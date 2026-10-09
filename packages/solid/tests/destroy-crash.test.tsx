@@ -84,6 +84,7 @@ describe("Renderer destroy with pending Solid updates", () => {
       log(`ticks later after destroy: ${ticksLaterAfterDestroy}`)
 
       expect(destroyEvents).toBe(1)
+      expect(testSetup.renderer.listenerCount("destroy")).toBe(1)
       expect(cleanupCalls).toBe(1)
       expect(testSetup.renderer.isDestroyed).toBe(true)
       expect(ticksLaterAfterDestroy).toBe(ticksSoonAfterDestroy)
