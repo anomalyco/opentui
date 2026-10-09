@@ -39,29 +39,24 @@ pub fn Rope(comptime T: type) type {
         };
         pub const MarkerCache = if (marker_enabled) struct {
             // Flat arrays of positions for each marker type
-            positions: std.AutoHashMap(std.meta.Tag(T), std.ArrayListUnmanaged(MarkerPosition)),
-            version: u64, // Rope version when cache was built
+            positions: [MarkerTagCount]std.ArrayListUnmanaged(MarkerPosition) = [_]std.ArrayListUnmanaged(MarkerPosition){.empty} ** MarkerTagCount,
+            version: u64 = std.math.maxInt(u64), // Rope version when cache was built
             allocator: Allocator,
 
             pub fn init(allocator: Allocator) MarkerCache {
                 return .{
-                    .positions = std.AutoHashMap(std.meta.Tag(T), std.ArrayListUnmanaged(MarkerPosition)).init(allocator),
-                    .version = std.math.maxInt(u64), // Sentinel: cache is invalid until first rebuild
                     .allocator = allocator,
                 };
             }
 
             pub fn deinit(self: *MarkerCache) void {
-                var iter = self.positions.valueIterator();
-                while (iter.next()) |list| {
+                for (&self.positions) |*list| {
                     list.deinit(self.allocator);
                 }
-                self.positions.deinit();
             }
 
             fn clear(self: *MarkerCache) void {
-                var iter = self.positions.valueIterator();
-                while (iter.next()) |list| {
+                for (&self.positions) |*list| {
                     list.clearRetainingCapacity();
                 }
             }
@@ -73,12 +68,17 @@ pub fn Rope(comptime T: type) type {
             fn clear(_: *@This()) void {}
         };
 
+        fn markerTypeIndex(tag: std.meta.Tag(T)) ?usize {
+            inline for (T.MarkerTypes, 0..) |mt, i| {
+                if (tag == mt) return i;
+            }
+            return null;
+        }
+
         pub const Metrics = struct {
             count: u32 = 0,
             depth: u32 = 1,
             custom: if (@hasDecl(T, "Metrics")) T.Metrics else void = if (@hasDecl(T, "Metrics")) .{} else {},
-
-            marker_counts: if (marker_enabled) [MarkerTagCount]u32 else void = if (marker_enabled) [_]u32{0} ** MarkerTagCount else {},
 
             pub fn add(self: *Metrics, other: Metrics) void {
                 self.count += other.count;
@@ -87,12 +87,6 @@ pub fn Rope(comptime T: type) type {
                 if (@hasDecl(T, "Metrics")) {
                     if (@hasDecl(T.Metrics, "add")) {
                         self.custom.add(other.custom);
-                    }
-                }
-
-                if (marker_enabled) {
-                    inline for (&self.marker_counts, 0..) |*dst, i| {
-                        dst.* += other.marker_counts[i];
                     }
                 }
             }
@@ -138,16 +132,6 @@ pub fn Rope(comptime T: type) type {
                 if (@hasDecl(T, "Metrics")) {
                     if (@hasDecl(T, "measure")) {
                         m.custom = self.data.measure();
-                    }
-                }
-
-                if (!self.is_sentinel and marker_enabled) {
-                    const tag = std.meta.activeTag(self.data);
-                    inline for (T.MarkerTypes, 0..) |mt, i| {
-                        if (tag == mt) {
-                            m.marker_counts[i] = 1;
-                            break;
-                        }
                     }
                 }
 
@@ -1215,14 +1199,6 @@ pub fn Rope(comptime T: type) type {
 
                     const tag = std.meta.activeTag(data.*);
 
-                    var is_marker = false;
-                    inline for (T.MarkerTypes) |mt| {
-                        if (tag == mt) {
-                            is_marker = true;
-                            break;
-                        }
-                    }
-
                     const leaf_weight = if (@hasDecl(T, "Metrics")) blk: {
                         if (@hasDecl(T, "measure")) {
                             const metrics = data.measure();
@@ -1231,15 +1207,8 @@ pub fn Rope(comptime T: type) type {
                         break :blk 1;
                     } else 1;
 
-                    if (is_marker) {
-                        const gop = context.cache.positions.getOrPut(tag) catch |e| {
-                            return .{ .keep_walking = false, .err = e };
-                        };
-                        if (!gop.found_existing) {
-                            gop.value_ptr.* = .empty;
-                        }
-
-                        gop.value_ptr.append(context.cache.allocator, .{
+                    if (markerTypeIndex(tag)) |marker_idx| {
+                        context.cache.positions[marker_idx].append(context.cache.allocator, .{
                             .leaf_index = context.current_leaf,
                             .global_weight = context.current_weight,
                         }) catch |e| {
@@ -1259,28 +1228,28 @@ pub fn Rope(comptime T: type) type {
             self.marker_cache.version = self.version;
         }
 
-        pub fn markerCount(self: *Self, tag: std.meta.Tag(T)) u32 {
-            if (!marker_enabled) return 0;
-
-            if (self.marker_cache.version != self.version) {
-                self.rebuildMarkerCache() catch return 0;
-            }
-
-            const list = self.marker_cache.positions.get(tag) orelse return 0;
-            return @intCast(list.items.len);
-        }
-
-        pub fn getMarker(self: *Self, tag: std.meta.Tag(T), occurrence: u32) ?MarkerPosition {
+        fn markerPositions(self: *Self, tag: std.meta.Tag(T)) ?[]const MarkerPosition {
             if (!marker_enabled) return null;
-            if (builtin.is_test) self.marker_lookups += 1;
+            const marker_idx = markerTypeIndex(tag) orelse return null;
 
             if (self.marker_cache.version != self.version) {
                 self.rebuildMarkerCache() catch return null;
             }
 
-            const list = self.marker_cache.positions.get(tag) orelse return null;
-            if (occurrence >= list.items.len) return null;
-            return list.items[occurrence];
+            return self.marker_cache.positions[marker_idx].items;
+        }
+
+        pub fn markerCount(self: *Self, tag: std.meta.Tag(T)) u32 {
+            const items = self.markerPositions(tag) orelse return 0;
+            return @intCast(items.len);
+        }
+
+        pub fn getMarker(self: *Self, tag: std.meta.Tag(T), occurrence: u32) ?MarkerPosition {
+            if (!marker_enabled) return null;
+            if (builtin.is_test) self.marker_lookups += 1;
+            const items = self.markerPositions(tag) orelse return null;
+            if (occurrence >= items.len) return null;
+            return items[occurrence];
         }
     };
 }
