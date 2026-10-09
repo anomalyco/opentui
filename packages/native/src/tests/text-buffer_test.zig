@@ -7,6 +7,7 @@ const iter_mod = @import("../text-buffer-iterators.zig");
 const TextAttributes = @import("../ansi.zig").TextAttributes;
 const owned_styled = @import("owned-styled-text.zig");
 const utils = @import("../utils.zig");
+const NoResizeAllocator = @import("no-resize-allocator.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 
@@ -1886,7 +1887,8 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
     defer links.deinit();
-    var tracked = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var no_resize: NoResizeAllocator = .{ .child = std.testing.allocator };
+    var tracked = std.testing.FailingAllocator.init(no_resize.allocator(), .{});
     const allocator = tracked.allocator();
     const tb = try TextBuffer.init(allocator, &pool, &links, .unicode);
     defer tb.deinit();

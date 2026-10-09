@@ -4,6 +4,7 @@ const context = @import("../context.zig");
 const gp = @import("../grapheme.zig");
 const ansi = @import("../ansi.zig");
 const utils = @import("../utils.zig");
+const NoResizeAllocator = @import("no-resize-allocator.zig");
 const foreground = ansi.rgbColor(255, 255, 255, 255);
 const background = ansi.rgbColor(0, 0, 0, 255);
 
@@ -83,7 +84,8 @@ test "Context encoded Unicode releases every provisional allocation" {
             try owner.drawBufferUnicode(target, null, encoded, 0, 0, 0, foreground, background, 0);
         }
     };
-    try testing.checkAllAllocationFailures(testing.allocator, Probe.run, .{});
+    var no_resize: NoResizeAllocator = .{ .child = testing.allocator };
+    try testing.checkAllAllocationFailures(no_resize.allocator(), Probe.run, .{});
 }
 
 test "Context encoded Unicode drawing rejection preserves cells and producer references" {

@@ -7,6 +7,7 @@ const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const utf8 = @import("../utf8.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
+const NoResizeAllocator = @import("no-resize-allocator.zig");
 
 const Clock = struct {
     time_us: i64,
@@ -653,8 +654,9 @@ fn createTextWithFailures(allocator: std.mem.Allocator) !void {
 }
 
 test "Context initialization and owned resource allocation failures release all storage" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, createWithFailures, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, createTextWithFailures, .{});
+    var no_resize: NoResizeAllocator = .{ .child = std.testing.allocator };
+    try std.testing.checkAllAllocationFailures(no_resize.allocator(), createWithFailures, .{});
+    try std.testing.checkAllAllocationFailures(no_resize.allocator(), createTextWithFailures, .{});
     try std.testing.expectError(error.InvalidOptions, context.Context.init(std.testing.allocator, std.testing.io, .{ .object_capacity = 0 }));
     try std.testing.expectError(error.InvalidOptions, context.Context.init(std.testing.allocator, std.testing.io, .{ .render_cells_max = 0 }));
 }
