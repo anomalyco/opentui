@@ -3,7 +3,6 @@ import { basename, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ContentEntryType } from "astro"
 import type { Loader, LoaderContext } from "astro/loaders"
-import { channelUrl, docsChannel, type DocsChannel } from "./docs-channel"
 import { parseReleaseNotes, splitFrontmatter, type ReleaseSection } from "./release-notes"
 
 type ReleaseLoaderContext = LoaderContext & { entryTypes: Map<string, ContentEntryType> }
@@ -17,8 +16,8 @@ export interface ReleaseNotesData {
 
 /**
  * Loads src/content/docs/releases/<version>.md. Each entry renders the whole file for its release page and
- * each change on its own for the Changes lists on documentation pages. Like the documentation's links, the
- * notes' /docs links stay in the build's channel.
+ * each change on its own for the Changes lists on documentation pages. Pages map the /docs links of the HTML to
+ * their channel with channelLinks().
  */
 export function releaseNotesLoader(): Loader {
   return {
@@ -28,11 +27,7 @@ export function releaseNotesLoader(): Loader {
       const directory = new URL("content/docs/releases/", context.config.srcDir)
       const entryType = context.entryTypes.get(".md")
       if (!entryType) throw new Error("The release notes loader requires Markdown support")
-      const channel = docsChannel()
-      const render = async (markdown: string, fileURL: URL) => {
-        const rendered = await context.renderMarkdown(markdown, { fileURL })
-        return { ...rendered, html: channelLinks(rendered.html, channel) }
-      }
+      const render = (markdown: string, fileURL: URL) => context.renderMarkdown(markdown, { fileURL })
 
       const loadAll = async () => {
         const names = (await fs.readdir(directory).catch(() => [] as string[])).filter((name) => name.endsWith(".md"))
@@ -84,13 +79,6 @@ export function releaseNotesLoader(): Loader {
       }
     },
   }
-}
-
-/** Maps the /docs links of rendered HTML to the channel. */
-export function channelLinks(html: string, channel: Pick<DocsChannel, "base">): string {
-  return html.replace(/(<a\s[^>]*?href=")(\/docs[^"]*)"/g, (_, start: string, href: string) => {
-    return `${start}${channelUrl(href, channel)}"`
-  })
 }
 
 function unwrapParagraph(html: string): string {

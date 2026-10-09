@@ -1,8 +1,6 @@
 import { defineConfig } from "astro/config"
 import mdx from "@astrojs/mdx"
-import { channelHasPage, docsChannel, docsRedirects } from "./src/lib/docs-channel.ts"
-
-const channel = docsChannel()
+import { buildChannels, docsRedirects } from "./src/lib/docs-channel.ts"
 
 const copyButtonTransformer = {
   name: "copy-button",
@@ -126,9 +124,6 @@ const codeCobalt = {
 export default defineConfig({
   integrations: [mdx()],
   site: "https://opentui.com",
-  // Rendered release notes depend on the channel (see release-notes-loader.ts), so each channel keeps its own
-  // content cache.
-  cacheDir: `./node_modules/.astro/${channel.id}`,
   build: {
     // The release channel's build keeps its assets under /docs so its tree can be merged into the main build.
     assets: process.env.OPENTUI_ASTRO_ASSETS || "_astro",
@@ -138,7 +133,7 @@ export default defineConfig({
       allowedHosts: true,
     },
   },
-  redirects: docsRedirects(channel, (url) => channelHasPage(channel.id, url)),
+  redirects: Object.assign({}, ...buildChannels().map((channel) => docsRedirects(channel))),
   markdown: {
     shikiConfig: {
       themes: {

@@ -134,6 +134,8 @@ The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it
   edit it by hand.
 - A release from a maintenance branch, such as 0.5.x, writes its API file and release notes on that branch. Copy both
   to main: the site reads them from main.
+- `bun run dev` and `bun run build` render both channels from the working tree. Unreleased API changes need a source
+  snapshot: set `OPENTUI_API_CURRENT` to a file from `bun run api:current --out <file>`.
 - Check a full build with `bun run build:site --release <version>` and `bun run preview:site`.
 
 ## Exceptions

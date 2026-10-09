@@ -2,18 +2,23 @@
 import ApiChangeList from "../../../../components/ApiChangeList.astro"
 import Docs from "../../../../layouts/Docs.astro"
 import { channelApi, groupChanges } from "../../../../lib/api-docs"
-import { docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { channelRoutes, type DocsChannel } from "../../../../lib/docs-channel"
 import { slugifyHeading } from "../../../../lib/docs-headings"
 
 // Like tip.golang.org/doc/next: the main-branch changes that the next release will contain. Only the main-branch
 // build has a source snapshot to compare with the latest release.
 export async function getStaticPaths() {
-  const channel = docsChannel()
-  const api = await channelApi(channel)
-  return api?.unreleased ? [{ params: { channel: docsRouteParam(channel.base) } }] : []
+  const routes = await Promise.all(
+    channelRoutes().map(async (route) => ((await channelApi(route.props.channel))?.unreleased ? [route] : [])),
+  )
+  return routes.flat()
 }
 
-const channel = docsChannel()
+interface Props {
+  channel: DocsChannel
+}
+
+const { channel } = Astro.props
 const api = await channelApi(channel)
 const changes = api?.unreleased ?? []
 const base = api?.unreleasedBase ?? channel.release

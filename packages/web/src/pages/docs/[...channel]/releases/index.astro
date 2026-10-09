@@ -2,14 +2,18 @@
 import ProseH2 from "../../../../components/ProseH2.astro"
 import Docs from "../../../../layouts/Docs.astro"
 import { channelApi } from "../../../../lib/api-docs"
-import { channelUrl, docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { channelRoutes, channelUrl, type DocsChannel } from "../../../../lib/docs-channel"
 import { channelReleases } from "../../../../lib/release-pages"
 
 export function getStaticPaths() {
-  return [{ params: { channel: docsRouteParam(docsChannel().base) } }]
+  return channelRoutes()
 }
 
-const channel = docsChannel()
+interface Props {
+  channel: DocsChannel
+}
+
+const { channel } = Astro.props
 const [releases, api] = await Promise.all([channelReleases(channel), channelApi(channel)])
 const lines = [...new Set(releases.map((release) => release.line))]
 const firstNotes = releases.findLast((release) => release.notes)?.version

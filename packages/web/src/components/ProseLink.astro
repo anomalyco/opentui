@@ -1,12 +1,12 @@
 ---
 // Documentation sources link to logical /docs URLs; this keeps those links in the page's channel.
 import type { HTMLAttributes } from "astro/types"
-import { channelUrl, docsChannel } from "../lib/docs-channel"
+import { channelUrl, pageChannel } from "../lib/docs-channel"
 
 type Props = HTMLAttributes<"a">
 
 const { href, ...attributes } = Astro.props
-const target = typeof href === "string" ? channelUrl(href, docsChannel()) : href
+const target = typeof href === "string" ? channelUrl(href, pageChannel(Astro.url.pathname)) : href
 ---
 
 <a href={target} {...attributes}><slot /></a>

@@ -2,7 +2,7 @@
 // The recent changes of a documentation page, newest first. Each release links to its release page; release-note
 // entries come first, then the API changes of the symbols the page documents.
 import { UNRELEASED } from "../lib/api-docs"
-import { channelUrl, docsChannel } from "../lib/docs-channel"
+import { channelLinks, channelUrl, pageChannel } from "../lib/docs-channel"
 import type { PageChanges } from "../lib/page-changes"
 import ProseH2 from "./ProseH2.astro"
 
@@ -14,7 +14,7 @@ interface Props {
 const MAX_NAMES = 12
 const shown = (names: string[]) => (names.length > MAX_NAMES + 3 ? MAX_NAMES : names.length)
 const labels = { added: "Added", changed: "Changed", deprecated: "Deprecated", removed: "Removed" }
-const channel = docsChannel()
+const channel = pageChannel(Astro.url.pathname)
 const releaseUrl = (version: string) =>
   channelUrl(version === UNRELEASED ? "/docs/releases/unreleased" : `/docs/releases/${version}`, channel)
 ---
@@ -28,7 +28,7 @@ const releaseUrl = (version: string) =>
           <a href={releaseUrl(release.version)}>{release.version}</a>
         </dt>
         {release.notes.map((html) => (
-          <dd set:html={html} />
+          <dd set:html={channelLinks(html, channel)} />
         ))}
         {release.api.map(({ type, names }) => (
           <dd>

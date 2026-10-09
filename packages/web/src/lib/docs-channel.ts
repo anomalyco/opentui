@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { DOC_MANIFEST } from "./docs-manifest"
 import { REPO_ROOT } from "./repo-root"
 
 // The site serves documentation in two channels, like go.dev and tip.golang.org. /docs documents the latest
-// release and /docs/next documents the main branch. One Astro build renders one channel; scripts/build-site.ts
-// builds both and merges them. Sources and the docs index use logical /docs URLs; pages map them to the channel
-// with channelUrl().
+// release and /docs/next documents the main branch. A page's channel follows from its URL (pageChannel). A build
+// renders the channel that OPENTUI_DOCS_CHANNEL names, or both from the working tree, as in development;
+// scripts/build-site.ts builds each channel from its own sources and merges them. Sources and the docs index use
+// logical /docs URLs; pages map them to their channel with channelUrl().
 
 export type DocsChannelId = "stable" | "next"
 
@@ -37,17 +39,42 @@ const DOC_REDIRECTS: Record<string, string> = {
 
 const VERSION = /^\d+\.\d+\.\d+$/
 
-/** Reads the channel from OPENTUI_DOCS_CHANNEL and the release from OPENTUI_DOCS_RELEASE. */
-export function docsChannel(env: Record<string, string | undefined> = process.env): DocsChannel {
-  const id = env.OPENTUI_DOCS_CHANNEL || "stable"
+/** The channels a build renders: the one OPENTUI_DOCS_CHANNEL names, or both. */
+export function buildChannels(env: Record<string, string | undefined> = process.env): DocsChannel[] {
+  const id = env.OPENTUI_DOCS_CHANNEL
+  if (!id) return [docsChannel("stable", env), docsChannel("next", env)]
   if (id !== "stable" && id !== "next") {
     throw new Error(`OPENTUI_DOCS_CHANNEL must be "stable" or "next", not "${id}"`)
   }
+  return [docsChannel(id, env)]
+}
 
+/** Static paths of a src/pages/docs/[...channel]/ route for each channel the build renders. */
+export function channelRoutes(env: Record<string, string | undefined> = process.env) {
+  return buildChannels(env).map((channel) => ({
+    params: { channel: docsRouteParam(channel.base) },
+    props: { channel },
+  }))
+}
+
+/** The channel of the page at a path: /docs/next and the pages below it are the main-branch channel. */
+export function pageChannel(path: string, env: Record<string, string | undefined> = process.env): DocsChannel {
+  const next = path === DOCS_CHANNEL_BASES.next || path.startsWith(`${DOCS_CHANNEL_BASES.next}/`)
+  return docsChannel(next ? "next" : "stable", env)
+}
+
+/** A channel, with the release from OPENTUI_DOCS_RELEASE or the version in this checkout. */
+export function docsChannel(id: DocsChannelId, env: Record<string, string | undefined> = process.env): DocsChannel {
   const release = env.OPENTUI_DOCS_RELEASE || coreVersion()
   if (!VERSION.test(release)) throw new Error(`OPENTUI_DOCS_RELEASE must be a version such as 0.5.17, not "${release}"`)
-
   return { id, base: DOCS_CHANNEL_BASES[id], release }
+}
+
+/** Maps the /docs links of rendered HTML, such as release notes, to the channel. */
+export function channelLinks(html: string, channel: Pick<DocsChannel, "base">): string {
+  return html.replace(/(<a\s[^>]*?href=")(\/docs[^"]*)"/g, (_, start: string, href: string) => {
+    return `${start}${channelUrl(href, channel)}"`
+  })
 }
 
 /**
@@ -92,11 +119,11 @@ export function logicalUrl(channelPath: string, channel: Pick<DocsChannel, "base
   return switchChannelPath(channelPath, channel, { base: "/docs" })
 }
 
-/** The redirects for the channel, keyed by channel path. */
-export function docsRedirects(channel: DocsChannel, hasPage: (logicalUrl: string) => boolean) {
+/** The redirects for the channel, keyed by channel path, given the logical URLs of the channel's pages. */
+export function docsRedirects(channel: Pick<DocsChannel, "base">, pages: Set<string> = manifestUrls()) {
   return Object.fromEntries(
     Object.entries(DOC_REDIRECTS)
-      .filter(([from, to]) => hasPage(to) && !hasPage(from))
+      .filter(([from, to]) => pages.has(to) && !pages.has(from))
       .map(([from, to]) => [channelUrl(from, channel), channelUrl(to, channel)]),
   )
 }
@@ -137,6 +164,13 @@ export function switchChannelPath(
 
 function isDocsUrl(url: string): boolean {
   return url === "/docs" || /^\/docs[/?#]/.test(url)
+}
+
+/** The logical URLs of the pages in docs-manifest.ts, which comes from the release in its build. */
+function manifestUrls(): Set<string> {
+  return new Set(
+    Object.entries(DOC_MANIFEST).map(([sourceId, entry]) => entry.url ?? `/docs/${entry.slug ?? sourceId}`),
+  )
 }
 
 function coreVersion(): string {

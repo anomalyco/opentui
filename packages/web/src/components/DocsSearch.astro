@@ -4,11 +4,11 @@
 // The page renders this twice (sidebar and menu), so each copy needs its
 // own control ids. On the sidebar, results overlay the article from
 // the nav's left edge; the overlay is only as large as the hits.
-import { docsChannel } from "../lib/docs-channel"
+import { pageChannel } from "../lib/docs-channel"
 
 const searchId = `docs-search-${crypto.randomUUID()}`
 const resultsId = `${searchId}-results`
-const indexUrl = `${docsChannel().base}/search-index.json`
+const indexUrl = `${pageChannel(Astro.url.pathname).base}/search-index.json`
 ---
 
 <search class="docs-search" data-index={indexUrl} hidden>

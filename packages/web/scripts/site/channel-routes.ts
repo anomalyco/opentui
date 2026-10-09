@@ -5,12 +5,13 @@ import { readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { channelApi } from "../../src/lib/api-docs"
 import { moduleSlug } from "../../src/lib/api-reference"
-import { docsChannel } from "../../src/lib/docs-channel"
+import { buildChannels } from "../../src/lib/docs-channel"
 import { buildDocsIndex } from "../../src/lib/docs-index"
 import { channelVersions } from "../../src/lib/release-notes"
 import { REPO_ROOT } from "../../src/lib/repo-root"
 
-const channel = docsChannel()
+const [channel, ...others] = buildChannels()
+if (others.length > 0) throw new Error("Set OPENTUI_DOCS_CHANNEL to the channel to list")
 const [index, api, notes] = await Promise.all([
   buildDocsIndex(),
   channelApi(channel),

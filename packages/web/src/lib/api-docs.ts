@@ -41,7 +41,7 @@ export interface ChannelApi {
   unreleasedBase?: string
 }
 
-let cache: { key: string; api: Promise<ChannelApi | undefined> } | undefined
+const cache = new Map<string, Promise<ChannelApi | undefined>>()
 
 /** The API data of the channel, or undefined when the repository has no api/ history. */
 export function channelApi(
@@ -49,8 +49,9 @@ export function channelApi(
   env: Record<string, string | undefined> = process.env,
 ): Promise<ChannelApi | undefined> {
   const key = `${channel.id} ${channel.release} ${env.OPENTUI_API_CURRENT ?? ""}`
-  if (cache?.key !== key) cache = { key, api: loadChannelApi(channel, env.OPENTUI_API_CURRENT) }
-  return cache.api
+  let api = cache.get(key)
+  if (!api) cache.set(key, (api = loadChannelApi(channel, env.OPENTUI_API_CURRENT)))
+  return api
 }
 
 async function loadChannelApi(channel: DocsChannel, currentFile: string | undefined): Promise<ChannelApi | undefined> {

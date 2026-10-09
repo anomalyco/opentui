@@ -4,11 +4,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  buildChannels,
   channelCounterpart,
+  channelLinks,
   channelUrl,
-  docsChannel,
   docsRedirects,
   docsRouteParam,
+  pageChannel,
   switchChannelPath,
   type DocsChannel,
 } from "./docs-channel"
@@ -46,15 +48,33 @@ test("switchChannelPath maps a page and its home between channels", () => {
   expect(switchChannelPath("/packages", stable, next)).toBe("/docs/next")
 })
 
-test("docsChannel reads and checks the environment", () => {
-  expect(docsChannel({ OPENTUI_DOCS_CHANNEL: "next", OPENTUI_DOCS_RELEASE: "1.2.3" })).toEqual({
-    id: "next",
-    base: "/docs/next",
-    release: "1.2.3",
-  })
-  expect(docsChannel({ OPENTUI_DOCS_RELEASE: "1.2.3" }).id).toBe("stable")
-  expect(() => docsChannel({ OPENTUI_DOCS_CHANNEL: "beta" })).toThrow("stable")
-  expect(() => docsChannel({ OPENTUI_DOCS_RELEASE: "v1.2.3" })).toThrow("version")
+test("a build renders the channel the environment names, or both", () => {
+  const env = { OPENTUI_DOCS_RELEASE: "1.2.3" }
+  expect(buildChannels({ ...env, OPENTUI_DOCS_CHANNEL: "next" })).toEqual([
+    { id: "next", base: "/docs/next", release: "1.2.3" },
+  ])
+  expect(buildChannels(env).map((channel) => channel.id)).toEqual(["stable", "next"])
+  expect(() => buildChannels({ OPENTUI_DOCS_CHANNEL: "beta" })).toThrow("stable")
+  expect(() => buildChannels({ OPENTUI_DOCS_RELEASE: "v1.2.3" })).toThrow("version")
+})
+
+test.each([
+  ["/docs", "stable"],
+  ["/docs/core-concepts/layout/", "stable"],
+  ["/docs/nextjs", "stable"],
+  ["/docs/next", "next"],
+  ["/docs/next/", "next"],
+  ["/docs/next/releases/0.5.17/", "next"],
+])("the page at %s is in the %s channel", (path, id) => {
+  expect(pageChannel(path, { OPENTUI_DOCS_RELEASE: "1.2.3" }).id).toBe(id as "stable" | "next")
+})
+
+test("channelLinks maps the documentation links of rendered HTML", () => {
+  const html = '<p><a href="/docs/x#y">x</a> <a class="c" href="/docs">home</a> <a href="https://e.com/docs">e</a></p>'
+  expect(channelLinks(html, next)).toBe(
+    '<p><a href="/docs/next/x#y">x</a> <a class="c" href="/docs/next">home</a> <a href="https://e.com/docs">e</a></p>',
+  )
+  expect(channelLinks(html, stable)).toBe(html)
 })
 
 test("pages that one channel lacks link to the nearest page the other channel has", () => {
@@ -86,14 +106,15 @@ test("pages that one channel lacks link to the nearest page the other channel ha
 })
 
 test("redirects are generated only where the target exists and the source is not a page", () => {
-  const has = (pages: string[]) => (url: string) => pages.includes(url)
-  expect(docsRedirects(next, has(["/docs", "/docs/core-concepts/renderables", "/docs/native/c"]))).toEqual({
+  expect(docsRedirects(next, new Set(["/docs", "/docs/core-concepts/renderables", "/docs/native/c"]))).toEqual({
     "/docs/next/getting-started": "/docs/next",
     "/docs/next/core-concepts/constructs": "/docs/next/core-concepts/renderables",
     "/docs/next/core-concepts/renderables-vs-constructs": "/docs/next/core-concepts/renderables",
     "/docs/next/native/c-zig": "/docs/next/native/c",
   })
-  expect(Object.keys(docsRedirects(stable, has(["/docs", "/docs/native/c-zig", "/docs/native/c"])))).toEqual([
+  expect(Object.keys(docsRedirects(stable, new Set(["/docs", "/docs/native/c-zig", "/docs/native/c"])))).toEqual([
     "/docs/getting-started",
   ])
+  // By default, the pages are the ones docs-manifest.ts lists.
+  expect(docsRedirects(stable)["/docs/getting-started"]).toBe("/docs")
 })

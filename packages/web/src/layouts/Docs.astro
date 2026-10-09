@@ -5,7 +5,7 @@ import DocsToc from "../components/DocsToc.astro"
 import PageChanges from "../components/PageChanges.astro"
 import SiteFooter from "../components/SiteFooter.astro"
 import SiteNav from "../components/SiteNav.astro"
-import { channelCounterpart, channelUrl, docsChannel } from "../lib/docs-channel"
+import { channelCounterpart, channelUrl, pageChannel } from "../lib/docs-channel"
 import { buildDocsIndex, getPrevNextDocSequences } from "../lib/docs-index"
 import { pageChanges } from "../lib/page-changes"
 import Minimal from "./Minimal.astro"
@@ -20,7 +20,7 @@ interface Props {
 }
 
 const { title, description, slug } = Astro.props
-const channel = docsChannel()
+const channel = pageChannel(Astro.url.pathname)
 const docsIndex = await buildDocsIndex()
 const page = slug ? docsIndex.pagesBySlug[slug] : undefined
 const sequencePagers = slug

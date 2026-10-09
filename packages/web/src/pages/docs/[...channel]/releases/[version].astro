@@ -1,35 +1,37 @@
 ---
-import { render } from "astro:content"
 import ApiChangeList from "../../../../components/ApiChangeList.astro"
 import ProseH2 from "../../../../components/ProseH2.astro"
 import Docs from "../../../../layouts/Docs.astro"
 import { channelApi, groupChanges } from "../../../../lib/api-docs"
-import { docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { buildChannels, channelLinks, docsRouteParam, type DocsChannel } from "../../../../lib/docs-channel"
 import { channelReleases, type ChannelRelease } from "../../../../lib/release-pages"
 import { slugifyHeading } from "../../../../lib/docs-headings"
 
 export async function getStaticPaths() {
-  const channel = docsChannel()
-  const releases = await channelReleases(channel)
-  return releases.map((release) => ({
-    params: { channel: docsRouteParam(channel.base), version: release.version },
-    props: { release },
-  }))
+  const paths = await Promise.all(
+    buildChannels().map(async (channel) =>
+      (await channelReleases(channel)).map((release) => ({
+        params: { channel: docsRouteParam(channel.base), version: release.version },
+        props: { channel, release },
+      })),
+    ),
+  )
+  return paths.flat()
 }
 
 interface Props {
+  channel: DocsChannel
   release: ChannelRelease
 }
 
-const { release } = Astro.props
-const channel = docsChannel()
+const { channel, release } = Astro.props
 const api = await channelApi(channel)
 const changes = api?.versions.includes(release.version) ? api.changes(release.version) : []
 const modules = [...new Set(groupChanges(changes).map((group) => group.module))]
-const rendered = release.notes ? await render(release.notes) : undefined
+const rendered = release.notes?.rendered
 const title = `OpenTUI ${release.version}`
 const headings = [
-  ...(rendered?.headings ?? []),
+  ...(rendered?.metadata?.headings ?? []),
   ...(changes.length > 0 ? [{ depth: 2, slug: "api-changes", text: "API changes" }] : []),
   ...modules.map((module) => ({ depth: 3, slug: slugifyHeading(module), text: module })),
 ]
@@ -46,7 +48,7 @@ const headings = [
       )
     }
   </p>
-  {rendered && <rendered.Content />}
+  {rendered && <Fragment set:html={channelLinks(rendered.html, channel)} />}
   {!rendered && <p>This release has no release notes. The list below comes from its published type declarations.</p>}
   {
     changes.length > 0 ? (

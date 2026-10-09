@@ -21,12 +21,13 @@ export interface PageChanges {
   api: Array<{ type: ApiChange["type"]; names: string[] }>
 }
 
-let cache: { key: string; index: Promise<Map<string, PageChanges[]>> } | undefined
+const cache = new Map<string, Promise<Map<string, PageChanges[]>>>()
 
 export async function pageChanges(channel: DocsChannel, page: string): Promise<PageChanges[]> {
   const key = `${channel.id} ${channel.release}`
-  if (cache?.key !== key) cache = { key, index: buildIndex(channel) }
-  return (await cache.index).get(page) ?? []
+  let index = cache.get(key)
+  if (!index) cache.set(key, (index = buildIndex(channel)))
+  return (await index).get(page) ?? []
 }
 
 async function buildIndex(channel: DocsChannel): Promise<Map<string, PageChanges[]>> {

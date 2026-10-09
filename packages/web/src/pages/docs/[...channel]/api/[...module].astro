@@ -3,25 +3,29 @@ import ProseH2 from "../../../../components/ProseH2.astro"
 import Docs from "../../../../layouts/Docs.astro"
 import { channelApi, featureText } from "../../../../lib/api-docs"
 import { apiModules, EXPORT_GROUPS, exportGroup, type ApiModule } from "../../../../lib/api-reference"
-import { channelUrl, docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { buildChannels, channelUrl, docsRouteParam, type DocsChannel } from "../../../../lib/docs-channel"
 import { buildDocsIndex } from "../../../../lib/docs-index"
 
 export async function getStaticPaths() {
-  const channel = docsChannel()
-  const api = await channelApi(channel)
-  if (!api) return []
-  return (await apiModules(api)).map((module) => ({
-    params: { channel: docsRouteParam(channel.base), module: module.slug },
-    props: { module },
-  }))
+  const paths = await Promise.all(
+    buildChannels().map(async (channel) => {
+      const api = await channelApi(channel)
+      if (!api) return []
+      return (await apiModules(api)).map((module) => ({
+        params: { channel: docsRouteParam(channel.base), module: module.slug },
+        props: { channel, module },
+      }))
+    }),
+  )
+  return paths.flat()
 }
 
 interface Props {
+  channel: DocsChannel
   module: ApiModule
 }
 
-const { module } = Astro.props
-const channel = docsChannel()
+const { channel, module } = Astro.props
 const docsIndex = await buildDocsIndex()
 const groups = EXPORT_GROUPS.map((group) => ({
   ...group,

@@ -6,18 +6,19 @@ import ProseH3 from "../../components/ProseH3.astro"
 import ProseLink from "../../components/ProseLink.astro"
 import ProseTable from "../../components/ProseTable.astro"
 import Docs from "../../layouts/Docs.astro"
-import { channelUrl, docsChannel, docsRouteParam } from "../../lib/docs-channel"
+import { buildChannels, channelUrl, docsRouteParam } from "../../lib/docs-channel"
 import { buildDocsIndex } from "../../lib/docs-index"
 
 export async function getStaticPaths() {
-  const channel = docsChannel()
   const [docs, docsIndex] = await Promise.all([getCollection("docs"), buildDocsIndex()])
   const entriesById = Object.fromEntries(docs.map((entry) => [entry.id, entry]))
 
-  return docsIndex.pages.map((page) => ({
-    params: { slug: docsRouteParam(channelUrl(page.url, channel)) },
-    props: { entry: entriesById[page.sourceId], page },
-  }))
+  return buildChannels().flatMap((channel) =>
+    docsIndex.pages.map((page) => ({
+      params: { slug: docsRouteParam(channelUrl(page.url, channel)) },
+      props: { entry: entriesById[page.sourceId], page },
+    })),
+  )
 }
 
 const { entry, page } = Astro.props

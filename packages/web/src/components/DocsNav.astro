@@ -1,10 +1,10 @@
 ---
-import { channelUrl, docsChannel } from "../lib/docs-channel"
+import { channelUrl, pageChannel } from "../lib/docs-channel"
 import { buildDocsIndex } from "../lib/docs-index"
 import DocsSearch from "./DocsSearch.astro"
 import DocsVersion from "./DocsVersion.astro"
 
-const channel = docsChannel()
+const channel = pageChannel(Astro.url.pathname)
 const docsIndex = await buildDocsIndex()
 
 const normalize = (path: string) => path.replace(/\/+$/, "") || "/"

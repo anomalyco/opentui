@@ -2,14 +2,20 @@
 import Docs from "../../../../layouts/Docs.astro"
 import { channelApi } from "../../../../lib/api-docs"
 import { apiModules } from "../../../../lib/api-reference"
-import { channelUrl, docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { channelRoutes, channelUrl, type DocsChannel } from "../../../../lib/docs-channel"
 
 export async function getStaticPaths() {
-  const channel = docsChannel()
-  return (await channelApi(channel)) ? [{ params: { channel: docsRouteParam(channel.base) } }] : []
+  const routes = await Promise.all(
+    channelRoutes().map(async (route) => ((await channelApi(route.props.channel)) ? [route] : [])),
+  )
+  return routes.flat()
 }
 
-const channel = docsChannel()
+interface Props {
+  channel: DocsChannel
+}
+
+const { channel } = Astro.props
 const modules = await apiModules((await channelApi(channel))!)
 const source = channel.id === "next" ? "the main-branch source" : `the ${channel.release} release`
 ---
