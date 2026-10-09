@@ -37,7 +37,7 @@ export function createRoot(renderer: CliRenderer): Root {
     }
   }
 
-  renderer.once(CliRenderEvents.DESTROY, cleanup)
+  if (!renderer.isDestroyed) renderer.once(CliRenderEvents.DESTROY, cleanup)
 
   return {
     render: (node: ReactNode) => {

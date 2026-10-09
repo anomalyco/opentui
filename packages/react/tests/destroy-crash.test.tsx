@@ -90,7 +90,7 @@ describe("Renderer Destroy Crash with Pending React Updates", () => {
     // React will try to add new <text> elements to destroyed Yoga nodes
     testSetup.renderer.destroy()
     using errors = spyOn(console, "error")
-    root.render(<App />)
+    createRoot(testSetup.renderer).render(<App />)
 
     // Wait for interval to fire more updates after destroy
     // This is when the crash occurs if the bug is present
@@ -98,5 +98,6 @@ describe("Renderer Destroy Crash with Pending React Updates", () => {
 
     expect(cleanedUp).toBe(true)
     expect(errors).not.toHaveBeenCalled()
+    expect(testSetup.renderer.listenerCount("destroy")).toBe(0)
   })
 })
