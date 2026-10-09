@@ -707,7 +707,7 @@ pub const EditorView = struct {
 
     pub fn moveDownVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
-        if (vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
+        if (self.placeholder_active or vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
         self.moveToVisualRow(vcursor, vcursor.visual_row + 1);
     }
 

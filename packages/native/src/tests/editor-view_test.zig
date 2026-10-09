@@ -247,16 +247,16 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
     const empty_line = "Line with some text\n\nAnother line with text";
     // From (0, 1) into the width-2 unit at the start of line 1, and back to column 1 on ASCII lines.
     const wide = [_][2]u32{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 } };
-    const Case = struct { text: []const u8, wrap: text_buffer.WrapMode = .none, width: u32 = 20, start: [2]u32, moves: []const u8, ends: []const [2]u32 };
+    const Case = struct { text: []const u8, wrap: text_buffer.WrapMode = .none, width: u32 = 20, placeholder: []const owned_styled.Part = &.{}, start: [2]u32, moves: []const u8, ends: []const [2]u32 };
     // u/d move the EditBuffer, U/D move the EditorView, a digit scrolls a one-row viewport to that
-    // line with moveCursor. Each end is the logical (row, col) after the move.
+    // line with moveCursor, x types "x". Each end is the logical (row, col) after the move.
     const cases = [_]Case{
         .{ .text = long, .wrap = .char, .start = .{ 0, 50 }, .moves = "UD", .ends = &.{ .{ 0, 30 }, .{ 0, 50 } } },
         .{ .text = long, .wrap = .char, .start = .{ 0, 0 }, .moves = "D", .ends = &.{.{ 0, 20 }} },
         .{ .text = "Short line", .wrap = .char, .start = .{ 0, 0 }, .moves = "Uu", .ends = &.{ .{ 0, 0 }, .{ 0, 0 } } },
         .{ .text = "Short line\nSecond line", .wrap = .char, .start = .{ 1, 0 }, .moves = "Dd", .ends = &.{ .{ 1, 0 }, .{ 1, 0 } } },
         .{ .text = "1234567890" ** 5, .wrap = .char, .start = .{ 0, 15 }, .moves = "DDU", .ends = &.{ .{ 0, 35 }, .{ 0, 50 }, .{ 0, 35 } } },
-        .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "DDUU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
+        .{ .text = empty_line, .placeholder = &.{.{ .text = "hint\nhint" }}, .start = .{ 0, 10 }, .moves = "DDUU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
         .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "dduudU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 }, .{ 1, 0 }, .{ 0, 0 } } },
         // 001: a move into a width-2 unit lands on its start; the desired column stays.
         .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
@@ -267,6 +267,11 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
         // #1289: cell boundaries 0, 2, 3, 5, ... above 0, 2, 4, ...
         .{ .text = "的[代码签名政策](\n因此签名批准者角色", .width = 40, .start = .{ 0, 5 }, .moves = "DUdu", .ends = &.{ .{ 1, 4 }, .{ 0, 5 }, .{ 1, 4 }, .{ 0, 5 } } },
         .{ .text = "的[代码因此签名政策", .wrap = .char, .width = 8, .start = .{ 0, 5 }, .moves = "DU", .ends = &.{ .{ 0, 11 }, .{ 0, 5 } } },
+        // Down from the end of a line onto a soft-wrapped line steps back before the wrap.
+        .{ .text = "0123456789\nquick brown fox", .wrap = .word, .width = 10, .start = .{ 0, 10 }, .moves = "D", .ends = &.{.{ 1, 5 }} },
+        // 172: the placeholder's visual rows are not rows of the empty buffer.
+        .{ .text = "", .placeholder = &.{.{ .text = "type here\nsecond line" }}, .start = .{ 0, 0 }, .moves = "UDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
+        .{ .text = "", .wrap = .char, .width = 10, .placeholder = &.{.{ .text = "a placeholder wider than the box" }}, .start = .{ 0, 0 }, .moves = "DDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
     };
     for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
         const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
@@ -278,6 +283,7 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
             ev.setWrapMode(case.wrap);
             try eb.setText(case.text);
             try eb.setCursor(case.start[0], case.start[1]);
+            try owned_styled.setPlaceholder(ev, case.placeholder);
             for (case.moves, case.ends) |move, end| {
                 errdefer std.debug.print("{t} {s}: {s}, move {c}\n", .{ method, case.text, case.moves, move });
                 switch (move) {
@@ -285,6 +291,7 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
                     'd' => eb.moveDown(),
                     'U' => ev.moveUpVisual(),
                     'D' => ev.moveDownVisual(),
+                    'x' => try eb.insertText("x"),
                     '0'...'9' => ev.setViewport(.{ .x = 0, .y = move - '0', .width = case.width, .height = 1 }, true),
                     else => unreachable,
                 }
@@ -351,34 +358,6 @@ test "EditorView - moveUpVisual resolves wrapped boundary with canonical convers
     ev.moveUpVisual();
     cursor = ev.getVisualCursor();
     try std.testing.expectEqual(@as(u32, 0), cursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 5), cursor.visual_col);
-}
-
-test "EditorView - moveDownVisual resolves wrapped boundary with canonical conversion" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 10, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.word);
-
-    try eb.setText("0123456789\nquick brown fox");
-
-    const line_info = ev.getCachedLineInfo();
-    try std.testing.expectEqualSlices(u32, &[_]u32{ 10, 6, 9 }, line_info.line_width_cols);
-
-    try eb.setCursor(0, 10);
-    var cursor = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 10), cursor.visual_col);
-
-    ev.moveDownVisual();
-    cursor = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 1), cursor.visual_row);
     try std.testing.expectEqual(@as(u32, 5), cursor.visual_col);
 }
 
