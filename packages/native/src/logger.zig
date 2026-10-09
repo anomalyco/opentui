@@ -93,10 +93,10 @@ pub const Logger = union(enum) {
                 var buf: [Diagnostic.message_bytes_max]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, format, args) catch {
                     const fallback = "Log formatting failed";
-                    callback(@intFromEnum(LogLevel.err), fallback.ptr, fallback.len);
+                    callback(@backingInt(LogLevel.err), fallback.ptr, fallback.len);
                     return;
                 };
-                callback(@intFromEnum(level), msg.ptr, @intCast(msg.len));
+                callback(@backingInt(level), msg.ptr, @intCast(msg.len));
             },
         }
     }

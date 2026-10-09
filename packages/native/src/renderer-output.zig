@@ -21,6 +21,7 @@ const compatibility_io = if (builtin.is_test) std.testing.io else if (@hasDecl(@
 const Allocator = std.mem.Allocator;
 const NativeSpanFeed = @import("native-span-feed.zig");
 const logger = @import("logger.zig");
+const utils = @import("utils.zig");
 
 pub const OUTPUT_BUFFER_SIZE = 1024 * 1024 * 2; // 2 MiB, double-buffered per BufferedBackend for thread handoff
 const UTF16_BUFFER_SIZE = 4096;
@@ -139,7 +140,7 @@ test "UTF-8 output chunking does not split surrogate pairs" {
 }
 
 test "UTF-8 output conversion is bounded by the UTF-16 buffer" {
-    const input = "x" ** (UTF16_BUFFER_SIZE + 1);
+    const input = utils.repeat(u8, "x", UTF16_BUFFER_SIZE + 1);
     var output: [UTF16_BUFFER_SIZE]u16 = undefined;
 
     const first = try utf8ToUtf16Chunk(&output, input);
@@ -199,9 +200,13 @@ pub const StdoutOutput = struct {
     /// One direct byte write, or one bounded UTF-16 console chunk. An incomplete
     /// UTF-8 suffix stays with the caller.
     pub fn writeSome(self: *StdoutOutput, data: []const u8) !usize {
-        errdefer |err| {
+        return self.writeSomeUnmarked(data) catch |err| {
             if (err != error.WouldBlock) self.failed.store(true, .release);
-        }
+            return err;
+        };
+    }
+
+    fn writeSomeUnmarked(self: *StdoutOutput, data: []const u8) !usize {
         if (data.len == 0) return 0;
         if (builtin.os.tag == .windows and self.windowsConsole) {
             const prefix = completeUtf8Prefix(data[0..@min(data.len, UTF16_BUFFER_SIZE)]);
@@ -440,10 +445,10 @@ test "BackendWriter batches ANSI formatting and preserves write order" {
     try writer.writeAll("text");
     try writer.writeByte('!');
     try std.testing.expectEqual(@as(usize, 1), try writer.write("?"));
-    try writer.print("<{s}:{d:0>300}:{s}>", .{ "x" ** 300, 1, "y" ** 300 });
-    const expected = ansi ++ "text!?<" ++ "x" ** 300 ++ ":" ++ "0" ** 299 ++ "1:" ++ "y" ** 300 ++ ">";
+    try writer.print("<{s}:{d:0>300}:{s}>", .{ utils.repeat(u8, "x", 300), 1, utils.repeat(u8, "y", 300) });
+    const expected = ansi ++ "text!?<" ++ utils.repeat(u8, "x", 300) ++ ":" ++ utils.repeat(u8, "0", 299) ++ "1:" ++ utils.repeat(u8, "y", 300) ++ ">";
     try std.testing.expectEqualStrings(expected, sink.bytes[0..sink.len]);
-    try std.testing.expectError(error.BufferFull, writer.print("{s}", .{"z" ** 2048}));
+    try std.testing.expectError(error.BufferFull, writer.print("{s}", .{utils.repeat(u8, "z", 2048)}));
 
     sink = .{};
     var buffered = writer;
@@ -453,7 +458,7 @@ test "BackendWriter batches ANSI formatting and preserves write order" {
     try std.testing.expectEqual(@as(usize, 0), sink.writes);
     try buffered.flush();
     try std.testing.expectEqual(@as(usize, 1), sink.writes);
-    try std.testing.expectEqualStrings(ansi ** 8, sink.bytes[0..sink.len]);
+    try std.testing.expectEqualStrings(utils.repeat(u8, ansi, 8), sink.bytes[0..sink.len]);
 }
 
 /// Tagged union dispatching to BufferedBackend or FeedBackend.

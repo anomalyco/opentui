@@ -3,6 +3,7 @@ const c = @import("context_abi_c");
 const abi = @import("context-abi.zig");
 const ctx = @import("context.zig");
 const editor = @import("context-editor-abi.zig");
+const utils = @import("utils.zig");
 const Owner = abi.ContextHandle;
 const admit = editor.admit;
 const fail = editor.fail;
@@ -117,12 +118,12 @@ pub fn ot_text_buffer_replace_styled_batch(
 comptime {
     // ot_text_buffer_view_command decodes these vocabularies with @enumFromInt.
     const view_mod = @import("text-buffer-view.zig");
-    std.debug.assert(@intFromEnum(view_mod.WrapMode.none) == c.OT_SCENE_WRAP_NONE);
-    std.debug.assert(@intFromEnum(view_mod.WrapMode.char) == c.OT_SCENE_WRAP_CHAR);
-    std.debug.assert(@intFromEnum(view_mod.WrapMode.word) == c.OT_SCENE_WRAP_WORD);
-    std.debug.assert(@intFromEnum(view_mod.TextAlign.left) == c.OT_SCENE_ALIGN_LEFT);
-    std.debug.assert(@intFromEnum(view_mod.TextAlign.center) == c.OT_SCENE_ALIGN_CENTER);
-    std.debug.assert(@intFromEnum(view_mod.TextAlign.right) == c.OT_SCENE_ALIGN_RIGHT);
+    std.debug.assert(@backingInt(view_mod.WrapMode.none) == c.OT_SCENE_WRAP_NONE);
+    std.debug.assert(@backingInt(view_mod.WrapMode.char) == c.OT_SCENE_WRAP_CHAR);
+    std.debug.assert(@backingInt(view_mod.WrapMode.word) == c.OT_SCENE_WRAP_WORD);
+    std.debug.assert(@backingInt(view_mod.TextAlign.left) == c.OT_SCENE_ALIGN_LEFT);
+    std.debug.assert(@backingInt(view_mod.TextAlign.center) == c.OT_SCENE_ALIGN_CENTER);
+    std.debug.assert(@backingInt(view_mod.TextAlign.right) == c.OT_SCENE_ALIGN_RIGHT);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_COUNT_MAX == ctx.Context.text_replacement_count_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_CHUNKS_MAX == ctx.Context.text_replacement_chunks_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_BYTES_MAX == ctx.Context.text_replacement_bytes_max);
@@ -223,11 +224,11 @@ pub fn ot_text_buffer_view_command(context: ?*Owner, id: ?*const c.ot_handle, co
         (command == c.OT_TEXT_VIEW_TEXT_ALIGN and argument > c.OT_SCENE_ALIGN_RIGHT)) return fail(owner, error.InvalidOptions);
     const operation: ctx.TextViewCommand = switch (command) {
         c.OT_TEXT_VIEW_WRAP_WIDTH => .{ .wrap_width = if (argument == 0) null else argument },
-        c.OT_TEXT_VIEW_WRAP_MODE => .{ .wrap_mode = @enumFromInt(argument) },
+        c.OT_TEXT_VIEW_WRAP_MODE => .{ .wrap_mode = @fromBackingInt(@intCast(argument)) },
         c.OT_TEXT_VIEW_FIRST_LINE_OFFSET => .{ .first_line_offset = argument },
         c.OT_TEXT_VIEW_TAB_INDICATOR => .{ .tab_indicator = if (argument == 0) null else argument },
         c.OT_TEXT_VIEW_TRUNCATE => .{ .truncate = argument == 1 },
-        c.OT_TEXT_VIEW_TEXT_ALIGN => .{ .text_align = @enumFromInt(argument) },
+        c.OT_TEXT_VIEW_TEXT_ALIGN => .{ .text_align = @fromBackingInt(@intCast(argument)) },
         else => unreachable,
     };
     owner.core.textViewCommand(abi.handleFromC(id.?.*), operation) catch |err| return fail(owner, err);
@@ -257,7 +258,7 @@ pub fn ot_text_buffer_view_get_info(context: ?*Owner, id: ?*const c.ot_handle, o
     const selection = value.view.packSelectionInfo();
     const present = selection != std.math.maxInt(u64);
     const count = value.view.getVirtualLineCount();
-    out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_view_info), .abi_version = c.OT_CONTEXT_ABI_VERSION, .virtual_line_count = count, .total_virtual_line_count = count, .selection_present = @intFromBool(present), .selection_start = if (present) @intCast(selection >> 32) else 0, .selection_end = if (present) @truncate(selection) else 0, .selection_occupancy = @intFromEnum(value.view.getSelectionOccupancy()) };
+    out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_view_info), .abi_version = c.OT_CONTEXT_ABI_VERSION, .virtual_line_count = count, .total_virtual_line_count = count, .selection_present = @intFromBool(present), .selection_start = if (present) @intCast(selection >> 32) else 0, .selection_end = if (present) @truncate(selection) else 0, .selection_occupancy = @backingInt(value.view.getSelectionOccupancy()) };
     return c.OT_OK;
 }
 
@@ -333,7 +334,7 @@ test "Context text copy queries report exact selected bytes and preserve short o
     const edit_id = abi.handleToC(edit_handle);
     const editor_handle = try core.createEditorView(edit_handle, 20, 2);
     const editor_id = abi.handleToC(editor_handle);
-    const document = "prefix\n\xe4\xb8\xad\tend\n" ++ "x" ** 65536;
+    const document = "prefix\n\xe4\xb8\xad\tend\n" ++ utils.repeat(u8, "x", 65536);
     try core.textBufferSetText(text_handle, document);
     try core.editSetText(edit_handle, document, false);
     _ = try core.textViewSelect(view_handle, .{ .operation = .set, .start = 7, .end = 9 });
@@ -618,7 +619,7 @@ test "Context shared text batch rejects every allocation failure including the f
             (try owner.core.raw().getTextBufferView(view_id)).view.setSelection(0, 1, null, null);
             replacement.* = .{ .struct_size = @sizeOf(c.ot_text_buffer_replacement), .abi_version = c.OT_CONTEXT_ABI_VERSION, .buffer = handle, .view = abi.handleToC(view_id), .byte_offset = @intCast(index * 4), .byte_count = 4, .chunk_offset = @intCast(index), .chunk_count = 1 };
         }
-        var output = [_]c.ot_text_buffer_replacement_info{.{ .text_length = 99, .byte_count = 99 }} ** 2;
+        var output: [2]c.ot_text_buffer_replacement_info = @splat(.{ .text_length = 99, .byte_count = 99 });
         failing.fail_index = failing.alloc_index + failure_offset;
         failing.resize_fail_index = failing.resize_index;
         const status = ot_text_buffer_replace_styled_batch(&owner, &records, records.len, "nextlast", 8, &.{ chunk, chunk }, 2, "https://example.test/next", 25, &output);
@@ -672,7 +673,7 @@ test "Context shared text batch validates identities limits admission and owned 
         try owner.core.textBufferSetText(buffer, "kept");
         replacement.* = .{ .struct_size = @sizeOf(c.ot_text_buffer_replacement), .abi_version = c.OT_CONTEXT_ABI_VERSION, .buffer = abi.handleToC(buffer), .view = abi.handleToC(dependent), .byte_offset = 0, .byte_count = 0, .chunk_offset = 0, .chunk_count = 0 };
     }
-    var output = [_]c.ot_text_buffer_replacement_info{.{ .text_length = 99, .byte_count = 99 }} ** 2;
+    var output: [2]c.ot_text_buffer_replacement_info = @splat(.{ .text_length = 99, .byte_count = 99 });
     for (0..9) |case| {
         var invalid = records;
         const expected: c.ot_status = switch (case) {
@@ -796,7 +797,7 @@ test "Context shared text ABI rejects cold selection marker allocation before pu
     try std.testing.expectEqual(c.OT_OK, ot_text_buffer_view_select(&owner, &view_id, &selection, &changed));
     const resource = try owner.core.raw().getTextBufferView(abi.handleFromC(view_id));
     const accepted = resource.view.selection;
-    const input = (line ++ "\n") ** 2;
+    const input = utils.repeat(u8, line ++ "\n", 2);
     try std.testing.expectEqual(c.OT_OK, ot_text_buffer_set_text(&owner, &text_id, input, input.len));
     var info = std.mem.zeroes(c.ot_editor_view_info);
     info.struct_size = @sizeOf(c.ot_editor_view_info);
@@ -840,7 +841,7 @@ test "Context shared text ABI preserves empty chunk ordinals" {
     var chunk = std.mem.zeroes(c.ot_styled_text_chunk);
     chunk.struct_size = @sizeOf(c.ot_styled_text_chunk);
     chunk.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    var chunks = [_]c.ot_styled_text_chunk{chunk} ** 5;
+    var chunks: [5]c.ot_styled_text_chunk = @splat(chunk);
     chunks[1].byte_count = 1;
     chunks[1].flags = c.OT_SCENE_TEXT_FOREGROUND;
     chunks[1].foreground = .{ 255, 0, 0, 255 };

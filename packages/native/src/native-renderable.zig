@@ -117,7 +117,7 @@ pub const NativeRenderable = struct {
         var measured_width: f32 = @floatFromInt(@max(@as(u32, 1), result.width_cols_max));
         var measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
 
-        if (width_mode == @intFromEnum(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
+        if (width_mode == @backingInt(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
             measured_width = @min(effective_width, measured_width);
             measured_height = @min(effective_height, measured_height);
         }
@@ -150,7 +150,7 @@ pub const NodeStorage = struct {
 };
 
 pub fn normalizeYogaMeasureWidthInput(value: f32, width_mode: u32) f32 {
-    if (width_mode == @intFromEnum(native_yoga.YogaMeasureMode.undefined) or std.math.isNan(value)) return 0;
+    if (width_mode == @backingInt(native_yoga.YogaMeasureMode.undefined) or std.math.isNan(value)) return 0;
     return value;
 }
 
@@ -167,6 +167,6 @@ fn floorToU32(value: f32) u32 {
 }
 
 fn isYogaNodeAbsolute(node: native_yoga.YGNodeRef) bool {
-    return native_yoga.yogaNodeStyleGetEnum(node, @intFromEnum(native_yoga.YogaEnumKind.position_type)) ==
-        @intFromEnum(native_yoga.YogaPositionType.absolute);
+    return native_yoga.yogaNodeStyleGetEnum(node, @backingInt(native_yoga.YogaEnumKind.position_type)) ==
+        @backingInt(native_yoga.YogaPositionType.absolute);
 }

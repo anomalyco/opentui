@@ -208,7 +208,7 @@ pub fn ot_editor_view_command(context: ?*Owner, id: ?*const c.ot_handle, command
         c.OT_EDITOR_GOTO_LINE_END => .goto_line_end,
         c.OT_EDITOR_DELETE_SELECTION => .delete_selection,
         c.OT_EDITOR_CURSOR_OFFSET => .{ .cursor_offset = argument },
-        c.OT_EDITOR_WRAP_MODE => .{ .wrap_mode = @enumFromInt(argument) },
+        c.OT_EDITOR_WRAP_MODE => .{ .wrap_mode = @fromBackingInt(@intCast(argument)) },
         c.OT_EDITOR_TAB_INDICATOR => .{ .tab_indicator = if (argument == 0) null else argument },
         else => unreachable,
     };
@@ -252,7 +252,7 @@ pub fn selectionFromC(options: ?*const c.ot_editor_selection, is_editor: bool) !
         if (v != 0) return error.InvalidOptions;
     };
     return .{
-        .operation = @enumFromInt(s.operation),
+        .operation = @fromBackingInt(@intCast(s.operation)),
         .start = s.start,
         .end = s.end,
         .anchor_x = s.anchor_x,
@@ -261,8 +261,8 @@ pub fn selectionFromC(options: ?*const c.ot_editor_selection, is_editor: bool) !
         .focus_y = s.focus_y,
         .foreground = if (s.flags & c.OT_SCENE_TEXT_FOREGROUND != 0) s.foreground else null,
         .background = if (s.flags & c.OT_SCENE_TEXT_BACKGROUND != 0) s.background else null,
-        .behavior = if (local) @enumFromInt(s.behavior) else .cell,
-        .occupancy = if (s.operation == c.OT_EDITOR_SELECT_OCCUPANCY) @enumFromInt(s.behavior) else .cell,
+        .behavior = if (local) @fromBackingInt(@intCast(s.behavior)) else .cell,
+        .occupancy = if (s.operation == c.OT_EDITOR_SELECT_OCCUPANCY) @fromBackingInt(@intCast(s.behavior)) else .cell,
         .update_cursor = s.update_cursor == 1,
         .follow_cursor = s.follow_cursor == 1,
     };
@@ -290,7 +290,7 @@ pub fn ot_editor_view_get_selection(context: ?*Owner, id: ?*const c.ot_handle, o
 fn selectionInfo(value: *const ctx.Editor) c.ot_editor_view_info {
     const selection = value.view.packSelectionInfo();
     const present = selection != std.math.maxInt(u64);
-    return .{ .struct_size = @sizeOf(c.ot_editor_view_info), .abi_version = c.OT_CONTEXT_ABI_VERSION, .virtual_line_count = 0, .total_virtual_line_count = 0, .selection_present = @intFromBool(present), .selection_start = if (present) @intCast(selection >> 32) else 0, .selection_end = if (present) @truncate(selection) else 0, .selection_occupancy = @intFromEnum(value.view.getSelectionOccupancy()) };
+    return .{ .struct_size = @sizeOf(c.ot_editor_view_info), .abi_version = c.OT_CONTEXT_ABI_VERSION, .virtual_line_count = 0, .total_virtual_line_count = 0, .selection_present = @intFromBool(present), .selection_start = if (present) @intCast(selection >> 32) else 0, .selection_end = if (present) @truncate(selection) else 0, .selection_occupancy = @backingInt(value.view.getSelectionOccupancy()) };
 }
 
 pub fn ot_editor_view_get_selected_text(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]u8, capacity: u32, out: ?*u32) callconv(.c) c.ot_status {

@@ -203,7 +203,7 @@ test "kitty zlib expansion falls back to unchanged raw output" {
 }
 
 test "kitty zlib allocation failures fall back even when the input compresses" {
-    const pixels = [_]u8{42} ** (64 * 64 * 4);
+    const pixels: [64 * 64 * 4]u8 = @splat(42);
     const value = try image.createFromRgba(std.testing.allocator, &pixels, 64, 64, 256);
     defer value.deinit();
     var raw: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -491,7 +491,7 @@ test "sixel indexed encoding preserves the supplied palette" {
 }
 
 test "sixel indexed encoding reserves index 255 for transparency" {
-    const palette = [_][3]u8{.{ 0, 0, 0 }} ** 256;
+    const palette: [256][3]u8 = @splat(.{ 0, 0, 0 });
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
     try std.testing.expectError(

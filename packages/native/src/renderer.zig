@@ -14,6 +14,7 @@ const output = @import("renderer-output.zig");
 const terminal_image = @import("terminal-image.zig");
 const kitty_transport = @import("kitty-transport.zig");
 const native_image = @import("image.zig");
+const utils = @import("utils.zig");
 
 pub const RGBA = ansi.RGBA;
 pub const OptimizedBuffer = buf.OptimizedBuffer;
@@ -1055,11 +1056,11 @@ pub const CliRenderer = struct {
     }
 
     fn commitPendingHitGrid(self: *CliRenderer) void {
-        self.hitGridDirty = self.hitGridResizeInvalidated or !std.mem.eql(u32, self.currentHitGrid, self.nextHitGrid);
+        self.hitGridDirty = self.hitGridResizeInvalidated or !utils.eql(u32, self.currentHitGrid, self.nextHitGrid);
         const previous = self.currentHitGrid;
         self.currentHitGrid = self.nextHitGrid;
         self.nextHitGrid = previous;
-        @import("utils.zig").fillU32(self.nextHitGrid, 0);
+        utils.fillU32(self.nextHitGrid, 0);
     }
 
     fn renderResult(self: *CliRenderer, status: RenderStatus) RenderResult {
@@ -2931,10 +2932,10 @@ pub const CliRenderer = struct {
             if (use_row_equality) {
                 const row_start = @as(usize, y) * self.width;
                 const row_end = row_start + self.width;
-                if (std.mem.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
-                    std.mem.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.fg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.fg[row_start..row_end])) and
-                    std.mem.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.bg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.bg[row_start..row_end])) and
-                    std.mem.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
+                if (utils.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
+                    utils.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.fg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.fg[row_start..row_end])) and
+                    utils.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.bg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.bg[row_start..row_end])) and
+                    utils.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
             }
 
             var runStart: i64 = -1;
@@ -3153,7 +3154,7 @@ pub const CliRenderer = struct {
                         }
                         if (gp.isContinuationChar(cell.char)) {
                             const start_x_i = x_i - @as(i32, @intCast(gp.charLeftExtent(cell.char)));
-                            const first_visible_placement_x = @max(placement.x, 0);
+                            const first_visible_placement_x = utils.nonNegative(placement.x);
                             if (start_x_i >= placement.x or x_i != first_visible_placement_x or start_x_i < 0) continue;
                             draw_x_i = start_x_i;
                             cell = self.nextRenderBuffer.get(@intCast(draw_x_i), @intCast(y_i)) orelse continue;
@@ -3240,7 +3241,7 @@ pub const CliRenderer = struct {
             const cursorG = ansi.green(cursorColor);
             const cursorB = ansi.blue(cursorColor);
 
-            const styleTag: u8 = @intFromEnum(cursorStyle.style);
+            const styleTag: u8 = @backingInt(cursorStyle.style);
             const styleChanged = (self.lastCursorStyleTag == null or self.lastCursorStyleTag.? != styleTag) or
                 (self.lastCursorBlinking == null or self.lastCursorBlinking.? != cursorStyle.blinking);
             const colorChanged = (self.lastCursorColorRGB == null or self.lastCursorColorRGB.?[0] != cursorR or self.lastCursorColorRGB.?[1] != cursorG or self.lastCursorColorRGB.?[2] != cursorB);
@@ -3653,10 +3654,10 @@ pub const CliRenderer = struct {
     pub fn kittyImageTransportStatus(self: *const CliRenderer) [6]u32 {
         const transport = &self.kittyTransport;
         return .{
-            @intFromEnum(transport.mode),
-            @intFromEnum(transport.effective),
-            @intFromEnum(transport.file_state),
-            @intFromEnum(transport.fallback),
+            @backingInt(transport.mode),
+            @backingInt(transport.effective),
+            @backingInt(transport.file_state),
+            @backingInt(transport.fallback),
             transport.pendingCount(),
             @intCast(transport.pendingBytes()),
         };

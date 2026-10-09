@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const atomic = std.atomic;
 const assert = std.debug.assert;
 const ansi = @import("ansi.zig");
+const base64Encode = @import("utils.zig").base64Encode;
 const utf8 = @import("utf8.zig");
 
 const WidthMethod = utf8.WidthMethod;
@@ -193,9 +194,9 @@ pub const Options = struct {
 };
 
 pub const TerminalInfo = struct {
-    name: [64]u8 = [_]u8{0} ** 64,
+    name: [64]u8 = @splat(0),
     name_len: usize = 0,
-    version: [32]u8 = [_]u8{0} ** 32,
+    version: [32]u8 = @splat(0),
     version_len: usize = 0,
     from_xtversion: bool = false,
 };
@@ -1600,7 +1601,7 @@ fn writeOsc99Payload(allocator: std.mem.Allocator, writer: anytype, id: []const 
     const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
     const encoded_buf = try allocator.alloc(u8, encoded_len);
     defer allocator.free(encoded_buf);
-    const encoded = std.base64.standard.Encoder.encode(encoded_buf, payload);
+    const encoded = base64Encode(encoded_buf, payload);
 
     try writer.print("\x1b]99;i={s}:p={s}:e=1:d={d};", .{ id, payload_type, @intFromBool(done) });
     try writer.writeAll(encoded);
@@ -1763,7 +1764,7 @@ fn writeClipboardBase64(writer: anytype, source: []const u8) !void {
     while (offset < source.len) {
         const chunk_len = @min(source.len - offset, source_chunk_size);
         const chunk = source[offset .. offset + chunk_len];
-        const encoded = std.base64.standard.Encoder.encode(&encoded_buffer, chunk);
+        const encoded = base64Encode(&encoded_buffer, chunk);
         try writer.writeAll(encoded);
         offset += chunk_len;
     }

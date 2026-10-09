@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
 
 test "decodeUtf8Unchecked keeps its result in one word" {
     const decoded = utf8.decodeUtf8Unchecked("\u{65e5}", 0);
@@ -186,7 +187,7 @@ const line_break_golden_tests = [_]LineBreakTestCase{
     },
     .{
         .name = "very long line no breaks",
-        .input = "a" ** 1000,
+        .input = utils.repeat(u8, "a", 1000),
         .expected = &[_]usize{},
     },
     .{
@@ -3523,20 +3524,20 @@ test "calculateTextWidth: validate against unicode-width-map.zon" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const zon_with_null = try allocator.dupeZ(u8, zon_content);
+    const zon_with_null = try allocator.dupeSentinel(u8, zon_content, 0);
 
     const WidthEntry = struct {
         codepoint: []const u8,
         width: i32,
     };
 
-    const width_entries = std.zon.parse.fromSliceAlloc(
-        []const WidthEntry,
-        allocator,
-        zon_with_null,
-        null,
-        .{},
-    ) catch |err| {
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const width_entries = std.zon.parse.fromSlice([]const WidthEntry, .{
+        .gpa = testing.allocator,
+        .arena = allocator,
+        .source = zon_with_null,
+        .diagnostics = &diagnostics,
+    }) catch |err| {
         return err;
     };
 

@@ -146,7 +146,7 @@ pub const Config = struct {
 
     pub fn init(self: *Config, allocator: std.mem.Allocator, callbacks: Callbacks) Error!void {
         var config: YGConfigRef = null;
-        try check(@enumFromInt(c.otYogaConfigCreate(&config)));
+        try check(@fromBackingInt(@intCast(c.otYogaConfigCreate(&config))));
         self.* = .{ .ref = config, .allocator = allocator, .callbacks = callbacks };
         c.YGConfigSetUseWebDefaults(config, false);
         c.YGConfigSetPointScaleFactor(config, 1);
@@ -170,7 +170,7 @@ pub const Config = struct {
         const callback_context = try self.allocator.create(CallbackContext);
         errdefer self.allocator.destroy(callback_context);
         var node: YGNodeRef = null;
-        try check(@enumFromInt(c.otYogaNodeCreate(self.ref, &node)));
+        try check(@fromBackingInt(@intCast(c.otYogaNodeCreate(self.ref, &node))));
         config_mutex.lockUncancelable(process_io);
         defer config_mutex.unlock(process_io);
         callback_context.* = .{ .config = self, .node = node, .config_next = self.nodes };
@@ -365,7 +365,7 @@ fn getConfigContext(node: YGNodeConstRef) ?*Config {
 
 // va_list is a pointer on some targets and a value on others. Use the translated
 // callback parameter, not the typedef before C's array-to-pointer adjustment.
-const LogArgs = @typeInfo(@typeInfo(@typeInfo(c.YGLogger).optional.child).pointer.child).@"fn".params[4].type.?;
+const LogArgs = @typeInfo(@typeInfo(@typeInfo(c.YGLogger).optional.child).pointer.child).@"fn".param_types[4].?;
 
 fn internalLogger(ref: YGConfigConstRef, _: YGNodeConstRef, level: c.YGLogLevel, format: [*c]const u8, args: LogArgs) callconv(.c) c_int {
     const config = configContext(ref) orelse return 0;
@@ -539,7 +539,7 @@ pub export fn yogaNodeFreeChecked(node: YGNodeRef) Status {
     // A config walk on another thread must not reach a freed Yoga node.
     config_mutex.lockUncancelable(process_io);
     defer config_mutex.unlock(process_io);
-    const result: Status = @enumFromInt(c.otYogaNodeFree(node));
+    const result: Status = @fromBackingInt(@intCast(c.otYogaNodeFree(node)));
     if (result != .ok) return result;
     if (ctx.config_previous) |previous| {
         previous.config_next = ctx.config_next;
@@ -609,7 +609,7 @@ pub export fn yogaNodeResetChecked(node: YGNodeRef) Status {
     // list links in frees. Both hold the lock.
     config_mutex.lockUncancelable(process_io);
     defer config_mutex.unlock(process_io);
-    const result: Status = @enumFromInt(c.otYogaNodeReset(node));
+    const result: Status = @fromBackingInt(@intCast(c.otYogaNodeReset(node)));
     // Yoga clears its context on reset. The preallocated callback state belongs
     // to this wrapper for the node's full lifetime, including a failed reset.
     c.YGNodeSetContext(node, ctx);
@@ -637,7 +637,7 @@ pub export fn yogaNodeCopyStyleChecked(dst_node: YGNodeRef, src_node: YGNodeCons
     if (dst != .ok) return dst;
     const src = nodeStatus(src_node, false, false);
     if (src != .ok) return src;
-    return @enumFromInt(c.otYogaNodeCopyStyle(dst_node, src_node));
+    return @fromBackingInt(@intCast(c.otYogaNodeCopyStyle(dst_node, src_node)));
 }
 
 pub export fn yogaNodeInsertChild(node: YGNodeRef, child: YGNodeRef, index: u32) void {
@@ -647,7 +647,7 @@ pub export fn yogaNodeInsertChild(node: YGNodeRef, child: YGNodeRef, index: u32)
 pub export fn yogaNodeInsertChildChecked(node: YGNodeRef, child: YGNodeRef, index: u32) Status {
     const status = placementStatus(node, child, index, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeInsertChild(node, child, index));
+    return @fromBackingInt(@intCast(c.otYogaNodeInsertChild(node, child, index)));
 }
 
 pub export fn yogaNodeMoveChildChecked(parent: YGNodeRef, child: YGNodeRef, final_index: u32) Status {
@@ -660,7 +660,7 @@ pub export fn yogaNodeMoveChildChecked(parent: YGNodeRef, child: YGNodeRef, fina
     destination.active_root = destination;
     defer source.active_root = null;
     defer destination.active_root = null;
-    return @enumFromInt(c.otYogaNodeMoveChild(parent, child, final_index));
+    return @fromBackingInt(@intCast(c.otYogaNodeMoveChild(parent, child, final_index)));
 }
 
 fn placementStatus(node: YGNodeRef, child: YGNodeRef, index: u32, moving: bool) Status {
@@ -700,7 +700,7 @@ pub export fn yogaNodeRemoveChildChecked(node: YGNodeRef, child: YGNodeRef) Stat
     if (status != .ok) return status;
     const child_status = nodeStatus(child, true, true);
     if (child_status != .ok) return child_status;
-    return @enumFromInt(c.otYogaNodeRemoveChild(node, child));
+    return @fromBackingInt(@intCast(c.otYogaNodeRemoveChild(node, child)));
 }
 
 export fn yogaNodeRemoveAllChildren(node: YGNodeRef) void {
@@ -710,7 +710,7 @@ export fn yogaNodeRemoveAllChildren(node: YGNodeRef) void {
 pub export fn yogaNodeRemoveAllChildrenChecked(node: YGNodeRef) Status {
     const status = nodeStatus(node, true, true);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeRemoveAllChildren(node));
+    return @fromBackingInt(@intCast(c.otYogaNodeRemoveAllChildren(node)));
 }
 
 export fn yogaNodeGetChild(node: YGNodeRef, index: u32) YGNodeRef {
@@ -750,7 +750,7 @@ pub export fn yogaNodeCalculateLayoutChecked(node: YGNodeRef, width: f32, height
     }
     root.measure_error = .ok;
     top.active_root = root;
-    var result: Status = @enumFromInt(c.otYogaNodeCalculateLayout(node, width, height, direction));
+    var result: Status = @fromBackingInt(@intCast(c.otYogaNodeCalculateLayout(node, width, height, direction)));
     if (result == .ok) result = root.measure_error;
     if (result != .ok) {
         // Interrupted solves and failed native measurement can leave partially
@@ -784,7 +784,7 @@ pub export fn yogaNodeMarkDirty(node: YGNodeRef) void {
 pub export fn yogaNodeMarkDirtyChecked(node: YGNodeRef) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeMarkDirty(node));
+    return @fromBackingInt(@intCast(c.otYogaNodeMarkDirty(node)));
 }
 
 export fn yogaNodeGetHasNewLayout(node: YGNodeConstRef) bool {
@@ -808,7 +808,7 @@ export fn yogaNodeSetHasNewLayout(node: YGNodeRef, has_new_layout: bool) void {
 pub export fn yogaNodeSetHasNewLayoutChecked(node: YGNodeRef, value: u32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeSetFlag(node, 0, value));
+    return @fromBackingInt(@intCast(c.otYogaNodeSetFlag(node, 0, value)));
 }
 
 export fn yogaNodeSetIsReferenceBaseline(node: YGNodeRef, is_reference_baseline: bool) void {
@@ -818,7 +818,7 @@ export fn yogaNodeSetIsReferenceBaseline(node: YGNodeRef, is_reference_baseline:
 pub export fn yogaNodeSetIsReferenceBaselineChecked(node: YGNodeRef, value: u32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeSetFlag(node, 1, value));
+    return @fromBackingInt(@intCast(c.otYogaNodeSetFlag(node, 1, value)));
 }
 
 export fn yogaNodeIsReferenceBaseline(node: YGNodeConstRef) bool {
@@ -842,7 +842,7 @@ export fn yogaNodeSetAlwaysFormsContainingBlock(node: YGNodeRef, always_forms_co
 pub export fn yogaNodeSetAlwaysFormsContainingBlockChecked(node: YGNodeRef, value: u32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeSetFlag(node, 2, value));
+    return @fromBackingInt(@intCast(c.otYogaNodeSetFlag(node, 2, value)));
 }
 
 export fn yogaNodeGetAlwaysFormsContainingBlock(node: YGNodeConstRef) bool {
@@ -868,7 +868,7 @@ pub export fn yogaNodeGetComputedLayout(node: YGNodeConstRef, out_ptr: *External
 pub export fn yogaNodeGetComputedLayoutChecked(node: YGNodeConstRef, out: ?*ExternalYogaLayout) Status {
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeGetComputedLayout(node, out));
+    return @fromBackingInt(@intCast(c.otYogaNodeGetComputedLayout(node, out)));
 }
 
 export fn yogaNodeLayoutGetEdge(node: YGNodeConstRef, kind: u32, edge: u32) f32 {
@@ -880,7 +880,7 @@ export fn yogaNodeLayoutGetEdge(node: YGNodeConstRef, kind: u32, edge: u32) f32 
 pub export fn yogaNodeLayoutGetEdgeChecked(node: YGNodeConstRef, kind: u32, edge: u32, out: ?*f32) Status {
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeLayoutGetEdge(node, kind, edge, out));
+    return @fromBackingInt(@intCast(c.otYogaNodeLayoutGetEdge(node, kind, edge, out)));
 }
 
 pub export fn yogaNodeStyleSetEnum(node: YGNodeRef, kind: u32, value: u32) void {
@@ -890,7 +890,7 @@ pub export fn yogaNodeStyleSetEnum(node: YGNodeRef, kind: u32, value: u32) void 
 pub export fn yogaNodeStyleSetEnumChecked(node: YGNodeRef, kind: u32, value: u32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleSetEnum(node, kind, value));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleSetEnum(node, kind, value)));
 }
 
 pub export fn yogaNodeStyleGetEnum(node: YGNodeConstRef, kind: u32) u32 {
@@ -902,7 +902,7 @@ pub export fn yogaNodeStyleGetEnum(node: YGNodeConstRef, kind: u32) u32 {
 pub export fn yogaNodeStyleGetEnumChecked(node: YGNodeConstRef, kind: u32, out: ?*u32) Status {
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleGetEnum(node, kind, out));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleGetEnum(node, kind, out)));
 }
 
 pub export fn yogaNodeStyleSetFloat(node: YGNodeRef, kind: u32, value: f32) void {
@@ -912,7 +912,7 @@ pub export fn yogaNodeStyleSetFloat(node: YGNodeRef, kind: u32, value: f32) void
 pub export fn yogaNodeStyleSetFloatChecked(node: YGNodeRef, kind: u32, value: f32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleSetFloat(node, kind, value));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleSetFloat(node, kind, value)));
 }
 
 export fn yogaNodeStyleGetFloat(node: YGNodeConstRef, kind: u32) f32 {
@@ -924,7 +924,7 @@ export fn yogaNodeStyleGetFloat(node: YGNodeConstRef, kind: u32) f32 {
 pub export fn yogaNodeStyleGetFloatChecked(node: YGNodeConstRef, kind: u32, out: ?*f32) Status {
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleGetFloat(node, kind, out));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleGetFloat(node, kind, out)));
 }
 
 export fn yogaNodeStyleSetBorder(node: YGNodeRef, edge: u32, border: f32) void {
@@ -934,7 +934,7 @@ export fn yogaNodeStyleSetBorder(node: YGNodeRef, edge: u32, border: f32) void {
 pub export fn yogaNodeStyleSetBorderChecked(node: YGNodeRef, edge: u32, border: f32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleSetBorder(node, edge, border));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleSetBorder(node, edge, border)));
 }
 
 export fn yogaNodeStyleGetBorder(node: YGNodeConstRef, edge: u32) f32 {
@@ -946,7 +946,7 @@ export fn yogaNodeStyleGetBorder(node: YGNodeConstRef, edge: u32) f32 {
 pub export fn yogaNodeStyleGetBorderChecked(node: YGNodeConstRef, edge: u32, out: ?*f32) Status {
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleGetBorder(node, edge, out));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleGetBorder(node, edge, out)));
 }
 
 pub export fn yogaNodeStyleSetValue(node: YGNodeRef, kind: u32, edge_or_gutter: u32, unit: u32, value: f32) void {
@@ -956,20 +956,20 @@ pub export fn yogaNodeStyleSetValue(node: YGNodeRef, kind: u32, edge_or_gutter: 
 pub export fn yogaNodeStyleSetValueChecked(node: YGNodeRef, kind: u32, edge_or_gutter: u32, unit: u32, value: f32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleSetValue(node, kind, edge_or_gutter, unit, value));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleSetValue(node, kind, edge_or_gutter, unit, value)));
 }
 
 pub export fn yogaNodeStyleSetDimensionChecked(node: YGNodeRef, kind: u32, unit: u32, value: f32, disable_flex_shrink: u32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleSetDimension(node, kind, unit, value, disable_flex_shrink));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleSetDimension(node, kind, unit, value, disable_flex_shrink)));
 }
 
 pub export fn yogaNodeStyleSetPositionsChecked(node: YGNodeRef, edge_mask: u32, units: ?*const [4]u32, values: ?*const [4]f32) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
     if (units == null or values == null) return .invalid_argument;
-    return @enumFromInt(c.otYogaNodeStyleSetPositions(node, edge_mask, units.?, values.?));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleSetPositions(node, edge_mask, units.?, values.?)));
 }
 
 pub export fn yogaNodeStyleGetValue(node: YGNodeConstRef, kind: u32, edge_or_gutter: u32) u64 {
@@ -981,7 +981,7 @@ pub export fn yogaNodeStyleGetValue(node: YGNodeConstRef, kind: u32, edge_or_gut
 pub export fn yogaNodeStyleGetValueChecked(node: YGNodeConstRef, kind: u32, edge_or_gutter: u32, out: ?*u64) Status {
     const status = nodeStatus(node, false, false);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeStyleGetValue(node, kind, edge_or_gutter, out));
+    return @fromBackingInt(@intCast(c.otYogaNodeStyleGetValue(node, kind, edge_or_gutter, out)));
 }
 
 pub export fn yogaConfigSetCallbacks(ref: YGConfigConstRef, measure: JsMeasureCallback, dirtied: JsDirtiedCallback) bool {
@@ -1016,7 +1016,7 @@ pub export fn yogaNodeSetMeasureFuncChecked(node: YGNodeRef, enabled: u32) Statu
     if (enabled > 1) return .invalid_argument;
     const status = nodeStatus(node, true, enabled == 0);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled != 0) &internalMeasureFunc else null));
+    return @fromBackingInt(@intCast(c.otYogaNodeSetMeasureFunc(node, if (enabled != 0) &internalMeasureFunc else null)));
 }
 
 pub fn yogaNodeSetNativeMeasureFunc(node: YGNodeRef, target: ?*anyopaque, callback: ?NativeMeasureCallback) Status {
@@ -1025,7 +1025,7 @@ pub fn yogaNodeSetNativeMeasureFunc(node: YGNodeRef, target: ?*anyopaque, callba
     const status = nodeStatus(node, true, !enabled);
     if (status != .ok) return status;
     const ctx = getContext(node).?;
-    const result: Status = @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled) &internalNativeMeasureFunc else null));
+    const result: Status = @fromBackingInt(@intCast(c.otYogaNodeSetMeasureFunc(node, if (enabled) &internalNativeMeasureFunc else null)));
     if (result != .ok) return result;
     ctx.native_measure_target = target;
     ctx.native_measure_callback = callback;

@@ -246,7 +246,7 @@ fn benchSetStyledTextOperations(
 
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                const parts = [_]Part{.{ .text = text, .fg = color }} ** 10;
+                const parts: [10]Part = @splat(.{ .text = text, .fg = color });
 
                 const timer = bench_utils.BenchTimer.start(io);
                 try commitOwnedStyledText(tb, allocator, style, &parts);

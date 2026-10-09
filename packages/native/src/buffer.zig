@@ -7,6 +7,8 @@ const edv = @import("editor-view.zig");
 const math = std.math;
 const assert = std.debug.assert;
 const fillU32 = @import("utils.zig").fillU32;
+const nonNegative = @import("utils.zig").nonNegative;
+const unsigned = @import("utils.zig").unsigned;
 
 const gp = @import("grapheme.zig");
 const link = @import("link.zig");
@@ -1825,8 +1827,9 @@ pub const OptimizedBuffer = struct {
         const opacity = self.getCurrentOpacity();
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
 
-        var scratch = std.heap.stackFallback(4096, self.allocator);
-        const scratch_allocator = scratch.get();
+        var scratch_buffer: [4096]u8 = undefined;
+        var scratch: std.heap.BufferFirstAllocator = .init(&scratch_buffer, self.allocator);
+        const scratch_allocator = scratch.allocator();
         // Pool growth can move input borrowed from this same pool.
         const input = try scratch_allocator.dupe(u8, text);
         defer scratch_allocator.free(input);
@@ -2023,8 +2026,8 @@ pub const OptimizedBuffer = struct {
         const clampedSrcWidth = @min(srcWidth, frameBuffer.width - srcX);
         const clampedSrcHeight = @min(srcHeight, frameBuffer.height - srcY);
 
-        const startDestX = @max(0, destX);
-        const startDestY = @max(0, destY);
+        const startDestX = nonNegative(destX);
+        const startDestY = nonNegative(destY);
         const endDestX = @min(@as(i32, @intCast(self.width)) - 1, destX + @as(i32, @intCast(clampedSrcWidth)) - 1);
         const endDestY = @min(@as(i32, @intCast(self.height)) - 1, destY + @as(i32, @intCast(clampedSrcHeight)) - 1);
 
@@ -2309,7 +2312,7 @@ pub const OptimizedBuffer = struct {
 
         if (virtual_lines.len == 0) return;
 
-        const firstVisibleLine: u32 = if (y < 0) @intCast(-@as(i64, y)) else 0;
+        const firstVisibleLine: u32 = if (y < 0) @abs(y) else 0;
         const bufferBottomY = self.height;
         const lastPossibleLine = if (y >= @as(i32, @intCast(bufferBottomY)))
             0
@@ -2858,8 +2861,8 @@ pub const OptimizedBuffer = struct {
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, borderFg, borderBg))) return;
         const transparent_fast = opacity == 1.0 and ansi.alpha(borderBg) == 0 and gridBorderCharsSingleWidth(borderChars);
 
-        const hChar = borderChars[@intFromEnum(BorderCharIndex.horizontal)];
-        const vChar = borderChars[@intFromEnum(BorderCharIndex.vertical)];
+        const hChar = borderChars[@backingInt(BorderCharIndex.horizontal)];
+        const vChar = borderChars[@backingInt(BorderCharIndex.vertical)];
         const bufWidth = self.width;
         const bufHeight = self.height;
         const bufWidthI32 = @as(i32, @intCast(bufWidth));
@@ -2944,7 +2947,7 @@ pub const OptimizedBuffer = struct {
     }
 
     fn gridBorderCharsSingleWidth(borderChars: [*]const u32) bool {
-        for (0..@typeInfo(BorderCharIndex).@"enum".fields.len) |index| {
+        for (0..@typeInfo(BorderCharIndex).@"enum".field_names.len) |index| {
             const char = borderChars[index];
             if (char == 0 or !isSingleWidthBorderChar(char)) return false;
         }
@@ -2963,22 +2966,22 @@ pub const OptimizedBuffer = struct {
     }
 
     fn tableBorderIntersectionByConnections(borderChars: [*]const u32, hasUp: bool, hasDown: bool, hasLeft: bool, hasRight: bool) u32 {
-        if (hasUp and hasDown and hasLeft and hasRight) return borderChars[@intFromEnum(BorderCharIndex.cross)];
+        if (hasUp and hasDown and hasLeft and hasRight) return borderChars[@backingInt(BorderCharIndex.cross)];
 
-        if (!hasUp and hasDown and !hasLeft and hasRight) return borderChars[@intFromEnum(BorderCharIndex.topLeft)];
-        if (!hasUp and hasDown and hasLeft and !hasRight) return borderChars[@intFromEnum(BorderCharIndex.topRight)];
-        if (hasUp and !hasDown and !hasLeft and hasRight) return borderChars[@intFromEnum(BorderCharIndex.bottomLeft)];
-        if (hasUp and !hasDown and hasLeft and !hasRight) return borderChars[@intFromEnum(BorderCharIndex.bottomRight)];
+        if (!hasUp and hasDown and !hasLeft and hasRight) return borderChars[@backingInt(BorderCharIndex.topLeft)];
+        if (!hasUp and hasDown and hasLeft and !hasRight) return borderChars[@backingInt(BorderCharIndex.topRight)];
+        if (hasUp and !hasDown and !hasLeft and hasRight) return borderChars[@backingInt(BorderCharIndex.bottomLeft)];
+        if (hasUp and !hasDown and hasLeft and !hasRight) return borderChars[@backingInt(BorderCharIndex.bottomRight)];
 
-        if (hasUp and hasDown and !hasLeft and hasRight) return borderChars[@intFromEnum(BorderCharIndex.leftT)];
-        if (hasUp and hasDown and hasLeft and !hasRight) return borderChars[@intFromEnum(BorderCharIndex.rightT)];
-        if (!hasUp and hasDown and hasLeft and hasRight) return borderChars[@intFromEnum(BorderCharIndex.topT)];
-        if (hasUp and !hasDown and hasLeft and hasRight) return borderChars[@intFromEnum(BorderCharIndex.bottomT)];
+        if (hasUp and hasDown and !hasLeft and hasRight) return borderChars[@backingInt(BorderCharIndex.leftT)];
+        if (hasUp and hasDown and hasLeft and !hasRight) return borderChars[@backingInt(BorderCharIndex.rightT)];
+        if (!hasUp and hasDown and hasLeft and hasRight) return borderChars[@backingInt(BorderCharIndex.topT)];
+        if (hasUp and !hasDown and hasLeft and hasRight) return borderChars[@backingInt(BorderCharIndex.bottomT)];
 
-        if ((hasLeft or hasRight) and !hasUp and !hasDown) return borderChars[@intFromEnum(BorderCharIndex.horizontal)];
-        if ((hasUp or hasDown) and !hasLeft and !hasRight) return borderChars[@intFromEnum(BorderCharIndex.vertical)];
+        if ((hasLeft or hasRight) and !hasUp and !hasDown) return borderChars[@backingInt(BorderCharIndex.horizontal)];
+        if ((hasUp or hasDown) and !hasLeft and !hasRight) return borderChars[@backingInt(BorderCharIndex.vertical)];
 
-        return borderChars[@intFromEnum(BorderCharIndex.cross)];
+        return borderChars[@backingInt(BorderCharIndex.cross)];
     }
 
     inline fn isSingleWidthBorderChar(char: u32) bool {
@@ -3008,12 +3011,12 @@ pub const OptimizedBuffer = struct {
             self.isPointInScissor(x + @as(i32, @intCast(width)) - 1, y + @as(i32, @intCast(height)) - 1) and
             !self.grapheme_tracker.hasAny() and
             !self.link_tracker.hasAny() and
-            isSingleWidthBorderChar(borderChars[@intFromEnum(BorderCharIndex.topLeft)]) and
-            isSingleWidthBorderChar(borderChars[@intFromEnum(BorderCharIndex.topRight)]) and
-            isSingleWidthBorderChar(borderChars[@intFromEnum(BorderCharIndex.bottomLeft)]) and
-            isSingleWidthBorderChar(borderChars[@intFromEnum(BorderCharIndex.bottomRight)]) and
-            isSingleWidthBorderChar(borderChars[@intFromEnum(BorderCharIndex.horizontal)]) and
-            isSingleWidthBorderChar(borderChars[@intFromEnum(BorderCharIndex.vertical)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.topLeft)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.topRight)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.bottomLeft)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.bottomRight)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.horizontal)]) and
+            isSingleWidthBorderChar(borderChars[@backingInt(BorderCharIndex.vertical)]) and
             (self.image_placements.items.len == 0 or !self.rectOverlapsImagePlacement(x, y, width, height));
     }
 
@@ -3132,8 +3135,8 @@ pub const OptimizedBuffer = struct {
         title_visible: bool,
         opacity: f32,
     ) !void {
-        const startX = @max(0, x);
-        const startY = @max(0, y);
+        const startX = nonNegative(x);
+        const startY = nonNegative(y);
         const endX = @min(@as(i32, @intCast(self.width)) - 1, x + @as(i32, @intCast(width)) - 1);
         const endY = @min(@as(i32, @intCast(self.height)) - 1, y + @as(i32, @intCast(height)) - 1);
 
@@ -3194,13 +3197,13 @@ pub const OptimizedBuffer = struct {
                             continue;
                         }
 
-                        var char = borderChars[@intFromEnum(BorderCharIndex.horizontal)];
+                        var char = borderChars[@backingInt(BorderCharIndex.horizontal)];
 
                         // Handle corners
                         if (drawX == startX and isAtActualLeft) {
-                            char = if (borderSides.left) borderChars[@intFromEnum(BorderCharIndex.topLeft)] else borderChars[@intFromEnum(BorderCharIndex.horizontal)];
+                            char = if (borderSides.left) borderChars[@backingInt(BorderCharIndex.topLeft)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
                         } else if (drawX == endX and isAtActualRight) {
-                            char = if (borderSides.right) borderChars[@intFromEnum(BorderCharIndex.topRight)] else borderChars[@intFromEnum(BorderCharIndex.horizontal)];
+                            char = if (borderSides.right) borderChars[@backingInt(BorderCharIndex.topRight)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
                         }
 
                         if (useTransparentBorderFastPath) {
@@ -3230,13 +3233,13 @@ pub const OptimizedBuffer = struct {
                             continue;
                         }
 
-                        var char = borderChars[@intFromEnum(BorderCharIndex.horizontal)];
+                        var char = borderChars[@backingInt(BorderCharIndex.horizontal)];
 
                         // Handle corners
                         if (drawX == startX and isAtActualLeft) {
-                            char = if (borderSides.left) borderChars[@intFromEnum(BorderCharIndex.bottomLeft)] else borderChars[@intFromEnum(BorderCharIndex.horizontal)];
+                            char = if (borderSides.left) borderChars[@backingInt(BorderCharIndex.bottomLeft)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
                         } else if (drawX == endX and isAtActualRight) {
-                            char = if (borderSides.right) borderChars[@intFromEnum(BorderCharIndex.bottomRight)] else borderChars[@intFromEnum(BorderCharIndex.horizontal)];
+                            char = if (borderSides.right) borderChars[@backingInt(BorderCharIndex.bottomRight)] else borderChars[@backingInt(BorderCharIndex.horizontal)];
                         }
 
                         if (useTransparentBorderFastPath) {
@@ -3269,17 +3272,17 @@ pub const OptimizedBuffer = struct {
                 if (borderSides.left and isAtActualLeft and startX >= 0 and startX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
                         const index = self.coordsToIndex(@intCast(startX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@intFromEnum(BorderCharIndex.vertical)];
+                        self.buffer.char[index] = borderChars[@backingInt(BorderCharIndex.vertical)];
                         self.buffer.fg[index] = borderColor;
                         self.buffer.attributes[index] = 0;
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(startX),
                             @intCast(drawY),
-                            makeCell(borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor, backgroundColor, 0),
+                            makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0),
                         );
                     } else {
-                        const cell = makeCell(borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor, backgroundColor, 0);
+                        const cell = makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0);
                         if (image_aware)
                             self.setCellWithAlphaBlendingCell(@intCast(startX), @intCast(drawY), cell)
                         else
@@ -3291,17 +3294,17 @@ pub const OptimizedBuffer = struct {
                 if (borderSides.right and isAtActualRight and endX >= 0 and endX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
                         const index = self.coordsToIndex(@intCast(endX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@intFromEnum(BorderCharIndex.vertical)];
+                        self.buffer.char[index] = borderChars[@backingInt(BorderCharIndex.vertical)];
                         self.buffer.fg[index] = borderColor;
                         self.buffer.attributes[index] = 0;
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(endX),
                             @intCast(drawY),
-                            makeCell(borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor, backgroundColor, 0),
+                            makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0),
                         );
                     } else {
-                        const cell = makeCell(borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor, backgroundColor, 0);
+                        const cell = makeCell(borderChars[@backingInt(BorderCharIndex.vertical)], borderColor, backgroundColor, 0);
                         if (image_aware)
                             self.setCellWithAlphaBlendingCell(@intCast(endX), @intCast(drawY), cell)
                         else
@@ -3410,10 +3413,10 @@ pub const OptimizedBuffer = struct {
         }
         if (clip_x0 >= clip_x1 or clip_y0 >= clip_y1) return false;
 
-        const left: u32 = @intCast(clip_x0 - @as(i64, pos_x));
-        const top: u32 = @intCast(clip_y0 - @as(i64, pos_y));
-        const right: u32 = @intCast(clip_x1 - @as(i64, pos_x));
-        const bottom: u32 = @intCast(clip_y1 - @as(i64, pos_y));
+        const left = unsigned(u32, clip_x0 - @as(i64, pos_x));
+        const top = unsigned(u32, clip_y0 - @as(i64, pos_y));
+        const right = unsigned(u32, clip_x1 - @as(i64, pos_x));
+        const bottom = unsigned(u32, clip_y1 - @as(i64, pos_y));
         const clipped_source_x = source_x + @as(u32, @intCast((@as(u64, left) * source_width) / width));
         const clipped_source_y = source_y + @as(u32, @intCast((@as(u64, top) * source_height) / height));
         const source_end_x = source_x + @as(u32, @intCast((@as(u64, right) * source_width + width - 1) / width));
@@ -3588,8 +3591,8 @@ pub const OptimizedBuffer = struct {
         // Each cell samples 2x2 source pixels. Draw only the source cells inside the buffer.
         const source_cells_x: i64 = (sourceWidth + 1) / 2;
         const source_cells_y: i64 = @intCast((pixels.len / alignedBytesPerRow + 1) / 2);
-        const start_x: u32 = @intCast(@max(0, posX));
-        const start_y: u32 = @intCast(@max(0, posY));
+        const start_x: u32 = @intCast(nonNegative(posX));
+        const start_y: u32 = @intCast(nonNegative(posY));
         const end_x = @min(@as(i64, self.width), @as(i64, posX) + source_cells_x);
         const end_y = @min(@as(i64, self.height), @as(i64, posY) + source_cells_y);
 
@@ -3659,8 +3662,8 @@ pub const OptimizedBuffer = struct {
         // Skip the source cells left of or above the buffer.
         const skip_x: u32 = @intCast(@min(terminalWidthCells, @max(0, -@as(i64, posX))));
         const skip_y: u32 = @intCast(@min(terminalHeightCells, @max(0, -@as(i64, posY))));
-        const start_x: u32 = @intCast(@max(0, posX));
-        const start_y: u32 = @intCast(@max(0, posY));
+        const start_x: u32 = @intCast(nonNegative(posX));
+        const start_y: u32 = @intCast(nonNegative(posY));
         if (start_x >= self.width or start_y >= self.height) return;
         const width = @min(terminalWidthCells - skip_x, self.width - start_x);
         const height = @min(terminalHeightCells - skip_y, self.height - start_y);
@@ -3743,8 +3746,8 @@ pub const OptimizedBuffer = struct {
         if (termWidth == 0 or termHeight == 0) return;
         if (posX >= @as(i32, @intCast(self.width)) or posY >= @as(i32, @intCast(self.height))) return;
 
-        const startX: u32 = if (posX < 0) @intCast(-@as(i64, posX)) else 0;
-        const startY: u32 = if (posY < 0) @intCast(-@as(i64, posY)) else 0;
+        const startX: u32 = if (posX < 0) @abs(posX) else 0;
+        const startY: u32 = if (posY < 0) @abs(posY) else 0;
 
         const destStartX: u32 = if (posX < 0) 0 else @intCast(posX);
         const destStartY: u32 = if (posY < 0) 0 else @intCast(posY);

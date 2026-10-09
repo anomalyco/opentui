@@ -49,7 +49,7 @@ test "Session cursor state accepts output pressure without consuming restoration
     try f.owner.setupSessionTerminal(f.id, .{});
     _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
     const reservation = f.value.output.control_sequence;
-    const blocker = [_]u8{'x'} ** (3 * 4096);
+    const blocker: [3 * 4096]u8 = @splat('x');
     try f.owner.writeSession(f.id, &blocker);
     const stats = f.value.getStats();
     try f.owner.controlSession(f.id, .{ .cursor = .{ .position = .{ .x = 6, .y = 2, .visible = true } } });

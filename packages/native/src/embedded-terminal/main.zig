@@ -132,7 +132,7 @@ pub const EmbeddedTerminal = struct {
 
     pub fn selectedText(self: *EmbeddedTerminal) Error![:0]const u8 {
         const screen = self.terminal.screens.active;
-        const selection = screen.selection orelse return try self.allocator.dupeZ(u8, "");
+        const selection = screen.selection orelse return try self.allocator.dupeSentinel(u8, "", 0);
         return try screen.selectionString(self.allocator, .{ .sel = selection });
     }
 

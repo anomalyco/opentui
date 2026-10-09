@@ -7,6 +7,7 @@ const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const utf8 = @import("../utf8.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
+const NoResizeAllocator = @import("no-resize-allocator.zig");
 
 const Clock = struct {
     time_us: i64,
@@ -624,7 +625,7 @@ test "Context concurrently renders with independent pools, Yoga callbacks, clock
     try std.testing.expectEqualStrings("https://second.invalid", try second.links.get(second_link));
     try std.testing.expectError(error.WrongContext, second.raw().getRenderable(first_identity));
     const custom = try second.raw().getRenderable(tasks[1].custom_id);
-    yoga.yogaNodeStyleSetValue(custom.yoga_node, @intFromEnum(yoga.YogaValueKind.min_width), 0, @intFromEnum(yoga.YogaUnit.point), 1);
+    yoga.yogaNodeStyleSetValue(custom.yoga_node, @backingInt(yoga.YogaValueKind.min_width), 0, @backingInt(yoga.YogaUnit.point), 1);
     second_clock.time_us += 1000;
     try tasks[1].render();
     try std.testing.expect(second_callbacks.dirtied > 0);
@@ -653,8 +654,9 @@ fn createTextWithFailures(allocator: std.mem.Allocator) !void {
 }
 
 test "Context initialization and owned resource allocation failures release all storage" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, createWithFailures, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, createTextWithFailures, .{});
+    var no_resize: NoResizeAllocator = .{ .child = std.testing.allocator };
+    try std.testing.checkAllAllocationFailures(no_resize.allocator(), createWithFailures, .{});
+    try std.testing.checkAllAllocationFailures(no_resize.allocator(), createTextWithFailures, .{});
     try std.testing.expectError(error.InvalidOptions, context.Context.init(std.testing.allocator, std.testing.io, .{ .object_capacity = 0 }));
     try std.testing.expectError(error.InvalidOptions, context.Context.init(std.testing.allocator, std.testing.io, .{ .render_cells_max = 0 }));
 }

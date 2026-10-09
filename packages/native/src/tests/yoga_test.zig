@@ -877,16 +877,16 @@ test "Yoga wrapper computes basic flex layout" {
     const root = yoga.yogaNodeCreateWithConfig(config);
     defer yoga.yogaNodeFree(root);
 
-    yoga.yogaNodeStyleSetEnum(root, @intFromEnum(yoga.YogaEnumKind.flex_direction), @intFromEnum(yoga.YogaFlexDirection.row));
-    yoga.yogaNodeStyleSetValue(root, @intFromEnum(yoga.YogaValueKind.width), 0, @intFromEnum(yoga.YogaUnit.point), 100);
-    yoga.yogaNodeStyleSetValue(root, @intFromEnum(yoga.YogaValueKind.height), 0, @intFromEnum(yoga.YogaUnit.point), 100);
+    yoga.yogaNodeStyleSetEnum(root, @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+    yoga.yogaNodeStyleSetValue(root, @backingInt(yoga.YogaValueKind.width), 0, @backingInt(yoga.YogaUnit.point), 100);
+    yoga.yogaNodeStyleSetValue(root, @backingInt(yoga.YogaValueKind.height), 0, @backingInt(yoga.YogaUnit.point), 100);
 
     const child = yoga.yogaNodeCreateWithConfig(config);
     defer yoga.yogaNodeFree(child);
-    yoga.yogaNodeStyleSetFloat(child, @intFromEnum(yoga.YogaFloatKind.flex_grow), 1);
+    yoga.yogaNodeStyleSetFloat(child, @backingInt(yoga.YogaFloatKind.flex_grow), 1);
     yoga.yogaNodeInsertChild(root, child, 0);
 
-    yoga.yogaNodeCalculateLayout(root, std.math.nan(f32), std.math.nan(f32), @intFromEnum(yoga.YogaDirection.ltr));
+    yoga.yogaNodeCalculateLayout(root, std.math.nan(f32), std.math.nan(f32), @backingInt(yoga.YogaDirection.ltr));
 
     var layout: yoga.ExternalYogaLayout = undefined;
     yoga.yogaNodeGetComputedLayout(child, &layout);
@@ -898,13 +898,13 @@ test "Yoga wrapper packs style values" {
     const node = yoga.yogaNodeCreate();
     defer yoga.yogaNodeFree(node);
 
-    yoga.yogaNodeStyleSetValue(node, @intFromEnum(yoga.YogaValueKind.flex_basis), 0, @intFromEnum(yoga.YogaUnit.point), 10);
-    const packed_value = yoga.yogaNodeStyleGetValue(node, @intFromEnum(yoga.YogaValueKind.flex_basis), 0);
+    yoga.yogaNodeStyleSetValue(node, @backingInt(yoga.YogaValueKind.flex_basis), 0, @backingInt(yoga.YogaUnit.point), 10);
+    const packed_value = yoga.yogaNodeStyleGetValue(node, @backingInt(yoga.YogaValueKind.flex_basis), 0);
     const unit: u32 = @intCast(packed_value & 0xffffffff);
     const value_bits: u32 = @intCast((packed_value >> 32) & 0xffffffff);
     const value: f32 = @bitCast(value_bits);
 
-    try std.testing.expectEqual(@as(u32, @intFromEnum(yoga.YogaUnit.point)), unit);
+    try std.testing.expectEqual(@as(u32, @backingInt(yoga.YogaUnit.point)), unit);
     try std.testing.expectApproxEqAbs(@as(f32, 10), value, 0.001);
 }
 

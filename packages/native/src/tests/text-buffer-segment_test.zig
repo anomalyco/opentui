@@ -3,6 +3,7 @@ const testing = std.testing;
 const seg_mod = @import("../text-buffer-segment.zig");
 const MemRegistry = @import("../mem-registry.zig").MemRegistry;
 const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
 
 const Segment = seg_mod.Segment;
 const UnifiedRope = seg_mod.UnifiedRope;
@@ -17,7 +18,7 @@ test "TextChunk layout cache retries and releases partial allocations" {
     defer arena.deinit();
     var registry = MemRegistry.init(testing.allocator);
     defer registry.deinit();
-    const text = "\u{65e5}\u{672c} " ** 512;
+    const text = utils.repeat(u8, "\u{65e5}\u{672c} ", 512);
     const mem_id = try registry.register(text, false);
 
     for (0..3) |fail_index| {
@@ -220,7 +221,7 @@ test "walkChunkLayoutInfo ASCII prefixes keep their final grapheme intact" {
     var breaks: std.ArrayListUnmanaged(utf8.LayoutWrapBreak) = .empty;
     defer breaks.deinit(testing.allocator);
     for (0..32) |prefix_len| {
-        const text = try std.fmt.allocPrint(testing.allocator, "{s} \u{301} \u{754c}abc", .{("a" ** 32)[0..prefix_len]});
+        const text = try std.fmt.allocPrint(testing.allocator, "{s} \u{301} \u{754c}abc", .{utils.repeat(u8, "a", 32)[0..prefix_len]});
         defer testing.allocator.free(text);
         _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, false, .unicode, &breaks);
         try testing.expectEqual(@as(usize, 3), breaks.items.len);

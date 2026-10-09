@@ -1,6 +1,7 @@
 const std = @import("std");
 const syntax_style = @import("../syntax-style.zig");
 const ansi = @import("../ansi.zig");
+const utils = @import("../utils.zig");
 
 const SyntaxStyle = syntax_style.SyntaxStyle;
 const StyleDefinition = syntax_style.StyleDefinition;
@@ -77,7 +78,7 @@ test "SyntaxStyle - registrations match a name-to-definition model" {
     const Entry = struct { id: u32, definition: StyleDefinition };
     var model: std.StringArrayHashMapUnmanaged(Entry) = .empty;
     defer model.deinit(allocator);
-    const names = [_][]const u8{ "keyword", "Keyword", "", "a.b-c_d@e#f", "\u{4e2d}\u{6587}\u{1f600}", "x" ** 1000, "string", "comment" };
+    const names = [_][]const u8{ "keyword", "Keyword", "", "a.b-c_d@e#f", "\u{4e2d}\u{6587}\u{1f600}", utils.repeat(u8, "x", 1000), "string", "comment" };
     for (0..400) |step| {
         errdefer std.debug.print("style model failed: seed 0x{x} step {d}\n", .{ seed, step });
         const name = names[random.uintLessThan(usize, names.len)];

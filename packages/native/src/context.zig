@@ -66,19 +66,20 @@ pub const Error = handles.Error || yoga.Error || session.Error || error{
 pub const RendererBuffer = enum { current, next };
 
 const scene_style_enum_maxima = blk: {
-    @setEvalBranchQuota(64 * std.meta.declarations(api).len);
+    const names = @typeInfo(api).@"struct".decl_names;
+    @setEvalBranchQuota(64 * names.len);
     var count = 0;
-    for (std.meta.declarations(api)) |decl| {
-        if (std.mem.startsWith(u8, decl.name, "OT_STYLE_ENUM_") and
-            !std.mem.endsWith(u8, decl.name, "_MAX")) count += 1;
+    for (names) |name| {
+        if (std.mem.startsWith(u8, name, "OT_STYLE_ENUM_") and
+            !std.mem.endsWith(u8, name, "_MAX")) count += 1;
     }
     var maxima: [count]u32 = undefined;
-    var present = [_]bool{false} ** count;
-    for (std.meta.declarations(api)) |decl| {
-        if (!std.mem.startsWith(u8, decl.name, "OT_STYLE_ENUM_") or
-            !std.mem.endsWith(u8, decl.name, "_MAX")) continue;
-        const kind = @field(api, decl.name[0 .. decl.name.len - "_MAX".len]);
-        maxima[kind] = @field(api, decl.name);
+    var present: [count]bool = @splat(false);
+    for (names) |name| {
+        if (!std.mem.startsWith(u8, name, "OT_STYLE_ENUM_") or
+            !std.mem.endsWith(u8, name, "_MAX")) continue;
+        const kind = @field(api, name[0 .. name.len - "_MAX".len]);
+        maxima[kind] = @field(api, name);
         present[kind] = true;
     }
     for (present) |found| if (!found) @compileError("Missing checked scene style enum constraint");
@@ -756,7 +757,7 @@ pub const Context = struct {
             .chunk_size = options.chunk_size,
             .initial_chunks = options.chunk_count,
             .max_bytes = @as(u64, options.chunk_size) * options.chunk_count,
-            .growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block),
+            .growth_policy = @backingInt(native_span_feed.GrowthPolicy.block),
             .auto_commit_on_full = 1,
             .span_queue_capacity = options.span_capacity,
         });
@@ -921,7 +922,7 @@ pub const Context = struct {
         try value.checkOpen();
         const attached = value.renderer orelse return error.RendererNotAttached;
         if (corner > 3) return error.InvalidOptions;
-        attached.setDebugOverlay(enabled, @enumFromInt(corner));
+        attached.setDebugOverlay(enabled, @fromBackingInt(@intCast(corner)));
     }
 
     pub fn sessionUpdateStats(self: *Context, handle: Handle, overall_ms: f64, fps: u32, callback_ms: f64) Error!void {
@@ -1776,7 +1777,7 @@ pub const Context = struct {
             if (cells.len / 3 > self.render_cells_max) return error.InvalidOptions;
         }
         try target.checkImageResources();
-        const channels: buffer_effects.ColorTarget = @enumFromInt(channel);
+        const channels: buffer_effects.ColorTarget = @fromBackingInt(@intCast(channel));
         if (mask) |cells| {
             buffer_effects.colorMatrix(target, matrix, cells, strength, channels);
         } else {
@@ -2602,7 +2603,7 @@ pub const Context = struct {
             if (text.buffer.rope().markerCount(.linestart) != text.buffer.lineCount()) return error.OutOfMemory;
             try text.prepareView();
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
-            const behavior: text_buffer_view.SelectionBehavior = @enumFromInt(options.behavior);
+            const behavior: text_buffer_view.SelectionBehavior = @fromBackingInt(@intCast(options.behavior));
             break :selection if (options.operation == api.OT_SCENE_TEXT_SELECTION_SET)
                 text.view.setLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior)
             else

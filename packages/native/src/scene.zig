@@ -1436,7 +1436,7 @@ pub const Scene = struct {
         // Cursor maintenance follows self drawing even when a host hook replaces the body.
         const editor = node.editor orelse return;
         if (self.focus == null or !std.meta.eql(self.focus.?, node.handle)) return;
-        if (node.control.editor.mouse_pointer < std.meta.tags(@import("terminal.zig").MousePointerStyle).len) cli.terminal.setMousePointerStyle(@enumFromInt(node.control.editor.mouse_pointer));
+        if (node.control.editor.mouse_pointer < std.meta.tags(@import("terminal.zig").MousePointerStyle).len) cli.terminal.setMousePointerStyle(@fromBackingInt(@intCast(node.control.editor.mouse_pointer)));
         if (!node.control.editor.show_cursor) return;
         const cursor = editor.view.getVisualCursor();
         const cursor_x = @max(1, layout.screenX + @as(f64, @floatFromInt(cursor.visual_col)) + 1);
@@ -1836,8 +1836,8 @@ fn placementGreaterThan(_: void, left: Feedback, right: Feedback) bool {
 fn validateLayout(layout: Layout) !void {
     const min: f64 = std.math.minInt(i32);
     const max: f64 = std.math.maxInt(i32);
-    inline for (std.meta.fields(Layout)) |field| {
-        if (!std.math.isFinite(@field(layout, field.name))) return error.InvalidDimensions;
+    inline for (@typeInfo(Layout).@"struct".field_names) |name| {
+        if (!std.math.isFinite(@field(layout, name))) return error.InvalidDimensions;
     }
     if (layout.screenX < min or layout.screenY < min or layout.width > max or layout.height > max or
         layout.screenX + @as(f64, layout.width) > max or layout.screenY + @as(f64, layout.height) > max)

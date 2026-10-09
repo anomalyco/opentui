@@ -123,7 +123,7 @@ fn runOutputModel(seed: u64, delivery: Delivery, trace: *OutputTrace) !void {
                 const text: []const u8 = if (random.boolean()) "ab" else "cd";
                 if (pending_before == null) try paint(cli, text, hit);
                 const result = try owner.renderSession(id, random.uintLessThan(u8, 4) == 0);
-                status = @intFromEnum(result);
+                status = @backingInt(result);
                 const after = value.getStats().bytes_written;
                 switch (result) {
                     .pending => if (pending_before == null) {
@@ -302,7 +302,7 @@ test "Session renderer skips frames under output pressure and fails frames that 
             cli.kittyTransport.mode = .file;
             cli.kittyTransport.file_state = .ready;
         }
-        const blocker = [_]u8{'x'} ** 512;
+        const blocker: [512]u8 = @splat('x');
         if (case.queued != 0) try owner.writeSession(id, blocker[0..case.queued]);
         const queued = value.getStats();
         const published = cli.getRenderStats();

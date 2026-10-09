@@ -5,6 +5,7 @@ const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const ansi = @import("../ansi.zig");
+const utils = @import("../utils.zig");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 
 const options: scene.FrameOptions = .{
@@ -368,7 +369,7 @@ const Resources = struct {
         try f.owner.editSetText(edit, "edit", false);
         const scene_text = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 9);
         try f.owner.sceneSetText(scene_text, "node");
-        const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
+        const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255 }, 4).*;
         return .{
             .text_view = try f.owner.createTextBufferView(text),
             .editor_view = try f.owner.createEditorView(edit, 4, 1),
@@ -402,7 +403,7 @@ fn appendCommand(recording: *Recording, command: Command, resources: Resources) 
             recording.append(c.ot_scene_record_packed{ .header = recordHeader(c.OT_SCENE_RECORD_PACKED), .x = 3, .y = 1, .width = 2, .height = 1, .byte_count = @sizeOf(@TypeOf(cells)), .reserved = 0 }, std.mem.sliceAsBytes(&cells));
         },
         .supersample => {
-            const pixels = [_]u8{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 } ** 2;
+            const pixels = utils.repeat(u8, &.{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 }, 2).*;
             recording.append(c.ot_scene_record_supersample{ .header = recordHeader(c.OT_SCENE_RECORD_SUPERSAMPLE), .x = 6, .y = 2, .format = 1, .stride = 16, .byte_count = pixels.len, .reserved = 0 }, &pixels);
         },
         .grayscale => recording.append(c.ot_scene_record_grayscale{ .header = recordHeader(c.OT_SCENE_RECORD_GRAYSCALE), .x = 1, .y = 3, .width = 3, .height = 1, .flags = c.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND | c.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND, .sample_count = 3, .foreground = white, .background = blue }, std.mem.sliceAsBytes(&[_]f32{ 0.2, 0.6, 1.0 })),
@@ -436,7 +437,7 @@ fn paintScene(f: Fixture) !context.Handle {
     try f.owner.sceneSetSlider(try placed(f, c.OT_SCENE_SLIDER, 4, 6, 1, 4), .{ .value = 40 });
     _ = try placed(f, c.OT_SCENE_ARROW, 5, 11, 0, 1);
     // A wide picture takes the fit path and the cropping cover path.
-    const pixels = [_]u8{ 200, 40, 0, 255, 0, 40, 200, 255 } ** 4;
+    const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255, 0, 40, 200, 255 }, 4).*;
     const picture = try f.owner.createImagePixels(&pixels, 4, 2, .{ .stride = 16 });
     try f.owner.sceneSetImage(try placed(f, c.OT_SCENE_IMAGE, 6, 0, 3, 2), picture, .fit, .blocks, null);
     const backed = try placed(f, c.OT_SCENE_IMAGE, 7, 2, 3, 2);
