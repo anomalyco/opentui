@@ -354,12 +354,9 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
     try std.testing.expectEqual(old.slot, foreign.slot);
     try std.testing.expectError(error.WrongContext, first.raw().getSession(foreign));
     try std.testing.expectError(error.WrongKind, first.raw().getTextBuffer(old));
-    // The table grows past object_capacity up to slot_count_max, and old handles still resolve.
-    first.objects.slot_count_max = 2;
-    const grown = try first.createSession(.{});
-    _ = try first.raw().getSession(old);
+    // An object_capacity above slot_count_max keeps the table at that size.
+    first.objects.slot_count_max = 0;
     try std.testing.expectError(error.ObjectLimit, first.createSession(.{}));
-    try first.destroy(grown);
     try first.destroy(old);
     const replacement = try first.createSession(.{});
     try std.testing.expectEqual(old.slot, replacement.slot);

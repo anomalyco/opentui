@@ -64,10 +64,10 @@ pub const Table = struct {
     slots: []Slot = &.{},
     free_head: ?u32 = null,
     live_count: u32 = 0,
-    slot_count_max: u32,
+    slot_count_max: u32 = slot_count_max_default,
 
     /// The table starts with `capacity` slots and doubles when full, up to
-    /// slot_count_max_default or `capacity`, whichever is larger.
+    /// slot_count_max. A larger `capacity` never grows.
     pub fn init(allocator: std.mem.Allocator, capacity: u32) Error!Table {
         std.debug.assert(capacity > 0);
         var id = last_context_id.load(.monotonic);
@@ -77,11 +77,7 @@ pub const Table = struct {
                 id = current;
             } else break;
         }
-        var table: Table = .{
-            .allocator = allocator,
-            .context_id = id + 1,
-            .slot_count_max = @max(capacity, slot_count_max_default),
-        };
+        var table: Table = .{ .allocator = allocator, .context_id = id + 1 };
         try table.grow(capacity);
         return table;
     }
@@ -95,7 +91,7 @@ pub const Table = struct {
     /// Makes a vacant slot available, so the next insert cannot fail.
     pub fn checkCapacity(self: *Table) Error!void {
         if (self.free_head != null) return;
-        if (self.slots.len == self.slot_count_max) return error.ObjectLimit;
+        if (self.slots.len >= self.slot_count_max) return error.ObjectLimit;
         try self.grow(@min(self.slot_count_max, @as(u32, @intCast(self.slots.len)) *| 2));
     }
 
