@@ -55,8 +55,40 @@ test.each([
   ["a deeper heading", "---\ndate: 2026-10-12\nsummary: S.\n---\n## Added\n### Core\n", "only ## section"],
   ["a bullet before a section", "---\ndate: 2026-10-12\nsummary: S.\n---\n- a\n", "under a section"],
   ["prose in a section", "---\ndate: 2026-10-12\nsummary: S.\n---\n## Added\nText.\n", "as a bullet"],
+  ["an HTML tag", "---\ndate: 2026-10-12\nsummary: S.\n---\n<script>alert(1)</script>\n", "not HTML"],
+  ["an HTML comment", "---\ndate: 2026-10-12\nsummary: S.\n---\n## Added\n- a <!-- b -->\n", "not HTML"],
+  [
+    "an image with an event handler",
+    '---\ndate: 2026-10-12\nsummary: S.\n---\n## Fixed\n- a <img src=x onerror="b">\n',
+    "not HTML",
+  ],
+  [
+    "a javascript link",
+    "---\ndate: 2026-10-12\nsummary: S.\n---\n## Fixed\n- [a](javascript:alert(1))\n",
+    "javascript:",
+  ],
+  ["an http link", "---\ndate: 2026-10-12\nsummary: S.\n---\n## Fixed\n- [a](http://example.com)\n", "http:"],
+  ["a relative link", "---\ndate: 2026-10-12\nsummary: S.\n---\nSee [a](../x).\n", '"../x"'],
+  ["a reference definition", "---\ndate: 2026-10-12\nsummary: S.\n---\n[a]: data:text/html,x\n", "data:"],
 ])("rejects %s", (_, source, message) => {
   expect(() => parse(source)).toThrow(message)
+})
+
+test("accepts code that looks like HTML, autolinks, and https, fragment, and docs links", () => {
+  const source = [
+    "---",
+    "date: 2026-10-12",
+    "summary: S.",
+    "---",
+    "## Added",
+    "- `<box>` and ``a <b>`` render. See <https://example.com/x>, [b](https://example.com), [c](#added), and",
+    "  [d](/docs/core-concepts/layout#cell-rounding).",
+    "",
+    "  ```tsx",
+    "  <text>hi</text>",
+    "  ```",
+  ].join("\n")
+  expect(parse(source).entries).toHaveLength(1)
 })
 
 test("rejects a file name that is not a version", () => {

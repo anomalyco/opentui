@@ -44,9 +44,10 @@ async function buildIndex(channel: DocsChannel): Promise<Map<string, PageChanges
     return changes
   }
 
+  // The main-branch channel also lists a release that npm does not serve yet.
   const window = windowStart(channel.release)
   const inWindow = (version: string) =>
-    compareVersions(version, window) >= 0 && compareVersions(version, channel.release) <= 0
+    compareVersions(version, window) >= 0 && (channel.id === "next" || compareVersions(version, channel.release) <= 0)
 
   for (const release of notes) {
     const data = release.data as unknown as ReleaseNotesData

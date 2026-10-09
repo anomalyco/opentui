@@ -4,7 +4,9 @@
 //
 // A file has YAML frontmatter with `date` (YYYY-MM-DD) and `summary` (one sentence for the release history),
 // optional introductory paragraphs, and then sections. Each section is one of RELEASE_SECTIONS, in that order,
-// and holds a bullet list with one change per bullet.
+// and holds a bullet list with one change per bullet. Notes are Markdown without HTML, and they link only to
+// /docs pages and https URLs: drafts come from a model that reads contributors' pull request descriptions, and
+// the notes reach the site, the GitHub release, and the agent skill.
 
 import { compareVersions } from "./api-history"
 
@@ -97,6 +99,7 @@ function parseEntries(version: string, body: string, firstLine: number): Release
       current?.lines.push(line)
       return
     }
+    checkMarkup(line, at)
 
     const heading = line.match(/^(#{1,6})\s+(.*?)\s*$/)
     if (heading) {
@@ -133,6 +136,23 @@ function parseEntries(version: string, body: string, firstLine: number): Release
   })
   flush()
   return entries
+}
+
+/** Rejects HTML and links other than /docs pages, https URLs, and fragments, outside code spans. */
+function checkMarkup(line: string, at: string) {
+  const text = line.replace(/(`+)[\s\S]*?\1/g, "")
+  if (/<(?!https:\/\/[^\s>]+>)[a-zA-Z!/?]/.test(text)) {
+    throw new ReleaseNotesError(`${at}: write Markdown, not HTML`)
+  }
+  const targets = [
+    ...[...text.matchAll(/\]\(\s*<?([^)\s>]*)/g)].map((match) => match[1]),
+    ...[...text.matchAll(/^\s*\[[^\]]+\]:\s*<?(\S*?)>?(\s|$)/g)].map((match) => match[1]),
+  ]
+  for (const target of targets) {
+    if (!/^(\/docs([/?#]|$)|https:\/\/|#)/.test(target)) {
+      throw new ReleaseNotesError(`${at}: link to /docs pages or https URLs, not "${target}"`)
+    }
+  }
 }
 
 /** Logical /docs page URLs in markdown links, without fragments or queries, in order of first use. */

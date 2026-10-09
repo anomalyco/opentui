@@ -130,7 +130,10 @@ The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it
   process drafts them with opencode (`scripts/release-notes.ts`). Edit them like other docs; they stay current on both
   channels.
 - `api/<version>.txt` at the repository root records each release's API changes (`api/README.md`). The release
-  process writes it. Do not edit it by hand.
+  process writes it, and the release workflow compares it with the published packages (`api.ts verify`). Do not
+  edit it by hand.
+- A release from a maintenance branch, such as 0.5.x, writes its API file and release notes on that branch. Copy both
+  to main: the site reads them from main.
 - Check a full build with `bun run build:site --release <version>` and `bun run preview:site`.
 
 ## Exceptions

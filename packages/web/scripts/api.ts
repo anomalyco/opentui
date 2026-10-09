@@ -30,6 +30,8 @@ const USAGE = `Usage: bun packages/web/scripts/api.ts <command> [options]
       Print the API file that a release of the source tree would add.
   release <version> [--base <version>] [--dir <dir>] [--root <dir>]
       Write <dir>/<version>.txt for the source tree, relative to the latest API file.
+  verify <version> [--dir <dir>]
+      Compare the API that the files record for a release with its packages on npm.
   check [--dir <dir>]
       Validate the API files.
 
@@ -239,6 +241,34 @@ async function release(options: Options): Promise<void> {
   console.error(`wrote ${file} (${textLines(text).length - 1} changes)`)
 }
 
+// Compares the API that api/ records for a release with the API of its packages on npm. A release pull request
+// records the API of the branch it was opened from; a change merged before the pull request makes it wrong.
+async function verify(options: Options): Promise<void> {
+  const [version, ...extra] = options.positional
+  if (version === undefined || extra.length > 0 || !isApiVersion(version)) throw new Error(USAGE)
+  const recorded = (await loadApiHistory(apiDir(options))).snapshot(version)
+  const features = new Set<string>()
+  for (const name of PACKAGES) {
+    const list = await publishedVersions(name)
+    const packageVersion = packageVersionFor(
+      list.map((item) => item.version),
+      version,
+    )
+    const published = list.find((item) => item.version === packageVersion)
+    if (published) for (const line of await publishedFeatures(name, published)) features.add(line)
+  }
+  const { added, removed } = diffFeatures(recorded, features)
+  for (const line of removed) console.error(`- ${line}`)
+  for (const line of added) console.error(`+ ${line}`)
+  if (added.length + removed.length > 0) {
+    throw new Error(
+      `api/ records a different API for ${version} than npm publishes (- recorded only, + published only). ` +
+        `Write ${version}.txt again: remove it, then run backfill --from ${version} --to ${version}`,
+    )
+  }
+  console.error(`api/ matches the published API of ${version}`)
+}
+
 async function check(options: Options): Promise<void> {
   const dir = apiDir(options)
   const files = await apiFiles(dir)
@@ -254,6 +284,7 @@ const commands: Record<string, { options: string[]; run: (options: Options) => P
   current: { options: ["out", "root"], run: current },
   diff: { options: ["base", "out", "dir", "root"], run: diff },
   release: { options: ["base", "dir", "root"], run: release },
+  verify: { options: ["dir"], run: verify },
   check: { options: ["dir"], run: check },
 }
 
@@ -262,7 +293,7 @@ async function main(): Promise<void> {
   const command = name === undefined ? undefined : commands[name]
   if (command === undefined) throw new Error(USAGE)
   const options = parseOptions(args, command.options)
-  if (name !== "release" && options.positional.length > 0) throw new Error(USAGE)
+  if (name !== "release" && name !== "verify" && options.positional.length > 0) throw new Error(USAGE)
   await command.run(options)
 }
 

@@ -59,5 +59,13 @@ jobs:
       - name: Test site tooling
         run: bun run test:site
 
+      # Main documents npm's latest release. A maintenance branch, such as 0.5.x, documents its own line.
       - name: Build site
-        run: bun run build:site --out "$RUNNER_TEMP/site"
+        env:
+          BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          if [[ "$BRANCH" =~ ^[0-9]+\.[0-9]+\.x$ ]]; then
+            bun run build:site --out "$RUNNER_TEMP/site" --release "$(jq -r .version ../core/package.json)"
+          else
+            bun run build:site --out "$RUNNER_TEMP/site"
+          fi

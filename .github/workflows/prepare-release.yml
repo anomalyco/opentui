@@ -37,8 +37,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      # The release notes draft reads the commits since the previous release tag.
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Configure git author
         run: |

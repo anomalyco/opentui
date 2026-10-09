@@ -37,7 +37,7 @@ function apiSize(version: string): string | undefined {
     api?.unreleased && (
       <p>
         <a href={channelUrl("/docs/releases/unreleased", channel)}>Unreleased changes</a> lists the API changes on the
-        main branch since {channel.release}.
+        main branch since {api.unreleasedBase}.
       </p>
     )
   }

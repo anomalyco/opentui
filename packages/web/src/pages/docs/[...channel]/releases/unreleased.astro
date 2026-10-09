@@ -14,19 +14,21 @@ export async function getStaticPaths() {
 }
 
 const channel = docsChannel()
-const changes = (await channelApi(channel))?.unreleased ?? []
+const api = await channelApi(channel)
+const changes = api?.unreleased ?? []
+const base = api?.unreleasedBase ?? channel.release
 const modules = [...new Set(groupChanges(changes).map((group) => group.module))]
 ---
 
 <Docs
   title="Unreleased changes"
-  description={`API changes on the main branch since OpenTUI ${channel.release}.`}
+  description={`API changes on the main branch since OpenTUI ${base}.`}
   headings={modules.map((module) => ({ depth: 3, slug: slugifyHeading(module), text: module }))}
 >
   <h1>Unreleased changes</h1>
   <p>
     These API changes are on the main branch and not in a release yet. They compare the source's type declarations
-    with {channel.release}. The release notes of the next release describe them.
+    with {base}. The release notes of the next release describe them.
   </p>
-  {changes.length > 0 ? <ApiChangeList {changes} /> : <p>The API has not changed since {channel.release}.</p>}
+  {changes.length > 0 ? <ApiChangeList {changes} /> : <p>The API has not changed since {base}.</p>}
 </Docs>

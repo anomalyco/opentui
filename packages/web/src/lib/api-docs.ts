@@ -34,6 +34,11 @@ export interface ChannelApi {
   size(version: string): { added: number; removed: number }
   /** The source's changes since the latest release, on the main-branch channel with a source snapshot. */
   unreleased?: ApiChange[]
+  /**
+   * The release that unreleased changes follow: the latest API file, which can be newer than the release npm
+   * serves while a release is published.
+   */
+  unreleasedBase?: string
 }
 
 let cache: { key: string; api: Promise<ChannelApi | undefined> } | undefined
@@ -85,6 +90,7 @@ async function loadChannelApi(channel: DocsChannel, currentFile: string | undefi
       changes: (version) => history.changes(version),
       size,
       unreleased: draft.changes(source),
+      unreleasedBase: latest,
     }
   }
 

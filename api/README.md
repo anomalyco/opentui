@@ -54,8 +54,10 @@ another package records only the export: `namespace THREE from "three"`, `reexpo
 Run these from the repository root.
 
 - `bun packages/web/scripts/api.ts release <version>` writes `api/<version>.txt`: the difference between the latest
-  file's API and the API of the source tree. Run it when the release version is set. It does not overwrite a file
-  with different contents. Pass `--base <version>` for a patch of an older line.
+  file's API and the API of the source tree. `scripts/release.ts` runs it in the release commit. It does not
+  overwrite a file with different contents. Pass `--base <version>` for a patch of an older line.
+- `bun packages/web/scripts/api.ts verify <version>` compares the API that the files record for a release with its
+  packages on npm. The release workflow runs it after npm serves the release.
 - `bun packages/web/scripts/api.ts diff` prints the file that a release of the source tree would add.
 - `bun packages/web/scripts/api.ts current` prints every feature of the source tree.
 - `bun packages/web/scripts/api.ts check` validates the files.
