@@ -961,7 +961,7 @@ typedef struct ot_input_drain {
  * at least OT_INPUT_EVENTS_MIN and payload_capacity at least
  * OT_INPUT_PAYLOAD_BYTES_MIN; the call consumes input until either runs low and
  * reports consumed. Records and payload are borrowed for the call and never
- * retained. Accepted in any open session state; closing, closed, failed, and
+ * retained. bytes, records, payload, and out_drain must not overlap. Accepted in any open session state; closing, closed, failed, and
  * cancelled sessions reject. No allocation, no I/O. */
 ot_status ot_session_input_feed(
     ot_context *context,
@@ -976,10 +976,12 @@ ot_status ot_session_input_feed(
     ot_input_drain *out_drain);
 
 /* flags is a combination of OT_INPUT_EXPECT_* bits; other bits must be zero.
- * REPLIES keeps a partial CSI reply waiting past the timeout while the host
- * awaits one. KITTY_KEYBOARD does the same for Kitty keys; the session also
- * applies it while its terminal has Kitty keyboard enabled. Changing flags
- * emits nothing; the next feed resolves a unit that may no longer wait. */
+ * Set REPLIES while any query is outstanding, including the capability queries
+ * that setup and resume publish. It keeps a partial CSI reply waiting past the
+ * timeout, and it makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply
+ * instead of a modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting;
+ * the session also applies it while its terminal has Kitty keyboard enabled.
+ * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 
 /* Drop any partial unit and mouse button state. Expectations are kept. */
