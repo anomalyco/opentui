@@ -128,8 +128,9 @@ The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it
 - `/docs/releases/<version>` shows a release's notes and its API changes. `/docs/api/<module>` lists every export with
   the release that added it. Each docs page ends with the changes of its documented symbols in recent releases.
 - Release notes are `src/content/docs/releases/<version>.md`. The format is in `src/lib/release-notes.ts`. The release
-  process drafts them with opencode (`scripts/release-notes.ts`). Edit them like other docs; they stay current on both
-  channels.
+  process drafts them with opencode (`scripts/release-notes.ts`). To edit the notes before a release, run
+  `bun run release-notes [patch|minor|major]` from the repository root, edit the file, and then release. Edit them like
+  other docs after a release too; they stay current on both channels.
 - `api/<version>.txt` at the repository root records each release's API changes (`api/README.md`). The release
   process writes it, and the release workflow compares it with the published packages (`api.ts verify`). Do not
   edit it by hand.

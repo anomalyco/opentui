@@ -20,8 +20,9 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 //    packages/web/src/content/docs/releases/X.Y.Z.md with opencode (see packages/web/scripts/release-notes.ts),
 //    commits "Release vX.Y.Z", tags it vX.Y.Z, and pushes the commit to the branch together with the tag.
 //    That needs the right to bypass the branch and tag rules. A maintenance branch takes only versions of its
-//    line. Notes already in place are kept; --no-notes and dry runs skip the draft. A push run in a terminal
-//    shows the notes and asks before it commits. Prereleases record neither file.
+//    line. The draft keeps notes already in place, such as from `bun run release-notes`, and dates them the
+//    release day. --no-notes skips the draft; a dry run commits no notes. A push run in a terminal shows the notes and
+//    asks before it commits. Prereleases record neither file.
 // 3. Follows the release.yml run of the tag push, and reports when every package is published and
 //    when npm serves them all.
 //
@@ -308,7 +309,9 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
         // A push publishes the notes with the release, so a person reads them first when one is present.
         if (options.mode === "push" && process.stdin.isTTY) await confirmNotes(notes)
       }
-      git("add", "--", apiFile, ...(existsSync(join(repoRoot, notes)) ? [notes] : []))
+      // A dry run switches back to the branch, which would delete notes that it committed.
+      if (options.mode !== "dry-run" && existsSync(join(repoRoot, notes))) notesFile = notes
+      git("add", "--", apiFile, ...(notesFile ? [notes] : []))
       stopIfInterrupted()
     }
     // The branch and the tag are recorded only once created, so that a failure never deletes one that

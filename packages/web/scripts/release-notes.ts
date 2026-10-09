@@ -1,20 +1,26 @@
 #!/usr/bin/env bun
 // Drafts and publishes the release notes in src/content/docs/releases/<version>.md.
 //
-//   bun scripts/release-notes.ts context <version> [--from <version>]   print what a draft is based on
-//   bun scripts/release-notes.ts draft <version> [--from <version>]     write the notes with opencode
-//   bun scripts/release-notes.ts github <version> --out <file>          write the GitHub release body
+//   bun run release-notes [draft] [patch|minor|major|<version>] [--force]   write the notes with opencode
+//   bun run release-notes context [patch|minor|major|<version>]              print what a draft is based on
+//   bun run release-notes github <version> --out <file>                      write the GitHub release body
 //
-// scripts/release.ts runs `draft` in the release commit, after `api.ts release` records the version's API, so
-// the release pull request carries notes to review. The draft is based on the commits and pull requests since
-// the previous release, the API changes, and the changed documentation. opencode reads it and replies with the
-// file; the reply must pass the release notes format check, or the draft is retried once with the problems.
-// The draft uses Claude Opus 5.5 with high reasoning through OpenCode; set OPENTUI_RELEASE_NOTES_MODEL
-// (provider/model#variant) to choose another model.
+// The version is the one `bun run release` with the same argument releases; the default is the next patch.
+// --from names the release the notes start from; the default is the latest release before the version.
+//
+// To edit the notes before a release, draft them, edit the file, and then run `bun run release`: it keeps notes
+// that are in place and sets their date to the release day. Without notes, scripts/release.ts drafts them in the
+// release commit, after `api.ts release` records the version's API. Before that, a draft compares the API of
+// the working tree with the latest release.
+//
+// The draft is based on the commits and pull requests since the previous release, the API changes, and the
+// changed documentation. opencode reads it and replies with the file; the reply must pass the release notes
+// format check, or the draft is retried once with the problems. The draft uses Claude Opus 5.5 with high
+// reasoning through OpenCode; set OPENTUI_RELEASE_NOTES_MODEL (provider/model#variant) to choose another model.
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 import { parseArgs } from "node:util"
 
 import { compareVersions } from "../src/lib/api-history"
@@ -27,36 +33,45 @@ const API_ROOT = join(REPO_ROOT, "api")
 const SITE = "https://opentui.com"
 const PULL_REQUEST_BODY_LIMIT = 3000
 const DEFAULT_MODEL = "opencode/claude-opus-5-5#high"
+const COMMANDS = ["draft", "context", "github"]
+const USAGE = "Usage: bun run release-notes [draft|context|github] [patch|minor|major|<version>] [--force] [--out <file>]"
 
 const { positionals, values } = parseArgs({
   args: Bun.argv.slice(2),
   allowPositionals: true,
-  options: { from: { type: "string" }, out: { type: "string" } },
+  options: { from: { type: "string" }, out: { type: "string" }, force: { type: "boolean", default: false } },
 })
-const [command, version] = positionals
-// Release notes exist for x.y.z releases only; `github` writes an empty body for other versions.
-if (!command || !version || (command !== "github" && !/^\d+\.\d+\.\d+$/.test(version))) {
-  console.error(
-    "Usage: bun scripts/release-notes.ts <context|draft|github> <version> [--from <version>] [--out <file>]",
-  )
-  process.exit(2)
-}
+const command = COMMANDS.includes(positionals[0] ?? "") ? positionals.shift()! : "draft"
+if (positionals.length > 1) throw new Error(USAGE)
 
-if (command === "context") {
-  console.log(await context(version, values.from))
-} else if (command === "draft") {
-  await draft(version, values.from)
-} else if (command === "github") {
-  if (!values.out) throw new Error("github needs --out <file>")
-  writeFileSync(values.out, githubBody(version))
+if (command === "github") {
+  // Release notes exist for x.y.z releases only; other versions get an empty body.
+  if (!values.out || !positionals[0]) throw new Error(USAGE)
+  writeFileSync(values.out, githubBody(positionals[0]))
 } else {
-  throw new Error(`Unknown command ${command}`)
+  const version = targetVersion(positionals[0] ?? "patch")
+  if (command === "context") console.log(await context(version, values.from))
+  else await draft(version, values.from, values.force)
 }
 
-async function draft(version: string, from?: string) {
+/** The version that `bun run release <target>` releases. */
+function targetVersion(target: string): string {
+  if (/^\d+\.\d+\.\d+$/.test(target)) return target
+  const current = JSON.parse(readFileSync(join(REPO_ROOT, "packages/core/package.json"), "utf8")) as { version: string }
+  const [major, minor, patch] = current.version.split(".").map(Number)
+  if (target === "major") return `${major + 1}.0.0`
+  if (target === "minor") return `${major}.${minor + 1}.0`
+  if (target === "patch") return `${major}.${minor}.${patch + 1}`
+  throw new Error(`Not a release type or x.y.z version: ${target}\n${USAGE}`)
+}
+
+async function draft(version: string, from: string | undefined, force: boolean) {
   const file = join(NOTES_ROOT, `${version}.md`)
-  if (existsSync(file)) {
-    console.log(`${file} exists; keeping it.`)
+  const shown = relative(process.cwd(), file)
+  if (existsSync(file) && !force) {
+    // Notes of a coming release take the day it ships.
+    if (!tagExists(`v${version}`)) setDate(file, today())
+    console.log(`Keeping ${shown}. Pass --force to draft it again.`)
     return
   }
   const directory = mkdtempSync(join(tmpdir(), "opentui-release-notes-"))
@@ -74,12 +89,22 @@ async function draft(version: string, from?: string) {
     if (!problem) {
       mkdirSync(NOTES_ROOT, { recursive: true })
       writeFileSync(file, notes)
-      console.log(`Wrote ${file}`)
+      console.log(`Wrote ${shown}. Edit it as needed; the release of ${version} keeps it.`)
       return
     }
     console.error(`Draft ${attempt} rejected: ${problem}`)
   }
   throw new Error(`Could not draft the release notes of ${version}: ${problem}`)
+}
+
+function setDate(file: string, date: string) {
+  const source = readFileSync(file, "utf8")
+  const updated = source.replace(/^(---\n[\s\S]*?^date: )\S+$/m, `$1${date}`)
+  if (updated !== source) writeFileSync(file, updated)
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
 function opencode(message: string, file: string): string {
@@ -128,14 +153,13 @@ async function context(version: string, from = previousVersion(version)): Promis
       `Drafting needs the history from ${fromRef} to ${toRef}; fetch it with git fetch --tags --unshallow`,
     )
   }
-  const date = toRef === "HEAD" ? new Date().toISOString().slice(0, 10) : git("log", "-1", "--format=%cs", toRef)
+  const date = toRef === "HEAD" ? today() : git("log", "-1", "--format=%cs", toRef)
   const index = await buildDocsIndex()
   // Notes of a past release can link only pages that it had and that this checkout still has; the release
   // documentation renders them too.
   const releasedSources = toRef === "HEAD" ? undefined : new Set(git("ls-tree", "-r", "--name-only", toRef).split("\n"))
   const pages = index.pages.filter((page) => !releasedSources || releasedSources.has(page.sourcePath))
-  const apiFile = join(API_ROOT, `${version}.txt`)
-  const api = existsSync(apiFile) ? readFileSync(apiFile, "utf8").split("\n").slice(1).join("\n").trim() : ""
+  const api = apiChanges(version, from)
   const docsChanges = git("diff", "--name-status", fromRef, toRef, "--", "packages/web/src/content/docs")
     .split("\n")
     .filter((line) => line && !line.includes("/releases/"))
@@ -202,6 +226,23 @@ async function context(version: string, from = previousVersion(version)): Promis
     "",
     ...pages.map((page) => `- ${page.url}: ${page.title}`),
   ].join("\n")
+}
+
+/**
+ * The API changes of the version, without the file's base line: its api/ file, or before the release records it,
+ * the difference between the working tree and the release the notes start from.
+ */
+function apiChanges(version: string, from: string): string {
+  const file = join(API_ROOT, `${version}.txt`)
+  if (existsSync(file)) return readFileSync(file, "utf8").split("\n").slice(1).join("\n").trim()
+  console.error(`api/${version}.txt does not exist yet; comparing the working tree's API with ${from}.`)
+  const result = spawnSync("bun", ["scripts/api.ts", "diff", "--base", from], {
+    cwd: join(REPO_ROOT, "packages/web"),
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  if (result.status !== 0) throw new Error(`Could not compute the API changes:\n${result.stderr}`)
+  return result.stdout.split("\n").slice(1).join("\n").trim()
 }
 
 /** One entry per pull request, with its description, then the commits without a pull request. */
