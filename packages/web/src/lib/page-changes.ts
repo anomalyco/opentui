@@ -63,19 +63,20 @@ async function buildIndex(channel: DocsChannel): Promise<Map<string, PageChanges
   )
   const addApi = (version: string, changes: ApiChange[]) => {
     for (const group of groupChanges(changes)) {
-      const byPage = new Map<string, string[]>()
+      const byPage = new Map<string, Set<string>>()
       for (const change of group.changes) {
         const page = symbolPages.get(`${change.module} ${exportName(change.name)}`)
         if (!page) continue
         const names = byPage.get(page)
-        if (names) names.push(change.name)
-        else byPage.set(page, [change.name])
+        if (names) names.add(change.name)
+        else byPage.set(page, new Set([change.name]))
       }
+      // A class and its constructor, or a name in two modules, are listed once.
       for (const [page, names] of byPage) {
         const api = entry(page, version).api
         const existing = api.find((item) => item.type === group.type)
-        if (existing) existing.names.push(...names)
-        else api.push({ type: group.type, names })
+        if (existing) existing.names.push(...[...names].filter((name) => !existing.names.includes(name)))
+        else api.push({ type: group.type, names: [...names] })
       }
     }
   }
