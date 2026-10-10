@@ -1015,7 +1015,7 @@ export class MarkdownRenderable extends Renderable {
     input: ListItemRenderInput,
     previousItem: Tokens.ListItem | undefined,
   ): boolean {
-    this.applyListItemMarker(row, input)
+    this.applyListItemMarker(row, input, previousItem === undefined)
 
     const content = row.getChildren()[1]
     if (!(content instanceof BoxRenderable)) return false
@@ -1114,7 +1114,7 @@ export class MarkdownRenderable extends Renderable {
     }
   }
 
-  private applyListItemMarker(row: BoxRenderable, input: ListItemRenderInput): void {
+  private applyListItemMarker(row: BoxRenderable, input: ListItemRenderInput, forceRefresh: boolean): void {
     const marker = row.getChildren()[0]
     if (!(marker instanceof TextRenderable)) return
     const marginBottom = /\n[ \t]*\n$/.test(input.item.raw) ? 1 : 0
@@ -1123,7 +1123,7 @@ export class MarkdownRenderable extends Renderable {
 
     if (row.marginBottom !== marginBottom) row.marginBottom = marginBottom
     if (marker.width !== markerWidth) marker.width = markerWidth
-    if (marker.chunks[0]?.text !== markerText) {
+    if (forceRefresh || marker.chunks[0]?.text !== markerText) {
       marker.content = new StyledText([this.createChunk(markerText, "markup.list")])
     }
   }
@@ -2055,7 +2055,7 @@ export class MarkdownRenderable extends Renderable {
           this.destroyUnusedDefaultRenderable(custom.renderable)
         }
 
-        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token)
+        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token, forceTableRefresh)
         existing.renderable.marginBottom = 0
         if (existing.marginTop !== block.marginTop) {
           this.applyMargins(existing.renderable, block.marginTop, 0)
