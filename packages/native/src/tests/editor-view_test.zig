@@ -1554,6 +1554,54 @@ test "EditorView - placeholder renders to buffer when empty" {
     try std.testing.expect(!std.mem.startsWith(u8, result2, "Type something..."));
 }
 
+test "EditorView - replacing an active word-wrapped placeholder refreshes byte boundaries" {
+    const cases = [_]struct { width: u32, before: []const u8, after: []const u8 }{
+        .{ .width = 6, .before = "alpha beta", .after = "a bbbbbbbb" },
+        .{ .width = 12, .before = "Worker running, Esc to stop...", .after = "Edit \u{1f680} text, / show help..." },
+        .{ .width = 70, .before = "Worker running, Esc to stop...", .after = "Edit \u{1f680} text, / show help..." },
+    };
+    for (cases) |case| {
+        var pools = TestPools.init(std.testing.allocator);
+        defer pools.deinit();
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, case.width, 8);
+        defer ev.deinit();
+        ev.setWrapMode(.word);
+
+        const fresh_eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+        defer fresh_eb.deinit();
+        const fresh_ev = try EditorView.init(std.testing.allocator, fresh_eb, case.width, 8);
+        defer fresh_ev.deinit();
+        fresh_ev.setWrapMode(.word);
+
+        var screen = try opt_buffer_mod.OptimizedBuffer.init(
+            std.testing.allocator,
+            case.width,
+            8,
+            .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = .wcwidth },
+        );
+        defer screen.deinit();
+
+        try owned_styled.setPlaceholder(ev, &.{.{ .text = case.before }});
+        screen.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        screen.drawEditorView(ev, 0, 0);
+
+        try owned_styled.setPlaceholder(ev, &.{.{ .text = case.after }});
+        screen.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        screen.drawEditorView(ev, 0, 0);
+        var actual: [2048]u8 = undefined;
+        const actual_len = try screen.writeResolvedChars(&actual, false);
+
+        try owned_styled.setPlaceholder(fresh_ev, &.{.{ .text = case.after }});
+        screen.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        screen.drawEditorView(fresh_ev, 0, 0);
+        var expected: [2048]u8 = undefined;
+        const expected_len = try screen.writeResolvedChars(&expected, false);
+        try std.testing.expectEqualStrings(expected[0..expected_len], actual[0..actual_len]);
+    }
+}
+
 test "EditorView - placeholder shrink clears tail and preserves background" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

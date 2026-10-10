@@ -1116,6 +1116,44 @@ describe("Textarea - Rendering Tests", () => {
       expect(editor.plainText).toBe("")
     })
 
+    it.each([
+      [6, "alpha beta", "a bbbbbbbb", "a\nbbbbbb\nbb"],
+      [
+        12,
+        "Worker running, Esc to stop...",
+        "Edit \u{1f680} text, / show help...",
+        "Edit \u{1f680}\ntext, / show\nhelp...",
+      ],
+      [
+        70,
+        "Worker running, Esc to stop...",
+        "Edit \u{1f680} text, / show help...",
+        "Edit \u{1f680} text, / show help...",
+      ],
+    ] as const)(
+      "redraws %i-column placeholders after word boundaries change",
+      async (width, before, after, expected) => {
+        const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+          width,
+          height: 4,
+          wrapMode: "word",
+          placeholder: before,
+        })
+        expect(captureFrame()).toContain(before.split(" ")[0])
+
+        editor.placeholder = after
+        await renderOnce()
+        expect(
+          captureFrame()
+            .split("\n")
+            .map((line) => line.trimEnd())
+            .join("\n")
+            .trimEnd(),
+        ).toBe(expected)
+        expect(editor.plainText).toBe("")
+      },
+    )
+
     it("should update placeholder text dynamically", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "",
