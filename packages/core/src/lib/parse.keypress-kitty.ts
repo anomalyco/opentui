@@ -3,7 +3,7 @@
 
 import type { ParsedKey } from "./parse.keypress.js"
 
-const kittyKeyMap: Record<number, string> = {
+export const kittyKeyMap: Record<number, string> = {
   // Standard keys
   27: "escape",
   9: "tab",
@@ -138,7 +138,7 @@ const kittyKeyMap: Record<number, string> = {
 
 export const kittyNamedSingleStrokeKeys = [...new Set(Object.values(kittyKeyMap))]
 
-const printableKeypadText: Record<string, string> = {
+export const printableKeypadText: Record<string, string> = {
   kp0: "0",
   kp1: "1",
   kp2: "2",

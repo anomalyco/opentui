@@ -705,6 +705,13 @@ export interface NativeSessionPumpResult {
   deadlineNs: bigint | null
 }
 
+/** One `ot_session_input_feed` call: input consumed, records written, and when to call again. */
+export interface NativeInputDrain {
+  consumed: number
+  count: number
+  deadlineNs: bigint | null
+}
+
 export type NativeSessionControl =
   | { kind: "capability-response"; bytes: Uint8Array }
   | { kind: "palette-query"; bytes: Uint8Array }
@@ -6386,6 +6393,70 @@ export class FFIRenderLib {
     const pointer = this.nativeContextPointer(context, "ot_session_pump_exit")
     nativeResult("ot_session_pump_exit", this.opentui.symbols.ot_session_pump_exit(pointer, handle, output))
     return output[0]
+  }
+
+  /**
+   * Parses terminal input into `ot_input_event` records (`records` must be 4-byte aligned) and
+   * their payload bytes. Stops when either buffer runs low; call again with the unconsumed rest.
+   */
+  public sessionInputFeed(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    bytes: Uint8Array,
+    nowNs: bigint,
+    records: Uint8Array,
+    payload: Uint8Array,
+  ): NativeInputDrain {
+    const layout = nativeLayouts.ot_input_drain
+    const handle = encodeContextHandle(context, session)
+    const input = sessionBytes(bytes, "Session input length")
+    const now = toFFIU64(nowNs, "Session input nowNs")
+    const recordView = sessionBytes(records, "Session input records length")
+    const payloadView = sessionBytes(payload, "Session input payload length")
+    if (recordView.byteOffset % nativeLayouts.ot_input_event.alignment !== 0) {
+      throw new RangeError("Session input records must be aligned to ot_input_event")
+    }
+    const capacity = Math.floor(recordView.byteLength / nativeLayouts.ot_input_event.size)
+    const output = new BigUint64Array(layout.size / 8)
+    const words = new Uint32Array(output.buffer)
+    words[layout.fields.struct_size.offset / 4] = layout.size
+    words[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+    const pointer = this.nativeContextPointer(context, "ot_session_input_feed")
+    nativeResult(
+      "ot_session_input_feed",
+      this.opentui.symbols.ot_session_input_feed(
+        pointer,
+        handle,
+        input.byteLength === 0 ? null : input,
+        input.byteLength,
+        now,
+        recordView,
+        capacity,
+        payloadView,
+        payloadView.byteLength,
+        output,
+      ),
+    )
+    const deadline = output[layout.fields.deadline_ns.offset / 8]!
+    return {
+      consumed: words[layout.fields.consumed.offset / 4]!,
+      count: words[layout.fields.count.offset / 4]!,
+      deadlineNs: deadline === 0n ? null : deadline,
+    }
+  }
+
+  /** `flags` combines `OT_INPUT_EXPECT_*` bits. Emits nothing; the next feed re-evaluates. */
+  public sessionInputExpect(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const value = toSafeFFIU32Length(flags, "Session input expectations")
+    const pointer = this.nativeContextPointer(context, "ot_session_input_expect")
+    nativeResult("ot_session_input_expect", this.opentui.symbols.ot_session_input_expect(pointer, handle, value))
+  }
+
+  public sessionInputReset(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const pointer = this.nativeContextPointer(context, "ot_session_input_reset")
+    nativeResult("ot_session_input_reset", this.opentui.symbols.ot_session_input_reset(pointer, handle, flags))
   }
 
   /** Discards terminal input queued on process stdin. Best effort; see `ot_terminal_flush_input`. */

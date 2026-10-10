@@ -175,6 +175,36 @@ static void rendered_output(ot_context *context) {
     assert(ot_scene_destroy_node(context, &root) == OT_STALE_HANDLE);
 }
 
+_Static_assert(sizeof(ot_input_event) == 32, "ot_input_event is 32 bytes");
+_Static_assert(sizeof(ot_input_drain) == 32, "ot_input_drain is 32 bytes");
+
+static void input_events(ot_context *context) {
+    const ot_session_options transport = {
+        .struct_size = sizeof(transport), .abi_version = OT_CONTEXT_ABI_VERSION,
+        .chunk_size = 4096, .span_capacity = 2, .max_bytes = 8192,
+    };
+    ot_handle session;
+    assert(ot_session_create(context, &transport, &session) == OT_OK);
+    ot_input_event records[8];
+    uint8_t payload[2 * OT_INPUT_PAYLOAD_BYTES_MIN];
+    ot_input_drain drain = {.struct_size = sizeof(drain), .abi_version = OT_CONTEXT_ABI_VERSION};
+    const uint8_t bytes[] = "\x1b[1;5A\x1b";
+    assert(ot_session_input_feed(context, &session, bytes, sizeof(bytes) - 1, 1, records, OT_INPUT_EVENTS_MIN - 1,
+        payload, sizeof(payload), &drain) == OT_INVALID_ARGUMENT);
+    assert(ot_session_input_feed(context, &session, bytes, sizeof(bytes) - 1, 1, records, 8,
+        payload, sizeof(payload), &drain) == OT_OK);
+    assert(drain.consumed == sizeof(bytes) - 1 && drain.count == 1 && drain.deadline_ns == 1 + OT_INPUT_TIMEOUT_NS);
+    assert(records[0].kind == OT_INPUT_KEY && records[0].code == OT_INPUT_KEY_UP);
+    assert(records[0].modifiers == OT_INPUT_MOD_CTRL && records[0].raw_len == 6);
+    assert(ot_session_input_feed(context, &session, NULL, 0, drain.deadline_ns, records, OT_INPUT_EVENTS_MIN,
+        payload, sizeof(payload), &drain) == OT_OK);
+    assert(drain.count == 1 && records[0].code == OT_INPUT_KEY_ESCAPE && drain.deadline_ns == 0);
+    assert(ot_session_input_expect(context, &session, OT_INPUT_EXPECT_REPLIES | OT_INPUT_EXPECT_KITTY_KEYBOARD) == OT_OK);
+    assert(ot_session_input_expect(context, &session, 4) == OT_INVALID_ARGUMENT);
+    assert(ot_session_input_reset(context, &session, 0) == OT_OK);
+    assert(ot_session_destroy(context, &session) == OT_OK);
+}
+
 int main(void) {
     const ot_context_options valid = {
         .struct_size = sizeof(valid), .abi_version = OT_CONTEXT_ABI_VERSION,
@@ -215,6 +245,7 @@ int main(void) {
     buffer_lease(first, second);
     editor(first);
     rendered_output(first);
+    input_events(first);
     assert(ot_context_destroy(first) == OT_OK);
     assert(ot_context_destroy(second) == OT_OK);
     return 0;

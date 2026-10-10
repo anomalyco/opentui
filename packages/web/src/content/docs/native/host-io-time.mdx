@@ -80,6 +80,9 @@ The default scheduler uses `process.hrtime.bigint()` on Bun and Node.js.
 The renderer's `Clock` sets the one-second poll interval. The Session scheduler supplies the time sample.
 For deterministic scheduling, inject both clocks.
 
+The experimental `ot_session_input_feed` uses a separate monotonic input clock. Its samples are checked only against
+earlier feeds. Core's native input parser takes them from the renderer's `Clock`, which also arms the input timeout.
+
 ## Native files and cleanup
 
 The renderer gets the Context I/O when you attach it to a Session, and passes it to Kitty transport.

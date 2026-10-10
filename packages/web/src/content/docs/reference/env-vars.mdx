@@ -64,19 +64,22 @@ captures stdout only in `"split-footer"`. Any other explicit value forces passth
 
 ## Diagnostics
 
-| Variable             | Type      | Default | Read time             | Purpose                                                   |
-| -------------------- | --------- | ------- | --------------------- | --------------------------------------------------------- |
-| `OTUI_TS_STYLE_WARN` | `string`  | `false` | First missing style   | Warn about missing Tree-sitter syntax styles              |
-| `OTUI_DEBUG_FFI`     | `boolean` | `false` | First FFI use         | Enable FFI debug logging                                  |
-| `OTUI_TRACE_FFI`     | `boolean` | `false` | First FFI use         | Enable FFI tracing                                        |
-| `OTUI_SHOW_STATS`    | `boolean` | `false` | Renderer creation     | Show the debug overlay at startup                         |
-| `SHOW_CONSOLE`       | `boolean` | `false` | Renderer creation     | Open the built-in console overlay at startup              |
-| `OTUI_DUMP_CAPTURES` | `boolean` | `false` | Renderer exit handler | Dump captured stdout and console caches from that handler |
+| Variable                   | Type      | Default | Read time             | Purpose                                                   |
+| -------------------------- | --------- | ------- | --------------------- | --------------------------------------------------------- |
+| `OTUI_TS_STYLE_WARN`       | `string`  | `false` | First missing style   | Warn about missing Tree-sitter syntax styles              |
+| `OTUI_DEBUG_FFI`           | `boolean` | `false` | First FFI use         | Enable FFI debug logging                                  |
+| `OTUI_TRACE_FFI`           | `boolean` | `false` | First FFI use         | Enable FFI tracing                                        |
+| `OTUI_SHOW_STATS`          | `boolean` | `false` | Renderer creation     | Show the debug overlay at startup                         |
+| `SHOW_CONSOLE`             | `boolean` | `false` | Renderer creation     | Open the built-in console overlay at startup              |
+| `OTUI_DUMP_CAPTURES`       | `boolean` | `false` | Renderer exit handler | Dump captured stdout and console caches from that handler |
+| `OTUI_NATIVE_INPUT_PARSER` | `boolean` | `false` | Renderer creation     | Parse stdin with the experimental native input parser     |
 
 `OTUI_TS_STYLE_WARN` behaves like a presence string. Any explicit nonempty value, including `false`, enables warnings.
 
 `OTUI_DUMP_CAPTURES` runs from the renderer exit handler. Calling `renderer.destroy()` directly does not trigger that
 dump by itself.
+
+The renderer option `experimental_nativeInput` takes precedence over `OTUI_NATIVE_INPUT_PARSER`.
 
 ## Build-time and startup values
 
@@ -110,17 +113,22 @@ Tree-sitter worker started. An explicit client `workerPath` option takes precede
 
 ## Security-sensitive diagnostics
 
-| Variable                 | Type      | Default | Read time                | Purpose                                                       |
-| ------------------------ | --------- | ------- | ------------------------ | ------------------------------------------------------------- |
-| `OTUI_DEBUG`             | `boolean` | `false` | Renderer creation        | Retain raw input sequences for debugging                      |
-| `OTUI_STDIN_LOG`         | `string`  | `""`    | Renderer creation        | Write the raw stdin byte stream to a file                     |
-| `OTUI_GHOSTTY_LOG_LEVEL` | `string`  | `""`    | Each Ghostty log message | Forward scoped Ghostty logs through the normal OpenTUI logger |
+| Variable                   | Type      | Default | Read time                | Purpose                                                       |
+| -------------------------- | --------- | ------- | ------------------------ | ------------------------------------------------------------- |
+| `OTUI_DEBUG`               | `boolean` | `false` | Renderer creation        | Retain raw input sequences for debugging                      |
+| `OTUI_STDIN_LOG`           | `string`  | `""`    | Renderer creation        | Write the raw stdin byte stream to a file                     |
+| `OTUI_NATIVE_INPUT_SHADOW` | `boolean` | `false` | Renderer creation        | Run the other stdin parser too and log each difference        |
+| `OTUI_GHOSTTY_LOG_LEVEL`   | `string`  | `""`    | Each Ghostty log message | Forward scoped Ghostty logs through the normal OpenTUI logger |
 
 `OTUI_STDIN_LOG=/tmp/opentui-stdin.bin` records stdin before parsing. The renderer truncates the file when it sets up
 input, then appends to it synchronously. A new file gets mode `0600`.
 
 The binary data can contain passwords and other sensitive input. Use this option only for short debugging sessions, and
-protect the recorded file. Treat `OTUI_DEBUG` input captures and `OTUI_DUMP_CAPTURES` output as sensitive data too.
+protect the recorded file. Treat `OTUI_DEBUG` input captures, `OTUI_NATIVE_INPUT_SHADOW` warnings, and
+`OTUI_DUMP_CAPTURES` output as sensitive data too.
+
+`OTUI_NATIVE_INPUT_SHADOW` writes one `[stdin-shadow]` console warning for each event that the legacy and native
+parsers report differently. The warning contains both events.
 
 `OTUI_GHOSTTY_LOG_LEVEL` accepts `error`, `warn`, `info`, or `debug` without case sensitivity. `err` and `warning` are
 aliases. The selected level includes all more severe messages. Unset or invalid values disable Ghostty logs.
