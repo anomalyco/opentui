@@ -11,8 +11,8 @@ interface Props {
 }
 
 // A long list stops after MAX_NAMES names, unless only a few more remain; the release page lists them all.
-const MAX_NAMES = 12
-const shown = (names: string[]) => (names.length > MAX_NAMES + 3 ? MAX_NAMES : names.length)
+const MAX_NAMES = 6
+const shown = (names: string[]) => (names.length > MAX_NAMES + 2 ? MAX_NAMES : names.length)
 const labels = { added: "Added", changed: "Changed", deprecated: "Deprecated", removed: "Removed" }
 const channel = pageChannel(Astro.url.pathname)
 const releaseUrl = (version: string) =>
@@ -83,30 +83,18 @@ const releaseUrl = (version: string) =>
     margin-inline-start: 0.75rem;
   }
 
-  /* Releases in their own column, as on the releases page; a release's
-   * entries stack beside it. */
+  /* Each release's version stands above its entries, on the page's one left edge. A blank line separates
+   * releases. */
   dl {
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
-    column-gap: 2ch;
     margin-block: 0.75rem 0;
   }
 
-  dt {
-    grid-column: 1;
+  dt:not(:first-child) {
+    margin-block-start: 1.5rem;
   }
 
   dd {
-    grid-column: 2;
     margin-inline-start: 0;
-  }
-
-  dd + dd {
     margin-block-start: 0.375rem;
-  }
-
-  dt:not(:first-child),
-  dt:not(:first-child) + dd {
-    margin-block-start: 0.75rem;
   }
 </style>

@@ -11,8 +11,8 @@ import { REPO_ROOT } from "./repo-root"
 
 // The changes a documentation page lists, so a reader sees what changed in recent releases without comparing
 // versions of the docs: release-note entries that link to the page, and API changes of the symbols that the API
-// index documents on the page. Pages list the releases of the channel's line and the line before it, and the
-// main-branch channel adds its unreleased API changes.
+// index documents on the page. Pages list their three most recent releases with changes, from the channel's line and
+// the line before it; on the main-branch channel, unreleased API changes count as the newest.
 
 export interface PageChanges {
   /** A release version, or UNRELEASED. */
@@ -21,6 +21,7 @@ export interface PageChanges {
   api: Array<{ type: ApiChange["type"]; names: string[] }>
 }
 
+const RELEASES = 3
 const cache = new Map<string, Promise<Map<string, PageChanges[]>>>()
 
 export async function pageChanges(channel: DocsChannel, page: string): Promise<PageChanges[]> {
@@ -88,7 +89,7 @@ async function buildIndex(channel: DocsChannel): Promise<Map<string, PageChanges
   return new Map(
     [...pages].map(([page, versions]) => [
       page,
-      [...versions.values()].sort((left, right) => compareRelease(right.version, left.version)),
+      [...versions.values()].sort((left, right) => compareRelease(right.version, left.version)).slice(0, RELEASES),
     ]),
   )
 }

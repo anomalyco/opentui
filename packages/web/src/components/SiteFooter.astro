@@ -78,8 +78,17 @@ const { links = false, animation, version } = Astro.props
     color: inherit;
   }
 
+  /* Page state, not part of the notice: set apart and muted. The line has no room for it below 26rem, where the
+   * site header still names the version, so it stays one line. */
   .version {
-    margin-inline-start: 1ch;
+    margin-inline-start: 2ch;
+    color: var(--muted-color);
+  }
+
+  @media (max-width: 26rem) {
+    .version {
+      display: none;
+    }
   }
 
   .github svg {
