@@ -69,6 +69,7 @@ const editBufferActions = [
   "delete-word-backward",
   "select-all",
   "submit",
+  "yank",
 ] as const satisfies readonly TextareaAction[]
 
 export type EditBufferCommandName = (typeof editBufferActions)[number]
@@ -114,6 +115,7 @@ const editBufferCommandNames = {
   "delete-word-backward": "input.delete.word.backward",
   "select-all": "input.select.all",
   submit: "input.submit",
+  yank: "input.yank",
 } as const satisfies Record<EditBufferCommandName, string>
 
 const editBufferCommandDescriptions = {
@@ -153,6 +155,7 @@ const editBufferCommandDescriptions = {
   "delete-word-backward": "Delete previous word",
   "select-all": "Select all",
   submit: "Submit",
+  yank: "Yank killed text",
 } as const satisfies Record<EditBufferCommandName, string>
 
 const editBufferFineGroups = {
@@ -192,6 +195,7 @@ const editBufferFineGroups = {
   "delete-word-backward": "Delete",
   "select-all": "Selection",
   submit: "Submit",
+  yank: "Insert",
 } as const satisfies Record<EditBufferCommandName, EditBufferFineGroup>
 
 interface EditBufferMetadataOptions {
@@ -486,6 +490,7 @@ const editBufferCommandHandlers = {
 
     return editor.submit()
   },
+  yank: (editor: EditBufferRenderable) => editor.yank(),
 } as const satisfies Record<EditBufferCommandName, (editor: EditBufferRenderable) => boolean>
 
 function createEditBufferCommand(
