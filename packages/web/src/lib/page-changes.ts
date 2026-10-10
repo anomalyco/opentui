@@ -6,7 +6,7 @@ import { compareVersions, type ApiChange } from "./api-history"
 import { documentedSymbols } from "./api-index-symbols"
 import type { DocsChannel } from "./docs-channel"
 import type { ReleaseNotesData } from "./release-notes-loader"
-import { releaseLine } from "./release-notes"
+import { releaseLine, withoutSelfReference } from "./release-notes"
 import { REPO_ROOT } from "./repo-root"
 
 // The changes a documentation page lists, so a reader sees what changed in recent releases without comparing
@@ -54,7 +54,7 @@ async function buildIndex(channel: DocsChannel): Promise<Map<string, PageChanges
     const data = release.data as unknown as ReleaseNotesData
     if (!inWindow(data.version)) continue
     for (const change of data.entries) {
-      for (const page of change.docs) entry(page, data.version).notes.push(change.html)
+      for (const page of change.docs) entry(page, data.version).notes.push(withoutSelfReference(change.html, page))
     }
   }
 

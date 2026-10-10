@@ -125,8 +125,13 @@ The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it
   change the site, its content, or the API history.
 - Write documentation links as logical `/docs/...` URLs. Pages map them to their channel with `channelUrl()`. Do not
   link to `/docs/next` from content.
+- Docs pages show the version at the right end of the site header: the release and `next`, with the current one in
+  the text color. Each links to the same page in its channel. The site links keep their place on every route. The
+  footer's line ends with the current version as text. The main-branch docs also open each page with a notice. Do not
+  put the version in the page navigation.
 - `/docs/releases/<version>` shows a release's notes and its API changes. `/docs/api/<module>` lists every export with
-  the release that added it. Each docs page ends with the changes of its documented symbols in recent releases.
+  the release that added it. Below the hairline that ends the article, a closed `Changes` disclosure lists the page's
+  changes in recent releases, above the previous and next links. It is not an article section; the outline links to it.
 - Release notes are `src/content/docs/releases/<version>.md`. The format is in `src/lib/release-notes.ts`. The release
   process drafts them with opencode (`scripts/release-notes.ts`). To edit the notes before a release, run
   `bun run release-notes [patch|minor|major]` from the repository root, edit the file, and then release. Edit them like

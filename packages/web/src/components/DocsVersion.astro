@@ -1,6 +1,6 @@
 ---
-// Switches between the release documentation and the main branch documentation for the same page. The links
-// carry data-docs-channel so the site validator accepts them as the only links between channels.
+// Names the documentation's version in the site header and switches to the same page in the other channel. The
+// links carry data-docs-channel so the site validator accepts them as the only links between channels.
 import { channelCounterpart, pageChannel } from "../lib/docs-channel"
 
 const channel = pageChannel(Astro.url.pathname)
@@ -34,11 +34,21 @@ const choices = (["stable", "next"] as const).map((id) => {
   .docs-version {
     display: flex;
     gap: 2ch;
-    margin-block-end: 1.5rem;
   }
 
+  /* The current version is plain text, like the current page in the docs
+   * navigation; the other channel stays a link. */
   a[aria-current] {
     color: inherit;
-    font-weight: 700;
+  }
+
+  /* Below 23rem the header cannot hold the wordmark, Menu, and both
+   * labels on one row, with a desktop scrollbar gutter and a two-digit
+   * minor version. Keep the current version; the main-branch notice still
+   * links back to the release. */
+  @media (max-width: 23rem) {
+    a:not([aria-current]) {
+      display: none;
+    }
   }
 </style>

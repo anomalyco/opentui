@@ -2,7 +2,6 @@
 import { channelUrl, pageChannel } from "../lib/docs-channel"
 import { buildDocsIndex } from "../lib/docs-index"
 import DocsSearch from "./DocsSearch.astro"
-import DocsVersion from "./DocsVersion.astro"
 
 const channel = pageChannel(Astro.url.pathname)
 const docsIndex = await buildDocsIndex()
@@ -24,7 +23,6 @@ const sections = docsIndex.sections.map((section) => {
 ---
 
 <div class="docs-index">
-  <DocsVersion />
   <DocsSearch />
   <nav aria-label="Documentation" data-docs-nav>
     <ul>

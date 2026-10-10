@@ -165,6 +165,12 @@ export function docsLinks(markdown: string): string[] {
   return [...urls]
 }
 
+/** Drops the closing "See [Page](/docs/page)." sentence of an entry's HTML on the page that it names. */
+export function withoutSelfReference(html: string, page: string): string {
+  const href = page.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return html.replace(new RegExp(` See <a href="${href}/?">[^<]*</a>\\.`, "g"), "")
+}
+
 /**
  * The releases a channel lists, newest first: each version with release notes or an API history file. The
  * release channel stops at its release; the main-branch channel also lists newer ones, such as a release whose

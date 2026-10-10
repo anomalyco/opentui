@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test"
 
-import { channelVersions, docsLinks, parseReleaseNotes, releaseLine, splitFrontmatter } from "./release-notes"
+import {
+  channelVersions,
+  docsLinks,
+  parseReleaseNotes,
+  releaseLine,
+  splitFrontmatter,
+  withoutSelfReference,
+} from "./release-notes"
 
 function parse(source: string, version = "0.5.18") {
   const { yaml, body, bodyLine } = splitFrontmatter(source)
@@ -99,6 +106,23 @@ test("docsLinks lists each linked page once, without fragments or queries", () =
   expect(
     docsLinks("[a](/docs/x#y) [b](/docs/x?path=1) [c](/docs) [d](https://opentui.com/docs/z) [e](/docsearch)"),
   ).toEqual(["/docs/x", "/docs"])
+})
+
+test.each([
+  [
+    'Fixes resize. See <a href="/docs/r">Renderer</a>. (<a href="https://x">#1</a>)',
+    'Fixes resize. (<a href="https://x">#1</a>)',
+  ],
+  ['Fixes resize. See <a href="/docs/r/">Renderer</a>.', "Fixes resize."],
+  [
+    'Fixes resize. See <a href="/docs/r#suspend">Suspend</a>.',
+    'Fixes resize. See <a href="/docs/r#suspend">Suspend</a>.',
+  ],
+  ['Fixes resize. See <a href="/docs/r/x">X</a>.', 'Fixes resize. See <a href="/docs/r/x">X</a>.'],
+  ['Fixes resize. See <a href="/docs/rx">X</a>.', 'Fixes resize. See <a href="/docs/rx">X</a>.'],
+  ['Uses the <a href="/docs/r">Renderer</a>.', 'Uses the <a href="/docs/r">Renderer</a>.'],
+])("withoutSelfReference drops only a closing See link to the page itself: %s", (html, expected) => {
+  expect(withoutSelfReference(html, "/docs/r")).toBe(expected)
 })
 
 test("channelVersions lists releases newest first, up to the release on the release channel", () => {

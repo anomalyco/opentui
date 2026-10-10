@@ -4,7 +4,7 @@ import { join, posix, relative, sep } from "node:path"
 // Checks the assembled site, after both documentation channels are merged. Source checks cannot see links that
 // layouts, redirects, or the merge add. Every internal href and src must resolve to a file, every fragment on a
 // documentation link must name an element, and documentation links stay in their channel unless they carry
-// data-docs-channel (the version switch and the main-branch notice).
+// data-docs-channel (the version switch in the header and the main-branch notice).
 
 export interface SiteProblem {
   page: string

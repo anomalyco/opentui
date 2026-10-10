@@ -2,6 +2,7 @@
 import type { MarkdownHeading } from "astro"
 import DocsNav from "../components/DocsNav.astro"
 import DocsToc from "../components/DocsToc.astro"
+import DocsVersion from "../components/DocsVersion.astro"
 import PageChanges from "../components/PageChanges.astro"
 import SiteFooter from "../components/SiteFooter.astro"
 import SiteNav from "../components/SiteNav.astro"
@@ -46,6 +47,7 @@ const releasePage = channelCounterpart(Astro.url.pathname.replace(/\/+$/, ""), c
     <a class="skip" href="#docs-content">Skip to content</a>
 
     <SiteNav docs={channel.base}>
+      <DocsVersion slot="end" />
       <DocsNav slot="menu" />
       {
         hasSections && (
@@ -89,37 +91,36 @@ const releasePage = channelCounterpart(Astro.url.pathname.replace(/\/+$/, ""), c
       }
       <article class="prose">
         <slot />
-        {changes.length > 0 && <PageChanges {changes} />}
       </article>
 
       {
-        sequencePagers.map(({ prev, next, sequence }, index) => (
-          <nav
-            class="pager"
-            aria-label={sequence.title}
-            data-doc-sequence={sequence.id}
-            hidden={index > 0}
-          >
-            {prev && (
-              <a
-                rel={index === 0 ? "prev" : undefined}
-                data-direction="prev"
-                href={`${channelUrl(prev.url, channel)}?path=${sequence.id}`}
-              >
-                &larr; {prev.title}
-              </a>
-            )}
-            {next && (
-              <a
-                rel={index === 0 ? "next" : undefined}
-                data-direction="next"
-                href={`${channelUrl(next.url, channel)}?path=${sequence.id}`}
-              >
-                {next.title} &rarr;
-              </a>
-            )}
-          </nav>
-        ))
+        (changes.length > 0 || sequencePagers.length > 0) && (
+          <div class="page-end">
+            {changes.length > 0 && <PageChanges {changes} />}
+            {sequencePagers.map(({ prev, next, sequence }, index) => (
+              <nav class="pager" aria-label={sequence.title} data-doc-sequence={sequence.id} hidden={index > 0}>
+                {prev && (
+                  <a
+                    rel={index === 0 ? "prev" : undefined}
+                    data-direction="prev"
+                    href={`${channelUrl(prev.url, channel)}?path=${sequence.id}`}
+                  >
+                    &larr; {prev.title}
+                  </a>
+                )}
+                {next && (
+                  <a
+                    rel={index === 0 ? "next" : undefined}
+                    data-direction="next"
+                    href={`${channelUrl(next.url, channel)}?path=${sequence.id}`}
+                  >
+                    {next.title} &rarr;
+                  </a>
+                )}
+              </nav>
+            ))}
+          </div>
+        )
       }
     </main>
 
@@ -137,7 +138,7 @@ const releasePage = channelCounterpart(Astro.url.pathname.replace(/\/+$/, ""), c
     }
   </div>
 
-  <SiteFooter />
+  <SiteFooter version={unreleased ? "next" : channel.release} />
 </Minimal>
 
 <style is:global>
@@ -301,14 +302,19 @@ const releasePage = channelCounterpart(Astro.url.pathname.replace(/\/+$/, ""), c
     border-inline-start: 2px solid;
   }
 
-  .pager {
-    display: flex;
-    justify-content: space-between;
-    gap: 1.5rem;
+  /* A hairline ends the article. Generated page facts, the changes and the
+   * previous and next links, sit below it. */
+  .page-end {
     max-width: var(--content-width);
     margin-block-start: 3rem;
     padding-block-start: 0.75rem;
     border-block-start: 1px solid GrayText;
+  }
+
+  .pager {
+    display: flex;
+    justify-content: space-between;
+    gap: 1.5rem;
   }
 
   .pager[hidden] {

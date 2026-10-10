@@ -5,10 +5,12 @@ import ThemeToggle from "./ThemeToggle.astro"
 
 interface Props {
   links?: boolean
+  /** The documentation's version, at the end of the line. */
+  version?: string
   animation?: ComponentProps<typeof BlockDivider>["animation"]
 }
 
-const { links = false, animation } = Astro.props
+const { links = false, animation, version } = Astro.props
 ---
 
 {
@@ -44,7 +46,7 @@ const { links = false, animation } = Astro.props
         ></path>
       </svg>
     </a>
-    MIT license. &copy; 2026 <a href="https://anoma.ly/">Anomaly</a>.
+    MIT license. &copy; 2026 <a href="https://anoma.ly/">Anomaly</a>.{version && <span class="version">{version}</span>}
   </p>
 </footer>
 
@@ -74,6 +76,10 @@ const { links = false, animation } = Astro.props
     margin-inline: 1ch;
     vertical-align: text-bottom;
     color: inherit;
+  }
+
+  .version {
+    margin-inline-start: 1ch;
   }
 
   .github svg {
