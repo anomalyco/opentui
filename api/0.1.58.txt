@@ -1,3 +1,0 @@
-base 0.1.57
-+ @opentui/core: property DiffRenderable.fg: RGBA | undefined
-+ @opentui/core: property DiffRenderableOptions.fg?: string | RGBA

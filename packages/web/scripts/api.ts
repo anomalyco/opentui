@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import process from "node:process"
 import ts from "typescript"
@@ -15,6 +15,7 @@ import {
   formatApiFile,
   isApiVersion,
   loadApiHistory,
+  parseApiFile,
 } from "../src/lib/api-history"
 import { extractPackage } from "./api/extract"
 import { headerFeaturesAt, headerFeaturesIn } from "./api/header"
@@ -26,6 +27,8 @@ const USAGE = `Usage: bun packages/web/scripts/api.ts <command> [options]
 
   backfill [--from <version>] [--to <version>] [--dir <dir>]
       Write <dir>/<version>.txt for each published stable version from the npm tarballs and its v<version> tag.
+  squash <version> [--dir <dir>]
+      Start the history at a version: make its file a snapshot of its API and remove the files of older releases.
   current [--out <file>] [--root <dir>]
       Print the API features of the source tree.
   diff [--base <version>] [--out <file>] [--dir <dir>] [--root <dir>]
@@ -118,8 +121,15 @@ async function pool<T>(items: T[], limit: number, run: (item: T) => Promise<void
 async function backfill(options: Options): Promise<void> {
   const start = performance.now()
   const dir = apiDir(options)
-  const from = versionOption(options, "from")
+  // The history starts at its oldest file, a snapshot (see squash). Older versions have no base to be written
+  // from.
+  const existing = await apiFiles(dir)
+  const oldest = existing.map((file) => file.version).sort(compareVersions)[0]
+  const from = versionOption(options, "from") ?? oldest
   const to = versionOption(options, "to")
+  if (from !== undefined && oldest !== undefined && compareVersions(from, oldest) < 0) {
+    throw new Error(`The history starts at ${oldest}; backfill cannot write ${from}`)
+  }
   const published = new Map<string, PublishedVersion[]>()
   for (const name of PACKAGES) {
     published.set(
@@ -135,8 +145,12 @@ async function backfill(options: Options): Promise<void> {
   )
   if (selected.length === 0) throw new Error("No published versions in the range")
   const first = versions.indexOf(selected[0]!)
-  // The version before the range is the base of its first file.
-  const needed = versions.slice(Math.max(0, first - 1), first + selected.length)
+  // The version before the range is the base of its first file, unless that file is the snapshot that starts
+  // the history.
+  const snapshot = existing.some(
+    (file) => file.version === selected[0] && parseApiFile(file.version, file.text).base === null,
+  )
+  const needed = versions.slice(snapshot ? first : Math.max(0, first - 1), first + selected.length)
 
   // Each version holds every package at that version. A package that skipped the version but was
   // published before and after it keeps its previous features.
@@ -282,6 +296,20 @@ async function verify(options: Options): Promise<void> {
   console.error(`api/ matches the published API of ${version}`)
 }
 
+// Starts the history at a release when its older lines stop mattering. The API that the files record for every
+// kept release stays the same; the site stops listing the older releases and their "added in" versions.
+async function squash(options: Options): Promise<void> {
+  const [version, ...extra] = options.positional
+  if (version === undefined || extra.length > 0 || !isApiVersion(version)) throw new Error(USAGE)
+  const dir = apiDir(options)
+  const history = await loadApiHistory(dir)
+  const [snapshot] = history.squash(version)
+  await writeFile(join(dir, `${version}.txt`), formatApiFile(snapshot!))
+  const dropped = history.versions.filter((item) => compareVersions(item, version) < 0)
+  for (const item of dropped) await rm(join(dir, `${item}.txt`))
+  console.error(`${version}.txt is a snapshot of ${snapshot!.added.length} features; removed ${dropped.length} files`)
+}
+
 async function check(options: Options): Promise<void> {
   const dir = apiDir(options)
   const files = await apiFiles(dir)
@@ -298,6 +326,7 @@ const commands: Record<string, { options: string[]; run: (options: Options) => P
   diff: { options: ["base", "out", "dir", "root"], run: diff },
   release: { options: ["base", "dir", "root"], run: release },
   verify: { options: ["dir"], run: verify },
+  squash: { options: ["dir"], run: squash },
   check: { options: ["dir"], run: check },
 }
 
@@ -306,7 +335,7 @@ async function main(): Promise<void> {
   const command = name === undefined ? undefined : commands[name]
   if (command === undefined) throw new Error(USAGE)
   const options = parseOptions(args, command.options)
-  if (name !== "release" && name !== "verify" && options.positional.length > 0) throw new Error(USAGE)
+  if (!["release", "verify", "squash"].includes(name) && options.positional.length > 0) throw new Error(USAGE)
   await command.run(options)
 }
 

@@ -1,6 +1,0 @@
-base 0.1.97
-+ @opentui/core: method CliRenderer.blurRenderable(renderable: Renderable): void
-+ @opentui/core: protected method Renderable.propagateFocusChange(hasFocus: boolean): void
-+ @opentui/core: property RenderContext.blurRenderable: (renderable: Renderable) => void
-+ @opentui/core: protected property Renderable._hasFocusedDescendant: boolean
-+ @opentui/core: readonly property Renderable.hasFocusedDescendant: boolean

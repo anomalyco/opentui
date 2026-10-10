@@ -1,2 +1,0 @@
-base 0.1.76
-+ @opentui/core: property CliRendererConfig.autoFocus?: boolean

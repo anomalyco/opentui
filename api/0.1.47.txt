@@ -1,5 +1,0 @@
-base 0.1.46
-- @opentui/core: method KeyHandler.resume(): void
-- @opentui/core: method KeyHandler.suspend(): void
-+ @opentui/core: property RenderLib.resumeRenderer: (renderer: Pointer) => void
-+ @opentui/core: property RenderLib.suspendRenderer: (renderer: Pointer) => void

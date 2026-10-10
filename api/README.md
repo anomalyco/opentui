@@ -4,7 +4,8 @@ Each `<version>.txt` file records how the API of the published `@opentui/*` pack
 `packages/native/include/opentui.h` changed in that release. The documentation site reads these files to show when
 each feature was added, changed, deprecated, or removed.
 
-A file exists for every stable release. A release without API changes has a file with only the header.
+A file exists for every stable release from the oldest file on. A release without API changes has a file with only
+the header.
 
 ## Format
 
@@ -16,8 +17,9 @@ base 0.5.14
 + @opentui/solid: method SlotRenderable.getSlotChild(parent: BaseRenderable): LayoutSlotRenderable | TextSlotRenderable
 ```
 
-The first line names the release that the file is relative to: `base <version>`, or `base none` for 0.1.0. Usually
-the base is the previous release. A patch of an older line names the release it was made from.
+The first line names the release that the file is relative to: `base <version>`. Usually the base is the previous
+release. A patch of an older line names the release it was made from. The oldest file is a snapshot: `base none`,
+and every feature of its release as a `+` line.
 
 Each other line adds (`+`) or removes (`-`) one feature. A changed signature is a `-` line and a `+` line with the
 same key. The API of a release is the API of its base, without the `-` lines, with the `+` lines.
@@ -91,8 +93,12 @@ Run these from the repository root.
 - `bun packages/web/scripts/api.ts current` prints every feature of the source tree.
 - `bun packages/web/scripts/api.ts check` validates the files.
 - `bun packages/web/scripts/api.ts backfill [--from <version>] [--to <version>]` writes the files of published
-  releases from their npm tarballs and the header at their tags. It rewrites only files that changed. Run it after a
-  change to the extractor. A release without a tag has no C ABI; the oldest 0.1 releases have none.
+  releases from their npm tarballs and the header at their tags, from the oldest file on. It rewrites only files that
+  changed. Run it after a change to the extractor. A release without a tag has no C ABI.
+- `bun packages/web/scripts/api.ts squash <version>` starts the history at a release: its file becomes a snapshot,
+  and the files of older releases go. The API that the files record for the kept releases stays the same; the site
+  stops listing the older releases and the versions that added their features. Run it when nobody uses the older
+  lines.
 
 The source commands run `tsc` declaration emit for each package into a temporary directory, with the exports map that
 the package's `scripts/build.ts` publishes. They do not run the package builds. The extractor reads those

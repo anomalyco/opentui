@@ -304,6 +304,24 @@ export class ApiHistory {
     return new Set([...this.state(version).values()].flat())
   }
 
+  /**
+   * The releases from `version` on, with `version` as a snapshot (`base none`) of its API, so that the files of
+   * older releases can go. The API of every kept release stays the same. A kept release based on an older one,
+   * such as a patch of an older line, has no base to keep, so it is an error.
+   */
+  squash(version: string): ApiRelease[] {
+    const snapshot = [...this.snapshot(version)].sort(compareText)
+    const kept = this.versions.filter((item) => compareVersions(item, version) >= 0)
+    return kept.map((item) => {
+      if (item === version) return { version, base: null, added: snapshot, removed: [] }
+      const release = this.release(item)
+      if (release.base !== null && !kept.includes(release.base)) {
+        throw new Error(`${item}: base ${release.base} is older than ${version}`)
+      }
+      return release
+    })
+  }
+
   changes(version: string): ApiChange[] {
     const release = this.release(version)
     const base = release.base === null ? new Map<string, string[]>() : this.state(release.base)

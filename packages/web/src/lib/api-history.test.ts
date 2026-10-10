@@ -228,6 +228,29 @@ describe("ApiHistory", () => {
     expect(history.keyHistory("0.2.0").get(`${M}: const keep`)?.deprecatedIn).toBeUndefined()
   })
 
+  test("squash starts the history at a snapshot and keeps the API of every later release", () => {
+    const squashed = ApiHistory.fromReleases(history.squash("0.3.0"))
+    expect(squashed.versions).toEqual(["0.3.0", "0.3.1"])
+    expect(squashed.release("0.3.0")).toEqual({
+      version: "0.3.0",
+      base: null,
+      added: [`${M}: deprecated const keep: 1`, `${M}: function f(): Promise<void>`],
+      removed: [],
+    })
+    expect(squashed.release("0.3.1")).toBe(history.release("0.3.1"))
+    for (const version of squashed.versions) expect(squashed.snapshot(version)).toEqual(history.snapshot(version))
+    expect(squashed.changes("0.3.0").every((change) => change.type === "added")).toBe(true)
+    expect(squashed.keyHistory().get(`${M}: const keep`)).toEqual({
+      key: `${M}: const keep`,
+      since: "0.3.0",
+      changedIn: [],
+      deprecatedIn: "0.3.0",
+    })
+    // 0.3.0 is based on 0.2.0, which a history that starts at the 0.2.1 backport does not keep.
+    expect(() => history.squash("0.2.1")).toThrow("0.3.0: base 0.2.0 is older than 0.2.1")
+    expect(() => history.squash("0.2.5")).toThrow("No API file for 0.2.5")
+  })
+
   test("unknown versions and broken chains throw", () => {
     expect(() => history.snapshot("9.9.9")).toThrow("No API file")
     expect(() => ApiHistory.fromFiles([{ version: "0.1.0", text: "base 0.0.9\n" }])).toThrow("No API file for 0.0.9")

@@ -1,6 +1,0 @@
-base 0.1.17
-- @opentui/core: function ensureRenderable(ctx: RenderContext, node: Renderable | VNode<any, any[]>): Renderable
-+ @opentui/core: function maybeMakeRenderable(ctx: RenderContext, node: Renderable | VNode<any, any[]>): Renderable | null
-- @opentui/core: protected method InputRenderable.destroySelf(): void
-+ @opentui/core: readonly property Renderable.isDestroyed: boolean
-+ @opentui/core: property VNode.[BrandedVNode]: true
