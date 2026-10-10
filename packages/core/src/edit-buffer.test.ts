@@ -1,6 +1,7 @@
 import { ResourceContext } from "./buffer.js"
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { EditBuffer } from "./edit-buffer.js"
+import { TextBuffer } from "./text-buffer.js"
 import { ManualClock } from "./testing/manual-clock.js"
 
 let resourceContext: ResourceContext
@@ -52,6 +53,22 @@ describe("EditBuffer", () => {
       const text = "Hello 世界 🌟"
       buffer.setText(text)
       expect(buffer.getText()).toBe(text)
+    })
+
+    it("should preserve a leading byte order mark when reading text", () => {
+      const textBuffer = TextBuffer.create("wcwidth", resourceContext)
+      const values = ["\uFEFFab", "a\uFEFFb", "\uFEFF\uFEFFab"]
+
+      try {
+        for (const text of values) {
+          buffer.setText(text)
+          textBuffer.setText(text)
+          expect(buffer.getText()).toBe(text)
+          expect(textBuffer.getPlainText()).toBe(text)
+        }
+      } finally {
+        textBuffer.destroy()
+      }
     })
   })
 
