@@ -8,6 +8,7 @@ interface RuntimePluginSupportInstall {
   core?: RuntimeModuleEntry
   preserveKey: PreserveKey
   rewriteKey: string
+  sourceTransform?: CreateRuntimePluginOptions["sourceTransform"]
 }
 
 type PreserveKey = string | ((specifier: string) => boolean) | undefined
@@ -49,6 +50,10 @@ function assertCompatibleInstall(install: RuntimePluginSupportInstall, options: 
   if (options.rewrite && normalizeRewriteKey(options.rewrite) !== install.rewriteKey) {
     throw new Error("OpenTUI Core runtime plugin support is already installed with different rewrite options.")
   }
+
+  if (options.sourceTransform && options.sourceTransform !== install.sourceTransform) {
+    throw new Error("OpenTUI Core runtime plugin support is already installed with a different source transform.")
+  }
 }
 
 export function ensureRuntimePluginSupport(options: CreateRuntimePluginOptions = {}): boolean {
@@ -67,6 +72,7 @@ export function ensureRuntimePluginSupport(options: CreateRuntimePluginOptions =
     core: options.core,
     preserveKey: normalizePreserveKey(options.preserve),
     rewriteKey: normalizeRewriteKey(options.rewrite),
+    sourceTransform: options.sourceTransform,
   }
   return true
 }
