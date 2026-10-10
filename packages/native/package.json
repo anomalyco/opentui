@@ -1,6 +1,6 @@
 {
   "name": "@opentui/native",
-  "version": "0.5.17",
+  "version": "0.6.0",
   "private": true,
   "scripts": {
     "prepare:zig": "sh scripts/prepare-zig-deps.sh",
