@@ -2458,17 +2458,13 @@ test "renderer - rgb colors fall back to ANSI256 mapping when rgb is unavailable
 }
 
 test "renderer - auto remote session renders rgb colors as ansi256 from forwarded TERM" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var memory = TestMemoryOutput.init(std.testing.allocator);
-    defer memory.deinit();
-    var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 2, 1, pool, .{
-        .remote_mode = .auto,
-        .output = .{ .buffered = memory.bufferedOutput() },
-    });
-    defer cli_renderer.destroy();
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, &pools.graphemes, &pools.links);
+    defer test_cli_renderer.deinit();
+    const cli_renderer = test_cli_renderer.renderer;
+    cli_renderer.terminal.opts.remote_mode = .auto;
 
     // Forwarded host env describing an SSH client behind a 256-color screen.
     try cli_renderer.terminal.setHostEnvVar(std.testing.allocator, "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
@@ -2479,7 +2475,7 @@ test "renderer - auto remote session renders rgb colors as ansi256 from forwarde
 
     _ = cli_renderer.render(false);
 
-    const output = memory.lastWrite();
+    const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, output, "\x1b[38;5;") != null);
     try std.testing.expect(std.mem.find(u8, output, "\x1b[38;2;") == null);
 }
