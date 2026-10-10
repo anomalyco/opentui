@@ -2021,4 +2021,22 @@ test "resetState - skips mouse disable when mouse was never enabled" {
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.disableButtonEventTracking) == null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.disableMouseTracking) == null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.disableSGRMouseMode) == null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.resetTerminalBgColor) == null);
+}
+
+test "resetState - restores an overridden Windows Terminal background" {
+    var env_map = std.process.Environ.Map.init(testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("WT_SESSION", "test-session");
+
+    var term = Terminal.init(.{ .env_map = &env_map });
+    term.state.terminal_bg_overridden = true;
+
+    var writer = TestWriter.init(testing.allocator);
+    defer writer.deinit();
+
+    try term.resetState(&writer);
+
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.resetTerminalBgColor) != null);
+    try testing.expect(!term.state.terminal_bg_overridden);
 }

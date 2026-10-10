@@ -1838,6 +1838,31 @@ test "renderer - background color setting" {
     try std.testing.expectEqual(ansi.rgbaFromFloats(0.25, 0.5, 0.75, 1.0), cli_renderer.getNextBuffer().getBlendBackdropColor().?);
 }
 
+test "renderer mirrors background only in identified Windows Terminal sessions" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    defer link.deinitGlobalLinkPool();
+
+    var windows_terminal = try TestRenderer.createWithEnv(std.testing.allocator, 80, 24, pool, &.{
+        .{ .key = "WT_SESSION", .value = "test-session" },
+    });
+    defer windows_terminal.deinit();
+
+    try std.testing.expect(windows_terminal.renderer.terminal.supportsBackgroundColorOverride());
+    windows_terminal.renderer.setBackgroundColor(ansi.rgbaFromFloats(0.1, 0.2, 0.3, 1.0));
+    try std.testing.expect(std.mem.find(u8, windows_terminal.memory.bytes.items, "\x1b]11;rgb:1a/33/4d\x07") != null);
+    windows_terminal.renderer.setBackgroundColor(ansi.rgbaFromFloats(0.1, 0.2, 0.3, 0.0));
+    try std.testing.expect(std.mem.find(u8, windows_terminal.memory.bytes.items, ansi.ANSI.resetTerminalBgColor) != null);
+
+    var ghostty = try TestRenderer.createWithEnv(std.testing.allocator, 80, 24, pool, &.{
+        .{ .key = "WT_SESSION", .value = "test-session" },
+    });
+    defer ghostty.deinit();
+    ghostty.renderer.terminal.processCapabilityResponse("\x1bP>|ghostty 1.3.1\x1b\\");
+    ghostty.renderer.setBackgroundColor(ansi.rgbaFromFloats(0.1, 0.2, 0.3, 1.0));
+    try std.testing.expect(std.mem.find(u8, ghostty.memory.bytes.items, "\x1b]11;rgb:") == null);
+}
+
 test "renderer - theme color query tracks pending background restore" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
