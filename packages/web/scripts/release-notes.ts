@@ -14,9 +14,10 @@
 // the working tree with the latest release.
 //
 // The draft is based on the commits and pull requests since the previous release, the API changes, and the
-// changed documentation. opencode reads it and replies with the file; the reply must pass the release notes
-// format check, or the draft is retried once with the problems. The draft uses Claude Opus 5.5 with high
-// reasoning through OpenCode; set OPENTUI_RELEASE_NOTES_MODEL (provider/model#variant) to choose another model.
+// changed documentation. opencode reads it and replies with the file; it can also read the repository and load the
+// writing-rsc and writing-ste skills. The reply must pass the release notes format check, or the draft is retried
+// once with the problems. The draft uses Claude Opus 5.5 with high reasoning through OpenCode; set
+// OPENTUI_RELEASE_NOTES_MODEL (provider/model#variant) to choose another model.
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -34,6 +35,14 @@ const SITE = "https://opentui.com"
 const PULL_REQUEST_BODY_LIMIT = 3000
 const DEFAULT_MODEL = "opencode/claude-opus-5-5#high"
 const COMMANDS = ["draft", "context", "github"]
+// The draft reads the repository and loads the writing skills, and nothing else: the context quotes contributors'
+// pull request descriptions. OpenCode applies the rules on the private server of `opencode run --standalone`.
+const DRAFT_PERMISSIONS = [
+  { action: "*", resource: "*", effect: "deny" },
+  ...["read", "grep", "glob"].map((action) => ({ action, resource: "*", effect: "allow" })),
+  ...["*.env", "*.env.*"].map((resource) => ({ action: "read", resource, effect: "deny" })),
+  ...["writing-rsc", "writing-ste"].map((resource) => ({ action: "skill", resource, effect: "allow" })),
+]
 const USAGE =
   "Usage: bun run release-notes [draft|context|github] [patch|minor|major|<version>] [--force] [--out <file>]"
 
@@ -110,12 +119,11 @@ function today(): string {
 
 function opencode(message: string, file: string): string {
   const model = process.env.OPENTUI_RELEASE_NOTES_MODEL || DEFAULT_MODEL
-  const result = spawnSync("opencode", ["run", "--model", model, "--file", file, message], {
+  const result = spawnSync("opencode", ["run", "--standalone", "--model", model, "--file", file, message], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
-    // The context holds everything the draft needs, so the model gets no tools.
-    env: { ...process.env, OPENCODE_PERMISSION: JSON.stringify({ "*": "deny" }) },
+    env: { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ permissions: DRAFT_PERMISSIONS }) },
   })
   const skip = "Write the notes by hand first, or release with --no-notes."
   if (result.error) throw new Error(`opencode is required to draft release notes: ${result.error.message}. ${skip}`)
@@ -192,7 +200,12 @@ async function context(version: string, from = previousVersion(version)): Promis
     "",
     `- Use only these sections, in this order, and only when they have entries: ${RELEASE_SECTIONS.join(", ")}.`,
     "  Under each section, write one bullet per change. Do not add other headings.",
-    "- A short paragraph before the first section is allowed only when the release has one main theme.",
+    "- When a change needs more than a bullet, such as a new capability, a behavior change, or a migration, explain it",
+    "  in an introduction before the first section, as the Go release notes do: a paragraph or a few for each such",
+    "  change, with a short code example where it helps. Do not restate its bullet: give the reason, the use, or the",
+    "  steps to move. Do not use headings in the introduction. A release with only small changes has no introduction.",
+    "- Keep each bullet to one or two sentences, also for a change that the introduction explains: documentation pages",
+    "  list the bullets of their changes.",
     "- The summary is one sentence of at most 140 characters, for the release history.",
     "- Start each bullet with the package in bold: **core:**, **react:**, **solid:**, **keymap:**, **ssh:**,",
     "  **three:**, **qrcode:**, or **native:** for the C and Zig interfaces.",
@@ -205,6 +218,16 @@ async function context(version: string, from = previousVersion(version)): Promis
     "- End each bullet with its pull request links, such as ([#1479](https://github.com/anomalyco/opentui/pull/1479)).",
     "- Cover each API change in the list below that application code would use or that breaks it. The release",
     "  page lists every API change separately, so do not copy the list.",
+    "",
+    "## Tools and writing",
+    "",
+    "You can read the repository's working tree with the read, grep, and glob tools. Read the source of a change",
+    "before you explain it or show it in an example.",
+    ...(toRef === "HEAD" ? [] : ["The working tree can be newer than this release; the API changes below are exact."]),
+    "",
+    "Load the writing-rsc skill and write the introduction in its style. Load the writing-ste skill and write the",
+    "summary and the bullets in its STE-flavored mode. You cannot run commands, so check them with its checklist",
+    "instead of its lint script. Where a skill conflicts with the rules above, the rules win.",
     "",
     "## Pull requests and commits",
     "",
