@@ -713,7 +713,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     const env_is_forwarded = if (self.host_env_map) |*host_env_map| env_map == host_env_map else false;
     self.applyKnownUnicodeWidthIdentity();
     // Unlike the identity keys below, color depth describes the endpoint in every mode:
-    // sshd takes TERM from the client's PTY request, and COLORTERM arrives only when the client sends it.
+    // sshd takes TERM from the client's PTY request, and COLORTERM comes from the client or the session itself.
     if (env_map.get("TERM")) |term| {
         if (std.ascii.findIgnoreCase(term, "256color") != null) {
             self.caps.ansi256 = true;

@@ -145,9 +145,14 @@ host terminal is the stream's real peer.
 Auto-detection recognizes `SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`, and `MOSH_CONNECTION`. In an auto-detected remote
 session, OpenTUI applies only the color depth keys from the forwarded environment: a `TERM` that contains `256color`
 enables `ansi256`, and a `COLORTERM` of `truecolor` or `24bit` enables `rgb` and `ansi256`. These keys describe the
-remote endpoint, because `sshd` takes `TERM` from the client's PTY request and `COLORTERM` arrives only when the client
-sends it. OpenTUI ignores the other keys, such as `TERM_PROGRAM`, the multiplexer variables, and the `OPENTUI_*`
-overrides. On the process host, they can describe the wrong terminal endpoint.
+remote endpoint: `sshd` takes `TERM` from the client's PTY request, and `COLORTERM` comes from the client when ssh is
+configured to send it, or from the server session itself, such as a shell rc file. OpenTUI ignores the other keys, such
+as `TERM_PROGRAM`, the multiplexer variables, and the `OPENTUI_*` overrides. On the process host, they can describe the
+wrong terminal endpoint.
+
+Without `COLORTERM`, a `256color` `TERM` gives 256-color output, even in a terminal that supports truecolor. To keep
+truecolor in an SSH session, export `COLORTERM=truecolor` on the server, forward it with `SendEnv COLORTERM` on the
+client and `AcceptEnv COLORTERM` on the server, or pass it in `environment`.
 
 `forwardEnvKeys` selects process environment names that OpenTUI sends to native detection. Explicit remote mode
 defaults to an empty list. Other modes default to the documented terminal, SSH, tmux, Zellij, width, graphics,
