@@ -1,0 +1,76 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`streaming ordered list does not depend on replacement highlighting to show current text: after initial highlight completes 1`] = `
+{
+  "frame": [
+    "                                                                                                    ",
+    "   Status: response is streaming.                                                                   ",
+    "                                                                                                    ",
+    "   1. Trigger the permission prompt: uninstall and                                                  ",
+    "   2. Create a schedule with a confirm-to-start segment: tap +, name it "Test                       ",
+    "   3. Test the foreground                                                                           ",
+    "   4. Test the background case: start the schedule again, press the side                            ",
+    "   5. Test the cancel: start the schedule, wait for the confirm-to-start segment, but stay in the   ",
+    "      app and tap the in                                                                            ",
+    "   6. Test app lifecycle edge case: start a schedule with a confirm-to-start segment, wait          ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "",
+  ],
+  "pendingHighlights": 0,
+}
+`;
+
+exports[`streaming ordered list does not depend on replacement highlighting to show current text: after updated highlight completes 1`] = `
+{
+  "frame": [
+    "                                                                                                    ",
+    "   Status: response source is complete.                                                             ",
+    "                                                                                                    ",
+    "   1. Trigger the permission prompt: uninstall and reinstall the app, then relaunch it.             ",
+    "   2. Create a schedule with a confirm-to-start segment: tap +, name it "Test", and save it.        ",
+    "   3. Test the foreground case: start the schedule and use the in-app Start button.                 ",
+    "   4. Test the background case: start the schedule again, then press the side button.               ",
+    "   5. Test the cancel: stay in the app and tap the in-app Start button before the notification      ",
+    "      appears.                                                                                      ",
+    "   6. Test app lifecycle edge case: wait for the segment, then send the app to the background.      ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "",
+  ],
+  "pendingHighlights": 0,
+}
+`;
+
+exports[`streaming ordered list does not depend on replacement highlighting to show current text: while updated highlighting is pending 1`] = `
+{
+  "frame": [
+    "                                                                                                    ",
+    "   Status: response source is complete.                                                             ",
+    "                                                                                                    ",
+    "   1. Trigger the permission prompt: uninstall and reinstall the app, then relaunch it.             ",
+    "   2. Create a schedule with a confirm-to-start segment: tap +, name it "Test", and save it.        ",
+    "   3. Test the foreground case: start the schedule and use the in-app Start button.                 ",
+    "   4. Test the background case: start the schedule again, then press the side button.               ",
+    "   5. Test the cancel: stay in the app and tap the in-app Start button before the notification      ",
+    "      appears.                                                                                      ",
+    "   6. Test app lifecycle edge case: wait for the segment, then send the app to the background.      ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "                                                                                                    ",
+    "",
+  ],
+  "pendingHighlights": 7,
+}
+`;
