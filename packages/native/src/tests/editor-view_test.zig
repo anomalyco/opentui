@@ -2251,6 +2251,20 @@ test "EditorView - controls show Vim notation that the cursor stops on and delet
             try std.testing.expectEqualStrings("ab", copied[0..eb.getText(&copied)]);
             _ = try eb.undo();
             try std.testing.expectEqualStrings(text, copied[0..eb.getText(&copied)]);
+            if (codepoint == '\t' or width == 1) continue;
+
+            // Word and inclusive selections take the whole unit, and a move up from inside it snaps to its start.
+            for (0..2 + width) |x| {
+                _ = ev.setLocalSelectionBehavior(@intCast(x), 0, @intCast(x), 0, null, null, false, .word);
+                try std.testing.expectEqualStrings(text, copied[0..ev.getSelectedTextIntoBuffer(&copied)]);
+            }
+            ev.setSelectionInclusive(width, width, null, null);
+            try std.testing.expectEqualStrings(character, copied[0..ev.getSelectedTextIntoBuffer(&copied)]);
+            try eb.setCursor(0, 2 + width);
+            try eb.insertText("\nabcdef");
+            try eb.setCursor(1, width);
+            eb.moveUp();
+            try std.testing.expectEqual(@as(u32, 1), eb.getPrimaryCursor().col);
         }
     }
 }
@@ -2258,10 +2272,11 @@ test "EditorView - controls show Vim notation that the cursor stops on and delet
 test "EditorView - wrapping never splits control notation" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    const text = "ab\x0c-\u{85}c\x00d-e\x7f";
-    const shown = "ab^L-<85>c^@d-e^?";
+    // The first 16 bytes are ASCII, so layout takes its vector path.
+    const text = "ab\x0c-defgh\x07ij-kl\x00m\u{85}c\x00d-e\x7f";
+    const shown = "ab^L-defgh^Gij-kl^@m<85>c^@d-e^?";
     // Cell offsets in `shown` where a unit ends; a row may end only there.
-    const unit_ends = [_]usize{ 1, 2, 4, 5, 9, 10, 12, 13, 14, 15, 17 };
+    const unit_ends = [_]usize{ 1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 20, 24, 25, 27, 28, 29, 30, 32 };
     for ([_]text_buffer.WrapMode{ .char, .word }) |wrap_mode| {
         // The widest unit, `<85>`, needs four cells.
         for (4..shown.len + 1) |width| {
@@ -2297,7 +2312,8 @@ test "EditorView - cursor moves and backspace step over zero-width clusters" {
     defer pools.deinit();
     // UAX #29 keeps a zero-width format character, or a mark after a control, in a cluster of its own.
     // U+FFFD ends an Indic conjunct or emoji ZWJ sequence, so the characters after it do not join across it.
-    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩" };
+    // The last text starts with 16 ASCII bytes, so layout takes its vector path.
+    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "ab\x0c-defgh\x07ij-kl\x00m-n\x1b" };
     for (std.enums.values(utf8.WidthMethod)) |width_method| {
         for (texts) |text| {
             errdefer std.debug.print("width_method={t} text={any}\n", .{ width_method, text });
@@ -2316,7 +2332,7 @@ test "EditorView - cursor moves and backspace step over zero-width clusters" {
             }
             try eb.setCursor(0, end);
             var bytes = text.len;
-            var out: [16]u8 = undefined;
+            var out: [32]u8 = undefined;
             while (bytes > 0) : (bytes = eb.getText(&out)) {
                 try eb.backspace();
                 try std.testing.expect(eb.getText(&out) < bytes);

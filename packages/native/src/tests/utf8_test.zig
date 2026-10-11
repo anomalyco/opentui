@@ -1722,8 +1722,9 @@ test "getPrevGraphemeStart: out of bounds" {
 
 test "getPrevGraphemeStart: steps back to the last grapheme with cells that layout measured" {
     // Model: segment forward as layout does and measure each grapheme as the width of the text before its end
-    // minus the width before its start. U+FFFD inside a joining sequence must not join the graphemes after it.
-    const texts = [_][]const u8{ "", "Hello 世界! 👋\u{1f3ff}", "a\tb", "日本", "e\u{301}\u{302}x", "👩\u{200d}👧!", "👩\u{200d}❤", "🇺🇸🇩🇪", "❤\u{fe0f}", "क्षि", "a\x07\u{301}\u{85}\x1b", "\u{200b}a\u{feff}", "日\u{fffd}", "a\r\nb", "\u{600}a", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩" };
+    // minus the width before its start. U+FFFD is a grapheme of its own: inside a joining sequence it must not join
+    // the graphemes after it, and a mark after it does not join it.
+    const texts = [_][]const u8{ "", "Hello 世界! 👋\u{1f3ff}", "a\tb", "日本", "e\u{301}\u{302}x", "👩\u{200d}👧!", "👩\u{200d}❤", "🇺🇸🇩🇪", "❤\u{fe0f}", "क्षि", "a\x07\u{301}\u{85}\x1b", "\u{200b}a\u{feff}", "日\u{fffd}", "a\r\nb", "\u{600}a", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "\u{fffd}\u{fe0f}" };
     const alphabet = [_]u21{ 'a', '\t', '\r', '\n', 0, 0x1b, 0x7f, 0x85, 0x301, 0x200b, 0x200d, 0xfe0f, 0x1f469, 0x1f3fb, 0x2764, 0x1f1e9, 0x600, 0x915, 0x94d, 0x93f, 0x1100, 0x1161, 0xac00, 0xfffd, 0x65e5 };
     var prng = std.Random.DefaultPrng.init(0x5eed);
     const random = prng.random();
@@ -1746,6 +1747,7 @@ test "getPrevGraphemeStart: steps back to the last grapheme with cells that layo
                     const decoded = if (pos < text.len) utf8.decodeUtf8Unchecked(text, pos) else null;
                     if (decoded == null or utf8.isGraphemeBreak(prev_cp, decoded.?.cp, &break_state, width_method)) {
                         const width = utf8.calculateTextWidth(text[0..pos], 4, control_display, false, width_method) - utf8.calculateTextWidth(text[0..start], 4, control_display, false, width_method);
+                        if (std.mem.indexOf(u8, text[start..pos], "\u{fffd}") != null) try testing.expectEqualStrings("\u{fffd}", text[start..pos]);
                         if (width > 0) expected = .{ .start_offset = start, .width = width };
                         try testing.expectEqual(expected, utf8.getPrevGraphemeStart(text, pos, 4, control_display, width_method));
                         start = pos;
