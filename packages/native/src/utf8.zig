@@ -1350,7 +1350,8 @@ pub const PrevGraphemeResult = struct {
     width: u32,
 };
 
-/// Get previous grapheme start - proxy function that dispatches based on width_method
+/// Get the start of the last grapheme before byte_offset that takes cells - proxy function that
+/// dispatches based on width_method
 pub fn getPrevGraphemeStart(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) ?PrevGraphemeResult {
     switch (width_method) {
         .unicode, .unicode_wide, .no_zwj => return getPrevGraphemeStartUnicode(text, byte_offset, tab_width, control_display, width_method),
@@ -1388,17 +1389,33 @@ fn getPrevGraphemeStartWCWidth(text: []const u8, byte_offset: usize, tab_width: 
     return last_result;
 }
 
-/// Get previous grapheme start using Unicode grapheme cluster segmentation
+/// Get previous grapheme start using the grapheme segmentation that layout measures with.
+/// Like the wcwidth variant, skip zero-width clusters: a cursor has no cell to stop on in them.
 fn getPrevGraphemeStartUnicode(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) ?PrevGraphemeResult {
     if (byte_offset == 0 or text.len == 0) return null;
     if (byte_offset > text.len) return null;
 
-    // For unicode/no_zwj modes, use grapheme cluster detection
+    // UAX #29 joins two ASCII characters only as CR LF, and LF takes no cells, so an ASCII character
+    // after ASCII that takes cells is the previous grapheme, and ASCII text needs no scan.
+    const last = text[byte_offset - 1];
+    const before: u8 = if (byte_offset > 1) text[byte_offset - 2] else 0;
+    if (last < 0x80 and before < 0x80) {
+        const width = asciiCharWidth(last, tab_width, control_display);
+        if (width > 0) return .{ .start_offset = byte_offset - 1, .width = width };
+    }
+
+    // The last grapheme usually takes cells, so find it without measuring the graphemes before it.
+    const last_start = lastGraphemeStart(text, byte_offset, width_method);
+    const last_width = getWidthAt(text, last_start, tab_width, control_display, width_method);
+    if (last_width > 0) return .{ .start_offset = last_start, .width = last_width };
+
+    // Otherwise measure each grapheme during one more scan to find the last one that takes cells.
     var break_state: uucode.grapheme.BreakState = .default;
     var pos: usize = 0;
     var prev_cp: ?u21 = null;
-    var prev_grapheme_start: usize = 0;
-    var second_to_last_grapheme_start: usize = 0;
+    var grapheme_start: usize = 0;
+    var width_state = GraphemeWidthState.init(0, 0, width_method);
+    var result: ?PrevGraphemeResult = null;
 
     while (pos < byte_offset) {
         const b = text[pos];
@@ -1409,35 +1426,37 @@ fn getPrevGraphemeStartUnicode(text: []const u8, byte_offset: usize, tab_width: 
         };
 
         const cp_len: usize = if (b < 0x80) 1 else decodeUtf8Unchecked(text, pos).len;
-
-        if (isValidCodepoint(curr_cp)) {
-            const is_break = if (prev_cp) |p| blk: {
-                if (!isValidCodepoint(p)) break :blk true;
-                break :blk uucode.grapheme.isBreak(p, curr_cp, &break_state);
-            } else true;
-
-            if (is_break) {
-                second_to_last_grapheme_start = prev_grapheme_start;
-                prev_grapheme_start = pos;
-            }
-
-            prev_cp = curr_cp;
+        const cp_width = charWidth(b, curr_cp, tab_width, control_display);
+        if (isGraphemeBreak(prev_cp, curr_cp, &break_state, width_method)) {
+            if (width_state.width > 0) result = .{ .start_offset = grapheme_start, .width = width_state.width };
+            grapheme_start = pos;
+            width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
+        } else {
+            width_state.addCodepoint(curr_cp, cp_width);
         }
 
+        prev_cp = curr_cp;
         pos += cp_len;
     }
 
-    if (prev_grapheme_start == 0 and byte_offset == 0) {
-        return null;
+    // Adding a code point never narrows a grapheme, so the part before byte_offset takes no cells either.
+    std.debug.assert(grapheme_start == last_start);
+    std.debug.assert(width_state.width == 0);
+    return result;
+}
+
+fn lastGraphemeStart(text: []const u8, byte_offset: usize, width_method: WidthMethod) usize {
+    var break_state: uucode.grapheme.BreakState = .default;
+    var pos: usize = 0;
+    var prev_cp: ?u21 = null;
+    var grapheme_start: usize = 0;
+    while (pos < byte_offset) {
+        const decoded = decodeUtf8Unchecked(text, pos);
+        if (isGraphemeBreak(prev_cp, decoded.cp, &break_state, width_method)) grapheme_start = pos;
+        prev_cp = decoded.cp;
+        pos += decoded.len;
     }
-
-    const start_offset = if (prev_grapheme_start < byte_offset) prev_grapheme_start else second_to_last_grapheme_start;
-    const width = getWidthAt(text, start_offset, tab_width, control_display, width_method);
-
-    return .{
-        .start_offset = start_offset,
-        .width = width,
-    };
+    return grapheme_start;
 }
 
 /// Calculate the display width of text - proxy function that dispatches based on width_method

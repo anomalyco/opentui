@@ -1898,6 +1898,25 @@ test "getPrevGraphemeStart: consecutive wide chars" {
     try testing.expectEqual(@as(u32, 2), r3.?.width);
 }
 
+test "getPrevGraphemeStart: steps back over each grapheme that layout measured" {
+    // Each step must be one grapheme as layout segments and measures it, so the steps from the end add up to the line.
+    const texts = [_][]const u8{ "a\tb", "日本", "e\u{301}x", "👩\u{200d}👧!", "👩\u{200d}❤", "🇺🇸🇩🇪", "❤\u{fe0f}", "क्षि", "a\x07\u{301}\u{85}\x1b", "\u{200b}a\u{feff}", "日\u{fffd}", "a\r\nb", "\u{600}a" };
+    for ([_]utf8.WidthMethod{ .unicode, .unicode_wide, .no_zwj }) |width_method| {
+        for (std.enums.values(utf8.ControlDisplay)) |control_display| {
+            for (texts) |text| {
+                errdefer std.debug.print("width_method={t} control_display={t} text={any}\n", .{ width_method, control_display, text });
+                var end = text.len;
+                var width: u32 = 0;
+                while (utf8.getPrevGraphemeStart(text, end, 4, control_display, width_method)) |prev| : (end = prev.start_offset) {
+                    try testing.expectEqual(utf8.getWidthAt(text, prev.start_offset, 4, control_display, width_method), prev.width);
+                    width += prev.width;
+                }
+                try testing.expectEqual(utf8.calculateTextWidth(text, 4, control_display, false, width_method), width);
+            }
+        }
+    }
+}
+
 // ============================================================================
 // CALCULATE TEXT WIDTH TESTS (static tab width)
 // ============================================================================
