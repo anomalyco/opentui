@@ -364,30 +364,17 @@ export class ExtmarksController {
           return
         }
 
-        const text = this.editBuffer.getText()
-        const currentOffset = this.editorView.getVisualCursor().offset
-
-        let lineStart = 0
-        for (let i = currentOffset - 1; i >= 0; i--) {
-          if (text[i] === "\n") {
-            lineStart = i + 1
-            break
-          }
-        }
-
-        let lineEnd = text.length
-        for (let i = currentOffset; i < text.length; i++) {
-          if (text[i] === "\n") {
-            lineEnd = i + 1
-            break
-          }
-        }
-
-        const deleteLength = lineEnd - lineStart
+        // Native deletes the line with the line break after it, or with the one before it on the last line.
+        const row = this.editBuffer.getCursorPosition().row
+        const lineStart = this.editBuffer.getLineStartOffset(row)
+        const [start, end] =
+          row + 1 < this.editBuffer.getLineCount()
+            ? [lineStart, this.editBuffer.getLineStartOffset(row + 1)]
+            : [Math.max(0, lineStart - 1), this.editBuffer.getEOL().offset]
 
         this.originalDeleteLine()
         this.saveSnapshot()
-        this.adjustExtmarksAfterDeletion(lineStart, deleteLength)
+        this.adjustExtmarksAfterDeletion(start, end - start)
       })
   }
 
