@@ -1474,6 +1474,7 @@ Press ESC to return to main menu.`
       ["日日日\nxyz", 0, 7, 10, [0, 3], "xyz"],
       ["\f\f\f\nxyz", 0, 7, 10, [0, 3], "xyz"],
       ["ab\ncd", 4, 0, 3, [0, 2], "ab"],
+      ["\f\f", 2, 0, 6, [0, 2], ""],
     ])("deletes the line of %j at %d and moves [%d, %d) to %j", async (text, cursor, start, end, expected, rest) => {
       await setup(text)
       const id = extmarks.create({ start, end })
