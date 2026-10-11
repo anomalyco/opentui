@@ -1433,7 +1433,8 @@ pub const UnifiedTextBufferView = struct {
 
             var prefix_accumulated: u32 = 0;
             for (vline.chunks.items) |chunk| {
-                if (prefix_accumulated >= prefix_width) break;
+                // Marks right after the prefix belong to its last glyph.
+                if (prefix_accumulated >= prefix_width and chunk.width_cols != 0) break;
 
                 const space_left = prefix_width - prefix_accumulated;
                 if (chunk.width_cols <= space_left) {

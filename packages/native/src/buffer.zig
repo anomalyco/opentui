@@ -2437,7 +2437,7 @@ pub const OptimizedBuffer = struct {
                     // zero-width clusters keep that glyph. Only a glyph that this iteration draws sets it again.
                     if (cluster_width_cols == 0) {
                         if (mark_base != null and utf8.isCombiningMark(grapheme_bytes)) {
-                            mark_base = try self.attachCombiningMark(checked, grapheme_bytes, mark_base.?, @intCast(currentY));
+                            mark_base = try self.attachCombiningMark(checked, grapheme_bytes, mark_base.?, @intCast(currentY), text_buffer.widthMethod());
                         }
                         continue;
                     }
@@ -2723,6 +2723,8 @@ pub const OptimizedBuffer = struct {
                     rendered_col_in_vline += cluster_width_cols;
                     col += cluster_width_cols;
                 }
+                // The ellipsis stands for dropped text, so the marks after it have no base glyph.
+                if (chunk == &layout_view.ellipsis_chunk) mark_base = null;
             }
 
             const is_last_vline_of_logical_line = (slice_idx + 1 >= virtual_lines[firstVisibleLine..lastPossibleLine].len) or
@@ -2742,8 +2744,8 @@ pub const OptimizedBuffer = struct {
     /// Combines a zero-width mark with the glyph that this draw wrote just before it, as if both
     /// were one cluster. The cell keeps its colors, which already have opacity applied.
     /// Returns the combined glyph, or null when the cell does not hold that glyph or cannot
-    /// hold the combination.
-    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32) !?MarkBase {
+    /// hold the combination in the same cells (U+FE0F can widen a cluster beyond its layout).
+    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32, width_method: utf8.WidthMethod) !?MarkBase {
         const index = self.coordsToIndex(base.x, y);
         // A blended space keeps the glyph under it, which this draw did not write.
         if (self.buffer.char[index] != base.char) return null;
@@ -2761,6 +2763,7 @@ pub const OptimizedBuffer = struct {
         if (base_bytes.len + mark.len > combined.len) return null;
         @memcpy(combined[0..base_bytes.len], base_bytes);
         @memcpy(combined[base_bytes.len..][0..mark.len], mark);
+        if (utf8.getGraphemeWidthAt(combined[0 .. base_bytes.len + mark.len], 0, 1, .hidden, width_method) != gp.encodedCharWidth(base.char)) return null;
         const id = self.acquireGlyph(combined[0 .. base_bytes.len + mark.len]) catch |err| {
             if (checked) return err;
             self.logger.warn("Failed to allocate grapheme: {}", .{err});
