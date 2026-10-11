@@ -275,6 +275,16 @@ describe("EmbeddedTerminalRenderable", () => {
     expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length > 0).toBe(name !== "menu")
   })
 
+  // Ghostty has no key or no Kitty encoding for 30 of the 111 Kitty functional keys: menu, F26-F35, the 10 media
+  // keys, the 3 volume keys, hyper, Kitty's meta (Ghostty's meta is Kitty's super), and the ISO level shifts.
+  test("encodes every Kitty functional key that Ghostty can encode", () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    terminal.write("\x1b[>31u")
+    const keys = Array.from({ length: 111 }, (_, i) => parseKeypress(`\x1b[${57344 + i}u`, { useKittyKeyboard: true })!)
+    const empty = keys.filter((key) => terminal.encodeKey(new KeyEvent(key)).length === 0)
+    expect(empty.map((key) => key.name)).toHaveLength(30)
+  })
+
   test.each([
     ["Kitty Ctrl+c", 3, "\x1b[99;5u", "\x1b[99;5u"],
     ["Kitty Escape", 3, "\x1b[27u", "\x1b[27u"],
@@ -293,6 +303,24 @@ describe("EmbeddedTerminalRenderable", () => {
     ["Kitty keypad Begin", 1, "\x1b[57427u", "\x1b[57427u"],
     ["Kitty Ctrl+keypad Begin", 1, "\x1b[57427;5u", "\x1b[57427;5u"],
     ["SS3 Up into a DECCKM child", "\x1b[?1h", "\x1bOA", "\x1bOA"],
+    ["Kitty keypad 9", 31, "\x1b[57408u", "\x1b[57408;;57u"],
+    ["Kitty Ctrl+keypad 0", 1, "\x1b[57399;5u", "\x1b[57399;5u"],
+    ["Kitty Ctrl+keypad 0 in legacy mode", 0, "\x1b[57399;5u", "0"],
+    ["Kitty Ctrl+keypad minus", 1, "\x1b[57412;5u", "\x1b[57412;5u"],
+    ["Kitty keypad separator", 8, "\x1b[57416u", "\x1b[57416u"],
+    ["Kitty keypad plus in legacy mode", 0, "\x1b[57413u", "+"],
+    ["Kitty keypad Enter", 1, "\x1b[57414u", "\x1b[57414u"],
+    ["Kitty keypad Enter in legacy mode", 0, "\x1b[57414u", "\r"],
+    ["Kitty Ctrl+keypad Left", 1, "\x1b[57417;5u", "\x1b[57417;5u"],
+    ["Kitty keypad Page Down in legacy mode", 0, "\x1b[57422u", "\x1b[6~"],
+    ["Kitty keypad Home", 1, "\x1b[57423u", "\x1b[57423u"],
+    ["Kitty Caps Lock", 8, "\x1b[57358u", "\x1b[57358u"],
+    ["Kitty Print Screen", 1, "\x1b[57361u", "\x1b[57361u"],
+    ["Kitty Caps Lock in legacy mode", 0, "\x1b[57358u", ""],
+    ["Kitty Shift+Left Shift", 31, "\x1b[57441;2u", "\x1b[57441;2u"],
+    ["Kitty Right Ctrl", 8, "\x1b[57448u", "\x1b[57448u"],
+    ["Kitty Left Super", 8, "\x1b[57444u", "\x1b[57444u"],
+    ["Kitty Left Shift in legacy mode", 0, "\x1b[57441u", ""],
     ["plain Dvorak u", 1, "\x1b[117::102;1u", "u"],
     ["plain Dvorak d", 1, "\x1b[100::104;1u", "d"],
     ["Dvorak Ctrl+U", 1, "\x1b[117::102;5u", "\x1b[117;5u"],
