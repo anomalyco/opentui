@@ -611,9 +611,10 @@ export class ExtmarksController {
     }
   }
 
-  // Each newline before the offset adds one, and native layout owns the cell widths of the text between them.
+  // Each newline before the offset adds one, and native layout owns the cell widths of the text between them. An
+  // offset past the end stays past the end, where native highlights clamp it.
   private offsetExcludingNewlines(offset: number): number {
-    return offset - (this.editBuffer.offsetToPosition(offset)?.row ?? this.editBuffer.getLineCount() - 1)
+    return offset - (this.editBuffer.offsetToPosition(offset)?.row ?? 0)
   }
 
   public create(options: ExtmarkOptions): number {
