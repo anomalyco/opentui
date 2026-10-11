@@ -26,7 +26,8 @@ describe("Textarea - Paste Tests", () => {
     currentRenderer.destroy()
   })
 
-  // A paste keeps control characters, as in Vim, but drops terminal escape sequences. Input also drops CR and LF.
+  // A paste keeps control characters, as in Vim, but drops terminal escape sequences, a lone ESC, and a sequence that
+  // the paste cuts off, on Bun and Node alike. Input also drops CR and LF.
   it.each([
     ["", "x", "x"],
     [" World", "x World", "x World"],
@@ -35,6 +36,9 @@ describe("Textarea - Paste Tests", () => {
     ["a \x1b[31mred\x1b[0m", "xa red", "xa red"],
     ["a\fb\u0000c", "xa\fb\u0000c", "xa\fb\u0000c"],
     ["\x1b]0;title\x07y", "xy", "xy"],
+    ["\x1b", "x", "x"],
+    ["a\x1bP1$r\x1b\\b\x1bXs\x1b\\c\x1b(Bd\x9b1me\x1b\x07", "xabcde\x07", "xabcde\x07"],
+    ["\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\x1b]0;cut", "xlink", "xlink"],
     ["p\u0085q\u007f", "xp\u0085q\u007f", "xp\u0085q\u007f"],
     ["\ty\r\nz", "x\ty\nz", "x\tyz"],
   ])("pastes %j into Textarea and Input", async (pasted, textareaText, inputText) => {

@@ -149,8 +149,13 @@ return, and line feed show as `^@` to `^_` in two cells, DEL as `^?` in two cell
 its notation, and `getText()`, history, and selected text return the original characters. Tab, carriage return, and
 line feed keep their meaning. The same rule applies to editor placeholders, `Textarea.initialValue`, and `Input.value`.
 `Input.maxLength` counts the characters of the value, controls included. Read-only text, such as `TextRenderable`,
-still gives controls no cells. `Textarea` and `Input` remove ANSI escape sequences from pasted text but keep other
-controls, and ignore key sequences that contain control characters.
+still gives controls no cells. `Textarea` and `Input` ignore key sequences that contain control characters.
+
+Pasted text keeps its controls, but `Textarea` and `Input` remove terminal escape sequences from it with
+`stripAnsiSequences()`, the same way on Bun and Node: control sequences such as `ESC [31m`, control strings such as
+OSC titles and hyperlinks through BEL or ST, other escapes such as `ESC ( B`, and their C1 forms. A sequence ends at
+the first character that cannot continue it, and a lone ESC or a sequence that the paste cuts off is removed too, so a
+paste never inserts ESC.
 
 The edit buffer emits native `"cursor-changed"` and `"content-changed"` events through its `EventEmitter` interface.
 `undo()` and `redo()` also emit `"cursorChanged"`. Native code reports each event during the edit call. Core then
