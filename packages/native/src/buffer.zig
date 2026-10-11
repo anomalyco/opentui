@@ -2392,7 +2392,8 @@ pub const OptimizedBuffer = struct {
                 };
                 const line_col_offset = vline.document_cell_offset;
 
-                if (currentX >= @as(i32, @intCast(self.width))) {
+                // A glyph in the last column can still take marks that start this chunk.
+                if (currentX >= @as(i32, @intCast(self.width)) and mark_base == null) {
                     document_cell_offset += vchunk.width_cols;
                     currentX += @intCast(vchunk.width_cols);
                     continue;
@@ -2407,7 +2408,7 @@ pub const OptimizedBuffer = struct {
                     special_idx += 1;
                 }
 
-                text_buffer_loop: while (byte_offset < byte_end and col < col_end) {
+                text_buffer_loop: while (byte_offset < byte_end) {
                     const at_special = special_idx < render_clusters.len and render_clusters[special_idx].byte_start == byte_offset;
 
                     var grapheme_bytes: []const u8 = undefined;
@@ -2432,8 +2433,14 @@ pub const OptimizedBuffer = struct {
                         cluster_width_cols = if (ascii) 1 else utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.controlDisplay(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
-                    // Only a glyph that this iteration draws, or a zero-width cluster, sets it again.
-                    const previous_glyph = mark_base;
+                    // A combining mark joins the glyph before it, which passed the checks below; other
+                    // zero-width clusters keep that glyph. Only a glyph that this iteration draws sets it again.
+                    if (cluster_width_cols == 0) {
+                        if (mark_base != null and utf8.isCombiningMark(grapheme_bytes)) {
+                            mark_base = try self.attachCombiningMark(checked, grapheme_bytes, mark_base.?, @intCast(currentY));
+                        }
+                        continue;
+                    }
                     mark_base = null;
 
                     if (rendered_col_in_vline < horizontal_offset) {
@@ -2614,17 +2621,6 @@ pub const OptimizedBuffer = struct {
                                 break;
                             }
                         }
-                    }
-
-                    if (cluster_width_cols == 0) {
-                        // A combining mark joins the glyph before it; other zero-width clusters keep it.
-                        if (previous_glyph) |glyph| {
-                            mark_base = if (utf8.isCombiningMark(grapheme_bytes))
-                                try self.attachCombiningMark(checked, grapheme_bytes, glyph, @intCast(currentY))
-                            else
-                                glyph;
-                        }
-                        continue;
                     }
 
                     var drawFg = finalFg;
