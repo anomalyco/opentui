@@ -952,14 +952,15 @@ test "OptimizedBuffer drawTextChecked skips complete zero width UTF-8 codepoints
 }
 
 /// A cluster that a cell cannot hold and the text that every checked draw must render in its place.
-const UnprintableText = struct { bytes: []const u8, blank: []const u8, line_break: bool = false };
+/// An editor shows a control as notation instead.
+const UnprintableText = struct { bytes: []const u8, blank: []const u8, notation: ?[]const u8 = null, line_break: bool = false };
 const unprintable_texts = [_]UnprintableText{
-    .{ .bytes = "\x00", .blank = "" },
-    .{ .bytes = "\x07", .blank = "" },
-    .{ .bytes = "\x1b", .blank = "" },
-    .{ .bytes = "\x7f", .blank = "" },
-    .{ .bytes = "\u{85}", .blank = "" },
-    .{ .bytes = "\u{9b}", .blank = "" },
+    .{ .bytes = "\x00", .blank = "", .notation = "^@" },
+    .{ .bytes = "\x07", .blank = "", .notation = "^G" },
+    .{ .bytes = "\x1b", .blank = "", .notation = "^[" },
+    .{ .bytes = "\x7f", .blank = "", .notation = "^?" },
+    .{ .bytes = "\u{85}", .blank = "", .notation = "<85>" },
+    .{ .bytes = "\u{9b}", .blank = "", .notation = "<9b>" },
     .{ .bytes = "\n", .blank = "", .line_break = true },
     .{ .bytes = "\r", .blank = "", .line_break = true },
     .{ .bytes = "\r\n", .blank = "", .line_break = true },
@@ -1020,7 +1021,7 @@ fn expectNoControlCells(target: *OptimizedBuffer) !void {
     }
 }
 
-test "OptimizedBuffer checked text draws skip controls and blank clusters a cell cannot hold" {
+test "OptimizedBuffer checked text draws skip controls, editors show their notation, and blank clusters a cell cannot hold" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     // The blank rule starts where the pool stops storing a cluster.
@@ -1048,7 +1049,8 @@ test "OptimizedBuffer checked text draws skip controls and blank clusters a cell
                     .end => .{ "abcd", "" },
                 };
                 const with = try std.fmt.bufPrint(&with_buffer, "{s}{s}{s}", .{ prefix, unprintable.bytes, suffix });
-                const blank = try std.fmt.bufPrint(&blank_buffer, "{s}{s}{s}", .{ prefix, unprintable.blank, suffix });
+                const shown = if (path == .editor_view) unprintable.notation orelse unprintable.blank else unprintable.blank;
+                const blank = try std.fmt.bufPrint(&blank_buffer, "{s}{s}{s}", .{ prefix, shown, suffix });
                 for (clips) |clip| {
                     errdefer std.debug.print("path={t} text={any} position={t} clip={any}\n", .{ path, unprintable.bytes, position, clip });
                     for ([_]*OptimizedBuffer{ actual, expected }) |target| {

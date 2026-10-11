@@ -67,6 +67,8 @@ pub const UnifiedTextBuffer = struct {
     link_tracker: ?link.LinkTracker,
 
     width_method: utf8.WidthMethod,
+    /// Fixed at creation: chunk layout caches omit it from their keys.
+    control_display: utf8.ControlDisplay,
 
     view_dirty_flags: std.ArrayListUnmanaged(bool),
     next_view_id: u32,
@@ -119,6 +121,10 @@ pub const UnifiedTextBuffer = struct {
         return self.tab_width;
     }
 
+    pub fn controlDisplay(self: *const Self) utf8.ControlDisplay {
+        return self.control_display;
+    }
+
     /// Accessor: return the internal allocator.
     pub fn getAllocator(self: *const Self) Allocator {
         return self.allocator;
@@ -158,11 +164,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn getGraphemeWidthAt(self: *const Self, row: u32, col: u32) u32 {
-        return iter_mod.getGraphemeWidthAt(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.width_method);
+        return iter_mod.getGraphemeWidthAt(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
     }
 
     pub fn getPrevGraphemeWidth(self: *const Self, row: u32, col: u32) u32 {
-        return iter_mod.getPrevGraphemeWidth(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.width_method);
+        return iter_mod.getPrevGraphemeWidth(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
     }
 
     pub fn textEndOffset(self: *const Self) u32 {
@@ -178,6 +184,7 @@ pub const UnifiedTextBuffer = struct {
             coords.row,
             coords.col,
             self.tab_width,
+            self.control_display,
             self.width_method,
         ) orelse return null;
         const line_start = offset - coords.col;
@@ -193,6 +200,7 @@ pub const UnifiedTextBuffer = struct {
             coords.row,
             coords.col,
             self.tab_width,
+            self.control_display,
             self.width_method,
         ) orelse return null;
         const line_start = offset - coords.col;
@@ -200,11 +208,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn getLayoutInfoFor(self: *const Self, chunk: *const TextChunk) TextBufferError!seg_mod.ChunkLayoutInfo {
-        return chunk.getLayoutInfo(self.allocator, @constCast(&self.layout_cache), &self.mem_registry, self.tab_width, self.width_method);
+        return chunk.getLayoutInfo(self.allocator, @constCast(&self.layout_cache), &self.mem_registry, self.tab_width, self.control_display, self.width_method);
     }
 
     pub fn getWordLayoutInfoFor(self: *const Self, chunk: *const TextChunk) TextBufferError!seg_mod.WordLayoutInfo {
-        return chunk.getWordLayoutInfo(self.allocator, @constCast(&self.layout_cache), &self.mem_registry, self.tab_width, self.width_method);
+        return chunk.getWordLayoutInfo(self.allocator, @constCast(&self.layout_cache), &self.mem_registry, self.tab_width, self.control_display, self.width_method);
     }
 
     /// Accessor: walk all lines and segments via callbacks.
@@ -220,6 +228,7 @@ pub const UnifiedTextBuffer = struct {
     pub const InitOptions = struct {
         io: std.Io = compatibility_io,
         logger: *const logger.Logger = logger.processLogger(),
+        control_display: utf8.ControlDisplay = .hidden,
     };
 
     pub fn init(
@@ -292,6 +301,7 @@ pub const UnifiedTextBuffer = struct {
             .link_pool = link_pool,
             .link_tracker = null,
             .width_method = width_method,
+            .control_display = options.control_display,
             .view_dirty_flags = view_dirty_flags,
             .next_view_id = 0,
             .free_view_ids = free_view_ids,
@@ -370,6 +380,7 @@ pub const UnifiedTextBuffer = struct {
         try self.initStorage(self.global_allocator, self.pool, self.link_pool, width_method, .{
             .io = self.io,
             .logger = self.logger,
+            .control_display = self.control_display,
         }, self.arena);
         self.mem_registry = registry;
         self.view_dirty_flags = view_dirty_flags;
@@ -471,7 +482,7 @@ pub const UnifiedTextBuffer = struct {
         // For grapheme-accurate width calculation (used by highlighting system),
         // use utf8.calculateTextWidth which properly handles grapheme clusters
         const is_ascii = utf8.isAsciiOnly(text);
-        return utf8.calculateTextWidth(text, self.tab_width, is_ascii, self.width_method);
+        return utf8.calculateTextWidth(text, self.tab_width, self.control_display, is_ascii, self.width_method);
     }
 
     /// Clear text while preserving highlights, registered bytes, and undo history.
@@ -824,6 +835,7 @@ pub const UnifiedTextBuffer = struct {
         var width_cursor = utf8.TextWidthCursor{
             .text = text,
             .tab_width = self.tab_width,
+            .control_display = self.control_display,
             .width_method = self.width_method,
         };
         var chunk_index: usize = 0;
@@ -1097,7 +1109,7 @@ pub const UnifiedTextBuffer = struct {
             flags |= TextChunk.Flags.HAS_TAB;
         }
 
-        const chunk_width = utf8.calculateTextWidth(chunk_bytes, self.tab_width, is_ascii, self.width_method);
+        const chunk_width = utf8.calculateTextWidth(chunk_bytes, self.tab_width, self.control_display, is_ascii, self.width_method);
 
         return .{
             .mem_id = mem_id,
@@ -1738,6 +1750,7 @@ pub const UnifiedTextBuffer = struct {
                     mutable.width_cols = utf8.calculateTextWidth(
                         bytes,
                         ctx.buffer.tab_width,
+                        ctx.buffer.control_display,
                         chunk.isAsciiOnly(),
                         ctx.buffer.width_method,
                     );
@@ -1791,6 +1804,7 @@ pub const UnifiedTextBuffer = struct {
             &self._rope,
             &self.mem_registry,
             self.tab_width,
+            self.control_display,
             start_offset,
             clamped_end,
             out_buffer,
@@ -1804,6 +1818,7 @@ pub const UnifiedTextBuffer = struct {
             &self._rope,
             &self.mem_registry,
             self.tab_width,
+            self.control_display,
             start_offset,
             @min(end_offset, self._rope.totalWeight()),
             null,

@@ -1933,7 +1933,7 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
             for (0..tb.rope().count()) |segment| {
                 if (tb.rope().get(@intCast(segment)).?.asText()) |chunk| {
                     _ = try tb.getLayoutInfoFor(chunk);
-                    _ = try chunk.getRenderClusters(tb.getAllocator(), tb.memRegistry(), tb.tabWidth(), tb.widthMethod());
+                    _ = try chunk.getRenderClusters(tb.getAllocator(), tb.memRegistry(), tb.tabWidth(), tb.controlDisplay(), tb.widthMethod());
                 }
             }
             const live = tracked.allocated_bytes - tracked.freed_bytes;

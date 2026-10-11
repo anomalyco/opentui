@@ -195,7 +195,10 @@ pub const EditBuffer = struct {
         const self = try allocator.create(EditBuffer);
         errdefer allocator.destroy(self);
 
-        const text_buffer = try UnifiedTextBuffer.initWithOptions(allocator, pool, link_pool, width_method, options);
+        // A cursor that moves by cell cannot stop on a zero-width control, so editors show notation.
+        var text_options = options;
+        text_options.control_display = .notation;
+        const text_buffer = try UnifiedTextBuffer.initWithOptions(allocator, pool, link_pool, width_method, text_options);
         errdefer text_buffer.deinit();
 
         const add_buffer = try AddBuffer.init(allocator, text_buffer, 65536);
@@ -273,12 +276,13 @@ pub const EditBuffer = struct {
             const chunk = seg.asText() orelse continue;
             const bytes = chunk.getBytes(self.tb.memRegistry());
             // The restored root's cached widths use the current policy, not the checkpoint's.
-            const next_col = old_col +| utf8.calculateTextWidth(bytes, old_tab_width, chunk.isAsciiOnly(), self.tb.widthMethod());
+            const next_col = old_col +| utf8.calculateTextWidth(bytes, old_tab_width, self.tb.controlDisplay(), chunk.isAsciiOnly(), self.tb.widthMethod());
             if (target_col <= next_col) {
                 const pos = utf8.findPosByWidth(
                     bytes,
                     target_col -| old_col,
                     old_tab_width,
+                    self.tb.controlDisplay(),
                     chunk.isAsciiOnly(),
                     false,
                     self.tb.widthMethod(),
@@ -286,6 +290,7 @@ pub const EditBuffer = struct {
                 return new_col +| utf8.calculateTextWidth(
                     bytes[0..pos.byte_offset],
                     self.tb.tabWidth(),
+                    self.tb.controlDisplay(),
                     chunk.isAsciiOnly(),
                     self.tb.widthMethod(),
                 );
@@ -339,7 +344,7 @@ pub const EditBuffer = struct {
         const chunk_bytes = chunk.getBytes(self.tb.memRegistry());
         const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
 
-        const result = utf8.findPosByWidth(chunk_bytes, weight, self.tb.tabWidth(), is_ascii_only, false, self.tb.widthMethod());
+        const result = utf8.findPosByWidth(chunk_bytes, weight, self.tb.tabWidth(), self.tb.controlDisplay(), is_ascii_only, false, self.tb.widthMethod());
         const split_byte_offset = result.byte_offset;
 
         const left_chunk = self.tb.createChunk(
@@ -710,7 +715,7 @@ pub const EditBuffer = struct {
     /// cursor does not land on the second cell of a wide unit.
     pub fn snapColumn(self: *EditBuffer, row: u32, col: u32) u32 {
         const text = self.tb;
-        const bounds = iter_mod.getCursorUnitBoundsAt(text.rope(), text.memRegistry(), row, col, text.tabWidth(), text.widthMethod());
+        const bounds = iter_mod.getCursorUnitBoundsAt(text.rope(), text.memRegistry(), row, col, text.tabWidth(), text.controlDisplay(), text.widthMethod());
         return if (bounds) |unit| unit.start else col;
     }
 

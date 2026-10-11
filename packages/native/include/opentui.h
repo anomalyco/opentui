@@ -1200,8 +1200,9 @@ ot_status ot_syntax_style_destroy(ot_context *, const ot_handle *style);
 /* NULL clears the binding. A non-NULL style must belong to this Context. */
 ot_status ot_edit_buffer_set_syntax_style(ot_context *, const ot_handle *edit_buffer, const ot_handle *style);
 /* Copy UTF-8 bytes into owned storage; bytes may be NULL only for zero length.
- * C0/C1/DEL controls reject except tab, CR, and LF. Queries normalize line endings
- * to LF. preserve_history is 0 (clear history) or 1 (create an undo point).
+ * Editors keep C0, DEL, and C1 controls and show them as notation: ^@..^_ and ^?
+ * in two cells, <80>..<9f> in four. Tab, CR, and LF keep their meaning. Queries
+ * normalize line endings to LF. preserve_history is 0 (clear history) or 1 (create an undo point).
  * Replacement resets the cursor to the origin; insertion uses the primary cursor.
  * No input memory remains borrowed after return. */
 ot_status ot_edit_buffer_set_text(ot_context *, const ot_handle *edit_buffer,
