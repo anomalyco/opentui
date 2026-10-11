@@ -429,6 +429,41 @@ describe("EditBuffer", () => {
       expect(buffer.positionToOffset(0, 0)).toBe(0)
       expect(buffer.getLineStartOffset(0)).toBe(0)
     })
+
+    // JavaScript string widths give controls, tabs, and line breaks no cells. measureText() must give the offset at
+    // which the same text ends after setText(), and must not store it.
+    it.each([
+      ["", 2, 0, 0],
+      ["a\fb\u0000c\u007f", 2, 9, 9],
+      ["\u0085\u009f", 2, 8, 8],
+      ["a\tb", 8, 10, 10],
+      ["日本\u0301", 2, 4, 4],
+      ["👩‍👧 🇩🇪", 2, 5, 7],
+      ["a\r\nb\rc\n", 2, 6, 6],
+    ] as const)("measures %j with tab width %d as unicode %d and wcwidth %d", (text, tabWidth, unicode, wcwidth) => {
+      for (const [widthMethod, expected] of [
+        ["unicode", unicode],
+        ["wcwidth", wcwidth],
+      ] as const) {
+        const editor = EditBuffer.create(widthMethod, resourceContext)
+        editor.setTabWidth(tabWidth)
+        editor.setText("kept")
+        expect(editor.measureText(text)).toBe(expected)
+        expect(editor.getText()).toBe("kept")
+        editor.setText(text)
+        expect(editor.offsetToPosition(expected)).not.toBeNull()
+        expect(editor.offsetToPosition(expected + 1)).toBeNull()
+        editor.destroy()
+      }
+    })
+
+    it("maps a string index to an offset and back", () => {
+      buffer.setText("\f@file")
+      const index = buffer.getText().indexOf("@")
+      const offset = buffer.measureText(buffer.getText().slice(0, index))
+      expect(offset).toBe(2)
+      expect(buffer.getTextRange(0, offset).length).toBe(index)
+    })
   })
 
   describe("getEOL navigation", () => {

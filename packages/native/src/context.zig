@@ -2652,6 +2652,19 @@ pub const Context = struct {
         return buffer.copyTextRange(offsets.start, offsets.end, out);
     }
 
+    /// Lays `bytes` out as setText would, without storing them, and returns the cursor offset at their end.
+    pub fn editMeasureText(self: *Context, handle: Handle, bytes: []const u8) !u32 {
+        try self.checkSceneRead();
+        const buffer = (try self.getEditBuffer(handle)).buffer.tb;
+        // The byte limit keeps the widths and line breaks within u32.
+        try validateTextBytes(buffer, bytes, 0);
+        var layout = try buffer.textToSegments(self.allocator, bytes, 0, 0, false);
+        defer layout.segments.deinit(layout.allocator);
+        var break_count: u32 = 0;
+        for (layout.segments.items) |*segment| break_count += @intFromBool(segment.isBreak());
+        return layout.total_width_cols + break_count;
+    }
+
     pub fn textViewGetSelectedText(self: *Context, handle: Handle, out: []u8) !u32 {
         try self.checkSceneRead();
         const view = try self.getTextBufferView(handle);

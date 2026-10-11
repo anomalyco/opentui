@@ -3040,6 +3040,14 @@ test "Context editor transport copies styles selections positions history and li
     try std.testing.expectEqualStrings("\xe7\x95\x8c", bytes[0..count]);
     try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_get_position(handle, &edit, c.OT_EDIT_POSITION_OFFSET, 3, 0, &position));
     try std.testing.expectEqual(3, position.col);
+    // a, the wide character, the tab, the line break, and z take 1 + 2 + 2 + 1 + 1 cells.
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_measure_text(handle, &edit, "a\xe7\x95\x8c\t\nz", 7, &count));
+    try std.testing.expectEqual(7, count);
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_get_position(handle, &edit, c.OT_EDIT_POSITION_COORDS, 1, 1, &position));
+    try std.testing.expectEqual(count, position.offset);
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_measure_text(handle, &edit, null, 0, &count));
+    try std.testing.expectEqual(0, count);
+    try std.testing.expectEqual(c.OT_WRONG_KIND, api.ot_edit_buffer_measure_text(handle, &view, "a", 1, &count));
     core.mutating = true;
     core.scene_measuring = true;
     try std.testing.expectEqual(c.OT_OK, api.ot_editor_view_get_info(handle, &view, 0, &info));

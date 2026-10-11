@@ -5034,6 +5034,22 @@ export class FFIRenderLib {
     )
   }
 
+  public contextEditBufferMeasureText(
+    context: NativeContextHandle,
+    editBuffer: ContextEditBufferHandle,
+    bytes: Uint8Array,
+  ): number {
+    const handle = encodeContextHandle(context, editBuffer)
+    const input = sessionBytes(bytes, "Edit buffer measure length")
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_edit_buffer_measure_text")
+    nativeResult(
+      "ot_edit_buffer_measure_text",
+      this.opentui.symbols.ot_edit_buffer_measure_text(pointer, handle, viewOrNull(input), input.length, output),
+    )
+    return output[0]
+  }
+
   public contextEditBufferSetDefaults(
     context: NativeContextHandle,
     editBuffer: ContextEditBufferHandle,
