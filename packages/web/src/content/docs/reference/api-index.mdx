@@ -526,7 +526,7 @@ Each item names the changed API or behavior first. New APIs are in the tables ab
 - `SyntaxStyle.create()`, `fromStyles(styles)`, and `fromTheme(theme)`: now `create(owner)`, `fromStyles(styles, owner)`, and `fromTheme(theme, owner)`. Pass `renderer.nativeScene`, or a `ResourceContext` for standalone use.
 - `TextBuffer.create(widthMethod)` and `EditBuffer.create(widthMethod)`: now `create(widthMethod, owner)`.
 - `.ptr` on `TextBuffer`, `TextBufferView`, `EditBuffer`, `EditorView`, and `SyntaxStyle`: removed. Their constructors take Context handles. Use the `create()` factories.
-- `EditBuffer.setText()`, `insertText()`, and `replaceText()`, the same Textarea and Input methods, Textarea `initialValue`, `Input.value`, and the `placeholder` of both: now throw for control characters other than tab, carriage return, and line feed. Remove them first. Paste handlers remove them.
+- `EditBuffer.setText()`, `insertText()`, and `replaceText()`, the same Textarea and Input methods, Textarea `initialValue`, `Input.value`, and the `placeholder` of both: now show control characters other than tab, carriage return, and line feed as notation, such as `^L` or `<85>`. In 0.5.14, the cursor could not move past or delete them, and the terminal received them.
 - `TextBuffer.loadFile()`: now rejects invalid UTF-8.
 - Text buffer and text view offsets: must be integers. Other values throw `RangeError`.
 - Highlight `priority` above 255 or `hlRef` above 65535: now throws. In 0.5.14, the value wrapped.

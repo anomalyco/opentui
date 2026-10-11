@@ -143,11 +143,14 @@ click maps to the painted character. Reset the matching form when the selection 
 `setText()` resets history and the native add buffer. `replaceText()` creates an undo point. All replacement methods
 copy text into native-owned memory. The `Owned` variants retain the same public behavior without a borrowed-memory path.
 
-Text that you replace or insert must not contain control characters other than tab, carriage return, and line feed.
-The replacement and insertion methods throw `NativeError` with status `InvalidArgument` for C0 controls, DEL, and C1
-controls, and the edit buffer does not change. The same rule applies to editor placeholders, `Textarea.initialValue`,
-and `Input.value`. `Textarea` and `Input` remove these characters from pasted text and ignore key sequences that
-contain them.
+An editor keeps every control character and shows it as notation, as Vim does. C0 controls other than tab, carriage
+return, and line feed show as `^@` to `^_` in two cells, DEL as `^?` in two cells, and C1 controls as lowercase hex
+`<80>` to `<9f>` in four cells. The cursor stops before each control and deletes it as one unit, wrapping never splits
+its notation, and `getText()`, history, and selected text return the original characters. Tab, carriage return, and
+line feed keep their meaning. The same rule applies to editor placeholders, `Textarea.initialValue`, and `Input.value`.
+`Input.maxLength` counts the characters of the value, controls included. Read-only text, such as `TextRenderable`,
+still gives controls no cells. `Textarea` and `Input` remove ANSI escape sequences from pasted text but keep other
+controls, and ignore key sequences that contain control characters.
 
 The edit buffer emits native `"cursor-changed"` and `"content-changed"` events through its `EventEmitter` interface.
 `undo()` and `redo()` also emit `"cursorChanged"`. Native code reports each event during the edit call. Core then
