@@ -510,26 +510,6 @@ pub const Segment = union(enum) {
         return true;
     }
 
-    pub fn merge(allocator: Allocator, left: *const Segment, right: *const Segment) Segment {
-        _ = allocator;
-
-        const left_chunk = left.asText().?;
-        const right_chunk = right.asText().?;
-
-        // TODO: could clear the caches on the original chunks,
-        // as the original chunks are only kept for history purposes.
-
-        return .{
-            .text = TextChunk{
-                .mem_id = left_chunk.mem_id,
-                .byte_start = left_chunk.byte_start,
-                .byte_end = right_chunk.byte_end,
-                .width_cols = left_chunk.width_cols + right_chunk.width_cols,
-                .flags = left_chunk.flags | right_chunk.flags,
-            },
-        };
-    }
-
     /// Boundary normalization action
     pub const BoundaryAction = struct {
         delete_left: bool = false,

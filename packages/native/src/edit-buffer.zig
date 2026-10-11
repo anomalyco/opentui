@@ -209,7 +209,7 @@ pub const EditBuffer = struct {
             .cursor = .{ .row = 0, .col = 0 },
             .allocator = allocator,
             .events = event_emitter.EventEmitter(EditBufferEvent).init(allocator),
-            .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback },
+            .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback, .mergeFn = mergeSegmentCallback },
             .notify = notify,
         };
 
@@ -385,6 +385,12 @@ pub const EditBuffer = struct {
         }
     }
 
+    /// A grapheme can continue across the join, so widths do not add; measure the joined bytes.
+    fn mergeSegmentCallback(ctx: ?*anyopaque, left: *const Segment, right: *const Segment) Segment {
+        const edit_buf = @as(*EditBuffer, @ptrCast(@alignCast(ctx.?)));
+        return .{ .text = edit_buf.tb.createChunk(left.text.mem_id, left.text.byte_start, right.text.byte_end) };
+    }
+
     pub fn insertText(self: *EditBuffer, bytes: []const u8) !void {
         if (bytes.len == 0) return;
 
@@ -402,8 +408,6 @@ pub const EditBuffer = struct {
         var result = try self.tb.textToSegments(self.allocator, bytes, base_mem_id, base_start, false);
         defer result.segments.deinit(result.allocator);
 
-        const inserted_width_cols = result.total_width_cols;
-
         // Calculate width after last break
         var width_after_last_break: u32 = 0;
         var num_breaks: usize = 0;
@@ -419,6 +423,8 @@ pub const EditBuffer = struct {
         // Prepare root/end-marker repairs without touching shared history or marker caches.
         var candidate = self.tb.rope().*;
         try candidate.insertSliceByWeight(insert_offset, result.segments.items, &self.segment_splitter);
+        // A merge can change the width before the insert, but the text after it keeps its weight.
+        const end_offset = candidate.totalWeight() - (self.tb.rope().totalWeight() - insert_offset);
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
         self.tb.rope().version = candidate.version;
@@ -433,13 +439,12 @@ pub const EditBuffer = struct {
                 .offset = new_offset,
             };
         } else {
-            const new_col = cursor.col + inserted_width_cols;
-            const new_offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, new_col) orelse 0;
+            const new_col = end_offset - (insert_offset - cursor.col);
             self.cursor = .{
                 .row = cursor.row,
                 .col = new_col,
                 .desired_col = new_col,
-                .offset = new_offset,
+                .offset = end_offset,
             };
         }
 
@@ -519,14 +524,16 @@ pub const EditBuffer = struct {
             if (segment.isBreak()) {
                 inserted_cursor.row += 1;
                 inserted_cursor.col = 0;
-                inserted_cursor.offset += 1;
             } else if (segment.asText()) |chunk| {
                 inserted_cursor.col += chunk.width_cols;
-                inserted_cursor.offset += chunk.width_cols;
             }
         }
         if (inserted_cursor.row != deleted_cursor.row) {
             inserted_cursor.offset = newlineOffset(&inserted, inserted_cursor.row - 1) + 1 + inserted_cursor.col;
+        } else {
+            // A merge can change the width before the insert, but the text after it keeps its weight.
+            inserted_cursor.offset = inserted.totalWeight() - (deleted.totalWeight() - deleted_cursor.offset);
+            inserted_cursor.col = inserted_cursor.offset - (deleted_cursor.offset - deleted_cursor.col);
         }
         inserted_cursor.desired_col = inserted_cursor.col;
 
