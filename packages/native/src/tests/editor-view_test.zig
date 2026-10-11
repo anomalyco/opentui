@@ -2292,11 +2292,12 @@ test "EditorView - wrapping never splits control notation" {
     }
 }
 
-test "EditorView - left moves and backspace step over zero-width clusters" {
+test "EditorView - cursor moves and backspace step over zero-width clusters" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     // UAX #29 keeps a zero-width format character, or a mark after a control, in a cluster of its own.
-    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}" };
+    // U+FFFD ends an Indic conjunct or emoji ZWJ sequence, so the characters after it do not join across it.
+    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩" };
     for (std.enums.values(utf8.WidthMethod)) |width_method| {
         for (texts) |text| {
             errdefer std.debug.print("width_method={t} text={any}\n", .{ width_method, text });
@@ -2304,8 +2305,11 @@ test "EditorView - left moves and backspace step over zero-width clusters" {
             defer eb.deinit();
             try eb.setText(text);
             const end = eb.getTextBuffer().lineWidthAt(0);
-            try eb.setCursor(0, end);
-            var col = end;
+            var col: u32 = 0;
+            while (col < end) : (col = eb.getPrimaryCursor().col) {
+                eb.moveRight();
+                try std.testing.expect(eb.getPrimaryCursor().col > col);
+            }
             while (col > 0) : (col = eb.getPrimaryCursor().col) {
                 eb.moveLeft();
                 try std.testing.expect(eb.getPrimaryCursor().col < col);

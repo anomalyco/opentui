@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const utf8 = @import("../utf8.zig");
+const uucode = @import("uucode");
 
 test "decodeUtf8Unchecked keeps its result in one word" {
     const decoded = utf8.decodeUtf8Unchecked("\u{65e5}", 0);
@@ -1715,203 +1716,43 @@ test "getWidthAt: random positions in realistic text" {
 // GET PREV GRAPHEME START TESTS
 // ============================================================================
 
-test "getPrevGraphemeStart: at start" {
-    const text = "hello";
-    const result = utf8.getPrevGraphemeStart(text, 0, 8, .hidden, .unicode);
-    try testing.expect(result == null);
-}
-
-test "getPrevGraphemeStart: empty string" {
-    const result = utf8.getPrevGraphemeStart("", 0, 8, .hidden, .unicode);
-    try testing.expect(result == null);
-}
-
 test "getPrevGraphemeStart: out of bounds" {
-    const text = "hello";
-    const result = utf8.getPrevGraphemeStart(text, 100, 8, .hidden, .unicode);
-    try testing.expect(result == null);
+    try testing.expect(utf8.getPrevGraphemeStart("hello", 100, 8, .hidden, .unicode) == null);
 }
 
-test "getPrevGraphemeStart: simple ASCII" {
-    const text = "hello";
-
-    const r1 = utf8.getPrevGraphemeStart(text, 1, 8, .hidden, .unicode);
-    try testing.expect(r1 != null);
-    try testing.expectEqual(@as(usize, 0), r1.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r1.?.width);
-
-    const r2 = utf8.getPrevGraphemeStart(text, 2, 8, .hidden, .unicode);
-    try testing.expect(r2 != null);
-    try testing.expectEqual(@as(usize, 1), r2.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r2.?.width);
-
-    const r5 = utf8.getPrevGraphemeStart(text, 5, 8, .hidden, .unicode);
-    try testing.expect(r5 != null);
-    try testing.expectEqual(@as(usize, 4), r5.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r5.?.width);
-}
-
-test "getPrevGraphemeStart: CJK wide character" {
-    const text = "a世界";
-
-    const r1 = utf8.getPrevGraphemeStart(text, 1, 8, .hidden, .unicode);
-    try testing.expect(r1 != null);
-    try testing.expectEqual(@as(usize, 0), r1.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r1.?.width);
-
-    const r4 = utf8.getPrevGraphemeStart(text, 4, 8, .hidden, .unicode);
-    try testing.expect(r4 != null);
-    try testing.expectEqual(@as(usize, 1), r4.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r4.?.width);
-
-    const r7 = utf8.getPrevGraphemeStart(text, 7, 8, .hidden, .unicode);
-    try testing.expect(r7 != null);
-    try testing.expectEqual(@as(usize, 4), r7.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r7.?.width);
-}
-
-test "getPrevGraphemeStart: combining mark" {
-    const text = "cafe\u{0301}"; // café with combining acute
-
-    const r6 = utf8.getPrevGraphemeStart(text, 6, 8, .hidden, .unicode);
-    try testing.expect(r6 != null);
-    try testing.expectEqual(@as(usize, 3), r6.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r6.?.width);
-}
-
-test "getPrevGraphemeStart: emoji with skin tone" {
-    const text = "Hi👋🏿";
-
-    const r2 = utf8.getPrevGraphemeStart(text, 2, 8, .hidden, .unicode);
-    try testing.expect(r2 != null);
-    try testing.expectEqual(@as(usize, 1), r2.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r2.?.width);
-
-    const r_end = utf8.getPrevGraphemeStart(text, text.len, 8, .hidden, .unicode);
-    try testing.expect(r_end != null);
-    try testing.expectEqual(@as(usize, 2), r_end.?.start_offset);
-}
-
-test "getPrevGraphemeStart: emoji with ZWJ" {
-    const text = "a👩‍🚀"; // a + woman astronaut
-
-    const r1 = utf8.getPrevGraphemeStart(text, 1, 8, .hidden, .unicode);
-    try testing.expect(r1 != null);
-    try testing.expectEqual(@as(usize, 0), r1.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r1.?.width);
-
-    const r_end = utf8.getPrevGraphemeStart(text, text.len, 8, .hidden, .unicode);
-    try testing.expect(r_end != null);
-    try testing.expectEqual(@as(usize, 1), r_end.?.start_offset);
-}
-
-test "getPrevGraphemeStart: flag emoji" {
-    const text = "US🇺🇸";
-
-    const r_end = utf8.getPrevGraphemeStart(text, text.len, 8, .hidden, .unicode);
-    try testing.expect(r_end != null);
-    try testing.expectEqual(@as(usize, 2), r_end.?.start_offset);
-}
-
-test "getPrevGraphemeStart: tab handling" {
-    const text = "a\tb";
-
-    const r2 = utf8.getPrevGraphemeStart(text, 2, 4, .hidden, .unicode);
-    try testing.expect(r2 != null);
-    try testing.expectEqual(@as(usize, 1), r2.?.start_offset);
-
-    const r1 = utf8.getPrevGraphemeStart(text, 1, 4, .hidden, .unicode);
-    try testing.expect(r1 != null);
-    try testing.expectEqual(@as(usize, 0), r1.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r1.?.width);
-}
-
-test "getPrevGraphemeStart: mixed content" {
-    const text = "Hi世界!";
-
-    const r2 = utf8.getPrevGraphemeStart(text, 2, 8, .hidden, .unicode);
-    try testing.expect(r2 != null);
-    try testing.expectEqual(@as(usize, 1), r2.?.start_offset);
-
-    const r5 = utf8.getPrevGraphemeStart(text, 5, 8, .hidden, .unicode);
-    try testing.expect(r5 != null);
-    try testing.expectEqual(@as(usize, 2), r5.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r5.?.width);
-
-    const r8 = utf8.getPrevGraphemeStart(text, 8, 8, .hidden, .unicode);
-    try testing.expect(r8 != null);
-    try testing.expectEqual(@as(usize, 5), r8.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r8.?.width);
-}
-
-test "getPrevGraphemeStart: multiple combining marks" {
-    const text = "e\u{0301}\u{0302}x"; // e + acute + circumflex + x
-
-    const r_x = utf8.getPrevGraphemeStart(text, text.len, 8, .hidden, .unicode);
-    try testing.expect(r_x != null);
-    try testing.expectEqual(@as(usize, text.len - 1), r_x.?.start_offset);
-
-    const r_e = utf8.getPrevGraphemeStart(text, text.len - 1, 8, .hidden, .unicode);
-    try testing.expect(r_e != null);
-    try testing.expectEqual(@as(usize, 0), r_e.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r_e.?.width);
-}
-
-test "getPrevGraphemeStart: hiragana" {
-    const text = "こんにちは";
-
-    const r_last = utf8.getPrevGraphemeStart(text, text.len, 8, .hidden, .unicode);
-    try testing.expect(r_last != null);
-    try testing.expectEqual(@as(usize, 12), r_last.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r_last.?.width);
-}
-
-test "getPrevGraphemeStart: realistic scenario" {
-    const text = "Hello 世界! 👋";
-
-    const r_end = utf8.getPrevGraphemeStart(text, text.len, 8, .hidden, .unicode);
-    try testing.expect(r_end != null);
-    try testing.expectEqual(@as(usize, 14), r_end.?.start_offset);
-
-    const r_space = utf8.getPrevGraphemeStart(text, 14, 8, .hidden, .unicode);
-    try testing.expect(r_space != null);
-    try testing.expectEqual(@as(usize, 13), r_space.?.start_offset);
-    try testing.expectEqual(@as(u32, 1), r_space.?.width);
-}
-
-test "getPrevGraphemeStart: consecutive wide chars" {
-    const text = "世界中";
-
-    const r9 = utf8.getPrevGraphemeStart(text, 9, 8, .hidden, .unicode);
-    try testing.expect(r9 != null);
-    try testing.expectEqual(@as(usize, 6), r9.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r9.?.width);
-
-    const r6 = utf8.getPrevGraphemeStart(text, 6, 8, .hidden, .unicode);
-    try testing.expect(r6 != null);
-    try testing.expectEqual(@as(usize, 3), r6.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r6.?.width);
-
-    const r3 = utf8.getPrevGraphemeStart(text, 3, 8, .hidden, .unicode);
-    try testing.expect(r3 != null);
-    try testing.expectEqual(@as(usize, 0), r3.?.start_offset);
-    try testing.expectEqual(@as(u32, 2), r3.?.width);
-}
-
-test "getPrevGraphemeStart: steps back over each grapheme that layout measured" {
-    // Each step must be one grapheme as layout segments and measures it, so the steps from the end add up to the line.
-    const texts = [_][]const u8{ "a\tb", "日本", "e\u{301}x", "👩\u{200d}👧!", "👩\u{200d}❤", "🇺🇸🇩🇪", "❤\u{fe0f}", "क्षि", "a\x07\u{301}\u{85}\x1b", "\u{200b}a\u{feff}", "日\u{fffd}", "a\r\nb", "\u{600}a" };
-    for ([_]utf8.WidthMethod{ .unicode, .unicode_wide, .no_zwj }) |width_method| {
-        for (std.enums.values(utf8.ControlDisplay)) |control_display| {
-            for (texts) |text| {
-                errdefer std.debug.print("width_method={t} control_display={t} text={any}\n", .{ width_method, control_display, text });
-                var end = text.len;
-                var width: u32 = 0;
-                while (utf8.getPrevGraphemeStart(text, end, 4, control_display, width_method)) |prev| : (end = prev.start_offset) {
-                    try testing.expectEqual(utf8.getWidthAt(text, prev.start_offset, 4, control_display, width_method), prev.width);
-                    width += prev.width;
+test "getPrevGraphemeStart: steps back to the last grapheme with cells that layout measured" {
+    // Model: segment forward as layout does and measure each grapheme as the width of the text before its end
+    // minus the width before its start. U+FFFD inside a joining sequence must not join the graphemes after it.
+    const texts = [_][]const u8{ "", "Hello 世界! 👋\u{1f3ff}", "a\tb", "日本", "e\u{301}\u{302}x", "👩\u{200d}👧!", "👩\u{200d}❤", "🇺🇸🇩🇪", "❤\u{fe0f}", "क्षि", "a\x07\u{301}\u{85}\x1b", "\u{200b}a\u{feff}", "日\u{fffd}", "a\r\nb", "\u{600}a", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩" };
+    const alphabet = [_]u21{ 'a', '\t', '\r', '\n', 0, 0x1b, 0x7f, 0x85, 0x301, 0x200b, 0x200d, 0xfe0f, 0x1f469, 0x1f3fb, 0x2764, 0x1f1e9, 0x600, 0x915, 0x94d, 0x93f, 0x1100, 0x1161, 0xac00, 0xfffd, 0x65e5 };
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const random = prng.random();
+    var bytes: [64]u8 = undefined;
+    for (0..texts.len + 20_000) |index| {
+        const text = if (index < texts.len) texts[index] else random_text: {
+            var len: usize = 0;
+            for (0..1 + random.uintLessThan(usize, 10)) |_| len += try std.unicode.utf8Encode(alphabet[random.uintLessThan(usize, alphabet.len)], bytes[len..]);
+            break :random_text bytes[0..len];
+        };
+        for ([_]utf8.WidthMethod{ .unicode, .unicode_wide, .no_zwj }) |width_method| {
+            for (std.enums.values(utf8.ControlDisplay)) |control_display| {
+                errdefer std.debug.print("width_method={t} control_display={t} text={x}\n", .{ width_method, control_display, text });
+                var break_state: uucode.grapheme.BreakState = .default;
+                var prev_cp: ?u21 = null;
+                var start: usize = 0;
+                var expected: ?utf8.PrevGraphemeResult = null;
+                var pos: usize = 0;
+                while (true) {
+                    const decoded = if (pos < text.len) utf8.decodeUtf8Unchecked(text, pos) else null;
+                    if (decoded == null or utf8.isGraphemeBreak(prev_cp, decoded.?.cp, &break_state, width_method)) {
+                        const width = utf8.calculateTextWidth(text[0..pos], 4, control_display, false, width_method) - utf8.calculateTextWidth(text[0..start], 4, control_display, false, width_method);
+                        if (width > 0) expected = .{ .start_offset = start, .width = width };
+                        try testing.expectEqual(expected, utf8.getPrevGraphemeStart(text, pos, 4, control_display, width_method));
+                        start = pos;
+                    }
+                    prev_cp = (decoded orelse break).cp;
+                    pos += decoded.?.len;
                 }
-                try testing.expectEqual(utf8.calculateTextWidth(text, 4, control_display, false, width_method), width);
             }
         }
     }

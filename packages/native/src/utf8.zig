@@ -600,42 +600,14 @@ inline fn isValidCodepoint(cp: u21) bool {
 /// - no_zwj mode: use grapheme breaks but treat ZWJ as a break (ignore joining)
 /// - unicode mode: use standard grapheme cluster segmentation
 pub inline fn isGraphemeBreak(prev_cp: ?u21, curr_cp: u21, break_state: *uucode.grapheme.BreakState, width_method: WidthMethod) bool {
-    // wcwidth mode uses Unicode grapheme clustering for proper rendering
-    // (ZWJ sequences, skin tone modifiers stay together), but width is
-    // calculated using wcwidth semantics (sum of codepoint widths)
-    if (width_method == .wcwidth) {
-        if (prev_cp == null) return true;
-
-        if (!isValidCodepoint(curr_cp)) return true;
-        if (!isValidCodepoint(prev_cp.?)) return true;
-        return uucode.grapheme.isBreak(prev_cp.?, curr_cp, break_state);
-    }
-
-    if (!isValidCodepoint(curr_cp)) return true;
-
-    // In no_zwj mode, treat ZWJ (U+200D) as NOT joining characters
-    // When we see ZWJ after a character, it's part of that character's grapheme
-    // But when we see a character after ZWJ, it starts a new grapheme
-    if (width_method == .no_zwj) {
-        const ZWJ: u21 = 0x200D;
-        if (prev_cp) |p| {
-            // If previous was ZWJ, current starts a new grapheme
-            // Don't call uucode.grapheme.isBreak because it will say no break
-            if (p == ZWJ) {
-                // Reset break state since we're forcing a break
-                break_state.* = .default;
-                return true;
-            }
-        }
-        // If current is ZWJ, don't break yet - it's part of previous grapheme
-        // (will have width 0 anyway)
-    }
-
-    if (prev_cp) |p| {
-        if (!isValidCodepoint(p)) return true;
-        return uucode.grapheme.isBreak(p, curr_cp, break_state);
-    }
-    return true;
+    const p = prev_cp orelse return true;
+    // U+FFFD stands alone, and in no_zwj mode a character after ZWJ starts a new grapheme. A forced
+    // break ends any joining sequence, as UAX #29 does, so the graphemes after it segment the same
+    // as when a scan starts there.
+    const forced = !isValidCodepoint(curr_cp) or !isValidCodepoint(p) or
+        (width_method == .no_zwj and p == 0x200D);
+    if (forced) break_state.* = .default;
+    return forced or uucode.grapheme.isBreak(p, curr_cp, break_state);
 }
 
 /// State for accumulating grapheme cluster width
