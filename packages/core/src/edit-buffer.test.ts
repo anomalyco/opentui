@@ -99,21 +99,29 @@ describe("EditBuffer", () => {
       expect(cursor.row).toBe(2)
     })
 
-    it("preserves cursor text boundaries across tab width changes and history", () => {
-      buffer.setText("a\tb")
-      buffer.setCursor(0, 4)
-      buffer.insertText("x")
+    // Tabs and control notation before the cursor change width differently.
+    it.each([
+      ["a\tb", 4, 11, 10, "a\tby"],
+      ["\u0007\tb", 2, 3, 2, "\u0007y\tb"],
+      ["a\t\u0007", 5, 12, 11, "a\t\u0007y"],
+    ] as const)(
+      "preserves cursor text boundaries in %j at %d across tab width changes and history",
+      (text, col, after, undone, typed) => {
+        buffer.setText(text)
+        buffer.setCursor(0, col)
+        buffer.insertText("x")
 
-      buffer.setTabWidth(8)
-      expect(buffer.getTabWidth()).toBe(8)
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 11, offset: 11 })
+        buffer.setTabWidth(8)
+        expect(buffer.getTabWidth()).toBe(8)
+        expect(buffer.getCursorPosition()).toEqual({ row: 0, col: after, offset: after })
 
-      expect(buffer.undo()).toBe("cursor:0:4:4")
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 10, offset: 10 })
+        expect(buffer.undo()).toBe(`cursor:0:${col}:${col}`)
+        expect(buffer.getCursorPosition()).toEqual({ row: 0, col: undone, offset: undone })
 
-      buffer.insertText("y")
-      expect(buffer.getText()).toBe("a\tby")
-    })
+        buffer.insertText("y")
+        expect(buffer.getText()).toBe(typed)
+      },
+    )
 
     it("remaps the cursor when tab width changes after an insert", () => {
       buffer.setText("a\tb")
