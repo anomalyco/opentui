@@ -98,6 +98,37 @@ test "selectWord - slash is not a boundary unlike wrap breaks" {
     try expectSelected(pair.view, pair.view.selectWord(3), "foo/bar");
 }
 
+test "selectWord - double-click on scheme selects whole URL" {
+    const pair = try initView("see https://example.com/foo?bar=1#frag end");
+    defer deinitView(pair);
+
+    // Click on "https" (offset 4) and inside the path; both select the full URL.
+    try expectSelected(pair.view, pair.view.selectWord(4), "https://example.com/foo?bar=1#frag");
+    try expectSelected(pair.view, pair.view.selectWord(12), "https://example.com/foo?bar=1#frag");
+}
+
+test "selectWord - trailing punctuation is not part of URL" {
+    const pair = try initView("Visit https://example.com/foo.");
+    defer deinitView(pair);
+
+    try expectSelected(pair.view, pair.view.selectWord(8), "https://example.com/foo");
+}
+
+test "selectWord - markdown parens are not part of URL" {
+    const pair = try initView("[label](https://example.com/foo)");
+    defer deinitView(pair);
+
+    try expectSelected(pair.view, pair.view.selectWord(10), "https://example.com/foo");
+}
+
+test "selectWord - colon without scheme still splits words" {
+    const pair = try initView("foo:bar");
+    defer deinitView(pair);
+
+    try expectSelected(pair.view, pair.view.selectWord(0), "foo");
+    try expectSelected(pair.view, pair.view.selectWord(4), "bar");
+}
+
 test "selectWord - wrapped hello world still selects world" {
     const pair = try initView("hello world");
     defer deinitView(pair);

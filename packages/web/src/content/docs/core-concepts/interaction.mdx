@@ -215,6 +215,8 @@ space tab ' " │ ` | : ; , ( ) [ ] { } < > $
 Adjacent boundary graphemes form one selectable run. Adjacent non-boundary graphemes form another. Thus, double-clicking
 a run of spaces or tabs selects that run. `/`, `\`, `-`, and `.` are not boundaries, so `foo/bar` is one selection word.
 The same rule treats `日本語abc` as one selection word. A hard line break ends a word, but a soft wrap does not.
+Double-clicking inside a `scheme://...` URL selects the whole URL, including the scheme; trailing punctuation and
+unbalanced closing brackets are excluded.
 
 These boundaries apply only to pointer selection. Textarea word movement and word deletion use editor boundaries, so
 they can stop at different positions.

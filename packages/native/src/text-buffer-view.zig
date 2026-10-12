@@ -951,8 +951,142 @@ pub const UnifiedTextBufferView = struct {
         };
     }
 
+    /// Characters that end a URL while scanning for double-click selection.
+    /// Deliberately excludes `:/?#[]@!$&'()*+,;=%.-_~` and parens/braces, which
+    /// are valid inside URLs and handled by trailing-trim below instead.
+    fn isUrlTerminator(cp: u21) bool {
+        return switch (cp) {
+            ' ', '\t', '\n', '\r', '"', '\'', '`', '<', '>', '|', '│' => true,
+            else => false,
+        };
+    }
+
+    fn isSchemeChar(cp: u21) bool {
+        return (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z') or
+            (cp >= '0' and cp <= '9') or cp == '+' or cp == '-' or cp == '.';
+    }
+
+    fn isSchemeStartChar(cp: u21) bool {
+        return (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z');
+    }
+
+    fn isTrailingUrlPunct(cp: u21) bool {
+        return switch (cp) {
+            '.', ',', ';', ':', '!', '?', '\'', '"', '>' => true,
+            else => false,
+        };
+    }
+
+    /// If `offset` sits inside a `scheme://...` URL, return the whole URL range
+    /// (scheme included). Otherwise null. Operates on display-cell offsets via
+    /// grapheme walks so wide glyphs before the URL do not skew the scan.
+    fn selectUrl(self: *Self, offset: u32) ?SelectionRange {
+        const at = self.selectionGraphemeAt(offset) orelse return null;
+        if (at.is_break or isUrlTerminator(at.first_cp)) return null;
+
+        const max_scan: u32 = 2048;
+        var win_start = at.start;
+        var scanned: u32 = 0;
+        while (scanned < max_scan) {
+            const prev = self.prevSelectionGrapheme(win_start) orelse break;
+            if (prev.is_break or isUrlTerminator(prev.first_cp)) break;
+            if (prev.start >= win_start) break;
+            win_start = prev.start;
+            scanned += 1;
+        }
+
+        const text_end = self.text_buffer.textEndOffset();
+        var win_end = at.end;
+        scanned = 0;
+        while (scanned < max_scan) {
+            if (win_end >= text_end) break;
+            const next = self.selectionGraphemeAt(win_end) orelse break;
+            if (next.is_break or isUrlTerminator(next.first_cp)) break;
+            if (next.end <= win_end) break;
+            win_end = next.end;
+            scanned += 1;
+        }
+        if (win_start >= win_end or offset < win_start or offset >= win_end) return null;
+
+        // Find the `://` whose URL contains `offset`.
+        var p = win_start;
+        while (p < win_end) {
+            const g = self.selectionGraphemeAt(p) orelse break;
+            if (g.end <= p) break;
+            if (g.first_cp == ':') {
+                const s1 = self.selectionGraphemeAt(g.end);
+                const s2 = if (s1) |one| self.selectionGraphemeAt(one.end) else null;
+                if (s1 != null and s2 != null and s1.?.first_cp == '/' and s2.?.first_cp == '/' and !s1.?.is_break and !s2.?.is_break) {
+                    // Walk left over scheme chars.
+                    var scheme_start = g.start;
+                    while (true) {
+                        const prev = self.prevSelectionGrapheme(scheme_start) orelse break;
+                        if (prev.is_break or !isSchemeChar(prev.first_cp)) break;
+                        if (prev.start >= scheme_start) break;
+                        if (prev.start < win_start) break;
+                        scheme_start = prev.start;
+                    }
+                    const first = self.selectionGraphemeAt(scheme_start) orelse break;
+                    const scheme_len_cells = g.start - scheme_start;
+                    if (isSchemeStartChar(first.first_cp) and scheme_len_cells >= 2) {
+                        const url_end = self.trimUrlEnd(scheme_start, win_end);
+                        if (url_end <= scheme_start) {
+                            p = g.end;
+                            continue;
+                        }
+                        if (offset >= scheme_start and offset < url_end) {
+                            return .{ .start = scheme_start, .end = url_end };
+                        }
+                    }
+                }
+            }
+            p = g.end;
+        }
+        return null;
+    }
+
+    /// Trim trailing punctuation and unbalanced `)]}>` from a URL candidate.
+    fn trimUrlEnd(self: *Self, url_start: u32, url_end: u32) u32 {
+        var end = url_end;
+        while (end > url_start) {
+            const prev = self.prevSelectionGrapheme(end) orelse break;
+            if (prev.end != end) break;
+            const cp = prev.first_cp;
+            if (prev.is_break or isUrlTerminator(cp)) break;
+            if (isTrailingUrlPunct(cp)) {
+                end = prev.start;
+                continue;
+            }
+            if (cp == ')' or cp == ']' or cp == '}') {
+                const open: u21 = if (cp == ')') '(' else if (cp == ']') '[' else '{';
+                var opens: u32 = 0;
+                var closes: u32 = 0;
+                var q = url_start;
+                while (q < end) {
+                    const g = self.selectionGraphemeAt(q) orelse break;
+                    if (g.end <= q) break;
+                    if (!g.is_break) {
+                        if (g.first_cp == open) opens += 1;
+                        if (g.first_cp == cp) closes += 1;
+                    }
+                    q = g.end;
+                }
+                if (closes > opens) {
+                    end = prev.start;
+                    continue;
+                }
+            }
+            break;
+        }
+        return end;
+    }
+
     /// Word at `offset`. Null on newline or end-of-buffer. `/` is not a boundary.
+    /// Double-clicking inside a `scheme://...` URL selects the whole URL,
+    /// including the scheme, so links copy in one gesture.
     pub fn selectWord(self: *Self, offset: u32) ?SelectionRange {
+        if (self.selectUrl(offset)) |url| return url;
+
         const grapheme = self.selectionGraphemeAt(offset) orelse return null;
         if (grapheme.is_break) return null;
 
