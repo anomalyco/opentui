@@ -4623,17 +4623,17 @@ fn splitsGrapheme(tb: *TextBuffer, mode: text_buffer_view.WrapMode) bool {
         };
         const bytes = chunk.getBytes(tb.memRegistry());
         if (previous) |left| if (left.len > 0 and bytes.len > 0) {
-            // Replay the left chunk's last grapheme so the break state knows its context.
+            // Replay the left chunk from its last grapheme with cells so the break state knows its context.
             var state: @import("uucode").grapheme.BreakState = .default;
             var last: ?u21 = null;
-            var pos = utf8.getPrevGraphemeStart(left, left.len, tb.tabWidth(), .unicode).?.start_offset;
+            var pos = if (utf8.getPrevGraphemeStart(left, left.len, tb.tabWidth(), .hidden, .unicode)) |grapheme| grapheme.start_offset else 0;
             while (pos < left.len) : (pos += utf8.decodeUtf8Unchecked(left, pos).len) {
                 const cp = utf8.decodeUtf8Unchecked(left, pos).cp;
                 _ = utf8.isGraphemeBreak(last, cp, &state, .unicode);
                 last = cp;
             }
             const first = utf8.decodeUtf8Unchecked(bytes, 0).cp;
-            const combining = first != 0x200D and utf8.zeroWidthPrefixLen(bytes, tb.tabWidth(), .unicode) > 0;
+            const combining = first != 0x200D and utf8.zeroWidthPrefixLen(bytes, tb.tabWidth(), .hidden, .unicode) > 0;
             const allow_combining = mode == .char or (!has_cjk_words and last.? <= 0x7F and utf8.isWordCodepoint(last.?));
             if (!(allow_combining and combining) and !utf8.isGraphemeBreak(last, first, &state, .unicode)) return true;
         };

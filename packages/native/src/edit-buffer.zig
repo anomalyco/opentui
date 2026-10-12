@@ -195,7 +195,10 @@ pub const EditBuffer = struct {
         const self = try allocator.create(EditBuffer);
         errdefer allocator.destroy(self);
 
-        const text_buffer = try UnifiedTextBuffer.initWithOptions(allocator, pool, link_pool, width_method, options);
+        // A cursor that moves by cell cannot stop on a zero-width control, so editors show notation.
+        var text_options = options;
+        text_options.control_display = .notation;
+        const text_buffer = try UnifiedTextBuffer.initWithOptions(allocator, pool, link_pool, width_method, text_options);
         errdefer text_buffer.deinit();
 
         const add_buffer = try AddBuffer.init(allocator, text_buffer, 65536);
@@ -206,7 +209,7 @@ pub const EditBuffer = struct {
             .cursor = .{ .row = 0, .col = 0 },
             .allocator = allocator,
             .events = event_emitter.EventEmitter(EditBufferEvent).init(allocator),
-            .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback },
+            .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback, .mergeFn = mergeSegmentCallback },
             .notify = notify,
         };
 
@@ -273,12 +276,13 @@ pub const EditBuffer = struct {
             const chunk = seg.asText() orelse continue;
             const bytes = chunk.getBytes(self.tb.memRegistry());
             // The restored root's cached widths use the current policy, not the checkpoint's.
-            const next_col = old_col +| utf8.calculateTextWidth(bytes, old_tab_width, chunk.isAsciiOnly(), self.tb.widthMethod());
+            const next_col = old_col +| utf8.calculateTextWidth(bytes, old_tab_width, self.tb.controlDisplay(), chunk.isAsciiOnly(), self.tb.widthMethod());
             if (target_col <= next_col) {
                 const pos = utf8.findPosByWidth(
                     bytes,
                     target_col -| old_col,
                     old_tab_width,
+                    self.tb.controlDisplay(),
                     chunk.isAsciiOnly(),
                     false,
                     self.tb.widthMethod(),
@@ -286,6 +290,7 @@ pub const EditBuffer = struct {
                 return new_col +| utf8.calculateTextWidth(
                     bytes[0..pos.byte_offset],
                     self.tb.tabWidth(),
+                    self.tb.controlDisplay(),
                     chunk.isAsciiOnly(),
                     self.tb.widthMethod(),
                 );
@@ -339,7 +344,7 @@ pub const EditBuffer = struct {
         const chunk_bytes = chunk.getBytes(self.tb.memRegistry());
         const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
 
-        const result = utf8.findPosByWidth(chunk_bytes, weight, self.tb.tabWidth(), is_ascii_only, false, self.tb.widthMethod());
+        const result = utf8.findPosByWidth(chunk_bytes, weight, self.tb.tabWidth(), self.tb.controlDisplay(), is_ascii_only, false, self.tb.widthMethod());
         const split_byte_offset = result.byte_offset;
 
         const left_chunk = self.tb.createChunk(
@@ -380,6 +385,12 @@ pub const EditBuffer = struct {
         }
     }
 
+    /// A grapheme can continue across the join, so widths do not add; measure the joined bytes.
+    fn mergeSegmentCallback(ctx: ?*anyopaque, left: *const Segment, right: *const Segment) Segment {
+        const edit_buf = @as(*EditBuffer, @ptrCast(@alignCast(ctx.?)));
+        return .{ .text = edit_buf.tb.createChunk(left.text.mem_id, left.text.byte_start, right.text.byte_end) };
+    }
+
     pub fn insertText(self: *EditBuffer, bytes: []const u8) !void {
         if (bytes.len == 0) return;
 
@@ -397,8 +408,6 @@ pub const EditBuffer = struct {
         var result = try self.tb.textToSegments(self.allocator, bytes, base_mem_id, base_start, false);
         defer result.segments.deinit(result.allocator);
 
-        const inserted_width_cols = result.total_width_cols;
-
         // Calculate width after last break
         var width_after_last_break: u32 = 0;
         var num_breaks: usize = 0;
@@ -414,6 +423,8 @@ pub const EditBuffer = struct {
         // Prepare root/end-marker repairs without touching shared history or marker caches.
         var candidate = self.tb.rope().*;
         try candidate.insertSliceByWeight(insert_offset, result.segments.items, &self.segment_splitter);
+        // A merge can change the width before the insert, but the text after it keeps its weight.
+        const end_offset = candidate.totalWeight() - (self.tb.rope().totalWeight() - insert_offset);
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
         self.tb.rope().version = candidate.version;
@@ -428,13 +439,12 @@ pub const EditBuffer = struct {
                 .offset = new_offset,
             };
         } else {
-            const new_col = cursor.col + inserted_width_cols;
-            const new_offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, new_col) orelse 0;
+            const new_col = end_offset - (insert_offset - cursor.col);
             self.cursor = .{
                 .row = cursor.row,
                 .col = new_col,
                 .desired_col = new_col,
-                .offset = new_offset,
+                .offset = end_offset,
             };
         }
 
@@ -514,14 +524,16 @@ pub const EditBuffer = struct {
             if (segment.isBreak()) {
                 inserted_cursor.row += 1;
                 inserted_cursor.col = 0;
-                inserted_cursor.offset += 1;
             } else if (segment.asText()) |chunk| {
                 inserted_cursor.col += chunk.width_cols;
-                inserted_cursor.offset += chunk.width_cols;
             }
         }
         if (inserted_cursor.row != deleted_cursor.row) {
             inserted_cursor.offset = newlineOffset(&inserted, inserted_cursor.row - 1) + 1 + inserted_cursor.col;
+        } else {
+            // A merge can change the width before the insert, but the text after it keeps its weight.
+            inserted_cursor.offset = inserted.totalWeight() - (deleted.totalWeight() - deleted_cursor.offset);
+            inserted_cursor.col = inserted_cursor.offset - (deleted_cursor.offset - deleted_cursor.col);
         }
         inserted_cursor.desired_col = inserted_cursor.col;
 
@@ -710,7 +722,7 @@ pub const EditBuffer = struct {
     /// cursor does not land on the second cell of a wide unit.
     pub fn snapColumn(self: *EditBuffer, row: u32, col: u32) u32 {
         const text = self.tb;
-        const bounds = iter_mod.getCursorUnitBoundsAt(text.rope(), text.memRegistry(), row, col, text.tabWidth(), text.widthMethod());
+        const bounds = iter_mod.getCursorUnitBoundsAt(text.rope(), text.memRegistry(), row, col, text.tabWidth(), text.controlDisplay(), text.widthMethod());
         return if (bounds) |unit| unit.start else col;
     }
 

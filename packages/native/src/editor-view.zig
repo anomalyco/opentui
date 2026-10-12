@@ -931,7 +931,7 @@ pub const EditorView = struct {
             self.edit_buffer.tb.pool,
             self.edit_buffer.tb.link_pool,
             self.edit_buffer.tb.width_method,
-            .{ .io = self.edit_buffer.tb.io, .logger = self.edit_buffer.tb.logger },
+            .{ .io = self.edit_buffer.tb.io, .logger = self.edit_buffer.tb.logger, .control_display = self.edit_buffer.tb.control_display },
         );
         errdefer if (self.placeholder_buffer == null) placeholder.deinit();
         const mem_id = try placeholder.replaceOwnedStyledText(

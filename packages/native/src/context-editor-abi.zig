@@ -153,6 +153,13 @@ pub fn ot_edit_buffer_get_range(context: ?*Owner, id: ?*const c.ot_handle, by_co
     return c.OT_OK;
 }
 
+pub fn ot_edit_buffer_measure_text(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]const u8, byte_count: u32, out: ?*u32) callconv(.c) c.ot_status {
+    const owner = admit(context, true) catch |err| return fail(context, err);
+    if (id == null or out == null or (byte_count != 0 and bytes == null)) return fail(owner, error.InvalidOptions);
+    out.?.* = owner.core.editMeasureText(abi.handleFromC(id.?.*), if (bytes) |p| p[0..byte_count] else &.{}) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_edit_buffer_set_defaults(context: ?*Owner, id: ?*const c.ot_handle, mask: u32, options: ?*const c.ot_editor_style) callconv(.c) c.ot_status {
     const owner = admit(context, false) catch |err| return fail(context, err);
     if (id == null) return fail(owner, error.InvalidOptions);
@@ -613,7 +620,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
     style.struct_size = @sizeOf(c.ot_editor_style);
     style.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const chunks = std.mem.zeroes([2]c.ot_styled_text_chunk);
-    for (0..18) |row| {
+    for (0..21) |row| {
         const status = switch (row) {
             0 => ot_edit_buffer_set_tab_width(&owner, &edit_id, 256),
             1 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_DEBUG_ROPE + 1, 0),
@@ -622,10 +629,10 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             4 => ot_edit_buffer_history(&owner, &edit_id, 0, &bytes, bytes.len - 1, &count),
             5 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "x", 1, 2),
             6 => abi.ot_edit_buffer_set_text(&owner, &edit_id, null, 1, 0),
-            // C0, C1 and DEL bytes other than tab, CR and LF are rejected whole.
-            7 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "a\x0cb", 3, 1),
-            8 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "a\x00", 2),
-            9 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "\xc2\x85", 2),
+            // Controls are text, but invalid UTF-8 beside them rejects the whole edit.
+            7 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "a\x0c\xff", 3, 1),
+            8 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "\x00\xc2", 2),
+            9 => ot_editor_view_set_placeholder(&owner, &view_id, "\xc2\x85\x80", 3, &chunks, 0),
             10 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_LINE_START + 1, 0, 0, &position),
             11 => ot_edit_buffer_get_range(&owner, &edit_id, 2, 0, 0, 0, 1, &bytes, bytes.len, &count),
             12 => ot_edit_buffer_set_defaults(&owner, &edit_id, 0, &style),
@@ -634,6 +641,9 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             15 => ot_editor_view_command(&owner, &view_id, c.OT_EDITOR_WRAP_MODE, c.OT_SCENE_WRAP_WORD + 1),
             16 => ot_editor_view_replace_selection(&owner, &view_id, "x", 1, null),
             17 => ot_editor_view_set_placeholder(&owner, &view_id, "a", 1, &chunks, chunks.len),
+            18 => ot_editor_view_replace_selection(&owner, &view_id, "\x1b\xff", 2, &count),
+            19 => ot_edit_buffer_measure_text(&owner, &edit_id, null, 1, &count),
+            20 => ot_edit_buffer_measure_text(&owner, &edit_id, "\x85", 1, &count),
             else => unreachable,
         };
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);

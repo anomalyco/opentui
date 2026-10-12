@@ -2129,7 +2129,7 @@ test "drawTextBuffer - wide tab indicator occupies whole cells without moving se
         var output: [32]u8 = undefined;
         const written = try target.writeResolvedChars(&output, false);
         try std.testing.expectEqualStrings(case.text, output[0..written]);
-        try std.testing.expectEqual(@as(u32, 8), @import("../utf8.zig").calculateTextWidth(output[0..written], 2, false, .unicode));
+        try std.testing.expectEqual(@as(u32, 8), @import("../utf8.zig").calculateTextWidth(output[0..written], 2, .hidden, false, .unicode));
         try std.testing.expectEqual(selected, target.get(1, 0).?.bg);
         if (case.width == 8) {
             try std.testing.expectEqual(@as(u32, 'B'), target.get(3, 0).?.char);

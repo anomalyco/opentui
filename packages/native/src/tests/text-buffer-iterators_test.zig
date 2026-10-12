@@ -191,13 +191,13 @@ test "getGraphemeWidthAt - ASCII text" {
 
     try tb.setText("Hello");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - emoji and wide characters" {
@@ -209,10 +209,10 @@ test "getGraphemeWidthAt - emoji and wide characters" {
 
     try tb.setText("a😀b");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - multiple chunks" {
@@ -224,12 +224,12 @@ test "getGraphemeWidthAt - multiple chunks" {
 
     try tb.setText("Hello World");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 11, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 11, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - empty line" {
@@ -241,7 +241,7 @@ test "getGraphemeWidthAt - empty line" {
 
     try tb.setText("");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - at chunk boundary" {
@@ -253,7 +253,7 @@ test "getGraphemeWidthAt - at chunk boundary" {
 
     try tb.setText("abcdef");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - after break segment" {
@@ -265,9 +265,9 @@ test "getGraphemeWidthAt - after break segment" {
 
     try tb.setText("abc\ndef");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - ASCII text" {
@@ -279,12 +279,12 @@ test "getPrevGraphemeWidth - ASCII text" {
 
     try tb.setText("Hello");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - emoji and wide characters" {
@@ -296,10 +296,10 @@ test "getPrevGraphemeWidth - emoji and wide characters" {
 
     try tb.setText("a😀b");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - at chunk boundary" {
@@ -311,9 +311,9 @@ test "getPrevGraphemeWidth - at chunk boundary" {
 
     try tb.setText("abcdef");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - emoji at chunk boundary" {
@@ -325,7 +325,7 @@ test "getPrevGraphemeWidth - emoji at chunk boundary" {
 
     try tb.setText("a😀b");
 
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - multiple chunks" {
@@ -337,10 +337,10 @@ test "getPrevGraphemeWidth - multiple chunks" {
 
     try tb.setText("Hello 😀");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - empty line" {
@@ -352,7 +352,7 @@ test "getPrevGraphemeWidth - empty line" {
 
     try tb.setText("");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - col beyond line width" {
@@ -364,7 +364,7 @@ test "getPrevGraphemeWidth - col beyond line width" {
 
     try tb.setText("abc");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 100, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 100, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - multiline" {
@@ -376,11 +376,11 @@ test "getPrevGraphemeWidth - multiline" {
 
     try tb.setText("abc\n😀xyz");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 3, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - CJK characters (Chinese)" {
@@ -392,11 +392,11 @@ test "getGraphemeWidthAt - CJK characters (Chinese)" {
 
     try tb.setText("a世界b");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - various emoji including star" {
@@ -408,9 +408,9 @@ test "getGraphemeWidthAt - various emoji including star" {
 
     try tb.setText("🌟🎉");
 
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - tab characters" {
@@ -423,12 +423,12 @@ test "getGraphemeWidthAt - tab characters" {
 
     try tb.setText("a\tb\t\tc");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 14, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 14, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - tab with different tab_width" {
@@ -441,10 +441,10 @@ test "getGraphemeWidthAt - tab with different tab_width" {
     try tb.setText("x\ty");
 
     tb.setTabWidth(2);
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 2, .unicode));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 2, .hidden, .unicode));
 
     tb.setTabWidth(8);
-    try testing.expectEqual(@as(u32, 8), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 8, .unicode));
+    try testing.expectEqual(@as(u32, 8), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 8, .hidden, .unicode));
 }
 
 test "getGraphemeWidthAt - middle of wide character" {
@@ -456,11 +456,11 @@ test "getGraphemeWidthAt - middle of wide character" {
 
     try tb.setText("世");
 
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    const result = iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod());
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    const result = iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod());
     try testing.expectEqual(@as(u32, 1), result);
 
-    const bounds = iter_mod.getGraphemeBoundsAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()).?;
+    const bounds = iter_mod.getGraphemeBoundsAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()).?;
     try testing.expectEqual(@as(u32, 0), bounds.start);
     try testing.expectEqual(@as(u32, 2), bounds.end);
 }
@@ -474,7 +474,7 @@ test "getGraphemeWidthAt - invalid row" {
 
     try tb.setText("test");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 5, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 5, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - CJK characters" {
@@ -486,11 +486,11 @@ test "getPrevGraphemeWidth - CJK characters" {
 
     try tb.setText("a世界b");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - star emoji" {
@@ -502,9 +502,9 @@ test "getPrevGraphemeWidth - star emoji" {
 
     try tb.setText("x🌟y");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - tabs" {
@@ -517,9 +517,9 @@ test "getPrevGraphemeWidth - tabs" {
 
     try tb.setText("a\tb");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - invalid row" {
@@ -531,7 +531,7 @@ test "getPrevGraphemeWidth - invalid row" {
 
     try tb.setText("test");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 10, 5, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 10, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt and getPrevGraphemeWidth - mixed content" {
@@ -544,16 +544,16 @@ test "getGraphemeWidthAt and getPrevGraphemeWidth - mixed content" {
 
     try tb.setText("Hi\t世🌟!");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }

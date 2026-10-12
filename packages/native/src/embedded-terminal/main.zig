@@ -183,14 +183,15 @@ pub const EmbeddedTerminal = struct {
                 return error.InvalidDimensions;
             }
         }
+        const fg, const bg = .{ self.render_state.colors.foreground, self.render_state.colors.background };
         self.render_state.update(self.allocator, &self.terminal) catch |err| {
             self.render_state.deinit(self.allocator);
             self.render_state = .empty;
             return err;
         };
-        if (self.force_redraw) {
-            self.render_state.dirty = .full;
-        }
+        // Ghostty does not dirty rows when OSC 10/11/110/111 or reverse video change the default colors.
+        const colors = &self.render_state.colors;
+        if (self.force_redraw or !std.meta.eql(fg, colors.foreground) or !std.meta.eql(bg, colors.background)) self.render_state.dirty = .full;
         try compositor.compose(self.allocator, &self.render_state, target, x, y, self.transparent_background, checked);
         self.force_redraw = false;
     }

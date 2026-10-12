@@ -265,6 +265,19 @@ export class EditBuffer extends EventEmitter {
     return this.position(NativeEditPositionQuery.LineStart, row)?.offset ?? 0
   }
 
+  /**
+   * Returns the global display offset at the end of `text` as this buffer would lay it out, without storing it: its
+   * cells under this buffer's width method, tab width, and control notation, plus one per line break.
+   */
+  public measureText(text: string): number {
+    this.guard()
+    return this.lib.contextEditBufferMeasureText(
+      this.native.handle.context,
+      this.native.handle,
+      this.lib.encoder.encode(text),
+    )
+  }
+
   public getTextRange(startOffset: number, endOffset: number): string {
     this.guard()
     if (startOffset >= endOffset) return ""

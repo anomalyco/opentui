@@ -1200,8 +1200,9 @@ ot_status ot_syntax_style_destroy(ot_context *, const ot_handle *style);
 /* NULL clears the binding. A non-NULL style must belong to this Context. */
 ot_status ot_edit_buffer_set_syntax_style(ot_context *, const ot_handle *edit_buffer, const ot_handle *style);
 /* Copy UTF-8 bytes into owned storage; bytes may be NULL only for zero length.
- * C0/C1/DEL controls reject except tab, CR, and LF. Queries normalize line endings
- * to LF. preserve_history is 0 (clear history) or 1 (create an undo point).
+ * Editors keep C0, DEL, and C1 controls and show them as notation: ^@..^_ and ^?
+ * in two cells, <80>..<9f> in four. Tab, CR, and LF keep their meaning. Queries
+ * normalize line endings to LF. preserve_history is 0 (clear history) or 1 (create an undo point).
  * Replacement resets the cursor to the origin; insertion uses the primary cursor.
  * No input memory remains borrowed after return. */
 ot_status ot_edit_buffer_set_text(ot_context *, const ot_handle *edit_buffer,
@@ -1275,6 +1276,12 @@ ot_status ot_edit_buffer_get_position(ot_context *, const ot_handle *, uint32_t 
 ot_status ot_edit_buffer_get_range(ot_context *, const ot_handle *, uint32_t by_coords,
     uint32_t start_row, uint32_t start_col, uint32_t end_row, uint32_t end_col,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
+/* Lays UTF-8 bytes out as set_text would, without storing them, and reports the offset at
+ * their end: display cells under the buffer's width method, tab width, and control notation,
+ * plus one per line break (LF, CR, or CRLF). bytes may be NULL only for zero length; the
+ * byte limit and UTF-8 validation of set_text apply. Failures preserve out_width. */
+ot_status ot_edit_buffer_measure_text(ot_context *, const ot_handle *edit_buffer,
+    const uint8_t *bytes, uint32_t byte_count, uint32_t *out_width);
 
 #define OT_EDITOR_STYLE_FOREGROUND UINT32_C(1)
 #define OT_EDITOR_STYLE_BACKGROUND UINT32_C(2)

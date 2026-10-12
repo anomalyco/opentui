@@ -529,7 +529,7 @@ const TextRow = struct {
             const width = if (cluster != null and target.width_method != .wcwidth)
                 cluster.?.width_cols
             else
-                utf8.getWidthAt(bytes, 0, tab_width, target.width_method);
+                utf8.getWidthAt(bytes, 0, tab_width, .hidden, target.width_method);
             if (width == 0) continue;
             const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
             self.advance_cells += width;
@@ -1828,7 +1828,7 @@ pub const OptimizedBuffer = struct {
         defer scratch_allocator.free(input);
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(scratch_allocator);
-        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, utf8.isAsciiOnly(input), self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, .hidden, utf8.isAsciiOnly(input), self.width_method, &clusters);
 
         const PreparedRun = struct { x: u32, char: u32, count: u32 };
         var runs: std.ArrayListUnmanaged(PreparedRun) = .empty;
@@ -1974,7 +1974,7 @@ pub const OptimizedBuffer = struct {
 
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(self.allocator);
-        try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, is_ascii_only, self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, .hidden, is_ascii_only, self.width_method, &clusters);
 
         var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y) };
         while (layout.next()) |glyph| {
@@ -2285,7 +2285,7 @@ pub const OptimizedBuffer = struct {
         else
             0;
         const indicator_width = if (indicator_length != 0)
-            utf8.getGraphemeWidthAt(indicator_bytes[0..indicator_length], 0, text_buffer.tabWidth(), text_buffer.widthMethod())
+            utf8.getGraphemeWidthAt(indicator_bytes[0..indicator_length], 0, text_buffer.tabWidth(), text_buffer.controlDisplay(), text_buffer.widthMethod())
         else
             0;
         const text_defaults = text_buffer.defaults();
@@ -2386,13 +2386,14 @@ pub const OptimizedBuffer = struct {
             for (vline.chunks.items) |vchunk| {
                 const chunk = vchunk.chunk;
                 const chunk_bytes = chunk.getBytes(text_buffer.memRegistry());
-                const render_clusters = chunk.getRenderClusters(text_buffer.getAllocator(), text_buffer.memRegistry(), text_buffer.tabWidth(), text_buffer.widthMethod()) catch |err| {
+                const render_clusters = chunk.getRenderClusters(text_buffer.getAllocator(), text_buffer.memRegistry(), text_buffer.tabWidth(), text_buffer.controlDisplay(), text_buffer.widthMethod()) catch |err| {
                     if (checked) return err;
                     continue;
                 };
                 const line_col_offset = vline.document_cell_offset;
 
-                if (currentX >= @as(i32, @intCast(self.width))) {
+                // A glyph in the last column can still take marks that start this chunk.
+                if (currentX >= @as(i32, @intCast(self.width)) and mark_base == null) {
                     document_cell_offset += vchunk.width_cols;
                     currentX += @intCast(vchunk.width_cols);
                     continue;
@@ -2407,7 +2408,7 @@ pub const OptimizedBuffer = struct {
                     special_idx += 1;
                 }
 
-                text_buffer_loop: while (byte_offset < byte_end and col < col_end) {
+                text_buffer_loop: while (byte_offset < byte_end) {
                     const at_special = special_idx < render_clusters.len and render_clusters[special_idx].byte_start == byte_offset;
 
                     var grapheme_bytes: []const u8 = undefined;
@@ -2429,11 +2430,17 @@ pub const OptimizedBuffer = struct {
                         // Sparse metadata omits printable ASCII and zero-width control characters.
                         // Printable ASCII is one cell under every width method.
                         ascii = isPrintableAscii(grapheme_bytes);
-                        cluster_width_cols = if (ascii) 1 else utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
+                        cluster_width_cols = if (ascii) 1 else utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.controlDisplay(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
-                    // Only a glyph that this iteration draws, or a zero-width cluster, sets it again.
-                    const previous_glyph = mark_base;
+                    // A combining mark joins the glyph before it, which passed the checks below; other
+                    // zero-width clusters keep that glyph. Only a glyph that this iteration draws sets it again.
+                    if (cluster_width_cols == 0) {
+                        if (mark_base != null and utf8.isCombiningMark(grapheme_bytes)) {
+                            mark_base = try self.attachCombiningMark(checked, grapheme_bytes, mark_base.?, @intCast(currentY), text_buffer.widthMethod());
+                        }
+                        continue;
+                    }
                     mark_base = null;
 
                     if (rendered_col_in_vline < horizontal_offset) {
@@ -2616,17 +2623,6 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    if (cluster_width_cols == 0) {
-                        // A combining mark joins the glyph before it; other zero-width clusters keep it.
-                        if (previous_glyph) |glyph| {
-                            mark_base = if (utf8.isCombiningMark(grapheme_bytes))
-                                try self.attachCombiningMark(checked, grapheme_bytes, glyph, @intCast(currentY))
-                            else
-                                glyph;
-                        }
-                        continue;
-                    }
-
                     var drawFg = finalFg;
                     var drawBg = finalBg;
                     const drawAttributes = finalAttributes;
@@ -2663,6 +2659,9 @@ pub const OptimizedBuffer = struct {
 
                     if (is_blank) {
                         const useTransparentTextFastPath = opacity == 1.0 and ansi.alpha(drawBg) == 0;
+                        // A control is a cluster of its own. Its notation is one printable glyph per cell.
+                        const first_cp = utf8.decodeUtf8Unchecked(grapheme_bytes, 0).cp;
+                        const is_notation = utf8.controlNotationWidth(first_cp) == cluster_width_cols;
                         var tab_col: u32 = 0;
                         while (tab_col < cluster_width_cols) : (tab_col += 1) {
                             if (rendered_col_in_vline + tab_col >= horizontal_offset + viewport_width) break;
@@ -2671,7 +2670,7 @@ pub const OptimizedBuffer = struct {
                             if (tab_x >= @as(i32, @intCast(self.width))) break;
                             if (!self.isPointInScissor(tab_x, currentY)) continue;
 
-                            var char = DEFAULT_SPACE_CHAR;
+                            var char: u32 = if (is_notation) utf8.controlNotationGlyph(first_cp, tab_col) else DEFAULT_SPACE_CHAR;
                             var fg = drawFg;
                             if (is_tab and tab_col == 0 and indicator_width > 0 and indicator_width <= cluster_width_cols and
                                 @as(u64, rendered_col_in_vline) + indicator_width <= @as(u64, horizontal_offset) + viewport_width)
@@ -2724,6 +2723,8 @@ pub const OptimizedBuffer = struct {
                     rendered_col_in_vline += cluster_width_cols;
                     col += cluster_width_cols;
                 }
+                // The ellipsis stands for dropped text, so the marks after it have no base glyph.
+                if (chunk == &layout_view.ellipsis_chunk) mark_base = null;
             }
 
             const is_last_vline_of_logical_line = (slice_idx + 1 >= virtual_lines[firstVisibleLine..lastPossibleLine].len) or
@@ -2743,8 +2744,8 @@ pub const OptimizedBuffer = struct {
     /// Combines a zero-width mark with the glyph that this draw wrote just before it, as if both
     /// were one cluster. The cell keeps its colors, which already have opacity applied.
     /// Returns the combined glyph, or null when the cell does not hold that glyph or cannot
-    /// hold the combination.
-    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32) !?MarkBase {
+    /// hold the combination in the same cells (U+FE0F can widen a cluster beyond its layout).
+    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32, width_method: utf8.WidthMethod) !?MarkBase {
         const index = self.coordsToIndex(base.x, y);
         // A blended space keeps the glyph under it, which this draw did not write.
         if (self.buffer.char[index] != base.char) return null;
@@ -2762,6 +2763,7 @@ pub const OptimizedBuffer = struct {
         if (base_bytes.len + mark.len > combined.len) return null;
         @memcpy(combined[0..base_bytes.len], base_bytes);
         @memcpy(combined[base_bytes.len..][0..mark.len], mark);
+        if (utf8.getGraphemeWidthAt(combined[0 .. base_bytes.len + mark.len], 0, 1, .hidden, width_method) != gp.encodedCharWidth(base.char)) return null;
         const id = self.acquireGlyph(combined[0 .. base_bytes.len + mark.len]) catch |err| {
             if (checked) return err;
             self.logger.warn("Failed to allocate grapheme: {}", .{err});
@@ -3345,7 +3347,7 @@ pub const OptimizedBuffer = struct {
         }
 
         const is_ascii = utf8.isAsciiOnly(text);
-        const titleLength = @as(i32, @intCast(utf8.calculateTextWidth(text, 2, is_ascii, self.width_method)));
+        const titleLength = @as(i32, @intCast(utf8.calculateTextWidth(text, 2, .hidden, is_ascii, self.width_method)));
         const minTitleSpace = 4;
 
         if (@as(i32, @intCast(width)) < titleLength + minTitleSpace) {

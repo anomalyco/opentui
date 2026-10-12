@@ -71,8 +71,8 @@ describe("statistics and manifest", () => {
       "JS Text/text-buffer-word-wrap-measure",
       "JS Buffer/draw-box-titled-scissored",
     ])
-    expect(manifest.cases.find(({ name }) => name === "draw-box-titled-scissored")?.workload_version).toBe(2)
-    expect(manifestHash(manifest)).toBe("sha256:a046b0f302d33ad7eacdbe6e0b951f2a60c7b43863acd3f3bfd06c611902f01e")
+    expect(manifest.cases.find(({ name }) => name === "draw-box-titled-scissored")?.workload_version).toBe(3)
+    expect(manifestHash(manifest)).toBe("sha256:41cc6f0856b059d6b77f0575f7cdd7c297ddd9e59b55185f3b7fc1ef4ce7e1d7")
     expect(manifestHash({ ...manifest, protocol_version: 2 })).not.toBe(manifestHash(manifest))
   })
 
@@ -314,14 +314,17 @@ test("canonical cases perform and validate work across consecutive batches", asy
   }
 })
 
-test("canonical box drawing validation rejects a no-op", async () => {
+test("canonical box drawing validation rejects a batch of no-ops", async () => {
   const benchmark = defaultBenchmarkCases.find(({ name }) => name === "draw-box-titled-scissored")!
   const runtime = await benchmark.setup()
   const drawBox = OptimizedBuffer.prototype.drawBox
-  OptimizedBuffer.prototype.drawBox = () => {}
   try {
     runtime.run(0)
-    expect(() => runtime.validateBatch(1)).toThrow("draw-box-titled-scissored: observation")
+    runtime.validateBatch(1)
+    OptimizedBuffer.prototype.drawBox = () => {}
+    runtime.run(1)
+    runtime.run(2)
+    expect(() => runtime.validateBatch(2)).toThrow("draw-box-titled-scissored: observation")
   } finally {
     OptimizedBuffer.prototype.drawBox = drawBox
     await runtime.teardown()

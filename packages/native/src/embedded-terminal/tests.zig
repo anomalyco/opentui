@@ -202,7 +202,7 @@ test "embedded terminal composes dirty rows into an OptimizedBuffer" {
     try std.testing.expectEqual(@as(u32, 'A'), target.get(1, 0).?.char);
 }
 
-test "embedded terminal redraws changed rows and clips composition" {
+test "embedded terminal redraws changed rows and default colors and clips composition" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -228,6 +228,33 @@ test "embedded terminal redraws changed rows and clips composition" {
     try terminal.compose(target, 0, 0);
     try std.testing.expectEqual(@as(u32, 'a'), target.get(0, 0).?.char);
     try std.testing.expectEqual(buffer.DEFAULT_SPACE_CHAR, target.get(0, 1).?.char);
+
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    const blue = ansi.rgbColor(0, 0, 255, 255);
+    // No step invalidates or writes row 1, so the row 1 sentinel survives unless every row is redrawn.
+    const steps = [_]struct { write: []const u8, fg: buffer.RGBA, bg: buffer.RGBA, full: bool }{
+        .{ .write = "\x1b[1;1Hb", .fg = white, .bg = black, .full = false },
+        .{ .write = "\x1b]11;rgb:ff/00/00\x1b\\", .fg = white, .bg = red, .full = true },
+        .{ .write = "\x1b]10;rgb:00/00/ff\x07", .fg = blue, .bg = red, .full = true },
+        .{ .write = "\x1b[?5h", .fg = red, .bg = blue, .full = true },
+        .{ .write = "\x1b[?5h\x1b]10;rgb:00/00/ff\x07\x1b[1;1Hc", .fg = red, .bg = blue, .full = false },
+        .{ .write = "\x1b[?5l", .fg = blue, .bg = red, .full = true },
+        .{ .write = "\x1b]110\x07", .fg = white, .bg = red, .full = true },
+        .{ .write = "\x1b]111\x07", .fg = white, .bg = black, .full = true },
+        .{ .write = "\x1b]4;0;rgb:00/ff/00\x07", .fg = white, .bg = black, .full = true },
+        .{ .write = "\x1b[?5h\x1bc", .fg = white, .bg = black, .full = true },
+    };
+    for (steps, 0..) |step, index| {
+        errdefer std.debug.print("step {d}\n", .{index});
+        try terminal.write(step.write);
+        target.set(0, 1, sentinel);
+        try terminal.compose(target, 0, 0);
+        try std.testing.expectEqual(step.fg, target.get(0, 0).?.fg);
+        try std.testing.expectEqual(step.bg, target.get(0, 0).?.bg);
+        try std.testing.expectEqual(if (step.full) buffer.DEFAULT_SPACE_CHAR else 'Q', target.get(0, 1).?.char);
+    }
 }
 
 test "embedded terminal exposes cursor state" {

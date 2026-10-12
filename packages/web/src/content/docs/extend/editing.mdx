@@ -134,7 +134,7 @@ click maps to the painted character. Reset the matching form when the selection 
 | Move                | `moveCursorLeft`, `moveCursorRight`, `moveCursorUp`, `moveCursorDown`, `gotoLine`                      |
 | Set cursor          | `setCursor`, `setCursorToLineCol`, `setCursorByOffset`                                                 |
 | Read cursor         | `getCursorPosition`, `getNextWordBoundary`, `getPrevWordBoundary`, `getEOL`                            |
-| Convert coordinates | `offsetToPosition`, `positionToOffset`, `getLineStartOffset`                                           |
+| Convert coordinates | `offsetToPosition`, `positionToOffset`, `getLineStartOffset`, `measureText`                            |
 | Read text           | `getText`, `getTextRange`, `getTextRangeByCoords`, `getLineCount`                                      |
 | History             | `undo`, `redo`, `canUndo`, `canRedo`, `clearHistory`                                                   |
 | Style               | Default-style, syntax-style, and highlight methods shared with `TextBuffer`                            |
@@ -143,11 +143,32 @@ click maps to the painted character. Reset the matching form when the selection 
 `setText()` resets history and the native add buffer. `replaceText()` creates an undo point. All replacement methods
 copy text into native-owned memory. The `Owned` variants retain the same public behavior without a borrowed-memory path.
 
-Text that you replace or insert must not contain control characters other than tab, carriage return, and line feed.
-The replacement and insertion methods throw `NativeError` with status `InvalidArgument` for C0 controls, DEL, and C1
-controls, and the edit buffer does not change. The same rule applies to editor placeholders, `Textarea.initialValue`,
-and `Input.value`. `Textarea` and `Input` remove these characters from pasted text and ignore key sequences that
-contain them.
+An editor keeps every control character and shows it as notation, as Vim does. C0 controls other than tab, carriage
+return, and line feed show as `^@` to `^_` in two cells, DEL as `^?` in two cells, and C1 controls as lowercase hex
+`<80>` to `<9f>` in four cells. The cursor stops before each control and deletes it as one unit, wrapping never splits
+its notation, and `getText()`, history, and selected text return the original characters. Tab, carriage return, and
+line feed keep their meaning. The same rule applies to editor placeholders, `Textarea.initialValue`, and `Input.value`.
+`Input.maxLength` counts the characters of the value, controls included. Read-only text, such as `TextRenderable`,
+still gives controls no cells. `Textarea` and `Input` ignore key sequences that contain control characters.
+
+Pasted text keeps its controls, but `Textarea` and `Input` remove terminal escape sequences from it with
+`stripAnsiSequences()`, the same way on Bun and Node: control sequences such as `ESC [31m`, control strings such as
+OSC titles and hyperlinks through BEL or ST, other escapes such as `ESC ( B`, and their C1 forms. A sequence ends at
+the first character that cannot continue it, and a lone ESC or a sequence that the paste cuts off is removed too, so a
+paste never inserts ESC.
+
+`measureText(text)` returns the global display offset at the end of `text` as the buffer would lay it out, without
+storing it. It uses the buffer's width method, tab width, and control notation, and counts each line break as one.
+JavaScript width functions such as `Bun.stringWidth()` and `string-width` give controls and tabs no cells and count
+no line breaks, so do not use them for editor offsets. To map a string index in the buffer text to an offset, measure
+the text before it. To map an offset to a string index, take the length of `getTextRange(0, offset)`:
+
+```typescript
+buffer.setText("\f@file")
+const text = buffer.getText()
+const offset = buffer.measureText(text.slice(0, text.indexOf("@"))) // 2: ^L takes two cells
+buffer.getTextRange(0, offset).length // 1: the index of "@"
+```
 
 The edit buffer emits native `"cursor-changed"` and `"content-changed"` events through its `EventEmitter` interface.
 `undo()` and `redo()` also emit `"cursorChanged"`. Native code reports each event during the edit call. Core then
@@ -239,8 +260,8 @@ global display-width offset and uses it to index a JavaScript string by UTF-16 c
 
 The result is unreliable after wide CJK text, emoji, line breaks, combining sequences, or other complex graphemes. It
 also returns a nearby character at some end-of-line and end-of-buffer positions. Use `logicalCursor`, `visualCursor`,
-`offsetToPosition()`, and `positionToOffset()` for display coordinates. Build a separate grapheme-to-UTF-16 map when a
-JavaScript string index is required.
+`offsetToPosition()`, and `positionToOffset()` for display coordinates. Use `measureText()` and `getTextRange()` to map
+between a JavaScript string index and an offset.
 
 ## Renderable base classes
 

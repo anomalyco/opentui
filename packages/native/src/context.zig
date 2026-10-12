@@ -2364,21 +2364,11 @@ pub const Context = struct {
     }
 
     pub fn validateTextBytes(text: *const text_buffer.UnifiedTextBuffer, bytes: []const u8, retained_bytes: u32) !void {
-        // Rope columns and line counts are u32. Tabs are the largest cell/byte
-        // expansion; reserve one count for the trailing logical line.
-        const bytes_max = (std.math.maxInt(u32) - 1) / @as(u32, @max(text.tabWidth(), 1));
+        // Rope columns and line counts are u32. Tabs and control notation (two cells per byte)
+        // are the largest cell/byte expansion; reserve one count for the trailing logical line.
+        const bytes_max = (std.math.maxInt(u32) - 1) / @as(u32, @max(text.tabWidth(), 2));
         if (retained_bytes > bytes_max or bytes.len > bytes_max - retained_bytes) return error.TextLimit;
         if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
-    }
-
-    fn validateEditTextBytes(text: *const text_buffer.UnifiedTextBuffer, bytes: []const u8, retained_bytes: u32) !void {
-        try validateTextBytes(text, bytes, retained_bytes);
-        // Cell-based editing cannot navigate standalone zero-width controls yet.
-        var codepoints = std.unicode.Utf8View.initUnchecked(bytes).iterator();
-        while (codepoints.nextCodepoint()) |codepoint| {
-            if ((codepoint < 0x20 and codepoint != '\t' and codepoint != '\r' and codepoint != '\n') or
-                (codepoint >= 0x7f and codepoint <= 0x9f)) return error.InvalidUnicode;
-        }
     }
 
     pub fn sceneSetStyledText(self: *Context, handle: Handle, bytes: []const u8, chunks: []const StyledTextChunk) !void {
@@ -2660,6 +2650,19 @@ pub const Context = struct {
             },
         };
         return buffer.copyTextRange(offsets.start, offsets.end, out);
+    }
+
+    /// Lays `bytes` out as setText would, without storing them, and returns the cursor offset at their end.
+    pub fn editMeasureText(self: *Context, handle: Handle, bytes: []const u8) !u32 {
+        try self.checkSceneRead();
+        const buffer = (try self.getEditBuffer(handle)).buffer.tb;
+        // The byte limit keeps the widths and line breaks within u32.
+        try validateTextBytes(buffer, bytes, 0);
+        var layout = try buffer.textToSegments(self.allocator, bytes, 0, 0, false);
+        defer layout.segments.deinit(layout.allocator);
+        var break_count: u32 = 0;
+        for (layout.segments.items) |*segment| break_count += @intFromBool(segment.isBreak());
+        return layout.total_width_cols + break_count;
     }
 
     pub fn textViewGetSelectedText(self: *Context, handle: Handle, out: []u8) !u32 {
@@ -3393,7 +3396,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        try validateEditTextBytes(edit.buffer.tb, bytes, 0);
+        try validateTextBytes(edit.buffer.tb, bytes, 0);
         if (preserve_history) {
             try edit.buffer.replaceText(bytes);
         } else {
@@ -3406,7 +3409,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        try validateEditTextBytes(edit.buffer.tb, bytes, edit.buffer.tb.getByteSize());
+        try validateTextBytes(edit.buffer.tb, bytes, edit.buffer.tb.getByteSize());
         try edit.buffer.insertText(bytes);
     }
 
@@ -3445,7 +3448,7 @@ pub const Context = struct {
             .delete_forward => try edit.buffer.deleteForward(),
             .backspace => try edit.buffer.backspace(),
             .new_line => {
-                try validateEditTextBytes(edit.buffer.tb, "\n", edit.buffer.tb.getByteSize());
+                try validateTextBytes(edit.buffer.tb, "\n", edit.buffer.tb.getByteSize());
                 try edit.buffer.insertText("\n");
             },
             .delete_line => try edit.buffer.deleteLine(),
@@ -3554,7 +3557,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const view = try self.getEditorView(handle);
         try view.edit.checkMutable();
-        try validateEditTextBytes(view.edit.buffer.tb, bytes, view.edit.buffer.tb.getByteSize());
+        try validateTextBytes(view.edit.buffer.tb, bytes, view.edit.buffer.tb.getByteSize());
         const steps = try view.view.replaceSelectedText(bytes);
         view.invalidate();
         return steps;
@@ -3565,7 +3568,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const view = try self.getEditorView(handle);
         try view.edit.checkMutable();
-        try validateEditTextBytes(view.edit.buffer.tb, bytes, 0);
+        try validateTextBytes(view.edit.buffer.tb, bytes, 0);
         var offset: usize = 0;
         for (chunks) |chunk| {
             if (chunk.byte_count == 0 or chunk.byte_count > bytes.len - offset or

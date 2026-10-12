@@ -29,10 +29,10 @@ test "TextChunk layout cache retries and releases partial allocations" {
         defer cache.clear();
         var chunk: TextChunk = .{ .mem_id = mem_id, .byte_start = 0, .byte_end = text.len, .width_cols = 2560 };
 
-        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode));
+        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode));
         try testing.expect(chunk.getCachedLayoutInfo(2, .unicode) == null);
         failing.fail_index = std.math.maxInt(usize);
-        const retried = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+        const retried = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
         try testing.expectEqual(@as(usize, 512), retried.wrap_breaks.len);
         try testing.expectEqual(@as(usize, 512), retried.cjk_breaks.len);
         try testing.expectEqual(retried.cjk_breaks.ptr, chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr);
@@ -41,7 +41,7 @@ test "TextChunk layout cache retries and releases partial allocations" {
         try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
 
         failing.fail_index = failing.alloc_index + fail_index;
-        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode));
+        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode));
         cache.clear();
         try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
     }
@@ -92,17 +92,17 @@ test "TextChunk.getLayoutInfo returns direct byte and column metadata" {
         .mem_id = mem_id,
         .byte_start = 0,
         .byte_end = @intCast(text.len),
-        .width_cols = @intCast(utf8.calculateTextWidth(text, 2, false, .unicode)),
+        .width_cols = @intCast(utf8.calculateTextWidth(text, 2, .hidden, false, .unicode)),
     };
 
-    const layout = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const layout = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(usize, 1), layout.wrap_breaks.len);
     try testing.expectEqual(@as(u32, 6), layout.wrap_breaks[0].byte_start);
     try testing.expectEqual(@as(u32, 4), layout.wrap_breaks[0].col_start);
     try testing.expectEqual(@as(u32, 7), layout.wrap_breaks[0].byteEnd());
     try testing.expectEqual(@as(u32, 5), layout.wrap_breaks[0].colEnd());
 
-    const cached = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const cached = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@intFromPtr(layout.wrap_breaks.ptr), @intFromPtr(cached.wrap_breaks.ptr));
 
     const zero_width_text = "a\u{200B}b";
@@ -111,9 +111,9 @@ test "TextChunk.getLayoutInfo returns direct byte and column metadata" {
         .mem_id = zero_width_mem_id,
         .byte_start = 0,
         .byte_end = @intCast(zero_width_text.len),
-        .width_cols = @intCast(utf8.calculateTextWidth(zero_width_text, 2, false, .unicode)),
+        .width_cols = @intCast(utf8.calculateTextWidth(zero_width_text, 2, .hidden, false, .unicode)),
     };
-    const zero_width_layout = try zero_width_chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const zero_width_layout = try zero_width_chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(usize, 1), zero_width_layout.wrap_breaks.len);
     try testing.expectEqual(@as(u32, 1), zero_width_layout.wrap_breaks[0].byte_start);
     try testing.expectEqual(@as(u32, 3), zero_width_layout.wrap_breaks[0].byte_len);
@@ -131,24 +131,24 @@ test "TextChunk keeps CJK line opportunities out of the word cache" {
     const text = "\u{65e5}\u{672c}\t\u{8a9e}\u{6587}";
     const mem_id = try registry.register(text, false);
     var chunk: TextChunk = .{ .mem_id = mem_id, .byte_start = 0, .byte_end = text.len, .width_cols = 10 };
-    const initial_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const initial_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expect(@sizeOf(@TypeOf(initial_words)) < @sizeOf(utf8.ChunkLayoutInfo));
     try testing.expectEqual(utf8.WordClass.cjk_word, initial_words.word_classes.first);
     try testing.expectEqual(utf8.WordClass.cjk_word, initial_words.word_classes.last);
     try testing.expectEqual(@as(usize, 1), initial_words.wrap_breaks.len);
     try testing.expectEqual(@as(usize, 0), chunk.cold.?.cjk_breaks.capacity);
-    _ = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    _ = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expect(chunk.cold.?.wrap_breaks != null);
     for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
         for ([_]u8{ 2, 8 }) |tab_width| {
-            const words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, method);
+            const words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, .hidden, method);
             try testing.expectEqual(@as(usize, 1), words.wrap_breaks.len);
             try testing.expectEqual(utf8.LayoutWrapBreakKind.whitespace, words.wrap_breaks[0].kind);
             try testing.expectEqual(@as(u32, tab_width), words.wrap_breaks[0].width_cols);
-            const lines = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, tab_width, method);
+            const lines = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, tab_width, .hidden, method);
             try testing.expectEqual(@as(usize, 1), lines.wrap_breaks.len);
             try testing.expectEqual(@as(usize, 2), lines.cjk_breaks.len);
-            const cached_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, method);
+            const cached_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, .hidden, method);
             try testing.expectEqual(utf8.WordClass.cjk_word, cached_words.word_classes.first);
             try testing.expectEqual(utf8.WordClass.cjk_word, cached_words.word_classes.last);
             try testing.expectEqual(@intFromPtr(words.wrap_breaks.ptr), @intFromPtr(cached_words.wrap_breaks.ptr));
@@ -159,7 +159,7 @@ test "TextChunk keeps CJK line opportunities out of the word cache" {
     const greek = "\u{3bb}-\u{3bb}";
     const greek_id = try registry.register(greek, false);
     var greek_chunk: TextChunk = .{ .mem_id = greek_id, .byte_start = 0, .byte_end = greek.len, .width_cols = 3 };
-    _ = try greek_chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    _ = try greek_chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expect(greek_chunk.getCachedLayoutInfo(2, .unicode) != null);
 }
 
@@ -197,7 +197,7 @@ test "findChunkLayoutInfo classifies direct byte and column break metadata" {
     defer breaks.deinit(testing.allocator);
 
     for (cases) |case| {
-        _ = try utf8.findChunkLayoutInfo(testing.allocator, case.text, case.tab_width, false, .unicode, &breaks);
+        _ = try utf8.findChunkLayoutInfo(testing.allocator, case.text, case.tab_width, .hidden, false, .unicode, &breaks);
         try testing.expectEqualDeep(case.expected, breaks.items);
     }
 }
@@ -207,7 +207,7 @@ test "walkChunkLayoutInfo keeps Prepend joined to an ASCII vector" {
     var breaks: std.ArrayListUnmanaged(utf8.LayoutWrapBreak) = .empty;
     defer breaks.deinit(testing.allocator);
 
-    _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, false, .unicode, &breaks);
+    _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, .hidden, false, .unicode, &breaks);
     try testing.expectEqual(@as(usize, 1), breaks.items.len);
     try testing.expectEqual(@as(u32, 0), breaks.items[0].byte_start);
     try testing.expectEqual(@as(u32, 3), breaks.items[0].byte_len);
@@ -222,7 +222,7 @@ test "walkChunkLayoutInfo ASCII prefixes keep their final grapheme intact" {
     for (0..32) |prefix_len| {
         const text = try std.fmt.allocPrint(testing.allocator, "{s} \u{301} \u{754c}abc", .{("a" ** 32)[0..prefix_len]});
         defer testing.allocator.free(text);
-        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, false, .unicode, &breaks);
+        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, .hidden, false, .unicode, &breaks);
         try testing.expectEqual(@as(usize, 3), breaks.items.len);
         try testing.expectEqual(@as(u32, @intCast(prefix_len)), breaks.items[0].byte_start);
         try testing.expectEqual(@as(u32, 3), breaks.items[0].byte_len);
@@ -244,7 +244,7 @@ test "walkChunkLayoutInfo preserves mixed-content whitespace graphemes" {
     defer breaks.deinit(testing.allocator);
 
     for (cases) |text| {
-        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, false, .unicode, &breaks);
+        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, .hidden, false, .unicode, &breaks);
         try testing.expectEqual(@as(usize, 1), breaks.items.len);
         try testing.expectEqual(@as(u32, 0), breaks.items[0].byte_start);
         try testing.expectEqual(@as(u32, @intCast(text.len)), breaks.items[0].byte_len);
@@ -278,7 +278,7 @@ test "walkChunkLayoutInfo stops streaming after visitor allocation failure" {
     };
     var ctx: Context = .{ .allocator = failing.allocator() };
     defer ctx.breaks.deinit(ctx.allocator);
-    _ = try utf8.walkChunkLayoutInfoComptime(text, 2, true, .unicode, &ctx, Context.visit);
+    _ = try utf8.walkChunkLayoutInfoComptime(text, 2, .hidden, true, .unicode, &ctx, Context.visit);
     try testing.expect(failing.has_induced_failure);
     try testing.expect(ctx.failed);
     try testing.expectEqual(@as(usize, 1), ctx.callback_count);
@@ -301,11 +301,11 @@ test "TextChunk.getLayoutInfo refreshes tab-dependent metadata" {
         .width_cols = 4,
     };
 
-    const first = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const first = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 2), first.wrap_breaks[0].width_cols);
     const capacity_after_first = arena.queryCapacity();
 
-    const second = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 8, .unicode);
+    const second = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 8, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 8), second.wrap_breaks[0].width_cols);
     try testing.expectEqual(@intFromPtr(first.wrap_breaks.ptr), @intFromPtr(second.wrap_breaks.ptr));
     try testing.expectEqual(capacity_after_first, arena.queryCapacity());
@@ -326,15 +326,15 @@ test "TextChunk.getRenderClusters reuses tab-dependent cache storage" {
         .width_cols = 4,
     };
 
-    const first = try chunk.getRenderClusters(arena.allocator(), &registry, 2, .unicode);
+    const first = try chunk.getRenderClusters(arena.allocator(), &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 2), first[0].width_cols);
     const capacity_after_first = arena.queryCapacity();
 
-    const wider = try chunk.getRenderClusters(arena.allocator(), &registry, 8, .unicode);
+    const wider = try chunk.getRenderClusters(arena.allocator(), &registry, 8, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 8), wider[0].width_cols);
     try testing.expectEqual(@intFromPtr(first.ptr), @intFromPtr(wider.ptr));
 
-    const narrower = try chunk.getRenderClusters(arena.allocator(), &registry, 4, .unicode);
+    const narrower = try chunk.getRenderClusters(arena.allocator(), &registry, 4, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 4), narrower[0].width_cols);
     try testing.expectEqual(@intFromPtr(first.ptr), @intFromPtr(narrower.ptr));
     try testing.expectEqual(capacity_after_first, arena.queryCapacity());

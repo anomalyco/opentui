@@ -220,17 +220,84 @@ test "EditBuffer - replacement notifications observe accepted state" {
     try std.testing.expectEqual(@as(usize, 2), capture.count);
 }
 
-/// Text inserted piece by piece, so every piece is its own chunk; `col` moves the cursor first.
-const Piece = struct { col: ?u32 = null, bytes: []const u8 };
+/// Text inserted piece by piece; `col` moves the cursor on its row first.
+/// A `replace` piece goes in through an empty replacement range at the cursor instead.
+const Piece = struct { col: ?u32 = null, bytes: []const u8, replace: bool = false };
 
 fn insertPieces(pools: *TestPools, method: utf8.WidthMethod, pieces: []const Piece) !*EditBuffer {
     const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
     errdefer eb.deinit();
+    const ignore = struct {
+        fn handle(_: *anyopaque) void {}
+    };
     for (pieces) |piece| {
-        if (piece.col) |col| try eb.setCursor(0, col);
-        try eb.insertText(piece.bytes);
+        if (piece.col) |col| try eb.setCursor(eb.cursor.row, col);
+        if (piece.replace) try eb.replaceRange(0, 0, piece.bytes, .{ .ctx = eb, .handle = ignore.handle }) else try eb.insertText(piece.bytes);
     }
     return eb;
+}
+
+test "EditBuffer - text typed in pieces measures and moves like the same text set at once" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // `text` defaults to the pieces joined in order; `before` (default `text`) ends where typing leaves the cursor.
+    const Case = struct { pieces: []const Piece, text: ?[]const u8 = null, before: ?[]const u8 = null };
+    const cases = [_]Case{
+        .{ .pieces = &.{ .{ .bytes = "h" }, .{ .bytes = "e" }, .{ .bytes = "l" }, .{ .bytes = "l" }, .{ .bytes = "o" } } },
+        .{ .pieces = &.{ .{ .bytes = "abc" }, .{ .col = 0, .bytes = "xyz" } }, .text = "xyzabc", .before = "xyz" },
+        .{ .pieces = &.{ .{ .bytes = "ab" }, .{ .bytes = "\n" }, .{ .bytes = "c" }, .{ .bytes = "d" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{4f60}" }, .{ .bytes = "\u{597d}" } } },
+        // A later piece continues the grapheme that the previous piece ends with.
+        .{ .pieces = &.{ .{ .bytes = "\u{1f44d}" }, .{ .bytes = "\u{1f3fd}" }, .{ .bytes = "bc" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f44d}" }, .{ .bytes = "\u{1f3fd}\nx" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f44d}" }, .{ .replace = true, .bytes = "\u{1f3fd}" } } },
+        .{ .pieces = &.{ .{ .bytes = "X" }, .{ .col = 0, .bytes = "\u{1f44d}" }, .{ .bytes = "\u{1f3fd}" } }, .text = "\u{1f44d}\u{1f3fd}X", .before = "\u{1f44d}\u{1f3fd}" },
+        .{
+            .pieces = &.{ .{ .bytes = "a\nbc" }, .{ .col = 0, .bytes = "\u{1f468}" }, .{ .bytes = "\u{200d}\u{1f469}" }, .{ .replace = true, .bytes = "\u{200d}\u{1f467}" }, .{ .bytes = "d" } },
+            .text = "a\n\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}dbc",
+            .before = "a\n\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}d",
+        },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f468}" }, .{ .bytes = "\u{200d}" }, .{ .bytes = "\u{1f469}" }, .{ .bytes = "\u{200d}\u{1f467}" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f1fa}" }, .{ .bytes = "\u{1f1f8}" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{ac01}" }, .{ .bytes = "\u{11a8}" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{263a}" }, .{ .bytes = "\u{fe0f}" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{65e5}" }, .{ .bytes = "\u{301}" } } },
+        .{ .pieces = &.{ .{ .bytes = "\u{e01}" }, .{ .bytes = "\u{e35}" } } },
+        // A control shows as notation and never joins a grapheme.
+        .{ .pieces = &.{ .{ .bytes = "\u{e9}" }, .{ .bytes = "\x01" }, .{ .bytes = "\u{e9}" } } },
+    };
+    for ([_]utf8.WidthMethod{ .wcwidth, .unicode, .unicode_wide, .no_zwj }) |method| for (cases) |case| {
+        var joined: [64]u8 = undefined;
+        var joined_len: usize = 0;
+        for (case.pieces) |piece| {
+            @memcpy(joined[joined_len..][0..piece.bytes.len], piece.bytes);
+            joined_len += piece.bytes.len;
+        }
+        const text = case.text orelse joined[0..joined_len];
+        const edited = try insertPieces(&pools, method, case.pieces);
+        defer edited.deinit();
+        const fresh = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
+        defer fresh.deinit();
+        try fresh.setText(case.before orelse text);
+        const last_row = fresh.tb.lineCount() - 1;
+        try fresh.setCursor(last_row, fresh.tb.lineWidthAt(last_row));
+        try std.testing.expectEqualDeep(fresh.getPrimaryCursor(), edited.getPrimaryCursor());
+        try fresh.setText(text);
+        var out: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(text, out[0..edited.getText(&out)]);
+        for (0..edited.tb.rope().count()) |i| {
+            const chunk = edited.tb.rope().get(@intCast(i)).?.asText() orelse continue;
+            try std.testing.expectEqual(edited.tb.measureText(chunk.getBytes(edited.tb.memRegistry())), chunk.width_cols);
+        }
+        // Right stops where it does in the fresh text.
+        try edited.setCursor(0, 0);
+        try fresh.setCursor(0, 0);
+        for (0..text.len + 1) |_| {
+            try std.testing.expectEqualDeep(fresh.getPrimaryCursor(), edited.getPrimaryCursor());
+            edited.moveRight();
+            fresh.moveRight();
+        }
+    };
 }
 
 test "EditBuffer - word boundary and line end walks" {

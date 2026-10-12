@@ -216,8 +216,7 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
 
   if (Buffer.isBuffer(s)) {
     if (s[0]! > 127 && s[1] === undefined) {
-      ;(s[0] as unknown as number) -= 128
-      s = "\x1b" + String(s)
+      s = "\x1b" + String.fromCharCode(s[0]! - 128)
     } else {
       s = String(s)
     }
