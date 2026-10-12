@@ -888,20 +888,21 @@ test("parseKeypress - backspace key with modifiers (Kitty keyboard protocol)", (
 })
 
 test("parseKeypress - Buffer input leaves the buffer unchanged", () => {
-  const raw = (name: string, sequence: string, meta = false): ParsedKey => ({
-    ...{ name, ctrl: false, meta, shift: false, option: false, number: false, sequence, raw: sequence },
-    ...{ eventType: "press", source: "raw" },
-  })
+  const press = { ctrl: false, shift: false, option: false, number: false, eventType: "press", source: "raw" } as const
+  const key = (name: string, sequence: string, meta = false) => ({ ...press, name, meta, sequence, raw: sequence })
   const kittyFlags = { super: false, hyper: false, capsLock: false, numLock: false }
   const cases: Array<[Buffer, boolean, ParsedKey | null]> = [
-    [Buffer.from("a"), false, raw("a", "a")],
-    [Buffer.from([160]), false, raw("space", "\x1b ", true)], // 128 + 32
-    [Buffer.from([225]), false, raw("a", "\x1ba", true)],
-    [Buffer.from([255]), false, raw("backspace", "\x1b\x7f", true)],
+    [Buffer.from("a"), false, key("a", "a")],
+    [Buffer.from("é"), false, key("é", "é")], // two bytes, the first above 127
+    [Buffer.from([127]), false, key("backspace", "\x7f")],
+    [Buffer.from([128]), false, { ...key("space", "\x1b\x00", true), ctrl: true }],
+    [Buffer.from([160]), false, key("space", "\x1b ", true)], // 128 + 32
+    [Buffer.from([225]), false, key("a", "\x1ba", true)],
+    [Buffer.from([255]), false, key("backspace", "\x1b\x7f", true)],
     [
       Buffer.from("\x1b[97;5u"),
       true,
-      { ...raw("a", "a"), ...kittyFlags, ctrl: true, raw: "\x1b[97;5u", source: "kitty" },
+      { ...key("a", "a"), ...kittyFlags, ctrl: true, raw: "\x1b[97;5u", source: "kitty" },
     ],
     [Buffer.from("\x1b[<0;1;1M"), false, null],
   ]
