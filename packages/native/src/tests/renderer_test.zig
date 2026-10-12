@@ -795,22 +795,24 @@ test "renderer preserves wide grapheme when continuation and next cell colors ma
     try std.testing.expectEqualStrings(text, std.mem.trimEnd(u8, screen, " "));
 }
 
-test "renderer closes each attributed run before the next run and the frame end" {
+test "renderer closes each attributed run before the next run starts" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     const white = ansi.rgbColor(255, 255, 255, 255);
     const black = ansi.rgbColor(0, 0, 0, 255);
+    const runs = [_]struct { []const u8, u32 }{ .{ "A", 2 }, .{ "A", 3 }, .{ "界", 2 } };
 
-    // Each base attribute; a run that ends at or before the last column; followed by a run
-    // on the next row, a run after a row that row equality skips, or the end of the frame.
-    for (0..8) |bit| for ([_]u32{ 2, 3 }) |run_x| for ([_]?u32{ 1, 2, null }) |follower_y| {
+    // Each base attribute; a run that ends before the last column, in it, or with a wide cell
+    // that fills it; followed by a run on the next row or after a row that row equality skips;
+    // in a diff frame or a forced frame.
+    for (0..8) |bit| for (runs) |run| for ([_]u32{ 1, 2 }) |follower_y| for ([_]bool{ false, true }) |force| {
         var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, &pools.graphemes, &pools.links);
         defer test_renderer.deinit();
         try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
         const next = test_renderer.renderer.getNextBuffer();
-        try next.drawText("A", run_x, 0, white, black, @as(u32, 1) << @intCast(bit));
-        if (follower_y) |y| try next.drawText("b", 0, y, white, black, 0);
-        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+        try next.drawText(run[0], run[1], 0, white, black, @as(u32, 1) << @intCast(bit));
+        try next.drawText("b", 0, follower_y, white, black, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(force));
 
         var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 3 });
         defer terminal.deinit(std.testing.allocator);
@@ -818,13 +820,10 @@ test "renderer closes each attributed run before the next run and the frame end"
         defer stream.deinit();
         stream.nextSlice(test_renderer.memory.bytes.items);
         const pages = &terminal.screens.active.pages;
-        try std.testing.expect(@as(u16, @bitCast(pages.getCell(.{ .active = .{ .x = @intCast(run_x) } }).?.style().flags)) != 0);
-        if (follower_y) |y| {
-            const cell = pages.getCell(.{ .active = .{ .y = y } }).?;
-            try std.testing.expectEqual(@as(u21, 'b'), cell.cell.codepoint());
-            try std.testing.expectEqual(@as(u16, 0), @as(u16, @bitCast(cell.style().flags)));
-        }
-        try std.testing.expectEqual(@as(u16, 0), @as(u16, @bitCast(terminal.screens.active.cursor.style.flags)));
+        try std.testing.expect(@as(u16, @bitCast(pages.getCell(.{ .active = .{ .x = @intCast(run[1]) } }).?.style().flags)) != 0);
+        const cell = pages.getCell(.{ .active = .{ .y = follower_y } }).?;
+        try std.testing.expectEqual(@as(u21, 'b'), cell.cell.codepoint());
+        try std.testing.expectEqual(@as(u16, 0), @as(u16, @bitCast(cell.style().flags)));
     };
 }
 
