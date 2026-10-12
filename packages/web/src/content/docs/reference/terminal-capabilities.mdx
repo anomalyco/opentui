@@ -192,7 +192,10 @@ Detection changes feature policy:
 - tmux skips Kitty and Sixel detection and enables focus tracking.
 - GNU Screen disables graphics queries and selects conservative width behavior.
 - Zellij accepts notification support only from an OSC 99 query or an explicit override.
-- Multiplexer detection can set `explicit_cursor_positioning` and `unicode` conservatively.
+- tmux 3.6 or newer selects the Unicode width method. Older or unknown tmux versions and GNU Screen select wcwidth.
+  All of them set `explicit_cursor_positioning`.
+- In tmux with `variation-selector-always-wide off`, set `OPENTUI_FORCE_WCWIDTH`. tmux still joins ZWJ and emoji modifier
+  sequences, so wcwidth is the closer method, not an exact match.
 
 The `terminal` fields can describe the multiplexer rather than the outer emulator. Use `multiplexer` for routing
 policy.
