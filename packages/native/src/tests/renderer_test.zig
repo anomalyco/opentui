@@ -795,6 +795,39 @@ test "renderer preserves wide grapheme when continuation and next cell colors ma
     try std.testing.expectEqualStrings(text, std.mem.trimEnd(u8, screen, " "));
 }
 
+test "renderer closes each attributed run before the next run and the frame end" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+
+    // Each base attribute; a run that ends at or before the last column; followed by a run
+    // on the next row, a run after a row that row equality skips, or the end of the frame.
+    for (0..8) |bit| for ([_]u32{ 2, 3 }) |run_x| for ([_]?u32{ 1, 2, null }) |follower_y| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+        const next = test_renderer.renderer.getNextBuffer();
+        try next.drawText("A", run_x, 0, white, black, @as(u32, 1) << @intCast(bit));
+        if (follower_y) |y| try next.drawText("b", 0, y, white, black, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+
+        var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 3 });
+        defer terminal.deinit(std.testing.allocator);
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice(test_renderer.memory.bytes.items);
+        const pages = &terminal.screens.active.pages;
+        try std.testing.expect(@as(u16, @bitCast(pages.getCell(.{ .active = .{ .x = @intCast(run_x) } }).?.style().flags)) != 0);
+        if (follower_y) |y| {
+            const cell = pages.getCell(.{ .active = .{ .y = y } }).?;
+            try std.testing.expectEqual(@as(u21, 'b'), cell.cell.codepoint());
+            try std.testing.expectEqual(@as(u16, 0), @as(u16, @bitCast(cell.style().flags)));
+        }
+        try std.testing.expectEqual(@as(u16, 0), @as(u16, @bitCast(terminal.screens.active.cursor.style.flags)));
+    };
+}
+
 fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

@@ -2930,7 +2930,6 @@ pub const CliRenderer = struct {
                     std.mem.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
             }
 
-            var runStart: i64 = -1;
             var runLength: u32 = 0;
             const cells_updated_before_row = cellsUpdated;
 
@@ -2952,7 +2951,6 @@ pub const CliRenderer = struct {
                     if (cellsEqual and !(clears_pending and cell_type == gp.CHAR_FLAG_IMAGE and dirtyImageChar(image_dirty_items, cell.char))) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
-                            runStart = -1;
                             runLength = 0;
                         }
                         continue;
@@ -2972,7 +2970,6 @@ pub const CliRenderer = struct {
                     if (!should_force and !state.clear and gp.isImageChar(currentCell.?.char)) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
-                            runStart = -1;
                             runLength = 0;
                         }
                         if (currentCell.?.char != cell.char) self.currentRenderBuffer.syncCell(x, y, cell);
@@ -2992,7 +2989,6 @@ pub const CliRenderer = struct {
                     currentFg = null;
                     currentBg = null;
                     currentAttributes = null;
-                    runStart = -1;
                     runLength = 0;
                     self.currentRenderBuffer.syncCell(x, y, cell);
                     cellsUpdated += 1;
@@ -3034,12 +3030,11 @@ pub const CliRenderer = struct {
                     }
                 }
 
-                if (!sameAttributes or runStart == -1) {
+                if (!sameAttributes or runLength == 0) {
                     if (runLength > 0) {
                         writer.writeAll(ansi.ANSI.reset) catch {};
                     }
 
-                    runStart = @intCast(x);
                     runLength = 0;
 
                     currentFg = cell.fg;
@@ -3103,6 +3098,8 @@ pub const CliRenderer = struct {
 
                 cellsUpdated += 1;
             }
+            // A new run sets colors but only turns attributes on, so close an attributed run here.
+            if (runLength > 0 and ansi.TextAttributes.getBaseAttributes(currentAttributes.?) != 0) writer.writeAll(ansi.ANSI.reset) catch {};
             if (cellsUpdated - cells_updated_before_row == self.width) use_row_equality = false;
         }
 
