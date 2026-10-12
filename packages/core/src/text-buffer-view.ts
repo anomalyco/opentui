@@ -180,6 +180,10 @@ export class TextBufferView {
     this.command(NativeTextViewCommand.WrapMode, mode === "none" ? 0 : mode === "char" ? 1 : 2)
   }
 
+  public setWrapIndent(indent: "none" | "same"): void {
+    this.command(NativeTextViewCommand.WrapIndent, indent === "same" ? 1 : 0)
+  }
+
   public setTextAlign(alignment: "left" | "center" | "right"): void {
     this.command(NativeTextViewCommand.TextAlign, alignment === "left" ? 0 : alignment === "center" ? 1 : 2)
   }

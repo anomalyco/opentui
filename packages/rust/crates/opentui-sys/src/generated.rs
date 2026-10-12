@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0xfcf352f7f1c874b8;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0xcb3bb3c1fc12a4de;
 
 pub type ot_status = i32;
 
@@ -70,6 +70,8 @@ pub const OT_SCENE_VIDEO: u32 = 9;
 pub const OT_SCENE_WRAP_NONE: u32 = 0;
 pub const OT_SCENE_WRAP_CHAR: u32 = 1;
 pub const OT_SCENE_WRAP_WORD: u32 = 2;
+pub const OT_SCENE_WRAP_INDENT_NONE: u32 = 0;
+pub const OT_SCENE_WRAP_INDENT_SAME: u32 = 1;
 pub const OT_SCENE_ALIGN_LEFT: u32 = 0;
 pub const OT_SCENE_ALIGN_CENTER: u32 = 1;
 pub const OT_SCENE_ALIGN_RIGHT: u32 = 2;
@@ -512,6 +514,7 @@ pub const OT_EDITOR_DELETE_SELECTION: u32 = 3;
 pub const OT_EDITOR_CURSOR_OFFSET: u32 = 4;
 pub const OT_EDITOR_WRAP_MODE: u32 = 5;
 pub const OT_EDITOR_TAB_INDICATOR: u32 = 6;
+pub const OT_EDITOR_WRAP_INDENT: u32 = 7;
 pub const OT_EDITOR_SELECT_SET: u32 = 0;
 pub const OT_EDITOR_SELECT_UPDATE: u32 = 1;
 pub const OT_EDITOR_SELECT_RESET: u32 = 2;
@@ -590,6 +593,7 @@ pub const OT_TEXT_VIEW_FIRST_LINE_OFFSET: u32 = 2;
 pub const OT_TEXT_VIEW_TAB_INDICATOR: u32 = 3;
 pub const OT_TEXT_VIEW_TRUNCATE: u32 = 4;
 pub const OT_TEXT_VIEW_TEXT_ALIGN: u32 = 5;
+pub const OT_TEXT_VIEW_WRAP_INDENT: u32 = 6;
 pub const OT_TEXT_REPLACEMENT_COUNT_MAX: u32 = 256;
 pub const OT_TEXT_REPLACEMENT_CHUNKS_MAX: u32 = 4096;
 pub const OT_TEXT_REPLACEMENT_BYTES_MAX: u32 = 4194304;
@@ -1026,7 +1030,11 @@ pub struct ot_scene_text_options {
     pub tab_color_set: u32,
     pub tab_color: [u16; 4],
     pub text_align: u32,
+    pub wrap_indent: u32,
 }
+
+// SAFETY: the record has no padding and only integer or float fields.
+unsafe impl Pod for ot_scene_text_options {}
 
 impl Default for ot_scene_text_options {
     fn default() -> Self {
@@ -1055,6 +1063,7 @@ const _: () = {
     assert!(core::mem::offset_of!(ot_scene_text_options, tab_color_set) == 60);
     assert!(core::mem::offset_of!(ot_scene_text_options, tab_color) == 64);
     assert!(core::mem::offset_of!(ot_scene_text_options, text_align) == 72);
+    assert!(core::mem::offset_of!(ot_scene_text_options, wrap_indent) == 76);
 };
 
 #[repr(C)]

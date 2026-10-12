@@ -2220,12 +2220,18 @@ pub fn ot_scene_set_text_options(context: ?*ContextHandle, node_ptr: ?*const c.o
         c.OT_SCENE_ALIGN_RIGHT => .right,
         else => return sessionError(owner, error.InvalidOptions),
     };
+    const wrap_indent: @import("text-buffer-view.zig").WrapIndent = switch (options.wrap_indent) {
+        c.OT_SCENE_WRAP_INDENT_NONE => .none,
+        c.OT_SCENE_WRAP_INDENT_SAME => .same,
+        else => return sessionError(owner, error.InvalidOptions),
+    };
     owner.core.sceneSetTextOptions(handleFromC(node.*), .{
         .foreground = options.foreground,
         .background = options.background,
         .attributes = options.attributes,
         .wrap_mode = wrap_mode,
         .text_align = text_align,
+        .wrap_indent = wrap_indent,
         .truncate = options.truncate == 1,
         .first_line_offset = options.first_line_offset,
         .scroll_x = options.scroll_x,
@@ -4600,6 +4606,7 @@ test "Scene text ABI validates options and copies bounded text queries" {
         .tab_color_set = 0,
         .tab_color = .{ 0, 0, 0, 0 },
         .text_align = c.OT_SCENE_ALIGN_LEFT,
+        .wrap_indent = c.OT_SCENE_WRAP_INDENT_NONE,
     };
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_text_options(handle, &text, &text_options));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_text(handle, &text, "one two\r\nlast", 13));

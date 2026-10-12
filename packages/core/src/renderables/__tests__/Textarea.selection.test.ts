@@ -684,6 +684,48 @@ describe("Textarea - Selection Tests", () => {
       expect(editor.getSelectedText()).toBe("World")
     })
 
+    it.each(["cell", "boundary"] as const)(
+      "preserves wrapIndent alignment during Shift+Down and Shift+Up with %s occupancy",
+      async (selectionOccupancy) => {
+        const text = "    " + "aaa ".repeat(12)
+        const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+          initialValue: text,
+          width: 20,
+          height: 10,
+          wrapMode: "word",
+          wrapIndent: "same",
+          selectionOccupancy,
+        })
+        editor.focus()
+        editor.editBuffer.setCursor(0, 4)
+        await renderOnce()
+
+        const inclusiveCell = selectionOccupancy === "cell" ? 1 : 0
+        for (const [direction, row] of [
+          ["down", 1],
+          ["down", 2],
+          ["up", 1],
+        ] as const) {
+          currentMockInput.pressArrow(direction, { shift: true })
+          await renderOnce()
+          expect(editor.visualCursor.visualRow).toBe(row)
+          expect(editor.visualCursor.visualCol).toBe(4)
+          expect(editor.logicalCursor.col).toBe(4 + row * 16)
+          expect(editor.getSelectedText()).toBe(text.slice(4, 4 + row * 16 + inclusiveCell))
+        }
+
+        editor.clearSelection()
+        editor.editBuffer.setCursor(0, 36)
+        for (const row of [1, 0]) {
+          currentMockInput.pressArrow("up", { shift: true })
+          await renderOnce()
+          expect(editor.visualCursor.visualRow).toBe(row)
+          expect(editor.visualCursor.visualCol).toBe(4)
+          expect(editor.getSelectedText()).toBe(text.slice(4 + row * 16, 36 + inclusiveCell))
+        }
+      },
+    )
+
     it("should move and select with up and down onto grapheme starts", async () => {
       // Cell selection includes the cell under the moved cursor. In the #1289 text, column 5 of the
       // first line is a boundary and column 6 is inside 码; column 5 of the second line is inside 签.

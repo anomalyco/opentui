@@ -350,7 +350,7 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
     defer pools.deinit();
 
     // The sweep fails each allocation of the partial layout in turn until the layout succeeds.
-    // With in-place growth refused, the allocations depend only on request sizes, and the 220
+    // With in-place growth refused, the allocations depend only on request sizes, and the 280
     // appended lines make the splice grow its arrays into a new arena block in both modes. The
     // sizes follow the build mode: ArrayList holds a safety lock only with runtime safety on.
     for ([_]bool{ false, true }) |truncate| {
@@ -375,7 +375,7 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
             full.force_full_layout = true;
             try tb.setText(utils.repeat(u8, "alpha \u{754c} e\u{301} word word word word\n", 20));
             _ = view.getVirtualLines();
-            try tb.append(utils.repeat(u8, "\ntail \u{754c} words that wrap", 220));
+            try tb.append(utils.repeat(u8, "\ntail \u{754c} words that wrap", 280));
             tracking.fail_index = tracking.alloc_index + failure;
             _ = text_work.take();
             _ = view.getVirtualLines();
@@ -4421,6 +4421,417 @@ test "TextBufferView word wrapping - does not split 'uses' across lines" {
     }
 
     try std.testing.expect(!split_found);
+}
+test "TextBufferView wrap indent - same pads continuations and narrows wrap width" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    var text_buf: [84]u8 = undefined;
+    @memset(text_buf[0..4], ' ');
+    @memset(text_buf[4..], 'a');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expect(vlines.len >= 2);
+    try std.testing.expectEqual(@as(u32, 0), vlines[0].pad_cols);
+    try std.testing.expectEqual(@as(u32, 20), vlines[0].width_cols);
+    try std.testing.expectEqual(@as(u32, 4), vlines[1].pad_cols);
+    try std.testing.expectEqual(@as(u32, 16), vlines[1].width_cols);
+    // Visual occupancy of continuation = pad + content <= wrap width
+    try std.testing.expectEqual(@as(u32, 20), vlines[1].pad_cols + vlines[1].width_cols);
+}
+
+test "TextBufferView wrap indent - none keeps pad_cols zero" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    var text_buf: [84]u8 = undefined;
+    @memset(text_buf[0..4], ' ');
+    @memset(text_buf[4..], 'a');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.none);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expect(vlines.len >= 2);
+    for (vlines) |vline| {
+        try std.testing.expectEqual(@as(u32, 0), vline.pad_cols);
+    }
+    try std.testing.expectEqual(@as(u32, 20), vlines[0].width_cols);
+    try std.testing.expectEqual(@as(u32, 20), vlines[1].width_cols);
+}
+
+test "TextBufferView wrap indent - clamp when indent >= wrap width" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    var text_buf: [60]u8 = undefined;
+    @memset(text_buf[0..20], ' ');
+    @memset(text_buf[20..], 'b');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expect(vlines.len >= 2);
+    for (vlines) |vline| {
+        try std.testing.expectEqual(@as(u32, 0), vline.pad_cols);
+    }
+}
+
+test "TextBufferView wrap indent - leading tab uses tab width" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+    tb.setTabWidth(4);
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    var text_buf: [81]u8 = undefined;
+    text_buf[0] = '\t';
+    @memset(text_buf[1..], 'c');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expect(vlines.len >= 2);
+    try std.testing.expectEqual(@as(u32, 0), vlines[0].pad_cols);
+    try std.testing.expectEqual(@as(u32, 4), vlines[1].pad_cols);
+}
+
+test "TextBufferView wrap indent - mixed spaces and tab use fixed tab width" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+    tb.setTabWidth(4);
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    // Engine tab width is fixed (2 spaces + tab = 6), not a modulo tab stop (would be 4).
+    var text_buf: [83]u8 = undefined;
+    text_buf[0] = ' ';
+    text_buf[1] = ' ';
+    text_buf[2] = '\t';
+    @memset(text_buf[3..], 'd');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expect(vlines.len >= 2);
+    try std.testing.expectEqual(@as(u32, 0), vlines[0].pad_cols);
+    try std.testing.expectEqual(@as(u32, 6), vlines[1].pad_cols);
+}
+
+test "TextBufferView wrap indent - short indented line has no pad" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    try tb.setText("    hello");
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expectEqual(@as(usize, 1), vlines.len);
+    try std.testing.expectEqual(@as(u32, 0), vlines[0].pad_cols);
+}
+
+test "TextBufferView wrap indent - ignored when wrapMode is none" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    var text_buf: [84]u8 = undefined;
+    @memset(text_buf[0..4], ' ');
+    @memset(text_buf[4..], 'a');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.none);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expectEqual(@as(usize, 1), vlines.len);
+    try std.testing.expectEqual(@as(u32, 0), vlines[0].pad_cols);
+}
+
+test "TextBufferView wrap indent - click on pad maps to content start" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    var text_buf: [84]u8 = undefined;
+    @memset(text_buf[0..4], ' ');
+    @memset(text_buf[4..], 'a');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expect(vlines.len >= 2);
+    const content_start = vlines[1].document_cell_offset;
+
+    // Click on pad column 0 of continuation row
+    _ = view.setLocalSelection(0, 1, 1, 1, null, null);
+    const sel = view.getSelection().?;
+    try std.testing.expectEqual(content_start, sel.start);
+
+    // Click on content column after pad should advance past content start
+    view.resetLocalSelection();
+    _ = view.setLocalSelection(5, 1, 6, 1, null, null);
+    const sel2 = view.getSelection().?;
+    try std.testing.expectEqual(content_start + 1, sel2.start);
+}
+
+test "TextBufferView wrap indent - measure includes continuation pad" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    // Word wrap: first visual row is short; continuation occupies full wrap width with pad.
+    try tb.setText("    hello world_and_more");
+    view.setWrapMode(.word);
+    view.setWrapWidth(12);
+    view.setWrapIndent(.same);
+
+    const result = try view.measureForDimensions(12, 10);
+    try std.testing.expectEqual(result.line_count, view.getVirtualLineCount());
+    try std.testing.expect(result.line_count >= 2);
+    try std.testing.expectEqual(@as(u32, 12), result.width_cols_max);
+}
+
+test "TextBufferView wrap indent - graphemeAtCell accounts for continuation pad" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    try tb.setText("    aaaaaaaaaaaaaaaabcde");
+    view.setWrapMode(.char);
+    view.setWrapIndent(.same);
+    view.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 4 });
+    view.setTextAlign(.center);
+    _ = view.getVirtualLines();
+
+    // Row 0: "    aaaaaaaaaaaaaaaa" (width 20), pad=0 -> align_pad = 0
+    // Row 1: "bcde" (width 4), pad_cols=4 -> align_pad = (20 - 8) / 2 = 6, painted cols [10, 14)
+    try std.testing.expect(view.graphemeAtCell(8, 1) == null);
+    try std.testing.expect(view.graphemeAtCell(9, 1) == null);
+    const hit = view.graphemeAtCell(10, 1).?;
+    try std.testing.expectEqual(@as(i64, 10), hit.x);
+    try std.testing.expectEqual(@as(u32, 1), hit.width);
+    try std.testing.expect(view.graphemeAtCell(14, 1) == null);
+}
+
+test "TextBufferView wrap indent - measure ledger tracks wrapIndent and truncated wrapWidth" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    try tb.setText("  a bbbbbbbb");
+    view.setWrapMode(.word);
+    view.setWrapWidth(30);
+
+    // Measure at width 10 (different from wrap_width 30) to exercise MeasureLedger.
+    const none_result = try view.measureForDimensions(10, 10);
+    try std.testing.expectEqual(@as(u32, 2), none_result.line_count);
+    try std.testing.expectEqual(@as(u32, 8), none_result.width_cols_max);
+
+    // Toggling wrapIndent must invalidate MeasureLedger even when text is unchanged.
+    view.setWrapIndent(.same);
+    const same_result = try view.measureForDimensions(10, 10);
+    try std.testing.expectEqual(@as(u32, 2), same_result.line_count);
+    try std.testing.expectEqual(@as(u32, 10), same_result.width_cols_max);
+
+    // At the render wrap_width with truncation active, measureForDimensions still adds pad_cols.
+    view.setWrapWidth(10);
+    view.setViewport(.{ .x = 0, .y = 0, .width = 6, .height = 10 });
+    view.setTruncate(true);
+    _ = view.getVirtualLines();
+    const truncated_measure = try view.measureForDimensions(10, 10);
+    try std.testing.expectEqual(@as(u32, 2), truncated_measure.line_count);
+    try std.testing.expectEqual(@as(u32, 10), truncated_measure.width_cols_max);
+}
+
+test "TextBufferView wrap indent - same measure does not poison none word summary" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    try tb.setText("    hello world_and_more extra_words");
+    view.setWrapMode(.word);
+    view.setWrapWidth(12);
+    view.setWrapIndent(.same);
+
+    const same_measured = try view.measureForDimensions(12, 10);
+    try std.testing.expectEqual(same_measured.line_count, view.getVirtualLineCount());
+    try std.testing.expect(same_measured.line_count >= 2);
+
+    view.setWrapIndent(.none);
+    const none_measured = try view.measureForDimensions(12, 10);
+    try std.testing.expectEqual(none_measured.line_count, view.getVirtualLineCount());
+
+    const fresh_tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer fresh_tb.deinit();
+    const fresh = try TextBufferView.init(std.testing.allocator, fresh_tb);
+    defer fresh.deinit();
+    try fresh_tb.setText("    hello world_and_more extra_words");
+    fresh.setWrapMode(.word);
+    fresh.setWrapWidth(12);
+    const fresh_measured = try fresh.measureForDimensions(12, 10);
+    try std.testing.expectEqual(fresh_measured.line_count, none_measured.line_count);
+    try std.testing.expectEqual(fresh.getVirtualLineCount(), view.getVirtualLineCount());
+}
+
+test "TextBufferView wrap indent - truncation accounts for pad" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    var text_buf: [84]u8 = undefined;
+    @memset(text_buf[0..4], ' ');
+    @memset(text_buf[4..], 'a');
+    try tb.setText(&text_buf);
+
+    view.setWrapMode(.char);
+    view.setWrapWidth(20);
+    view.setWrapIndent(.same);
+    // Force a continuation that would overflow a narrower viewport if pad is ignored.
+    view.setViewport(.{ .x = 0, .y = 0, .width = 18, .height = 10 });
+    view.setTruncate(true);
+
+    const vlines = view.getVirtualLines();
+    try std.testing.expect(vlines.len >= 2);
+    try std.testing.expectEqual(@as(u32, 4), vlines[1].pad_cols);
+    try std.testing.expect(vlines[1].pad_cols + vlines[1].width_cols <= 18);
+}
+
+fn expectWrapIndentRowsFit(view: *TextBufferView) !void {
+    for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
+        view.setWrapMode(mode);
+        // Narrower rows cannot hold a 4-column tab even without a pad.
+        var width: u32 = 4;
+        while (width <= 30) : (width += 1) {
+            view.setWrapWidth(width);
+            const vlines = view.getVirtualLines();
+            var painted_max: u32 = 0;
+            for (vlines) |vline| {
+                try std.testing.expect(vline.pad_cols + vline.width_cols <= width);
+                painted_max = @max(painted_max, vline.pad_cols + vline.width_cols);
+            }
+            const measured = try view.measureForDimensions(width, 10);
+            try std.testing.expectEqual(@as(u32, @intCast(vlines.len)), measured.line_count);
+            try std.testing.expectEqual(painted_max, measured.width_cols_max);
+        }
+    }
+}
+
+test "TextBufferView wrap indent - continuation rows stay within wrap width" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    view.setWrapIndent(.same);
+    tb.setTabWidth(4);
+
+    // Words that fit a full row but not an indented continuation must still wrap.
+    for ([_][]const u8{ "        see aaaaaaaaaaaaaaaaaa end", "\t\tfoo\tbarbazquxquux corge grault" }) |text| {
+        try tb.setText(text);
+        try expectWrapIndentRowsFit(view);
+    }
+
+    // Continuations keep room for a wide grapheme or a tab.
+    try tb.setText("    \u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}");
+    try expectWrapIndentRowsFit(view);
+
+    // An indent split across chunks cannot gain a pad after its whitespace wrapped.
+    try tb.setText(utils.repeat(u8, " ", 18));
+    try tb.append("foo bar baz");
+    view.setFirstLineOffset(15);
+    try expectWrapIndentRowsFit(view);
 }
 
 /// Every chunk boundary inside a line is a grapheme boundary of the line's text (E4).

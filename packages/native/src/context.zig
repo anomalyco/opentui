@@ -698,6 +698,7 @@ pub const EditorCommand = union(enum) {
     cursor_offset: u32,
     wrap_mode: text_buffer_view.WrapMode,
     tab_indicator: ?u32,
+    wrap_indent: text_buffer_view.WrapIndent,
 };
 
 pub const TextViewCommand = union(enum) {
@@ -707,6 +708,7 @@ pub const TextViewCommand = union(enum) {
     tab_indicator: ?u32,
     truncate: bool,
     text_align: text_buffer_view.TextAlign,
+    wrap_indent: text_buffer_view.WrapIndent,
 };
 
 pub const TextDefaults = struct {
@@ -820,6 +822,7 @@ pub const Text = struct {
         viewport: ?text_buffer_view.Viewport,
         wrap_width: ?u32,
         wrap_mode: text_buffer_view.WrapMode,
+        wrap_indent: text_buffer_view.WrapIndent,
         text_align: text_buffer_view.TextAlign,
         truncate: bool,
         first_line_offset: u32,
@@ -832,6 +835,7 @@ pub const Text = struct {
             .viewport = view.viewport,
             .wrap_width = view.wrap_width,
             .wrap_mode = view.wrap_mode,
+            .wrap_indent = view.wrap_indent,
             .text_align = view.text_align,
             .truncate = view.truncate,
             .first_line_offset = view.first_line_offset,
@@ -3131,12 +3135,15 @@ pub const Context = struct {
         };
         const wrap_changed = text.view.wrap_mode != options.wrap_mode;
         const scroll_changed = text.scroll_x != options.scroll_x or text.scroll_y != options.scroll_y;
-        const measure_changed = wrap_changed or text.view.first_line_offset != options.first_line_offset;
+        const measure_changed = wrap_changed or
+            text.view.wrap_indent != options.wrap_indent or
+            text.view.first_line_offset != options.first_line_offset;
         const prepare_changed = measure_changed or scroll_changed or text.view.truncate != options.truncate;
         text.buffer.setDefaultFg(options.foreground);
         text.buffer.setDefaultBg(options.background);
         text.buffer.setDefaultAttributes(options.attributes);
         text.view.setWrapMode(options.wrap_mode);
+        text.view.setWrapIndent(options.wrap_indent);
         text.view.setTextAlign(options.text_align);
         text.view.setTruncate(options.truncate);
         text.view.setFirstLineOffset(options.first_line_offset);
@@ -3906,9 +3913,10 @@ pub const Context = struct {
             },
             .truncate => |enabled| view.view.setTruncate(enabled),
             .text_align => |alignment| view.view.setTextAlign(alignment),
+            .wrap_indent => |indent| view.view.setWrapIndent(indent),
         }
         switch (command) {
-            .wrap_width, .wrap_mode, .first_line_offset => view.invalidate(),
+            .wrap_width, .wrap_mode, .first_line_offset, .wrap_indent => view.invalidate(),
             .tab_indicator, .truncate, .text_align => view.invalidatePreparation(),
         }
     }
@@ -4331,7 +4339,7 @@ pub const Context = struct {
         // Cursor and text changes only make a scroll due; visual moves need the layout.
         switch (command) {
             .move_up, .move_down, .goto_line_end => try view.prepareView(),
-            .wrap_mode => if (view.view.follow_pending) try view.prepareView(),
+            .wrap_mode, .wrap_indent => if (view.view.follow_pending) try view.prepareView(),
             .delete_selection, .cursor_offset, .tab_indicator => {},
         }
         const from = view.edit.buffer.getPrimaryCursor().offset;
@@ -4349,9 +4357,10 @@ pub const Context = struct {
             .cursor_offset => |offset| try view.view.setCursorByOffset(offset),
             .wrap_mode => |mode| view.view.setWrapMode(mode),
             .tab_indicator => |indicator| view.view.setTabIndicator(indicator),
+            .wrap_indent => |indent| view.view.setWrapIndent(indent),
         }
         switch (command) {
-            .wrap_mode => view.invalidate(),
+            .wrap_mode, .wrap_indent => view.invalidate(),
             else => view.invalidatePreparation(),
         }
     }

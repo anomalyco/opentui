@@ -60,6 +60,7 @@ const enumSamples: Record<string, unknown> = {
   bottomTitleAlignment: "right",
   textAlign: "center",
   wrapMode: "none",
+  wrapIndent: "same",
   orientation: "vertical",
   direction: "left",
   cursorStyle: { style: "line", blinking: false },

@@ -97,6 +97,7 @@ const textarea = new TextareaRenderable(renderer, {
 | `focusedBackgroundColor` | `string` or `RGBA`                    | initial base color | Background when focused                 |
 | `focusedTextColor`       | `string` or `RGBA`                    | initial base color | Text color when focused                 |
 | `wrapMode`               | `"none"`, `"char"`, or `"word"`       | `"word"`           | Line wrapping mode                      |
+| `wrapIndent`             | `"none"` or `"same"`                  | `"none"`           | Indent wrapped rows by the line indent  |
 | `selectionBg`            | `string` or `RGBA`                    | -                  | Selection background                    |
 | `selectionFg`            | `string` or `RGBA`                    | -                  | Selection foreground                    |
 | `cursorColor`            | `string` or `RGBA`                    | `#FFFFFF`          | Cursor color                            |
@@ -123,6 +124,8 @@ background is transparent, and the focused text uses `#FFFFFF`.
 | `traits`                | `EditorTraits`        | Editor traits published to hosting UI (see [Traits](#traits)) |
 
 `cursorCharacterOffset` uses a display-cell offset as a JavaScript string index. Its result is not reliable after wide graphemes, line breaks, or joined emoji. Use `logicalCursor`, `visualCursor`, and the editing-buffer APIs for Unicode-aware work.
+
+`visualCursor.visualCol` is a painted column. On a wrapped row, it includes the indent that `wrapIndent: "same"` adds.
 
 ## Cursor and selection control
 
