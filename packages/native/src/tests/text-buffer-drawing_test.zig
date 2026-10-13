@@ -2975,6 +2975,49 @@ test "drawTextBuffer - owned styled text with multiple colors and horizontal scr
     }
 }
 
+test "drawTextBuffer - selection without explicit colors picks a legible text colour" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const cases = [_]struct { text_fg: RGBA, expected_sel_fg: RGBA }{
+        // Light theme: dark text on a transparent cell background. The highlight
+        // ends up dark, so the selected text has to become light to stay readable.
+        .{ .text_fg = ansi.rgbColor(0x1a, 0x1d, 0x24, 255), .expected_sel_fg = ansi.rgbColor(255, 255, 255, 255) },
+        // Dark theme: light text on a transparent cell background.
+        .{ .text_fg = ansi.rgbColor(0xe6, 0xe6, 0xe6, 255), .expected_sel_fg = ansi.rgbColor(0, 0, 0, 255) },
+    };
+
+    for (cases) |case| {
+        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        const view = try TextBufferView.init(std.testing.allocator, tb);
+        defer view.deinit();
+
+        tb.setDefaultFg(case.text_fg);
+        try tb.setText("selected");
+        view.setWrapMode(.none);
+        view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 1 });
+
+        const target = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode });
+        defer target.deinit();
+        target.clear(ansi.rgbColor(0, 0, 0, 0), 32);
+
+        // No selection colours: the renderer falls back to reverse video.
+        view.setSelection(0, 4, null, null);
+        try target.drawTextBufferChecked(view, 0, 0);
+
+        const selected = target.get(0, 0) orelse unreachable;
+        // The highlight is the text colour, so the selection is always visible.
+        try std.testing.expectEqual(case.text_fg, selected.bg);
+        // And the text stays legible instead of the previous hard-coded black.
+        try std.testing.expectEqual(case.expected_sel_fg, selected.fg);
+
+        // Cells outside the selection keep the plain text colour.
+        const unselected = target.get(5, 0) orelse unreachable;
+        try std.testing.expectEqual(case.text_fg, unselected.fg);
+    }
+}
+
 test "drawTextBuffer - selection with horizontal viewport offset" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
