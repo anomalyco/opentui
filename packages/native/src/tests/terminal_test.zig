@@ -433,7 +433,7 @@ test "program status - only an OSC 7501 query reply enables the capability" {
         .{ "\x1b]7501;?\x1b\\", true },
         .{ "\x1b]7501;?\x07", true },
         .{ "\x1b]7501; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth\x1b\\", true },
-        .{ "\x1b]7501;?:states=idle\x1b\\", true },
+        .{ "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\", true },
         .{ "\x1b]7501;state=idle\x1b\\", false },
         .{ "\x1b]7501;??\x1b\\", false },
         .{ "\x1b]7501;\x1b\\", false },

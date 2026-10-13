@@ -103,7 +103,11 @@ describe("renderer program status", () => {
     let capabilities = 0
     renderer.on("capabilities", () => capabilities++)
 
-    renderer.stdin.emit("data", Buffer.from("\x1b]7501;?:states=idle,working,done,blocked,error\x1b\\"))
+    // libghostty-vt's exact reply (`osc.program_status.query_reply`, ghostty 9cd19b4).
+    renderer.stdin.emit(
+      "data",
+      Buffer.from("\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\"),
+    )
 
     expect(renderer.capabilities?.program_status).toBe(true)
     expect(capabilities).toBe(1)
