@@ -140,6 +140,7 @@ type Case = [label: string, input: ChunkInput, expected: Snap[]]
 
 // Conformance vectors for the native parser port (issue 044); the JSON file's `format` field defines them.
 // The native parser passes every row; a row with an issue id is a todo for the legacy parser only.
+// packages/native/src/tests/input-parser_test.zig also runs every row against the parser alone.
 // `bun test --todo src/lib/stdin-parser.test.ts` also runs the todo rows: a todo row that passes fails that run.
 type ConformanceContext = { kitty?: boolean; pending?: string[] }
 type ConformanceRow = [

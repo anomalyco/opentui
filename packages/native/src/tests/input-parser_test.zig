@@ -1297,3 +1297,166 @@ test "input parser sink stays within its per-byte bounds" {
     try testing.expectEqual(@as(u32, 4), parser.feed("\xf0\x9f\x98a", start_ns, &sink));
     try testing.expectEqual(@as(u32, 4), sink.count);
 }
+
+// Core's conformance vectors (packages/core/src/lib/stdin-parser.conformance.json): byte steps and
+// the events Core reports for them, in the notation that the file's `format` field defines.
+test "input parser passes Core's conformance vectors, whole and one byte at a time" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const file = try std.json.parseFromSliceLeaky(std.json.Value, allocator, @embedFile("input_conformance"), .{});
+    const rows = file.object.get("rows").?.array.items;
+    try testing.expect(rows.len > 0);
+    // The notation's strings match JSON.stringify, here of the latin1 bytes 08 09 0a 0c 0d 01 7f 22 5c e9.
+    var json: std.ArrayList(u8) = .empty;
+    try appendJson(&json, allocator, "\x08\t\n\x0c\r\x01\x7f\"\\\xe9", true);
+    try testing.expectEqualStrings("\"\\b\\t\\n\\f\\r\\u0001\x7f\\\"\\\\é\"", json.items);
+    for (rows) |row| {
+        const fields = row.array.items;
+        // A step is one read; null is the Escape timeout passing.
+        var whole: std.ArrayList(?[]const u8) = .empty;
+        var bytewise: std.ArrayList(?[]const u8) = .empty;
+        for (fields[1].array.items) |step| {
+            const bytes: ?[]const u8 = switch (step) {
+                .null => null,
+                .string => |text| text,
+                .array => |values| bytes: {
+                    const bytes = try allocator.alloc(u8, values.items.len);
+                    for (values.items, bytes) |value, *byte| byte.* = @intCast(value.integer);
+                    break :bytes bytes;
+                },
+                else => return error.InvalidConformanceStep,
+            };
+            try whole.append(allocator, bytes);
+            if (bytes) |read| {
+                for (0..read.len) |index| try bytewise.append(allocator, read[index..][0..1]);
+            } else try bytewise.append(allocator, null);
+        }
+        const expected = fields[2].array.items;
+        for ([_][]const ?[]const u8{ whole.items, bytewise.items }) |steps| {
+            const got = try conformanceRun(allocator, steps);
+            const same = got.len == expected.len and for (got, expected) |a, b| {
+                if (!std.mem.eql(u8, a, b.string)) break false;
+            } else true;
+            if (!same) {
+                std.debug.print("conformance row {s} ({d} steps):\n  expected:", .{ fields[0].string, steps.len });
+                for (expected) |event| std.debug.print(" {s}", .{event.string});
+                std.debug.print("\n  got:     ", .{});
+                for (got) |event| std.debug.print(" {s}", .{event});
+                std.debug.print("\n", .{});
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+/// Feeds each step, then lets the timeout pass once more, and writes every event in notation.
+fn conformanceRun(allocator: std.mem.Allocator, steps: []const ?[]const u8) ![]const []const u8 {
+    var harness = try Harness.create();
+    defer harness.deinit();
+    const timeout_ms = ip.timeout_ns / ms;
+    for (steps) |step| _ = if (step) |bytes| try harness.feed(bytes) else try harness.wait(timeout_ms);
+    _ = try harness.wait(timeout_ms);
+    var out: std.ArrayList([]const u8) = .empty;
+    for (harness.out.items) |got| try out.append(allocator, try notation(allocator, got));
+    return out.items;
+}
+
+/// Writes one event as Core reports it: the TypeScript adapter's names and button numbers
+/// (stdin-parser-native.ts parsedKey and rawMouseEvent) for the fields the notation shows.
+fn notation(allocator: std.mem.Allocator, got: Got) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    const modifiers: Mods = @bitCast(got.mods);
+    switch (got.kind) {
+        .key => {
+            var shift = modifiers.shift;
+            var scalar: [4]u8 = undefined;
+            const name = if (got.code == 0) got.text else if (coreKeyName(got.code)) |core| core else name: {
+                if (got.code >= K.functional_first and got.code <= K.functional_last) {
+                    std.debug.print("no notation name for key code {d}; add Core's name to coreKeyName\n", .{got.code});
+                    return error.UnnamedKey;
+                }
+                const len = try std.unicode.utf8Encode(@intCast(got.code), &scalar);
+                // Core names a typed uppercase letter by its lowercase key with Shift; Alt keeps the case.
+                if (got.flags & ip.flags.key_kitty == 0 and got.code >= 'A' and got.code <= 'Z') {
+                    shift = true;
+                    if (!modifiers.alt) scalar[0] += 'a' - 'A';
+                }
+                break :name scalar[0..len];
+            };
+            try out.appendSlice(allocator, "key(");
+            try appendJson(&out, allocator, name, false);
+            if (modifiers.ctrl) try out.appendSlice(allocator, " ctrl");
+            if (modifiers.alt or modifiers.meta) try out.appendSlice(allocator, " meta");
+            if (shift) try out.appendSlice(allocator, " shift");
+            if (got.action == @intFromEnum(ip.KeyAction.release)) try out.appendSlice(allocator, " release");
+            try out.append(allocator, ')');
+        },
+        .mouse => {
+            const action: ip.MouseAction = @enumFromInt(got.action);
+            const sgr = got.raw.len > 2 and got.raw[2] == '<';
+            // Core: SGR motion and wheels without a button report 0, X10 motion -1.
+            var button: i64 = got.code;
+            if (got.code == ip.mouse_button_none) button = if (sgr) 0 else -1;
+            if (action == .scroll and (!sgr or got.code == 3)) button = 0;
+            try out.print(allocator, "mouse({s} {d},{d} b{d})", .{ @tagName(action), got.x, got.y, button });
+        },
+        .paste => {
+            try testing.expect(got.flags & ip.flags.paste_end != 0);
+            try out.appendSlice(allocator, "paste(");
+            try appendJson(&out, allocator, got.text, false);
+            try out.append(allocator, ')');
+        },
+        // Core reports focus as a response, and the renderer matches its raw bytes.
+        .focus, .reply => {
+            try out.appendSlice(allocator, "response(");
+            try appendJson(&out, allocator, got.raw, true);
+            try out.append(allocator, ')');
+        },
+    }
+    return out.items;
+}
+
+/// Core's names (parse.keypress-kitty.ts kittyKeyMap) for the codes the vectors use.
+fn coreKeyName(code: u32) ?[]const u8 {
+    return switch (code) {
+        ' ' => "space",
+        K.escape => "escape",
+        K.enter => "return",
+        K.tab => "tab",
+        K.backspace => "backspace",
+        K.insert => "insert",
+        K.delete => "delete",
+        K.left => "left",
+        K.right => "right",
+        K.up => "up",
+        K.down => "down",
+        K.page_up => "pageup",
+        K.page_down => "pagedown",
+        K.home => "home",
+        K.end => "end",
+        else => null,
+    };
+}
+
+/// Writes `text` as a JSON string the way JavaScript's JSON.stringify does: `"` and `\` escaped,
+/// \b \t \n \f \r short, other C0 controls as lowercase \u00xx, and the rest literal. With
+/// `latin1`, each byte is one code point, so bytes from 0x80 up are written as UTF-8.
+fn appendJson(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8, latin1: bool) !void {
+    try out.append(allocator, '"');
+    for (text) |byte| switch (byte) {
+        '"' => try out.appendSlice(allocator, "\\\""),
+        '\\' => try out.appendSlice(allocator, "\\\\"),
+        0x08 => try out.appendSlice(allocator, "\\b"),
+        0x09 => try out.appendSlice(allocator, "\\t"),
+        0x0a => try out.appendSlice(allocator, "\\n"),
+        0x0c => try out.appendSlice(allocator, "\\f"),
+        0x0d => try out.appendSlice(allocator, "\\r"),
+        0x00...0x07, 0x0b, 0x0e...0x1f => try out.print(allocator, "\\u{x:0>4}", .{byte}),
+        0x80...0xff => if (latin1) {
+            try out.appendSlice(allocator, &.{ 0xc0 | byte >> 6, 0x80 | (byte & 0x3f) });
+        } else try out.append(allocator, byte),
+        else => try out.append(allocator, byte),
+    };
+    try out.append(allocator, '"');
+}
