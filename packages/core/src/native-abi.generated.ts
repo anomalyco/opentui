@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 8c8c3cd16feb7d50d826a524ac21dc6d6f4b5c41925ca2e62309787ba55a5e4e
+// ABI audit SHA-256: 2b36545357f7738df87404a9507ebeb54f38df5cd270fd98c80998f95972863c
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1164,6 +1164,20 @@ export const nativeLayouts = {
       color: { offset: 16, size: 8, alignment: 2, type: "[4]u16" },
     },
   },
+  ot_session_program_status: {
+    size: 32,
+    alignment: 4,
+    fields: {
+      state: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      kind: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      fields: { offset: 8, size: 4, alignment: 4, type: "u32" },
+      progress: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      id_len: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      app_len: { offset: 20, size: 4, alignment: 4, type: "u32" },
+      title_len: { offset: 24, size: 4, alignment: 4, type: "u32" },
+      message_len: { offset: 28, size: 4, alignment: 4, type: "u32" },
+    },
+  },
   ot_session_capabilities: {
     size: 144,
     alignment: 4,
@@ -1805,11 +1819,22 @@ export const nativeConstants = {
   OT_CONTROL_CURSOR: 8,
   OT_CONTROL_RESET_BACKGROUND: 9,
   OT_CONTROL_PALETTE_QUERY: 10,
+  OT_CONTROL_PROGRAM_STATUS: 11,
   OT_CURSOR_POSITION: 1,
   OT_CURSOR_STYLE: 2,
   OT_CURSOR_BLINKING: 4,
   OT_CURSOR_COLOR: 8,
   OT_CURSOR_MOUSE_POINTER: 16,
+  OT_PROGRAM_STATE_IDLE: 1,
+  OT_PROGRAM_STATE_WORKING: 2,
+  OT_PROGRAM_STATE_DONE: 3,
+  OT_PROGRAM_STATE_BLOCKED: 4,
+  OT_PROGRAM_STATE_ERROR: 5,
+  OT_PROGRAM_STATE_CLEAR: 6,
+  OT_PROGRAM_KIND_PERMISSION: 1,
+  OT_PROGRAM_KIND_QUESTION: 2,
+  OT_PROGRAM_KIND_AUTH: 3,
+  OT_PROGRAM_STATUS_PROGRESS: 1,
   OT_CAP_KITTY_KEYBOARD: 1,
   OT_CAP_KITTY_GRAPHICS: 2,
   OT_CAP_RGB: 4,
@@ -1827,6 +1852,7 @@ export const nativeConstants = {
   OT_CAP_NOTIFICATIONS: 16384,
   OT_CAP_EXPLICIT_CURSOR_POSITIONING: 32768,
   OT_CAP_REMOTE: 65536,
+  OT_CAP_PROGRAM_STATUS: 131072,
   OT_TERMINAL_UNINITIALIZED: 0,
   OT_TERMINAL_SETTING_UP: 1,
   OT_TERMINAL_ACTIVE: 2,

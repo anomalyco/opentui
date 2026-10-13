@@ -96,12 +96,13 @@ Read [Image](/docs/components/image) for protocol selection. Do not choose a pro
 
 ### Links, clipboard, and notifications
 
-| Field           | Type                      | Meaning                                                                       |
-| --------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `hyperlinks`    | `boolean`                 | OSC 8 hyperlink output is enabled                                             |
-| `osc52`         | `boolean`                 | OSC 52 clipboard support was detected or inferred                             |
-| `osc52_support` | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
-| `notifications` | `boolean`                 | A notification protocol was selected                                          |
+| Field            | Type                      | Meaning                                                                       |
+| ---------------- | ------------------------- | ----------------------------------------------------------------------------- |
+| `hyperlinks`     | `boolean`                 | OSC 8 hyperlink output is enabled                                             |
+| `osc52`          | `boolean`                 | OSC 52 clipboard support was detected or inferred                             |
+| `osc52_support`  | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
+| `notifications`  | `boolean`                 | A notification protocol was selected                                          |
+| `program_status` | `boolean`                 | The terminal answered the OSC 7501 program status query                       |
 
 The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false. Without OSC 8,
 the terminal detects URLs one row at a time, so a wrapped URL opens only the part on the clicked row.
@@ -119,6 +120,9 @@ remote policy.
 
 `notifications` does not expose the selected OSC variant. Use `renderer.triggerNotification()` and its boolean result.
 Read [Notifications](/docs/core-concepts/notifications) for protocol and multiplexer behavior.
+
+`renderer.setProgramStatus()` does not depend on `program_status`. Terminals ignore OSC 7501 reports they do not
+implement. Read [Program status](/docs/application-apis/program-status).
 
 ### Session and terminal identity
 

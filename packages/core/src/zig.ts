@@ -23,6 +23,7 @@ import {
   type LineInfo,
   type MousePointerStyle,
   type ImageRenderProtocol,
+  type ProgramStatus,
 } from "./types.js"
 export type {
   LineInfo,
@@ -711,6 +712,7 @@ export type NativeSessionControl =
   | { kind: "title"; title: string }
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
+  | { kind: "program-status"; status: ProgramStatus }
   | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
@@ -925,6 +927,19 @@ registerEnvVar({
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
 const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
 const CURSOR_ID_TO_STYLE = ["block", "line", "underline", "default"] as const
+const PROGRAM_STATE_TO_ID: Record<string, number | undefined> = {
+  idle: nativeConstants.OT_PROGRAM_STATE_IDLE,
+  working: nativeConstants.OT_PROGRAM_STATE_WORKING,
+  done: nativeConstants.OT_PROGRAM_STATE_DONE,
+  blocked: nativeConstants.OT_PROGRAM_STATE_BLOCKED,
+  error: nativeConstants.OT_PROGRAM_STATE_ERROR,
+  clear: nativeConstants.OT_PROGRAM_STATE_CLEAR,
+}
+const PROGRAM_KIND_TO_ID: Record<string, number | undefined> = {
+  permission: nativeConstants.OT_PROGRAM_KIND_PERMISSION,
+  question: nativeConstants.OT_PROGRAM_KIND_QUESTION,
+  auth: nativeConstants.OT_PROGRAM_KIND_AUTH,
+}
 const MOUSE_STYLE_TO_ID = {
   auto: nativeConstants.OT_MOUSE_POINTER_AUTO,
   default: nativeConstants.OT_MOUSE_POINTER_DEFAULT,
@@ -1081,6 +1096,47 @@ function sessionBytes(bytes: Uint8Array, label: string): Uint8Array {
     typedArrayAccessors.byteOffset.get!.call(bytes),
     length,
   )
+}
+
+/** Packs one ot_session_program_status record and its text. Native code validates every value. */
+function programStatusPayload(status: ProgramStatus, encoder: TextEncoder): Uint8Array {
+  const layout = nativeLayouts.ot_session_program_status
+  const { state, kind, progress, id, app, title, message } = status as Partial<Record<string, unknown>>
+  const stateId = typeof state === "string" ? PROGRAM_STATE_TO_ID[state] : undefined
+  if (typeof stateId !== "number") throw new TypeError("Unknown program status state")
+  const header = new Uint32Array(layout.size / 4)
+  header[layout.fields.state.offset / 4] = stateId
+  if (kind != null) {
+    const kindId = typeof kind === "string" ? PROGRAM_KIND_TO_ID[kind] : undefined
+    if (typeof kindId !== "number") throw new TypeError("Unknown program status kind")
+    header[layout.fields.kind.offset / 4] = kindId
+  }
+  if (progress != null) {
+    if (typeof progress !== "number") throw new TypeError("Program status progress must be a number")
+    if (!isFFIU32(progress)) throw new RangeError("Program status progress must be an integer percentage")
+    header[layout.fields.fields.offset / 4] = nativeConstants.OT_PROGRAM_STATUS_PROGRESS
+    header[layout.fields.progress.offset / 4] = progress
+  }
+  // The record encodes an absent id as zero bytes. An empty id is not the root record.
+  if (id === "") throw new RangeError("Program status id must not be empty; omit it for the root record")
+  const text = { id, app, title, message }
+  const parts = (["id", "app", "title", "message"] as const).map((name) => {
+    const value = text[name]
+    if (value == null) return new Uint8Array(0)
+    if (typeof value !== "string") throw new TypeError(`Program status ${name} must be a string`)
+    // One extra UTF-16 unit preserves native over-limit rejection without an unbounded encoding allocation.
+    const bytes = encoder.encode(value.slice(0, NATIVE_SESSION_CONTROL_PACKET_BYTES + 1))
+    header[layout.fields[`${name}_len`].offset / 4] = bytes.byteLength
+    return bytes
+  })
+  const payload = new Uint8Array(layout.size + parts.reduce((total, part) => total + part.byteLength, 0))
+  payload.set(new Uint8Array(header.buffer))
+  let offset = layout.size
+  for (const part of parts) {
+    payload.set(part, offset)
+    offset += part.byteLength
+  }
+  return payload
 }
 
 function pixelInput(data: Uint8Array | PointerInput, length: number): Uint8Array | Pointer {
@@ -6464,6 +6520,10 @@ export class FFIRenderLib {
         record[kind] = nativeConstants.OT_CONTROL_KITTY_KEYBOARD_FLAGS
         record[layout.fields.argument.offset / 4] = toSafeFFIU32Length(command.flags, "Session Kitty keyboard flags")
         break
+      case "program-status":
+        record[kind] = nativeConstants.OT_CONTROL_PROGRAM_STATUS
+        bytes = programStatusPayload(command.status, this.encoder)
+        break
       case "restore-modes":
         record[kind] = nativeConstants.OT_CONTROL_RESTORE_MODES
         break
@@ -6647,6 +6707,7 @@ export class FFIRenderLib {
       notifications: flag(nativeConstants.OT_CAP_NOTIFICATIONS),
       explicit_cursor_positioning: flag(nativeConstants.OT_CAP_EXPLICIT_CURSOR_POSITIONING),
       remote: flag(nativeConstants.OT_CAP_REMOTE),
+      program_status: flag(nativeConstants.OT_CAP_PROGRAM_STATUS),
       unicode: widthMethodFromCode(output[layout.fields.width_method.offset / 4]),
       multiplexer: (["none", "tmux", "zellij", "screen", "unknown"] as const)[
         output[layout.fields.multiplexer.offset / 4]

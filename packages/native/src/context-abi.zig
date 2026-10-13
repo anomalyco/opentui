@@ -1263,7 +1263,8 @@ pub fn ot_session_control(
     if (options.struct_size != @sizeOf(c.ot_session_control_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     if (options.reserved != 0 or (byte_count != 0 and bytes_ptr == null)) return sessionError(owner, error.InvalidOptions);
-    const payload = options.kind == c.OT_CONTROL_CAPABILITY_RESPONSE or options.kind == c.OT_CONTROL_TITLE or options.kind == c.OT_CONTROL_CURSOR or options.kind == c.OT_CONTROL_PALETTE_QUERY;
+    const payload = options.kind == c.OT_CONTROL_CAPABILITY_RESPONSE or options.kind == c.OT_CONTROL_TITLE or options.kind == c.OT_CONTROL_CURSOR or options.kind == c.OT_CONTROL_PALETTE_QUERY or
+        options.kind == c.OT_CONTROL_PROGRAM_STATUS;
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @intFromEnum(@import("session.zig").MouseMode.motion),
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
@@ -1306,6 +1307,30 @@ pub fn ot_session_control(
                 .blinking = if (update.fields & c.OT_CURSOR_BLINKING != 0) update.blinking != 0 else null,
                 .color = if (update.fields & c.OT_CURSOR_COLOR != 0) update.color else null,
                 .cursor = if (update.fields & c.OT_CURSOR_MOUSE_POINTER != 0) @enumFromInt(update.mouse_pointer) else null,
+            } };
+        },
+        c.OT_CONTROL_PROGRAM_STATUS => blk: {
+            const header_len = @sizeOf(c.ot_session_program_status);
+            if (bytes.len < header_len) return sessionError(owner, error.InvalidOptions);
+            var report: c.ot_session_program_status = undefined;
+            @memcpy(std.mem.asBytes(&report), bytes[0..header_len]);
+            if (report.state < c.OT_PROGRAM_STATE_IDLE or report.state > c.OT_PROGRAM_STATE_CLEAR or report.kind > c.OT_PROGRAM_KIND_AUTH or
+                report.fields & ~@as(u32, c.OT_PROGRAM_STATUS_PROGRESS) != 0 or report.progress > std.math.maxInt(u8) or
+                (report.fields & c.OT_PROGRAM_STATUS_PROGRESS == 0 and report.progress != 0)) return sessionError(owner, error.InvalidOptions);
+            const text = bytes[header_len..];
+            const text_len = @as(u64, report.id_len) + report.app_len + report.title_len + report.message_len;
+            if (text_len != text.len) return sessionError(owner, error.InvalidOptions);
+            const app_start = report.id_len;
+            const title_start = app_start + report.app_len;
+            const message_start = title_start + report.title_len;
+            break :blk .{ .program_status = .{
+                .state = @enumFromInt(report.state),
+                .kind = if (report.kind == 0) null else @enumFromInt(report.kind),
+                .progress = if (report.fields & c.OT_PROGRAM_STATUS_PROGRESS != 0) @intCast(report.progress) else null,
+                .id = text[0..app_start],
+                .app = text[app_start..title_start],
+                .title = text[title_start..message_start],
+                .message = text[message_start..],
             } };
         },
         else => return sessionError(owner, error.InvalidOptions),
@@ -1406,6 +1431,7 @@ pub fn ot_session_get_capabilities(
         .{ "notifications", c.OT_CAP_NOTIFICATIONS },
         .{ "explicit_cursor_positioning", c.OT_CAP_EXPLICIT_CURSOR_POSITIONING },
         .{ "remote", c.OT_CAP_REMOTE },
+        .{ "program_status", c.OT_CAP_PROGRAM_STATUS },
     }) |field| {
         if (@field(caps, field[0])) result.flags |= field[1];
     }
@@ -3144,6 +3170,17 @@ fn cursorUpdate(fields: u32, values: anytype) c.ot_session_cursor_update {
     return update;
 }
 
+/// A well-formed idle root report unless values override its fields.
+inline fn programStatus(comptime values: anytype, comptime text: []const u8) []const u8 {
+    comptime {
+        var report = std.mem.zeroes(c.ot_session_program_status);
+        report.state = c.OT_PROGRAM_STATE_IDLE;
+        for (std.meta.fields(@TypeOf(values))) |field| @field(report, field.name) = @field(values, field.name);
+        const bytes = std.mem.toBytes(report) ++ text[0..text.len].*;
+        return &bytes;
+    }
+}
+
 test "Context ABI Session control decodes kinds arguments and cursor records before admission" {
     const context = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 16 });
     defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
@@ -3171,8 +3208,19 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .reserved = 1 },
         .{ .kind = c.OT_CONTROL_TITLE, .null_bytes = true },
         .{ .kind = 0 },
-        .{ .kind = c.OT_CONTROL_PALETTE_QUERY + 1 },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS + 1 },
         .{ .kind = c.OT_CONTROL_RESTORE_MODES, .bytes = "x" },
+        // Program status records have known enums and fields, zero unselected progress, and exact text lengths.
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{}, "")[1..] },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .state = 0 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .state = c.OT_PROGRAM_STATE_CLEAR + 1 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .kind = c.OT_PROGRAM_KIND_AUTH + 1 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .fields = 2 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .progress = 1 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .fields = c.OT_PROGRAM_STATUS_PROGRESS, .progress = 256 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .message_len = 2 }, "m") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .id_len = 1 }, "id") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .id_len = std.math.maxInt(u32), .app_len = 2 }, "a") },
         // Cursor records have an exact size, known fields, bounded values, and zero unselected values.
         .{ .cursor = cursorUpdate(0, .{}), .argument = 1 },
         .{ .cursor = cursorUpdate(0, .{}), .cursor_size = @sizeOf(Cursor) - 1 },
@@ -3205,6 +3253,16 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
             .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 0, "" },
             .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
             .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
+            .{ c.OT_CONTROL_PROGRAM_STATUS, 0, programStatus(.{
+                .state = c.OT_PROGRAM_STATE_BLOCKED,
+                .kind = c.OT_PROGRAM_KIND_AUTH,
+                .fields = c.OT_PROGRAM_STATUS_PROGRESS,
+                .progress = 100,
+                .id_len = 1,
+                .app_len = 2,
+                .title_len = 3,
+                .message_len = 4,
+            }, "iaatttmmmm") },
         };
         var rows: [2 * kinds.len]Case = undefined;
         for (kinds, 0..) |kind, index| rows[2 * index ..][0..2].* = .{
@@ -3334,7 +3392,7 @@ test "Context ABI Session setup and capability records validate before changing 
         try std.testing.expect(seen & capabilities.flags == 0);
         seen |= capabilities.flags;
     }
-    try std.testing.expectEqual(@as(u32, 17), @popCount(seen));
+    try std.testing.expectEqual(@as(u32, 18), @popCount(seen));
     cli.terminal.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
     try std.testing.expectEqual(c.OT_OK, ot_session_get_capabilities(context, &id, &capabilities));
     try std.testing.expectEqualStrings("kitty", capabilities.term_name[0..capabilities.term_name_len]);

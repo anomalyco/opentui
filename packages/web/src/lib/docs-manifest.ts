@@ -556,19 +556,23 @@ export const DOC_MANIFEST = {
     searchSymbols: ["sendNotification"],
     related: ["core-concepts/renderer", "reference/env-vars"],
   }),
-  "core-concepts/audio": page("application-apis", 3, "Audio", "task-guide", {
+  "application-apis/program-status": page("application-apis", 3, "Program status", "task-guide", {
+    searchSymbols: ["setProgramStatus", "ProgramStatus"],
+    related: ["core-concepts/notifications", "reference/terminal-capabilities"],
+  }),
+  "core-concepts/audio": page("application-apis", 4, "Audio", "task-guide", {
     searchSymbols: ["Audio", "setupAudio", "AudioSound", "AudioVoice", "AudioGroup"],
     related: ["core-concepts/lifecycle", "reference/standalone-executables"],
   }),
-  "application-apis/audio-streaming": page("application-apis", 4, "Streaming audio", "task-guide", {
+  "application-apis/audio-streaming": page("application-apis", 5, "Streaming audio", "task-guide", {
     searchSymbols: ["AudioStream", "AudioStreamError", "createIcyStreamDemuxer"],
     related: ["core-concepts/audio", "application-apis/audio-capture", "core-concepts/lifecycle"],
   }),
-  "application-apis/audio-capture": page("application-apis", 5, "Audio capture", "task-guide", {
+  "application-apis/audio-capture": page("application-apis", 6, "Audio capture", "task-guide", {
     searchSymbols: ["AudioCaptureStream", "AudioCaptureStreamError", "AudioRecorder", "AudioRecorderError"],
     related: ["core-concepts/audio", "application-apis/audio-streaming", "core-concepts/lifecycle"],
   }),
-  "application-apis/animation": page("application-apis", 6, "Animation and Timeline", "task-guide", {
+  "application-apis/animation": page("application-apis", 7, "Animation and Timeline", "task-guide", {
     searchSymbols: ["Timeline", "createTimeline", "engine", "useTimeline"],
     related: ["bindings/react", "bindings/solid", "core-concepts/lifecycle"],
   }),

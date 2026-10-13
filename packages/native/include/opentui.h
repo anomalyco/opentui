@@ -1977,10 +1977,11 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_CURSOR UINT32_C(8)
 #define OT_CONTROL_RESET_BACKGROUND UINT32_C(9)
 #define OT_CONTROL_PALETTE_QUERY UINT32_C(10)
+#define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
- * and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, and PALETTE_QUERY accept payload bytes.
- * reserved must be zero. */
+ * and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
+ * PROGRAM_STATUS accept payload bytes. reserved must be zero. */
 typedef struct ot_session_control_options {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -2012,6 +2013,41 @@ typedef struct ot_session_cursor_update {
     uint16_t color[4];
 } ot_session_cursor_update;
 
+#define OT_PROGRAM_STATE_IDLE UINT32_C(1)
+#define OT_PROGRAM_STATE_WORKING UINT32_C(2)
+#define OT_PROGRAM_STATE_DONE UINT32_C(3)
+#define OT_PROGRAM_STATE_BLOCKED UINT32_C(4)
+#define OT_PROGRAM_STATE_ERROR UINT32_C(5)
+#define OT_PROGRAM_STATE_CLEAR UINT32_C(6)
+
+#define OT_PROGRAM_KIND_PERMISSION UINT32_C(1)
+#define OT_PROGRAM_KIND_QUESTION UINT32_C(2)
+#define OT_PROGRAM_KIND_AUTH UINT32_C(3)
+
+#define OT_PROGRAM_STATUS_PROGRESS UINT32_C(1)
+
+/* PROGRAM_STATUS payload is one copied ot_session_program_status, with native
+ * byte order and no alignment requirement, followed by exactly id_len, app_len,
+ * title_len, and message_len bytes in that order. It writes one OSC 7501
+ * Program Status Protocol report. A zero length omits that key; an empty id
+ * addresses the root record. kind is zero or an OT_PROGRAM_KIND_* value and
+ * requires BLOCKED. fields selects progress, 0..100, which requires WORKING or
+ * BLOCKED; unselected progress must be zero. CLEAR accepts only an id.
+ * id is at most 8 '/'-separated segments of 1..32 [A-Za-z0-9_.+-] bytes and 128
+ * bytes in total. app is at most 32 [A-Za-z0-9_.+-] bytes. title (at most 192
+ * bytes) and message (at most 2048 bytes) are UTF-8 without C0, DEL, or C1
+ * controls; output encodes them as base64. Output is never multiplexer-wrapped. */
+typedef struct ot_session_program_status {
+    uint32_t state;
+    uint32_t kind;
+    uint32_t fields;
+    uint32_t progress;
+    uint32_t id_len;
+    uint32_t app_len;
+    uint32_t title_len;
+    uint32_t message_len;
+} ot_session_program_status;
+
 #define OT_CAP_KITTY_KEYBOARD UINT32_C(1)
 #define OT_CAP_KITTY_GRAPHICS UINT32_C(2)
 #define OT_CAP_RGB UINT32_C(4)
@@ -2029,6 +2065,7 @@ typedef struct ot_session_cursor_update {
 #define OT_CAP_NOTIFICATIONS UINT32_C(16384)
 #define OT_CAP_EXPLICIT_CURSOR_POSITIONING UINT32_C(32768)
 #define OT_CAP_REMOTE UINT32_C(65536)
+#define OT_CAP_PROGRAM_STATUS UINT32_C(131072)
 
 /* Initialize struct_size and abi_version. All other fields are copied output.
  * width_method is 0=wcwidth, 1=unicode, 2=no_zwj, 3=unicode_wide.
@@ -2612,6 +2649,8 @@ ot_status ot_session_get_terminal_state(ot_context *context, const ot_handle *se
  * contain complete supported 7-bit CSI/DCS/OSC/APC replies, not stream fragments,
  * at most 4096 bytes.
  * Titles are UTF-8 without C0, DEL, or C1 controls, at most 4091 bytes.
+ * Program status reports do not depend on detected support; terminals ignore
+ * OSC 7501 they do not implement. OT_CAP_PROGRAM_STATUS reports a query reply.
  * All output uses ordinary capacity and stays behind earlier raw/frame bytes,
  * including copied tickets. Setup enables detected features after screen selection.
  * Admission failure changes neither terminal state nor accepted output.

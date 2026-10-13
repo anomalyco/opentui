@@ -11,6 +11,7 @@ import {
   DebugOverlayCorner,
   type CursorStyleOptions,
   type MousePointerStyle,
+  type ProgramStatus,
   type RenderContext,
   type TerminalCapabilities,
   type ThemeMode,
@@ -2025,6 +2026,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public triggerNotification(message: string, title?: string): boolean {
     if (this._isDestroyed) return false
     return this.nativeSession.triggerNotification(message, title)
+  }
+
+  /**
+   * Report program status with OSC 7501. Terminals that do not implement the
+   * protocol ignore it, so this does not wait for `capabilities.program_status`.
+   * Returns false when the report is not queued: the renderer is destroyed, the
+   * terminal is not active, or output is full. Invalid reports throw.
+   */
+  public setProgramStatus(status: ProgramStatus): boolean {
+    if (this._isDestroyed) return false
+    return this.nativeSession.setProgramStatus(status)
   }
 
   public get themeMode(): ThemeMode | null {

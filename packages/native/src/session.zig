@@ -177,6 +177,21 @@ pub const CursorOptions = struct {
     cursor: ?terminal.MousePointerStyle = null,
 };
 
+pub const ProgramState = enum(u8) { idle = 1, working, done, blocked, @"error", clear };
+pub const ProgramKind = enum(u8) { permission = 1, question, auth };
+
+/// One OSC 7501 Program Status Protocol report. Empty strings omit their key;
+/// an empty id addresses the root record. Title and message are UTF-8 text.
+pub const ProgramStatus = struct {
+    state: ProgramState,
+    id: []const u8 = "",
+    kind: ?ProgramKind = null,
+    progress: ?u8 = null,
+    app: []const u8 = "",
+    title: []const u8 = "",
+    message: []const u8 = "",
+};
+
 /// Byte slices are borrowed for this call only. Replies must contain complete
 /// 7-bit ASCII CSI, DCS, OSC, or APC capability responses, not input-stream chunks.
 pub const Control = union(enum) {
@@ -194,6 +209,8 @@ pub const Control = union(enum) {
     reset_background,
     /// Desired cursor state only; the frame encoder owns output admission.
     cursor: CursorOptions,
+    /// Validated against the protocol limits below; never multiplexer-wrapped.
+    program_status: ProgramStatus,
 };
 
 pub const PumpStatus = enum(u8) { idle, again, output_pending, wait_until, closed };
@@ -205,6 +222,12 @@ pub const PumpResult = struct {
 pub const control_packet_bytes_max: u32 = 4096;
 pub const capability_response_bytes_max: u32 = control_packet_bytes_max;
 pub const title_bytes_max: u32 = control_packet_bytes_max - "\x1b]0;\x07".len;
+pub const program_status_id_bytes_max: u32 = 128;
+pub const program_status_id_segment_bytes_max: u32 = 32;
+pub const program_status_id_segments_max: u32 = 8;
+pub const program_status_app_bytes_max: u32 = 32;
+pub const program_status_title_bytes_max: u32 = 192;
+pub const program_status_message_bytes_max: u32 = 2048;
 pub const cursor_settle_ns: u64 = 10 * std.time.ns_per_ms;
 pub const split_snapshots_max: u32 = 64;
 
@@ -672,6 +695,16 @@ pub const Session = struct {
             if (options.cursor) |cursor| value.terminal.setMousePointerStyle(cursor);
             return;
         }
+        // Malformed input is rejected in every phase, before lifecycle admission.
+        switch (command) {
+            .title => |title| try validateText(title, title_bytes_max),
+            .kitty_keyboard_flags => |flags| {
+                if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
+            },
+            .palette_query => |bytes| try validatePaletteQuery(bytes),
+            .program_status => |status| try validateProgramStatus(status),
+            else => {},
+        }
         switch (self.lifecycle.phase) {
             .active => {},
             .setting_up, .resuming => {
@@ -682,24 +715,53 @@ pub const Session = struct {
             else => return error.TerminalInactive,
         }
         self.assertTerminalOutput();
-        switch (command) {
-            .title => |title| {
-                if (title.len > title_bytes_max) return error.InvalidOptions;
-                const view = std.unicode.Utf8View.init(title) catch return error.InvalidOptions;
-                var codepoints = view.iterator();
-                while (codepoints.nextCodepoint()) |codepoint| {
-                    if (codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f)) {
-                        return error.InvalidOptions;
-                    }
-                }
-            },
-            .kitty_keyboard_flags => |flags| {
-                if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
-            },
-            .palette_query => |bytes| try validatePaletteQuery(bytes),
-            else => {},
-        }
         try self.publishTerminalPacket(command);
+    }
+
+    /// UTF-8 without C0, DEL, or C1 controls.
+    fn validateText(text: []const u8, bytes_max: u32) Error!void {
+        if (text.len > bytes_max) return error.InvalidOptions;
+        const view = std.unicode.Utf8View.init(text) catch return error.InvalidOptions;
+        var codepoints = view.iterator();
+        while (codepoints.nextCodepoint()) |codepoint| {
+            if (codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f)) {
+                return error.InvalidOptions;
+            }
+        }
+    }
+
+    /// Rejects every report a terminal would discard or partly ignore, so each
+    /// accepted report means exactly what its fields say.
+    fn validateProgramStatus(status: ProgramStatus) Error!void {
+        if (status.kind != null and status.state != .blocked) return error.InvalidOptions;
+        if (status.progress) |progress| {
+            if (progress > 100) return error.InvalidOptions;
+            if (status.state != .working and status.state != .blocked) return error.InvalidOptions;
+        }
+        if (status.state == .clear and (status.app.len != 0 or status.title.len != 0 or status.message.len != 0)) {
+            return error.InvalidOptions;
+        }
+        if (status.id.len > program_status_id_bytes_max) return error.InvalidOptions;
+        if (status.id.len != 0) {
+            var segments = std.mem.splitScalar(u8, status.id, '/');
+            var count: u32 = 0;
+            while (segments.next()) |segment| : (count += 1) {
+                if (count == program_status_id_segments_max) return error.InvalidOptions;
+                try validateProgramStatusName(segment, program_status_id_segment_bytes_max);
+            }
+        }
+        if (status.app.len != 0) try validateProgramStatusName(status.app, program_status_app_bytes_max);
+        try validateText(status.title, program_status_title_bytes_max);
+        try validateText(status.message, program_status_message_bytes_max);
+    }
+
+    fn validateProgramStatusName(name: []const u8, bytes_max: u32) Error!void {
+        if (name.len == 0 or name.len > bytes_max) return error.InvalidOptions;
+        for (name) |byte| {
+            if (!std.ascii.isAlphanumeric(byte) and std.mem.findScalar(u8, "_.+-", byte) == null) {
+                return error.InvalidOptions;
+            }
+        }
     }
 
     pub fn setPaletteState(self: *Session, palette: []const ansi.RGBA, default_fg: ansi.RGBA, default_bg: ansi.RGBA, epoch: u32) Error!void {
@@ -1035,7 +1097,26 @@ pub const Session = struct {
             .palette_query => |bytes| try writer.writeAll(bytes),
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),
             .cursor => unreachable,
+            .program_status => |status| try writeProgramStatus(writer, status),
         }
+    }
+
+    // The largest valid report is about 3.2 KiB, so it always fits one control packet.
+    fn writeProgramStatus(writer: *std.Io.Writer, status: ProgramStatus) !void {
+        try writer.print("\x1b]7501;state={t}", .{status.state});
+        if (status.id.len != 0) try writer.print(":id={s}", .{status.id});
+        if (status.kind) |kind| try writer.print(":kind={t}", .{kind});
+        if (status.progress) |progress| try writer.print(":progress={d}", .{progress});
+        if (status.app.len != 0) try writer.print(":app={s}", .{status.app});
+        if (status.title.len != 0) {
+            try writer.writeAll(":title=");
+            try std.base64.standard.Encoder.encodeWriter(writer, status.title);
+        }
+        if (status.message.len != 0) {
+            try writer.writeAll(":msg=");
+            try std.base64.standard.Encoder.encodeWriter(writer, status.message);
+        }
+        try writer.writeAll("\x1b\\");
     }
 
     fn writeTerminalPacket(self: *Session, candidate: *terminal.Terminal, progress: *Lifecycle, writer: *std.Io.Writer) !void {
@@ -1424,7 +1505,8 @@ fn validateCapabilityString(kind: u8, payload: []const u8) Error!void {
         },
         ']' => {
             if (!std.mem.startsWith(u8, payload, "99;") and
-                !std.mem.startsWith(u8, payload, "1337;Capabilities=")) return error.InvalidOptions;
+                !std.mem.startsWith(u8, payload, "1337;Capabilities=") and
+                !std.mem.startsWith(u8, payload, "7501;")) return error.InvalidOptions;
         },
         '_' => {
             if (!std.mem.startsWith(u8, payload, "G")) return error.InvalidOptions;

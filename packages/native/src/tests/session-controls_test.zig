@@ -28,8 +28,10 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .query_pixel_resolution,
         .query_theme_colors,
         .reset_background,
+        .{ .program_status = .{ .state = .working } },
     };
     for (commands) |command| try testing.expectError(error.TerminalInactive, f.value.control(command));
+    try testing.expectError(error.InvalidOptions, f.value.control(.{ .program_status = .{ .state = .idle, .id = "a b" } }));
     var bytes: [8192]u8 = undefined;
     var now_ns: u64 = 0;
     try f.owner.setupSessionTerminal(f.id, .{});
@@ -48,6 +50,36 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
 
     const long_title = [_]u8{'x'} ** (session.title_bytes_max + 1);
     const long_response = [_]u8{'x'} ** (session.capability_response_bytes_max + 1);
+    const segment = "s" ** session.program_status_id_segment_bytes_max;
+    const long_text = [_]u8{'m'} ** (session.program_status_message_bytes_max + 1);
+    // One report per rule: field combinations, id grammar and limits, app, then text.
+    const invalid_status = [_]session.ProgramStatus{
+        .{ .state = .working, .kind = .permission },
+        .{ .state = .idle, .kind = .auth },
+        .{ .state = .working, .progress = 101 },
+        .{ .state = .done, .progress = 0 },
+        .{ .state = .clear, .app = "app" },
+        .{ .state = .clear, .title = "title" },
+        .{ .state = .clear, .message = "message" },
+        .{ .state = .idle, .id = "/" },
+        .{ .state = .idle, .id = "a//b" },
+        .{ .state = .idle, .id = "a/" },
+        .{ .state = .idle, .id = "a:b" },
+        .{ .state = .idle, .id = "a b" },
+        .{ .state = .idle, .id = segment ++ "s" },
+        .{ .state = .idle, .id = "a/b/c/d/e/f/g/h/i" },
+        .{ .state = .idle, .id = segment ++ "/" ++ segment ++ "/" ++ segment ++ "/" ++ segment ++ "/s" },
+        .{ .state = .idle, .app = "a/b" },
+        .{ .state = .idle, .app = "a=b" },
+        .{ .state = .idle, .app = segment ++ "s" },
+        .{ .state = .idle, .title = "line\nbreak" },
+        .{ .state = .idle, .title = "\xc2\x9b" },
+        .{ .state = .idle, .title = "\xff" },
+        .{ .state = .idle, .title = long_text[0 .. session.program_status_title_bytes_max + 1] },
+        .{ .state = .idle, .message = "\x1b\\" },
+        .{ .state = .idle, .message = "\x7f" },
+        .{ .state = .idle, .message = &long_text },
+    };
     const invalid = [_]session.Control{
         .{ .title = "nul\x00" },
         .{ .title = "\x1b]0;injected\x07" },
@@ -75,6 +107,10 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
     const before = f.snapshot();
     for (invalid) |command| {
         try testing.expectError(error.InvalidOptions, f.value.control(command));
+        try testing.expectEqualDeep(before, f.snapshot());
+    }
+    for (invalid_status) |status| {
+        try testing.expectError(error.InvalidOptions, f.value.control(.{ .program_status = status }));
         try testing.expectEqualDeep(before, f.snapshot());
     }
     for (replies) |reply| {
@@ -111,6 +147,7 @@ test "Session controls preserve rejected drafts and leave restoration capacity u
         .query_pixel_resolution,
         .query_theme_colors,
         .reset_background,
+        .{ .program_status = .{ .state = .done } },
     }) |command| {
         try testing.expectError(error.NoSpace, f.value.control(command));
         try testing.expectEqualDeep(before, f.snapshot());
@@ -148,6 +185,30 @@ test "Session controls bound input and output without allocation after attachmen
     try testing.expectEqualStrings("\x1b]0;\xc3\xb8\x07", try f.drain(&bytes));
     try f.value.control(.{ .title = "" });
     try testing.expectEqualStrings("\x1b]0;\x07", try f.drain(&bytes));
+    // The first two reports are the OSC 7501 specification's own examples.
+    for ([_]struct { session.ProgramStatus, []const u8 }{
+        .{ .{ .state = .blocked, .kind = .permission, .app = "terraform", .message = "Apply 3 to add, 1 to change, 0 to destroy?" }, "\x1b]7501;state=blocked:kind=permission:app=terraform:msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/\x1b\\" },
+        .{ .{ .state = .working, .id = "us-east", .progress = 40, .title = "US East", .message = "Pushing image" }, "\x1b]7501;state=working:id=us-east:progress=40:title=VVMgRWFzdA==:msg=UHVzaGluZyBpbWFnZQ==\x1b\\" },
+        .{ .{ .state = .blocked, .kind = .auth, .progress = 0 }, "\x1b]7501;state=blocked:kind=auth:progress=0\x1b\\" },
+        .{ .{ .state = .@"error", .id = "a/b-1/C_2.+", .message = "\xc3\xb8" }, "\x1b]7501;state=error:id=a/b-1/C_2.+:msg=w7g=\x1b\\" },
+        .{ .{ .state = .clear, .id = "us-east" }, "\x1b]7501;state=clear:id=us-east\x1b\\" },
+        .{ .{ .state = .clear }, "\x1b]7501;state=clear\x1b\\" },
+    }) |case| {
+        try f.value.control(.{ .program_status = case[0] });
+        try testing.expectEqualStrings(case[1], try f.drain(&bytes));
+    }
+    const segment = "s" ** session.program_status_id_segment_bytes_max;
+    try f.value.control(.{ .program_status = .{
+        .state = .blocked,
+        .id = segment ++ "/" ++ segment ++ "/" ++ segment ++ "/" ++ segment[3..],
+        .kind = .permission,
+        .progress = 100,
+        .app = segment,
+        .title = &([_]u8{'t'} ** session.program_status_title_bytes_max),
+        .message = &([_]u8{'m'} ** session.program_status_message_bytes_max),
+    } });
+    // The specification puts the largest legal report under 3300 bytes.
+    try testing.expectEqual(@as(usize, 3220), (try f.drain(&bytes)).len);
     var response = [_]u8{'v'} ** session.capability_response_bytes_max;
     @memcpy(response[0.."\x1bP>|kitty ".len], "\x1bP>|kitty ");
     @memcpy(response[response.len - 2 ..], "\x1b\\");
@@ -155,7 +216,7 @@ test "Session controls bound input and output without allocation after attachmen
         .{ .capability_response = &response },
         .{ .capability_response = "\x1bP1+r4d73=7878\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[?62;4c" },
         .{ .capability_response = "\x1bP0+r\x1b\\\x1bP1+r4d73\x1b\\\x1b[?c\x1b[?2026;0$y" },
-        .{ .capability_response = "\x1b]99;i=opentui-notifications:p=?;p=title\x07\x1b]1337;Capabilities=No\x1b\\" },
+        .{ .capability_response = "\x1b]99;i=opentui-notifications:p=?;p=title\x07\x1b]1337;Capabilities=No\x1b\\\x1b]7501;?:states=idle\x07" },
         .{ .mouse = .motion },
         .{ .kitty_keyboard_flags = 31 },
         .restore_modes,
@@ -165,6 +226,7 @@ test "Session controls bound input and output without allocation after attachmen
     }
     try testing.expect(f.cli.terminal.caps.osc52 and f.cli.terminal.caps.kitty_graphics);
     try testing.expect(f.cli.terminal.caps.sixel and f.cli.terminal.caps.notifications);
+    try testing.expect(f.cli.terminal.caps.program_status);
     try f.value.control(.query_pixel_resolution);
     try testing.expectEqualStrings(ansi.ANSI.queryPixelSize, try f.drain(&bytes));
     try f.value.control(.query_theme_colors);
