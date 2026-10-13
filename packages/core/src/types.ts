@@ -165,8 +165,6 @@ export type ProgramStatus =
   | (ProgramStatusRecord & { state: "blocked"; kind?: ProgramStatusKind; progress?: number })
   | { state: "clear"; id?: string }
 
-export type ProgramStatusState = ProgramStatus["state"]
-
 export interface RendererEvents {
   resize: (width: number, height: number) => void
   key: (data: Buffer) => void

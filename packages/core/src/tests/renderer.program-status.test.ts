@@ -30,27 +30,21 @@ describe("renderer program status", () => {
   test("writes OSC 7501 reports in call order", async () => {
     const { renderer, stdout } = await setup()
     stdout.clear()
-    // Messages and titles come from the specification's deploy example.
+    // Native tests pin each encoding rule. These rows pin how TypeScript packs, encodes, and reads fields.
     const reports: Array<[ProgramStatus, string]> = [
-      [
-        { state: "working", app: "deploy", message: "Deploying v2.4.1" },
-        "state=working:app=deploy:msg=RGVwbG95aW5nIHYyLjQuMQ==",
-      ],
       [
         {
           state: "blocked",
           kind: "permission",
+          progress: 10,
           id: "eu-west",
           app: "deploy",
-          title: "EU West",
+          title: "世界",
           message: "Approve deploy to eu-west (production)?",
         },
-        "state=blocked:id=eu-west:kind=permission:app=deploy:title=RVUgV2VzdA==:msg=QXBwcm92ZSBkZXBsb3kgdG8gZXUtd2VzdCAocHJvZHVjdGlvbik/",
+        "state=blocked:id=eu-west:kind=permission:progress=10:app=deploy:title=5LiW55WM:msg=QXBwcm92ZSBkZXBsb3kgdG8gZXUtd2VzdCAocHJvZHVjdGlvbik/",
       ],
-      [{ state: "working", id: "us-east", progress: 40 }, "state=working:id=us-east:progress=40"],
-      [Object.assign(Object.create({ id: "build" }), { state: "working" }), "state=working:id=build"],
-      [{ state: "done", message: "世界", app: undefined }, "state=done:msg=5LiW55WM"],
-      [{ state: "clear", id: "us-east" }, "state=clear:id=us-east"],
+      [Object.assign(Object.create({ id: "build" }), { state: "working", app: undefined }), "state=working:id=build"],
       [{ state: "clear" }, "state=clear"],
     ]
     for (const [status] of reports) expect(renderer.setProgramStatus(status)).toBe(true)
@@ -70,15 +64,8 @@ describe("renderer program status", () => {
       [{ state: "clear", id: "" }, RangeError],
       [{ state: "working", progress: 1.5 }, RangeError],
       [{ state: "working", progress: -1 }, RangeError],
+      // Native code owns the protocol rules; TypeScript only bounds the encoding work.
       [{ state: "working", progress: 101 }, NativeError],
-      [{ state: "working", kind: "auth" }, NativeError],
-      [{ state: "done", progress: 100 }, NativeError],
-      [{ state: "clear", message: "gone" }, NativeError],
-      [{ state: "idle", id: "a b" }, NativeError],
-      [{ state: "idle", app: "a/b" }, NativeError],
-      [{ state: "error", message: "line\nbreak" }, NativeError],
-      [{ state: "error", title: "x".repeat(193) }, NativeError],
-      [{ state: "error", message: "x".repeat(2049) }, NativeError],
       [{ state: "error", message: "x".repeat(1_000_000) }, NativeError],
     ]
     for (const [status, error] of invalid) {
@@ -88,7 +75,7 @@ describe("renderer program status", () => {
     expect(stdout.text()).toBe("")
   })
 
-  test("returns false while the terminal is inactive", async () => {
+  test("returns false when the report cannot be queued", async () => {
     ;({ renderer } = await createTestRenderer({ remote: true }))
     expect(renderer.setProgramStatus({ state: "working" })).toBe(false)
     expect(() => renderer!.setProgramStatus({ state: "idle", id: "a b" })).toThrow(NativeError)
@@ -98,15 +85,11 @@ describe("renderer program status", () => {
     expect(renderer.setProgramStatus({ state: "idle" })).toBe(false)
     await renderer.resume()
     expect(renderer.setProgramStatus({ state: "idle" })).toBe(true)
-    renderer.destroy()
-    expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
-  })
-
-  test("returns false while output is full", async () => {
-    const { renderer } = await setup()
     const session = (renderer as unknown as { nativeSession: NativeSession }).nativeSession
     // Nothing drains during this synchronous loop, so every size down to one byte is eventually refused.
     for (let size = 1 << 20; size >= 1; size >>= 1) while (session.write(new Uint8Array(size))) {}
+    expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
+    renderer.destroy()
     expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
   })
 
