@@ -76,8 +76,9 @@ A report that breaks a rule above throws. OpenTUI checks the whole report before
 ## Detection
 
 Terminals ignore OSC sequences they do not implement, so `setProgramStatus()` does not wait for detection. OpenTUI
-sends the `OSC 7501 ; ?` query at startup. `renderer.capabilities?.program_status` becomes `true` when the terminal
-replies. A `false` value can also mean that the reply has not arrived yet.
+sends the `OSC 7501 ; ?` query at startup, except in foot, which mishandles OSC queries during detection.
+`renderer.capabilities?.program_status` becomes `true` when the terminal replies. A `false` value can also mean that
+the reply has not arrived yet.
 
 ```typescript
 renderer.on("capabilities", (capabilities) => {
