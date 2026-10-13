@@ -148,12 +148,13 @@ const CommittedImage = struct {
     // A partial overlay must rebuild placements; an unchanged overlay must not.
     reservation_intact: bool = true,
     reservation_hash: u64 = 0,
+    // Kitty runs placed for a partial reservation, ids KITTY_RUN_ID_MIN up.
+    kitty_runs: u32 = 0,
 };
 
 // Run placement ids start above every buffer placement id. Kitty scopes
 // placement ids to an image id and each owner has its own image id, so runs
-// of different owners never collide and no run needs tracking: a placement
-// delete by image id drops the owner rectangle or its runs alike.
+// of different owners never collide.
 const KITTY_RUN_ID_MIN: u32 = 0x8000_0000;
 
 comptime {
@@ -2364,6 +2365,10 @@ pub const CliRenderer = struct {
                 .lower_occupancy_hash = if (index < self.imageDirty.items.len) self.imageDirty.items[index].lower_occupancy_hash else 0,
                 .reservation_intact = reservation.intact,
                 .reservation_hash = reservation.hash,
+                .kitty_runs = if (protocol == .kitty and !reservation.intact)
+                    self.writeKittyReservationRuns({}, placement, 0, kittyDownscaleApplies(placement), false) catch unreachable
+                else
+                    0,
             });
         }
     }
@@ -2488,7 +2493,8 @@ pub const CliRenderer = struct {
     // with the same coverage share a placement, so an uncovered band keeps the
     // owner's exact source mapping and the escape count follows the overlay
     // shape rather than the image height. z stays on the owner id so ordering
-    // does not follow the run id.
+    // does not follow the run id. Returns the run count; a void writer only
+    // counts, so committed state can name each run for its later delete.
     fn writeKittyReservationRuns(
         self: *CliRenderer,
         writer: anytype,
@@ -2496,7 +2502,7 @@ pub const CliRenderer = struct {
         image_id: u32,
         downscaled: bool,
         tmux: bool,
-    ) !void {
+    ) !u32 {
         const src_x0: u32 = if (downscaled) 0 else placement.source_x;
         const src_y0: u32 = if (downscaled) 0 else placement.source_y;
         const src_w: u32 = if (downscaled) placement.pixel_width else placement.source_width;
@@ -2520,7 +2526,7 @@ pub const CliRenderer = struct {
                 const src_x = kittySourceSpan(src_x0, src_w, start, ox - start, placement.width) orelse continue;
                 // Runs never outnumber cells, so the id space above KITTY_RUN_ID_MIN suffices.
                 std.debug.assert(run_index < std.math.maxInt(u32) - KITTY_RUN_ID_MIN);
-                try terminal_image.writeKittyPlacement(
+                if (@TypeOf(writer) != void) try terminal_image.writeKittyPlacement(
                     writer,
                     image_id,
                     KITTY_RUN_ID_MIN + run_index,
@@ -2538,11 +2544,14 @@ pub const CliRenderer = struct {
                 run_index += 1;
             }
         }
+        return run_index;
     }
 
     // Re-emit one Kitty placement when its transmit, geometry, or coverage
-    // changed, or when a full repaint is forced. Deletes address the image id,
-    // not individual placements, so a dropped frame leaves nothing to reconcile.
+    // changed, or when a full repaint is forced. Placement deletes name each
+    // committed placement: iTerm2 also frees the image on an image-wide `d=i`,
+    // so a following put would find no image. Committed state only advances
+    // with a presented frame, so a dropped frame still names what is shown.
     fn writeKittyPlacementUpdate(
         self: *CliRenderer,
         writer: anytype,
@@ -2585,10 +2594,17 @@ pub const CliRenderer = struct {
         if (retransmit) {
             // Frees the image and every placement of it, runs included.
             try terminal_image.writeKittyDelete(writer, image_id, null, true, tmux);
-        } else if (previous != null) {
+        } else if (previous) |committed| {
             // Drops the owner rectangle or its runs, whichever is on the
             // terminal, and keeps the image data for the new placements.
-            try terminal_image.writeKittyDelete(writer, image_id, null, false, tmux);
+            if (committed.reservation_intact) {
+                try terminal_image.writeKittyDelete(writer, image_id, placement.placement_id, false, tmux);
+            } else {
+                var run: u32 = 0;
+                while (run < committed.kitty_runs) : (run += 1) {
+                    try terminal_image.writeKittyDelete(writer, image_id, KITTY_RUN_ID_MIN + run, false, tmux);
+                }
+            }
         }
         if (previous == null or retransmit) {
             const transmit = try self.kittyPlacementTransmit(placement, .escape);
@@ -2599,7 +2615,7 @@ pub const CliRenderer = struct {
         }
         if (placement.x < 0 or placement.y < 0) return;
         if (!reservation.intact) {
-            try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
+            _ = try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
             return;
         }
         // A downscaled transmit already contains exactly the placement's
