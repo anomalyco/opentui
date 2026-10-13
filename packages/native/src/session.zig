@@ -228,6 +228,10 @@ pub const program_status_id_segments_max: u32 = 8;
 pub const program_status_app_bytes_max: u32 = 32;
 pub const program_status_title_bytes_max: u32 = 192;
 pub const program_status_message_bytes_max: u32 = 2048;
+/// A valid report with every key at its longest value.
+pub const program_status_bytes_max: u32 = "\x1b]7501;state=blocked:id=:kind=permission:progress=100:app=:title=:msg=\x1b\\".len +
+    program_status_id_bytes_max + program_status_app_bytes_max + std.base64.standard.Encoder.calcSize(program_status_title_bytes_max) +
+    std.base64.standard.Encoder.calcSize(program_status_message_bytes_max);
 pub const cursor_settle_ns: u64 = 10 * std.time.ns_per_ms;
 pub const split_snapshots_max: u32 = 64;
 
@@ -742,13 +746,10 @@ pub const Session = struct {
             return error.InvalidOptions;
         }
         if (status.id.len > program_status_id_bytes_max) return error.InvalidOptions;
+        if (std.mem.countScalar(u8, status.id, '/') >= program_status_id_segments_max) return error.InvalidOptions;
         if (status.id.len != 0) {
             var segments = std.mem.splitScalar(u8, status.id, '/');
-            var count: u32 = 0;
-            while (segments.next()) |segment| : (count += 1) {
-                if (count == program_status_id_segments_max) return error.InvalidOptions;
-                try validateProgramStatusName(segment, program_status_id_segment_bytes_max);
-            }
+            while (segments.next()) |segment| try validateProgramStatusName(segment, program_status_id_segment_bytes_max);
         }
         if (status.app.len != 0) try validateProgramStatusName(status.app, program_status_app_bytes_max);
         try validateText(status.title, program_status_title_bytes_max);
@@ -1097,26 +1098,23 @@ pub const Session = struct {
             .palette_query => |bytes| try writer.writeAll(bytes),
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),
             .cursor => unreachable,
-            .program_status => |status| try writeProgramStatus(writer, status),
+            .program_status => |status| writeProgramStatus(writer, status),
         }
     }
 
-    // The largest valid report is about 3.2 KiB, so it always fits one control packet.
-    fn writeProgramStatus(writer: *std.Io.Writer, status: ProgramStatus) !void {
-        try writer.print("\x1b]7501;state={t}", .{status.state});
-        if (status.id.len != 0) try writer.print(":id={s}", .{status.id});
-        if (status.kind) |kind| try writer.print(":kind={t}", .{kind});
-        if (status.progress) |progress| try writer.print(":progress={d}", .{progress});
-        if (status.app.len != 0) try writer.print(":app={s}", .{status.app});
-        if (status.title.len != 0) {
-            try writer.writeAll(":title=");
-            try std.base64.standard.Encoder.encodeWriter(writer, status.title);
-        }
-        if (status.message.len != 0) {
-            try writer.writeAll(":msg=");
-            try std.base64.standard.Encoder.encodeWriter(writer, status.message);
-        }
-        try writer.writeAll("\x1b\\");
+    /// Validation bounds the report, and the bound fits the empty packet, so writing cannot fail.
+    fn writeProgramStatus(writer: *std.Io.Writer, status: ProgramStatus) void {
+        comptime std.debug.assert(program_status_bytes_max <= control_packet_bytes_max);
+        var report: std.ArrayList(u8) = .initBuffer(writer.unusedCapacitySlice()[0..program_status_bytes_max]);
+        report.printAssumeCapacity("\x1b]7501;state={t}", .{status.state});
+        if (status.id.len != 0) report.printAssumeCapacity(":id={s}", .{status.id});
+        if (status.kind) |kind| report.printAssumeCapacity(":kind={t}", .{kind});
+        if (status.progress) |progress| report.printAssumeCapacity(":progress={d}", .{progress});
+        if (status.app.len != 0) report.printAssumeCapacity(":app={s}", .{status.app});
+        if (status.title.len != 0) report.printAssumeCapacity(":title={b64}", .{status.title});
+        if (status.message.len != 0) report.printAssumeCapacity(":msg={b64}", .{status.message});
+        report.appendSliceAssumeCapacity("\x1b\\");
+        writer.advance(report.items.len);
     }
 
     fn writeTerminalPacket(self: *Session, candidate: *terminal.Terminal, progress: *Lifecycle, writer: *std.Io.Writer) !void {

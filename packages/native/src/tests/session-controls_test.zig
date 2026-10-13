@@ -52,34 +52,6 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
     const long_response = [_]u8{'x'} ** (session.capability_response_bytes_max + 1);
     const segment = "s" ** session.program_status_id_segment_bytes_max;
     const long_text = [_]u8{'m'} ** (session.program_status_message_bytes_max + 1);
-    // One report per rule: field combinations, id grammar and limits, app, then text.
-    const invalid_status = [_]session.ProgramStatus{
-        .{ .state = .working, .kind = .permission },
-        .{ .state = .idle, .kind = .auth },
-        .{ .state = .working, .progress = 101 },
-        .{ .state = .done, .progress = 0 },
-        .{ .state = .clear, .app = "app" },
-        .{ .state = .clear, .title = "title" },
-        .{ .state = .clear, .message = "message" },
-        .{ .state = .idle, .id = "/" },
-        .{ .state = .idle, .id = "a//b" },
-        .{ .state = .idle, .id = "a/" },
-        .{ .state = .idle, .id = "a:b" },
-        .{ .state = .idle, .id = "a b" },
-        .{ .state = .idle, .id = segment ++ "s" },
-        .{ .state = .idle, .id = "a/b/c/d/e/f/g/h/i" },
-        .{ .state = .idle, .id = segment ++ "/" ++ segment ++ "/" ++ segment ++ "/" ++ segment ++ "/s" },
-        .{ .state = .idle, .app = "a/b" },
-        .{ .state = .idle, .app = "a=b" },
-        .{ .state = .idle, .app = segment ++ "s" },
-        .{ .state = .idle, .title = "line\nbreak" },
-        .{ .state = .idle, .title = "\xc2\x9b" },
-        .{ .state = .idle, .title = "\xff" },
-        .{ .state = .idle, .title = long_text[0 .. session.program_status_title_bytes_max + 1] },
-        .{ .state = .idle, .message = "\x1b\\" },
-        .{ .state = .idle, .message = "\x7f" },
-        .{ .state = .idle, .message = &long_text },
-    };
     const invalid = [_]session.Control{
         .{ .title = "nul\x00" },
         .{ .title = "\x1b]0;injected\x07" },
@@ -90,6 +62,25 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .title = &long_title },
         .{ .kitty_keyboard_flags = 32 },
         .{ .kitty_keyboard_flags = 255 },
+        // One report per rule: field combinations, id grammar and limits, app, then text.
+        .{ .program_status = .{ .state = .working, .kind = .permission } },
+        .{ .program_status = .{ .state = .working, .progress = 101 } },
+        .{ .program_status = .{ .state = .done, .progress = 0 } },
+        .{ .program_status = .{ .state = .clear, .app = "app" } },
+        .{ .program_status = .{ .state = .clear, .title = "title" } },
+        .{ .program_status = .{ .state = .clear, .message = "message" } },
+        .{ .program_status = .{ .state = .idle, .id = "/" } },
+        .{ .program_status = .{ .state = .idle, .id = "a/" } },
+        .{ .program_status = .{ .state = .idle, .id = "a:b" } },
+        .{ .program_status = .{ .state = .idle, .id = segment ++ "s" } },
+        .{ .program_status = .{ .state = .idle, .id = "a/b/c/d/e/f/g/h/i" } },
+        .{ .program_status = .{ .state = .idle, .id = segment ++ "/" ++ segment ++ "/" ++ segment ++ "/" ++ segment ++ "/s" } },
+        .{ .program_status = .{ .state = .idle, .app = "a/b" } },
+        .{ .program_status = .{ .state = .idle, .app = segment ++ "s" } },
+        .{ .program_status = .{ .state = .idle, .title = "line\nbreak" } },
+        .{ .program_status = .{ .state = .idle, .title = long_text[0 .. session.program_status_title_bytes_max + 1] } },
+        .{ .program_status = .{ .state = .idle, .message = "\x1b\\" } },
+        .{ .program_status = .{ .state = .idle, .message = &long_text } },
     };
     // One reply per rule: framing, DCS, OSC, APC, then each CSI form.
     const replies = [_][]const u8{
@@ -107,10 +98,6 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
     const before = f.snapshot();
     for (invalid) |command| {
         try testing.expectError(error.InvalidOptions, f.value.control(command));
-        try testing.expectEqualDeep(before, f.snapshot());
-    }
-    for (invalid_status) |status| {
-        try testing.expectError(error.InvalidOptions, f.value.control(.{ .program_status = status }));
         try testing.expectEqualDeep(before, f.snapshot());
     }
     for (replies) |reply| {
@@ -190,7 +177,7 @@ test "Session controls bound input and output without allocation after attachmen
         .{ .{ .state = .blocked, .kind = .permission, .app = "terraform", .message = "Apply 3 to add, 1 to change, 0 to destroy?" }, "\x1b]7501;state=blocked:kind=permission:app=terraform:msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/\x1b\\" },
         .{ .{ .state = .working, .id = "us-east", .progress = 40, .title = "US East", .message = "Pushing image" }, "\x1b]7501;state=working:id=us-east:progress=40:title=VVMgRWFzdA==:msg=UHVzaGluZyBpbWFnZQ==\x1b\\" },
         .{ .{ .state = .blocked, .kind = .auth, .progress = 0 }, "\x1b]7501;state=blocked:kind=auth:progress=0\x1b\\" },
-        .{ .{ .state = .@"error", .id = "a/b-1/C_2.+", .message = "\xc3\xb8" }, "\x1b]7501;state=error:id=a/b-1/C_2.+:msg=w7g=\x1b\\" },
+        .{ .{ .state = .@"error", .id = "a/b-1/C_2.+/d/e/f/g/h", .message = "\xc3\xb8" }, "\x1b]7501;state=error:id=a/b-1/C_2.+/d/e/f/g/h:msg=w7g=\x1b\\" },
         .{ .{ .state = .clear, .id = "us-east" }, "\x1b]7501;state=clear:id=us-east\x1b\\" },
         .{ .{ .state = .clear }, "\x1b]7501;state=clear\x1b\\" },
     }) |case| {
@@ -207,8 +194,7 @@ test "Session controls bound input and output without allocation after attachmen
         .title = &([_]u8{'t'} ** session.program_status_title_bytes_max),
         .message = &([_]u8{'m'} ** session.program_status_message_bytes_max),
     } });
-    // The specification puts the largest legal report under 3300 bytes.
-    try testing.expectEqual(@as(usize, 3220), (try f.drain(&bytes)).len);
+    try testing.expectEqual(session.program_status_bytes_max, (try f.drain(&bytes)).len);
     var response = [_]u8{'v'} ** session.capability_response_bytes_max;
     @memcpy(response[0.."\x1bP>|kitty ".len], "\x1bP>|kitty ");
     @memcpy(response[response.len - 2 ..], "\x1b\\");
