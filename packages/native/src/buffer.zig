@@ -1000,7 +1000,7 @@ pub const OptimizedBuffer = struct {
         self.clearImagePlacements();
         fillU32(self.buffer.char, cellChar);
         fillU32(self.buffer.attributes, 0);
-        @memset(self.buffer.fg, ansi.rgbColor(255, 255, 255, 255));
+        @memset(self.buffer.fg, ansi.defaultColor(255, 255, 255, 255));
         @memset(self.buffer.bg, bg);
     }
 
@@ -1623,7 +1623,7 @@ pub const OptimizedBuffer = struct {
         const clippedEndY = @min(endY, @as(u32, @intCast(clippedRect.y + @as(i32, @intCast(clippedRect.height)) - 1)));
 
         if (fully_transparent) {
-            const cell = makeCell(DEFAULT_SPACE_CHAR, ansi.rgbColor(255, 255, 255, 255), bg, 0);
+            const cell = makeCell(DEFAULT_SPACE_CHAR, ansi.defaultColor(255, 255, 255, 255), bg, 0);
             const clipped_area = @as(u64, clippedEndX - clippedStartX + 1) * (clippedEndY - clippedStartY + 1);
             var intersection_area: u64 = 0;
             for (self.image_placements.items) |placement| {
@@ -1680,7 +1680,7 @@ pub const OptimizedBuffer = struct {
                     self.setCellWithAlphaBlendingCell(
                         fillX,
                         fillY,
-                        makeCell(DEFAULT_SPACE_CHAR, ansi.rgbColor(255, 255, 255, 255), bg, 0),
+                        makeCell(DEFAULT_SPACE_CHAR, ansi.defaultColor(255, 255, 255, 255), bg, 0),
                     );
                 }
             }
@@ -1692,7 +1692,7 @@ pub const OptimizedBuffer = struct {
             while (fillY <= clippedEndY) : (fillY += 1) {
                 var fillX = clippedStartX;
                 while (fillX <= clippedEndX) : (fillX += 1) {
-                    const cell = makeCell(DEFAULT_SPACE_CHAR, ansi.rgbColor(255, 255, 255, 255), bg, 0);
+                    const cell = makeCell(DEFAULT_SPACE_CHAR, ansi.defaultColor(255, 255, 255, 255), bg, 0);
                     if (image_aware) self.setCellWithAlphaBlendingRawImageAware(fillX, fillY, cell) else self.setCellWithAlphaBlendingRawCell(fillX, fillY, cell);
                 }
             }
@@ -1709,7 +1709,7 @@ pub const OptimizedBuffer = struct {
                 const rowSliceAttrs = self.buffer.attributes[rowStartIndex .. rowStartIndex + rowWidth];
 
                 fillU32(rowSliceChar, DEFAULT_SPACE_CHAR);
-                @memset(rowSliceFg, ansi.rgbColor(255, 255, 255, 255));
+                @memset(rowSliceFg, ansi.defaultColor(255, 255, 255, 255));
                 @memset(rowSliceBg, bg);
                 fillU32(rowSliceAttrs, 0);
             }
@@ -2350,7 +2350,7 @@ pub const OptimizedBuffer = struct {
             const spans = vline_span_info.spans;
             const col_offset = vline_span_info.source_col_start;
             var span_idx: usize = 0;
-            var lineFg = text_defaults.fg orelse ansi.rgbColor(255, 255, 255, 255);
+            var lineFg = text_defaults.fg orelse ansi.defaultColor(255, 255, 255, 255);
             var lineBg = text_defaults.bg orelse ansi.rgbColor(0, 0, 0, 0);
             var lineAttributes = text_defaults.attributes orelse 0;
             const defaultFg = lineFg;
@@ -3754,7 +3754,7 @@ pub const OptimizedBuffer = struct {
 
         if (visibleWidth == 0 or visibleHeight == 0) return;
 
-        const baseFg = fgColor orelse ansi.rgbColor(255, 255, 255, 255);
+        const baseFg = fgColor orelse ansi.defaultColor(255, 255, 255, 255);
 
         const graphemeAware = self.grapheme_tracker.hasAny();
         const linkAware = self.link_tracker.hasAny();
