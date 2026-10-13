@@ -50,6 +50,9 @@ describe("renderer program status", () => {
     for (const [status] of reports) expect(renderer.setProgramStatus(status)).toBe(true)
     await renderer.nativeScene.driver.idle()
     expect(stdout.text()).toBe(reports.map(([, body]) => `\x1b]7501;${body}\x1b\\`).join(""))
+    // The native session closes later, so only the renderer's own check can refuse this report.
+    renderer.destroy()
+    expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
   })
 
   test("rejects invalid reports without output", async () => {
@@ -88,8 +91,6 @@ describe("renderer program status", () => {
     const session = (renderer as unknown as { nativeSession: NativeSession }).nativeSession
     // Nothing drains during this synchronous loop, so every size down to one byte is eventually refused.
     for (let size = 1 << 20; size >= 1; size >>= 1) while (session.write(new Uint8Array(size))) {}
-    expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
-    renderer.destroy()
     expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
   })
 
