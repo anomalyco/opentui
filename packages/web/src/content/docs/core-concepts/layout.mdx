@@ -292,6 +292,7 @@ Custom streams must call `renderer.resize(columns, rows)`. Local `process.stdout
 - `overflow: "scroll"` clips like a Yoga overflow mode, but it does not add scroll state. Use [ScrollBox](/docs/components/scrollbox).
 - Gap options belong to [Box](/docs/components/box), not every renderable class.
 - `visible = false` removes a renderable from layout.
+- A scene holds at most 256 levels, counting the root. An `add()` or `insertBefore()` that nests deeper throws `NativeError` with status `ObjectLimit`.
 - Text can contain fewer graphemes than cells or more UTF-16 units than cells. See [Text and terminal cells](/docs/core-concepts/text-and-cells).
 
 ## Next

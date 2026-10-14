@@ -20,6 +20,7 @@ import { InputRenderable } from "../renderables/Input.js"
 import { SliderRenderable } from "../renderables/Slider.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
+import { NativeError, NativeStatus } from "../zig.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -422,6 +423,31 @@ describe("Renderable - Child Management", () => {
 
     expect(() => (parent as any).remove("child")).toThrow("remove expects a renderable child object")
     expect(parent.getChildren()[0]).toBe(child)
+  })
+
+  test("add names the scene nesting limit and keeps the tree", async () => {
+    // The root and 255 descendants fill the 256 levels of the native scene.
+    let parent: Renderable = testRenderer.root
+    for (let level = 1; level < 256; level++) {
+      const next = new TestRenderable(testRenderer, {})
+      parent.add(next)
+      parent = next
+    }
+    const child = new TestRenderable(testRenderer, {})
+    const failure = (node: Renderable) => {
+      try {
+        parent.add(node)
+      } catch (error) {
+        return error instanceof NativeError && [error.operation, NativeStatus[error.status], error.message]
+      }
+    }
+    // A cycle at the same depth fails for its own cause.
+    expect([failure(child), failure(testRenderer.root.getChildren()[0])]).toEqual([
+      ["ot_scene_move_node", "ObjectLimit", "ot_scene_move_node failed: Scene nesting depth exceeds the native limit"],
+      ["ot_scene_move_node", "InvalidArgument", "ot_scene_move_node failed: InvalidArgument"],
+    ])
+    expect([child.parent, parent.getChildren().length]).toEqual([null, 0])
+    await renderOnce()
   })
 
   test("remove warns in dev when the object was never a child", () => {

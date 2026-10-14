@@ -759,8 +759,9 @@ export class NativeError extends Error {
   constructor(
     public readonly operation: string,
     public readonly status: NativeStatus,
+    reason = NativeStatus[status] ?? `status ${status}`,
   ) {
-    super(`${operation} failed: ${NativeStatus[status] ?? `status ${status}`}`)
+    super(`${operation} failed: ${reason}`)
     this.name = "NativeError"
   }
 }
@@ -6978,10 +6979,11 @@ export class FFIRenderLib {
         parent === null ? null : encodeContextHandle(context, parent, scratch.target.record, scratch.target.words)
       const childIndex = toSafeFFIU32Length(index, "Scene child index")
       const pointer = this.nativeContextPointer(context, "ot_scene_move_node")
-      nativeResult(
-        "ot_scene_move_node",
-        this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex),
-      )
+      const status = this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex)
+      // A move returns ObjectLimit for the Yoga depth limit; its other cause, 2^64 placements, cannot occur.
+      if (status === NativeStatus.ObjectLimit)
+        throw new NativeError("ot_scene_move_node", status, "Scene nesting depth exceeds the native limit")
+      nativeResult("ot_scene_move_node", status)
     } finally {
       this.sceneMoveRecord ??= scratch
     }
