@@ -842,12 +842,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set width(value: number | "auto" | `${number}%` | null | undefined) {
-    value ??= this.defaultDimension("width")
-    if (!isDimensionType(value) || this._width === value) {
-      return
-    }
-
-    this.setDimension(Dimension.Width, value)
+    this.setDimension("width", value)
   }
 
   public get height(): number {
@@ -888,18 +883,18 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set height(value: number | "auto" | `${number}%` | null | undefined) {
-    value ??= this.defaultDimension("height")
-    if (!isDimensionType(value) || this._height === value) {
-      return
-    }
-
-    this.setDimension(Dimension.Height, value)
+    this.setDimension("height", value)
   }
 
-  private setDimension(dimension: Dimension, value: number | "auto" | `${number}%`): void {
+  private setDimension(kind: "width" | "height", input: number | "auto" | `${number}%` | null | undefined): void {
+    // A destroyed node ignores writes; a defaultDimension override may need its native context.
+    if (this.isFreed()) return
+    const value = input ?? this.defaultDimension(kind)
+    const key = kind === "width" ? "_width" : "_height"
+    if (!isDimensionType(value) || this[key] === value) return
     this.runMutation(() => {
-      const key = dimension === Dimension.Width ? "_width" : "_height"
       const disableShrink = typeof value === "number" && this._flexShrink === 1
+      const dimension = kind === "width" ? Dimension.Width : Dimension.Height
       sceneSetDimension(this._ctx.nativeScene, this, dimension, value, disableShrink)
       this[key] = value
       if (disableShrink) this._flexShrink = 0

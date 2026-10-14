@@ -414,7 +414,7 @@ export class ArrowRenderable extends Renderable {
         ...options.arrowChars,
       }
 
-      if (!options.width) this.width = this.defaultDimension("width")
+      if (!options.width) this.width = this.glyphWidth()
       this.setNativeSceneArrow()
       this.setNativeScenePaint()
     } catch (error) {
@@ -497,7 +497,10 @@ export class ArrowRenderable extends Renderable {
   }
 
   protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
-    if (kind === "height") return super.defaultDimension(kind)
+    return kind === "width" ? this.glyphWidth() : super.defaultDimension(kind)
+  }
+
+  private glyphWidth(): number {
     const { context, renderLib } = this._ctx.nativeScene.driver
     const unicode = renderLib.createContextUnicode(context, this.getArrowChar(), this._ctx.widthMethod)
     try {

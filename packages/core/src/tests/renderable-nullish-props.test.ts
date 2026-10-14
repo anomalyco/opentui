@@ -323,6 +323,7 @@ test.each(renderableClasses)("%s ignores writes after destroy", async (name, Ren
   const orphan = new RenderableClass(other, classOptions(name, SyntaxStyle.create(other.nativeScene)))
   other.root.add(orphan)
   other.destroy()
+  await other.closed
   failures.push(...writeAfterDestroy(orphan, writes, skipped).map((failure) => `renderer destroyed: ${failure}`))
   expect(failures).toEqual([])
 })
