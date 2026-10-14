@@ -192,6 +192,32 @@ A 32-column bordered row leaves 30 inner columns. Adding one column gives the mi
 
 Renderable getters expose computed integer geometry after a layout pass. OpenTUI clamps exposed `width` and `height` to at least one cell.
 
+## Read style and geometry
+
+`x`, `y`, `width`, `height`, and `getLayout()` report computed geometry from the last layout pass.
+
+To read the style that was set, call the method with the name of the matching [Yoga](/docs/reference/yoga) Node getter. It returns
+the same `Value` or enum type. A change is visible at once, before the next layout pass:
+
+```typescript
+box.maxWidth = 40
+box.getMaxWidth() // { unit: Unit.Point, value: 40 }
+box.width // the computed width from the last layout pass
+```
+
+| Options                                          | Getters                                                              |
+| ------------------------------------------------ | -------------------------------------------------------------------- |
+| `width`, `height`                                | `getWidth()`, `getHeight()`                                          |
+| `minWidth`, `minHeight`, `maxWidth`, `maxHeight` | `getMinWidth()`, `getMinHeight()`, `getMaxWidth()`, `getMaxHeight()` |
+| Margin and padding options                       | `getMargin(edge)`, `getPadding(edge)`                                |
+| `gap`, `rowGap`, `columnGap`                     | `getGap(gutter)`                                                     |
+| `flexGrow`, `flexShrink`, `flexBasis`            | `getFlexGrow()`, `getFlexShrink()`, `getFlexBasis()`                 |
+| `flexDirection`, `flexWrap`                      | `getFlexDirection()`, `getFlexWrap()`                                |
+| `alignItems`, `alignSelf`, `justifyContent`      | `getAlignItems()`, `getAlignSelf()`, `getJustifyContent()`           |
+| `position`                                       | `getPositionType()`                                                  |
+
+`top`, `right`, `bottom`, `left`, and `overflow` have property getters. Assign an option to change its style.
+
 ## Resize behavior
 
 A terminal resize keeps the same renderable instances. The renderer resizes its root and runs Yoga again with the new column and row counts.

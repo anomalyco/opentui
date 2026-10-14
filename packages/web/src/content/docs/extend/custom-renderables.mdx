@@ -141,8 +141,9 @@ it reports the previous completed layout until the next layout pass. Before the 
 `NaN`. Use `screenX`, `screenY`, `width`, and `height` for drawing in terminal cells.
 
 Renderable `getLayoutNode()` and protected `yogaNode` access are no longer supported. Use layout properties, measurement
-providers, and `getLayout()` instead. The [standalone Yoga API](/docs/reference/yoga) remains available for separate
-layout trees. Read [Layout](/docs/core-concepts/layout) for sizing, rounding, and parent constraints.
+providers, and `getLayout()` instead. To read a style, call the renderable method with the Yoga Node getter's name, such
+as `getMaxWidth()` or `getPadding(edge)`. [Read style and geometry](/docs/core-concepts/layout#read-style-and-geometry)
+lists them. The [standalone Yoga API](/docs/reference/yoga) remains available for separate layout trees. Read [Layout](/docs/core-concepts/layout) for sizing, rounding, and parent constraints.
 
 ## Use paint hooks
 

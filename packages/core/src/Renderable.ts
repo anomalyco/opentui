@@ -1,10 +1,14 @@
 import { EventEmitter } from "events"
 import {
+  Align,
   Dimension,
   Display,
   Edge,
   FlexDirection,
   Gutter,
+  Justify,
+  PositionType,
+  Wrap,
   type Layout,
   type MeasureFunction,
   type Value,
@@ -15,6 +19,7 @@ import {
   YogaValueKind,
   parseYogaValue,
   sceneGetEnum,
+  sceneGetFloat,
   sceneGetValue,
   sceneSetDimension,
   sceneSetEnum,
@@ -958,6 +963,10 @@ export abstract class Renderable extends BaseRenderable {
     return this.isFreed() ? fallback : sceneGetEnum(this._ctx.nativeScene, this, kind)
   }
 
+  private yogaGetFloat(kind: (typeof YogaFloatKind)[keyof typeof YogaFloatKind]): number {
+    return this.isFreed() ? NaN : sceneGetFloat(this._ctx.nativeScene, this, kind)
+  }
+
   private yogaSetFloat(kind: (typeof YogaFloatKind)[keyof typeof YogaFloatKind], value: number | undefined): void {
     if (this.isFreed()) return
     sceneSetFloat(this._ctx.nativeScene, this, kind, value)
@@ -980,7 +989,7 @@ export abstract class Renderable extends BaseRenderable {
     this.yogaSetEnum(YogaEnumKind.Display, display)
   }
 
-  private getFlexDirection(): FlexDirection {
+  getFlexDirection(): FlexDirection {
     return this.yogaGetEnum(YogaEnumKind.FlexDirection, FlexDirection.Column) as FlexDirection
   }
 
@@ -1066,6 +1075,67 @@ export abstract class Renderable extends BaseRenderable {
 
   getWidth(): Value {
     return this.yogaGetValue(YogaValueKind.Width, NATIVE_EDGE_NONE)
+  }
+
+  // Declared style, with the types of the matching standalone Yoga Node getters. Pending writes are visible.
+  getFlexWrap(): Wrap {
+    return this.yogaGetEnum(YogaEnumKind.FlexWrap, Wrap.NoWrap) as Wrap
+  }
+
+  getAlignItems(): Align {
+    return this.yogaGetEnum(YogaEnumKind.AlignItems, Align.Stretch) as Align
+  }
+
+  getJustifyContent(): Justify {
+    return this.yogaGetEnum(YogaEnumKind.JustifyContent, Justify.FlexStart) as Justify
+  }
+
+  getAlignSelf(): Align {
+    return this.yogaGetEnum(YogaEnumKind.AlignSelf, Align.Auto) as Align
+  }
+
+  getPositionType(): PositionType {
+    return this.yogaGetEnum(YogaEnumKind.PositionType, PositionType.Relative) as PositionType
+  }
+
+  getFlexGrow(): number {
+    return this.yogaGetFloat(YogaFloatKind.FlexGrow)
+  }
+
+  getFlexShrink(): number {
+    return this.yogaGetFloat(YogaFloatKind.FlexShrink)
+  }
+
+  getFlexBasis(): Value {
+    return this.yogaGetValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE)
+  }
+
+  getHeight(): Value {
+    return this.yogaGetValue(YogaValueKind.Height, NATIVE_EDGE_NONE)
+  }
+
+  getMinWidth(): Value {
+    return this.yogaGetValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE)
+  }
+
+  getMinHeight(): Value {
+    return this.yogaGetValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE)
+  }
+
+  getMaxWidth(): Value {
+    return this.yogaGetValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE)
+  }
+
+  getMaxHeight(): Value {
+    return this.yogaGetValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE)
+  }
+
+  getPadding(edge: Edge): Value {
+    return this.yogaGetValue(YogaValueKind.Padding, edge)
+  }
+
+  getGap(gutter: Gutter): Value {
+    return this.yogaGetValue(YogaValueKind.Gap, gutter)
   }
 
   private setPositions(positions: readonly (number | "auto" | `${number}%` | undefined)[]): void {

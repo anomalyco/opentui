@@ -14,7 +14,8 @@ import type { RenderContext } from "../types.js"
 import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
-import { BoxRenderable } from "../renderables/Box.js"
+import { BoxRenderable, type BoxOptions } from "../renderables/Box.js"
+import { Align, Edge, FlexDirection, Gutter, Justify, PositionType, Unit, Wrap } from "../yoga.js"
 import { InputRenderable } from "../renderables/Input.js"
 import { SliderRenderable } from "../renderables/Slider.js"
 import type { OptimizedBuffer } from "../buffer.js"
@@ -297,6 +298,51 @@ describe("Renderable - layout read caching invariants", () => {
     expect(grandchild.screenX).toBe(beforeX + 7)
     expect(grandchild.screenY).toBe(beforeY + 5)
   })
+})
+
+describe("Renderable - declared style getters", () => {
+  const point = (value: number) => ({ unit: Unit.Point, value })
+  const percent = (value: number) => ({ unit: Unit.Percent, value })
+  // Each option differs from its default, so a getter that reads the wrong style fails.
+  const cases: [string, (box: BoxRenderable) => unknown, BoxOptions, unknown][] = [
+    ["getFlexDirection", (box) => box.getFlexDirection(), { flexDirection: "row-reverse" }, FlexDirection.RowReverse],
+    ["getFlexWrap", (box) => box.getFlexWrap(), { flexWrap: "wrap" }, Wrap.Wrap],
+    ["getAlignItems", (box) => box.getAlignItems(), { alignItems: "center" }, Align.Center],
+    ["getJustifyContent", (box) => box.getJustifyContent(), { justifyContent: "space-between" }, Justify.SpaceBetween],
+    ["getAlignSelf", (box) => box.getAlignSelf(), { alignSelf: "flex-end" }, Align.FlexEnd],
+    ["getPositionType", (box) => box.getPositionType(), { position: "absolute" }, PositionType.Absolute],
+    ["getFlexGrow", (box) => box.getFlexGrow(), { flexGrow: 2 }, 2],
+    ["getFlexShrink", (box) => box.getFlexShrink(), { flexShrink: 3 }, 3],
+    ["getFlexBasis", (box) => box.getFlexBasis(), { flexBasis: 7 }, point(7)],
+    ["getWidth", (box) => box.getWidth(), { width: "50%" }, percent(50)],
+    ["getHeight", (box) => box.getHeight(), { height: "40%" }, percent(40)],
+    ["getMinWidth", (box) => box.getMinWidth(), { minWidth: 4 }, point(4)],
+    ["getMinHeight", (box) => box.getMinHeight(), { minHeight: "10%" }, percent(10)],
+    ["getMaxWidth", (box) => box.getMaxWidth(), { maxWidth: 20 }, point(20)],
+    ["getMaxHeight", (box) => box.getMaxHeight(), { maxHeight: 9 }, point(9)],
+    ["getMargin", (box) => box.getMargin(Edge.Top), { marginTop: 1 }, point(1)],
+    ["getPadding", (box) => box.getPadding(Edge.Bottom), { paddingBottom: 1 }, point(1)],
+    ["getPadding all", (box) => box.getPadding(Edge.All), { padding: 2 }, point(2)],
+    ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: 3 }, point(3)],
+  ]
+
+  test.each(cases)(
+    "%s reads the option, a pending write, and the laid-out style",
+    async (_, read, options, expected) => {
+      const constructed = new BoxRenderable(testRenderer, options)
+      const assigned = Object.assign(new BoxRenderable(testRenderer, {}), options)
+      testRenderer.root.add(constructed)
+      testRenderer.root.add(assigned)
+
+      expect(read(constructed)).toEqual(expected)
+      expect(read(assigned)).toEqual(expected)
+      await renderOnce()
+      expect(read(assigned)).toEqual(expected)
+
+      assigned.destroy()
+      expect(() => read(assigned)).not.toThrow()
+    },
+  )
 })
 
 describe("Renderable - Child Management", () => {
