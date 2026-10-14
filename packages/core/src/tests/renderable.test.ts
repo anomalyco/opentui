@@ -303,7 +303,9 @@ describe("Renderable - layout read caching invariants", () => {
 describe("Renderable - declared style getters", () => {
   const point = (value: number) => ({ unit: Unit.Point, value })
   const percent = (value: number) => ({ unit: Unit.Percent, value })
+  const unset = { unit: Unit.Undefined, value: NaN }
   // Each expected value differs from every style's default, so a getter that reads the wrong style fails.
+  // The Top row is the exception: it expects unset, because an edge getter does not fall back to a shorthand.
   // Wrap.Wrap would equal the AlignContent and PositionType defaults.
   const cases: [string, (box: BoxRenderable) => unknown, BoxOptions, unknown][] = [
     ["getFlexDirection", (box) => box.getFlexDirection(), { flexDirection: "row-reverse" }, FlexDirection.RowReverse],
@@ -322,7 +324,7 @@ describe("Renderable - declared style getters", () => {
     ["getMaxWidth", (box) => box.getMaxWidth(), { maxWidth: 20 }, point(20)],
     ["getMaxHeight", (box) => box.getMaxHeight(), { maxHeight: 9 }, point(9)],
     ["getPadding", (box) => box.getPadding(Edge.Bottom), { paddingBottom: 1 }, point(1)],
-    ["getPadding all", (box) => box.getPadding(Edge.All), { padding: 2 }, point(2)],
+    ["getPadding Top", (box) => box.getPadding(Edge.Top), { padding: 2, paddingX: 3, paddingY: 4 }, unset],
     ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: 3 }, point(3)],
   ]
 

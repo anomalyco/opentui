@@ -216,6 +216,12 @@ box.width // the computed width from the last layout pass
 | `alignItems`, `alignSelf`, `justifyContent`      | `getAlignItems()`, `getAlignSelf()`, `getJustifyContent()`           |
 | `position`                                       | `getPositionType()`                                                  |
 
+An edge or gutter getter reads only the value set for that edge or gutter. `padding` sets `Edge.All`, `paddingX` sets
+`Edge.Horizontal`, `paddingY` sets `Edge.Vertical`, and `paddingLeft` sets `Edge.Left`. The margin and gap options work
+the same way. After `padding: 2`, `getPadding(Edge.Left)` returns a `Unit.Undefined` value, but layout still pads the
+left side by 2, because Yoga falls back from `Edge.Left` to `Edge.Horizontal` and then to `Edge.All`. Renderables have no
+getter for computed padding, margin, or border.
+
 `top`, `right`, `bottom`, `left`, and `overflow` have property getters. Assign an option to change its style.
 
 ## Resize behavior
