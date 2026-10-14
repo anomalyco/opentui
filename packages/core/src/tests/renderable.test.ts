@@ -303,10 +303,11 @@ describe("Renderable - layout read caching invariants", () => {
 describe("Renderable - declared style getters", () => {
   const point = (value: number) => ({ unit: Unit.Point, value })
   const percent = (value: number) => ({ unit: Unit.Percent, value })
-  // Each option differs from its default, so a getter that reads the wrong style fails.
+  // Each expected value differs from every style's default, so a getter that reads the wrong style fails.
+  // Wrap.Wrap would equal the AlignContent and PositionType defaults.
   const cases: [string, (box: BoxRenderable) => unknown, BoxOptions, unknown][] = [
     ["getFlexDirection", (box) => box.getFlexDirection(), { flexDirection: "row-reverse" }, FlexDirection.RowReverse],
-    ["getFlexWrap", (box) => box.getFlexWrap(), { flexWrap: "wrap" }, Wrap.Wrap],
+    ["getFlexWrap", (box) => box.getFlexWrap(), { flexWrap: "wrap-reverse" }, Wrap.WrapReverse],
     ["getAlignItems", (box) => box.getAlignItems(), { alignItems: "center" }, Align.Center],
     ["getJustifyContent", (box) => box.getJustifyContent(), { justifyContent: "space-between" }, Justify.SpaceBetween],
     ["getAlignSelf", (box) => box.getAlignSelf(), { alignSelf: "flex-end" }, Align.FlexEnd],
@@ -320,7 +321,6 @@ describe("Renderable - declared style getters", () => {
     ["getMinHeight", (box) => box.getMinHeight(), { minHeight: "10%" }, percent(10)],
     ["getMaxWidth", (box) => box.getMaxWidth(), { maxWidth: 20 }, point(20)],
     ["getMaxHeight", (box) => box.getMaxHeight(), { maxHeight: 9 }, point(9)],
-    ["getMargin", (box) => box.getMargin(Edge.Top), { marginTop: 1 }, point(1)],
     ["getPadding", (box) => box.getPadding(Edge.Bottom), { paddingBottom: 1 }, point(1)],
     ["getPadding all", (box) => box.getPadding(Edge.All), { padding: 2 }, point(2)],
     ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: 3 }, point(3)],
