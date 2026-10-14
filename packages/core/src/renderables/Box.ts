@@ -389,23 +389,23 @@ export class BoxRenderable extends Renderable {
     }
   }
 
-  public set gap(gap: number | `${number}%` | undefined) {
-    if (isGapType(gap)) {
-      this.setGap(Gutter.All, gap)
+  public set gap(gap: number | `${number}%` | null | undefined) {
+    if (gap == null || isGapType(gap)) {
+      this.setGap(Gutter.All, gap ?? undefined)
       this.requestRender()
     }
   }
 
-  public set rowGap(rowGap: number | `${number}%` | undefined) {
-    if (isGapType(rowGap)) {
-      this.setGap(Gutter.Row, rowGap)
+  public set rowGap(rowGap: number | `${number}%` | null | undefined) {
+    if (rowGap == null || isGapType(rowGap)) {
+      this.setGap(Gutter.Row, rowGap ?? undefined)
       this.requestRender()
     }
   }
 
-  public set columnGap(columnGap: number | `${number}%` | undefined) {
-    if (isGapType(columnGap)) {
-      this.setGap(Gutter.Column, columnGap)
+  public set columnGap(columnGap: number | `${number}%` | null | undefined) {
+    if (columnGap == null || isGapType(columnGap)) {
+      this.setGap(Gutter.Column, columnGap ?? undefined)
       this.requestRender()
     }
   }

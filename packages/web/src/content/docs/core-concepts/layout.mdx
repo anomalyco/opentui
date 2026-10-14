@@ -224,6 +224,21 @@ getter for computed padding, margin, or border.
 
 `top`, `right`, `bottom`, `left`, and `overflow` have property getters. Assign an option to change its style.
 
+Assigning `null` or `undefined` to a layout option restores the default in [Supported options](#supported-options), also
+on a class with its own default. `flexShrink` becomes `1`. A margin, padding, or gap edge becomes unset, so layout
+falls back to its shorthand again. Assigning `0` sets the edge instead:
+
+```typescript
+const box = new BoxRenderable(renderer, { paddingX: 2 })
+box.getPadding(Edge.Left) // { unit: Unit.Undefined, value: NaN }
+box.paddingLeft = 5 // pads the left side by 5
+box.paddingLeft = undefined // pads it by 2 again, from paddingX
+```
+
+To write back a `Value` that a getter returned, assign `undefined` for `Unit.Undefined`, `"auto"` for `Unit.Auto`,
+`` `${value}%` `` for `Unit.Percent`, and `value` for `Unit.Point`. Assigning a number to `width` or `height` also
+changes a `flexShrink` of `1` to `0`, so restore `getFlexShrink()` with them.
+
 ## Resize behavior
 
 A terminal resize keeps the same renderable instances. The renderer resizes its root and runs Yoga again with the new column and row counts.

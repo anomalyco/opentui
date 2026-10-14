@@ -345,6 +345,30 @@ describe("Renderable - declared style getters", () => {
       expect(() => read(assigned)).not.toThrow()
     },
   )
+
+  // The nullish sweep cannot check width and height: its nodes need them. It writes no invalid values.
+  test.each(cases.filter((row) => typeof row[3] === "object"))(
+    "%s keeps the style after an invalid write and restores the default after a nullish write",
+    (_, read, options) => {
+      const assign = (box: BoxRenderable, value: unknown) =>
+        Object.assign(box, Object.fromEntries(Object.keys(options).map((key) => [key, value])))
+      const box = new BoxRenderable(testRenderer, options)
+      const expected = read(box)
+      expect(read(assign(box, NaN))).toEqual(expected)
+      expect(read(assign(box, null))).toEqual(read(new BoxRenderable(testRenderer, {})))
+    },
+  )
+
+  test("a position write changes only its own edge", async () => {
+    const box = new BoxRenderable(testRenderer, { position: "absolute", top: 1, left: 2, width: 1, height: 1 })
+    testRenderer.root.add(box)
+    box.left = 3
+    await renderOnce()
+    expect([box.x, box.y]).toEqual([3, 1])
+    box.left = null
+    await renderOnce()
+    expect([box.x, box.y]).toEqual([0, 1])
+  })
 })
 
 describe("Renderable - Child Management", () => {
