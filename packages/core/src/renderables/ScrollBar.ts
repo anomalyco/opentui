@@ -144,6 +144,11 @@ export class ScrollBarRenderable extends Renderable {
       flexDirection: orientation === "vertical" ? "column" : "row",
       alignSelf: "stretch",
       alignItems: "stretch",
+      // Fixed chrome: never grow into spare room or shrink under pressure.
+      // Shrinking distributes fractional widths through flex factors, and
+      // text nodes ceiling fractional widths (+1 visible overflow).
+      flexGrow: 0,
+      flexShrink: 0,
       ...(options as BoxOptions),
     })
 
