@@ -1031,10 +1031,8 @@ function toSafeByteCount(value: number | bigint, label: string): number {
 }
 
 function toSafeFFIU32Length(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_FFI_U32) {
-    throw new RangeError(`${label} exceeds native u32 length limit`)
-  }
-
+  if (!Number.isInteger(value) || value < 0) throw new RangeError(`${label} must be a non-negative integer`)
+  if (value > MAX_FFI_U32) throw new RangeError(`${label} exceeds native u32 length limit`)
   return value
 }
 

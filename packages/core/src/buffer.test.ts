@@ -190,14 +190,39 @@ describe("OptimizedBuffer", () => {
     }
   })
 
-  it("rejects invalid image draw geometry before FFI", () => {
+  it("rejects invalid draw geometry before FFI and names the cause", () => {
     const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
+    const red = RGBA.fromInts(255, 0, 0)
+    const box = (width: number) =>
+      buffer.drawBox({ x: 0, y: 0, width, height: 2, border: true, borderColor: red, backgroundColor: red })
+    const draws: [() => unknown, string][] = [
+      [
+        () => buffer.drawImage(image, 0, 0, Number.POSITIVE_INFINITY, 1),
+        "width must be an integer from 1 to 2147483647",
+      ],
+      [() => buffer.drawImage(image, 0, 0, -1, 1), "width must be an integer from 1 to 2147483647"],
+      [() => buffer.drawImage(image, 0.5, 0, 1, 1), "x must be an integer from -2147483648 to 2147483647"],
+      [() => buffer.drawImage(image, 0, 0, 0x80000000, 1), "width must be an integer from 1 to 2147483647"],
+      [
+        () => buffer.drawImage(image, 0x7fffffff, 0, 1, 1),
+        "image destination coordinates and dimensions exceed i32 bounds",
+      ],
+      [() => buffer.fillRect(0, 0, Number.NaN, 1, red), "Buffer width must be a non-negative integer"],
+      [() => buffer.fillRect(0, 0, 1, 1.5, red), "Buffer height must be a non-negative integer"],
+      [() => buffer.fillRect(0, 0, 2 ** 53, 1, red), "Buffer width exceeds native u32 length limit"],
+      [() => box(Number.POSITIVE_INFINITY), "Buffer width must be a non-negative integer"],
+      [() => buffer.setCell(0, 0, "a", red, red, 0.5), "Buffer attributes must be a non-negative integer"],
+      [() => buffer.drawChar(-1, 0, 0, red, red), "Buffer character must be a non-negative integer"],
+    ]
+    const failure = (draw: () => unknown) => {
+      try {
+        draw()
+      } catch (error) {
+        return String(error)
+      }
+    }
     try {
-      expect(() => buffer.drawImage(image, 0, 0, Number.POSITIVE_INFINITY, 1)).toThrow(RangeError)
-      expect(() => buffer.drawImage(image, 0, 0, -1, 1)).toThrow(RangeError)
-      expect(() => buffer.drawImage(image, 0.5, 0, 1, 1)).toThrow(RangeError)
-      expect(() => buffer.drawImage(image, 0, 0, 0x80000000, 1)).toThrow(RangeError)
-      expect(() => buffer.drawImage(image, 0x7fffffff, 0, 1, 1)).toThrow(RangeError)
+      expect(draws.map(([draw]) => failure(draw))).toEqual(draws.map(([, message]) => `RangeError: ${message}`))
     } finally {
       image.dispose()
     }
