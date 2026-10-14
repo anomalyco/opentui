@@ -325,7 +325,7 @@ describe("Renderable - declared style getters", () => {
     ["getMaxHeight", (box) => box.getMaxHeight(), { maxHeight: 9 }, point(9)],
     ["getPadding", (box) => box.getPadding(Edge.Bottom), { paddingBottom: 1 }, point(1)],
     ["getPadding Top", (box) => box.getPadding(Edge.Top), { padding: 2, paddingX: 3, paddingY: 4 }, unset],
-    ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: 3 }, point(3)],
+    ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: "30%" }, percent(30)],
   ]
 
   test.each(cases)(
