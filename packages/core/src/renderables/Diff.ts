@@ -19,6 +19,18 @@ interface LogicalLine {
   hunkStart?: boolean
 }
 
+export interface DiffGutterOptions {
+  /** Columns before the line numbers, painted in each row's gutter color. Defaults to 1. */
+  paddingLeft?: number
+  /** Columns after the line numbers and signs. Defaults to 1. */
+  paddingRight?: number
+  /**
+   * Reserve room for at least this many line-number digits, and always reserve the sign column. Give several diffs
+   * the same value to line up their code columns.
+   */
+  minDigits?: number
+}
+
 export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable> {
   diff?: string
   syncScroll?: boolean
@@ -38,6 +50,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
   showLineNumbers?: boolean
   lineNumberFg?: string | RGBA
   lineNumberBg?: string | RGBA
+  gutter?: DiffGutterOptions
 
   // Diff styling
   addedBg?: string | RGBA
@@ -51,6 +64,9 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
   addedLineNumberBg?: string | RGBA
   removedLineNumberBg?: string | RGBA
 }
+
+// Width of the " +" and " -" signs.
+const SIGN_WIDTH = 2
 
 const defaultColors = {
   lineNumberFg: "#888888",
@@ -93,6 +109,7 @@ export class DiffRenderable extends Renderable {
   private _showLineNumbers: boolean
   private _lineNumberFg: RGBA
   private _lineNumberBg: RGBA
+  private _gutter: DiffGutterOptions
 
   // Diff styling
   private _addedBg: RGBA
@@ -149,6 +166,7 @@ export class DiffRenderable extends Renderable {
       this._showLineNumbers = options.showLineNumbers ?? true
       this._lineNumberFg = RGBA.clone(parseColor(options.lineNumberFg ?? defaultColors.lineNumberFg))
       this._lineNumberBg = RGBA.clone(parseColor(options.lineNumberBg ?? defaultColors.lineNumberBg))
+      this._gutter = { ...options.gutter }
 
       // Diff styling
       this._addedBg = RGBA.clone(parseColor(options.addedBg ?? defaultColors.addedBg))
@@ -504,6 +522,7 @@ export class DiffRenderable extends Renderable {
         height: "100%",
       })
       newSide.showLineNumbers = this._showLineNumbers
+      newSide.setGutterLayout(this.gutterLayout())
       super.add(newSide)
 
       if (side === "left") {
@@ -517,6 +536,7 @@ export class DiffRenderable extends Renderable {
       sideRef.width = width
       sideRef.fg = this._lineNumberFg
       sideRef.bg = this._lineNumberBg
+      sideRef.setGutterLayout(this.gutterLayout())
       sideRef.setLineColors(lineColors)
       // Preserve the viewer's width-only gutter reservation across alignment rebuilds.
       const padding = sideRef.getLineSigns().get(-1)
@@ -533,6 +553,17 @@ export class DiffRenderable extends Renderable {
           this.rightSideAdded = true
         }
       }
+    }
+  }
+
+  // Set through the method: LineNumberRenderable also applies a paddingRight option as layout padding.
+  private gutterLayout() {
+    return {
+      paddingLeft: this._gutter.paddingLeft ?? 1,
+      paddingRight: this._gutter.paddingRight ?? 1,
+      minDigits: this._gutter.minDigits ?? 0,
+      // A fixed digit count only lines diffs up if sides without +/- lines keep the sign column too.
+      minAfterWidth: this._gutter.minDigits === undefined ? 0 : SIGN_WIDTH,
     }
   }
 
@@ -1150,6 +1181,22 @@ export class DiffRenderable extends Renderable {
 
   public set lineNumberBg(value: string | RGBA) {
     this._lineNumberBg = RGBA.clone(parseColor(value ?? defaultColors.lineNumberBg))
+    this.rebuildView()
+  }
+
+  public get gutter(): DiffGutterOptions {
+    return { ...this._gutter }
+  }
+
+  public set gutter(value: DiffGutterOptions | undefined) {
+    const next = { ...value }
+    if (
+      next.paddingLeft === this._gutter.paddingLeft &&
+      next.paddingRight === this._gutter.paddingRight &&
+      next.minDigits === this._gutter.minDigits
+    )
+      return
+    this._gutter = next
     this.rebuildView()
   }
 
