@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
+import { ANSI } from "../ansi.js"
 import { NativeSession } from "../NativeSession.js"
 import { CliRenderEvents } from "../renderer.js"
 import { Renderable, RenderableEvents } from "../Renderable.js"
@@ -261,8 +262,29 @@ test.each(["frames", "suspend", "destroy"] as const)(
   },
 )
 
-// A wide grapheme that does not fit the row starts the next one; native must count the rows the terminal uses.
-// A row that fills the width keeps its last cell (#1580). The footer starts below the empty row after the newline.
+// a split-footer replay reset must scrub the screen and replay its history inside one synchronized update.
+test("a replay reset scrubs and replays inside one synchronized update", async () => {
+  const terminal = await setupTerminal()
+  terminal.stdout.write(lines(40).join("\n") + "\npartial")
+  terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+  terminal.renderer.writeToScrollback(({ renderContext }) => ({
+    root: new TextRenderable(renderContext, { content: "after", width: 5, height: 1 }),
+  }))
+  await terminal.drainUntil("after")
+
+  const out = terminal.stdout.bytes().toString("latin1")
+  const scrubAt = out.indexOf("\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")
+  expect(scrubAt).toBeGreaterThanOrEqual(0)
+
+  const afterAt = out.indexOf("after", scrubAt)
+  expect(out.lastIndexOf(ANSI.syncSet, scrubAt)).toBeGreaterThan(out.lastIndexOf(ANSI.syncReset, scrubAt))
+  expect(afterAt).toBeGreaterThan(scrubAt)
+  expect(out.indexOf(ANSI.syncReset, scrubAt)).toBeGreaterThan(afterAt)
+
+  const outside = out.replace(/\x1b\[\?2026h[\s\S]*?\x1b\[\?2026l/g, "").replace(/[\r\n]/g, "")
+  expect(outside).toBe("")
+})
+
 // Old text on the start row (`~`) gives way to the right of a row, and only there. `{ red }` is a 9-cell writer row on a
 // red background that continues the last row, and "\n" ends its line; runs on a red background show in brackets.
 // A row with [terminal rows, footer height] lists its scrollback and screen down to the footer: a pane of one row or
