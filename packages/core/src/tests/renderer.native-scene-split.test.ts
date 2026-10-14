@@ -285,6 +285,46 @@ test("a replay reset scrubs and replays inside one synchronized update", async (
   expect(outside).toBe("")
 })
 
+test.each(["suspend", "destroy"] as const)("an empty replay reset reaches the terminal before %s", async (drain) => {
+  const terminal = await setupTerminal()
+  terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+
+  if (drain === "suspend") await terminal.renderer.suspend()
+  else {
+    terminal.renderer.destroy()
+    await terminal.renderer.closed
+  }
+
+  const out = terminal.stdout.text()
+  const scrubAt = out.indexOf(ANSI.clearSavedLines)
+
+  expect(scrubAt).toBeGreaterThanOrEqual(0)
+  expect(out.lastIndexOf(ANSI.syncSet, scrubAt)).toBeGreaterThan(out.lastIndexOf(ANSI.syncReset, scrubAt))
+  expect(out.indexOf(ANSI.syncReset, scrubAt)).toBeGreaterThan(scrubAt)
+})
+
+test.each(
+  (["frames", "suspend", "destroy"] as const).flatMap((drain) =>
+    (["immediate", "queued"] as const).map((reset) => [drain, reset] as const),
+  ),
+)("%s keeps a multi-commit replay after a %s reset in one synchronized update", async (drain, reset) => {
+  const terminal = await setupTerminal()
+
+  if (reset === "queued") terminal.stdout.write("before\n")
+  terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+
+  for (const row of lines(12)) writeRow(terminal, row)
+  if (drain === "frames") await terminal.drainUntil("line 11")
+  else await drains[drain](terminal, "line 11")
+
+  const out = terminal.stdout.text()
+  const scrubAt = out.indexOf(ANSI.clearSavedLines)
+
+  expect(scrubAt).toBeGreaterThanOrEqual(0)
+  expect(terminal.printed(/line \d+/g)).toEqual(lines(12))
+  expect(out.indexOf(ANSI.syncReset, scrubAt)).toBeGreaterThan(out.indexOf("line 11", scrubAt))
+})
+
 // Old text on the start row (`~`) gives way to the right of a row, and only there. `{ red }` is a 9-cell writer row on a
 // red background that continues the last row, and "\n" ends its line; runs on a red background show in brackets.
 // A row with [terminal rows, footer height] lists its scrollback and screen down to the footer: a pane of one row or

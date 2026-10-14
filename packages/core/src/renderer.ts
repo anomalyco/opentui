@@ -1056,7 +1056,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   // Instead of sending the "wipe" now, we store it here and let the next frame send it at the
   // start inside its synchronized update, hence "wipe" and the redraw land together.
-  // While a "wipe" is stored here, that frame also sends the entire queued replay at once 
+  // While a "wipe" is stored here, that frame also sends the entire queued replay at once
   // in a single update instead of chunks.
   private pendingSplitFramePrefix: string = ""
 
@@ -4413,7 +4413,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!this._terminalIsSetup || this.nativeTerminalTransition) {
       throw new Error("Native scene suspension requires completed terminal setup and no pending transition")
     }
-    const flushNativeSplit = this.externalOutputQueue.size > 0 || this.pendingNativeReplay
+    const flushNativeSplit =
+      this.externalOutputQueue.size > 0 || this.pendingNativeReplay || this.pendingSplitFramePrefix !== ""
     if (flushNativeSplit) this.lib.getYogaHost().assertMutable()
     let nativeTransition: Promise<void>
     if (flushNativeSplit) {
@@ -4571,11 +4572,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // scopes still unwind before this microtask releases the Context.
     queueMicrotask(async () => {
       try {
-        if (splitFlush || this.externalOutputQueue.size > 0 || this.pendingNativeReplay) {
+        if (
+          splitFlush ||
+          this.externalOutputQueue.size > 0 ||
+          this.pendingNativeReplay ||
+          this.pendingSplitFramePrefix !== ""
+        ) {
           this.nativeSession.armCloseTimeout()
           if (splitFlush) await splitFlush
           else if (terminalTransition) await terminalTransition
-          if (this.externalOutputQueue.size > 0 || this.pendingNativeReplay) await this.flushNativeSplitOutput()
+          if (this.externalOutputQueue.size > 0 || this.pendingNativeReplay || this.pendingSplitFramePrefix !== "") {
+            await this.flushNativeSplitOutput()
+          }
         }
         void this.nativeSession.close()
       } catch (error) {
@@ -5121,7 +5129,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         }
       }
       if (remaining === 0) break
-      // Open a synchronized update with any parked clear bytes. 
+      const prefixPending = this.pendingSplitFramePrefix !== ""
+      // Open a synchronized update with any parked clear bytes
       // This keeps the clear bytes and the rows in the same update.
       try {
         this.openSplitFrame(true)
@@ -5131,7 +5140,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         continue
       }
       const commits = this.externalOutputQueue.batch(
-        Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
+        Math.min(
+          remaining,
+          prefixPending ? Number.POSITIVE_INFINITY : this.maxSplitCommitsPerFrame,
+          this.pendingNativeReplay?.remaining ?? Infinity,
+        ),
       )
       // A null-frame render also reports PENDING for an earlier frame, which would complete unsent commits.
       if (this.lib.sessionGetRendererState(driver.context, driver.session).framePending) {

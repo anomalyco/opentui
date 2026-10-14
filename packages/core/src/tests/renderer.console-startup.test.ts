@@ -1624,7 +1624,7 @@ test.each([
 
     result.resize(nextWidth, nextHeight)
     await renderer.nativeScene!.driver.idle()
-    
+
     await result.renderOnce()
     await renderer.nativeScene!.driver.idle()
 
