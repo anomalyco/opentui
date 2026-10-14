@@ -224,9 +224,11 @@ getter for computed padding, margin, or border.
 
 `top`, `right`, `bottom`, `left`, and `overflow` have property getters. Assign an option to change its style.
 
-Assigning `null` or `undefined` to a layout option restores the default in [Supported options](#supported-options), also
-on a class with its own default. `flexShrink` becomes `1`. A margin, padding, or gap edge becomes unset, so layout
-falls back to its shorthand again. Assigning `0` sets the edge instead:
+Assigning `null` or `undefined` to a layout option restores the default in [Supported options](#supported-options). A
+class that sizes itself, such as `InputRenderable` or `TabSelectRenderable`, restores its own `width` or `height`. Other
+class defaults, such as the row direction of `ScrollBoxRenderable`, are not restored, and `flexShrink` becomes `1`. A
+margin, padding, or gap edge becomes unset, so layout falls back to its shorthand again. Assigning `0` sets the edge
+instead:
 
 ```typescript
 const box = new BoxRenderable(renderer, { paddingX: 2 })

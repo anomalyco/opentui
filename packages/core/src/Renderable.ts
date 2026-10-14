@@ -842,7 +842,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set width(value: number | "auto" | `${number}%` | null | undefined) {
-    value ??= "auto"
+    value ??= this.defaultDimension("width")
     if (!isDimensionType(value) || this._width === value) {
       return
     }
@@ -856,6 +856,11 @@ export abstract class Renderable extends BaseRenderable {
       return layout.height === 0 ? this.styledDimension("height") : layout.height
     }
     return this._destroyedLayout?.height ?? this.styledDimension("height")
+  }
+
+  /** The `width` or `height` that a nullish write restores. A class that sizes itself overrides it. */
+  protected defaultDimension(_kind: "width" | "height"): number | "auto" | `${number}%` {
+    return "auto"
   }
 
   private styledDimension(kind: "width" | "height"): number {
@@ -883,7 +888,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set height(value: number | "auto" | `${number}%` | null | undefined) {
-    value ??= "auto"
+    value ??= this.defaultDimension("height")
     if (!isDimensionType(value) || this._height === value) {
       return
     }

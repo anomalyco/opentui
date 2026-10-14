@@ -41,9 +41,14 @@ const excludedProps: Record<string, string> = {
 const mainResults: Record<string, string> = {
   scrollSpeed: "Math.max(0, value)",
   flexShrink: "1, not the 0 that a numeric width or height selects",
+  "LineNumberRenderable.width": "keeps the flexShrink 0 that the numeric width selected; the class ignores height",
+  "FrameBufferRenderable.width": "required option; auto",
+  "FrameBufferRenderable.height": "required option; auto",
   "LineNumberRenderable.flexDirection": "column, not the class default row",
   "ScrollBoxRenderable.flexDirection": "column, not the class default row",
   "ScrollBarRenderable.alignSelf": "auto, not the class default stretch",
+  "ScrollBarRenderable.width": "the slider keeps the width it took from the constructor width",
+  "ScrollBarRenderable.visible": "auto-hide, which the constructor skips: controls.test.ts checks it",
   "TimeToFirstDrawRenderable.alignSelf": "auto, not the class default center",
   "ScrollBarRenderable.scrollSize": "a size write runs auto-hide, which the constructor does not",
   "ScrollBarRenderable.viewportSize": "a size write runs auto-hide, which the constructor does not",
@@ -93,6 +98,7 @@ function layoutState(node: Renderable): unknown[] {
     styleGetters.map((name) => (node[name] as () => unknown)()),
     edges.map((edge) => [node.getMargin(edge), node.getPadding(edge)]),
     [Gutter.Column, Gutter.Row, Gutter.All].map((gutter) => node.getGap(gutter)),
+    node.getChildren().map((child) => [child.visible, child.getLayout()]),
   ]
 }
 
@@ -129,7 +135,7 @@ function classOptions(name: string, style = syntaxStyle): object {
 }
 
 const renderableClasses = Object.entries(core).filter(
-  (entry): entry is [string, new (ctx: TestRenderer, options: object) => Renderable] =>
+  (entry): entry is [string, RenderableClass] =>
     typeof entry[1] === "function" && entry[1].prototype instanceof Renderable && !(entry[0] in excludedClasses),
 )
 
@@ -161,6 +167,20 @@ function sample(prop: string, fallback: unknown): unknown {
   if (typeof fallback === "number") return fallback === 0 ? 1 : fallback / 2
   if (fallback instanceof RGBA) return RGBA.fromInts(10, 20, 30)
   return fallback
+}
+
+type RenderableClass = new (ctx: TestRenderer, options: object) => Renderable
+
+async function omittedState(RenderableClass: RenderableClass, name: string, prop: string) {
+  if (prop !== "width" && prop !== "height") return undefined
+  const { [prop]: _, ...options } = classOptions(name) as Record<string, unknown>
+  const node = new RenderableClass(renderer, options)
+  renderer.root.add(node)
+  node.focus()
+  await renderOnce()
+  const state = layoutState(node)
+  node.destroyRecursively()
+  return state
 }
 
 test.each(renderableClasses)("%s setters accept null and undefined", async (name, RenderableClass) => {
@@ -198,15 +218,16 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
       states.push(layoutState(node))
     }
     node.destroyRecursively()
-    // Check the reset only where the fresh value is the default.
-    if (prop in options || listed(mainResults, name, prop)) continue
+    if (listed(mainResults, name, prop)) continue
+    // Every node here has a width and a height, so their default needs a node built without one.
+    const expected = prop in options ? await omittedState(RenderableClass, name, prop) : initial
     for (const index of [0, 2, 4]) {
-      if (index < states.length && !isDeepStrictEqual(states[index], initial)) {
+      if (expected && index < states.length && !isDeepStrictEqual(states[index], expected)) {
         failures.push(`${prop} = ${writes[index]}: layout style differs from the constructor default`)
       }
     }
-    // The getter check also needs a getter that returns the written value.
-    if (reads.length < writes.length || !isDeepStrictEqual(reads[1], writes[1])) continue
+    // The getter check also needs a fresh value that is the default and a getter that returns the written value.
+    if (prop in options || reads.length < writes.length || !isDeepStrictEqual(reads[1], writes[1])) continue
     for (const index of [0, 2, 4]) {
       const value = writes[index]
       const expected = value === null && prop in nullResults ? nullResults[prop] : fallback

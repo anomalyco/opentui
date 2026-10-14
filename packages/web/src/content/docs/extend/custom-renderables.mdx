@@ -145,6 +145,9 @@ providers, and `getLayout()` instead. To read a style, call the renderable metho
 as `getMaxWidth()` or `getPadding(edge)`. [Read style and geometry](/docs/core-concepts/layout#read-style-and-geometry)
 lists them. The [standalone Yoga API](/docs/reference/yoga) remains available for separate layout trees. Read [Layout](/docs/core-concepts/layout) for sizing, rounding, and parent constraints.
 
+A class that passes its own `width` or `height` to `super()` overrides `protected defaultDimension(kind)` to return it.
+Assigning `null` or `undefined` to `width` or `height` restores that value. The base class returns `"auto"`.
+
 ## Use paint hooks
 
 The native scene handles layout, traversal, visibility, clipping, hit testing, and built-in drawing. Your measure

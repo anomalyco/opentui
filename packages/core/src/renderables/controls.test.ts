@@ -270,6 +270,16 @@ test("box titles and arrow characters accept any text", async () => {
   expect(errors).toEqual([])
 })
 
+test("a nullish scrollbar visible write restores visibility that follows the scroll sizes", () => {
+  const bar = new ScrollBarRenderable(renderer, { orientation: "vertical" })
+  Object.assign(bar, { scrollSize: 10, viewportSize: 20, visible: true })
+  bar.visible = null as never
+  expect(bar.visible).toBe(false)
+  bar.scrollSize = 30
+  expect(bar.visible).toBe(true)
+  bar.destroyRecursively()
+})
+
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.
 test("control methods ignore calls after destroy", () => {
   const bar = new ScrollBarRenderable(renderer, { orientation: "vertical" })

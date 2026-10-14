@@ -346,16 +346,13 @@ describe("Renderable - declared style getters", () => {
     },
   )
 
-  // The nullish sweep cannot check width and height: its nodes need them. It writes no invalid values.
-  test.each(cases.filter((row) => typeof row[3] === "object"))(
-    "%s keeps the style after an invalid write and restores the default after a nullish write",
+  // The nullish sweep writes no invalid values. An unset row cannot show that the write was ignored.
+  test.each(cases.filter((row) => typeof row[3] === "object" && row[3] !== unset))(
+    "%s ignores an invalid write",
     (_, read, options) => {
-      const assign = (box: BoxRenderable, value: unknown) =>
-        Object.assign(box, Object.fromEntries(Object.keys(options).map((key) => [key, value])))
       const box = new BoxRenderable(testRenderer, options)
-      const expected = read(box)
-      expect(read(assign(box, NaN))).toEqual(expected)
-      expect(read(assign(box, null))).toEqual(read(new BoxRenderable(testRenderer, {})))
+      Object.assign(box, Object.fromEntries(Object.keys(options).map((key) => [key, NaN])))
+      expect(read(box)).toEqual(read(new BoxRenderable(testRenderer, options)))
     },
   )
 
