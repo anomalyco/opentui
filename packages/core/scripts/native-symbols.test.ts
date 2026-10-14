@@ -89,3 +89,32 @@ test.skipIf(process.platform !== "linux")("a release without a binary identity i
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test.skipIf(process.platform !== "linux" && process.platform !== "freebsd")(
+  "FreeBSD packages use ELF build identities and detached debug symbols",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "opentui-freebsd-symbols-"))
+    try {
+      const source = join(root, "fixture.c")
+      const binary = join(root, "libfixture.so")
+      writeFileSync(source, "int fixture(void) { return 42; }\n")
+      execFileSync("cc", ["-shared", "-fPIC", "-O2", "-g", "-Wl,--build-id=sha1", source, "-o", binary])
+      const manifest = separateNativeSymbols({
+        binary,
+        symbolsDir: join(root, "symbols"),
+        platform: "freebsd",
+        target: "x86_64-freebsd",
+        version: "test",
+        commit: "fixture",
+      })
+      expect(manifest.identityKind).toBe("elf-build-id")
+      expect(manifest.binaryIdentity).toMatch(/^[a-f0-9]{40}$/)
+      expect(manifest.symbols.map((symbol) => symbol.path)).toEqual(["libfixture.so.debug"])
+      const sections = execFileSync("readelf", ["-SW", binary], { encoding: "utf8" })
+      expect(sections).not.toContain(".debug_info")
+      expect(sections).toContain(".gnu_debuglink")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)

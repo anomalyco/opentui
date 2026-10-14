@@ -7,6 +7,8 @@ export interface Variant {
 export const variants: Variant[] = [
   { platform: "darwin", arch: "x64" },
   { platform: "darwin", arch: "arm64" },
+  { platform: "freebsd", arch: "x64" },
+  { platform: "freebsd", arch: "arm64" },
   { platform: "linux", arch: "x64" },
   { platform: "linux", arch: "arm64" },
   { platform: "linux", arch: "x64", abi: "musl" },

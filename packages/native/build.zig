@@ -27,6 +27,8 @@ const SUPPORTED_TARGETS = [_]SupportedTarget{
     .{ .zig_target = "aarch64-macos.13.0", .output_name = "aarch64-macos", .description = "macOS aarch64 (Apple Silicon)" },
     .{ .zig_target = "x86_64-windows-gnu", .output_name = "x86_64-windows", .description = "Windows x86_64" },
     .{ .zig_target = "aarch64-windows-gnu", .output_name = "aarch64-windows", .description = "Windows aarch64" },
+    .{ .zig_target = "x86_64-freebsd", .output_name = "x86_64-freebsd", .description = "FreeBSD x86_64" },
+    .{ .zig_target = "aarch64-freebsd", .output_name = "aarch64-freebsd", .description = "FreeBSD aarch64" },
 };
 
 const DEFAULT_MACOS_SDK_PATH = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
@@ -370,6 +372,10 @@ fn addNativeAudioDependencies(
             module.linkSystemLibrary("pthread", .{});
             module.linkSystemLibrary("m", .{});
         },
+        .freebsd => {
+            module.linkSystemLibrary("pthread", .{});
+            module.linkSystemLibrary("m", .{});
+        },
         else => {},
     }
 }
@@ -393,7 +399,7 @@ fn ghosttyVtAvailable(target: std.Build.ResolvedTarget) bool {
     }
     return switch (target.result.os.tag) {
         .linux => target.result.abi.isMusl() or target.result.abi == .gnu,
-        .macos => true,
+        .macos, .freebsd => true,
         .windows => target.result.abi == .gnu,
         else => false,
     };
@@ -745,7 +751,7 @@ fn buildTarget(
         .linkage = .dynamic,
     });
 
-    if (target.result.os.tag == .linux and optimize != .Debug) lib.build_id = .sha1;
+    if ((target.result.os.tag == .linux or target.result.os.tag == .freebsd) and optimize != .Debug) lib.build_id = .sha1;
 
     addNativeAudioDependencies(b, module, target, macos_sdk_path);
     addYogaDependencies(b, module);

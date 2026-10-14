@@ -51,6 +51,7 @@ const nodeTestTimeoutMs = 30_000
 const nodeProcessTimeoutMs = 10 * 60_000
 const nodePath = requireNode26()
 const emittedAllowlist = [
+  ".node-test/src/node-asset-target.test.js",
   ".node-test/src/platform/ffi.test.js",
   ".node-test/src/platform/runtime.test.js",
   ".node-test/src/platform/worker.node-test.js",

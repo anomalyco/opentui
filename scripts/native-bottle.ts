@@ -54,6 +54,8 @@ const BOTTLE_LIBRARIES: ReadonlyArray<{
   },
   { dir: "x86_64-macos", files: ["libopentui.dylib"], package: "core-darwin-x64", symbols: "darwin-x64" },
   { dir: "aarch64-macos", files: ["libopentui.dylib"], package: "core-darwin-arm64", symbols: "darwin-arm64" },
+  { dir: "x86_64-freebsd", files: ["libopentui.so"], package: "core-freebsd-x64", symbols: "freebsd-x64" },
+  { dir: "aarch64-freebsd", files: ["libopentui.so"], package: "core-freebsd-arm64", symbols: "freebsd-arm64" },
   { dir: "x86_64-windows", files: ["opentui.dll", "opentui.pdb"], package: "core-win32-x64", symbols: "win32-x64" },
   {
     dir: "aarch64-windows",

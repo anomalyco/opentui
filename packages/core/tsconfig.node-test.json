@@ -6,6 +6,7 @@
     "rootDir": "."
   },
   "include": [
+    "src/node-asset-target.test.ts",
     "src/platform/ffi.test.ts",
     "src/platform/runtime.test.ts",
     "src/platform/worker.node-test.ts",

@@ -55,6 +55,22 @@ const buildAll = args.includes("--all") // Build for all platforms
 const gpaSafeStats = args.includes("--gpa-safe-stats")
 const skipZig = args.includes("--skip-zig")
 const skipSymbols = args.includes("--skip-symbols")
+const requestedTarget =
+  args.find((arg) => arg.startsWith("--target="))?.slice("--target=".length) ??
+  (buildNative ? process.env.OPENTUI_NATIVE_TARGET : undefined)
+
+if (requestedTarget && buildAll) {
+  throw new Error("--target and --all cannot be combined")
+}
+if (requestedTarget && !skipZig) {
+  throw new Error("--target requires --skip-zig; build the library with zig build -Dlibrary-target=<target> first")
+}
+const selectedVariant = requestedTarget
+  ? variants.find(({ platform, arch, abi }) => `${platform}-${arch}${abi ? `-${abi}` : ""}` === requestedTarget)
+  : undefined
+if (requestedTarget && !selectedVariant) {
+  throw new Error(`Unsupported native target: ${requestedTarget}`)
+}
 
 const getHostVariant = (): Variant => {
   const hostVariant = variants.find((variant) => variant.platform === process.platform && variant.arch === process.arch)
@@ -193,7 +209,7 @@ if (buildNative) {
 
   if (!skipZig) runCommand("zig", zigArgs, nativeRoot, "Error: Zig build failed")
 
-  const variantsToPackage = buildAll ? variants : [getHostVariant()]
+  const variantsToPackage = buildAll ? variants : [selectedVariant ?? getHostVariant()]
 
   for (const { platform, arch, abi } of variantsToPackage) {
     const nativeName = `${packageJson.name}-${platform}-${arch}${abi ? `-${abi}` : ""}`
@@ -220,6 +236,7 @@ if (buildNative) {
     }
 
     if (copiedFiles === 0) {
+      if (selectedVariant) throw new Error(`No native library found for ${requestedTarget} in ${libDir}`)
       // Skip platforms that weren't built
       console.log(`Skipping ${platform}-${arch}: no libraries found`)
       rmSync(nativeDir, { recursive: true, force: true })

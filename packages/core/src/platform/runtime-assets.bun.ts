@@ -52,6 +52,15 @@ export async function resolveNativeLibraryPath(): Promise<string> {
     }
   }
 
+  if (process.platform === "freebsd") {
+    if (process.arch === "x64") {
+      return ((await import("@opentui/core-freebsd-x64" as string)) as NativePackageModule).default
+    }
+    if (process.arch === "arm64") {
+      return ((await import("@opentui/core-freebsd-arm64" as string)) as NativePackageModule).default
+    }
+  }
+
   if (process.platform === "linux") {
     if (process.arch === "x64") {
       if (process.env.OPENTUI_LIBC === "musl") {
