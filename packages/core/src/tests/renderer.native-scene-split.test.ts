@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
 import { ANSI } from "../ansi.js"
 import { NativeSession } from "../NativeSession.js"
+import { NativeSessionRenderStatus } from "../zig.js"
 import { CliRenderEvents } from "../renderer.js"
 import { Renderable, RenderableEvents } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
@@ -43,7 +44,13 @@ async function setup(options: TestRendererOptions = {}) {
 
 /** A set-up split-footer terminal whose native output reaches `stdout`, so tests can read the scrollback bytes. */
 async function setupTerminal(
-  options: { columns?: number; height?: number; footerHeight?: number; maxBytes?: bigint } = {},
+  options: {
+    columns?: number
+    height?: number
+    footerHeight?: number
+    maxBytes?: bigint
+    synchronizedOutput?: TestRendererOptions["synchronizedOutput"]
+  } = {},
 ) {
   const columns = options.columns ?? 40
   const height = options.height ?? 10
@@ -63,6 +70,7 @@ async function setupTerminal(
     nativeSession,
     bufferedOutput: "stdout",
     remote: true,
+    synchronizedOutput: options.synchronizedOutput,
     clock,
   })
   const driver = result.renderer.nativeScene.driver
@@ -263,6 +271,51 @@ test.each(["frames", "suspend", "destroy"] as const)(
 )
 
 // a split-footer replay reset must scrub the screen and replay its history inside one synchronized update.
+test.each(["always", "never", "auto"] as const)("replay reset respects synchronizedOutput %s", async (mode) => {
+  const terminal = await setupTerminal({ synchronizedOutput: mode })
+  if (mode === "auto") {
+    terminal.renderer.stdin.emit("data", Buffer.from("\x1b[?1;2c"))
+    await terminal.renderer.nativeScene.driver.idle()
+    terminal.stdout.clear()
+  }
+  terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+  writeRow(terminal, "after")
+  await terminal.drainUntil("after")
+  const output = terminal.stdout.text()
+  const scrubAt = output.indexOf(ANSI.clearSavedLines)
+  expect(scrubAt).toBeGreaterThanOrEqual(0)
+  expect(output.indexOf("after")).toBeGreaterThan(scrubAt)
+  expect(output.split(ANSI.syncSet).length).toBe(output.split(ANSI.syncReset).length)
+  if (mode === "always") {
+    expect(output.lastIndexOf(ANSI.syncSet, scrubAt)).toBeGreaterThan(output.lastIndexOf(ANSI.syncReset, scrubAt))
+    expect(output.indexOf(ANSI.syncReset, scrubAt)).toBeGreaterThan(output.indexOf("after"))
+  } else {
+    expect(output).not.toContain(ANSI.syncSet)
+    expect(output).not.toContain(ANSI.syncReset)
+  }
+})
+
+test("a rejected replay frame keeps its clear pending until admission succeeds", async () => {
+  const terminal = await setupTerminal({ synchronizedOutput: "always" })
+  terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+  writeRow(terminal, "after")
+  const commit = spyOn(terminal.renderer.nativeScene, "commitSplit").mockImplementation(() => ({
+    status: NativeSessionRenderStatus.Skipped,
+  }))
+  try {
+    await terminal.frame()
+    expect(terminal.stdout.text()).toBe("")
+    expect(terminal.renderer["pendingSplitFramePrefix"]).not.toBe("")
+  } finally {
+    commit.mockRestore()
+  }
+  await terminal.drainUntil("after")
+  const output = terminal.stdout.text()
+  expect(output.split(ANSI.clearSavedLines).length).toBe(2)
+  expect(output.split(ANSI.syncSet).length).toBe(output.split(ANSI.syncReset).length)
+  expect(terminal.renderer["pendingSplitFramePrefix"]).toBe("")
+})
+
 test("a replay reset scrubs and replays inside one synchronized update", async () => {
   const terminal = await setupTerminal()
   terminal.stdout.write(lines(40).join("\n") + "\npartial")
@@ -283,6 +336,46 @@ test("a replay reset scrubs and replays inside one synchronized update", async (
 
   const outside = out.replace(/\x1b\[\?2026h[\s\S]*?\x1b\[\?2026l/g, "").replace(/[\r\n]/g, "")
   expect(outside).toBe("")
+})
+
+test.each(["suspend", "destroy"] as const)("an empty replay reset reaches the terminal before %s", async (drain) => {
+  const terminal = await setupTerminal()
+  terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+
+  if (drain === "suspend") await terminal.renderer.suspend()
+  else {
+    terminal.renderer.destroy()
+    await terminal.renderer.closed
+  }
+
+  const out = terminal.stdout.text()
+  const scrubAt = out.indexOf(ANSI.clearSavedLines)
+
+  expect(scrubAt).toBeGreaterThanOrEqual(0)
+  expect(out.lastIndexOf(ANSI.syncSet, scrubAt)).toBeGreaterThan(out.lastIndexOf(ANSI.syncReset, scrubAt))
+  expect(out.indexOf(ANSI.syncReset, scrubAt)).toBeGreaterThan(scrubAt)
+})
+
+test.each(
+  (["frames", "suspend", "destroy"] as const).flatMap((drain) =>
+    (["immediate", "queued"] as const).map((reset) => [drain, reset] as const),
+  ),
+)("%s keeps a multi-commit replay after a %s reset in one synchronized update", async (drain, reset) => {
+  const terminal = await setupTerminal()
+
+  if (reset === "queued") terminal.stdout.write("before\n")
+  terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+
+  for (const row of lines(12)) writeRow(terminal, row)
+  if (drain === "frames") await terminal.drainUntil("line 11")
+  else await drains[drain](terminal, "line 11")
+
+  const out = terminal.stdout.text()
+  const scrubAt = out.indexOf(ANSI.clearSavedLines)
+
+  expect(scrubAt).toBeGreaterThanOrEqual(0)
+  expect(terminal.printed(/line \d+/g)).toEqual(lines(12))
+  expect(out.indexOf(ANSI.syncReset, scrubAt)).toBeGreaterThan(out.indexOf("line 11", scrubAt))
 })
 
 // Old text on the start row (`~`) gives way to the right of a row, and only there. `{ red }` is a 9-cell writer row on a

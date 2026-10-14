@@ -405,9 +405,18 @@ export class NativeSession {
     commits: readonly NativeSplitSnapshot[],
     pinnedRenderOffset: number,
     force: boolean,
+    prefix?: Uint8Array,
   ): { status: NativeSessionRenderStatus } {
     this.checkOpen()
-    const result = this.lib.sessionRenderSplit(this.context, this.session, frame, commits, pinnedRenderOffset, force)
+    const result = this.lib.sessionRenderSplit(
+      this.context,
+      this.session,
+      frame,
+      commits,
+      pinnedRenderOffset,
+      force,
+      prefix,
+    )
     if (result.status === NativeSessionRenderStatus.Pending) this.schedule()
     return result
   }

@@ -763,10 +763,11 @@ export class NativeScene {
     commits: Parameters<NativeSession["renderSplit"]>[1],
     pinnedRenderOffset: number,
     force: boolean,
+    prefix?: Uint8Array,
   ): ReturnType<NativeSession["renderSplit"]> {
     const frame = this.paintedFrame
     if (!frame) throw new Error("Native scene has no painted frame")
-    const result = this.driver.renderSplit(frame, commits, pinnedRenderOffset, force)
+    const result = this.driver.renderSplit(frame, commits, pinnedRenderOffset, force, prefix)
     this.paintedFrame = null
     return result
   }

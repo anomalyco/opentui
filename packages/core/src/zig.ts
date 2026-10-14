@@ -3708,6 +3708,7 @@ export class FFIRenderLib {
     snapshots: readonly NativeSplitSnapshot[],
     pinnedRenderOffset: number,
     force: boolean,
+    prefix?: Uint8Array,
   ): { status: NativeSessionRenderStatus } {
     const layout = nativeLayouts.ot_split_snapshot
     this.getYogaHost().assertMutable()
@@ -3735,11 +3736,13 @@ export class FFIRenderLib {
     }
     const offset = toSafeFFIU32Length(pinnedRenderOffset, "Split pinned render offset")
     const forced = toFFIBool(force, "Split force render")
+    const prefixBytes = toSafeFFIU32Length(prefix?.byteLength ?? 0, "Split prefix bytes")
+    if (prefixBytes > 4096) throw new RangeError("Split frame prefix must fit within 4096 bytes")
     const output = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_session_render_split")
     nativeResult(
       "ot_session_render_split",
-      this.opentui.symbols.ot_session_render_split(
+      this.opentui.symbols.ot_session_render_split_with_prefix(
         pointer,
         handle,
         ticket,
@@ -3747,6 +3750,8 @@ export class FFIRenderLib {
         count,
         offset,
         forced,
+        prefixBytes ? prefix : null,
+        prefixBytes,
         output,
       ),
     )
