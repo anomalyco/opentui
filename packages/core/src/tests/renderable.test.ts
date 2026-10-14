@@ -324,6 +324,7 @@ describe("Renderable - declared style getters", () => {
     ["getMaxWidth", (box) => box.getMaxWidth(), { maxWidth: 20 }, point(20)],
     ["getMaxHeight", (box) => box.getMaxHeight(), { maxHeight: 9 }, point(9)],
     ["getPadding", (box) => box.getPadding(Edge.Bottom), { paddingBottom: 1 }, point(1)],
+    ["getMargin", (box) => box.getMargin(Edge.All), { margin: "auto" }, { unit: Unit.Auto, value: NaN }],
     ["getPadding Top", (box) => box.getPadding(Edge.Top), { padding: 2, paddingX: 3, paddingY: 4 }, unset],
     ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: "30%" }, percent(30)],
   ]
@@ -356,12 +357,14 @@ describe("Renderable - declared style getters", () => {
     },
   )
 
-  test("a position write changes only its own edge", async () => {
+  test("a position write changes only its own edge, and an invalid one keeps the layout", async () => {
     const box = new BoxRenderable(testRenderer, { position: "absolute", top: 1, left: 2, width: 1, height: 1 })
     testRenderer.root.add(box)
     box.left = 3
+    Object.assign(box, { right: NaN, bottom: "x" })
+    box.setPosition({ top: NaN })
     await renderOnce()
-    expect([box.x, box.y]).toEqual([3, 1])
+    expect([box.x, box.y, box.right, box.bottom]).toEqual([3, 1, undefined, undefined])
     box.left = null
     await renderOnce()
     expect([box.x, box.y]).toEqual([0, 1])

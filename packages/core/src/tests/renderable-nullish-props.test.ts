@@ -60,8 +60,8 @@ const mainResults: Record<string, string> = {
 // The constructor and `main` map `null` (not `undefined`) to these values.
 const nullResults: Record<string, unknown> = { opacity: 0 }
 
-// A non-default value per prop whose getter gives none; booleans, numbers, and colors derive one from their default.
-const samples: Record<string, unknown> = {
+// A non-default value per enum prop; booleans, numbers, and colors derive one from their default.
+const enumSamples: Record<string, unknown> = {
   titleAlignment: "center",
   bottomTitleAlignment: "right",
   textAlign: "center",
@@ -69,6 +69,10 @@ const samples: Record<string, unknown> = {
   orientation: "vertical",
   direction: "left",
   cursorStyle: { style: "line", blinking: false },
+}
+
+// A non-default value per layout option. Its setter must write what the constructor option writes.
+const layoutSamples: Record<string, unknown> = {
   flexDirection: "row",
   flexWrap: "wrap",
   alignItems: "center",
@@ -90,6 +94,9 @@ const styleGetters = `getWidth getHeight getMinWidth getMinHeight getMaxWidth ge
   getFlexShrink getFlexDirection getFlexWrap getAlignItems getAlignSelf getJustifyContent getPositionType`.split(
   /\s+/,
 ) as (keyof Renderable)[]
+
+// The constructor overrides these options.
+const constructorOverrides = { "DiffRenderable.flexDirection": "view", "MarkdownRenderable.flexDirection": "column" }
 
 // Declared Yoga style and the box from the last layout pass. Prop getters do not show them.
 function layoutState(node: Renderable): unknown[] {
@@ -162,18 +169,16 @@ function read(node: Renderable, prop: string): unknown {
 }
 
 function sample(prop: string, fallback: unknown): unknown {
-  if (prop in samples) return samples[prop]
+  if (prop in layoutSamples) return layoutSamples[prop]
   if (typeof fallback === "boolean") return !fallback
   if (typeof fallback === "number") return fallback === 0 ? 1 : fallback / 2
   if (fallback instanceof RGBA) return RGBA.fromInts(10, 20, 30)
-  return fallback
+  return enumSamples[prop] ?? fallback
 }
 
 type RenderableClass = new (ctx: TestRenderer, options: object) => Renderable
 
-async function omittedState(RenderableClass: RenderableClass, name: string, prop: string) {
-  if (prop !== "width" && prop !== "height") return undefined
-  const { [prop]: _, ...options } = classOptions(name) as Record<string, unknown>
+async function builtState(RenderableClass: RenderableClass, options: object): Promise<unknown[]> {
   const node = new RenderableClass(renderer, options)
   renderer.root.add(node)
   node.focus()
@@ -202,9 +207,16 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
     node.focus()
     await renderOnce()
     const initial = layoutState(node)
+    let renders = 0
+    const requestRender = node.requestRender.bind(node)
+    node.requestRender = () => void (renders++, requestRender())
     for (const value of writes) {
       try {
+        renders = 0
         ;(node as unknown as Record<string, unknown>)[prop] = value
+        // Each write after the first changes the value, so a layout write must schedule a frame.
+        const layout = prop in layoutSamples || prop === "width" || prop === "height"
+        if (layout && states.length > 0 && renders === 0) failures.push(`${prop} = ${value}: no render`)
         await renderOnce()
       } catch (error) {
         failures.push(`${prop} = ${value}: ${error}`)
@@ -220,10 +232,17 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
     node.destroyRecursively()
     if (listed(mainResults, name, prop)) continue
     // Every node here has a width and a height, so their default needs a node built without one.
-    const expected = prop in options ? await omittedState(RenderableClass, name, prop) : initial
-    for (const index of [0, 2, 4]) {
-      if (expected && index < states.length && !isDeepStrictEqual(states[index], expected)) {
-        failures.push(`${prop} = ${writes[index]}: layout style differs from the constructor default`)
+    const { [prop]: _, ...omitted } = options as Record<string, unknown>
+    const sized = prop === "width" || prop === "height"
+    const reset = !(prop in options) ? initial : sized ? await builtState(RenderableClass, omitted) : undefined
+    const sampled =
+      prop in layoutSamples && !listed(constructorOverrides, name, prop)
+        ? await builtState(RenderableClass, { ...options, [prop]: value })
+        : undefined
+    for (const [index, state] of states.entries()) {
+      const [expected, source] = index % 2 === 0 ? [reset, "default"] : [sampled, "option"]
+      if (expected && !isDeepStrictEqual(state, expected)) {
+        failures.push(`${prop} = ${writes[index]}: layout style differs from the constructor ${source}`)
       }
     }
     // The getter check also needs a fresh value that is the default and a getter that returns the written value.
