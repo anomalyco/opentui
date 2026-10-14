@@ -1054,14 +1054,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // churn and keep render latency predictable under heavy scrollback append load.
   private readonly maxSplitCommitsPerFrame: number = 8
 
-  // Screen-clear bytes waiting to be sent at the start of the next split frame.
-  //
-  // A replay reset or a narrowing resize has to wipe the screen before redrawing it. If we send that wipe on its
-  // own, the terminal paints a blank screen the instant it arrives and only fills it back in on the next frame -
-  // a one-frame flash. So instead of sending the wipe now, we park it here and let the next frame send it as the
-  // first thing inside its synchronized update (see `openSplitFrame`). The wipe and the redraw then land together,
-  // with no blank in between. While a wipe is parked, that frame also sends the entire queued replay at once so the
-  // restored history appears in a single update instead of trickling in a few rows at a time.
+  // Instead of sending the "wipe" now, we store it here and let the next frame send it at the
+  // start inside its synchronized update, hence "wipe" and the redraw land together.
+  // While a "wipe" is stored here, that frame also sends the entire queued replay at once 
+  // in a single update instead of chunks.
   private pendingSplitFramePrefix: string = ""
 
   private _terminalWidth: number = 0
