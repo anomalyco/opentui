@@ -160,8 +160,7 @@ describe("native handles", () => {
     ["EditBuffer.create(widthMethod)", () => (EditBuffer.create as Function)("unicode")],
     ["OptimizedBuffer.create(width, height, widthMethod)", () => (OptimizedBuffer.create as Function)(1, 1, "unicode")],
   ])("%s without an owner names the owner to pass", (_, create) => {
-    expect(create).toThrow("requires an explicit resource owner: pass")
-    expect(create).toThrow("renderer.nativeScene")
+    expect(create).toThrow(/requires an explicit resource owner: pass .*renderer\.nativeScene/)
   })
 
   test("destroying a buffer invalidates its views", () => {
