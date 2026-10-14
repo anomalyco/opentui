@@ -3409,8 +3409,8 @@ export class FFIRenderLib {
   private readonly hitTestOutput = new Uint32Array(1)
   private readonly bufferStackInput = new Float32Array(1)
   private readonly bufferStackOutput = new Float32Array(1)
-  private drawTextBytes: Uint8Array | undefined
-  private drawBottomBytes: Uint8Array | undefined
+  private readonly drawTextBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
+  private readonly drawBottomBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
   private opentui: ReturnType<typeof getOpenTUILib>
   private iccCacheClient = false
   // Layout reads are synchronous and non-reentrant. Retain one backing buffer so
@@ -5837,8 +5837,8 @@ export class FFIRenderLib {
       const record = scratch.records[encoded.operation]
       const source = encoded.source
       // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
-      const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const textBytes = this.drawTextBytes
+      const bottomBytes = this.drawBottomBytes
       const textLength = encodeDrawText(text, textBytes)
       const bottomLength = encodeDrawText(bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
@@ -7051,8 +7051,9 @@ export class FFIRenderLib {
     const title = details.title ?? ""
     const bottomTitle = details.bottomTitle ?? ""
     if (typeof title !== "string" || typeof bottomTitle !== "string") throw new TypeError("Box titles must be strings")
-    const topBytes = sessionBytes(this.encoder.encode(title), "Box title length")
-    const bottomBytes = sessionBytes(this.encoder.encode(bottomTitle), "Box bottom title length")
+    // No JavaScript runs between these encodes and the call, so the drawText buffers can be shared.
+    const topLength = encodeDrawText(title, this.drawTextBytes)
+    const bottomLength = encodeDrawText(bottomTitle, this.drawBottomBytes)
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_scene_set_box_details")
       nativeResult(
@@ -7061,10 +7062,10 @@ export class FFIRenderLib {
           pointer,
           handle,
           record,
-          viewOrNull(topBytes),
-          topBytes.length,
-          viewOrNull(bottomBytes),
-          bottomBytes.length,
+          topLength === 0 ? null : this.drawTextBytes,
+          topLength,
+          bottomLength === 0 ? null : this.drawBottomBytes,
+          bottomLength,
         ),
       )
     })
