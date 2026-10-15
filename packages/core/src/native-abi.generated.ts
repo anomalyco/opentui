@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 2b36545357f7738df87404a9507ebeb54f38df5cd270fd98c80998f95972863c
+// ABI audit SHA-256: 1fe65b5e634c613749abec93ae6cd141b377d9418d5bd5c273ce85add9d99548
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -225,6 +225,8 @@ export const nativeSymbols = {
   ot_session_get_renderer_state: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_session_acquire_buffer_lease: { args: ["ptr", "buffer", "u32", "buffer"], returns: "i32" },
   ot_session_get_link_id: { args: ["ptr", "buffer", "i32", "i32", "buffer"], returns: "i32" },
+  ot_session_get_presented_link_id: { args: ["ptr", "buffer", "i32", "i32", "buffer"], returns: "i32" },
+  ot_session_get_presented_fragment_key: { args: ["ptr", "buffer", "i32", "i32", "buffer"], returns: "i32" },
   ot_buffer_lease_validate: { args: ["ptr", "buffer"], returns: "i32" },
   ot_buffer_lease_release: { args: ["ptr", "buffer"], returns: "i32" },
   ot_buffer_lease_get_real_char_size: { args: ["ptr", "buffer", "u32", "buffer"], returns: "i32" },
@@ -380,7 +382,7 @@ export const nativeLayouts = {
       foreground: { offset: 16, size: 8, alignment: 2, type: "[4]u16" },
       background: { offset: 24, size: 8, alignment: 2, type: "[4]u16" },
       attributes: { offset: 32, size: 4, alignment: 4, type: "u32" },
-      reserved: { offset: 36, size: 4, alignment: 4, type: "u32" },
+      fragment_key: { offset: 36, size: 4, alignment: 4, type: "u32" },
       link_offset: { offset: 40, size: 4, alignment: 4, type: "u32" },
       link_byte_count: { offset: 44, size: 4, alignment: 4, type: "u32" },
     },
@@ -1576,6 +1578,7 @@ export const nativeConstants = {
   OT_SCENE_TEXT_FOREGROUND: 1,
   OT_SCENE_TEXT_BACKGROUND: 2,
   OT_SCENE_TEXT_LINK: 4,
+  OT_SCENE_TEXT_FRAGMENT: 8,
   OT_SCENE_MUTATIONS_MAX: 4096,
   OT_SCENE_HOOK_UPDATE: 1,
   OT_SCENE_HOOK_RESIZE: 2,

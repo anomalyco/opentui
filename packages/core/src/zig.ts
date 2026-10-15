@@ -37,6 +37,7 @@ export type {
 
 import { RGBA } from "./lib/RGBA.js"
 import { isStyledText, type StyledText } from "./lib/styled-text.js"
+import type { FragmentKeySink } from "./lib/fragment-keys.js"
 import { YogaError, YogaStatus, type MeasureFunction } from "./yoga.js"
 import { YogaHost, rejectAsyncCallback } from "./yoga.internal.js"
 import { env, registerEnvVar } from "./lib/env.js"
@@ -180,6 +181,12 @@ export interface NativeEncodedStyledText {
   records: Uint32Array
   count: number
   urlBytes: Uint8Array
+  /**
+   * Fragment keys retained for this encoding, one per chunk with `metadata` (0 for none).
+   * The encoder retains them before any native call. Whoever installs the text must either
+   * adopt them (after native accepts it) or release them (if the install throws or is dropped).
+   */
+  keys: Uint32Array
 }
 
 export enum NativeTextViewCommand {
@@ -4247,11 +4254,13 @@ export class FFIRenderLib {
     text: ContextTextBufferHandle,
     content: StyledText,
   ): void {
-    this.contextTextBufferSetEncodedStyledText(context, text, this.encodeTextBufferStyledText(content))
+    const encoded = this.encodeTextBufferStyledText(content)
+    this.contextTextBufferSetEncodedStyledText(context, text, encoded)
   }
 
-  public encodeTextBufferStyledText(content: StyledText): NativeEncodedStyledText {
-    return this.encodeStyledText(content, true, true)
+  /** Encodes text for a text buffer. Keys for `metadata` are retained in `fragmentKeys` (see NativeEncodedStyledText.keys). */
+  public encodeTextBufferStyledText(content: StyledText, fragmentKeys?: FragmentKeySink): NativeEncodedStyledText {
+    return this.encodeStyledText(content, true, true, fragmentKeys)
   }
 
   public contextTextBufferSetEncodedStyledText(
@@ -6288,6 +6297,39 @@ export class FFIRenderLib {
     return output[0] ?? 0
   }
 
+  /** Link id that the last presented frame shows at (x, y); never a pending, skipped, or failed frame. */
+  public sessionGetPresentedLinkId(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number {
+    const handle = encodeContextHandle(context, session)
+    toFFII32(x, "Link x")
+    toFFII32(y, "Link y")
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_session_get_presented_link_id")
+    nativeResult(
+      "ot_session_get_presented_link_id",
+      this.opentui.symbols.ot_session_get_presented_link_id(pointer, handle, x, y, output),
+    )
+    return output[0] ?? 0
+  }
+
+  /** Fragment key that the last presented frame shows at (x, y), or 0. */
+  public sessionGetPresentedFragmentKey(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    x: number,
+    y: number,
+  ): number {
+    const handle = encodeContextHandle(context, session)
+    toFFII32(x, "Fragment x")
+    toFFII32(y, "Fragment y")
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_session_get_presented_fragment_key")
+    nativeResult(
+      "ot_session_get_presented_fragment_key",
+      this.opentui.symbols.ot_session_get_presented_fragment_key(pointer, handle, x, y, output),
+    )
+    return output[0] ?? 0
+  }
+
   private acquireBufferLease(
     context: NativeContextHandle,
     target: ContextObjectHandle,
@@ -7129,27 +7171,47 @@ export class FFIRenderLib {
     )
   }
 
-  public sceneSetStyledText(context: NativeContextHandle, node: SceneNodeHandle, content: StyledText): void {
+  /**
+   * Installs styled text on a scene text node. Returns the fragment keys retained for its
+   * `metadata`: the caller adopts them. If native code rejects the text, they are released here.
+   */
+  public sceneSetStyledText(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    content: StyledText,
+    fragmentKeys?: FragmentKeySink,
+  ): Uint32Array {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, node)
-    const { bytes, records, count, urlBytes } = this.encodeStyledText(content)
-    const pointer = this.nativeContextPointer(context, "ot_scene_set_styled_text")
-    nativeResult(
-      "ot_scene_set_styled_text",
-      this.opentui.symbols.ot_scene_set_styled_text(
-        pointer,
-        handle,
-        viewOrNull(bytes),
-        bytes.length,
-        count === 0 ? null : records,
-        count,
-        viewOrNull(urlBytes),
-        urlBytes.length,
-      ),
-    )
+    const { bytes, records, count, urlBytes, keys } = this.encodeStyledText(content, true, false, fragmentKeys)
+    try {
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_styled_text")
+      nativeResult(
+        "ot_scene_set_styled_text",
+        this.opentui.symbols.ot_scene_set_styled_text(
+          pointer,
+          handle,
+          viewOrNull(bytes),
+          bytes.length,
+          count === 0 ? null : records,
+          count,
+          viewOrNull(urlBytes),
+          urlBytes.length,
+        ),
+      )
+    } catch (error) {
+      fragmentKeys?.releaseAll(keys)
+      throw error
+    }
+    return keys
   }
 
-  private encodeStyledText(content: StyledText, allowLinks = true, preserveChunkOrdinals = false) {
+  private encodeStyledText(
+    content: StyledText,
+    allowLinks = true,
+    preserveChunkOrdinals = false,
+    fragmentKeys?: FragmentKeySink,
+  ): NativeEncodedStyledText {
     if (typeof content !== "object" || content === null || isStyledText(content) !== true) {
       throw new TypeError("Native scene text requires a string or branded StyledText")
     }
@@ -7160,61 +7222,78 @@ export class FFIRenderLib {
     const stride = layout.size / 4
     const records = new Uint32Array(count * stride)
     const colors = new Uint16Array(records.buffer)
+    const keys = new Uint32Array(count)
     const parts: Uint8Array[] = []
     const urls: Uint8Array[] = []
     let byteCount = 0
     let urlByteCount = 0
-    for (let index = 0; index < count; index++) {
-      const chunk = chunks[index]
-      if (typeof chunk !== "object" || chunk === null) throw new TypeError("Invalid native scene StyledText chunk")
-      const { __isChunk, text, fg, bg, attributes, link } = chunk
-      if (__isChunk !== true || typeof text !== "string") throw new TypeError("Invalid native scene StyledText chunk")
-      const foreground = fg === undefined ? undefined : contextBufferColor(fg)
-      const background = bg === undefined ? undefined : contextBufferColor(bg)
-      const attrs = attributes === undefined ? 0 : toSafeFFIU32Length(attributes, "Scene styled chunk attributes")
-      if (attrs > ATTRIBUTE_BASE_MASK) throw new RangeError("Native scene StyledText supports only base attributes")
-      let urlBytes: Uint8Array | undefined
-      if (link !== undefined) {
-        if (!allowLinks) throw new TypeError("Native editor placeholder does not support links")
-        if (typeof link !== "object" || link === null) throw new TypeError("Invalid native scene StyledText link")
-        const url = link.url
-        if (typeof url !== "string") throw new TypeError("Native scene StyledText link requires a URL string")
-        urlBytes = this.encoder.encode(url)
+    try {
+      for (let index = 0; index < count; index++) {
+        const chunk = chunks[index]
+        if (typeof chunk !== "object" || chunk === null) throw new TypeError("Invalid native scene StyledText chunk")
+        // The only read of chunk properties: native records and fragment keys come from one snapshot.
+        const { __isChunk, text, fg, bg, attributes, link, metadata } = chunk
+        if (__isChunk !== true || typeof text !== "string") throw new TypeError("Invalid native scene StyledText chunk")
+        const foreground = fg === undefined ? undefined : contextBufferColor(fg)
+        const background = bg === undefined ? undefined : contextBufferColor(bg)
+        const attrs = attributes === undefined ? 0 : toSafeFFIU32Length(attributes, "Scene styled chunk attributes")
+        if (attrs > ATTRIBUTE_BASE_MASK) throw new RangeError("Native scene StyledText supports only base attributes")
+        let urlBytes: Uint8Array | undefined
+        if (link !== undefined) {
+          if (!allowLinks) throw new TypeError("Native editor placeholder does not support links")
+          if (typeof link !== "object" || link === null) throw new TypeError("Invalid native scene StyledText link")
+          const url = link.url
+          if (typeof url !== "string") throw new TypeError("Native scene StyledText link requires a URL string")
+          urlBytes = this.encoder.encode(url)
+        }
+        if (metadata !== undefined && !fragmentKeys) {
+          throw new TypeError("This text destination does not support fragment metadata")
+        }
+        // Encode each chunk separately, preserving legacy replacement of split UTF-16 surrogates.
+        const bytes = this.encoder.encode(text)
+        if (bytes.length === 0 && !preserveChunkOrdinals) continue
+        byteCount = toSafeFFIU32Length(byteCount + bytes.length, "Scene styled text length")
+        const offset = parts.length * stride
+        const key = metadata === undefined ? 0 : fragmentKeys!.retain(metadata)
+        keys[parts.length] = key
+        records[offset + layout.fields.struct_size.offset / 4] = layout.size
+        records[offset + layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+        records[offset + layout.fields.byte_count.offset / 4] = bytes.length
+        records[offset + layout.fields.flags.offset / 4] =
+          (foreground ? nativeConstants.OT_SCENE_TEXT_FOREGROUND : 0) |
+          (background ? nativeConstants.OT_SCENE_TEXT_BACKGROUND : 0) |
+          (urlBytes ? nativeConstants.OT_SCENE_TEXT_LINK : 0) |
+          (key !== 0 ? nativeConstants.OT_SCENE_TEXT_FRAGMENT : 0)
+        if (foreground) colors.set(foreground, offset * 2 + layout.fields.foreground.offset / 2)
+        if (background) colors.set(background, offset * 2 + layout.fields.background.offset / 2)
+        records[offset + layout.fields.attributes.offset / 4] = attrs
+        records[offset + layout.fields.fragment_key.offset / 4] = key
+        if (urlBytes) {
+          records[offset + layout.fields.link_offset.offset / 4] = urlByteCount
+          records[offset + layout.fields.link_byte_count.offset / 4] = urlBytes.length
+          urlByteCount = toSafeFFIU32Length(urlByteCount + urlBytes.length, "Scene styled URL length")
+          urls.push(urlBytes)
+        }
+        parts.push(bytes)
       }
-      // Encode each chunk separately, preserving legacy replacement of split UTF-16 surrogates.
-      const bytes = this.encoder.encode(text)
-      if (bytes.length === 0 && !preserveChunkOrdinals) continue
-      byteCount = toSafeFFIU32Length(byteCount + bytes.length, "Scene styled text length")
-      const offset = parts.length * stride
-      records[offset + layout.fields.struct_size.offset / 4] = layout.size
-      records[offset + layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
-      records[offset + layout.fields.byte_count.offset / 4] = bytes.length
-      records[offset + layout.fields.flags.offset / 4] =
-        (foreground ? 1 : 0) | (background ? 2 : 0) | (urlBytes ? 4 : 0)
-      if (foreground) colors.set(foreground, offset * 2 + layout.fields.foreground.offset / 2)
-      if (background) colors.set(background, offset * 2 + layout.fields.background.offset / 2)
-      records[offset + layout.fields.attributes.offset / 4] = attrs
-      if (urlBytes) {
-        records[offset + layout.fields.link_offset.offset / 4] = urlByteCount
-        records[offset + layout.fields.link_byte_count.offset / 4] = urlBytes.length
-        urlByteCount = toSafeFFIU32Length(urlByteCount + urlBytes.length, "Scene styled URL length")
-        urls.push(urlBytes)
+      const bytes = new Uint8Array(byteCount)
+      let offset = 0
+      for (const part of parts) {
+        bytes.set(part, offset)
+        offset += part.length
       }
-      parts.push(bytes)
+      const urlBytes = new Uint8Array(urlByteCount)
+      offset = 0
+      for (const url of urls) {
+        urlBytes.set(url, offset)
+        offset += url.length
+      }
+      return { bytes, records, count: parts.length, urlBytes, keys: keys.subarray(0, parts.length) }
+    } catch (error) {
+      // Any failure before the encoding is returned keeps no keys: nothing was handed to native code.
+      fragmentKeys?.releaseAll(keys)
+      throw error
     }
-    const bytes = new Uint8Array(byteCount)
-    let offset = 0
-    for (const part of parts) {
-      bytes.set(part, offset)
-      offset += part.length
-    }
-    const urlBytes = new Uint8Array(urlByteCount)
-    offset = 0
-    for (const url of urls) {
-      urlBytes.set(url, offset)
-      offset += url.length
-    }
-    return { bytes, records, count: parts.length, urlBytes }
   }
 
   public sceneSetSlider(context: NativeContextHandle, node: SceneNodeHandle, options: NativeSceneSliderOptions): void {

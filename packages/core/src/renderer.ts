@@ -37,6 +37,7 @@ import { TerminalConsole, type ConsoleOptions, capture } from "./console.js"
 import { type MouseEventType, type RawMouseEvent, type ScrollInfo } from "./lib/parse.mouse.js"
 import { Selection } from "./lib/selection.js"
 import { ClipboardTarget } from "./lib/clipboard.js"
+import { fragmentKeysFor } from "./lib/fragment-keys.js"
 import { EventEmitter } from "events"
 import { singleton } from "./lib/singleton.js"
 import { getObjectsInViewport } from "./lib/objects-in-viewport.js"
@@ -4218,6 +4219,53 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public getLinkAt(x: number, y: number): string | null {
     const linkId = this.getLinkIdAt(x, y)
     return linkId === 0 ? null : this.lib.contextGetLinkUrl(this.nativeSession.context, linkId) || null
+  }
+
+  /**
+   * Link id that the last presented frame shows at screen cell (x, y), or 0.
+   * Unlike getLinkIdAt, it never reflects a frame whose output is still pending, or a frame that was
+   * skipped or failed: ids publish together with the hit grid when a frame is presented.
+   */
+  public getPresentedLinkIdAt(x: number, y: number): number {
+    if (
+      this._isDestroyed ||
+      !Number.isInteger(x) ||
+      !Number.isInteger(y) ||
+      x < 0 ||
+      y < 0 ||
+      x > 0x7fff_ffff ||
+      y > 0x7fff_ffff
+    ) {
+      return 0
+    }
+    return this.lib.sessionGetPresentedLinkId(this.nativeSession.context, this.nativeSession.session, x, y)
+  }
+
+  /**
+   * Application metadata (`TextChunk.metadata`) of the text fragment that the last presented frame
+   * shows at screen cell (x, y), or undefined.
+   *
+   * Only what the user can see answers: clipped, covered, truncated (ellipsis), padding, and
+   * not-yet-presented cells return undefined, as do frames whose output is still pending.
+   * The value is returned by identity. Content that was replaced or destroyed after it was
+   * presented returns undefined, even while its old pixels are still on screen. A suspended or
+   * destroyed renderer presents nothing, so it also returns undefined.
+   */
+  public getTextMetadataAt(x: number, y: number): unknown {
+    if (
+      this._isDestroyed ||
+      !Number.isInteger(x) ||
+      !Number.isInteger(y) ||
+      x < 0 ||
+      y < 0 ||
+      x > 0x7fff_ffff ||
+      y > 0x7fff_ffff
+    ) {
+      return undefined
+    }
+    const { context, session } = this.nativeSession
+    const key = this.lib.sessionGetPresentedFragmentKey(context, session, x, y)
+    return key === 0 ? undefined : fragmentKeysFor(context).resolve(key)
   }
 
   public static setCursorPosition(renderer: CliRenderer, x: number, y: number, visible: boolean = true): void {

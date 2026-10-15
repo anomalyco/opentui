@@ -15,6 +15,7 @@ import { type WidthMethod, type Highlight } from "./types.js"
 import type { SyntaxStyle } from "./syntax-style.js"
 import type { NativeResourceOwner, ResourceContext } from "./buffer.js"
 import type { TextBufferView } from "./text-buffer-view.js"
+import { fragmentKeysFor } from "./lib/fragment-keys.js"
 
 export interface TextChunk {
   __isChunk: true
@@ -23,11 +24,22 @@ export interface TextChunk {
   bg?: RGBA
   attributes?: number
   link?: { url: string }
+  /**
+   * Opaque application data for hit lookups (`renderer.getTextMetadataAt`). Core never reads it.
+   * Lookups return this same value by identity, not a copy. It is not sent to native code: native
+   * cells carry a numeric key that maps back to it.
+   */
+  metadata?: unknown
 }
+
+/** A text fragment found at a screen cell. `metadata` is the chunk's value, by identity. */
+export type StyledTextHit = Readonly<{ metadata: unknown }>
 
 export class TextBuffer {
   private lib: RenderLib
   private native: { owner: ResourceContext; handle: ContextTextBufferHandle }
+  /** Fragment keys held by the installed content; released when the content is replaced. */
+  private _fragmentKeys: Uint32Array | null = null
   private _length: number = 0
   private _byteSize: number = 0
   private _destroyed: boolean = false
@@ -89,12 +101,35 @@ export class TextBuffer {
     this._byteSize = info.byteLength
   }
 
+  /** @internal The fragment key registry shared by everything in this buffer's native Context. */
+  public _fragmentKeyRegistry() {
+    return fragmentKeysFor(this.native.handle.context)
+  }
+
+  /** @internal Retains fragment keys in this buffer's scope, so a presented key identifies this buffer. */
+  public _fragmentKeySink() {
+    return this._fragmentKeyRegistry().forScope(this)
+  }
+
+  /** @internal Whether this buffer's installed content holds fragment `key`. */
+  public _holdsFragmentKey(key: number): boolean {
+    return key !== 0 && (this._fragmentKeys?.includes(key) ?? false)
+  }
+
+  /** Replaces the keys held by installed content. Call only after native accepted the content. */
+  private adoptFragmentKeys(keys: Uint32Array | null): void {
+    const previous = this._fragmentKeys
+    this._fragmentKeys = keys && keys.some((key) => key !== 0) ? keys : null
+    if (previous) this._fragmentKeyRegistry().releaseAll(previous)
+  }
+
   public setText(text: string): void {
     this.guard()
     // Publish accepted state before this boundary reports deferred callback errors.
     this.lib.getYogaHost().runMutation(() => {
       const textBytes = this.lib.encoder.encode(text)
       this.lib.contextTextBufferSetText(this.native.handle.context, this.native.handle, textBytes)
+      this.adoptFragmentKeys(null)
       this.updateLengths()
     })
   }
@@ -119,6 +154,7 @@ export class TextBuffer {
         throw new Error(`Failed to load file: ${path}`, { cause })
       }
       this.lib.contextTextBufferSetText(this.native.handle.context, this.native.handle, bytes)
+      this.adoptFragmentKeys(null)
       this.updateLengths()
     })
   }
@@ -130,20 +166,34 @@ export class TextBuffer {
       const chunks = text.chunks
       if (Array.isArray(chunks) && chunks.length === 0) {
         this.lib.contextTextBufferClear(this.native.handle.context, this.native.handle)
+        this.adoptFragmentKeys(null)
       } else {
-        this.lib.contextTextBufferSetStyledText(this.native.handle.context, this.native.handle, new StyledText(chunks))
+        // One snapshot pass produces the native records and the retained keys.
+        const encoded = this.lib.encodeTextBufferStyledText(new StyledText(chunks), this._fragmentKeySink())
+        this.installEncoded(encoded)
       }
       this.updateLengths()
     })
   }
 
-  /** @internal Uses an input snapshot without invoking chunk getters again. */
+  /** @internal Uses an input snapshot without invoking chunk getters again. Adopts its keys. */
   public _setEncodedStyledText(text: NativeEncodedStyledText): void {
     this.guard()
     this.lib.getYogaHost().runMutation(() => {
-      this.lib.contextTextBufferSetEncodedStyledText(this.native.handle.context, this.native.handle, text)
+      this.installEncoded(text)
       this.updateLengths()
     })
+  }
+
+  /** Installs encoded text; adopts its keys on success and releases them if native rejects it. */
+  private installEncoded(text: NativeEncodedStyledText): void {
+    try {
+      this.lib.contextTextBufferSetEncodedStyledText(this.native.handle.context, this.native.handle, text)
+    } catch (error) {
+      this._fragmentKeyRegistry().releaseAll(text.keys)
+      throw error
+    }
+    this.adoptFragmentKeys(text.keys)
   }
 
   /** @internal Returns false for oversized batches without changing any resource. */
@@ -163,11 +213,21 @@ export class TextBuffer {
       text,
     }))
     return lib.getYogaHost().runMutation(() => {
-      const info = lib.contextTextBufferReplaceStyledBatch(owner.context, entries, beforeNative)
+      let info: Uint32Array | null
+      try {
+        info = lib.contextTextBufferReplaceStyledBatch(owner.context, entries, beforeNative)
+      } catch (error) {
+        // A rejected batch publishes nothing, so no cell keeps any of its keys.
+        for (const { textBuffer, text } of replacements) textBuffer._fragmentKeyRegistry().releaseAll(text.keys)
+        throw error
+      }
+      // An oversized batch returns null without changing any resource. The caller still owns
+      // the encodings and either reinstalls them one by one or drops them.
       if (info === null) return false
       for (let index = 0; index < replacements.length; index++) {
         replacements[index].textBuffer._length = info[index * 2]
         replacements[index].textBuffer._byteSize = info[index * 2 + 1]
+        replacements[index].textBuffer.adoptFragmentKeys(replacements[index].text.keys)
       }
       return true
     })
@@ -302,6 +362,7 @@ export class TextBuffer {
     this.guard()
     this.lib.getYogaHost().runMutation(() => {
       this.lib.contextTextBufferClear(this.native.handle.context, this.native.handle)
+      this.adoptFragmentKeys(null)
       this._length = 0
       this._byteSize = 0
     })
@@ -311,6 +372,7 @@ export class TextBuffer {
     this.guard()
     this.lib.getYogaHost().runMutation(() => {
       this.lib.contextTextBufferClear(this.native.handle.context, this.native.handle, true)
+      this.adoptFragmentKeys(null)
       this._length = 0
       this._byteSize = 0
     })
@@ -330,6 +392,7 @@ export class TextBuffer {
       }
       this._destroyed = true
       this._syntaxStyle = undefined
+      this.adoptFragmentKeys(null)
     })
   }
 }

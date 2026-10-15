@@ -4,6 +4,7 @@ import type { OptimizedBuffer } from "../buffer.js"
 import { type BorderStyle, BorderCharArrays, parseBorderStyle } from "../lib/border.js"
 import { convertGlobalToLocalSelection, type Selection, type LocalSelectionBounds } from "../lib/selection.js"
 import { StyledText, stringToStyledText } from "../lib/styled-text.js"
+import { fragmentKeysFor } from "../lib/fragment-keys.js"
 import { RGBA, parseColor, type ColorInput } from "../lib/RGBA.js"
 import { type TextChunk, TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
@@ -20,6 +21,9 @@ export type TextTableCellContent = TextChunk[] | null | undefined
 export type TextTableContent = TextTableCellContent[][]
 export type TextTableColumnWidthMode = "content" | "full"
 export type TextTableColumnFitter = "proportional" | "balanced"
+
+/** A text fragment found in a table cell. `row` and `column` index the table content. */
+export type TextTableStyledTextHit = Readonly<{ metadata: unknown; cell: Readonly<{ row: number; column: number }> }>
 
 interface ResolvedTableBorderLayout {
   left: boolean
@@ -366,6 +370,33 @@ export class TextTableRenderable extends Renderable {
     return this.getCellAtLocalPosition(localX, localY) !== null
   }
 
+  /**
+   * The text fragment that the last presented frame shows at a cell relative to this table's
+   * top-left corner, with the content cell that holds it, or null.
+   *
+   * As with TextBufferRenderable.getStyledTextHit, the presented hit grid must name this table at
+   * that cell and the cell must show a fragment of the table's current content. Borders, padding,
+   * covered, clipped, unpresented, and replaced cells return null.
+   */
+  public getStyledTextHit(x: number, y: number): TextTableStyledTextHit | null {
+    if (this.isDestroyed || !Number.isInteger(x) || !Number.isInteger(y)) return null
+    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return null
+    const scene = this._ctx.nativeScene
+    const screenX = Math.trunc(this.screenX) + x
+    const screenY = Math.trunc(this.screenY) + y
+    const key = scene.presentedFragmentKey(screenX, screenY)
+    if (key === 0 || scene.hitTest(screenX, screenY) !== this.num || scene.fragmentKeyScope(key) !== this) return null
+    this.ensureLayoutReady()
+    const position = this.getCellAtLocalPosition(x, y)
+    if (!position) return null
+    // The key is shared by every cell that shows the same value, so the cell must also hold it.
+    if (!this._cells[position.rowIdx]?.[position.colIdx]?.textBuffer._holdsFragmentKey(key)) return null
+    return Object.freeze({
+      metadata: scene.resolveFragmentKey(key),
+      cell: Object.freeze({ row: position.rowIdx, column: position.colIdx }),
+    })
+  }
+
   public onSelectionChanged(selection: Selection | null): boolean {
     this.ensureLayoutReady()
 
@@ -517,36 +548,59 @@ export class TextTableRenderable extends Renderable {
 
     // Snapshot every getter before native acceptance, including the oversized fallback.
     const lib = this._ctx.nativeScene.driver.renderLib
-    for (let rowIdx = 0; rowIdx < newRowCount; rowIdx++) {
-      const row = rows[rowIdx]
-      const rowRefs: TextTableCellContent[] = []
-      for (let colIdx = 0; colIdx < newColumnCount; colIdx++) {
-        const cellContent = row[colIdx]
-        rowRefs.push(cellContent)
-        if (!previous[rowIdx]?.[colIdx] || cellContent !== previousContent[rowIdx][colIdx]) {
-          changes.push({
-            row: rowIdx,
-            col: colIdx,
-            text: lib.encodeTextBufferStyledText(this.toStyledText(cellContent)),
-          })
-        }
-      }
-      refs.push(rowRefs)
-      cells.push(previous[rowIdx]?.slice(0, newColumnCount) ?? [])
+    // Cell keys are scoped to the table: cells are encoded before their buffers exist.
+    const fragmentKeys = fragmentKeysFor(this._ctx.nativeScene.driver.context).forScope(this)
+    // Encodings own retained fragment keys until a cell adopts them. Any encoding that no cell
+    // adopts (an encode or preparation failure) releases its keys here.
+    const adopted = new Set<NativeEncodedStyledText>()
+    const releaseUnadopted = () => {
+      for (const change of changes) if (!adopted.has(change.text)) fragmentKeys.releaseAll(change.text.keys)
     }
-    assertCurrent()
-    const reused =
-      newRowCount === this._rowCount &&
-      newColumnCount === this._columnCount &&
-      TextBuffer._replaceStyledTextBatch(
-        changes.map(({ row, col, text }) => ({ ...previous[row][col], text })),
-        assertCurrent,
-      )
+    try {
+      for (let rowIdx = 0; rowIdx < newRowCount; rowIdx++) {
+        const row = rows[rowIdx]
+        const rowRefs: TextTableCellContent[] = []
+        for (let colIdx = 0; colIdx < newColumnCount; colIdx++) {
+          const cellContent = row[colIdx]
+          rowRefs.push(cellContent)
+          if (!previous[rowIdx]?.[colIdx] || cellContent !== previousContent[rowIdx][colIdx]) {
+            changes.push({
+              row: rowIdx,
+              col: colIdx,
+              text: lib.encodeTextBufferStyledText(this.toStyledText(cellContent), fragmentKeys),
+            })
+          }
+        }
+        refs.push(rowRefs)
+        cells.push(previous[rowIdx]?.slice(0, newColumnCount) ?? [])
+      }
+      assertCurrent()
+    } catch (error) {
+      releaseUnadopted()
+      throw error
+    }
+    let reused: boolean
+    try {
+      reused =
+        newRowCount === this._rowCount &&
+        newColumnCount === this._columnCount &&
+        TextBuffer._replaceStyledTextBatch(
+          changes.map(({ row, col, text }) => ({ ...previous[row][col], text })),
+          assertCurrent,
+        )
+    } catch (error) {
+      // _replaceStyledTextBatch already released the keys of a batch that native rejected.
+      for (const change of changes) adopted.add(change.text)
+      throw error
+    }
+    if (reused) for (const change of changes) adopted.add(change.text)
 
     // Prepare every changed cell before publishing or releasing accepted resources.
     try {
       if (!reused) {
         for (const { row, col, text } of changes) {
+          // createCell consumes the encoding's keys whether it succeeds or throws.
+          adopted.add(text)
           const cell = this.createCell(text)
           created.push(cell)
           cells[row][col] = cell
@@ -555,6 +609,7 @@ export class TextTableRenderable extends Renderable {
         assertCurrent()
       }
     } catch (error) {
+      releaseUnadopted()
       try {
         this.runCleanup((run) => {
           for (const cell of created) run(() => this.destroyCell(cell))
@@ -581,19 +636,32 @@ export class TextTableRenderable extends Renderable {
     })
   }
 
+  /** Creates a cell from an encoding. Always consumes the encoding's fragment keys: the new
+   * cell adopts them, or they are released if construction fails. */
   private createCell(text: NativeEncodedStyledText): TextTableCellState {
-    const textBuffer = TextBuffer.create(this._ctx.widthMethod, this._ctx.nativeScene)
+    let textBuffer: TextBuffer
+    try {
+      textBuffer = TextBuffer.create(this._ctx.widthMethod, this._ctx.nativeScene)
+    } catch (error) {
+      fragmentKeysFor(this._ctx.nativeScene.driver.context).releaseAll(text.keys)
+      throw error
+    }
     let textBufferView: TextBufferView | undefined
+    let installed = false
     try {
       textBuffer._setDefaults(this._defaultFg, this._defaultBg, this._defaultAttributes)
+      // Adopts the keys on success and releases them if native rejects the text.
+      installed = true
       textBuffer._setEncodedStyledText(text)
 
       textBufferView = TextBufferView.create(textBuffer)
       return { textBuffer, textBufferView }
     } catch (error) {
+      if (!installed) fragmentKeysFor(this._ctx.nativeScene.driver.context).releaseAll(text.keys)
       try {
         this.runCleanup((run) => {
           run(() => textBufferView?.destroy())
+          // Destroying the buffer releases any keys it adopted.
           run(() => textBuffer.destroy())
         })
       } catch {
