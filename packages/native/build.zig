@@ -401,6 +401,7 @@ fn ghosttyVtAvailable(target: std.Build.ResolvedTarget) bool {
         .linux => target.result.abi.isMusl() or target.result.abi == .gnu,
         .macos => true,
         .windows => target.result.abi == .gnu,
+        .freebsd => true,
         else => false,
     };
 }
