@@ -8,6 +8,7 @@ import {
   type CliRendererConfig,
 } from "../renderer.js"
 import { NativeSession } from "../NativeSession.js"
+import { StyledText } from "../lib/styled-text.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { ImageRenderable } from "../renderables/Image.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
@@ -188,6 +189,47 @@ test("late Ghostty capability detection emits OSC 8 for compact Markdown links",
   expect(output).toContain(";https://github.com/anomalyco/opentui\x1b\\")
   expect(output).toContain(";https://example.com/path\x1b\\")
   expect(output).toContain("\x1b]8;;\x1b\\")
+})
+
+test("fragment metadata never reaches terminal output, and links that carry it still emit OSC 8", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(60, 4)
+  const renderer = await createCliRenderer({ stdin, stdout, useMouse: true })
+  destroyFns.push(() => renderer.destroy())
+  stdin.emit("data", Buffer.from("\x1bP>|ghostty 1.1.3\x1b\\"))
+  await renderer.idle()
+  expect(renderer.capabilities?.hyperlinks).toBe(true)
+
+  const data = { id: "data" }
+  const site = { id: "site" }
+  renderer.root.add(
+    new TextRenderable(renderer, {
+      content: new StyledText([
+        { __isChunk: true, text: "DATA", metadata: data },
+        { __isChunk: true, text: " " },
+        { __isChunk: true, text: "SITE", metadata: site, link: { url: "https://example.com/site" } },
+        { __isChunk: true, text: " " },
+        { __isChunk: true, text: "PLAIN", link: { url: "https://example.com/plain" } },
+      ]),
+    }),
+  )
+  stdout.clear()
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const output = stdout.bytes().toString("binary")
+  // Exactly the two URL chunks open a hyperlink; the metadata-only chunk is plain text.
+  expect(output.match(/\x1b\]8;id=\d+;/g)).toHaveLength(2)
+  expect(output).toContain(";https://example.com/site\x1b\\")
+  expect(output).toContain(";https://example.com/plain\x1b\\")
+  const dataIndex = output.indexOf("DATA")
+  const firstOpen = output.indexOf("\x1b]8;id=")
+  expect(dataIndex).toBeGreaterThanOrEqual(0)
+  expect(firstOpen).toBeGreaterThan(dataIndex)
+  expect(renderer.getTextMetadataAt(0, 0)).toBe(data)
+  expect(renderer.getTextMetadataAt(5, 0)).toBe(site)
+  expect(renderer.getLinkAt(5, 0)).toBe("https://example.com/site")
+  expect(renderer.getLinkAt(0, 0)).toBeNull()
 })
 
 test("unidentified truecolor terminals preserve the visible Markdown link fallback", async () => {

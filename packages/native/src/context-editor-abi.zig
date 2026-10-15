@@ -794,7 +794,7 @@ test "Context editor placeholder ABI rejects malformed chunks and preserves styl
     const editor = try owner.core.raw().getEditorView(view_id);
     const accepted = editor.view.placeholder_buffer.?;
     const epoch = accepted.getContentEpoch();
-    for (0..10) |field| {
+    for (0..11) |field| {
         var invalid = chunk;
         var expected: c.ot_status = c.OT_INVALID_ARGUMENT;
         switch (field) {
@@ -804,13 +804,18 @@ test "Context editor placeholder ABI rejects malformed chunks and preserves styl
                 expected = c.OT_UNSUPPORTED_VERSION;
             },
             2 => invalid.flags |= c.OT_SCENE_TEXT_LINK,
-            3 => invalid.reserved = 1,
+            3 => invalid.fragment_key = 1,
             4 => invalid.byte_count = 0,
             5 => invalid.byte_count = 5,
             6 => invalid.attributes = 256,
             7 => invalid.foreground[0] = 256,
             8 => invalid.link_offset = 1,
             9 => invalid.link_byte_count = 1,
+            // A well-formed fragment key is still rejected: placeholders carry no hit metadata.
+            10 => {
+                invalid.flags |= c.OT_SCENE_TEXT_FRAGMENT;
+                invalid.fragment_key = 7;
+            },
             else => unreachable,
         }
         try std.testing.expectEqual(expected, ot_editor_view_set_placeholder(&owner, &id, "next", 4, &.{invalid}, 1));
@@ -840,7 +845,7 @@ test "Context editor transport allocation failures are reported and owned placeh
             const view_handle: c.ot_handle = .{ .context_id = view_id.context_id, .slot = view_id.slot, .generation = view_id.generation };
             const style_handle: c.ot_handle = .{ .context_id = style_id.context_id, .slot = style_id.slot, .generation = style_id.generation };
             const style: c.ot_editor_style = .{ .struct_size = @sizeOf(c.ot_editor_style), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 1, .attributes = 0, .foreground = .{ 1, 2, 3, 255 }, .background = .{ 0, 0, 0, 0 } };
-            const chunk: c.ot_styled_text_chunk = .{ .struct_size = @sizeOf(c.ot_styled_text_chunk), .abi_version = c.OT_CONTEXT_ABI_VERSION, .byte_count = 4, .flags = 1, .foreground = .{ 1, 2, 3, 255 }, .background = .{ 0, 0, 0, 0 }, .attributes = 0, .reserved = 0, .link_offset = 0, .link_byte_count = 0 };
+            const chunk: c.ot_styled_text_chunk = .{ .struct_size = @sizeOf(c.ot_styled_text_chunk), .abi_version = c.OT_CONTEXT_ABI_VERSION, .byte_count = 4, .flags = 1, .foreground = .{ 1, 2, 3, 255 }, .background = .{ 0, 0, 0, 0 }, .attributes = 0, .fragment_key = 0, .link_offset = 0, .link_byte_count = 0 };
             const highlight: c.ot_edit_highlight = .{ .start = 0, .end = 6, .style_id = 1, .priority = 0, .ref = 1 };
             var output: u32 = 99;
             var placeholder = "hint".*;

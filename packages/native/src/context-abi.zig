@@ -985,6 +985,40 @@ pub fn ot_session_get_link_id(
     return c.OT_OK;
 }
 
+pub fn ot_session_get_presented_link_id(
+    context: ?*ContextHandle,
+    session_ptr: ?*const c.ot_handle,
+    x: i32,
+    y: i32,
+    out_ptr: ?*u32,
+) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const link_id = owner.core.sessionGetPresentedLinkId(handleFromC(id.*), x, y) catch |err| return sessionError(owner, err);
+    out.* = link_id;
+    return c.OT_OK;
+}
+
+pub fn ot_session_get_presented_fragment_key(
+    context: ?*ContextHandle,
+    session_ptr: ?*const c.ot_handle,
+    x: i32,
+    y: i32,
+    out_ptr: ?*u32,
+) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const key = owner.core.sessionGetPresentedFragmentKey(handleFromC(id.*), x, y) catch |err| return sessionError(owner, err);
+    out.* = key;
+    return c.OT_OK;
+}
+
 fn writeBufferLeaseSnapshot(owner: *ContextHandle, lease: ObjectHandle, out: *c.ot_buffer_lease_snapshot) c.ot_status {
     const snapshot = owner.core.bufferLeaseSnapshot(lease) catch |err| {
         owner.core.releaseBufferLease(lease) catch unreachable;
@@ -1960,10 +1994,12 @@ pub fn setStyledText(
 }
 
 pub fn styledTextChunkFromC(record: c.ot_styled_text_chunk, urls: []const u8) !@import("context.zig").StyledTextChunk {
-    const flags: u32 = c.OT_SCENE_TEXT_FOREGROUND | c.OT_SCENE_TEXT_BACKGROUND | c.OT_SCENE_TEXT_LINK;
+    const flags: u32 = c.OT_SCENE_TEXT_FOREGROUND | c.OT_SCENE_TEXT_BACKGROUND | c.OT_SCENE_TEXT_LINK | c.OT_SCENE_TEXT_FRAGMENT;
     if (record.struct_size != @sizeOf(c.ot_styled_text_chunk)) return error.InvalidOptions;
     if (record.abi_version != c.OT_CONTEXT_ABI_VERSION) return error.UnsupportedVersion;
-    if (record.reserved != 0 or record.flags & ~flags != 0 or
+    // fragment_key is non-zero exactly when OT_SCENE_TEXT_FRAGMENT is set.
+    const has_fragment = record.flags & c.OT_SCENE_TEXT_FRAGMENT != 0;
+    if (has_fragment != (record.fragment_key != 0) or record.flags & ~flags != 0 or
         record.link_offset > urls.len or record.link_byte_count > urls.len - record.link_offset or
         (record.flags & c.OT_SCENE_TEXT_LINK == 0 and (record.link_offset != 0 or record.link_byte_count != 0))) return error.InvalidOptions;
     return .{
@@ -1972,6 +2008,7 @@ pub fn styledTextChunkFromC(record: c.ot_styled_text_chunk, urls: []const u8) !@
         .background = if (record.flags & c.OT_SCENE_TEXT_BACKGROUND != 0) record.background else null,
         .attributes = record.attributes,
         .link_url = if (record.flags & c.OT_SCENE_TEXT_LINK != 0) urls[record.link_offset..][0..record.link_byte_count] else null,
+        .fragment_key = record.fragment_key,
     };
 }
 
@@ -4105,7 +4142,7 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
     const text = (try owner.raw().getRenderable(node)).scene_node.?.text.?;
     const style = text.owned_style;
     const epoch = text.buffer.getContentEpoch();
-    for (0..13) |field| {
+    for (0..15) |field| {
         var invalid = linked;
         var expected: c.ot_status = c.OT_INVALID_ARGUMENT;
         switch (field) {
@@ -4114,8 +4151,10 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
                 invalid.abi_version += 1;
                 expected = c.OT_UNSUPPORTED_VERSION;
             },
-            2 => invalid.flags |= 8,
-            3 => invalid.reserved = 1,
+            // Bit 8 is OT_SCENE_TEXT_FRAGMENT; the first unassigned flag is 16.
+            2 => invalid.flags |= 16,
+            // A fragment key without its flag, and the flag without a key, are both rejected.
+            3 => invalid.fragment_key = 1,
             4 => invalid.byte_count = 0,
             5 => invalid.byte_count = 5,
             6 => invalid.attributes = 256,
@@ -4127,6 +4166,11 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
             12 => {
                 invalid.flags |= c.OT_SCENE_TEXT_FOREGROUND;
                 invalid.foreground[0] = 256;
+            },
+            13 => invalid.flags |= c.OT_SCENE_TEXT_FRAGMENT,
+            14 => {
+                invalid.flags |= c.OT_SCENE_TEXT_FRAGMENT;
+                invalid.fragment_key = 0;
             },
             else => unreachable,
         }

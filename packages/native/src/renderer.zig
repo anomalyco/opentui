@@ -393,6 +393,26 @@ pub const CliRenderer = struct {
     hitGridDirty: bool = false,
     hitGridResizeInvalidated: bool = false,
 
+    // Link ids of the last presented frame, one per cell, in hit-grid geometry.
+    //
+    // currentRenderBuffer is synced while a frame is encoded, before its bytes are
+    // published, so it can describe a pending, skipped, or failed frame. These planes
+    // follow the hit grid instead: encoding copies the encoded frame's ids into
+    // pendingLinkIds, and commitPendingHitGrid publishes it only for a presented frame.
+    //
+    // Each plane owns one link-pool reference per distinct non-zero id (its tracker).
+    // Without that, encoding the next frame drops the current buffer's references, and
+    // ids that are still on screen can be released and reused before they are replaced.
+    // Staging reserves every reference, so publication cannot fail after a frame is out.
+    presentedLinkIds: []u32,
+    pendingLinkIds: []u32,
+    presentedLinks: link.LinkTracker,
+    pendingLinks: link.LinkTracker,
+    // Whether a plane may hold a non-zero id. A plane that is known to be empty is not
+    // cleared again, so frames without links pay no per-cell cost for the planes.
+    presentedLinkIdsUsed: bool = false,
+    pendingLinkIdsUsed: bool = false,
+
     lastCursorStyleTag: ?u8 = null,
     lastCursorBlinking: ?bool = null,
     lastCursorColorRGB: ?[3]u8 = null,
@@ -504,6 +524,16 @@ pub const CliRenderer = struct {
         errdefer allocator.free(nextHitGrid);
         @memset(currentHitGrid, 0); // Initialize with 0 (no renderable)
         @memset(nextHitGrid, 0);
+        const presentedLinkIds = try allocator.alloc(u32, hitGridSize);
+        errdefer allocator.free(presentedLinkIds);
+        const pendingLinkIds = try allocator.alloc(u32, hitGridSize);
+        errdefer allocator.free(pendingLinkIds);
+        @memset(presentedLinkIds, 0);
+        @memset(pendingLinkIds, 0);
+        var presentedLinks = link.LinkTracker.init(allocator, opts.link_pool);
+        errdefer presentedLinks.deinit();
+        var pendingLinks = link.LinkTracker.init(allocator, opts.link_pool);
+        errdefer pendingLinks.deinit();
         const hitScissorStack: std.ArrayListUnmanaged(buf.ClipRect) = .empty;
 
         // Backend variant selected once by opts.output.
@@ -570,6 +600,10 @@ pub const CliRenderer = struct {
             .hitGridWidth = width,
             .hitGridHeight = height,
             .hitScissorStack = hitScissorStack,
+            .presentedLinkIds = presentedLinkIds,
+            .pendingLinkIds = pendingLinkIds,
+            .presentedLinks = presentedLinks,
+            .pendingLinks = pendingLinks,
             .palette_rgba = undefined,
             .default_fg_rgba = ansi.defaultColor(255, 255, 255, 255),
             .default_bg_rgba = ansi.defaultColor(0, 0, 0, 255),
@@ -624,6 +658,10 @@ pub const CliRenderer = struct {
         self.allocator.free(self.currentHitGrid);
         self.allocator.free(self.nextHitGrid);
         self.hitScissorStack.deinit(self.allocator);
+        self.presentedLinks.deinit();
+        self.pendingLinks.deinit();
+        self.allocator.free(self.presentedLinkIds);
+        self.allocator.free(self.pendingLinkIds);
 
         self.allocator.destroy(self);
     }
@@ -761,6 +799,7 @@ pub const CliRenderer = struct {
             return;
         }
         self.currentImages.clearRetainingCapacity();
+        self.discardPresentedLinkIds();
 
         // Workaround for Ghostty not showing the cursor after shutdown for some reason.
         // Keep this backend-agnostic: the active output transport owns delivery.
@@ -892,6 +931,16 @@ pub const CliRenderer = struct {
             self.allocator.free(grids[0]);
             self.allocator.free(grids[1]);
         };
+        const newLinkPlanes: ?[2][]u32 = if (newHitGridSize > self.presentedLinkIds.len) planes: {
+            const newPresented = try self.allocator.alloc(u32, newHitGridSize);
+            errdefer self.allocator.free(newPresented);
+            const newPending = try self.allocator.alloc(u32, newHitGridSize);
+            break :planes .{ newPresented, newPending };
+        } else null;
+        errdefer if (newLinkPlanes) |planes| {
+            self.allocator.free(planes[0]);
+            self.allocator.free(planes[1]);
+        };
         if (bytes) |packet| try self.backend.feed.feed.writeAtomic(packet);
 
         // Every fallible allocation finishes before any visible state changes.
@@ -908,6 +957,19 @@ pub const CliRenderer = struct {
             self.currentHitGrid = grids[0];
             self.nextHitGrid = grids[1];
         }
+        // A resize clears the screen, so no fragment remains presented.
+        self.presentedLinks.clear();
+        self.pendingLinks.clear();
+        if (newLinkPlanes) |planes| {
+            self.allocator.free(self.presentedLinkIds);
+            self.allocator.free(self.pendingLinkIds);
+            self.presentedLinkIds = planes[0];
+            self.pendingLinkIds = planes[1];
+        }
+        @memset(self.presentedLinkIds, 0);
+        @memset(self.pendingLinkIds, 0);
+        self.presentedLinkIdsUsed = false;
+        self.pendingLinkIdsUsed = false;
 
         @memset(self.currentHitGrid, 0);
         @memset(self.nextHitGrid, 0);
@@ -1053,6 +1115,7 @@ pub const CliRenderer = struct {
     fn clearSkippedFrameState(self: *CliRenderer) void {
         self.nextRenderBuffer.clear(self.backgroundColor, null);
         @memset(self.nextHitGrid, 0);
+        self.discardPendingLinkIds();
     }
 
     fn finishSkippedFrame(self: *CliRenderer) RenderStatus {
@@ -1066,6 +1129,7 @@ pub const CliRenderer = struct {
         self.kittyTransport.cancel(.io_error);
         self.pendingImages.clearRetainingCapacity();
         @memset(self.nextHitGrid, 0);
+        self.discardPendingLinkIds();
         self.invalidateTerminalState();
         return .failed;
     }
@@ -1101,6 +1165,66 @@ pub const CliRenderer = struct {
         self.currentHitGrid = self.nextHitGrid;
         self.nextHitGrid = previous;
         @import("utils.zig").fillU32(self.nextHitGrid, 0);
+        // Link ids publish with the hit grid: both describe the frame that was just presented.
+        // Swapping the trackers moves the references with their plane; the old plane's
+        // references are dropped only now, after the frame that replaces it is presented.
+        std.mem.swap([]u32, &self.presentedLinkIds, &self.pendingLinkIds);
+        std.mem.swap(link.LinkTracker, &self.presentedLinks, &self.pendingLinks);
+        std.mem.swap(bool, &self.presentedLinkIdsUsed, &self.pendingLinkIdsUsed);
+        self.discardPendingLinkIds();
+    }
+
+    /// Drops the pending plane and its pool references. Never fails.
+    fn discardPendingLinkIds(self: *CliRenderer) void {
+        self.pendingLinks.clear();
+        if (!self.pendingLinkIdsUsed) return;
+        @memset(self.pendingLinkIds, 0);
+        self.pendingLinkIdsUsed = false;
+    }
+
+    /// Drops the presented plane and its pool references. Call wherever the terminal stops
+    /// showing the presented frame without presenting another one: shutdown or suspend, a
+    /// screen switch, or a clear. Presented lookups then answer nothing until the next frame
+    /// is presented. Never fails.
+    pub fn discardPresentedLinkIds(self: *CliRenderer) void {
+        self.presentedLinks.clear();
+        if (!self.presentedLinkIdsUsed) return;
+        @memset(self.presentedLinkIds, 0);
+        self.presentedLinkIdsUsed = false;
+    }
+
+    /// Copies the encoded frame's link ids into the pending plane and takes one pool reference
+    /// per distinct id. Runs once per encoded frame, after the diff loop and before the next
+    /// buffer is cleared, so rows the diff skipped are captured too. The tracker capacity is
+    /// reserved first from the next buffer's own count. If that count is ever short, the extra
+    /// allocation can fail; the frame then fails cleanly instead of aborting the process.
+    fn stagePendingLinkIds(self: *CliRenderer) error{ OutOfMemory, TrackerLimit }!void {
+        self.discardPendingLinkIds();
+        const next = self.nextRenderBuffer;
+        // Every write of a link id updates the buffer's tracker, so an empty tracker means
+        // no cell carries an id and the pending plane is already all zero.
+        if (!next.link_tracker.hasAny()) return;
+        self.pendingLinkIdsUsed = true;
+        errdefer self.discardPendingLinkIds();
+        // The next buffer's own tracker already counts its distinct ids.
+        try self.pendingLinks.used_ids.ensureTotalCapacity(next.link_tracker.getLinkCount());
+        const cells = @as(usize, self.width) * self.height;
+        const attributes = next.buffer.attributes[0..cells];
+        var previous: u32 = 0;
+        for (attributes, self.pendingLinkIds[0..cells]) |cell_attributes, *id| {
+            const link_id = ansi.TextAttributes.getLinkId(cell_attributes);
+            id.* = link_id;
+            // One pool reference per distinct id. A run of cells with the same id needs no
+            // further tracker lookup; the plane's tracker is only ever cleared as a whole.
+            if (link_id != 0 and link_id != previous) try self.pendingLinks.tryAddCellRef(link_id);
+            previous = link_id;
+        }
+    }
+
+    /// Link id of the last presented frame at (x, y); 0 when none or out of range.
+    pub fn getPresentedLinkId(self: *const CliRenderer, x: u32, y: u32) u32 {
+        if (x >= self.hitGridWidth or y >= self.hitGridHeight) return 0;
+        return self.presentedLinkIds[@as(usize, y) * self.hitGridWidth + x];
     }
 
     fn renderResult(self: *CliRenderer, status: RenderStatus) RenderResult {
@@ -1939,7 +2063,7 @@ pub const CliRenderer = struct {
                 const bgMatch = currentBg != null and buf.rgbaEqual(currentBg.?, cell.bg);
                 const sameAttributes = fgMatch and bgMatch and currentAttributes != null and cell.attributes == currentAttributes.?;
 
-                const linkId = if (hyperlinksEnabled) ansi.TextAttributes.getLinkId(cell.attributes) else 0;
+                const linkId = if (hyperlinksEnabled) snapshot.link_pool.hyperlinkId(ansi.TextAttributes.getLinkId(cell.attributes)) else 0;
                 if (hyperlinksEnabled and linkId != currentLinkId) {
                     if (currentLinkId != 0) {
                         writer.writeAll("\x1b]8;;\x1b\\") catch {};
@@ -2915,6 +3039,8 @@ pub const CliRenderer = struct {
     pub fn prepareRenderFrameWithWriter(self: *CliRenderer, writer: anytype, force: bool, sync_started: bool) error{ OutOfMemory, TrackerLimit, PresentationPending, PresentationFailed }!void {
         if (self.pendingPresentation != null) return error.PresentationPending;
         if (self.presentationFailed) return error.PresentationFailed;
+        // An encode that stops early must not leave an earlier frame's ids to be published.
+        self.discardPendingLinkIds();
         _ = self.pollKittyImageTransport();
         const renderStartTime = std.Io.Clock.now(.awake, self.io).toMicroseconds();
         var cellsUpdated: u32 = 0;
@@ -2957,6 +3083,9 @@ pub const CliRenderer = struct {
         );
         // Current cells and leases retain their image resources after the next buffer clears.
         try current.syncImagePlacements(next);
+        // Capture this frame's link ids before the diff syncs them into the current buffer.
+        // It is the last fallible step, so a failure leaves no frame bytes behind.
+        try self.stagePendingLinkIds();
 
         // Lazy frame start is the core no-op suppression mechanism. If diffing,
         // cursor state, and pointer state are unchanged, frame_started stays false
@@ -3093,7 +3222,7 @@ pub const CliRenderer = struct {
                 const bgMatch = currentBg != null and buf.rgbaEqual(currentBg.?, cell.bg);
                 const sameAttributes = fgMatch and bgMatch and currentAttributes != null and cell.attributes == currentAttributes.?;
 
-                const linkId = if (hyperlinksEnabled) ansi.TextAttributes.getLinkId(cell.attributes) else 0;
+                const linkId = if (hyperlinksEnabled) self.nextRenderBuffer.link_pool.hyperlinkId(ansi.TextAttributes.getLinkId(cell.attributes)) else 0;
 
                 if (hyperlinksEnabled and linkId != currentLinkId) {
                     if (currentLinkId != 0) {
@@ -3235,7 +3364,7 @@ pub const CliRenderer = struct {
                         self.emitColor(writer, cell.fg, false);
                         self.emitColor(writer, cell.bg, true);
                         ansi.TextAttributes.applyAttributesOutputWriter(writer, cell.attributes) catch {};
-                        const replay_link_id = if (hyperlinksEnabled) ansi.TextAttributes.getLinkId(cell.attributes) else 0;
+                        const replay_link_id = if (hyperlinksEnabled) self.nextRenderBuffer.link_pool.hyperlinkId(ansi.TextAttributes.getLinkId(cell.attributes)) else 0;
                         if (replay_link_id != 0) {
                             const lp = self.nextRenderBuffer.link_pool;
                             if (lp.get(replay_link_id)) |url_bytes| {
@@ -3425,6 +3554,7 @@ pub const CliRenderer = struct {
         }
         self.writeOut(ansi.ANSI.clearAndHome);
         self.currentImages.clearRetainingCapacity();
+        self.discardPresentedLinkIds();
         self.force_full_repaint = true;
     }
 

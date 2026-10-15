@@ -99,7 +99,8 @@ pub const SyntaxStyle = struct {
             const id = ansi.TextAttributes.getLinkId(definition.attributes);
             if (id == 0) continue;
             const url = try pool.get(id);
-            const retained = try self.link_tracker.?.trackUrl(url);
+            // An id names a (url, key) entry; re-track the same entry, not a URL-only one.
+            const retained = try self.link_tracker.?.trackFragment(url, try pool.getKey(id));
             std.debug.assert(retained == id);
         }
     }
@@ -165,5 +166,11 @@ pub const SyntaxStyle = struct {
 
     pub fn offDestroy(self: *SyntaxStyle, ctx: *anyopaque, handle: *const fn (*anyopaque) void) void {
         self.emitter.off(.Destroy, .{ .ctx = ctx, .handle = handle });
+    }
+
+    /// Number of text buffers drawing with this style. Each attached buffer holds one Destroy subscription.
+    pub fn dependentCount(self: *const SyntaxStyle) usize {
+        const listeners = self.emitter.listeners.get(.Destroy) orelse return 0;
+        return listeners.items.len;
     }
 };

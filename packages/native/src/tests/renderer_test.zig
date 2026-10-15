@@ -2345,6 +2345,186 @@ test "renderer - hyperlinks disabled no OSC 8 output" {
     try std.testing.expect(std.mem.find(u8, output, "]8;id=") == null);
 }
 
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.find(u8, haystack[pos..], needle)) |found| {
+        count += 1;
+        pos += found + needle.len;
+    }
+    return count;
+}
+
+test "renderer - key-only fragment entries never emit OSC 8" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 40, 2, &pools.graphemes, &pools.links);
+    defer test_cli_renderer.deinit();
+    const cli_renderer = test_cli_renderer.renderer;
+    cli_renderer.terminal.caps.hyperlinks = true;
+
+    const key_only = try pools.links.acquireFragment("", 42);
+    defer pools.links.decref(key_only) catch unreachable;
+    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+    try cli_renderer.getNextBuffer().drawText("data", 0, 0, fg, bg, ansi.TextAttributes.setLinkId(0, key_only));
+    _ = cli_renderer.render(false);
+
+    const output = test_cli_renderer.lastOutput();
+    try std.testing.expect(std.mem.find(u8, output, "data") != null);
+    try std.testing.expect(std.mem.find(u8, output, "]8;") == null);
+}
+
+test "renderer - a key-only fragment between links closes the open OSC 8 run" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 40, 2, &pools.graphemes, &pools.links);
+    defer test_cli_renderer.deinit();
+    const cli_renderer = test_cli_renderer.renderer;
+    cli_renderer.terminal.caps.hyperlinks = true;
+
+    const linked = try pools.links.acquire("https://example.com/a");
+    defer pools.links.decref(linked) catch unreachable;
+    const key_only = try pools.links.acquireFragment("", 3);
+    defer pools.links.decref(key_only) catch unreachable;
+    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+    const next = cli_renderer.getNextBuffer();
+    try next.drawText("link", 0, 0, fg, bg, ansi.TextAttributes.setLinkId(0, linked));
+    try next.drawText("data", 4, 0, fg, bg, ansi.TextAttributes.setLinkId(0, key_only));
+    _ = cli_renderer.render(false);
+
+    const output = test_cli_renderer.lastOutput();
+    // One open for the URL; "data" must come after its close, outside any hyperlink.
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(output, "\x1b]8;id="));
+    const open = std.mem.find(u8, output, "https://example.com/a") orelse return error.TestUnexpectedResult;
+    const close = std.mem.findPos(u8, output, open, "\x1b]8;;\x1b\\") orelse return error.TestUnexpectedResult;
+    const data = std.mem.find(u8, output, "data") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(close < data);
+}
+
+test "renderer - URL fragments with different keys keep their URL in each OSC 8 run" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 40, 2, &pools.graphemes, &pools.links);
+    defer test_cli_renderer.deinit();
+    const cli_renderer = test_cli_renderer.renderer;
+    cli_renderer.terminal.caps.hyperlinks = true;
+
+    const first = try pools.links.acquireFragment("https://example.com/same", 1);
+    defer pools.links.decref(first) catch unreachable;
+    const second = try pools.links.acquireFragment("https://example.com/same", 2);
+    defer pools.links.decref(second) catch unreachable;
+    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+    const next = cli_renderer.getNextBuffer();
+    try next.drawText("one", 0, 0, fg, bg, ansi.TextAttributes.setLinkId(0, first));
+    try next.drawText("two", 3, 0, fg, bg, ansi.TextAttributes.setLinkId(0, second));
+    _ = cli_renderer.render(false);
+
+    // Two runs with the same target: terminals treat them as one link destination.
+    const output = test_cli_renderer.lastOutput();
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(output, ";https://example.com/same\x1b\\"));
+}
+
+test "renderer - split-footer snapshot commits emit no OSC 8 for key-only fragments" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 12, 3, &pools.graphemes, &pools.links);
+    defer test_renderer.deinit();
+    test_renderer.renderer.terminal.caps.hyperlinks = true;
+    _ = test_renderer.renderer.resetSplitScrollback(2, 2);
+
+    const linked = try pools.links.acquireFragment("https://example.com/kept", 5);
+    defer pools.links.decref(linked) catch unreachable;
+    const key_only = try pools.links.acquireFragment("", 6);
+    defer pools.links.decref(key_only) catch unreachable;
+    var snapshot = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer snapshot.deinit();
+    try snapshot.drawText("data", 0, 0, .{ 255, 255, 255, 255 }, null, ansi.TextAttributes.setLinkId(0, key_only));
+    try snapshot.drawText("link", 4, 0, .{ 255, 255, 255, 255 }, null, ansi.TextAttributes.setLinkId(0, linked));
+    const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 8, false, true, 2, false, true, true);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, result.status);
+
+    const output = test_renderer.memory.lastWrite();
+    const data = std.mem.find(u8, output, "data") orelse return error.TestUnexpectedResult;
+    const open = std.mem.find(u8, output, "\x1b]8;id=") orelse return error.TestUnexpectedResult;
+    // Key-only cells are written outside any hyperlink; the URL fragment keeps its own run.
+    try std.testing.expect(open > data);
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(output, "\x1b]8;id="));
+    try std.testing.expect(std.mem.find(u8, output, ";https://example.com/kept\x1b\\") != null);
+}
+
+test "renderer - cells replayed over Sixel emit no OSC 8 for key-only fragments" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 3, 1, &pools.graphemes, &pools.links);
+    defer test_renderer.deinit();
+    test_renderer.renderer.terminal.caps.sixel = true;
+    test_renderer.renderer.terminal.caps.hyperlinks = true;
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer value.deinit();
+    const image_handle: u32 = 1;
+    const key_only = try pools.links.acquireFragment("", 9);
+    defer pools.links.decref(key_only) catch unreachable;
+
+    const next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 3, 1, 6, 2, 0, 0, 1, 1, .sixel));
+    try next.drawText("Y", 0, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(0, 0, 0, 255), ansi.TextAttributes.setLinkId(0, key_only));
+    _ = test_renderer.renderer.render(true);
+
+    const output = test_renderer.memory.lastWrite();
+    const sixel = std.mem.findLast(u8, output, "\x1bP0;1;0q") orelse return error.TestUnexpectedResult;
+    const replay = output[sixel..];
+    try std.testing.expect(std.mem.findScalar(u8, replay, 'Y') != null);
+    try std.testing.expect(std.mem.find(u8, output, "]8;") == null);
+}
+
+test "renderer - presented link ids publish only with a presented frame" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 8, 1, &pools.graphemes, &pools.links);
+    defer test_cli_renderer.deinit();
+    const cli_renderer = test_cli_renderer.renderer;
+    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+
+    const first = try pools.links.acquireFragment("", 10);
+    try cli_renderer.getNextBuffer().drawText("ab", 0, 0, fg, bg, ansi.TextAttributes.setLinkId(0, first));
+    _ = cli_renderer.render(false);
+    try std.testing.expectEqual(first, cli_renderer.getPresentedLinkId(0, 0));
+    try std.testing.expectEqual(@as(u32, 0), cli_renderer.getPresentedLinkId(2, 0));
+    try std.testing.expectEqual(@as(u32, 0), cli_renderer.getPresentedLinkId(8, 0));
+    // The plane holds its own reference, in addition to the current buffer's cell reference.
+    try pools.links.decref(first);
+    try std.testing.expectEqual(@as(u32, 2), try pools.links.getRefcount(first));
+    try std.testing.expectEqual(@as(u32, 10), try pools.links.getKey(first));
+
+    // The next frame overwrites the cells. The current buffer drops its reference during
+    // encoding, but the plane keeps the id live until that frame is presented.
+    try cli_renderer.getNextBuffer().drawText("cd", 0, 0, fg, bg, 0);
+    _ = cli_renderer.render(false);
+    try std.testing.expectEqual(@as(u32, 0), cli_renderer.getPresentedLinkId(0, 0));
+    try std.testing.expectEqual(@as(u64, 0), pools.links.getLiveSlotCount());
+}
+
+test "renderer - resize clears presented link ids and their references" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 6, 2, &pools.graphemes, &pools.links);
+    defer test_cli_renderer.deinit();
+    const cli_renderer = test_cli_renderer.renderer;
+    const id = try pools.links.acquireFragment("", 4);
+    try cli_renderer.getNextBuffer().drawText("x", 5, 1, ansi.rgbaFromFloats(1, 1, 1, 1), ansi.rgbaFromFloats(0, 0, 0, 1), ansi.TextAttributes.setLinkId(0, id));
+    _ = cli_renderer.render(false);
+    try pools.links.decref(id);
+    try std.testing.expectEqual(id, cli_renderer.getPresentedLinkId(5, 1));
+    try cli_renderer.resize(12, 3);
+    try std.testing.expectEqual(@as(u32, 0), cli_renderer.getPresentedLinkId(5, 1));
+    try std.testing.expectEqual(@as(u32, 0), cli_renderer.getPresentedLinkId(11, 2));
+    try std.testing.expectEqual(@as(u64, 0), pools.links.getLiveSlotCount());
+}
+
 test "renderer - link transition mid-line" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

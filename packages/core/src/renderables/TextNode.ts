@@ -10,6 +10,17 @@ export interface TextNodeOptions extends BaseRenderableOptions {
   bg?: string | RGBA
   attributes?: number
   link?: { url: string }
+  /** Application data for hit lookups; inherited by child nodes like `link`. See TextChunk.metadata. */
+  metadata?: unknown
+}
+
+/** The style a node passes to its children while gathering chunks. */
+export interface TextNodeInheritedStyle {
+  fg?: RGBA
+  bg?: RGBA
+  attributes: number
+  link?: { url: string }
+  metadata?: unknown
 }
 
 const BrandedTextNodeRenderable: unique symbol = Symbol.for("@opentui/core/TextNodeRenderable")
@@ -25,6 +36,7 @@ function styledTextToTextNodes(styledText: StyledText): TextNodeRenderable[] {
       bg: chunk.bg,
       attributes: chunk.attributes,
       link: chunk.link,
+      metadata: chunk.metadata,
     })
     node.add(chunk.text)
     return node
@@ -38,6 +50,7 @@ export class TextNodeRenderable extends BaseRenderable {
   private _bg?: RGBA
   private _attributes: number
   private _link?: { url: string }
+  private _metadata?: unknown
   private _children: (string | TextNodeRenderable)[] = []
   private dirtyRevision = 0
   public parent: TextNodeRenderable | null = null
@@ -49,6 +62,7 @@ export class TextNodeRenderable extends BaseRenderable {
     this._bg = options.bg ? RGBA.clone(parseColor(options.bg)) : undefined
     this._attributes = options.attributes ?? 0
     this._link = options.link
+    this._metadata = options.metadata
   }
 
   public get children(): (string | TextNodeRenderable)[] {
@@ -229,22 +243,18 @@ export class TextNodeRenderable extends BaseRenderable {
     this.requestRender()
   }
 
-  public mergeStyles(parentStyle: { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string } }): {
-    fg?: RGBA
-    bg?: RGBA
-    attributes: number
-    link?: { url: string }
-  } {
+  public mergeStyles(parentStyle: TextNodeInheritedStyle): TextNodeInheritedStyle {
     return {
       fg: this.fg ?? parentStyle.fg,
       bg: this.bg ?? parentStyle.bg,
       attributes: this._attributes | parentStyle.attributes,
       link: this._link ?? parentStyle.link,
+      metadata: this._metadata !== undefined ? this._metadata : parentStyle.metadata,
     }
   }
 
   public gatherWithInheritedStyle(
-    parentStyle: { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string } } = {
+    parentStyle: TextNodeInheritedStyle = {
       fg: undefined,
       bg: undefined,
       attributes: 0,
@@ -288,6 +298,7 @@ export class TextNodeRenderable extends BaseRenderable {
           bg: currentStyle.bg,
           attributes: currentStyle.attributes,
           link: currentStyle.link,
+          ...(currentStyle.metadata !== undefined ? { metadata: currentStyle.metadata } : {}),
         })
       } else {
         const childChunks = revisions
@@ -317,7 +328,7 @@ export class TextNodeRenderable extends BaseRenderable {
   }
 
   public toChunks(
-    parentStyle: { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string } } = {
+    parentStyle: TextNodeInheritedStyle = {
       fg: undefined,
       bg: undefined,
       attributes: 0,
@@ -386,6 +397,15 @@ export class TextNodeRenderable extends BaseRenderable {
 
   public get link(): { url: string } | undefined {
     return this._link
+  }
+
+  public set metadata(metadata: unknown) {
+    this._metadata = metadata
+    this.requestRender()
+  }
+
+  public get metadata(): unknown {
+    return this._metadata
   }
 
   public findDescendantById(id: string): BaseRenderable | undefined {

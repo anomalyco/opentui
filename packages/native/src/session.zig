@@ -585,6 +585,7 @@ pub const Session = struct {
         value.terminal.state = candidate.state;
         value.useAlternateScreen = alternate;
         value.imageScreenInvalidated = true;
+        value.discardPresentedLinkIds();
         value.invalidateTerminalState();
     }
 
@@ -1010,6 +1011,7 @@ pub const Session = struct {
                         self.output.setControlSequenceReservation(.{}) catch unreachable;
                         const value = self.renderer.?;
                         value.currentImages.clearRetainingCapacity();
+                        value.discardPresentedLinkIds();
                         value.invalidateTerminalState();
                         self.lifecycle.deadline_ns = null;
                         self.lifecycle.step = .idle;

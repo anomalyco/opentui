@@ -239,3 +239,102 @@ test "LinkPool - interning failure retires an exhausted generation before retry"
 test "LinkPool and LinkTracker match a reference model" {
     for (0..8) |seed| try test_pools.checkPoolModel(test_pools.LinkSpec, seed, 400);
 }
+
+test "LinkPool - fragment entries intern by URL and key together" {
+    var pool = LinkPool.init(std.testing.allocator);
+    defer pool.deinit();
+    const url = "https://example.com/shared";
+    const plain = try pool.acquire(url);
+    const keyed = try pool.acquireFragment(url, 7);
+    const other_key = try pool.acquireFragment(url, 8);
+    const key_only = try pool.acquireFragment("", 7);
+    defer for ([_]u32{ plain, keyed, other_key, key_only }) |id| pool.decref(id) catch unreachable;
+
+    // Each distinct (url, key) pair is its own entry; the URL alone does not merge them.
+    try std.testing.expect(plain != keyed and keyed != other_key and keyed != key_only and plain != key_only);
+    try std.testing.expectEqual(keyed, try pool.acquireFragment(url, 7));
+    try pool.decref(keyed);
+    try std.testing.expectEqual(plain, pool.lookupLiveUrl(url).?);
+
+    try std.testing.expectEqualStrings(url, try pool.get(keyed));
+    try std.testing.expectEqual(@as(u32, 0), try pool.getKey(plain));
+    try std.testing.expectEqual(@as(u32, 7), try pool.getKey(keyed));
+    try std.testing.expectEqual(@as(u32, 8), try pool.getKey(other_key));
+    try std.testing.expectEqualStrings("", try pool.get(key_only));
+    try std.testing.expectEqual(@as(u32, 7), try pool.getKey(key_only));
+
+    // Only entries with a URL are hyperlinks.
+    try std.testing.expectEqual(plain, pool.hyperlinkId(plain));
+    try std.testing.expectEqual(keyed, pool.hyperlinkId(keyed));
+    try std.testing.expectEqual(@as(u32, 0), pool.hyperlinkId(key_only));
+    try std.testing.expectEqual(@as(u32, 0), pool.hyperlinkId(0));
+    try std.testing.expectEqual(@as(u32, 0), pool.hyperlinkId(link.SLOT_MASK));
+}
+
+test "LinkPool - fragment acquisition rejects an empty entry and oversized URLs" {
+    var pool = LinkPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try std.testing.expectError(error.InvalidId, pool.acquireFragment("", 0));
+    try std.testing.expectError(error.UrlTooLong, pool.acquireFragment("x" ** (link.MAX_URL_LENGTH + 1), 3));
+    // A maximal URL with a key still fits: the key is not stored in the URL bytes.
+    const id = try pool.acquireFragment("x" ** link.MAX_URL_LENGTH, std.math.maxInt(u32));
+    defer pool.decref(id) catch unreachable;
+    try std.testing.expectEqual(@as(usize, link.MAX_URL_LENGTH), (try pool.get(id)).len);
+    try std.testing.expectEqual(std.math.maxInt(u32), try pool.getKey(id));
+    try std.testing.expectEqual(@as(u64, 1), pool.getLiveSlotCount());
+}
+
+test "LinkPool - releasing a fragment entry frees its intern key and slot" {
+    var pool = LinkPool.init(std.testing.allocator);
+    defer pool.deinit();
+    const id = try pool.acquireFragment("https://example.com/released", 5);
+    try pool.decref(id);
+    try std.testing.expectEqual(@as(u64, 0), pool.getLiveSlotCount());
+    try std.testing.expectEqual(@as(u32, 0), pool.interned_live_ids.count());
+    // Like get(), the raw pool still resolves a released id until its slot is reused; liveness
+    // is the refcount, which Context-level lookups check (sessionGetPresentedLinkId).
+    try std.testing.expectEqual(@as(u32, 0), try pool.getRefcount(id));
+    // A new entry in the same slot has a new generation and never answers for the old id.
+    const reused = try pool.acquireFragment("https://example.com/reused", 9);
+    defer pool.decref(reused) catch unreachable;
+    try std.testing.expect(reused != id);
+    try std.testing.expectEqual(@as(u32, 9), try pool.getKey(reused));
+}
+
+test "LinkPool - fragment acquisition rolls back first-use allocation failures" {
+    var fail_offset: usize = 0;
+    while (fail_offset < 16) : (fail_offset += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        var pool = LinkPool.init(failing.allocator());
+        defer pool.deinit();
+        failing.fail_index = fail_offset;
+        const result = pool.acquireFragment("", 11);
+        failing.fail_index = std.math.maxInt(usize);
+        if (result) |id| {
+            try std.testing.expect(!failing.has_induced_failure);
+            try pool.decref(id);
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+        }
+        try std.testing.expectEqual(@as(u64, 0), pool.getLiveSlotCount());
+        try std.testing.expectEqual(@as(u32, 0), pool.interned_live_ids.count());
+        if (result) |_| break else |_| {}
+    }
+    try std.testing.expect(fail_offset < 16);
+}
+
+test "LinkTracker - fragment membership is per (url, key) entry" {
+    var pool = LinkPool.init(std.testing.allocator);
+    defer pool.deinit();
+    var tracker = LinkTracker.init(std.testing.allocator, &pool);
+    defer tracker.deinit();
+    const a = try tracker.trackFragment("https://example.com/t", 1);
+    try std.testing.expectEqual(a, try tracker.trackFragment("https://example.com/t", 1));
+    const b = try tracker.trackFragment("https://example.com/t", 2);
+    const url_only = try tracker.trackUrl("https://example.com/t");
+    try std.testing.expect(a != b and a != url_only and b != url_only);
+    try std.testing.expectEqual(@as(u32, 3), tracker.getLinkCount());
+    for ([_]u32{ a, b, url_only }) |id| try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(id));
+    tracker.clear();
+    try std.testing.expectEqual(@as(u64, 0), pool.getLiveSlotCount());
+}

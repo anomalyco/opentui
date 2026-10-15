@@ -412,6 +412,8 @@ pub const StyledTextChunk = struct {
     background: ?buf.RGBA = null,
     attributes: u32 = 0,
     link_url: ?[]const u8 = null,
+    /// Application fragment key; 0 means none. Combined with link_url into one cell link id.
+    fragment_key: u32 = 0,
 };
 
 pub const SceneTextSelectionOptions = struct {
@@ -856,6 +858,34 @@ pub const Context = struct {
         if (x < 0 or y < 0) return 0;
         const cell = attached.getCurrentBuffer().get(@intCast(x), @intCast(y)) orelse return 0;
         return ansi.TextAttributes.getLinkId(cell.attributes);
+    }
+
+    /// Link id of the last presented frame at (x, y). Unlike sessionGetLinkId, it never
+    /// reflects a frame that is encoded but pending, skipped, or failed. An id whose pool
+    /// slot was released since presentation reads as 0. A session whose terminal is not
+    /// active (suspended, closing) presents nothing, so it reads as 0 instead of failing.
+    pub fn sessionGetPresentedLinkId(self: *Context, handle: Handle, x: i32, y: i32) !u32 {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.getSession(handle);
+        value.checkRendering() catch |err| switch (err) {
+            error.TerminalInactive => return 0,
+            else => return err,
+        };
+        const attached = value.renderer orelse return error.RendererNotAttached;
+        if (x < 0 or y < 0) return 0;
+        const id = attached.getPresentedLinkId(@intCast(x), @intCast(y));
+        if (id == 0) return 0;
+        const refcount = self.links.getRefcount(id) catch return 0;
+        return if (refcount == 0) 0 else id;
+    }
+
+    /// Application fragment key of the fragment that the last presented frame shows at (x, y).
+    /// 0 means none: no fragment, a URL-only link, nothing presented yet, or out of range.
+    pub fn sessionGetPresentedFragmentKey(self: *Context, handle: Handle, x: i32, y: i32) !u32 {
+        const id = try self.sessionGetPresentedLinkId(handle, x, y);
+        if (id == 0) return 0;
+        return self.links.getKey(id) catch 0;
     }
 
     /// Retains mutable storage, not a frame. Finish drawing before submitting a
@@ -2450,6 +2480,10 @@ pub const Context = struct {
         errdefer prepared.deinit(self.allocator);
         const style = if (retained_style) |retained| try retained.prepareDefinitions() else try syntax_style.SyntaxStyle.init(self.allocator);
         prepared.style = style;
+        // A retained style names chunk styles by chunk index, so buffers that share it replace each
+        // other's chunk definitions. A fragment key stored there would resolve to another buffer's
+        // metadata, so keys are withheld while the style is shared. Colors and URLs are unchanged.
+        const keep_fragment_keys = if (retained_style) |retained| retained.dependentCount() <= 1 else true;
         const ranges = try self.allocator.alloc(text_buffer.OwnedStyledChunk, chunks.len);
         defer self.allocator.free(ranges);
         offset = 0;
@@ -2457,14 +2491,20 @@ pub const Context = struct {
         for (chunks, 0..) |chunk, index| {
             if (chunk.byte_count == 0) continue;
             var attributes = chunk.attributes;
-            if (chunk.link_url) |url| {
-                // Legacy styled text omits empty/oversized URLs and zero-width chunks.
-                if (url.len != 0 and url.len <= link.MAX_URL_LENGTH and
-                    text.buffer.measureText(bytes[offset..][0..chunk.byte_count]) > 0)
-                {
-                    const id = try prepared.links.trackUrl(url);
-                    attributes = @import("ansi.zig").TextAttributes.setLinkId(attributes, id);
-                }
+            const url = chunk.link_url orelse "";
+            const fragment_key: u32 = if (keep_fragment_keys) chunk.fragment_key else 0;
+            // Legacy styled text omits empty/oversized URLs and zero-width chunks.
+            const has_url = url.len != 0 and url.len <= link.MAX_URL_LENGTH;
+            if ((has_url or fragment_key != 0) and
+                text.buffer.measureText(bytes[offset..][0..chunk.byte_count]) > 0)
+            {
+                const fragment_url = if (has_url) url else "";
+                const id = prepared.links.trackFragment(fragment_url, fragment_key) catch |err| switch (err) {
+                    // Pool exhaustion drops only the fragment key; a URL keeps its existing behaviour.
+                    error.OutOfMemory => if (has_url and fragment_key != 0) try prepared.links.trackUrl(url) else if (has_url) return err else 0,
+                    else => return err,
+                };
+                if (id != 0) attributes = @import("ansi.zig").TextAttributes.setLinkId(attributes, id);
             }
             offset += chunk.byte_count;
             var name_bytes: [20]u8 = undefined;
@@ -3621,7 +3661,8 @@ pub const Context = struct {
         var offset: usize = 0;
         for (chunks) |chunk| {
             if (chunk.byte_count == 0 or chunk.byte_count > bytes.len - offset or
-                chunk.attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0 or chunk.link_url != null) return error.InvalidOptions;
+                chunk.attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0 or chunk.link_url != null or
+                chunk.fragment_key != 0) return error.InvalidOptions;
             if (chunk.foreground) |color| try buf.validateColor(color);
             if (chunk.background) |color| try buf.validateColor(color);
             if (!std.unicode.utf8ValidateSlice(bytes[offset..][0..chunk.byte_count])) return error.InvalidUnicode;

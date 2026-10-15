@@ -6,6 +6,7 @@ import { OptimizedBuffer } from "./buffer.js"
 import type { ImageRenderProtocol } from "./types.js"
 import { RendererControlState, type CliRenderer } from "./renderer.js"
 import type { StyledText } from "./lib/styled-text.js"
+import { fragmentKeysFor } from "./lib/fragment-keys.js"
 import type { RGBA } from "./lib/RGBA.js"
 import type { LocalSelectionBounds } from "./lib/selection.js"
 import { Edge, type Value, type MeasureFunction } from "./yoga.js"
@@ -120,6 +121,8 @@ export class NativeScene {
   /** @internal Renderables whose destroy walk is still running; renderer finalization waits for them. */
   readonly cleanupOwners = new Set<Renderable>()
   private readonly nodes = new Map<number, Renderable>()
+  /** Fragment keys held by each scene text node's installed content (see lib/fragment-keys). */
+  private readonly textFragmentKeys = new Map<number, Uint32Array>()
   private paintedFrame: NativeSceneFrameRequest | null = null
   private paintRecording?: { recorder: NativePaintRecorder; buffer: OptimizedBuffer }
   private destroyed = false
@@ -272,6 +275,11 @@ export class NativeScene {
       renderable._releaseSceneHandle()
       this.nodes.delete(renderable.num)
       this.renderer.unregisterLifecyclePass(renderable)
+      const keys = this.textFragmentKeys.get(renderable.num)
+      if (keys) {
+        this.textFragmentKeys.delete(renderable.num)
+        fragmentKeysFor(this.driver.context).releaseAll(keys)
+      }
     } catch (error) {
       if (flushFailure) {
         throw new AggregateError([flushFailure.error, error], "Native scene flush and node cleanup both failed")
@@ -410,11 +418,19 @@ export class NativeScene {
   setText(renderable: Renderable, content: string | StyledText): void {
     this.flushStaged()
     const node = renderable._getSceneHandle(this)
+    const registry = fragmentKeysFor(this.driver.context)
+    let keys: Uint32Array | undefined
     if (typeof content === "string") {
       this.driver.renderLib.sceneSetText(this.driver.context, node, this.driver.renderLib.encoder.encode(content))
     } else {
-      this.driver.renderLib.sceneSetStyledText(this.driver.context, node, content)
+      // Keys are scoped to the renderable, so a presented key identifies the node that drew it.
+      keys = this.driver.renderLib.sceneSetStyledText(this.driver.context, node, content, registry.forScope(renderable))
     }
+    // Native accepted the new content: the node now owns the new keys and drops the old ones.
+    const previous = this.textFragmentKeys.get(renderable.num)
+    if (keys && keys.some((key) => key !== 0)) this.textFragmentKeys.set(renderable.num, keys)
+    else this.textFragmentKeys.delete(renderable.num)
+    if (previous) registry.releaseAll(previous)
   }
 
   /** @internal Text options commit together without exposing the node-owned buffer or view. */
@@ -738,6 +754,22 @@ export class NativeScene {
     const id = this.driver.renderLib.sceneHitTest(this.driver.context, this.driver.session, x, y)
     const renderable = this.nodes.get(id)
     return renderable && !renderable.isDestroyed ? id : 0
+  }
+
+  /** @internal The install owner that holds fragment `key`, or undefined. See FragmentKeyRegistry. */
+  fragmentKeyScope(key: number): object | undefined {
+    return fragmentKeysFor(this.driver.context).scopeOf(key)
+  }
+
+  /** @internal The fragment key presented at screen cell (x, y), or 0. Returns 0 once the scene is destroyed. */
+  presentedFragmentKey(x: number, y: number): number {
+    if (this.destroyed || this.driver.disposed) return 0
+    return this.driver.renderLib.sessionGetPresentedFragmentKey(this.driver.context, this.driver.session, x, y)
+  }
+
+  /** @internal The value of fragment `key` in this scene's Context, or undefined. */
+  resolveFragmentKey(key: number): unknown {
+    return fragmentKeysFor(this.driver.context).resolve(key)
   }
 
   destroy(): void {

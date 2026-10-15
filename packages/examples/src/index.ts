@@ -61,6 +61,7 @@ import * as markdownDemo from "./markdown-demo.js"
 import * as markdownCodeBlockRendererDemo from "./markdown-code-block-renderer-demo.js"
 import * as qrcodeDemo from "./qrcode-demo.js"
 import * as linkDemo from "./link-demo.js"
+import * as styledTextHitDemo from "./styled-text-hit-demo.js"
 import * as opacityExample from "./opacity-example.js"
 import * as scrollboxOverlayHitTest from "./scrollbox-overlay-hit-test.js"
 import * as scrollboxMouseTest from "./scrollbox-mouse-test.js"
@@ -477,6 +478,12 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
       description: "Hyperlink support with OSC 8 - clickable links and link inheritance in styled text",
       run: linkDemo.run,
       destroy: linkDemo.destroy,
+    },
+    {
+      name: "Styled Text Hit Demo",
+      description: "Chunk metadata resolved from clicks on text and table cells, respecting overlays",
+      run: styledTextHitDemo.run,
+      destroy: styledTextHitDemo.destroy,
     },
     {
       name: "Markdown Demo",
