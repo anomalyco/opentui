@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { runtimeModuleIdForSpecifier } from "@opentui/core/runtime-plugin"
 import { createSolidTransformPlugin, resetSolidTransformPluginState } from "../scripts/solid-plugin.js"
 
@@ -185,6 +185,50 @@ describe("solid transform plugin", () => {
     } finally {
       tempFile.dispose()
     }
+  })
+
+  it("transforms JSX inside node_modules only under included directories", async () => {
+    const tempRoot = mkdtempSync(join(import.meta.dir, "solid-plugin-include-"))
+    const included = join(tempRoot, "cache", "plugin", "node_modules", "example", "view.tsx")
+    const excluded = join(tempRoot, "node_modules", "example", "view.tsx")
+    mkdirSync(dirname(included), { recursive: true })
+    mkdirSync(dirname(excluded), { recursive: true })
+    writeFileSync(included, "const node = <text>ok</text>\nexport { node }")
+    writeFileSync(excluded, "const node = <text>ok</text>\nexport { node }")
+
+    try {
+      const { build, loadHandlers } = createMockBuild()
+      createSolidTransformPlugin({ include: [join(tempRoot, "cache")] }).setup(build as any)
+
+      const transformed = await runLoad(loadHandlers, included)
+
+      expect(transformed).toBeDefined()
+
+      if (!transformed) {
+        throw new Error("Expected transformed output")
+      }
+
+      expect(transformed.loader).toBe("js")
+      expect(transformed.contents).toContain("@opentui/solid")
+      expect(await runLoad(loadHandlers, `${included}?reload=1`)).toBeDefined()
+      expect(await runLoad(loadHandlers, excluded)).toBeUndefined()
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps JSX in included node_modules directories reactive in a subprocess", () => {
+    const fixturePath = join(import.meta.dir, "solid-plugin-include.fixture.ts")
+    const result = Bun.spawnSync([process.execPath, fixturePath], {
+      cwd: join(import.meta.dir, ".."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    })
+
+    expect(result.stderr.toString()).toBe("")
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.toString().trim()).toBe("before=before;after=after")
   })
 
   it("transforms runtime-resolved modules end-to-end in a subprocess", () => {
