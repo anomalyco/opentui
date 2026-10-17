@@ -170,6 +170,62 @@ const nonSelectable = new TextRenderable(renderer, {
 })
 ```
 
+## Find the text under the pointer
+
+Attach application data to a chunk with `metadata`. OpenTUI never reads it. A lookup returns the same value by
+identity:
+
+```typescript
+import { StyledText, TextRenderable } from "@opentui/core"
+
+const file = { path: "src/index.ts", line: 12 }
+const output = new TextRenderable(renderer, {
+  content: new StyledText([
+    { __isChunk: true, text: "Error in " },
+    { __isChunk: true, text: "src/index.ts:12", metadata: file },
+  ]),
+  onMouseDown(event) {
+    const hit = this.getStyledTextHit(event.x - Math.trunc(this.screenX), event.y - Math.trunc(this.screenY))
+    if (hit) openFile(hit.metadata as typeof file)
+  },
+})
+```
+
+`getStyledTextHit` takes whole cells. A renderable draws from its truncated screen position, so subtract
+`Math.trunc(this.screenX)` and `Math.trunc(this.screenY)`. Subtracting a fractional position, for example after
+`translateX = 0.5`, yields a fractional cell and no hit.
+
+`TextNodeRenderable` accepts the same `metadata` option. Child nodes inherit it, as they inherit `link`.
+
+Both lookups read the last frame the terminal has shown:
+
+- `renderer.getTextMetadataAt(x, y)` takes screen cells and returns the metadata, or `undefined`.
+- `getStyledTextHit(x, y)` on `TextRenderable`, `CodeRenderable`, and `TextTableRenderable` takes cells relative to
+  the renderable. It returns `{ metadata }`, or `null`. The table version also returns `cell: { row, column }`.
+
+A cell answers only while it shows a fragment of the current content. These cells return nothing:
+
+- cells covered by another renderable, clipped by an `overflow: "hidden"` ancestor, or hidden;
+- padding, borders, truncation ellipses, and empty space;
+- cells of a frame that is still being written to the terminal, or that was skipped;
+- cells of content that was replaced or destroyed, even while the old frame is still on screen;
+- every cell after the terminal is suspended, cleared, or switched between the main and alternate screen, until the
+  next frame is presented.
+
+`getStyledTextHit` also checks the renderer's hit grid, so it returns `null` while `useMouse` is `false` or while
+another renderable captures a drag. `getTextMetadataAt` does not depend on the hit grid.
+
+`metadata` does not create a terminal hyperlink. A chunk can carry both `link` and `metadata`. A `TextareaRenderable`
+placeholder chunk with `metadata` throws a `TypeError`.
+
+When you use a `TextBuffer` directly, as `CodeRenderable` does internally, `metadata` is part of the chunk's style,
+like `link`:
+
+- Clearing a buffer's highlights, or covering a cell with a higher-priority highlight, removes the chunk's colors,
+  link, and metadata from those cells.
+- Metadata is not kept for a buffer whose `SyntaxStyle` is shared with other buffers. Its cells return nothing, so a
+  lookup never returns another buffer's metadata. Give each buffer its own `SyntaxStyle` to keep metadata.
+
 ## Properties
 
 | Property                         | Type                              | Default      | Description                              |

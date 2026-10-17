@@ -505,7 +505,7 @@ test "Context shared text ABI rejects malformed replacement and preserves short-
     try std.testing.expectEqual(c.OT_OK, ot_text_buffer_set_text(&owner, &text_id, "kept", 4));
     var output: [4]u8 = undefined;
     var count: u32 = 99;
-    const chunk: c.ot_styled_text_chunk = .{ .struct_size = @sizeOf(c.ot_styled_text_chunk), .abi_version = c.OT_CONTEXT_ABI_VERSION, .byte_count = 4, .flags = c.OT_SCENE_TEXT_LINK, .foreground = @splat(0), .background = @splat(0), .attributes = 0, .reserved = 0, .link_offset = 1, .link_byte_count = 4 };
+    const chunk: c.ot_styled_text_chunk = .{ .struct_size = @sizeOf(c.ot_styled_text_chunk), .abi_version = c.OT_CONTEXT_ABI_VERSION, .byte_count = 4, .flags = c.OT_SCENE_TEXT_LINK, .foreground = @splat(0), .background = @splat(0), .attributes = 0, .fragment_key = 0, .link_offset = 1, .link_byte_count = 4 };
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_text_buffer_set_styled_text(&owner, &text_id, "next", 4, &.{chunk}, 1, "url", 3));
     try std.testing.expectEqual(c.OT_OK, ot_text_buffer_get_text(&owner, &text_id, &output, output.len, &count));
     try std.testing.expectEqualStrings("kept", &output);
@@ -562,7 +562,7 @@ test "Context shared text ABI releases provisional linked replacement on allocat
         _ = try owner.core.createTextBufferView(abi.handleFromC(text_id));
         const resource = try owner.core.raw().getTextBuffer(abi.handleFromC(text_id));
         const epoch = resource.buffer.getContentEpoch();
-        const chunk: c.ot_styled_text_chunk = .{ .struct_size = @sizeOf(c.ot_styled_text_chunk), .abi_version = c.OT_CONTEXT_ABI_VERSION, .byte_count = 4, .flags = c.OT_SCENE_TEXT_LINK, .foreground = @splat(0), .background = @splat(0), .attributes = 0, .reserved = 0, .link_offset = 0, .link_byte_count = 19 };
+        const chunk: c.ot_styled_text_chunk = .{ .struct_size = @sizeOf(c.ot_styled_text_chunk), .abi_version = c.OT_CONTEXT_ABI_VERSION, .byte_count = 4, .flags = c.OT_SCENE_TEXT_LINK, .foreground = @splat(0), .background = @splat(0), .attributes = 0, .fragment_key = 0, .link_offset = 0, .link_byte_count = 19 };
         failing.fail_index = failing.alloc_index + failure_offset;
         failing.resize_fail_index = failing.resize_index;
         const status = ot_text_buffer_set_styled_text(&owner, &text_id, "next", 4, &.{chunk}, 1, "https://example.com", 19);
@@ -626,7 +626,7 @@ test "Context shared text batch rejects every allocation failure including the f
         failing.resize_fail_index = std.math.maxInt(usize);
         try std.testing.expect(!owner.core.mutating);
         try std.testing.expectEqual(@as(u64, 1), owner.core.links.getLiveSlotCount());
-        try std.testing.expectEqual(failing.has_induced_failure, owner.core.links.interned_live_ids.contains("https://example.test/kept"));
+        try std.testing.expectEqual(failing.has_induced_failure, owner.core.links.lookupLiveUrl("https://example.test/kept") != null);
         for (records, 0..) |replacement, index| {
             const value = try owner.core.raw().getTextBuffer(abi.handleFromC(replacement.buffer));
             const dependent = try owner.core.raw().getTextBufferView(abi.handleFromC(replacement.view));

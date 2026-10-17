@@ -322,7 +322,13 @@ typedef struct ot_scene_text_selection_options {
 #define OT_SCENE_TEXT_FOREGROUND UINT32_C(1)
 #define OT_SCENE_TEXT_BACKGROUND UINT32_C(2)
 #define OT_SCENE_TEXT_LINK UINT32_C(4)
+/* fragment_key is set. Text and scene text accept it; editor placeholders reject it. */
+#define OT_SCENE_TEXT_FRAGMENT UINT32_C(8)
 
+/* fragment_key is an application key for hit lookups; 0 means none, and it must be non-zero
+ * exactly when OT_SCENE_TEXT_FRAGMENT is set. The link pool interns each (url, fragment_key)
+ * pair as one cell link id. An id with an empty URL carries no hyperlink: renderers never emit
+ * it as OSC 8, and ot_context_get_link_url reports 0 bytes for it. */
 typedef struct ot_styled_text_chunk {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -331,7 +337,7 @@ typedef struct ot_styled_text_chunk {
     uint16_t foreground[4];
     uint16_t background[4];
     uint32_t attributes;
-    uint32_t reserved;
+    uint32_t fragment_key;
     uint32_t link_offset;
     uint32_t link_byte_count;
 } ot_styled_text_chunk;
@@ -2598,6 +2604,30 @@ ot_status ot_session_get_link_id(
     int32_t x,
     int32_t y,
     uint32_t *out_link_id);
+
+/* Read the link id that the last presented frame shows in one cell. Unlike
+ * ot_session_get_link_id, it never reflects a frame that is encoded but still
+ * pending, skipped, or failed: ids publish with the hit grid on presentation.
+ * An id whose pool slot was released since presentation reads as 0. Negative or
+ * out-of-range coordinates write 0 and succeed. out_link_id is required;
+ * rejection leaves it unchanged. */
+ot_status ot_session_get_presented_link_id(
+    ot_context *context,
+    const ot_handle *session,
+    int32_t x,
+    int32_t y,
+    uint32_t *out_link_id);
+
+/* Read the application fragment key (ot_styled_text_chunk.fragment_key) of the fragment that
+ * the last presented frame shows in one cell. 0 means no fragment key: no fragment, a URL-only
+ * link, nothing presented yet, or out-of-range coordinates. Same presentation rules as
+ * ot_session_get_presented_link_id. out_key is required; rejection leaves it unchanged. */
+ot_status ot_session_get_presented_fragment_key(
+    ot_context *context,
+    const ot_handle *session,
+    int32_t x,
+    int32_t y,
+    uint32_t *out_key);
 
 /* Ordinary leases check storage lifetime, not contents or Session phase. Qualified
  * leases also check retained painted-frame membership, destination, and storage

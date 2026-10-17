@@ -195,6 +195,8 @@ export const nativePointerPolicies = {
   ot_session_get_renderer_state: { 0: context, 1: buffer, 2: buffer },
   ot_session_acquire_buffer_lease: { 0: context, 1: buffer, 3: buffer },
   ot_session_get_link_id: { 0: context, 1: buffer, 4: buffer },
+  ot_session_get_presented_link_id: { 0: context, 1: buffer, 4: buffer },
+  ot_session_get_presented_fragment_key: { 0: context, 1: buffer, 4: buffer },
   ot_buffer_lease_validate: { 0: context, 1: buffer },
   ot_buffer_lease_release: { 0: context, 1: buffer },
   ot_buffer_lease_get_real_char_size: { 0: context, 1: buffer, 3: buffer },

@@ -19,10 +19,34 @@ const RETIRED_GENERATION = GEN_MASK + 1;
 
 pub const IdPayload = u32;
 
+/// Bytes appended to a URL to form the intern key of a fragment entry.
+const KEY_SUFFIX_BYTES = @sizeOf(u32);
+
+/// Interning identity of an entry: the URL bytes followed by the little-endian fragment key.
+/// Two entries share an id only when both their URL and their key are equal.
+const InternKey = struct {
+    bytes: [MAX_URL_LENGTH + KEY_SUFFIX_BYTES]u8 = undefined,
+    len: usize = 0,
+
+    fn init(url: []const u8, key: u32) InternKey {
+        assert(url.len <= MAX_URL_LENGTH);
+        var value: InternKey = .{ .len = url.len + KEY_SUFFIX_BYTES };
+        @memcpy(value.bytes[0..url.len], url);
+        std.mem.writeInt(u32, value.bytes[url.len..][0..KEY_SUFFIX_BYTES], key, .little);
+        return value;
+    }
+
+    fn slice(self: *const InternKey) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
 const SlotHeader = extern struct {
     len: u32,
     refcount: u32,
     generation: u32,
+    /// Application fragment key; 0 for an entry that carries only a URL.
+    key: u32,
 };
 
 /// Simple link pool for storing URL strings with reusable IDs
@@ -106,25 +130,35 @@ pub const LinkPool = struct {
         };
     }
 
-    fn removeInternedLiveId(self: *LinkPool, url: []const u8, id: IdPayload) void {
-        const removed = self.interned_live_ids.fetchRemove(url).?;
+    fn removeInternedLiveId(self: *LinkPool, url: []const u8, key: u32, id: IdPayload) void {
+        const intern_key = InternKey.init(url, key);
+        const removed = self.interned_live_ids.fetchRemove(intern_key.slice()).?;
         assert(removed.value == id);
         self.allocator.free(@constCast(removed.key));
     }
 
     /// The map holds exactly the live IDs: acquireNew adds an entry after its
     /// last fallible step, and the decref that releases the slot removes it.
-    fn lookupLive(self: *LinkPool, url: []const u8) ?IdPayload {
-        const id = self.interned_live_ids.get(url) orelse return null;
+    fn lookupLive(self: *LinkPool, url: []const u8, key: u32) ?IdPayload {
+        const intern_key = InternKey.init(url, key);
+        const id = self.interned_live_ids.get(intern_key.slice()) orelse return null;
         if (std.debug.runtime_safety) {
             assert(std.mem.eql(u8, self.get(id) catch unreachable, url));
+            assert((self.getKey(id) catch unreachable) == key);
             assert((self.getRefcount(id) catch unreachable) > 0);
         }
         return id;
     }
 
-    fn internLiveId(self: *LinkPool, id: IdPayload, url: []const u8) LinkPoolError!void {
-        const owned_key = try self.allocator.dupe(u8, url);
+    /// The live id for a URL entry without a fragment key, if any.
+    pub fn lookupLiveUrl(self: *LinkPool, url: []const u8) ?IdPayload {
+        if (url.len > MAX_URL_LENGTH) return null;
+        return self.lookupLive(url, 0);
+    }
+
+    fn internLiveId(self: *LinkPool, id: IdPayload, url: []const u8, key: u32) LinkPoolError!void {
+        const intern_key = InternKey.init(url, key);
+        const owned_key = try self.allocator.dupe(u8, intern_key.slice());
         errdefer self.allocator.free(owned_key);
         try self.interned_live_ids.putNoClobber(self.allocator, owned_key, id);
     }
@@ -132,17 +166,25 @@ pub const LinkPool = struct {
     /// Return one owned live reference. Failed acquisition leaves no stranded
     /// slot or interned identity. Internal pages may remain allocated.
     pub fn acquire(self: *LinkPool, url: []const u8) LinkPoolError!IdPayload {
+        return self.acquireFragment(url, 0);
+    }
+
+    /// Like acquire, for an entry identified by both a URL and an application fragment key.
+    /// url may be empty when key is non-zero; such an entry carries no hyperlink, and
+    /// renderers never emit it as OSC 8. An empty URL with key 0 is not an entry.
+    pub fn acquireFragment(self: *LinkPool, url: []const u8, key: u32) LinkPoolError!IdPayload {
         if (url.len > self.slot_capacity) {
             return LinkPoolError.UrlTooLong;
         }
-        if (self.lookupLive(url)) |live_id| {
+        if (url.len == 0 and key == 0) return LinkPoolError.InvalidId;
+        if (self.lookupLive(url, key)) |live_id| {
             try self.incref(live_id);
             return live_id;
         }
-        return self.acquireNew(url);
+        return self.acquireNew(url, key);
     }
 
-    fn acquireNew(self: *LinkPool, url: []const u8) LinkPoolError!IdPayload {
+    fn acquireNew(self: *LinkPool, url: []const u8, key: u32) LinkPoolError!IdPayload {
         var copy: [MAX_URL_LENGTH]u8 = undefined;
         @memcpy(copy[0..url.len], url);
         const owned = copy[0..url.len];
@@ -159,13 +201,14 @@ pub const LinkPool = struct {
             .len = @intCast(owned.len),
             .refcount = 0,
             .generation = new_generation,
+            .key = key,
         };
         const data_ptr = @as([*]u8, @ptrCast(p)) + @sizeOf(SlotHeader);
         @memcpy(data_ptr[0..owned.len], owned);
         errdefer self.releaseSlot(slot_index, new_generation);
 
         const id = try packId(slot_index, new_generation);
-        try self.internLiveId(id, owned);
+        try self.internLiveId(id, owned, key);
         header_ptr.refcount = 1;
         return id;
     }
@@ -211,7 +254,7 @@ pub const LinkPool = struct {
         if (header_ptr.generation != unpacked.generation) return LinkPoolError.WrongGeneration;
 
         if (header_ptr.refcount == 1) {
-            self.removeInternedLiveId(self.get(id) catch unreachable, id);
+            self.removeInternedLiveId(self.get(id) catch unreachable, header_ptr.key, id);
         }
 
         header_ptr.refcount -%= 1;
@@ -219,6 +262,14 @@ pub const LinkPool = struct {
         if (header_ptr.refcount == 0) {
             self.releaseSlot(unpacked.slot_index, unpacked.generation);
         }
+    }
+
+    /// The id to emit as an OSC 8 hyperlink for a cell link id: the id itself when its entry has a
+    /// URL, else 0. Key-only fragment entries, and unknown ids, are not hyperlinks.
+    pub fn hyperlinkId(self: *LinkPool, id: IdPayload) IdPayload {
+        if (id == 0) return 0;
+        const url = self.get(id) catch return 0;
+        return if (url.len == 0) 0 else id;
     }
 
     pub fn get(self: *LinkPool, id: IdPayload) LinkPoolError![]const u8 {
@@ -232,6 +283,15 @@ pub const LinkPool = struct {
 
         const data_ptr = @as([*]u8, @ptrCast(p)) + @sizeOf(SlotHeader);
         return data_ptr[0..header_ptr.len];
+    }
+
+    /// The application fragment key of an entry; 0 when the entry carries only a URL.
+    pub fn getKey(self: *LinkPool, id: IdPayload) LinkPoolError!u32 {
+        const unpacked = unpackId(id);
+        if (unpacked.slot_index >= self.num_slots) return LinkPoolError.InvalidId;
+        const header_ptr = slotHeaderPtr(self.slotPtr(unpacked.slot_index));
+        if (header_ptr.generation != unpacked.generation) return LinkPoolError.WrongGeneration;
+        return header_ptr.key;
     }
 
     pub fn getRefcount(self: *LinkPool, id: IdPayload) LinkPoolError!u32 {
@@ -292,19 +352,32 @@ pub const LinkTracker = struct {
 
     /// Track document membership once per URL, independent of its chunk count.
     pub fn trackUrl(self: *LinkTracker, url: []const u8) LinkPoolError!IdPayload {
-        if (self.pool.lookupLive(url)) |id| {
-            if (self.used_ids.contains(id)) return id;
+        return self.trackFragment(url, 0);
+    }
+
+    /// Track document membership once per (url, key) entry, independent of its chunk count.
+    pub fn trackFragment(self: *LinkTracker, url: []const u8, key: u32) LinkPoolError!IdPayload {
+        if (url.len <= MAX_URL_LENGTH) {
+            if (self.pool.lookupLive(url, key)) |id| {
+                if (self.used_ids.contains(id)) return id;
+            }
         }
-        const id = try self.pool.acquire(url);
+        const id = try self.pool.acquireFragment(url, key);
         errdefer self.pool.decref(id) catch unreachable;
         try self.used_ids.put(id, 1);
         return id;
     }
 
     pub fn addCellRef(self: *LinkTracker, id: u32) void {
-        const res = self.used_ids.getOrPut(id) catch |err| {
+        self.tryAddCellRef(id) catch |err| {
             std.debug.panic("LinkTracker.addCellRef getOrPut failed: {}\n", .{err});
         };
+    }
+
+    /// Like addCellRef, but reports allocation failure instead of aborting. An id whose pool
+    /// slot cannot take another reference is skipped, as in addCellRef.
+    pub fn tryAddCellRef(self: *LinkTracker, id: u32) std.mem.Allocator.Error!void {
+        const res = try self.used_ids.getOrPut(id);
         if (!res.found_existing) {
             self.pool.incref(id) catch {
                 _ = self.used_ids.remove(id);
