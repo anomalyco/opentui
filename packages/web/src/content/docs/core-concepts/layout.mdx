@@ -90,6 +90,10 @@ Yoga align values are `"auto"`, `"flex-start"`, `"center"`, `"flex-end"`, `"stre
 
 The public TypeScript interface includes `"auto"` for min and max dimensions. The current runtime ignores that value for those four options.
 
+A numeric value, `translateX`, and `translateY` must be finite and at most about `3.4e38` in magnitude, the 32-bit float range. Other values throw `RangeError`. Drawing clamps geometry to the signed 32-bit cell range, so a very large value moves a renderable off the screen instead of failing the frame. `x`, `y`, `width`, and `height` still report the unclamped layout.
+
+Margin, padding, edge (`top`, `right`, `bottom`, `left`), and gap values beyond `±1e30` are stored as `±1e30`, and a resolved percentage is limited the same way, so layout sums stay finite. `getMargin()`, `getPadding()`, and `getGap()` read back the stored value.
+
 ## Alignment
 
 In a row, `justifyContent` distributes horizontal space and `alignItems` positions children vertically. A child can override the vertical alignment with `alignSelf`.

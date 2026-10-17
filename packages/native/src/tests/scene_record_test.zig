@@ -620,3 +620,21 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
         }
     }
 }
+
+test "Scene image paints a fill wider than its pixel range" {
+    const f = try Fixture.init(testing.allocator, 4, 2, .{ .output = transport });
+    defer f.deinit();
+    f.cli.image_resolution = .{ .terminal_width = 4, .terminal_height = 2, .pixel_width = 40, .pixel_height = 40 };
+    const pixels = [_]u8{ 200, 40, 0, 255 };
+    const image = try placed(f, c.OT_SCENE_IMAGE, 2, 0, 0, 1);
+    try f.owner.sceneSetImage(image, try f.owner.createImagePixels(&pixels, 1, 1, .{ .stride = 4 }), .fill, .blocks, null);
+    // 5e8 cells fit i32 but not u32 pixels at 10 per cell; 1e15 also leaves the cell range. Each paints like 4 cells.
+    var cells: [3]u32 = undefined;
+    for ([_]f32{ 4, 5e8, 1e15 }, &cells) |width, *cell| {
+        try f.owner.sceneSetStyle(image, 4, 0, 0, 1, width, 1);
+        try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, true, 0);
+        cell.* = f.cli.getNextBuffer().get(3, 0).?.char;
+    }
+    try testing.expect(cells[0] != ' ');
+    try testing.expectEqual([3]u32{ cells[0], cells[0], cells[0] }, cells);
+}

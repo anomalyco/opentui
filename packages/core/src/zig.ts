@@ -1618,15 +1618,11 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
   const translateX = paint.translateX
   const translateY = paint.translateY
   if (translateX !== undefined) {
-    if (!Number.isFinite(translateX)) {
-      throw new RangeError("Scene translations must be finite numbers")
-    }
-    doubles[layout.fields.translate_x.offset / 8] = translateX
+    doubles[layout.fields.translate_x.offset / 8] = toFFIF32(translateX, "Scene translateX")
     fields |= nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_X
   }
   if (translateY !== undefined) {
-    if (!Number.isFinite(translateY)) throw new RangeError("Scene translations must be finite numbers")
-    doubles[layout.fields.translate_y.offset / 8] = translateY
+    doubles[layout.fields.translate_y.offset / 8] = toFFIF32(translateY, "Scene translateY")
     fields |= nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_Y
   }
   const requestedBorder = paint.border

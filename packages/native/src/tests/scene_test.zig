@@ -160,6 +160,11 @@ test "Scene geometry cache retries a failed third solve in one frame with clean 
     const box = try f.owner.sceneCreateNode(f.id, 1, 2);
     try dimensions(f.owner, box, 3, 1);
     try f.owner.sceneMoveNode(box, f.root, 0);
+    const slider = try f.owner.sceneCreateNode(f.id, 3, 3);
+    try dimensions(f.owner, slider, 4, 1);
+    // The thumb offset of this accepted value fits width 4 and overflows at width 5.
+    try f.owner.sceneSetSlider(slider, .{ .max = 1, .value = 4e307, .viewport_size = 1 });
+    try f.owner.sceneMoveNode(slider, f.root, 1);
     try f.owner.sceneSetHooks(f.root, 4, 1, 0, 0);
     const node = (try f.owner.raw().getRenderable(box)).scene_node.?;
     var request = try f.step(null, frame_options, 3, null);
@@ -174,9 +179,9 @@ test "Scene geometry cache retries a failed third solve in one frame with clean 
     try testing.expectEqual(@as(f32, 3), (try f.owner.sceneGetLayout(box, false)).width);
 
     try dimensions(f.owner, box, 5, 1);
-    // This accepted transform fails preparation only after the third Yoga solve.
-    try f.owner.sceneSetPaint(box, .{ .translateX = 2147483648 });
-    try testing.expectError(error.InvalidDimensions, f.owner.sceneFrameStep(f.id, request, frame_options));
+    // The slider fails preparation only after the third Yoga solve.
+    try dimensions(f.owner, slider, 5, 1);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStep(f.id, request, frame_options));
     try testing.expect(f.state.attempt == null and f.state.work.items.len == 0 and f.state.feedback.items.len == 0);
     try testing.expectEqual(epoch + 2, f.state.layout_epoch);
     try testing.expectEqual(frame_id, node.prepared_frame);
@@ -187,6 +192,7 @@ test "Scene geometry cache retries a failed third solve in one frame with clean 
     try testing.expectEqual(@as(f32, 4), (try f.owner.sceneGetLayout(box, false)).width);
 
     try f.owner.sceneSetPaint(box, .{ .background = .{ 200, 0, 0, 255 } });
+    try f.owner.sceneSetSlider(slider, .{});
     request = try f.step(null, frame_options, 3, null);
     try testing.expectEqual(frame_id + 1, request.frame_id);
     try testing.expectEqual(epoch + 2, request.layout_epoch);
@@ -405,6 +411,27 @@ test "Scene selected text copies exact bytes without allocating" {
     try testing.expect(!failing.has_induced_failure);
 }
 
+test "Scene cell layout keeps in-range axes and the truncated visible cells of the rest" {
+    const inf = std.math.inf(f64);
+    const nan = std.math.nan(f64);
+    // start, size -> clamped start, size. Paint covers trunc(start) .. trunc(start) + trunc(size).
+    for ([_][4]f64{
+        .{ -2147483648, 2147483520, -2147483648, 2147483520 },
+        .{ 2.5, 3.75, 2.5, 3.75 },
+        .{ -3e9 + 2.5, 3e9, -4194304, 4194307 },
+        .{ -2e9, 3e9, -4194304, 8388608 },
+        .{ 1e9, 2e9, 4194303, 1 },
+        .{ -3e9, 1e10, -4194304, 8388608 },
+        .{ nan, 4, -4194304, 1 },
+        .{ 5, nan, 5, 1 },
+        .{ -inf, inf, -4194304, 1 },
+        .{ 3, inf, 3, 4194301 },
+    }) |row| {
+        const cells = scene.cellLayout(.{ .screenX = row[0], .width = @floatCast(row[1]) });
+        try testing.expectEqual([2]f64{ row[2], row[3] }, [2]f64{ cells.screenX, cells.width });
+    }
+}
+
 test "Scene text fully clipped coordinates never enter signed drawing arithmetic" {
     const f = try Fixture.init(testing.allocator, 4, 2, .{});
     defer f.deinit();
@@ -412,10 +439,15 @@ test "Scene text fully clipped coordinates never enter signed drawing arithmetic
     try f.owner.sceneSetText(text, "offscreen");
     try dimensions(f.owner, text, 3, 1);
     try f.owner.sceneMoveNode(text, f.root, 0);
-    try f.owner.sceneSetPaint(text, .{ .translateY = std.math.minInt(i32) });
-    try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, true, 0);
-    for (f.cli.getNextBuffer().buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
-    for (f.cli.nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
+    const max = std.math.floatMax(f32);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPaint(text, .{ .translateX = @as(f64, max) * 2 }));
+    // Translations beyond the i32 cell range clamp instead of failing the frame.
+    for ([_][2]f64{ .{ 0, std.math.minInt(i32) }, .{ 0, std.math.maxInt(i32) }, .{ -max, 0 }, .{ max, -max } }) |translate| {
+        try f.owner.sceneSetPaint(text, .{ .translateX = translate[0], .translateY = translate[1] });
+        try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, true, 0);
+        for (f.cli.getNextBuffer().buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
+        for (f.cli.nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
+    }
 }
 
 test "Scene owns and iteratively destroys registered nodes including detached boxes" {

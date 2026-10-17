@@ -331,8 +331,8 @@ export class BoxRenderable extends Renderable {
     buffer.drawBox({
       x: screenX,
       y: screenY,
-      width: this.width,
-      height: this.height,
+      width: this._paintWidth,
+      height: this._paintHeight,
       borderStyle: this._borderStyle,
       customBorderChars: this._customBorderChars,
       border: this._border,

@@ -42,21 +42,24 @@ test "Scene warmed preparation cannot bypass the work budget" {
     }
 }
 
-test "Scene work budget rejects late invalid transforms before publishing prepared geometry" {
+test "Scene work budget rejects late invalid slider geometry before publishing prepared geometry" {
     const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
     defer f.deinit();
     _ = try box(f.owner, f.id, f.root, 2, 0);
     var request = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, options, 1);
-    try f.owner.sceneSetPaint(f.root, .{ .translateX = @as(f64, std.math.maxInt(i32)) + 1 });
+    const slider = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_SLIDER, 3);
+    try f.owner.sceneSetStyle(slider, 4, 0, 0, 1, 2, 1);
+    // The thumb offset fits the unprepared zero width and overflows at the prepared width.
+    try f.owner.sceneSetSlider(slider, .{ .max = 1, .value = 1e308, .viewport_size = 1 });
+    try f.owner.sceneMoveNode(slider, f.root, 1);
     for (0..16) |_| {
         request = f.owner.sceneFrameStepWorkBudgeted(f.id, request, options, 1) catch |err| {
-            try testing.expectEqual(error.InvalidDimensions, err);
+            try testing.expectEqual(error.InvalidOptions, err);
             break;
         };
         try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
     } else return error.TestUnexpectedResult;
     try testing.expectEqual(@as(f32, 0), (try f.owner.sceneGetLayout(f.root, false)).width);
-    try testing.expectEqual(@as(f64, std.math.maxInt(i32)) + 1, (try f.owner.sceneGetLayout(f.root, false)).screenX);
 }
 
 fn workAllocationFailures(allocator: std.mem.Allocator) !void {

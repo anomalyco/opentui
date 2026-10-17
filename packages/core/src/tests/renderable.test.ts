@@ -18,6 +18,8 @@ import { BoxRenderable, type BoxOptions } from "../renderables/Box.js"
 import { Align, Edge, FlexDirection, Gutter, Justify, PositionType, Unit, Wrap } from "../yoga.js"
 import { InputRenderable } from "../renderables/Input.js"
 import { SliderRenderable } from "../renderables/Slider.js"
+import { ImageRenderable } from "../renderables/Image.js"
+import { NativeImage } from "../image.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 import { NativeError, NativeStatus } from "../zig.js"
@@ -301,6 +303,173 @@ describe("Renderable - layout read caching invariants", () => {
   })
 })
 
+describe("Renderable - layout values beyond the cell range", () => {
+  // Issue 202: each value failed every frame. It must paint like the reference values, which fit i32 cells, both
+  // natively and from a host renderSelf, after a translate-only change (`then`, by default translateX + 1).
+  type Values = { [key: string]: unknown; child?: Values }
+  const signed = ["left", "top", "right", "bottom", "margin", "translateX", "translateY"]
+  const unsigned = ["width", "height", "minWidth", "minHeight", "maxWidth", "flexBasis", "padding", "gap"]
+  const rows: [Values, Values, Values?][] = [...signed, ...unsigned].flatMap((key) =>
+    [2 ** 31 - 1, 2 ** 31, 1e15, 3.4e38].flatMap((value) =>
+      (signed.includes(key) ? [1, -1] : [1]).map((sign): [Values, Values] => [
+        { [key]: sign * value },
+        { [key]: sign * 1e9 },
+      ]),
+    ),
+  )
+  rows.push(
+    // A node that crosses the screen from beyond the range keeps covering exactly its visible cells.
+    [
+      { left: -3e9, width: 1e10 },
+      { left: -3e8, width: 1e9 },
+    ],
+    [
+      { translateX: -3e9 + 2, width: 3e9 },
+      { translateX: -1e9 + 2, width: 1e9 },
+    ],
+    [
+      { left: -2e9, width: 3e9 },
+      { left: -2e8, width: 3e8 },
+    ],
+    // A node translated beyond the range and back keeps its size.
+    [{ translateX: 2 ** 31 }, { translateX: 1e9 }, { translateX: 0 }],
+    // Yoga overflows f32 on these sums.
+    [
+      { width: "auto", left: -3.4e38, right: -3.4e38 },
+      { width: "auto", left: -1e9, right: -1e9 },
+    ],
+    [
+      { left: 3.4e38, marginLeft: 3.4e38 },
+      { left: 1e9, marginLeft: 1e9 },
+    ],
+    [
+      { position: "relative", margin: -3.4e38, flexGrow: 1 },
+      { position: "relative", margin: -1e9, flexGrow: 1 },
+    ],
+    [
+      { width: 1e15, child: { margin: "-1e26%", flexGrow: 1 } },
+      { width: 1e9, child: { margin: "-100%", flexGrow: 1 } },
+    ],
+  )
+  class HostBox extends BoxRenderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      super.renderSelf(buffer)
+    }
+  }
+  const frame = async (Box: typeof BoxRenderable, { child, ...values }: Values, then?: Values) => {
+    const setup = await createTestRenderer({ width: 8, height: 4 })
+    const errors: string[] = []
+    setup.renderer.on("render:error", (event: { error: Error }) => errors.push(event.error.message))
+    try {
+      const box = new Box(setup.renderer, { position: "absolute", border: true, width: 4, height: 3 })
+      box.add(Object.assign(new TextRenderable(setup.renderer, { content: "a" }), child))
+      box.add(new TextRenderable(setup.renderer, { content: "b" }))
+      setup.renderer.root.add(box)
+      const ok = new TextRenderable(setup.renderer, { position: "absolute", left: 6, top: 3, content: "ok" })
+      setup.renderer.root.add(ok)
+      Object.assign(box, values)
+      await setup.renderOnce()
+      Object.assign(box, then ?? { translateX: box.translateX + 1 })
+      await setup.renderOnce()
+      const result = setup.captureCharFrame()
+      // Public sizes are Yoga's, wherever the node is.
+      const { width, height } = box.getLayout()
+      expect([box.width, box.height]).toEqual([Math.max(width, 1), Math.max(height, 1)])
+      expect(errors).toEqual([])
+      return result
+    } finally {
+      setup.renderer.destroy()
+    }
+  }
+
+  // A rest parameter keeps the callback's arity at zero, so Bun does not pass `done` for rows without `then`.
+  test.each(rows)("%o paints like %o", async (...[values, reference, then]) => {
+    for (const Box of [BoxRenderable, HostBox]) {
+      expect(await frame(Box, values, then)).toEqual(await frame(Box, reference, then))
+    }
+  })
+
+  class HostSlider extends SliderRenderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      super.renderSelf(buffer)
+    }
+  }
+  class HostImage extends ImageRenderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      super.renderSelf(buffer)
+    }
+  }
+  const scrollBox = (renderer: TestRenderer) => {
+    const scroll = new ScrollBoxRenderable(renderer, { position: "absolute", width: 6, height: 3 })
+    for (let i = 0; i < 20; i++) scroll.add(new TextRenderable(renderer, { content: `l${i}` }))
+    return scroll
+  }
+  const slider = (Slider: typeof SliderRenderable) => (renderer: TestRenderer) =>
+    new Slider(renderer, { position: "absolute", orientation: "horizontal", width: 4, height: 1, value: 50 })
+  const image = (renderer: TestRenderer) => {
+    const source = NativeImage.fromRgba(Uint8Array.of(12, 34, 56, 255), 1, 1)
+    // The renderable retains the source; the caller's reference must still be disposed.
+    try {
+      return new HostImage(renderer, { position: "absolute", width: 4, height: 2, fit: "fill", source })
+    } finally {
+      source.dispose()
+    }
+  }
+  // Widgets that read their own size: a ScrollBox scrolls, and host renderSelf draws with paint geometry.
+  test.each<[string, Values, Values, (renderer: TestRenderer) => Renderable]>([
+    ["ScrollBox", { height: 2 ** 31 }, { height: 1e9 }, scrollBox],
+    ["Slider", { width: 3e9 }, { width: 1e9 }, slider(SliderRenderable)],
+    ["host Slider", { width: 3e9 }, { width: 1e9 }, slider(HostSlider)],
+    ["host Image", { width: 3e9 }, { width: 1e9 }, image],
+    ["host Image", { left: -3e9, width: 1e10 }, { left: -3e8, width: 1e9 }, image],
+  ])("a %s at %o paints like %o", async (_, values, reference, make) => {
+    const frame = async (values: Values) => {
+      const setup = await createTestRenderer({ width: 8, height: 4 })
+      const errors: string[] = []
+      setup.renderer.on("render:error", (event: { error: Error }) => errors.push(event.error.message))
+      try {
+        const widget = make(setup.renderer)
+        setup.renderer.root.add(widget)
+        await (widget as ImageRenderable).loadPromise
+        await setup.renderOnce()
+        Object.assign(widget, values)
+        await setup.renderOnce()
+        if (widget instanceof ScrollBoxRenderable) widget.scrollTop = 3
+        await setup.renderOnce()
+        expect(errors).toEqual([])
+        return setup.captureCharFrame()
+      } finally {
+        setup.renderer.destroy()
+      }
+    }
+    expect(await frame(values)).toBe(await frame(reference))
+  })
+
+  test.each([2 ** 31, -(2 ** 31), 3.4e38])("a ScrollBox at translateX %d updates the children it shows", async (x) => {
+    let count = 0
+    class Counted extends BoxRenderable {
+      protected onUpdate(): void {
+        count++
+      }
+    }
+    const updates = async (translateX: number) => {
+      const setup = await createTestRenderer({ width: 8, height: 4 })
+      try {
+        const scroll = new ScrollBoxRenderable(setup.renderer, { width: 8, height: 4 })
+        for (let i = 0; i < 20; i++) scroll.add(new Counted(setup.renderer, { height: 1 }))
+        setup.renderer.root.add(scroll)
+        scroll.translateX = translateX
+        count = 0
+        await setup.renderOnce()
+        return count
+      } finally {
+        setup.renderer.destroy()
+      }
+    }
+    expect([await updates(x), await updates(0)]).toEqual([4, 4])
+  })
+})
+
 describe("Renderable - declared style getters", () => {
   const point = (value: number) => ({ unit: Unit.Point, value })
   const percent = (value: number) => ({ unit: Unit.Percent, value })
@@ -328,6 +497,8 @@ describe("Renderable - declared style getters", () => {
     ["getMargin", (box) => box.getMargin(Edge.All), { margin: "auto" }, { unit: Unit.Auto, value: NaN }],
     ["getPadding Top", (box) => box.getPadding(Edge.Top), { padding: 2, paddingX: 3, paddingY: 4 }, unset],
     ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: "30%" }, percent(30)],
+    // Native clamps summed styles to ±1e30, so Yoga's sums stay finite.
+    ["getMargin beyond 1e30", (box) => box.getMargin(Edge.Top), { marginTop: -3.4e38 }, point(Math.fround(-1e30))],
   ]
 
   test.each(cases)(

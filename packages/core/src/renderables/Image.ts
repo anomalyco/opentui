@@ -204,14 +204,16 @@ export class ImageRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    if (!this._image || this.width <= 0 || this.height <= 0) return
-    const fitted =
-      this._fit === "cover" ? { width: this.width, height: this.height } : this.getFittedSize(this.width, this.height)
+    // Paint geometry fits drawImage's cell range; public sizes are Yoga's.
+    const width = this._paintWidth
+    const height = this._paintHeight
+    if (!this._image || width <= 0 || height <= 0) return
+    const fitted = this._fit === "cover" ? { width, height } : this.getFittedSize(width, height)
     if (fitted.width <= 0 || fitted.height <= 0) return
     const originX = this.buffered ? 0 : this._screenX
     const originY = this.buffered ? 0 : this._screenY
-    const x = originX + Math.floor((this.width - fitted.width) / 2)
-    const y = originY + Math.floor((this.height - fitted.height) / 2)
+    const x = originX + Math.floor((width - fitted.width) / 2)
+    const y = originY + Math.floor((height - fitted.height) / 2)
     const resolution = pixelResolution(this._ctx)
     const pixelWidth = resolution
       ? Math.max(1, Math.round((fitted.width * resolution.width) / this._ctx.terminalWidth!))
@@ -224,7 +226,7 @@ export class ImageRenderable extends Renderable {
     let sourceWidth = this._image.width
     let sourceHeight = this._image.height
     if (this._fit === "cover") {
-      const targetAspect = this.width / (this.height * this.cellAspectRatio)
+      const targetAspect = width / (height * this.cellAspectRatio)
       const sourceAspect = sourceWidth / sourceHeight
       if (sourceAspect > targetAspect) {
         sourceWidth = Math.max(1, Math.round(sourceHeight * targetAspect))

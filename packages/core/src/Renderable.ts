@@ -753,6 +753,15 @@ export abstract class Renderable extends BaseRenderable {
     return this.getNativeScenePaintLayout()?.screenY ?? this.screenY
   }
 
+  // Paint geometry is clamped to the cell range that drawing accepts; public sizes are Yoga's.
+  protected get _paintWidth(): number {
+    return this.getNativeScenePaintLayout()?.width ?? this.width
+  }
+
+  protected get _paintHeight(): number {
+    return this.getNativeScenePaintLayout()?.height ?? this.height
+  }
+
   private getNativeScenePaintLayout(): NativeSceneLayout | undefined {
     const cached = this._nativeSceneHookLayout
     if (!cached) return undefined

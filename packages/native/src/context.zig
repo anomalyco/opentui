@@ -2190,7 +2190,8 @@ pub const Context = struct {
         try yoga.check(switch (group) {
             api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(node.yoga_node, kind, @intFromFloat(value)),
             api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(node.yoga_node, kind, value),
-            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(node.yoga_node, kind, edge, unit, value),
+            // Finite summed edges and gaps saturate so Yoga's f32 sums stay finite; NaN still unsets.
+            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(node.yoga_node, kind, edge, unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(node.yoga_node, kind, unit, value, flags),
             else => unreachable,
         });

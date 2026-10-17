@@ -17,7 +17,7 @@ Its build file exports only the Zig VT modules.
 The change to `src/build/SharedDeps.zig` removes unused GUI frame data.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga 3.2.1 with three changes, applied in this order:
+The Yoga source is upstream Yoga 3.2.1 with four changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation through `yoga/OTAllocator.h`, so a test build can
   inject allocation failures. It also makes style updates, child insertion, and child moves leave the node
@@ -26,6 +26,8 @@ The Yoga source is upstream Yoga 3.2.1 with three changes, applied in this order
   cache decision stays the same.
 - `yoga-node-reuse.patch` keeps a reset node's child storage for reuse, and resets the count of
   `display: contents` children when all children are removed.
+- `yoga-finite-percent.patch` clamps a resolved percentage to ±1e30, so a deep percentage chain cannot
+  overflow f32 and stop layout on an indefinite available size.
 
 `src/tests/yoga_test.zig` tests each change.
 
