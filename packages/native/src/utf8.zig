@@ -1038,10 +1038,6 @@ fn findPosByWidthUnicode(
     include_start_before: bool,
     width_method: WidthMethod,
 ) PosByWidthResult {
-    if (text.len == 0 or max_columns == 0) {
-        return .{ .byte_offset = 0, .grapheme_count = 0, .columns_used = 0 };
-    }
-
     // ASCII-only fast path
     if (isASCIIOnly) {
         if (max_columns >= text.len) {
@@ -1168,10 +1164,6 @@ fn findPosByWidthWCWidth(
     isASCIIOnly: bool,
     include_start_before: bool,
 ) PosByWidthResult {
-    if (text.len == 0 or max_columns == 0) {
-        return .{ .byte_offset = 0, .grapheme_count = 0, .columns_used = 0 };
-    }
-
     // ASCII-only fast path
     if (isASCIIOnly) {
         if (max_columns >= text.len) {
@@ -1221,30 +1213,6 @@ fn findPosByWidthWCWidth(
     }
 
     return .{ .byte_offset = @intCast(text.len), .grapheme_count = codepoint_count, .columns_used = columns_used };
-}
-
-/// Byte length of the zero-width grapheme clusters that start `text`, such as a combining
-/// mark that an edit placed in a chunk of its own.
-pub fn zeroWidthPrefixLen(text: []const u8, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) usize {
-    var pos: usize = 0;
-    var cluster_start: usize = 0;
-    var prev_cp: ?u21 = null;
-    var break_state: uucode.grapheme.BreakState = .default;
-    var width_state = GraphemeWidthState.init(0, 0, width_method);
-    while (pos < text.len) {
-        const decoded = decodeUtf8Unchecked(text, pos);
-        const cp_width = charWidth(text[pos], decoded.cp, tab_width, control_display);
-        if (prev_cp == null or isGraphemeBreak(prev_cp, decoded.cp, &break_state, width_method)) {
-            if (width_state.width > 0) return cluster_start;
-            cluster_start = pos;
-            width_state = GraphemeWidthState.init(decoded.cp, cp_width, width_method);
-        } else {
-            width_state.addCodepoint(decoded.cp, cp_width);
-        }
-        prev_cp = decoded.cp;
-        pos += decoded.len;
-    }
-    return if (width_state.width > 0) cluster_start else text.len;
 }
 
 /// Get width at byte offset - proxy function that dispatches based on width_method

@@ -2307,35 +2307,40 @@ test "EditorView - wrapping never splits control notation" {
     }
 }
 
-test "EditorView - cursor moves and backspace step over zero-width clusters" {
+test "EditorView - cursor moves, backspace, and delete step over zero-width clusters" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     // UAX #29 keeps a zero-width format character, or a mark after a control, in a cluster of its own.
     // U+FFFD ends an Indic conjunct or emoji ZWJ sequence, so the characters after it do not join across it.
     // The last text starts with 16 ASCII bytes, so layout takes its vector path.
-    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "ab\x0c-defgh\x07ij-kl\x00m-n\x1b" };
+    // Each "|" starts a new insert, and so a new chunk: a zero-width cluster can start a line or a chunk.
+    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "ab\x0c-defgh\x07ij-kl\x00m-n\x1b", "\u{200b}ab", "\u{200d}\u{301}日b", "\u{feff}ab", "ab|\u{301}cd", "ab|\u{200b}\u{2060}cd" };
     for (std.enums.values(utf8.WidthMethod)) |width_method| {
         for (texts) |text| {
-            errdefer std.debug.print("width_method={t} text={any}\n", .{ width_method, text });
-            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
-            defer eb.deinit();
-            try eb.setText(text);
-            const end = eb.getTextBuffer().lineWidthAt(0);
-            var col: u32 = 0;
-            while (col < end) : (col = eb.getPrimaryCursor().col) {
-                eb.moveRight();
-                try std.testing.expect(eb.getPrimaryCursor().col > col);
-            }
-            while (col > 0) : (col = eb.getPrimaryCursor().col) {
-                eb.moveLeft();
-                try std.testing.expect(eb.getPrimaryCursor().col < col);
-            }
-            try eb.setCursor(0, end);
-            var bytes = text.len;
-            var out: [32]u8 = undefined;
-            while (bytes > 0) : (bytes = eb.getText(&out)) {
-                try eb.backspace();
-                try std.testing.expect(eb.getText(&out) < bytes);
+            for ([_]bool{ false, true }) |forward| {
+                errdefer std.debug.print("width_method={t} text={any} forward={}\n", .{ width_method, text, forward });
+                const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
+                defer eb.deinit();
+                var parts = std.mem.splitScalar(u8, text, '|');
+                while (parts.next()) |part| try eb.insertText(part);
+                const end = eb.getTextBuffer().lineWidthAt(0);
+                var col = eb.getPrimaryCursor().col;
+                while (col > 0) : (col = eb.getPrimaryCursor().col) {
+                    eb.moveLeft();
+                    try std.testing.expect(eb.getPrimaryCursor().col < col);
+                }
+                while (col < end) : (col = eb.getPrimaryCursor().col) {
+                    eb.moveRight();
+                    try std.testing.expect(eb.getPrimaryCursor().col > col);
+                    try std.testing.expectEqual(eb.getPrimaryCursor().col, eb.snapColumn(0, eb.getPrimaryCursor().col));
+                }
+                if (forward) try eb.setCursor(0, 0);
+                var out: [32]u8 = undefined;
+                var bytes = eb.getText(&out);
+                while (bytes > 0) : (bytes = eb.getText(&out)) {
+                    if (forward) try eb.deleteForward() else try eb.backspace();
+                    try std.testing.expect(eb.getText(&out) < bytes);
+                }
             }
         }
     }
