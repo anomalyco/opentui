@@ -896,7 +896,8 @@ registerEnvVar({
 // Env vars used in terminal.zig
 registerEnvVar({
   name: "OPENTUI_FORCE_WCWIDTH",
-  description: "Use wcwidth for character width calculations when the variable is present",
+  description:
+    "Use wcwidth for character width calculations when the variable is present, for example in tmux with variation-selector-always-wide off",
   type: "string",
   required: false,
 })
