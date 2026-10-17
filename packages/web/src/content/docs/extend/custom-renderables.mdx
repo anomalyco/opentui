@@ -135,6 +135,12 @@ When intrinsic content changes, call `invalidateIntrinsicSize()` to invalidate c
 `requestRender()` to schedule a renderer pass. Invalidation does nothing when no provider is registered.
 `requestRender()` alone does not invalidate measurement. Setting, replacing, or clearing a provider schedules a pass.
 
+A measurement fails when the provider throws, returns a promise, mutates layout, or returns a `NaN`, negative, or
+infinite dimension. The node measures 0 for each invalid dimension in that pass. An exception also cancels the frame
+and emits `render:error`. The next frame measures the node once more. If that fails too, the node stays at 0 until
+`invalidateIntrinsicSize()` or a layout change asks for a new measurement, and frames paint again. A provider that
+always fails costs at most two failed frames each time.
+
 Use `getLayout()` for a read-only snapshot of raw local layout: `left`, `top`, `right`, `bottom`, `width`, and `height`.
 It preserves zero dimensions and excludes screen translations. It does not calculate layout. After a property change,
 it reports the previous completed layout until the next layout pass. Before the first layout pass, dimensions can be

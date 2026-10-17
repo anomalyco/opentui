@@ -193,6 +193,13 @@ void otYogaNodeInvalidateMeasure(YGNodeRef node) noexcept {
   facebook::yoga::resolveRef(node)->markDirtyAndPropagate();
 }
 
+void otYogaNodeForgetMeasurements(YGNodeRef node) noexcept {
+  // The reset Yoga applies when it visits a dirty node.
+  auto& layout = facebook::yoga::resolveRef(node)->getLayout();
+  layout.nextCachedMeasurementsIndex = 0;
+  layout.cachedLayout = {};
+}
+
 uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) noexcept {
   if (!node || !out) return OT_YOGA_INVALID_ARGUMENT;
   return checked([&] {
