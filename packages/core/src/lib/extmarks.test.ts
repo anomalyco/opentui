@@ -1407,6 +1407,86 @@ Press ESC to return to main menu.`
     })
   })
 
+  describe("Partial deletion of a virtual extmark", () => {
+    // "[Pasted ~5 lines]" spans offsets 4..21.
+    const text = "see [Pasted ~5 lines] x"
+
+    it("deletes the whole extmark when deleteWordBackward stops inside it", async () => {
+      await setup(text)
+      const id = extmarks.create({ start: 4, end: 21, virtual: true })
+
+      textarea.focus()
+      textarea.cursorOffset = 21
+      textarea.deleteWordBackward()
+
+      expect(textarea.plainText).toBe("see  x")
+      expect(extmarks.get(id)).toBeNull()
+      expect(textarea.cursorOffset).toBe(4)
+    })
+
+    it("deletes the whole extmark when deleteWordForward stops inside it", async () => {
+      await setup(text)
+      const id = extmarks.create({ start: 4, end: 21, virtual: true })
+
+      textarea.focus()
+      textarea.cursorOffset = 4
+      textarea.deleteWordForward()
+
+      expect(textarea.plainText).toBe("see  x")
+      expect(extmarks.get(id)).toBeNull()
+    })
+
+    it("deletes the whole extmark when deleteRange ends inside it", async () => {
+      await setup(text)
+      const id = extmarks.create({ start: 4, end: 21, virtual: true })
+      const after = extmarks.create({ start: 22, end: 23 })
+
+      textarea.deleteRange(0, 2, 0, 10)
+
+      expect(textarea.plainText).toBe("se x")
+      expect(extmarks.get(id)).toBeNull()
+      expect(extmarks.get(after)?.start).toBe(3)
+      expect(extmarks.get(after)?.end).toBe(4)
+    })
+
+    it("deletes adjacent virtual extmarks the range cuts into", async () => {
+      await setup("[a][b] tail")
+      const first = extmarks.create({ start: 0, end: 3, virtual: true })
+      const second = extmarks.create({ start: 3, end: 6, virtual: true })
+
+      textarea.deleteRange(0, 1, 0, 4)
+
+      expect(textarea.plainText).toBe(" tail")
+      expect(extmarks.get(first)).toBeNull()
+      expect(extmarks.get(second)).toBeNull()
+    })
+
+    it("still trims a non-virtual extmark the range cuts into", async () => {
+      await setup(text)
+      const id = extmarks.create({ start: 4, end: 21 })
+
+      textarea.deleteRange(0, 2, 0, 10)
+
+      expect(textarea.plainText).toBe("sed ~5 lines] x")
+      expect(extmarks.get(id)?.start).toBe(2)
+      expect(extmarks.get(id)?.end).toBe(13)
+    })
+
+    it("restores the whole extmark on undo", async () => {
+      await setup(text)
+      const id = extmarks.create({ start: 4, end: 21, virtual: true })
+
+      textarea.focus()
+      textarea.cursorOffset = 21
+      textarea.deleteWordBackward()
+      textarea.undo()
+
+      expect(textarea.plainText).toBe(text)
+      expect(extmarks.get(id)?.start).toBe(4)
+      expect(extmarks.get(id)?.end).toBe(21)
+    })
+  })
+
   describe("deleteToLineEnd() Operations", () => {
     it("should remove extmark when deleteToLineEnd covers it", async () => {
       await setup("Hello World")
