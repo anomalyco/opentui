@@ -3,7 +3,7 @@ import React, { type ReactNode } from "react"
 import type { OpaqueRoot } from "react-reconciler"
 import { AppContext } from "../components/app.js"
 import { ErrorBoundary } from "../components/error-boundary.js"
-import { _render, reconciler } from "./reconciler.js"
+import { createContainer, reconciler } from "./reconciler.js"
 
 // flushSync was renamed to flushSyncFromReconciler in react-reconciler 0.32.0
 // the types for react-reconciler are not up to date with the library
@@ -28,29 +28,33 @@ export type Root = {
  */
 export function createRoot(renderer: CliRenderer): Root {
   let container: OpaqueRoot | null = null
+  let renderVersion = 0
+  const appContext = { keyHandler: renderer.keyInput, renderer }
 
   const cleanup = () => {
-    if (container) {
-      reconciler.updateContainer(null, container, null, () => {})
-      reconciler.flushSyncWork()
-      container = null
-    }
+    const current = container
+    if (!current) return
+    container = null
+    renderer.off(CliRenderEvents.DESTROY, cleanup)
+    reconciler.updateContainerSync(null, current, null, () => {})
+    reconciler.flushSyncWork()
   }
-
-  if (!renderer.isDestroyed) renderer.once(CliRenderEvents.DESTROY, cleanup)
 
   return {
     render: (node: ReactNode) => {
       if (renderer.isDestroyed) return
       engine.attach(renderer)
-      container = _render(
-        React.createElement(
-          AppContext.Provider,
-          { value: { keyHandler: renderer.keyInput, renderer } },
-          React.createElement(ErrorBoundary, null, node),
-        ),
-        renderer.root,
+      if (!container) {
+        container = createContainer(renderer.root)
+        renderer.once(CliRenderEvents.DESTROY, cleanup)
+      }
+      const element = React.createElement(
+        AppContext.Provider,
+        { value: appContext },
+        // Explicit renders retry failed trees without remounting healthy children.
+        React.createElement(ErrorBoundary, { resetKey: ++renderVersion, children: node }),
       )
+      reconciler.updateContainer(element, container, null, () => {})
     },
 
     unmount: cleanup,
