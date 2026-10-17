@@ -134,7 +134,7 @@ export class RendererThemeMode {
       return { handled: true, changedMode: null }
     }
 
-    if (!this.themeOscForeground || !this.themeOscBackground) {
+    if (!this.themeOscBackground) {
       return { handled: true, changedMode: null }
     }
 
