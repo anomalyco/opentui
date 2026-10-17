@@ -443,6 +443,13 @@ fn addContextABIHeader(
     module.addImport("context_abi_c", header.createModule());
 }
 
+/// Files that tests embed by module name, such as Core's input parser conformance vectors.
+fn addTestFixtures(b: *std.Build, module: *std.Build.Module) void {
+    module.addAnonymousImport("input_conformance", .{
+        .root_source_file = b.path("../core/src/lib/stdin-parser.conformance.json"),
+    });
+}
+
 /// Apply dependencies to a module
 fn applyDependencies(
     b: *std.Build,
@@ -577,6 +584,7 @@ pub fn build(b: *std.Build) void {
         .optimize = test_optimize,
     });
     applyDependencies(b, test_mod, test_optimize, native_target, build_options);
+    addTestFixtures(b, test_mod);
     const test_artifact = b.addTest(.{
         .root_module = test_mod,
         .filters = if (b.option([]const u8, "test-filter", "Skip tests that do not match filter")) |f| &.{f} else &.{},
@@ -604,6 +612,7 @@ pub fn build(b: *std.Build) void {
         .fuzz = true,
     });
     applyDependencies(b, cov_mod, .Debug, native_target, build_options);
+    addTestFixtures(b, cov_mod);
     const cov_artifact = b.addTest(.{
         .name = "test-cov",
         .root_module = cov_mod,
@@ -657,6 +666,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
     });
     applyDependencies(b, lifetime_mod, .Debug, native_target, lifetime_options);
+    addTestFixtures(b, lifetime_mod);
     const lifetime_artifact = b.addTest(.{
         .root_module = lifetime_mod,
         .filters = &.{ "measure", "NativeRenderable", "Context Yoga target" },
