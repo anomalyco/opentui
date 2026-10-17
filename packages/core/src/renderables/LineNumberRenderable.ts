@@ -742,8 +742,7 @@ export class LineNumberRenderable extends Renderable {
     return { ...this._layout }
   }
 
-  public setGutterLayout(patch: Partial<GutterLayout>): void {
-    const layout = { ...this._layout, ...patch }
+  public setGutterLayout(layout: GutterLayout): void {
     if (
       layout.minWidth === this._layout.minWidth &&
       layout.paddingLeft === this._layout.paddingLeft &&
@@ -752,8 +751,8 @@ export class LineNumberRenderable extends Renderable {
       layout.minAfterWidth === this._layout.minAfterWidth
     )
       return
-    this._layout = layout
-    this.gutter?.setLayout(layout)
+    this._layout = { ...layout }
+    this.gutter?.setLayout(this._layout)
   }
 
   public set lineNumberOffset(value: number) {

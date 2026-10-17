@@ -2352,14 +2352,18 @@ test("DiffRenderable - gutter paddingLeft pads line numbers in each row's gutter
   })
   currentRenderer.root.add(diffRenderable)
   await renderOnce()
-  expect(captureFrame().split("\n")[1]).toStartWith(" 2 -")
+  expect(captureFrame().split("\n")[1]).toMatch(/^ 2 -/)
 
   diffRenderable.gutter = { paddingLeft: 3 }
   await renderOnce()
-  expect(captureFrame().split("\n")[1]).toStartWith("   2 -")
+  expect(captureFrame().split("\n")[1]).toMatch(/^   2 -/)
   const buffer = currentRenderer.currentRenderBuffer
   const bg = buffer.withBuffers(({ bg }) => RGBA.fromArray(bg.slice(buffer.width * 4, buffer.width * 4 + 4)))
   expect(bg.equals(parseColor("#ff0000"))).toBe(true)
+
+  diffRenderable.gutter = { paddingLeft: 0 }
+  await renderOnce()
+  expect(captureFrame().split("\n")[1]).toMatch(/^2 -/)
 })
 
 test("DiffRenderable - gutter minDigits lines up diffs with different line numbers", async () => {

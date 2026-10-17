@@ -1,7 +1,7 @@
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import type { RenderContext } from "../types.js"
 import { CodeRenderable, type CodeOptions } from "./Code.js"
-import { LineNumberRenderable, type LineSign, type LineColorConfig } from "./LineNumberRenderable.js"
+import { LineNumberRenderable, type GutterLayout, type LineSign, type LineColorConfig } from "./LineNumberRenderable.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { parsePatch, type StructuredPatch } from "diff"
@@ -557,8 +557,10 @@ export class DiffRenderable extends Renderable {
   }
 
   // Set through the method: LineNumberRenderable also applies a paddingRight option as layout padding.
-  private gutterLayout() {
+  private gutterLayout(): GutterLayout {
     return {
+      // The paddings and digits set the width; a minWidth floor would turn into extra left padding.
+      minWidth: 0,
       paddingLeft: this._gutter.paddingLeft ?? 1,
       paddingRight: this._gutter.paddingRight ?? 1,
       minDigits: this._gutter.minDigits ?? 0,
