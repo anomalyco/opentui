@@ -152,6 +152,26 @@ Change `textAlign` after mount with `text.textAlign = "right"`. `CodeRenderable`
 
 `textAlign` does not replace [Yoga box alignment](/docs/core-concepts/layout#alignment).
 
+## Indent wrapped lines
+
+`wrapIndent: "same"` indents each wrapped row by the leading whitespace of its line. The default is `"none"`.
+
+```typescript
+const text = new TextRenderable(renderer, {
+  content: "    one two three four five six",
+  width: 16,
+  wrapIndent: "same",
+})
+```
+
+A space counts as one column. A tab counts as the tab width, which is two columns by default. Other whitespace does not count.
+
+A line with no leading whitespace has no indent. A line also has no indent when the indent leaves fewer than two columns, or fewer than the tab width if that is larger, for text in each row.
+
+Wrapping and measurement include the indent. `wrapIndent` has no effect when `wrapMode` is `"none"`.
+
+Change `wrapIndent` after mount with `text.wrapIndent = "none"`. `CodeRenderable` and `TextareaRenderable` accept the same option.
+
 ## Text selection
 
 Text selection lets users copy text. It is on by default:
@@ -180,6 +200,7 @@ const nonSelectable = new TextRenderable(renderer, {
 | `attributes`                     | `TextAttributes`                  | `0`          | Text styling attributes                  |
 | `selectable`                     | `boolean`                         | `true`       | Whether users can select the text        |
 | `wrapMode`                       | `"none" \| "char" \| "word"`      | `"word"`     | Line wrapping mode                       |
+| `wrapIndent`                     | `"none" \| "same"`                | `"none"`     | Indent wrapped rows by the line indent   |
 | `textAlign`                      | `"left" \| "center" \| "right"`   | `"left"`     | Per-line alignment within the text width |
 | `position`                       | `"relative" \| "absolute"`        | `"relative"` | Positioning mode                         |
 | `left`, `top`, `right`, `bottom` | `number \| "auto" \| "{number}%"` | -            | Position offsets                         |

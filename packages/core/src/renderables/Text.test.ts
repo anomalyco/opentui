@@ -2114,6 +2114,23 @@ describe("TextRenderable Selection", () => {
       const updatedFrame = captureFrame()
       expect(updatedFrame).toMatchSnapshot()
     })
+
+    it("should pad soft-wrap continuations with wrapIndent in the native scene path", async () => {
+      const { text } = await createTextRenderable(currentRenderer, {
+        content: "    " + "a".repeat(30),
+        wrapMode: "char",
+        wrapIndent: "same",
+        width: 20,
+        left: 0,
+        top: 0,
+      })
+
+      expect(captureFrame().split("\n")[1]?.indexOf("a")).toBe(4)
+
+      text.wrapIndent = "none"
+      await renderOnce()
+      expect(captureFrame().split("\n")[1]?.indexOf("a")).toBe(0)
+    })
   })
 
   describe("Mouse Scrolling", () => {

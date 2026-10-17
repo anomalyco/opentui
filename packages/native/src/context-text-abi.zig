@@ -123,6 +123,8 @@ comptime {
     std.debug.assert(@intFromEnum(view_mod.TextAlign.left) == c.OT_SCENE_ALIGN_LEFT);
     std.debug.assert(@intFromEnum(view_mod.TextAlign.center) == c.OT_SCENE_ALIGN_CENTER);
     std.debug.assert(@intFromEnum(view_mod.TextAlign.right) == c.OT_SCENE_ALIGN_RIGHT);
+    std.debug.assert(@intFromEnum(view_mod.WrapIndent.none) == c.OT_SCENE_WRAP_INDENT_NONE);
+    std.debug.assert(@intFromEnum(view_mod.WrapIndent.same) == c.OT_SCENE_WRAP_INDENT_SAME);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_COUNT_MAX == ctx.Context.text_replacement_count_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_CHUNKS_MAX == ctx.Context.text_replacement_chunks_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_BYTES_MAX == ctx.Context.text_replacement_bytes_max);
@@ -217,10 +219,11 @@ pub fn ot_text_buffer_view_set_viewport(context: ?*Owner, id: ?*const c.ot_handl
 
 pub fn ot_text_buffer_view_command(context: ?*Owner, id: ?*const c.ot_handle, command: u32, argument: u32) callconv(.c) c.ot_status {
     const owner = admit(context, false) catch |err| return fail(context, err);
-    if (id == null or command > c.OT_TEXT_VIEW_TEXT_ALIGN or
+    if (id == null or command > c.OT_TEXT_VIEW_WRAP_INDENT or
         (command == c.OT_TEXT_VIEW_WRAP_MODE and argument > c.OT_SCENE_WRAP_WORD) or
         (command == c.OT_TEXT_VIEW_TRUNCATE and argument > 1) or
-        (command == c.OT_TEXT_VIEW_TEXT_ALIGN and argument > c.OT_SCENE_ALIGN_RIGHT)) return fail(owner, error.InvalidOptions);
+        (command == c.OT_TEXT_VIEW_TEXT_ALIGN and argument > c.OT_SCENE_ALIGN_RIGHT) or
+        (command == c.OT_TEXT_VIEW_WRAP_INDENT and argument > c.OT_SCENE_WRAP_INDENT_SAME)) return fail(owner, error.InvalidOptions);
     const operation: ctx.TextViewCommand = switch (command) {
         c.OT_TEXT_VIEW_WRAP_WIDTH => .{ .wrap_width = if (argument == 0) null else argument },
         c.OT_TEXT_VIEW_WRAP_MODE => .{ .wrap_mode = @enumFromInt(argument) },
@@ -228,6 +231,7 @@ pub fn ot_text_buffer_view_command(context: ?*Owner, id: ?*const c.ot_handle, co
         c.OT_TEXT_VIEW_TAB_INDICATOR => .{ .tab_indicator = if (argument == 0) null else argument },
         c.OT_TEXT_VIEW_TRUNCATE => .{ .truncate = argument == 1 },
         c.OT_TEXT_VIEW_TEXT_ALIGN => .{ .text_align = @enumFromInt(argument) },
+        c.OT_TEXT_VIEW_WRAP_INDENT => .{ .wrap_indent = @enumFromInt(argument) },
         else => unreachable,
     };
     owner.core.textViewCommand(abi.handleFromC(id.?.*), operation) catch |err| return fail(owner, err);

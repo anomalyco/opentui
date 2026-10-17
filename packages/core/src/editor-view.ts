@@ -141,6 +141,10 @@ export class EditorView {
     this.command(NativeEditorCommand.WrapMode, mode === "none" ? 0 : mode === "char" ? 1 : 2)
   }
 
+  public setWrapIndent(indent: "none" | "same"): void {
+    this.command(NativeEditorCommand.WrapIndent, indent === "same" ? 1 : 0)
+  }
+
   public getVirtualLineCount(): number {
     this.guard()
     return this.lib.contextEditorViewGetInfo(this.native.handle.context, this.native.handle, true).virtualLineCount

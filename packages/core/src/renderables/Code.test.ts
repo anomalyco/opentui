@@ -2299,6 +2299,38 @@ test("CodeRenderable - concealed lineInfo source cache invalidates when wrap mod
   expect(codeRenderable.lineInfo.lineSources).toEqual([1, 1, 3])
 })
 
+test("CodeRenderable - concealed lineInfo source cache invalidates when wrap indent changes", async () => {
+  const content = "```ts\n    abcdefghijklmnopqrstuvwxyz\n```\ntail"
+  const mockClient = new MockTreeSitterClient()
+  mockClient.setMockResult({
+    highlights: [
+      [0, 5, "markup.raw.block", { conceal: "", concealLines: "" }],
+      [content.indexOf("```", 5), content.indexOf("```", 5) + 3, "markup.raw.block", { conceal: "", concealLines: "" }],
+    ],
+  })
+
+  const codeRenderable = new CodeRenderable(currentRenderer, {
+    id: "test-code",
+    content,
+    filetype: "markdown",
+    syntaxStyle,
+    treeSitterClient: mockClient,
+    conceal: true,
+    wrapMode: "char",
+    width: 10,
+  })
+
+  currentRenderer.root.add(codeRenderable)
+  await resolveMockHighlights(codeRenderable, mockClient)
+
+  expect(codeRenderable.lineInfo.lineSources).toEqual([1, 1, 1, 3])
+  expect(codeRenderable.lineInfo.lineSources).toEqual([1, 1, 1, 3])
+
+  codeRenderable.wrapIndent = "same"
+
+  expect(codeRenderable.lineInfo.lineSources).toEqual([1, 1, 1, 1, 1, 3])
+})
+
 test("CodeRenderable - plainText reflects content immediately with drawUnstyledText=false", async () => {
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })

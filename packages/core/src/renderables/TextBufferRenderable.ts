@@ -8,6 +8,8 @@ import type { OptimizedBuffer } from "../buffer.js"
 import type { LineInfo, NativeSceneTextOptions } from "../zig.js"
 import { SyntaxStyle } from "../syntax-style.js"
 
+export type WrapIndent = "none" | "same"
+
 export interface TextBufferOptions extends RenderableOptions<TextBufferRenderable> {
   fg?: string | RGBA
   bg?: string | RGBA
@@ -16,6 +18,7 @@ export interface TextBufferOptions extends RenderableOptions<TextBufferRenderabl
   selectable?: boolean
   attributes?: number
   wrapMode?: "none" | "char" | "word"
+  wrapIndent?: WrapIndent
   textAlign?: "left" | "center" | "right"
   tabIndicator?: string | number
   tabIndicatorColor?: string | RGBA
@@ -38,6 +41,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   protected _selectionBg: RGBA | undefined
   protected _selectionFg: RGBA | undefined
   protected _wrapMode: "none" | "char" | "word" = "word"
+  protected _wrapIndent: WrapIndent = "none"
   protected _textAlign: "left" | "center" | "right" = "left"
   protected lastLocalSelection: LocalSelectionBounds | null = null
   protected _tabIndicator?: string | number
@@ -61,6 +65,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     selectable: true,
     attributes: 0,
     wrapMode: "word" as "none" | "char" | "word",
+    wrapIndent: "none" as WrapIndent,
     textAlign: "left" as "left" | "center" | "right",
     tabIndicator: undefined,
     tabIndicatorColor: undefined,
@@ -83,6 +88,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       this._selectionFg = options.selectionFg ? RGBA.clone(parseColor(options.selectionFg)) : undefined
       this.selectable = options.selectable ?? this._defaultOptions.selectable
       this._wrapMode = options.wrapMode ?? this._defaultOptions.wrapMode
+      this._wrapIndent = options.wrapIndent ?? this._defaultOptions.wrapIndent
       this._textAlign = options.textAlign ?? this._defaultOptions.textAlign
       this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator
       this._tabIndicatorColor = options.tabIndicatorColor
@@ -108,6 +114,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       textBuffer.setSyntaxStyle(syntaxStyle)
 
       this.textBufferView.setWrapMode(this._wrapMode)
+      this.textBufferView.setWrapIndent(this._wrapIndent)
       this.textBufferView.setTextAlign(this._textAlign)
       this.textBufferView.setFirstLineOffset(this._firstLineOffset)
       ctx.nativeScene.setTextView(this, textBufferView._getSceneHandle(ctx.nativeScene))
@@ -388,6 +395,23 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     }
   }
 
+  get wrapIndent(): WrapIndent {
+    return this._wrapIndent
+  }
+
+  set wrapIndent(value: WrapIndent) {
+    value ??= this._defaultOptions.wrapIndent
+    if (this._wrapIndent !== value) {
+      this.runMutation(() => {
+        this.setNativeSceneTextOptions({ wrapIndent: value })
+        if (!this.nativeTextScene) this.textBufferView.setWrapIndent(value)
+        this._wrapIndent = value
+        this.invalidateIntrinsicSize()
+        this.requestRender()
+      })
+    }
+  }
+
   get tabIndicator(): string | number | undefined {
     return this._tabIndicator
   }
@@ -557,6 +581,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       bg: this._defaultBg,
       attributes: this._defaultAttributes,
       wrapMode: this._wrapMode,
+      wrapIndent: this._wrapIndent,
       textAlign: this._textAlign,
       truncate: this._truncate,
       scrollX: this._scrollX,
