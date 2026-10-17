@@ -2339,4 +2339,78 @@ test "EditorView - cursor moves and backspace step over zero-width clusters" {
             }
         }
     }
+    // A line without cells still holds bytes: Delete, Backspace, and deleting the whole text remove them.
+    const zero_width_lines = [_][]const u8{ "\u{200b}", "\u{200b}\nb", "a\n\u{200b}", "a\n\u{2060}\u{301}\nb", "\u{200d}\u{2060}" };
+    for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        for (zero_width_lines) |text| {
+            for ([_]enum { delete, backspace, all }{ .delete, .backspace, .all }) |key| {
+                errdefer std.debug.print("width_method={t} text={any} key={t}\n", .{ width_method, text, key });
+                const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
+                defer eb.deinit();
+                try eb.setText(text);
+                const last = eb.getTextBuffer().lineCount() - 1;
+                const text_end: Cursor = .{ .row = last, .col = eb.getTextBuffer().lineWidthAt(last) };
+                if (key == .backspace) try eb.setCursor(text_end.row, text_end.col);
+                var out: [32]u8 = undefined;
+                var bytes = text.len;
+                var steps: u32 = 0;
+                while (bytes > 0) : (bytes = eb.getText(&out)) {
+                    switch (key) {
+                        .delete => try eb.deleteForward(),
+                        .backspace => try eb.backspace(),
+                        .all => try eb.deleteRange(.{ .row = 0, .col = 0 }, text_end),
+                    }
+                    try std.testing.expect(eb.getText(&out) < if (key == .all) 1 else bytes);
+                    steps += 1;
+                }
+                while (steps > 0) : (steps -= 1) _ = try eb.undo();
+                try std.testing.expectEqualStrings(text, out[0..eb.getText(&out)]);
+            }
+        }
+    }
+    // One edit, after `zw` was typed at `at` so that it is a leaf of its own: what remains.
+    // Zero-width text goes with the cell before it, or with the cell after it at a line start.
+    const Edit = union(enum) { delete: [2]u32, backspace: [2]u32, line: u32, replace: [2]u32 };
+    const edits = [_]struct { text: []const u8, zw: []const u8 = "", at: [2]u32 = .{ 0, 0 }, edit: Edit, want: []const u8 }{
+        .{ .text = "a\n\u{200b}\nb", .edit = .{ .delete = .{ 1, 0 } }, .want = "a\nb" },
+        .{ .text = "a\n\u{200b}", .edit = .{ .delete = .{ 1, 0 } }, .want = "a\n" },
+        .{ .text = "a\n\u{2060}\u{301}\nb", .edit = .{ .backspace = .{ 2, 0 } }, .want = "a\nb" },
+        .{ .text = "ab", .zw = "\u{301}", .at = .{ 0, 1 }, .edit = .{ .backspace = .{ 0, 1 } }, .want = "b" },
+        .{ .text = "a\nb", .zw = "\u{200b}", .at = .{ 1, 0 }, .edit = .{ .line = 0 }, .want = "\u{200b}b" },
+        .{ .text = "\u{200b}", .edit = .{ .line = 0 }, .want = "" },
+        .{ .text = "\u{200b}\nab", .edit = .{ .line = 1 }, .want = "" },
+        .{ .text = "ab", .zw = "\u{200b}", .edit = .{ .replace = .{ 0, 1 } }, .want = "xb" },
+        .{ .text = "ab", .zw = "\u{200b}", .at = .{ 0, 1 }, .edit = .{ .replace = .{ 1, 2 } }, .want = "a\u{200b}x" },
+        .{ .text = "a\nb", .zw = "\u{200b}", .at = .{ 1, 0 }, .edit = .{ .replace = .{ 0, 2 } }, .want = "x\u{200b}b" },
+        .{ .text = "a\n\u{200b}", .edit = .{ .replace = .{ 0, 2 } }, .want = "x" },
+    };
+    const ignore = struct {
+        fn handle(_: *anyopaque) void {}
+    };
+    for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        for (edits) |case| {
+            errdefer std.debug.print("width_method={t} case={any}\n", .{ width_method, case });
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
+            defer eb.deinit();
+            try eb.setText(case.text);
+            try eb.setCursor(case.at[0], case.at[1]);
+            try eb.insertText(case.zw);
+            switch (case.edit) {
+                .delete => |at| try eb.setCursor(at[0], at[1]),
+                .backspace => |at| try eb.setCursor(at[0], at[1]),
+                .line => |row| try eb.setCursor(row, 0),
+                .replace => {},
+            }
+            switch (case.edit) {
+                .delete => try eb.deleteForward(),
+                .backspace => try eb.backspace(),
+                .line => try eb.deleteLine(),
+                .replace => |range| try eb.replaceRange(range[0], range[1], "x", .{ .ctx = eb, .handle = ignore.handle }),
+            }
+            var out: [16]u8 = undefined;
+            try std.testing.expectEqualStrings(case.want, out[0..eb.getText(&out)]);
+            while (eb.canUndo()) _ = try eb.undo();
+            try std.testing.expectEqualStrings(case.text, out[0..eb.getText(&out)]);
+        }
+    }
 }
