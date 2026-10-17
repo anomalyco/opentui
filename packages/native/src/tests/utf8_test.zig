@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const utf8 = @import("../utf8.zig");
 const uucode = @import("uucode");
+const ghostty_vt = @import("../ghostty-vt.zig");
 
 test "decodeUtf8Unchecked keeps its result in one word" {
     const decoded = utf8.decodeUtf8Unchecked("\u{65e5}", 0);
@@ -1725,7 +1726,7 @@ test "getPrevGraphemeStart: steps back to the last grapheme with cells that layo
     // minus the width before its start. U+FFFD is a grapheme of its own: inside a joining sequence it must not join
     // the graphemes after it, and a mark after it does not join it.
     const texts = [_][]const u8{ "", "Hello 世界! 👋\u{1f3ff}", "a\tb", "日本", "e\u{301}\u{302}x", "👩\u{200d}👧!", "👩\u{200d}❤", "🇺🇸🇩🇪", "❤\u{fe0f}", "क्षि", "a\x07\u{301}\u{85}\x1b", "\u{200b}a\u{feff}", "日\u{fffd}", "a\r\nb", "\u{600}a", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "\u{fffd}\u{fe0f}" };
-    const alphabet = [_]u21{ 'a', '\t', '\r', '\n', 0, 0x1b, 0x7f, 0x85, 0x301, 0x200b, 0x200d, 0xfe0f, 0x1f469, 0x1f3fb, 0x2764, 0x1f1e9, 0x600, 0x915, 0x94d, 0x93f, 0x1100, 0x1161, 0xac00, 0xfffd, 0x65e5 };
+    const alphabet = [_]u21{ 'a', '\t', '\r', '\n', 0, 0x1b, 0x7f, 0x85, 0x301, 0x200b, 0x200d, 0x200e, 0xe0041, 0xfe0f, 0x1f469, 0x1f3fb, 0x2764, 0x1f1e9, 0x600, 0x915, 0x94d, 0x93f, 0x1100, 0x1161, 0xac00, 0xfffd, 0x65e5 };
     var prng = std.Random.DefaultPrng.init(0x5eed);
     const random = prng.random();
     var bytes: [64]u8 = undefined;
@@ -2631,35 +2632,31 @@ test "calculateTextWidth: Vietnamese with multiple diacritics" {
 // Zero-Width Characters
 // ----------------------------------------------------------------------------
 
-test "calculateTextWidth: zero width joiner (ZWJ)" {
-    // ZWJ by itself (shouldn't happen, but test it) - it's a format char with width 0
-    const zwj = "\u{200D}";
-    const width = utf8.calculateTextWidth(zwj, 4, .hidden, false, .unicode);
-    try testing.expectEqual(@as(u32, 0), width); // Width of ZWJ is 0 (Cf category)
-}
-
-test "calculateTextWidth: zero width non-joiner (ZWNJ)" {
-    // ZWNJ U+200C
-    const zwnj = "ab\u{200C}cd";
-    const width = utf8.calculateTextWidth(zwnj, 4, .hidden, false, .unicode);
-    // ZWNJ has width 0, so should be 4 (a, b, c, d)
-    try testing.expectEqual(@as(u32, 4), width);
-}
-
-test "calculateTextWidth: zero width space" {
-    // ZWSP U+200B is Cf (format) category with width 0
-    const zwsp = "a\u{200B}b\u{200B}c";
-    const width = utf8.calculateTextWidth(zwsp, 4, .hidden, false, .unicode);
-    // a(1) + ZWSP(0) + b(1) + ZWSP(0) + c(1) = 3
-    try testing.expectEqual(@as(u32, 3), width);
-}
-
-test "calculateTextWidth: word joiner" {
-    // Word joiner U+2060 is Cf (format) category with width 0
-    const word_joiner = "word\u{2060}joiner";
-    const width = utf8.calculateTextWidth(word_joiner, 4, .hidden, false, .unicode);
-    // word(4) + word_joiner(0) + joiner(6) = 10
-    try testing.expectEqual(@as(u32, 10), width);
+test "calculateTextWidth: each default-ignorable code point takes the cells Ghostty gives it" {
+    // Default_Ignorable_Code_Point (Unicode 17.0 DerivedCoreProperties.txt), alone and after a base.
+    // Ghostty draws each in no cell except U+00AD; a cell the terminal does not draw moves the rest of the row.
+    var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, testing.allocator, .{ .cols = 4, .rows = 1 });
+    defer terminal.deinit(testing.allocator);
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    var bytes: [5]u8 = .{ 'a', 0, 0, 0, 0 };
+    for (0..0x110000) |cp| {
+        // Ghostty gives the conjoining jamo fillers no cell; OpenTUI keeps their widths (see the drawing test).
+        if (!uucode.get(.is_default_ignorable, @intCast(cp)) or cp == 0x115f or cp == 0x1160) continue;
+        const len = 1 + try std.unicode.utf8Encode(@intCast(cp), bytes[1..]);
+        stream.nextSlice("\r\x1b[2K");
+        stream.nextSlice(bytes[0..len]);
+        const cells = terminal.screens.active.cursor.x - 1;
+        for (std.enums.values(utf8.WidthMethod)) |width_method| {
+            errdefer std.debug.print("width_method={t} code point={x}\n", .{ width_method, cp });
+            try testing.expectEqual(cells, utf8.calculateTextWidth(bytes[1..len], 4, .hidden, false, width_method));
+            // OpenTUI widens any one-cell base before VS16 to two cells.
+            if (cp == 0xfe0f) continue;
+            try testing.expectEqual(1 + cells, utf8.calculateTextWidth(bytes[0..len], 4, .hidden, false, width_method));
+            // Grapheme-safe wrapping measures the cluster as it grows, in every width method.
+            try testing.expectEqual(1 + cells, utf8.findWrapPosByWidthGraphemeSafe(bytes[0..len], 4, 4, .hidden, false, width_method).columns_used);
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------

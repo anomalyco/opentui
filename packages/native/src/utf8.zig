@@ -433,15 +433,9 @@ inline fn eawToWidth(cp: u21, eaw: uucode.types.EastAsianWidth) i16 {
         else => {},
     }
 
-    if (cp == 0x200B) return 0;
-    if (cp == 0x200C) return 0;
-    if (cp == 0x200D) return 0;
-    if (cp == 0x2060) return 0;
-    if (cp == 0x034F) return 0;
-    if (cp == 0xFEFF) return 0;
-    if (cp >= 0x180B and cp <= 0x180D) return 0;
-    if (cp >= 0xFE00 and cp <= 0xFE0F) return 0;
-    if (cp >= 0xE0100 and cp <= 0xE01EF) return 0;
+    // Terminals draw a default-ignorable code point in no cell, but the soft hyphen in one. The
+    // conjoining jamo fillers U+115F and U+1160 keep their widths: they start a Hangul syllable cluster.
+    if (cp != 0x00AD and cp != 0x115F and cp != 0x1160 and uucode.get(.is_default_ignorable, cp)) return 0;
 
     if (eaw == .fullwidth or eaw == .wide) return 2;
 

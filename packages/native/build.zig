@@ -483,7 +483,7 @@ fn applyDependencies(
             "grapheme_break",
             "east_asian_width",
             "general_category",
-            "is_emoji_presentation",
+            "is_default_ignorable",
         }),
         .fields_1 = @as([]const []const u8, &.{"wcwidth_zero_in_grapheme"}),
     })) |uucode_dep| {

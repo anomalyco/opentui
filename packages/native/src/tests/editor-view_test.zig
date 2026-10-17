@@ -2313,7 +2313,7 @@ test "EditorView - cursor moves and backspace step over zero-width clusters" {
     // UAX #29 keeps a zero-width format character, or a mark after a control, in a cluster of its own.
     // U+FFFD ends an Indic conjunct or emoji ZWJ sequence, so the characters after it do not join across it.
     // The last text starts with 16 ASCII bytes, so layout takes its vector path.
-    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "ab\x0c-defgh\x07ij-kl\x00m-n\x1b" };
+    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\u{e0041}\u{200e}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "ab\x0c-defgh\x07ij-kl\x00m-n\x1b" };
     for (std.enums.values(utf8.WidthMethod)) |width_method| {
         for (texts) |text| {
             errdefer std.debug.print("width_method={t} text={any}\n", .{ width_method, text });
