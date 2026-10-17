@@ -232,7 +232,7 @@ export interface CliRendererConfig {
   clock?: Clock
 
   // Run after destroy() finishes cleanup.
-  onDestroy?: () => void
+  onDestroy?: (reason?: DestroyReason) => void
 }
 
 // Controls how the renderer uses terminal space:
@@ -839,6 +839,13 @@ const rendererTracker = singleton("RendererTracker", () => ({
   streamOwners: new WeakMap<object, CliRenderer>(),
 }))
 
+export type DestroyReason =
+  | { type: "ctrl-c" }
+  | { type: "signal"; signal: NodeJS.Signals }
+  | { type: "output-closed"; error?: unknown }
+  | { type: "process-exit" }
+  | { type: "destroy" }
+
 /**
  * Create a CLI renderer and run its async terminal setup. The constructor
  * owns all stream and backend decisions; this factory only layers on the
@@ -921,6 +928,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private kittyTransportMode: KittyImageTransport = "raw"
   private kittyTransportTimer: TimerHandle | null = null
   private _lastSceneTimeMs = 0
+  public destroyReason?: DestroyReason
 
   public get lastSceneTimeMs(): number {
     return this._lastSceneTimeMs
@@ -1091,7 +1099,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _nativePaletteSignature: string | null = null
   private _emittedPaletteSignature: string | null = null
   private _palettePublishGeneration = 0
-  private _onDestroy?: () => void
+  private _onDestroy?: (destroyReason?: DestroyReason) => void
   private themeModeState: RendererThemeMode
   private _terminalFocusState: boolean | null = null
 
@@ -1147,20 +1155,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.realStdoutWrite.call(this.stdout, ANSI.reset)
   }
 
-  private exitHandler: () => void = (() => {
-    this.destroy()
+  private exitHandler: (signal?: NodeJS.Signals) => void = (signal) => {
+    this.destroy(signal ? { type: "signal", signal } : { type: "ctrl-c" })
     void this.closed
       .then(() => {
         if (env.OTUI_DUMP_CAPTURES) this.dumpOutputCache("=== CAPTURED OUTPUT ===\n")
       })
       .catch((error) => console.error("Native scene shutdown failed:", error))
-  }).bind(this)
+  }
 
   private nativeProcessExitHandler = (): void => {
     if (!this.nativeSession || this.nativeSession.disposed) return
     const restored = this.nativeSession.restoreOnExit()
     try {
-      this.destroy()
+      this.destroy({ type: "process-exit" })
       if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
     } finally {
       this.nativeSession.dispose()
@@ -1455,7 +1463,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         } catch {
           // The original Session failure remains available through closed.
         } finally {
-          this.destroy()
+          this.destroy({ type: "output-closed", error })
         }
       })
     } catch (error) {
@@ -4313,7 +4321,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private queueFrame(): void {
     if (this.cancelReadyFrame || this._isDestroyed) return
     if (!this.canRender) {
-      this.destroy()
+      this.destroy({ type: "output-closed", error: this.nativeSession.error ?? undefined })
       return
     }
     this.cancelReadyFrame = this.nativeSession.scheduler.schedule(() => {
@@ -4535,12 +4543,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!this.rendering) this.resolveIdleIfNeeded()
   }
 
-  public destroy(): void {
+  public destroy(reason: DestroyReason = { type: "destroy" }): void {
     if (this._isDestroyed) return
     this.lib.getYogaHost().assertMutable()
     this._isDestroyed = true
     this._destroyPending = true
     this._palettePublishGeneration++
+    this.destroyReason = reason
 
     this._cancelPaletteDetection?.(new Error("Cannot detect palette after renderer destruction"))
 
@@ -4739,7 +4748,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     if (this._onDestroy) {
       try {
-        this._onDestroy()
+        this._onDestroy(this.destroyReason)
       } catch (e) {
         console.error("Error in onDestroy callback:", e instanceof Error ? e.stack : String(e))
       }
@@ -4953,7 +4962,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.nativeScene.cancelFrame()
         this.rendering = false
         this.logNativeDiagnostics()
-        if (!this.canRender && !this._isDestroyed) this.destroy()
+        if (!this.canRender && !this._isDestroyed)
+          this.destroy({ type: "output-closed", error: this.nativeSession.error ?? undefined })
         if (this._destroyPending) {
           this.finalizeDestroy()
         }
