@@ -144,6 +144,8 @@ export type {
   NativeSpanFeedEventHandler,
   NativeSplitSnapshot,
   NativeTextBufferInfo,
+  NativeVideoInfo,
+  NativeVideoState,
   NativeYogaDirtiedCallback,
   NativeYogaLayout,
   NativeYogaMeasureCallback,

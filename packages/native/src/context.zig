@@ -21,6 +21,7 @@ const editor_view = @import("editor-view.zig");
 const ansi = @import("ansi.zig");
 const image = @import("image.zig");
 const audio = @import("audio.zig");
+const video = @import("video.zig");
 const clipboard = @import("clipboard/host.zig");
 const encoded_unicode = @import("encoded-unicode.zig");
 pub const embedded_terminal = if (@import("ghostty_vt_options").available)
@@ -1898,7 +1899,7 @@ pub const Context = struct {
     pub fn sceneCreateNode(self: *Context, session_handle: Handle, kind: u32, num: u32) !Handle {
         try self.beginMutation();
         defer self.mutating = false;
-        if (kind > api.OT_SCENE_IMAGE or num == 0) return error.InvalidOptions;
+        if (kind > api.OT_SCENE_VIDEO or num == 0) return error.InvalidOptions;
         const value = try self.getSession(session_handle);
         try value.checkOpen();
         const attached = value.renderer orelse return error.RendererNotAttached;
@@ -2052,6 +2053,70 @@ pub const Context = struct {
         if (source) |value| value.retain();
         node.scene_node.?.control.image.deinit();
         node.scene_node.?.control.image = .{ .source = source, .fit = fit, .protocol = protocol, .buffer = target };
+    }
+
+    fn videoState(self: *Context, handle: Handle) !*scene.VideoState {
+        const node = try self.sceneMutableNode(handle);
+        if (node.scene_node.?.kind != api.OT_SCENE_VIDEO) return error.WrongKind;
+        return &node.scene_node.?.control.video;
+    }
+
+    fn videoPlayer(self: *Context, handle: Handle) !*video.Player {
+        return (try self.videoState(handle)).player orelse error.NoPlayer;
+    }
+
+    pub fn sceneSetVideo(self: *Context, handle: Handle, fit: image.Fit, buffer_handle: ?Handle) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const node = try self.sceneMutableNode(handle);
+        if (node.scene_node.?.kind != api.OT_SCENE_VIDEO) return error.WrongKind;
+        try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
+        const target = if (buffer_handle) |id| try self.getBuffer(id) else null;
+        if (target) |value| try value.retain();
+        const state = &node.scene_node.?.control.video;
+        state.image.deinit();
+        state.image = .{ .fit = fit, .buffer = target };
+    }
+
+    /// Replaces the node's player. An empty path closes it. A failed open keeps no player.
+    pub fn videoOpen(self: *Context, handle: Handle, path: []const u8) !video.Info {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const state = try self.videoState(handle);
+        if (state.player) |player| player.deinit();
+        state.player = null;
+        state.painted = 0;
+        self.allocator.free(state.open_error);
+        state.open_error = &.{};
+        if (path.len == 0) return .{};
+        var detail: [256]u8 = undefined;
+        state.player = video.Player.open(self.allocator, path, &detail) catch |err| {
+            state.open_error = self.allocator.dupe(u8, std.mem.sliceTo(&detail, 0)) catch &.{};
+            return err;
+        };
+        return state.player.?.video.info;
+    }
+
+    pub fn videoControl(self: *Context, handle: Handle, comptime operation: anytype, args: anytype) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const player = try self.videoPlayer(handle);
+        try @call(.auto, operation, .{player} ++ args);
+    }
+
+    pub fn videoGetState(self: *Context, handle: Handle) !video.PlayerState {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return (try self.videoPlayer(handle)).snapshot();
+    }
+
+    /// Returns the detail of the last open, seek, or decode failure, or of a non-fatal audio failure.
+    pub fn videoGetError(self: *Context, handle: Handle) ![]const u8 {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const state = try self.videoState(handle);
+        const player = state.player orelse return state.open_error;
+        return player.lastError();
     }
 
     pub fn sceneSetSurface(self: *Context, handle: Handle, buffer_handle: ?Handle) !void {

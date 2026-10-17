@@ -115,6 +115,7 @@
     "src/tests/image-renderable.test.ts",
     "src/tests/image-pool.test.ts",
     "src/tests/image.test.ts",
+    "src/tests/video-renderable.test.ts",
     "src/tests/destroy-on-exit.fixture.ts",
     "src/tests/destroy-on-exit.test.ts",
     "src/tests/destroy-during-render.test.ts",

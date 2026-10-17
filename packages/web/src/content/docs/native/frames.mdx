@@ -142,7 +142,7 @@ Two commands ignore the clip and opacity and act on the whole frame, like their 
 - A `DRAW` with `OT_BUFFER_DRAW_CLEAR` overwrites every cell, including cells that earlier nodes painted, and removes their image placements.
 - `COLOR_MATRIX` transforms every cell that it selects, inside or outside the clip.
 
-An `IMAGE` node with a backing buffer from `ot_scene_set_image` is an exception to these rules.
+An `IMAGE` or `VIDEO` node with a backing buffer from `ot_scene_set_image` or `ot_scene_set_video` is an exception to these rules.
 Native code clears that buffer, plays the node's phases into it in buffer coordinates with empty stacks, and then composes it into the frame.
 
 Native code reads each resource that a command names when it plays the command, not when the host records it.

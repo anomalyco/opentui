@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 2b36545357f7738df87404a9507ebeb54f38df5cd270fd98c80998f95972863c
+// ABI audit SHA-256: 48e726e26dbadfea03f29bf3455b63c7b4a4be63ace6072b3b86899f698a58f5
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -139,6 +139,18 @@ export const nativeSymbols = {
   ot_image_take_pixels: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_image_pixels_release: { args: ["ptr", "buffer"], returns: "i32" },
   ot_scene_set_image: { args: ["ptr", "buffer", "ptr", "u32", "u32", "ptr"], returns: "i32" },
+  ot_scene_set_video: { args: ["ptr", "buffer", "u32", "ptr"], returns: "i32" },
+  ot_video_open: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_video_play: { args: ["ptr", "buffer"], returns: "i32" },
+  ot_video_pause: { args: ["ptr", "buffer"], returns: "i32" },
+  ot_video_seek: { args: ["ptr", "buffer", "i64"], returns: "i32" },
+  ot_video_set_loop: { args: ["ptr", "buffer", "u32"], returns: "i32" },
+  ot_video_set_muted: { args: ["ptr", "buffer", "u32"], returns: "i32" },
+  ot_video_set_volume: { args: ["ptr", "buffer", "f32"], returns: "i32" },
+  ot_video_set_av_sync_offset: { args: ["ptr", "buffer", "i64"], returns: "i32" },
+  ot_video_set_max_fps: { args: ["ptr", "buffer", "u32"], returns: "i32" },
+  ot_video_get_state: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
+  ot_video_get_error: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
   ot_buffer_draw_image: { args: ["ptr", "buffer", "ptr", "buffer", "buffer", "buffer"], returns: "i32" },
   ot_session_set_image_resolution: { args: ["ptr", "buffer", "u32", "u32", "u32", "u32"], returns: "i32" },
   ot_session_set_kitty_image_transport: { args: ["ptr", "buffer", "u32"], returns: "i32" },
@@ -935,6 +947,29 @@ export const nativeLayouts = {
       byte_count: { offset: 24, size: 8, alignment: 8, type: "u64" },
     },
   },
+  ot_video_info: {
+    size: 32,
+    alignment: 8,
+    fields: {
+      duration_us: { offset: 0, size: 8, alignment: 8, type: "i64" },
+      width: { offset: 8, size: 4, alignment: 4, type: "u32" },
+      height: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      fps_num: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      fps_den: { offset: 20, size: 4, alignment: 4, type: "u32" },
+      has_audio: { offset: 24, size: 4, alignment: 4, type: "u32" },
+      reserved: { offset: 28, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_video_state: {
+    size: 24,
+    alignment: 8,
+    fields: {
+      current_time_us: { offset: 0, size: 8, alignment: 8, type: "i64" },
+      frame_pts_us: { offset: 8, size: 8, alignment: 8, type: "i64" },
+      flags: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      quality_tier: { offset: 20, size: 4, alignment: 4, type: "u32" },
+    },
+  },
   ot_image_draw_options: {
     size: 64,
     alignment: 4,
@@ -1430,6 +1465,7 @@ export const nativeConstants = {
   OT_IMAGE_OUTPUT_TOO_SMALL: -45,
   OT_IMAGE_UNSUPPORTED_FEATURE: -46,
   OT_IMAGE_BUSY: -47,
+  OT_VIDEO_FAILED: -60,
   OT_SCENE_ROOT: 0,
   OT_SCENE_BOX: 1,
   OT_SCENE_TEXT: 2,
@@ -1439,6 +1475,7 @@ export const nativeConstants = {
   OT_SCENE_CUSTOM: 6,
   OT_SCENE_TEXT_VIEW: 7,
   OT_SCENE_IMAGE: 8,
+  OT_SCENE_VIDEO: 9,
   OT_SCENE_WRAP_NONE: 0,
   OT_SCENE_WRAP_CHAR: 1,
   OT_SCENE_WRAP_WORD: 2,
@@ -1771,6 +1808,12 @@ export const nativeConstants = {
   OT_IMAGE_BLEND_SOURCE_OVER: 0,
   OT_IMAGE_BLEND_SOURCE: 1,
   OT_IMAGE_BLEND_DESTINATION_OVER: 2,
+  OT_VIDEO_PLAYING: 1,
+  OT_VIDEO_ENDED: 2,
+  OT_VIDEO_BUFFERING: 4,
+  OT_VIDEO_AUDIO: 8,
+  OT_VIDEO_HAS_FRAME: 16,
+  OT_VIDEO_ERROR: 32,
   OT_TEXT_VIEW_WRAP_WIDTH: 0,
   OT_TEXT_VIEW_WRAP_MODE: 1,
   OT_TEXT_VIEW_FIRST_LINE_OFFSET: 2,

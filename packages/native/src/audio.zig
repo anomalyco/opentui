@@ -1689,6 +1689,14 @@ pub fn startMixer(engine: *Engine) i32 {
     return Status.ok;
 }
 
+/// Silences the mixer without releasing the device; startMixer resumes. Streams keep their
+/// buffered audio because a stopped mixer does not read them.
+pub fn suspendMixer(engine: *Engine) void {
+    engine.lock.lockUncancelable(io);
+    engine.started = false;
+    engine.lock.unlock(io);
+}
+
 pub fn stop(engine: *Engine) i32 {
     const e = engine;
     e.lock.lockUncancelable(io);

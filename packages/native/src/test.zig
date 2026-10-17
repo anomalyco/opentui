@@ -56,6 +56,7 @@ const session_cursor_tests = @import("tests/session-cursor_test.zig");
 const buffer_methods_tests = @import("tests/buffer-methods_test.zig");
 const split_scrollback_tests = @import("tests/split-scrollback_test.zig");
 const audio_tests = @import("tests/audio_test.zig");
+const video_tests = @import("tests/video_test.zig");
 const yoga_tests = @import("tests/yoga_test.zig");
 const ansi_tests = @import("tests/ansi_test.zig");
 const ghostty_vt_tests = @import("tests/ghostty_vt_test.zig");
@@ -143,6 +144,7 @@ comptime {
     _ = buffer_methods_tests;
     _ = split_scrollback_tests;
     _ = audio_tests;
+    _ = video_tests;
     _ = yoga_tests;
     _ = ansi_tests;
     _ = ghostty_vt_tests;

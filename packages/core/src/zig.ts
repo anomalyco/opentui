@@ -753,6 +753,28 @@ export enum NativeStatus {
   LayoutLimit = -26,
   FrameBusy = -27,
   FrameRequestLimit = -28,
+  VideoFailed = -60,
+}
+
+export interface NativeVideoInfo {
+  durationUs: bigint
+  width: number
+  height: number
+  fpsNum: number
+  fpsDen: number
+  hasAudio: boolean
+}
+
+export interface NativeVideoState {
+  currentTimeUs: bigint
+  framePtsUs: bigint
+  playing: boolean
+  ended: boolean
+  buffering: boolean
+  audio: boolean
+  hasFrame: boolean
+  failed: boolean
+  qualityTier: number
 }
 
 export class NativeError extends Error {
@@ -924,6 +946,14 @@ registerEnvVar({
   type: "string",
   required: false,
 })
+// Read by video-shim.c when a video opens
+registerEnvVar({
+  name: "OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL",
+  description:
+    "Experimental: decode video with VideoToolbox on macOS when set to exactly 1 or true; otherwise or on failure, decode in software",
+  type: "string",
+  required: false,
+})
 
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
 const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
@@ -982,7 +1012,18 @@ const MOUSE_STYLE_TO_ID = {
 const SCENE_BORDER_STYLES = ["single", "double", "rounded", "heavy"] as const
 const SCENE_TEXT_WRAP_MODES = ["none", "char", "word"] as const
 const SCENE_TEXT_ALIGNS = ["left", "center", "right"] as const
-const SCENE_NODE_KINDS = ["root", "box", "text", "slider", "arrow", "editor", "custom", "text_view", "image"] as const
+const SCENE_NODE_KINDS = [
+  "root",
+  "box",
+  "text",
+  "slider",
+  "arrow",
+  "editor",
+  "custom",
+  "text_view",
+  "image",
+  "video",
+] as const
 const IMAGE_PROTOCOL_TO_ID = { auto: 0, kitty: 1, sixel: 2, blocks: 3 } as const
 const IMAGE_FITS = ["fit", "cover", "fill"] as const
 const BUFFER_DRAW_OPERATIONS = new Map<string, { id: number; size: number }>([
@@ -3402,6 +3443,8 @@ export class FFIRenderLib {
     createEditorSelectionRecord()
   // Info reads never call back into JavaScript, so one output record serves every read.
   private readonly editorViewInfoRecord = createContextRecord(nativeLayouts.ot_editor_view_info)
+  private readonly videoStateRecord = new Uint8Array(nativeLayouts.ot_video_state.size)
+  private readonly videoStateView = new DataView(this.videoStateRecord.buffer)
   private readonly selectionResetRecord = encodeEditorSelection({ operation: NativeEditorSelectionOperation.Reset })
   private readonly localSelectionResetRecord = encodeEditorSelection({
     operation: NativeEditorSelectionOperation.LocalReset,
@@ -5656,6 +5699,147 @@ export class FFIRenderLib {
       nativeResult(
         "ot_scene_set_image",
         this.opentui.symbols.ot_scene_set_image(pointer, handle, source, fitId, protocolId, storage),
+      )
+    })
+  }
+
+  public sceneSetVideo(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    fit: "fit" | "cover" | "fill",
+    buffer: ContextBufferHandle | null,
+  ): void {
+    const handle = encodeContextHandle(context, node)
+    const storage = buffer === null ? null : encodeContextHandle(context, buffer)
+    const fitId = IMAGE_FITS.indexOf(fit)
+    if (fitId < 0) throw new TypeError("Unknown video fit")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_video")
+      nativeResult("ot_scene_set_video", this.opentui.symbols.ot_scene_set_video(pointer, handle, fitId, storage))
+    })
+  }
+
+  /** Replaces the node's player; an empty path closes it. */
+  public videoOpen(context: NativeContextHandle, node: SceneNodeHandle, path: string): NativeVideoInfo {
+    const handle = encodeContextHandle(context, node)
+    const bytes = path.length === 0 ? null : sessionBytes(this.encoder.encode(path), "Video path length")
+    const layout = nativeLayouts.ot_video_info
+    const output = new Uint8Array(layout.size)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_open")
+      nativeResult(
+        "ot_video_open",
+        this.opentui.symbols.ot_video_open(pointer, handle, bytes, bytes?.byteLength ?? 0, output),
+      )
+    })
+    const view = new DataView(output.buffer)
+    const fields = layout.fields
+    return {
+      durationUs: view.getBigInt64(fields.duration_us.offset, true),
+      width: view.getUint32(fields.width.offset, true),
+      height: view.getUint32(fields.height.offset, true),
+      fpsNum: view.getUint32(fields.fps_num.offset, true),
+      fpsDen: view.getUint32(fields.fps_den.offset, true),
+      hasAudio: view.getUint32(fields.has_audio.offset, true) !== 0,
+    }
+  }
+
+  public videoCall(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    operation: "ot_video_play" | "ot_video_pause",
+  ): void {
+    const handle = encodeContextHandle(context, node)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, operation)
+      nativeResult(operation, this.opentui.symbols[operation](pointer, handle))
+    })
+  }
+
+  public videoSeek(context: NativeContextHandle, node: SceneNodeHandle, timeUs: bigint): void {
+    const handle = encodeContextHandle(context, node)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_seek")
+      nativeResult("ot_video_seek", this.opentui.symbols.ot_video_seek(pointer, handle, timeUs))
+    })
+  }
+
+  public videoSetLoop(context: NativeContextHandle, node: SceneNodeHandle, loop: boolean): void {
+    const handle = encodeContextHandle(context, node)
+    const value = toFFIBool(loop, "Video loop")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_loop")
+      nativeResult("ot_video_set_loop", this.opentui.symbols.ot_video_set_loop(pointer, handle, value))
+    })
+  }
+
+  public videoSetMuted(context: NativeContextHandle, node: SceneNodeHandle, muted: boolean): void {
+    const handle = encodeContextHandle(context, node)
+    const value = toFFIBool(muted, "Video muted")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_muted")
+      nativeResult("ot_video_set_muted", this.opentui.symbols.ot_video_set_muted(pointer, handle, value))
+    })
+  }
+
+  public videoSetVolume(context: NativeContextHandle, node: SceneNodeHandle, volume: number): void {
+    const handle = encodeContextHandle(context, node)
+    const value = toFFIF32(volume, "Video volume")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_volume")
+      nativeResult("ot_video_set_volume", this.opentui.symbols.ot_video_set_volume(pointer, handle, value))
+    })
+  }
+
+  public videoSetAvSyncOffset(context: NativeContextHandle, node: SceneNodeHandle, offsetUs: bigint): void {
+    const handle = encodeContextHandle(context, node)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_av_sync_offset")
+      nativeResult(
+        "ot_video_set_av_sync_offset",
+        this.opentui.symbols.ot_video_set_av_sync_offset(pointer, handle, offsetUs),
+      )
+    })
+  }
+
+  public videoSetMaxFps(context: NativeContextHandle, node: SceneNodeHandle, fps: number): void {
+    const handle = encodeContextHandle(context, node)
+    if (!isFFIU32(fps)) throw new RangeError("Video maxFps must be a u32")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_max_fps")
+      nativeResult("ot_video_set_max_fps", this.opentui.symbols.ot_video_set_max_fps(pointer, handle, fps))
+    })
+  }
+
+  public videoGetState(context: NativeContextHandle, node: SceneNodeHandle): NativeVideoState {
+    const handle = encodeContextHandle(context, node)
+    const layout = nativeLayouts.ot_video_state
+    const output = this.videoStateRecord
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_get_state")
+      nativeResult("ot_video_get_state", this.opentui.symbols.ot_video_get_state(pointer, handle, output))
+    })
+    const view = this.videoStateView
+    const flags = view.getUint32(layout.fields.flags.offset, true)
+    return {
+      currentTimeUs: view.getBigInt64(layout.fields.current_time_us.offset, true),
+      framePtsUs: view.getBigInt64(layout.fields.frame_pts_us.offset, true),
+      playing: (flags & nativeConstants.OT_VIDEO_PLAYING) !== 0,
+      ended: (flags & nativeConstants.OT_VIDEO_ENDED) !== 0,
+      buffering: (flags & nativeConstants.OT_VIDEO_BUFFERING) !== 0,
+      audio: (flags & nativeConstants.OT_VIDEO_AUDIO) !== 0,
+      hasFrame: (flags & nativeConstants.OT_VIDEO_HAS_FRAME) !== 0,
+      failed: (flags & nativeConstants.OT_VIDEO_ERROR) !== 0,
+      qualityTier: view.getUint32(layout.fields.quality_tier.offset, true),
+    }
+  }
+
+  public videoGetError(context: NativeContextHandle, node: SceneNodeHandle): string {
+    const handle = encodeContextHandle(context, node)
+    return this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_get_error")
+      return this.readText("ot_video_get_error", (bytes, capacity, count) =>
+        this.opentui.symbols.ot_video_get_error(pointer, handle, bytes, capacity, count),
       )
     })
   }

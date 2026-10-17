@@ -3370,6 +3370,23 @@ test "renderer - repaintSplitFooter repaints footer without append payload" {
     try std.testing.expect(sync_index.? < footer_text_index.?);
 }
 
+test "renderer - split footer frames record frame cost" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 12, 3, &pools.graphemes, &pools.links);
+    defer test_cli_renderer.deinit();
+    const cli_renderer = test_cli_renderer.renderer;
+
+    _ = cli_renderer.resetSplitScrollback(2, 2);
+    const stale = std.math.maxInt(u32);
+    cli_renderer.lastFrameCostUs = stale;
+    const frames = cli_renderer.renderStats.frameCount;
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.repaintSplitFooter(2, true).status);
+    try std.testing.expectEqual(frames + 1, cli_renderer.renderStats.frameCount);
+    try std.testing.expect(cli_renderer.lastFrameCostUs != stale);
+}
+
 test "renderer - repaintSplitFooter applies pending viewport scroll transition in one frame" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
