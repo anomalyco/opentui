@@ -64,38 +64,41 @@ async function setupScroll() {
   return { target, scroll, child }
 }
 
-test.each(["wheel input", "key input", "content height shrink", "content width shrink"])(
-  "native sticky ScrollBox %s stops after a change listener destroys its controller",
-  async (name) => {
-    const { target, scroll, child } = await setupScroll()
-    const vertical = /wheel|height/.test(name)
-    const shrink = name.includes("shrink")
-    const bar = vertical ? scroll.verticalScrollBar : scroll.horizontalScrollBar
-    if (shrink) bar.scrollPosition = 20
-    const inputStep = vertical ? 1 : Math.round(scroll.viewport.width / 5)
-    const changes: number[] = []
-    const errors: Error[] = []
-    target.renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }: CliRendererErrorEvent) => errors.push(error))
-    bar.on("change", ({ position }: { position: number }) => {
-      changes.push(position)
-      scroll.destroyRecursively()
-    })
-    const logged = spyOn(console, "error").mockImplementation(() => {})
-    try {
-      scroll.focus()
-      if (shrink) {
-        child[vertical ? "height" : "width"] = 15
-        await target.renderOnce()
-      } else if (vertical) await target.mockMouse.scroll(scroll.viewport.x, scroll.viewport.y, "down")
-      else target.mockInput.pressKey("ARROW_RIGHT")
-      const expected = shrink ? 15 - bar.viewportSize : inputStep
-      assert.deepEqual([changes, bar.scrollPosition, bar.slider.value], [[expected], expected, expected])
-      assert.deepEqual([scroll.isDestroyed, errors, logged.mock.calls], [true, [], []])
-    } finally {
-      logged.mockRestore()
-    }
-  },
-)
+test.each(
+  ["wheel input", "key input", "content height shrink", "content width shrink"].flatMap((name) =>
+    ["change listener", "option callback"].map((source) => [name, source]),
+  ),
+)("native sticky ScrollBox %s stops after a %s destroys its controller", async (name, source) => {
+  const { target, scroll, child } = await setupScroll()
+  const vertical = /wheel|height/.test(name)
+  const shrink = name.includes("shrink")
+  const bar = vertical ? scroll.verticalScrollBar : scroll.horizontalScrollBar
+  if (shrink) bar.scrollPosition = 20
+  const inputStep = vertical ? 1 : Math.round(scroll.viewport.width / 5)
+  const changes: number[] = []
+  const errors: Error[] = []
+  target.renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }: CliRendererErrorEvent) => errors.push(error))
+  const onChange = (position: number) => {
+    changes.push(position)
+    scroll.destroyRecursively()
+  }
+  if (source === "change listener") bar.on("change", ({ position }: { position: number }) => onChange(position))
+  else scroll[vertical ? "verticalScrollbarOptions" : "horizontalScrollbarOptions"] = { onChange }
+  const logged = spyOn(console, "error").mockImplementation(() => {})
+  try {
+    scroll.focus()
+    if (shrink) {
+      child[vertical ? "height" : "width"] = 15
+      await target.renderOnce()
+    } else if (vertical) await target.mockMouse.scroll(scroll.viewport.x, scroll.viewport.y, "down")
+    else target.mockInput.pressKey("ARROW_RIGHT")
+    const expected = shrink ? 15 - bar.viewportSize : inputStep
+    assert.deepEqual([changes, bar.scrollPosition, bar.slider.value], [[expected], expected, expected])
+    assert.deepEqual([scroll.isDestroyed, errors, logged.mock.calls], [true, [], []])
+  } finally {
+    logged.mockRestore()
+  }
+})
 
 test("a retained native slider does not call its destroyed scrollbar controller", async () => {
   const target = await setup()
@@ -153,3 +156,23 @@ test("native ScrollBox root options stop after a blur callback removes the owner
   })
   assert.equal(scroll.isDestroyed, true)
 })
+
+test.each(["scrollbarOptions", "verticalScrollbarOptions", "horizontalScrollbarOptions"] as const)(
+  "native ScrollBox %s stop after an option callback removes the owner",
+  async (option) => {
+    const { scroll } = await setupScroll()
+    const changes: number[] = []
+    assert.doesNotThrow(() => {
+      scroll[option] = {
+        onChange: (position) => {
+          changes.push(position)
+          scroll.destroyRecursively()
+        },
+        trackOptions: { value: 3 },
+        visible: false,
+      }
+    })
+    assert.deepEqual(changes, [3])
+    assert.equal(scroll.isDestroyed, true)
+  },
+)
