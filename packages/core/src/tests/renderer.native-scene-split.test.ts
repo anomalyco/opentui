@@ -399,6 +399,67 @@ test("captured stdout that fails mid-write queues and leaks none of its rows", a
   expect(externalOutput.takeText()).toBe("d")
 })
 
+test.each([
+  ["café", 4],
+  ["一", 1],
+  ["\u{10437}", 1],
+] as const)("captured stdout streams UTF-8 %s split at byte %s", async (text, split) => {
+  const terminal = await setupTerminal()
+  const bytes = Buffer.from(text)
+  terminal.stdout.write("before:")
+  terminal.stdout.write(bytes.subarray(0, split))
+  terminal.stdout.write("")
+  terminal.stdout.write(bytes.subarray(split), "utf8")
+  terminal.stdout.write(" after\n")
+  const commits = terminal.externalOutput.take()
+  expect(commits.map(({ text }) => text).join("")).toBe(`before:${text} after`)
+  await terminal.drainUntil(Array.from(text).at(-1)!)
+  expect(terminal.stdout.text()).not.toContain("\ufffd")
+})
+
+test.each(["string write", "capture end", "deferred capture end", "destroy"] as const)(
+  "captured stdout flushes pending UTF-8 on %s",
+  async (end) => {
+    const terminal = await setupTerminal()
+    terminal.stdout.write(Buffer.from([0xc3]))
+    expect(terminal.externalOutput.take()).toEqual([])
+    if (end === "string write") terminal.stdout.write("x\n")
+    else if (end !== "destroy") {
+      if (end === "deferred capture end") terminal.stdout.write("x")
+      terminal.renderer.externalOutputMode = "passthrough"
+      if (end === "deferred capture end") terminal.stdout.write(Buffer.from([0xc3]))
+    } else terminal.renderer.destroy()
+    if (end === "destroy") await terminal.renderer.closed
+    else await terminal.drainUntil("\ufffd")
+    const expected = end === "string write" ? "\ufffdx" : end === "deferred capture end" ? "\ufffdx\ufffd" : "\ufffd"
+    const commits = terminal.externalOutput.take()
+    expect(commits.map(({ text }) => text).join("")).toBe(expected)
+    expect(terminal.stdout.text()).toContain("\ufffd")
+  },
+)
+
+test("output failure discards pending UTF-8 and completes renderer cleanup", async () => {
+  const { renderer, stdout, externalOutput } = await setupTerminal()
+  renderers.pop()
+  const intercepted = stdout.write
+  const failure = new Error("stdout output failure")
+  stdout.write(Buffer.from([0xc3]))
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("renderer cleanup timed out")), 2000)
+  })
+  try {
+    stdout.emit("error", failure)
+    await expect(Promise.race([renderer.closed, timedOut])).rejects.toBe(failure)
+    expect(renderer.root.isDestroyed).toBe(true)
+    expect(stdout.write).not.toBe(intercepted)
+    expect(stdout.text()).not.toContain("\ufffd")
+    expect(externalOutput.take()).toEqual([])
+  } finally {
+    clearTimeout(timeout)
+  }
+})
+
 test("capture-stdout set after destruction leaves stdout uncaptured", async () => {
   const stdout = createTestStdout(24, 10)
   const { renderer } = await setup({ stdout, externalOutputMode: "passthrough" })
