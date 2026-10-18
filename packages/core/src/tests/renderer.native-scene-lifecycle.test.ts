@@ -1,6 +1,7 @@
 import { afterEach, spyOn, test } from "bun:test"
 import assert from "node:assert/strict"
 import { BoxRenderable } from "../renderables/Box.js"
+import type { DestroyReason } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { RecordingWriteStream, TestWriteStream } from "../testing/test-streams.js"
@@ -54,15 +55,51 @@ test("frame callback can destroy and await renderer.closed including finalizatio
   }
 })
 
+test("onDestroy receives the reason each trigger destroyed the renderer", async () => {
+  const failure = new Error("output failed")
+  const triggers: [DestroyReason, (target: TestRendererSetup, stdout: TestWriteStream) => unknown][] = [
+    [{ type: "destroy" }, ({ renderer }) => renderer.destroy()],
+    [{ type: "ctrl-c" }, ({ mockInput }) => mockInput.pressCtrlC()],
+    [{ type: "signal", signal: "SIGUSR2" }, () => process.emit("SIGUSR2", "SIGUSR2")],
+    [
+      { type: "process-exit" },
+      ({ renderer }) => (renderer as unknown as { nativeProcessExitHandler: () => void }).nativeProcessExitHandler(),
+    ],
+    // The frame path sees the failed Session before `closed` rejects and must still carry its error.
+    [
+      { type: "output-closed", error: failure },
+      ({ renderOnce }, stdout) => {
+        stdout.on("error", () => { })
+        stdout.emit("error", failure)
+        return renderOnce()
+      },
+    ],
+  ]
+  for (const [expected, trigger] of triggers) {
+    const stdout = new TestWriteStream(8, 3)
+    let reason: DestroyReason | undefined
+    const target = await createTestRenderer({
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      bufferedOutput: "stdout",
+      exitSignals: ["SIGUSR2"],
+      onDestroy: (destroyReason) => (reason = destroyReason),
+    })
+    await trigger(target, stdout)
+    await target.renderer.closed.catch(() => { })
+    assert.deepEqual(reason, expected)
+    assert.deepEqual(target.renderer.destroyReason, expected)
+  }
+})
+
 test("destroying nodes while their Session closes drops staged writes without reporting them", async () => {
   const stdout = new RecordingWriteStream()
   const target = await createTestRenderer({ stdout: stdout as unknown as NodeJS.WriteStream, bufferedOutput: "stdout" })
   const { renderer } = target
   targets.push(target)
-  const logged = spyOn(console, "error").mockImplementation(() => {})
+  const logged = spyOn(console, "error").mockImplementation(() => { })
   try {
     stdout.hold()
-    const setupTerminal = renderer.setupTerminal().catch(() => {})
+    const setupTerminal = renderer.setupTerminal().catch(() => { })
     const box = new BoxRenderable(renderer, { width: 2, height: 1 })
     renderer.root.add(box)
     const closing = renderer.nativeScene.driver.close()
@@ -83,7 +120,7 @@ test("destroying nodes while their Session closes drops staged writes without re
 
 test("reentrant input failure during destruction still releases nodes and stream ownership", async () => {
   const { renderer, renderOnce, finalized, stdout } = await setup()
-  const logged = spyOn(console, "error").mockImplementation(() => {})
+  const logged = spyOn(console, "error").mockImplementation(() => { })
   const failure = new Error("input cleanup failure")
   const gate = Promise.withResolvers<void>()
   const entered = Promise.withResolvers<void>()
