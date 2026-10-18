@@ -496,6 +496,7 @@ test "embedded terminal drains generated PTY responses incrementally" {
         .{ .query = "\x1b[=c", .reply = "\x1bP!|00000000\x1b\\" },
         .{ .query = "\x1b]10;?\x07", .reply = "\x1b]10;rgb:ffff/ffff/ffff\x07" },
         .{ .query = "\x1b]11;?\x1b\\", .reply = "\x1b]11;rgb:0000/0000/0000\x1b\\" },
+        .{ .query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\", .reply = "" }, // a=q to Kitty Graphics Protocol, must return empty
     };
     for (cases) |case| {
         try terminal.write(case.query);
@@ -504,6 +505,13 @@ test "embedded terminal drains generated PTY responses incrementally" {
         const rest_len = try terminal.drainResponses(output[first_len..]);
         try std.testing.expectEqualStrings(case.reply, output[0 .. first_len + rest_len]);
     }
+
+    // a=T to Ghostty/Kitty, must now return 0 since it should not retain any uploaded image data
+    try terminal.write("\x1b_Ga=T,i=7,f=24,s=2,v=2;////////////////\x1b\\");
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        terminal.terminal.screens.active.kitty_images.total_bytes,
+    );
 }
 
 test "embedded terminal preserves queued responses when the bound is reached" {

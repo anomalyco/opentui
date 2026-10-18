@@ -73,6 +73,9 @@ pub const EmbeddedTerminal = struct {
                 .cols = options.cols,
                 .rows = options.rows,
                 .max_scrollback_bytes = options.max_scrollback,
+                // With a nonzero limit Ghostty accepts and answers Kitty graphics commands.
+                // With a zero value, the Kitty graphics command now sends no reply
+                .kitty_image_storage_limit = 0,
                 // Ghostty answers OSC 10/11 and renders one-sided changes only when both defaults are set.
                 .colors = .{
                     .background = .init(ghostty.RenderState.empty.colors.background),
