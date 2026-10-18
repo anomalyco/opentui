@@ -1004,11 +1004,9 @@ test "isXtversionTmux - detects tmux from xtversion" {
     try testing.expect(term.isXtversionTmux());
 }
 
-// =====================================================================}
-
+// ============================================================================
 // GRAPHEME CURSOR POSITIONING CAPABILITY TESTS
-// =====================================================================}
-
+// ============================================================================
 
 test "processCapabilityResponse - tmux sets explicit_cursor_positioning" {
     var term: Terminal = .{};
@@ -1111,11 +1109,9 @@ test "processCapabilityResponse - XTGETTCAP Ms only establishes positive support
     try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
 }
 
-// =====================================================================}
-
+// ============================================================================
 // CLIPBOARD (OSC 52) TESTS
-// =====================================================================}
-
+// ============================================================================
 
 test "writeClipboard - generates basic OSC52 sequence" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
