@@ -170,6 +170,20 @@ const offset = buffer.measureText(text.slice(0, text.indexOf("@"))) // 2: ^L tak
 buffer.getTextRange(0, offset).length // 1: the index of "@"
 ```
 
+To measure text that is not in a buffer, call `measureEditText(text, { widthMethod, tabWidth })`. It needs no
+`EditBuffer` or owner, and returns what `measureText()` returns on an edit buffer with that width method and tab width.
+`tabWidth` defaults to the tab width of a new edit buffer, which is 2, and rounds as `setTabWidth()` does. Pass the
+settings of the editor that will hold the text. `Textarea` and `Input` use the renderer's width method and the default
+tab width:
+
+```typescript
+import { createCliRenderer, measureEditText } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+measureEditText("\f@file", { widthMethod: renderer.widthMethod }) // 7: ^L takes two cells
+measureEditText("a\tb", { widthMethod: renderer.widthMethod, tabWidth: 4 }) // 6
+```
+
 The edit buffer emits native `"cursor-changed"` and `"content-changed"` events through its `EventEmitter` interface.
 `undo()` and `redo()` also emit `"cursorChanged"`. Native code reports each event during the edit call. Core then
 delivers it to listeners in a microtask, so listeners run after the edit call returns. Events are scoped to the
@@ -260,8 +274,8 @@ global display-width offset and uses it to index a JavaScript string by UTF-16 c
 
 The result is unreliable after wide CJK text, emoji, line breaks, combining sequences, or other complex graphemes. It
 also returns a nearby character at some end-of-line and end-of-buffer positions. Use `logicalCursor`, `visualCursor`,
-`offsetToPosition()`, and `positionToOffset()` for display coordinates. Use `measureText()` and `getTextRange()` to map
-between a JavaScript string index and an offset.
+`offsetToPosition()`, and `positionToOffset()` for display coordinates. Use `measureText()` or `measureEditText()` and
+`getTextRange()` to map between a JavaScript string index and an offset.
 
 ## Renderable base classes
 

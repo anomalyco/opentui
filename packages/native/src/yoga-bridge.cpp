@@ -442,10 +442,13 @@ uint32_t otYogaNodeStyleGetValue(YGNodeConstRef node, uint32_t kind, uint32_t ed
       case OT_STYLE_VALUE_MARGIN: value = YGNodeStyleGetMargin(node, e); break;
       case OT_STYLE_VALUE_PADDING: value = YGNodeStyleGetPadding(node, e); break;
       case OT_STYLE_VALUE_POSITION: value = YGNodeStyleGetPosition(node, e); break;
-      case OT_STYLE_VALUE_GAP:
-        value.value = YGNodeStyleGetGap(node, static_cast<YGGutter>(edge));
-        value.unit = std::isnan(value.value) ? YGUnitUndefined : YGUnitPoint;
+      case OT_STYLE_VALUE_GAP: {
+        // YGNodeStyleGetGap returns a float without its unit, so read the style itself.
+        using namespace facebook::yoga;
+        const auto gutter = scopedEnum(static_cast<YGGutter>(edge));
+        value = static_cast<YGValue>(resolveRef(node)->style().gap(gutter));
         break;
+      }
     }
     *out = (static_cast<uint64_t>(std::bit_cast<uint32_t>(value.value)) << 32) | value.unit;
   });

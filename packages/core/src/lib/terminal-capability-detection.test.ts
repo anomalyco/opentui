@@ -67,6 +67,14 @@ describe("isCapabilityResponse", () => {
     expect(isCapabilityResponse("\x1b]1337;Capabilities=T2NoH\x1b\\")).toBe(true)
   })
 
+  test("detects program status query responses", () => {
+    expect(isCapabilityResponse("\x1b]7501;?\x1b\\")).toBe(true)
+    expect(isCapabilityResponse("\x1b]7501;?:states=idle,working:kinds=auth\x07")).toBe(true)
+    expect(isCapabilityResponse("\x1b]7501; ? : states=idle\x1b\\")).toBe(true)
+    expect(isCapabilityResponse("\x1b]7501;state=idle\x1b\\")).toBe(false)
+    expect(isCapabilityResponse("\x1b]75010;?\x1b\\")).toBe(false)
+  })
+
   test("does not detect regular keypresses", () => {
     expect(isCapabilityResponse("a")).toBe(false)
     expect(isCapabilityResponse("A")).toBe(false)

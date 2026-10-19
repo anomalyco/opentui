@@ -29,6 +29,7 @@ pub const Capabilities = struct {
     notifications: bool = false,
     explicit_cursor_positioning: bool = false,
     remote: bool = false,
+    program_status: bool = false,
 };
 
 pub const NotificationProtocol = enum {
@@ -671,6 +672,16 @@ fn parseOsc99NotificationQuery(self: *Terminal, response: []const u8) void {
     }
 }
 
+// A supporting terminal replies `OSC 7501 ; ? ST`, optionally followed by
+// `:states=...:kinds=...`. Whitespace around the `?` is allowed.
+fn parseProgramStatusReply(self: *Terminal, response: []const u8) void {
+    const prefix = "\x1b]7501;";
+    const start = (std.mem.find(u8, response, prefix) orelse return) + prefix.len;
+    const payload = response[start .. start + findOscTerminator(response[start..])];
+    const first = payload[0 .. std.mem.findScalar(u8, payload, ':') orelse payload.len];
+    if (std.mem.eql(u8, std.mem.trim(u8, first, " "), "?")) self.caps.program_status = true;
+}
+
 pub fn checkEnvironmentOverrides(self: *Terminal) void {
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
@@ -1285,6 +1296,7 @@ fn applyKnownUnicodeWidthIdentity(self: *Terminal) void {
 pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     self.parseOsc99NotificationQuery(response);
     self.parseItermCapabilities(response);
+    self.parseProgramStatusReply(response);
     self.parseXtgettcapMs(response);
     self.parseKittyGraphicsResponse(response);
     self.parseSixelDeviceAttributes(response);

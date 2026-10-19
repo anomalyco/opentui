@@ -160,6 +160,15 @@ pub fn ot_edit_buffer_measure_text(context: ?*Owner, id: ?*const c.ot_handle, by
     return c.OT_OK;
 }
 
+pub fn ot_edit_measure_text(context: ?*Owner, bytes: ?[*]const u8, byte_count: u32, width_method: u32, tab_width: u32, out: ?*u32) callconv(.c) c.ot_status {
+    const owner = admit(context, true) catch |err| return fail(context, err);
+    if (out == null or (byte_count != 0 and bytes == null) or tab_width > 255) return fail(owner, error.InvalidOptions);
+    const method = abi.widthMethodFromC(width_method) catch |err| return fail(owner, err);
+    const width = @import("text-buffer.zig").UnifiedTextBuffer.effectiveTabWidth(@intCast(tab_width));
+    out.?.* = ctx.Context.measureEditText(if (bytes) |p| p[0..byte_count] else &.{}, width, .notation, method) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_edit_buffer_set_defaults(context: ?*Owner, id: ?*const c.ot_handle, mask: u32, options: ?*const c.ot_editor_style) callconv(.c) c.ot_status {
     const owner = admit(context, false) catch |err| return fail(context, err);
     if (id == null) return fail(owner, error.InvalidOptions);
@@ -620,7 +629,11 @@ test "Context editor ABI rejects malformed arguments without side effects" {
     style.struct_size = @sizeOf(c.ot_editor_style);
     style.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const chunks = std.mem.zeroes([2]c.ot_styled_text_chunk);
-    for (0..21) |row| {
+    // One byte over the limit for the widest tab; tab width 255 rounds to 254.
+    const tabs = try std.testing.allocator.alloc(u8, (std.math.maxInt(u32) - 1) / 254 + 1);
+    defer std.testing.allocator.free(tabs);
+    @memset(tabs, '\t');
+    for (0..27) |row| {
         const status = switch (row) {
             0 => ot_edit_buffer_set_tab_width(&owner, &edit_id, 256),
             1 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_DEBUG_ROPE + 1, 0),
@@ -644,6 +657,12 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             18 => ot_editor_view_replace_selection(&owner, &view_id, "\x1b\xff", 2, &count),
             19 => ot_edit_buffer_measure_text(&owner, &edit_id, null, 1, &count),
             20 => ot_edit_buffer_measure_text(&owner, &edit_id, "\x85", 1, &count),
+            21 => ot_edit_measure_text(&owner, null, 1, c.OT_WIDTH_METHOD_UNICODE, 0, &count),
+            22 => ot_edit_measure_text(&owner, "\x85", 1, c.OT_WIDTH_METHOD_UNICODE, 0, &count),
+            23 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE_WIDE + 1, 0, &count),
+            24 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 256, &count),
+            25 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 0, null),
+            26 => ot_edit_measure_text(&owner, tabs.ptr, @intCast(tabs.len), c.OT_WIDTH_METHOD_UNICODE, 255, &count),
             else => unreachable,
         };
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);
@@ -653,6 +672,9 @@ test "Context editor ABI rejects malformed arguments without side effects" {
         try std.testing.expectEqual(@as(u32, 99), count);
         try std.testing.expect(!owner.core.mutating);
     }
+    // At the limit, the cells of the widest tabs still fit in u32.
+    try std.testing.expectEqual(c.OT_OK, ot_edit_measure_text(&owner, tabs.ptr, @intCast(tabs.len - 1), c.OT_WIDTH_METHOD_UNICODE, 255, &count));
+    try std.testing.expectEqual(254 * (tabs.len - 1), count);
 }
 
 test "Context history-preserving set_text needs no registry slot per call" {

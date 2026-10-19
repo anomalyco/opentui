@@ -47,7 +47,10 @@ export class TextBuffer {
 
   static create(widthMethod: WidthMethod, source: NativeResourceOwner): TextBuffer {
     const owner = source?.resourceContext
-    if (!owner) throw new Error("TextBuffer requires an explicit resource owner")
+    if (!owner)
+      throw new Error(
+        "TextBuffer requires an explicit resource owner: pass renderer.nativeScene, or a ResourceContext when there is no renderer",
+      )
     owner.assertAlive()
     const lib = owner.renderLib
     const handle = lib.createContextTextBuffer(owner.context, { widthMethod })

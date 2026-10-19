@@ -428,6 +428,36 @@ test "notifications - OSC99 query response enables OSC99 protocol" {
     try testing.expectEqual(Terminal.NotificationProtocol.osc99, term.notification_protocol);
 }
 
+test "program status - only an OSC 7501 query reply enables the capability" {
+    for ([_]struct { []const u8, bool }{
+        .{ "\x1b]7501;?\x1b\\", true },
+        .{ "\x1b]7501;?\x07", true },
+        .{ "\x1b]7501; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;state=idle\x1b\\", false },
+        .{ "\x1b]7501;??\x1b\\", false },
+        .{ "\x1b]7501;\x1b\\", false },
+        .{ "\x1b]75010;?\x1b\\", false },
+        .{ "\x1b]99;?\x1b\\", false },
+    }) |case| {
+        var term = Terminal.init(.{});
+        term.processCapabilityResponse(case[0]);
+        try testing.expectEqual(case[1], term.caps.program_status);
+    }
+}
+
+test "queryTerminalSend - foot skips OSC capability queries" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "foot");
+    var term = Terminal.init(.{ .env_map = &env });
+    var writer = TestWriter.init(testing.allocator);
+    defer writer.deinit();
+    try term.queryTerminalSend(&writer);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.notificationQueries) == null);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.programStatusQuery) == null);
+}
+
 test "notifications - OSC99 query response ignores mismatched identifier" {
     var term = Terminal.init(.{ .remote_mode = .remote });
 
@@ -1060,6 +1090,7 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) != null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.programStatusQuery) != null);
 
     // Should NOT contain tmux DCS wrapper
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);

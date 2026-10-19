@@ -1,0 +1,16 @@
+base 0.6.5
+- @opentui/core: constructor NativeError(operation: string, status: NativeStatus)
++ @opentui/core: constructor NativeError(operation: string, status: NativeStatus, reason?: string)
++ @opentui/core: protected method ASCIIFontRenderable.defaultDimension(kind: "width" | "height"): number
++ @opentui/core: protected method ArrowRenderable.defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%`
++ @opentui/core: protected method EmbeddedTerminalRenderable.defaultDimension(kind: "width" | "height"): number
++ @opentui/core: protected method InputRenderable.defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%`
++ @opentui/core: protected method Renderable.defaultDimension(_kind: "width" | "height"): number | "auto" | `${number}%`
++ @opentui/core: protected method TabSelectRenderable.defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%`
++ @opentui/core: protected method TimeToFirstDrawRenderable.defaultDimension(kind: "width" | "height"): number | `${number}%`
+- @opentui/core: property BoxRenderable.columnGap: number | `${number}%` | undefined
++ @opentui/core: property BoxRenderable.columnGap: number | `${number}%` | null | undefined
+- @opentui/core: property BoxRenderable.gap: number | `${number}%` | undefined
++ @opentui/core: property BoxRenderable.gap: number | `${number}%` | null | undefined
+- @opentui/core: property BoxRenderable.rowGap: number | `${number}%` | undefined
++ @opentui/core: property BoxRenderable.rowGap: number | `${number}%` | null | undefined

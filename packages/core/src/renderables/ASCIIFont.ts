@@ -141,6 +141,10 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
     this.requestRender()
   }
 
+  protected override defaultDimension(kind: "width" | "height"): number {
+    return measureText({ text: this._text, font: this._font })[kind] || 1
+  }
+
   private updateDimensions(): void {
     const measurements = measureText({ text: this._text, font: this._font })
     this.width = measurements.width

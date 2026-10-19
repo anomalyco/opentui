@@ -1,6 +1,6 @@
 import { ResourceContext } from "./buffer.js"
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
-import { EditBuffer } from "./edit-buffer.js"
+import { EditBuffer, measureEditText } from "./edit-buffer.js"
 import { ManualClock } from "./testing/manual-clock.js"
 
 let resourceContext: ResourceContext
@@ -461,6 +461,27 @@ describe("EditBuffer", () => {
         editor.setText(text)
         expect(editor.offsetToPosition(expected)).not.toBeNull()
         expect(editor.offsetToPosition(expected + 1)).toBeNull()
+        editor.destroy()
+      }
+    })
+
+    // measureEditText() has no buffer, so it must give the offset that measureText() and setText() give on an edit
+    // buffer with the same settings. The tab widths cover the default and widths that setTabWidth() rounds. The long
+    // text puts a CRLF across the 16-byte blocks in which setText() finds line breaks, then one long line.
+    it.each(["wcwidth", "unicode", "unicode-wide"] as const)("measureEditText() matches a %s buffer", (widthMethod) => {
+      const units = ["", "a\u0000\u001b\f\u007f", "\u0085\u009f", "\ta\t", "日本\u0301", "👩‍👧", "👍🏽", "🇩🇪🇺🇸"]
+      const long = "x".repeat(15) + "\r\n" + units.join("\t").repeat(500)
+      const lines = ["\r", "\n", "\r\n", "\r\r\n\n", "a\r\nb\rc\n\nd", long]
+      for (const tabWidth of [undefined, 0, 1, 3, 8, 255]) {
+        const editor = EditBuffer.create(widthMethod, resourceContext)
+        if (tabWidth !== undefined) editor.setTabWidth(tabWidth)
+        for (const text of [...units, ...lines]) {
+          const measured = [measureEditText(text, { widthMethod, tabWidth }), editor.measureText(text)]
+          editor.setText(text)
+          editor.gotoLine(editor.getLineCount())
+          const end = editor.getCursorPosition().offset
+          expect([tabWidth, text, ...measured]).toEqual([tabWidth, text, end, end])
+        }
         editor.destroy()
       }
     })

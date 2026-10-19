@@ -1714,7 +1714,7 @@ pub const UnifiedTextBuffer = struct {
         self.markAllViewsDirty();
     }
 
-    fn effectiveTabWidth(width: u8) u8 {
+    pub fn effectiveTabWidth(width: u8) u8 {
         const clamped_width = @min(@as(u8, 254), @max(2, width));
         return clamped_width + clamped_width % 2;
     }

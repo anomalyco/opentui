@@ -8,6 +8,7 @@ import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
+import { SyntaxStyle } from "./syntax-style.js"
 import { Config, Node } from "./yoga.js"
 import { nativeLayouts } from "./native-abi.generated.js"
 import {
@@ -150,6 +151,18 @@ describe("native handles", () => {
     }
   })
 
+  // OpenTUI 0.5 factories took no owner. Code built against 0.5 must learn what to pass.
+  test.each([
+    ["SyntaxStyle.create()", () => (SyntaxStyle.create as Function)()],
+    ["SyntaxStyle.fromStyles(styles)", () => (SyntaxStyle.fromStyles as Function)({})],
+    ["SyntaxStyle.fromTheme(theme)", () => (SyntaxStyle.fromTheme as Function)([])],
+    ["TextBuffer.create(widthMethod)", () => (TextBuffer.create as Function)("unicode")],
+    ["EditBuffer.create(widthMethod)", () => (EditBuffer.create as Function)("unicode")],
+    ["OptimizedBuffer.create(width, height, widthMethod)", () => (OptimizedBuffer.create as Function)(1, 1, "unicode")],
+  ])("%s without an owner names the owner to pass", (_, create) => {
+    expect(create).toThrow(/requires an explicit resource owner: pass .*renderer\.nativeScene/)
+  })
+
   test("destroying a buffer invalidates its views", () => {
     const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 1 })
     const { renderLib: lib, context } = owner
@@ -279,15 +292,23 @@ describe("native handles", () => {
         }
       },
     ],
-  ] as const)("a dispose refused by %s keeps audio engines", (_, reason, hold) => {
+  ] as const)("a dispose refused by %s keeps audio engines and the measure Context", (_, reason, hold) => {
     const lib = new FFIRenderLib()
     const engine = lib.createAudioEngine()!
+    const measure = () => lib.editMeasureText(lib.encoder.encode("\t"), "unicode", 0)
+    let width = 0
+    // The first measure creates the Context, which a Yoga callback such as a layout measure may do.
+    lib.getYogaHost().invokeCallback(() => (width = measure()))
+    expect(width).toBe(2)
     const release = hold(lib)
     expect(() => lib.dispose()).toThrow(reason)
     expect(lib.audioGetStats(engine)).not.toBeNull()
+    expect(measure()).toBe(2)
     release()
     lib.dispose()
+    expect((lib as unknown as { nativeContexts: Map<unknown, unknown> }).nativeContexts.size).toBe(0)
     expect(() => lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })).toThrow("disposed")
+    expect(measure).toThrow("disposed")
   })
 
   // The test outlives the child's timeout, so a hung child fails with its signal instead of a test timeout.

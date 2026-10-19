@@ -389,24 +389,22 @@ export class BoxRenderable extends Renderable {
     }
   }
 
-  public set gap(gap: number | `${number}%` | undefined) {
-    if (isGapType(gap)) {
-      this.setGap(Gutter.All, gap)
-      this.requestRender()
-    }
+  public set gap(gap: number | `${number}%` | null | undefined) {
+    this.setGapStyle(Gutter.All, gap)
   }
 
-  public set rowGap(rowGap: number | `${number}%` | undefined) {
-    if (isGapType(rowGap)) {
-      this.setGap(Gutter.Row, rowGap)
-      this.requestRender()
-    }
+  public set rowGap(rowGap: number | `${number}%` | null | undefined) {
+    this.setGapStyle(Gutter.Row, rowGap)
   }
 
-  public set columnGap(columnGap: number | `${number}%` | undefined) {
-    if (isGapType(columnGap)) {
-      this.setGap(Gutter.Column, columnGap)
-      this.requestRender()
-    }
+  public set columnGap(columnGap: number | `${number}%` | null | undefined) {
+    this.setGapStyle(Gutter.Column, columnGap)
+  }
+
+  // A nullish gap unsets the gutter, as when the option is omitted.
+  private setGapStyle(gutter: Gutter, gap: number | `${number}%` | null | undefined): void {
+    if (gap != null && !isGapType(gap)) return
+    this.setGap(gutter, gap ?? undefined)
+    this.requestRender()
   }
 }

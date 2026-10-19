@@ -47,6 +47,11 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set visible(value: boolean) {
+    // A nullish write restores the constructor default: visibility that follows the scroll sizes.
+    if (value == null) {
+      this.resetVisibilityControl()
+      return
+    }
     this._manualVisibility = true
     super.visible = value
   }
@@ -122,6 +127,7 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set showArrows(value: boolean) {
+    value ??= false
     if (this.isDestroyed || value === this._showArrows) return
     this.assertMutable()
     this._showArrows = value
@@ -408,15 +414,7 @@ export class ArrowRenderable extends Renderable {
         ...options.arrowChars,
       }
 
-      if (!options.width) {
-        const { context, renderLib } = ctx.nativeScene.driver
-        const unicode = renderLib.createContextUnicode(context, this.getArrowChar(), ctx.widthMethod)
-        try {
-          this.width = renderLib.getContextUnicode(context, unicode).reduce((width, glyph) => width + glyph.width, 0)
-        } finally {
-          renderLib.destroyContextUnicode(context, unicode)
-        }
-      }
+      if (!options.width) this.width = this.glyphWidth()
       this.setNativeSceneArrow()
       this.setNativeScenePaint()
     } catch (error) {
@@ -496,6 +494,20 @@ export class ArrowRenderable extends Renderable {
   protected renderSelf(buffer: OptimizedBuffer): void {
     const char = this.getArrowChar()
     buffer.drawText(char, this.x, this.y, this._foregroundColor, this._backgroundColor, this._attributes)
+  }
+
+  protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
+    return kind === "width" ? this.glyphWidth() : super.defaultDimension(kind)
+  }
+
+  private glyphWidth(): number {
+    const { context, renderLib } = this._ctx.nativeScene.driver
+    const unicode = renderLib.createContextUnicode(context, this.getArrowChar(), this._ctx.widthMethod)
+    try {
+      return renderLib.getContextUnicode(context, unicode).reduce((width, glyph) => width + glyph.width, 0)
+    } finally {
+      renderLib.destroyContextUnicode(context, unicode)
+    }
   }
 
   private getArrowChar(): string {

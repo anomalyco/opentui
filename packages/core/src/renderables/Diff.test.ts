@@ -2340,3 +2340,64 @@ test.each([
   await renderOnce()
   expect(diffRenderable.getHunkRowOffsets()).toEqual([...expected])
 })
+
+test("DiffRenderable - gutter paddingLeft pads line numbers in each row's gutter color", async () => {
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    diff: simpleDiff,
+    view: "unified",
+    syntaxStyle,
+    removedLineNumberBg: "#ff0000",
+    width: "100%",
+    height: "100%",
+  })
+  currentRenderer.root.add(diffRenderable)
+  await renderOnce()
+  expect(captureFrame().split("\n")[1]).toMatch(/^ 2 -/)
+
+  diffRenderable.gutter = { paddingLeft: 3 }
+  await renderOnce()
+  expect(captureFrame().split("\n")[1]).toMatch(/^   2 -/)
+  const buffer = currentRenderer.currentRenderBuffer
+  const bg = buffer.withBuffers(({ bg }) => RGBA.fromArray(bg.slice(buffer.width * 4, buffer.width * 4 + 4)))
+  expect(bg.equals(parseColor("#ff0000"))).toBe(true)
+
+  diffRenderable.gutter = { paddingLeft: 0 }
+  await renderOnce()
+  expect(captureFrame().split("\n")[1]).toMatch(/^2 -/)
+})
+
+test("DiffRenderable - gutter minDigits lines up diffs with different line numbers", async () => {
+  // The left pane of an addition has no signs, so only a reserved sign column lines its code up.
+  const lateAddDiff = `--- a/test.js
++++ b/test.js
+@@ -1000,2 +1000,3 @@
+ function late() {
++  return 1
+ }`
+  const render = async (gutter?: { minDigits: number }) => {
+    const diffs = [simpleDiff, lateAddDiff].map(
+      (diff, index) =>
+        new DiffRenderable(currentRenderer, {
+          diff,
+          view: "split",
+          syntaxStyle,
+          gutter,
+          position: "absolute",
+          top: index * 5,
+          width: "100%",
+          height: 4,
+        }),
+    )
+    diffs.forEach((diff) => currentRenderer.root.add(diff))
+    await renderOnce()
+    const lines = captureFrame().split("\n")
+    diffs.forEach((diff) => diff.destroyRecursively())
+    // Left pane: where the code starts after the line number and sign.
+    return [lines[0]!.indexOf("function"), lines[5]!.indexOf("function")]
+  }
+
+  const [early, late] = await render()
+  expect(early).not.toBe(late)
+  const aligned = await render({ minDigits: 4 })
+  expect(aligned[0]).toBe(aligned[1])
+})

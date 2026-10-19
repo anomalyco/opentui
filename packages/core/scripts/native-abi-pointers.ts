@@ -143,6 +143,7 @@ export const nativePointerPolicies = {
   ot_edit_buffer_get_position: { 0: context, 1: buffer, 5: buffer },
   ot_edit_buffer_get_range: { 0: context, 1: buffer, 7: empty, 9: buffer },
   ot_edit_buffer_measure_text: { 0: context, 1: buffer, 2: empty, 4: buffer },
+  ot_edit_measure_text: { 0: context, 1: empty, 5: buffer },
   ot_edit_buffer_set_defaults: { 0: context, 1: buffer, 3: buffer },
   ot_syntax_style_register: { 0: context, 1: buffer, 2: empty, 4: buffer, 5: buffer },
   ot_syntax_style_resolve: { 0: context, 1: buffer, 2: empty, 4: buffer },
