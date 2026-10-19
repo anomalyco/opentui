@@ -57,6 +57,10 @@ export class TimeToFirstDrawRenderable extends Renderable {
     this.precision = this.normalizePrecision(options.precision ?? 2)
   }
 
+  protected override defaultDimension(kind: "width" | "height"): number | `${number}%` {
+    return kind === "width" ? "100%" : 1
+  }
+
   public get runtimeMs(): number | null {
     return this._runtimeMs
   }

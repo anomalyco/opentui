@@ -5,6 +5,7 @@ import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { BoxRenderable } from "./Box.js"
+import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
 import { ArrowRenderable, ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
@@ -268,6 +269,29 @@ test("box titles and arrow characters accept any text", async () => {
   arrow.arrowChars = { up: text.slice(1) }
   await setup.renderOnce()
   expect(errors).toEqual([])
+})
+
+// The nullish sweep builds each class with one option set; these sizes depend on other options.
+test("a nullish width or height restores the size that the class chose", () => {
+  const arrow = new ArrowRenderable(renderer, { direction: "up", width: 3 })
+  const terminal = new EmbeddedTerminalRenderable(renderer, { cols: 30, rows: 5, width: 12, height: 4 })
+  const tabs = new TabSelectRenderable(renderer, { options: [{ name: "a", description: "b" }], showDescription: false })
+  Object.assign(terminal, { width: null, height: null })
+  tabs.height = 7
+  tabs.height = null
+  const sizes = [arrow.getWidth(), terminal.getWidth(), terminal.getHeight(), tabs.getHeight()]
+  expect(sizes.map((size) => size.value)).toEqual([3, 30, 5, 2])
+  for (const node of [arrow, terminal, tabs]) node.destroyRecursively()
+})
+
+test("a nullish scrollbar visible write restores visibility that follows the scroll sizes", () => {
+  const bar = new ScrollBarRenderable(renderer, { orientation: "vertical" })
+  Object.assign(bar, { scrollSize: 10, viewportSize: 20, visible: true })
+  Object.assign(bar, { visible: null })
+  expect(bar.visible).toBe(false)
+  bar.scrollSize = 30
+  expect(bar.visible).toBe(true)
+  bar.destroyRecursively()
 })
 
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.

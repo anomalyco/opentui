@@ -103,7 +103,10 @@ export class SyntaxStyle {
 
   static create(source: NativeResourceOwner): SyntaxStyle {
     const owner = source?.resourceContext
-    if (!owner) throw new Error("SyntaxStyle requires an explicit resource owner")
+    if (!owner)
+      throw new Error(
+        "SyntaxStyle requires an explicit resource owner: pass renderer.nativeScene, or a ResourceContext when there is no renderer",
+      )
     owner.assertAlive()
     const lib = owner.renderLib
     const handle = lib.createContextSyntaxStyle(owner.context)

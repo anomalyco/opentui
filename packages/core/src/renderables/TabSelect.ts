@@ -148,6 +148,10 @@ export class TabSelectRenderable extends Renderable {
     return calculateDynamicHeight(this._showUnderline, this._showDescription)
   }
 
+  protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
+    return kind === "height" ? this.calculateDynamicHeight() : super.defaultDimension(kind)
+  }
+
   protected renderSelf(buffer: OptimizedBuffer, deltaTime: number): void {
     if (!this.visible || !this.frameBuffer) return
 

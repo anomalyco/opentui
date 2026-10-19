@@ -56,6 +56,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
   private selection = false
   private composedHookGeneration = 0n
   private _transparentBackground = false
+  private readonly sizeDefaults: { width: number; height: number }
 
   constructor(ctx: RenderContext, options: EmbeddedTerminalOptions) {
     const cols = options.cols ?? (typeof options.width === "number" ? options.width : 80)
@@ -68,6 +69,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
     })
     this._focusable = true
     this.lib = ctx.nativeScene.driver.renderLib
+    this.sizeDefaults = { width: options.cols ?? 80, height: options.rows ?? 24 }
 
     try {
       this._onData = options.onData
@@ -81,6 +83,10 @@ export class EmbeddedTerminalRenderable extends Renderable {
     } catch (error) {
       this.rollbackConstruction(error)
     }
+  }
+
+  protected override defaultDimension(kind: "width" | "height"): number {
+    return this.sizeDefaults[kind]
   }
 
   public get onData(): ((data: Uint8Array, source: EmbeddedTerminalDataSource) => void) | undefined {

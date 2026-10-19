@@ -8,6 +8,7 @@ import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
+import { SyntaxStyle } from "./syntax-style.js"
 import { Config, Node } from "./yoga.js"
 import { nativeLayouts } from "./native-abi.generated.js"
 import {
@@ -148,6 +149,18 @@ describe("native handles", () => {
       lib.destroyContext(other)
       lib.destroyContext(context)
     }
+  })
+
+  // OpenTUI 0.5 factories took no owner. Code built against 0.5 must learn what to pass.
+  test.each([
+    ["SyntaxStyle.create()", () => (SyntaxStyle.create as Function)()],
+    ["SyntaxStyle.fromStyles(styles)", () => (SyntaxStyle.fromStyles as Function)({})],
+    ["SyntaxStyle.fromTheme(theme)", () => (SyntaxStyle.fromTheme as Function)([])],
+    ["TextBuffer.create(widthMethod)", () => (TextBuffer.create as Function)("unicode")],
+    ["EditBuffer.create(widthMethod)", () => (EditBuffer.create as Function)("unicode")],
+    ["OptimizedBuffer.create(width, height, widthMethod)", () => (OptimizedBuffer.create as Function)(1, 1, "unicode")],
+  ])("%s without an owner names the owner to pass", (_, create) => {
+    expect(create).toThrow(/requires an explicit resource owner: pass .*renderer\.nativeScene/)
   })
 
   test("destroying a buffer invalidates its views", () => {

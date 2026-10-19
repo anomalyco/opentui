@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util"
 import * as core from "../index.js"
 import { CliRenderEvents, Renderable, RGBA, SyntaxStyle, TabSelectRenderable } from "../index.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
+import { Edge, Gutter } from "../yoga.js"
 
 // React writes `null` when a prop is removed, and Solid writes `undefined` when a prop expression becomes undefined.
 // Every public setter of every exported renderable accepts both, keeps frames rendering, and restores the value that
@@ -36,11 +37,24 @@ const excludedProps: Record<string, string> = {
   "EmbeddedTerminalRenderable.focusable": "accepted, but the constructor sets focus, not the class default (U24)",
 }
 
-// Accepted, but the value after a nullish write follows `main` instead of the constructor default.
+// Accepted, but the value after a nullish write follows `main` instead of the constructor default. Key as above.
 const mainResults: Record<string, string> = {
-  x: "keeps the layout position",
-  y: "keeps the layout position",
   scrollSpeed: "Math.max(0, value)",
+  flexShrink: "1, not the 0 that a numeric width or height selects",
+  "LineNumberRenderable.width": "keeps the flexShrink 0 that the numeric width selected; the class ignores height",
+  "FrameBufferRenderable.width": "required option; auto",
+  "FrameBufferRenderable.height": "required option; auto",
+  "LineNumberRenderable.flexDirection": "column, not the class default row",
+  "ScrollBoxRenderable.flexDirection": "column, not the class default row",
+  "ScrollBarRenderable.alignSelf": "auto, not the class default stretch",
+  "ScrollBarRenderable.width": "the slider keeps the width it took from the constructor width",
+  "ScrollBarRenderable.visible": "auto-hide, which the constructor skips: controls.test.ts checks it",
+  "TimeToFirstDrawRenderable.alignSelf": "auto, not the class default center",
+  "ScrollBarRenderable.scrollSize": "a size write runs auto-hide, which the constructor does not",
+  "ScrollBarRenderable.viewportSize": "a size write runs auto-hide, which the constructor does not",
+  "DiffRenderable.view": "stores null, which lays out as a row",
+  "TabSelectRenderable.showDescription": "stores null, which hides the description",
+  "TabSelectRenderable.showUnderline": "stores null, which hides the underline",
 }
 
 // The constructor and `main` map `null` (not `undefined`) to these values.
@@ -55,6 +69,44 @@ const enumSamples: Record<string, unknown> = {
   orientation: "vertical",
   direction: "left",
   cursorStyle: { style: "line", blinking: false },
+}
+
+// A non-default value per layout option. Its setter must write what the constructor option writes.
+const layoutSamples: Record<string, unknown> = {
+  flexDirection: "row",
+  flexWrap: "wrap",
+  alignItems: "center",
+  alignSelf: "center",
+  justifyContent: "center",
+  position: "absolute",
+  overflow: "hidden",
+  ...Object.fromEntries(
+    `top right bottom left minWidth minHeight maxWidth maxHeight flexBasis flexGrow gap rowGap columnGap margin marginX
+    marginY marginTop marginRight marginBottom marginLeft padding paddingX paddingY paddingTop paddingRight paddingBottom
+    paddingLeft`
+      .split(/\s+/)
+      .map((prop) => [prop, 1]),
+  ),
+}
+
+const edges = [Edge.Left, Edge.Top, Edge.Right, Edge.Bottom, Edge.Horizontal, Edge.Vertical, Edge.All]
+const styleGetters = `getWidth getHeight getMinWidth getMinHeight getMaxWidth getMaxHeight getFlexBasis getFlexGrow
+  getFlexShrink getFlexDirection getFlexWrap getAlignItems getAlignSelf getJustifyContent getPositionType`.split(
+  /\s+/,
+) as (keyof Renderable)[]
+
+// The constructor overrides these options.
+const constructorOverrides = { "DiffRenderable.flexDirection": "view", "MarkdownRenderable.flexDirection": "column" }
+
+// Declared Yoga style and the box from the last layout pass. Prop getters do not show them.
+function layoutState(node: Renderable): unknown[] {
+  return [
+    node.getLayout(),
+    styleGetters.map((name) => (node[name] as () => unknown)()),
+    edges.map((edge) => [node.getMargin(edge), node.getPadding(edge)]),
+    [Gutter.Column, Gutter.Row, Gutter.All].map((gutter) => node.getGap(gutter)),
+    node.getChildren().map((child) => [child.visible, child.getLayout()]),
+  ]
 }
 
 let renderer: TestRenderer
@@ -90,12 +142,12 @@ function classOptions(name: string, style = syntaxStyle): object {
 }
 
 const renderableClasses = Object.entries(core).filter(
-  (entry): entry is [string, new (ctx: TestRenderer, options: object) => Renderable] =>
+  (entry): entry is [string, RenderableClass] =>
     typeof entry[1] === "function" && entry[1].prototype instanceof Renderable && !(entry[0] in excludedClasses),
 )
 
-function nullishExcluded(name: string, prop: string): boolean {
-  return prop in excludedProps || `${name}.${prop}` in excludedProps
+function listed(list: Record<string, unknown>, name: string, prop: string): boolean {
+  return prop in list || `${name}.${prop}` in list
 }
 
 function publicSetters(node: object): string[] {
@@ -117,29 +169,54 @@ function read(node: Renderable, prop: string): unknown {
 }
 
 function sample(prop: string, fallback: unknown): unknown {
+  if (prop in layoutSamples) return layoutSamples[prop]
   if (typeof fallback === "boolean") return !fallback
   if (typeof fallback === "number") return fallback === 0 ? 1 : fallback / 2
   if (fallback instanceof RGBA) return RGBA.fromInts(10, 20, 30)
   return enumSamples[prop] ?? fallback
 }
 
+type RenderableClass = new (ctx: TestRenderer, options: object) => Renderable
+
+async function builtState(RenderableClass: RenderableClass, options: object): Promise<unknown[]> {
+  const node = new RenderableClass(renderer, options)
+  renderer.root.add(node)
+  node.focus()
+  await renderOnce()
+  const state = layoutState(node)
+  node.destroyRecursively()
+  return state
+}
+
 test.each(renderableClasses)("%s setters accept null and undefined", async (name, RenderableClass) => {
   const failures: string[] = []
   const options = classOptions(name)
   const fresh = new RenderableClass(renderer, classOptions(name))
-  const props = publicSetters(fresh).filter((prop) => !nullishExcluded(name, prop))
+  const props = publicSetters(fresh).filter((prop) => !listed(excludedProps, name, prop))
   expect(props.length).toBeGreaterThan(0)
   for (const prop of props) {
     const fallback = read(fresh, prop)
-    const writes = [null, undefined, sample(prop, fallback), null]
+    const value = sample(prop, fallback)
+    // Each nullish write after the first follows the sample, so a setter that ignores it keeps the sample.
+    const writes = [null, value, undefined, value, null]
     const reads: unknown[] = []
+    const states: unknown[] = []
     const node = new RenderableClass(renderer, classOptions(name))
     renderer.root.add(node)
     // Focus-only colors paint only while focused.
     node.focus()
+    await renderOnce()
+    const initial = layoutState(node)
+    let renders = 0
+    const requestRender = node.requestRender.bind(node)
+    node.requestRender = () => void (renders++, requestRender())
     for (const value of writes) {
       try {
+        renders = 0
         ;(node as unknown as Record<string, unknown>)[prop] = value
+        // Each write after the first changes the value, so a layout write must schedule a frame.
+        const layout = prop in layoutSamples || prop === "width" || prop === "height"
+        if (layout && states.length > 0 && renders === 0) failures.push(`${prop} = ${value}: no render`)
         await renderOnce()
       } catch (error) {
         failures.push(`${prop} = ${value}: ${error}`)
@@ -150,12 +227,27 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
         break
       }
       reads.push(read(node, prop))
+      states.push(layoutState(node))
     }
     node.destroyRecursively()
-    // Check the reset only where the fresh value is the default and the getter returns the written value.
-    if (prop in options || prop in mainResults) continue
-    if (reads.length < writes.length || !isDeepStrictEqual(reads[2], writes[2])) continue
-    for (const index of [0, 1, 3]) {
+    if (listed(mainResults, name, prop)) continue
+    // Every node here has a width and a height, so their default needs a node built without one.
+    const { [prop]: _, ...omitted } = options as Record<string, unknown>
+    const sized = prop === "width" || prop === "height"
+    const reset = !(prop in options) ? initial : sized ? await builtState(RenderableClass, omitted) : undefined
+    const sampled =
+      prop in layoutSamples && !listed(constructorOverrides, name, prop)
+        ? await builtState(RenderableClass, { ...options, [prop]: value })
+        : undefined
+    for (const [index, state] of states.entries()) {
+      const [expected, source] = index % 2 === 0 ? [reset, "default"] : [sampled, "option"]
+      if (expected && !isDeepStrictEqual(state, expected)) {
+        failures.push(`${prop} = ${writes[index]}: layout style differs from the constructor ${source}`)
+      }
+    }
+    // The getter check also needs a fresh value that is the default and a getter that returns the written value.
+    if (prop in options || reads.length < writes.length || !isDeepStrictEqual(reads[1], writes[1])) continue
+    for (const index of [0, 2, 4]) {
       const value = writes[index]
       const expected = value === null && prop in nullResults ? nullResults[prop] : fallback
       // A getter that returns the nullish value itself stores it raw, as `main` did.
@@ -214,7 +306,7 @@ test.each(renderableClasses)("%s ignores writes after destroy", async (name, Ren
     .map((prop): [string, unknown[]] => {
       const value = sample(prop, read(fresh, prop))
       // Without a default, only a value read from the node is known to be valid.
-      return [prop, !nullishExcluded(name, prop) ? [value, null] : value == null ? [] : [value]]
+      return [prop, !listed(excludedProps, name, prop) ? [value, null] : value == null ? [] : [value]]
     })
   fresh.destroyRecursively()
 
@@ -231,6 +323,7 @@ test.each(renderableClasses)("%s ignores writes after destroy", async (name, Ren
   const orphan = new RenderableClass(other, classOptions(name, SyntaxStyle.create(other.nativeScene)))
   other.root.add(orphan)
   other.destroy()
+  await other.closed
   failures.push(...writeAfterDestroy(orphan, writes, skipped).map((failure) => `renderer destroyed: ${failure}`))
   expect(failures).toEqual([])
 })

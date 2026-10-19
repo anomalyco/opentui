@@ -47,7 +47,10 @@ export class EditBuffer extends EventEmitter {
 
   static create(widthMethod: WidthMethod, source: NativeResourceOwner): EditBuffer {
     const owner = source?.resourceContext
-    if (!owner) throw new Error("EditBuffer requires an explicit resource owner")
+    if (!owner)
+      throw new Error(
+        "EditBuffer requires an explicit resource owner: pass renderer.nativeScene, or a ResourceContext when there is no renderer",
+      )
     owner.assertAlive()
     const lib = owner.renderLib
     const handle = lib.createContextEditBuffer(owner.context, { widthMethod })
