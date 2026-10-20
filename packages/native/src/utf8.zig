@@ -1454,7 +1454,7 @@ fn lastGraphemeStart(text: []const u8, byte_offset: usize, width_method: WidthMe
 
 /// Calculate the display width of text - proxy function that dispatches based on width_method
 pub fn calculateTextWidth(text: []const u8, tab_width: u8, control_display: ControlDisplay, isASCIIOnly: bool, width_method: WidthMethod) u32 {
-    text_work.addScan(isASCIIOnly, text.len);
+    if (!isASCIIOnly) text_work.add(.bytes_scanned, text.len);
     switch (width_method) {
         .unicode, .unicode_wide, .no_zwj => return calculateTextWidthUnicode(text, tab_width, control_display, isASCIIOnly, width_method),
         .wcwidth => return calculateTextWidthWCWidth(text, tab_width, control_display, isASCIIOnly),
@@ -1832,7 +1832,7 @@ fn walkChunkLayoutInfoGeneric(
     width_method: WidthMethod,
     visitor: anytype,
 ) !WordClassEdges {
-    text_work.addScan(isASCIIOnly, text.len);
+    if (isASCIIOnly) text_work.add(.ascii_bytes, text.len) else text_work.add(.bytes_scanned, text.len);
     if (text.len == 0) return .{ .first = .other, .last = .other };
 
     if (isASCIIOnly) {
@@ -1994,7 +1994,7 @@ pub fn findRenderClusterInfo(
     width_method: WidthMethod,
     result: *std.ArrayListUnmanaged(RenderClusterInfo),
 ) !void {
-    text_work.addScan(isASCIIOnly, text.len);
+    if (!isASCIIOnly) text_work.add(.bytes_scanned, text.len);
     switch (width_method) {
         .unicode, .unicode_wide, .no_zwj => try findRenderClusterInfoUnicode(allocator, text, tab_width, control_display, isASCIIOnly, width_method, result),
         .wcwidth => try findRenderClusterInfoWCWidth(allocator, text, tab_width, control_display, isASCIIOnly, result),

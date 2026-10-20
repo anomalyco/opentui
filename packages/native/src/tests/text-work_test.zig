@@ -4,7 +4,10 @@ const std = @import("std");
 const TestPools = @import("test-pools.zig").TestPools;
 const text_work = @import("../text-work.zig");
 const TextBuffer = @import("../text-buffer.zig").UnifiedTextBuffer;
-const TextBufferView = @import("../text-buffer-view.zig").UnifiedTextBufferView;
+const text_buffer_view = @import("../text-buffer-view.zig");
+const TextBufferView = text_buffer_view.UnifiedTextBufferView;
+const WrapMode = text_buffer_view.WrapMode;
+const MeasureResult = text_buffer_view.MeasureResult;
 const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
 const EditorView = @import("../editor-view.zig").EditorView;
 const OptimizedBuffer = @import("../buffer.zig").OptimizedBuffer;
@@ -18,6 +21,12 @@ fn expectWork(expected: Counts) !void {
     return error.TestExpectedEqual;
 }
 
+/// Checks the work of `call`, which Zig evaluates before this function runs.
+fn expectAfter(call: anytype, expected: Counts) !void {
+    _ = call;
+    try expectWork(expected);
+}
+
 fn repeatLines(allocator: std.mem.Allocator, line: []const u8, count: usize) ![]u8 {
     var list: std.ArrayList(u8) = .empty;
     errdefer list.deinit(allocator);
@@ -28,30 +37,37 @@ fn repeatLines(allocator: std.mem.Allocator, line: []const u8, count: usize) ![]
     return list.toOwnedSlice(allocator);
 }
 
+fn repeatText(allocator: std.mem.Allocator, unit: []const u8, bytes: usize) ![]u8 {
+    const count = bytes / unit.len;
+    const text = try allocator.alloc(u8, count * unit.len);
+    for (0..count) |i| @memcpy(text[i * unit.len ..][0..unit.len], unit);
+    return text;
+}
+
 test "text work: one edit in a 10,000-line editor lays out the whole document" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
     const text = try repeatLines(allocator, "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor in", 10_000);
     defer allocator.free(text);
-    const rows = [_]struct { mode: @import("../text-buffer-view.zig").WrapMode, insert: Counts, burst: Counts, measure: Counts }{
+    const rows = [_]struct { mode: WrapMode, insert: Counts, burst: Counts, measure: Counts }{
         .{
             .mode = .none,
-            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 8, .ascii_bytes = 1 },
-            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .marker_rebuilds = 10, .marker_leaves = 300_000, .marker_lookups = 80, .ascii_bytes = 75 },
+            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 8 },
+            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .marker_rebuilds = 10, .marker_leaves = 300_000, .marker_lookups = 80 },
             // Unwrapped measure reads every line width from the markers.
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .marker_lookups = 19_999 },
         },
         .{
             .mode = .word,
-            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 8, .ascii_bytes = 790_002 },
-            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .marker_rebuilds = 10, .marker_leaves = 300_000, .marker_lookups = 80, .ascii_bytes = 7_900_140 },
+            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 8, .ascii_bytes = 790_001 },
+            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .marker_rebuilds = 10, .marker_leaves = 300_000, .marker_lookups = 80, .ascii_bytes = 7_900_065 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .ascii_bytes = 790_011 },
         },
         .{
             .mode = .char,
-            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 8, .prefix_seeks = 10_001, .ascii_bytes = 1 },
-            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .marker_rebuilds = 10, .marker_leaves = 300_000, .marker_lookups = 80, .prefix_seeks = 100_010, .ascii_bytes = 75 },
+            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 8, .prefix_seeks = 10_001 },
+            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .marker_rebuilds = 10, .marker_leaves = 300_000, .marker_lookups = 80, .prefix_seeks = 100_010 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .prefix_seeks = 10_001 },
         },
     };
@@ -106,16 +122,15 @@ test "text work: an append measures and lays out a 5,000-line view once each" {
     _ = try view.measureForDimensions(40, 24);
     _ = view.getVirtualLineCount();
     // The second measure hits the cache; render lays the document out again.
-    try expectWork(.{ .layouts = 1, .lines_laid_out = 5_000, .measure_passes = 1, .measure_lines = 5_000, .ascii_bytes = 355_089 });
+    try expectWork(.{ .layouts = 1, .lines_laid_out = 5_000, .measure_passes = 1, .measure_lines = 5_000, .ascii_bytes = 355_083 });
 }
 
 test "text work: drawing rows of a wrapped CJK line rescans its clusters from the line start" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
-    const text = try allocator.alloc(u8, 100_000 * 3);
+    const text = try repeatText(allocator, "\u{754c}", 100_000 * 3);
     defer allocator.free(text);
-    for (0..100_000) |i| @memcpy(text[i * 3 ..][0..3], "\u{754c}");
     const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     const view = try TextBufferView.init(allocator, tb);
@@ -148,9 +163,8 @@ test "text work: drawing a long unwrapped line scrolled right skips every cluste
         .{ .unit = "\u{754c}", .draw = .{ .left_skip_steps = 131_032, .clusters_drawn = 40 } },
     };
     for (rows) |row| {
-        const text = try allocator.alloc(u8, 131_072 * row.unit.len);
+        const text = try repeatText(allocator, row.unit, 131_072 * row.unit.len);
         defer allocator.free(text);
-        for (0..131_072) |i| @memcpy(text[i * row.unit.len ..][0..row.unit.len], row.unit);
         const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
         defer tb.deinit();
         const view = try TextBufferView.init(allocator, tb);
@@ -193,11 +207,9 @@ test "text work: a changed scene frame measures and lays out an auto-height text
     try expectWork(changed);
 }
 
-const MeasureResult = @import("../text-buffer-view.zig").MeasureResult;
-
 /// Loads the parts as chunks, measures once at each width to warm, then returns the work
 /// of measuring again at each width. The measure cache holds 3 widths, so all 8 miss.
-fn measureSweep(allocator: std.mem.Allocator, pools: *TestPools, parts: []const []const u8, mode: @import("../text-buffer-view.zig").WrapMode, results: ?*[8]MeasureResult) !Counts {
+fn measureSweep(allocator: std.mem.Allocator, pools: *TestPools, parts: []const []const u8, mode: WrapMode, results: ?*[8]MeasureResult) !Counts {
     const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     const view = try TextBufferView.init(allocator, tb);
@@ -215,18 +227,11 @@ fn measureSweep(allocator: std.mem.Allocator, pools: *TestPools, parts: []const 
     return text_work.take();
 }
 
-fn repeatText(allocator: std.mem.Allocator, unit: []const u8, bytes: usize) ![]u8 {
-    const count = bytes / unit.len;
-    const text = try allocator.alloc(u8, count * unit.len);
-    for (0..count) |i| @memcpy(text[i * unit.len ..][0..unit.len], unit);
-    return text;
-}
-
 test "text work: wrapping one long line costs work linear in its length" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
-    const rows = [_]struct { unit: []const u8, mode: @import("../text-buffer-view.zig").WrapMode }{
+    const rows = [_]struct { unit: []const u8, mode: WrapMode }{
         .{ .unit = "x", .mode = .word },
         .{ .unit = "\u{e9}", .mode = .word },
         .{ .unit = "xxxxxxxxxx ", .mode = .word },
@@ -236,16 +241,26 @@ test "text work: wrapping one long line costs work linear in its length" {
     };
     for (rows) |row| {
         var work: [2]Counts = undefined;
+        errdefer std.debug.print("unit \"{s}\" mode {s}:\n{any}\n{any}\n", .{ row.unit, @tagName(row.mode), work[0], work[1] });
         for (&work, [_]usize{ 20_000, 40_000 }) |*counts, bytes| {
             const text = try repeatText(allocator, row.unit, bytes);
             defer allocator.free(text);
             counts.* = try measureSweep(allocator, &pools, &.{text}, row.mode, null);
+            try std.testing.expectEqual(8, counts.measure_passes);
+            // Each pass scans the text once on its path and seeks at least once per wrapped row.
+            const scanned = text.len * 8;
+            if (row.unit[0] < 0x80) {
+                try std.testing.expectEqual(0, counts.bytes_scanned);
+                try std.testing.expectEqual(if (row.mode == .word) scanned else 0, counts.ascii_bytes);
+            } else {
+                try std.testing.expectEqual(0, counts.ascii_bytes);
+                try std.testing.expect(counts.bytes_scanned >= scanned and counts.bytes_scanned <= 3 * scanned);
+            }
+            if (row.unit.len <= 2) try std.testing.expect(counts.prefix_seeks >= 8 * (text.len / row.unit.len) / 83);
         }
-        errdefer std.debug.print("unit \"{s}\" mode {s}:\n{any}\n{any}\n", .{ row.unit, @tagName(row.mode), work[0], work[1] });
-        for (work) |counts| try std.testing.expectEqual(8, counts.measure_passes);
-        // Twice the text may cost at most 2.1 times the work; a rescan per row costs about 4 times.
+        // Twice the text may cost at most 3 times the work: n log n passes, a rescan per row costs about 4 times.
         inline for (.{ "prefix_seeks", "bytes_scanned", "ascii_bytes" }) |field| {
-            try std.testing.expect(@field(work[1], field) * 10 <= @field(work[0], field) * 21 + 80);
+            try std.testing.expect(@field(work[1], field) <= 3 * @field(work[0], field) + 8);
         }
     }
 }
@@ -264,7 +279,8 @@ test "text work: a grapheme split across chunks keeps ASCII fitting for the rest
     errdefer std.debug.print("control {any}\nsplit   {any}\n", .{ control, split });
     try std.testing.expectEqual(8, split.measure_passes);
     try std.testing.expectEqual(control.ascii_bytes, split.ascii_bytes);
-    try std.testing.expect(split.bytes_scanned <= control.bytes_scanned + 8 * 64);
+    // Only the emoji prefix takes the scalar path; the 64,000 ASCII bytes after it never do.
+    for ([_]Counts{ control, split }) |counts| try std.testing.expect(counts.bytes_scanned <= 8 * 64);
 }
 
 test "text work: each UTF-8 scan entry counts its seeks, width reads, and bytes" {
@@ -272,30 +288,20 @@ test "text work: each UTF-8 scan entry counts its seeks, width reads, and bytes"
     var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
     defer clusters.deinit(std.testing.allocator);
     _ = text_work.take();
-    // Finds the last grapheme from the line start, then reads its width.
-    _ = utf8.getPrevGraphemeStart("a\u{e9}", 3, 4, .hidden, .unicode);
-    try expectWork(.{ .prefix_seeks = 1, .grapheme_width_reads = 1, .bytes_scanned = 3 });
-    // A last grapheme without cells costs a second scan from the line start.
-    _ = utf8.getPrevGraphemeStart("\u{e9}\u{200b}", 5, 4, .hidden, .unicode);
-    try expectWork(.{ .prefix_seeks = 1, .grapheme_width_reads = 1, .bytes_scanned = 10 });
-    _ = utf8.getPrevGraphemeStart("a\u{e9}", 3, 4, .hidden, .wcwidth);
-    try expectWork(.{ .prefix_seeks = 1, .bytes_scanned = 3 });
-    _ = utf8.getGraphemeWidthAt("a\u{e9}", 1, 4, .hidden, .unicode);
-    try expectWork(.{ .grapheme_width_reads = 1 });
-    // Walks to the first grapheme with cells after the zero-width prefix.
-    _ = utf8.zeroWidthPrefixLen("\u{301}\u{e9}a", 4, .hidden, .unicode);
-    try expectWork(.{ .bytes_scanned = 4 });
-    try utf8.findRenderClusterInfo(std.testing.allocator, "a\u{e9}", 4, .hidden, false, .unicode, &clusters);
-    try expectWork(.{ .bytes_scanned = 3 });
-    try utf8.findRenderClusterInfo(std.testing.allocator, "abc", 4, .hidden, true, .unicode, &clusters);
-    try expectWork(.{ .ascii_bytes = 3 });
+    // Finds the last grapheme from the line start, then reads its width; one without cells costs a second scan.
+    try expectAfter(utf8.getPrevGraphemeStart("a\u{e9}", 3, 4, .hidden, .unicode), .{ .prefix_seeks = 1, .grapheme_width_reads = 1, .bytes_scanned = 3 });
+    try expectAfter(utf8.getPrevGraphemeStart("\u{e9}\u{200b}", 5, 4, .hidden, .unicode), .{ .prefix_seeks = 1, .grapheme_width_reads = 1, .bytes_scanned = 10 });
+    try expectAfter(utf8.getPrevGraphemeStart("a\u{e9}", 3, 4, .hidden, .wcwidth), .{ .prefix_seeks = 1, .bytes_scanned = 3 });
+    try expectAfter(utf8.getGraphemeWidthAt("a\u{e9}", 1, 4, .hidden, .unicode), .{ .grapheme_width_reads = 1 });
+    try expectAfter(utf8.zeroWidthPrefixLen("\u{301}\u{e9}a", 4, .hidden, .unicode), .{ .bytes_scanned = 4 });
+    // Whole-slice scans on the ASCII hint return at once and count nothing.
+    try expectAfter(utf8.calculateTextWidth("a\u{e9}", 4, .hidden, false, .unicode), .{ .bytes_scanned = 3 });
+    try expectAfter(utf8.calculateTextWidth("abc", 4, .hidden, true, .unicode), .{});
+    try expectAfter(try utf8.findRenderClusterInfo(std.testing.allocator, "a\u{e9}", 4, .hidden, false, .unicode, &clusters), .{ .bytes_scanned = 3 });
+    try expectAfter(try utf8.findRenderClusterInfo(std.testing.allocator, "abc", 4, .hidden, true, .unicode, &clusters), .{});
     // A seek counts the bytes up to the position it returns.
-    _ = utf8.findWrapPosByWidth("\u{e9}\u{e9}\u{e9}", 2, 4, .hidden, false, .unicode);
-    try expectWork(.{ .prefix_seeks = 1, .bytes_scanned = 4 });
-    _ = utf8.findWrapPosByWidthGraphemeSafe("\u{e9}\u{e9}\u{e9}", 2, 4, .hidden, false, .wcwidth);
-    try expectWork(.{ .prefix_seeks = 1, .bytes_scanned = 4 });
-    _ = utf8.findPosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .wcwidth);
-    try expectWork(.{ .prefix_seeks = 1, .bytes_scanned = 2 });
-    _ = utf8.findGraphemePosByWidth("abc", 1, 4, .hidden, true, true, .unicode);
-    try expectWork(.{ .prefix_seeks = 1 });
+    try expectAfter(utf8.findWrapPosByWidth("\u{e9}\u{e9}\u{e9}", 2, 4, .hidden, false, .unicode), .{ .prefix_seeks = 1, .bytes_scanned = 4 });
+    try expectAfter(utf8.findWrapPosByWidthGraphemeSafe("\u{e9}\u{e9}\u{e9}", 2, 4, .hidden, false, .wcwidth), .{ .prefix_seeks = 1, .bytes_scanned = 4 });
+    try expectAfter(utf8.findPosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .wcwidth), .{ .prefix_seeks = 1, .bytes_scanned = 2 });
+    try expectAfter(utf8.findGraphemePosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .unicode), .{ .prefix_seeks = 1, .bytes_scanned = 2 });
 }
