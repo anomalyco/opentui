@@ -193,6 +193,80 @@ test "text work: a changed scene frame measures and lays out an auto-height text
     try expectWork(changed);
 }
 
+const MeasureResult = @import("../text-buffer-view.zig").MeasureResult;
+
+/// Loads the parts as chunks, measures once at each width to warm, then returns the work
+/// of measuring again at each width. The measure cache holds 3 widths, so all 8 miss.
+fn measureSweep(allocator: std.mem.Allocator, pools: *TestPools, parts: []const []const u8, mode: @import("../text-buffer-view.zig").WrapMode, results: ?*[8]MeasureResult) !Counts {
+    const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+    const view = try TextBufferView.init(allocator, tb);
+    defer view.deinit();
+    try tb.setText(parts[0]);
+    for (parts[1..]) |part| try tb.append(part);
+    view.setWrapMode(mode);
+    view.setWrapWidth(80);
+    for (76..84) |width| _ = try view.measureForDimensions(@intCast(width), 100);
+    _ = text_work.take();
+    for (76..84, 0..) |width, i| {
+        const result = try view.measureForDimensions(@intCast(width), 100);
+        if (results) |out| out[i] = result;
+    }
+    return text_work.take();
+}
+
+fn repeatText(allocator: std.mem.Allocator, unit: []const u8, bytes: usize) ![]u8 {
+    const count = bytes / unit.len;
+    const text = try allocator.alloc(u8, count * unit.len);
+    for (0..count) |i| @memcpy(text[i * unit.len ..][0..unit.len], unit);
+    return text;
+}
+
+test "text work: wrapping one long line costs work linear in its length" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const rows = [_]struct { unit: []const u8, mode: @import("../text-buffer-view.zig").WrapMode }{
+        .{ .unit = "x", .mode = .word },
+        .{ .unit = "\u{e9}", .mode = .word },
+        .{ .unit = "xxxxxxxxxx ", .mode = .word },
+        .{ .unit = "\u{e9}" ** 10 ++ " ", .mode = .word },
+        .{ .unit = "x", .mode = .char },
+        .{ .unit = "\u{e9}", .mode = .char },
+    };
+    for (rows) |row| {
+        var work: [2]Counts = undefined;
+        for (&work, [_]usize{ 20_000, 40_000 }) |*counts, bytes| {
+            const text = try repeatText(allocator, row.unit, bytes);
+            defer allocator.free(text);
+            counts.* = try measureSweep(allocator, &pools, &.{text}, row.mode, null);
+        }
+        errdefer std.debug.print("unit \"{s}\" mode {s}:\n{any}\n{any}\n", .{ row.unit, @tagName(row.mode), work[0], work[1] });
+        for (work) |counts| try std.testing.expectEqual(8, counts.measure_passes);
+        // Twice the text may cost at most 2.1 times the work; a rescan per row costs about 4 times.
+        inline for (.{ "prefix_seeks", "bytes_scanned", "ascii_bytes" }) |field| {
+            try std.testing.expect(@field(work[1], field) * 10 <= @field(work[0], field) * 21 + 80);
+        }
+    }
+}
+
+test "text work: a grapheme split across chunks keeps ASCII fitting for the rest of the word" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const suffix = try repeatText(allocator, "x", 64_000);
+    defer allocator.free(suffix);
+    var control_layout: [8]MeasureResult = undefined;
+    var split_layout: [8]MeasureResult = undefined;
+    const control = try measureSweep(allocator, &pools, &.{ "\u{1f44b}", "\u{1f44b}", suffix, "y" }, .word, &control_layout);
+    const split = try measureSweep(allocator, &pools, &.{ "\u{1f44b}", "\u{1f3fb}", suffix, "y" }, .word, &split_layout);
+    try std.testing.expectEqualSlices(MeasureResult, &control_layout, &split_layout);
+    errdefer std.debug.print("control {any}\nsplit   {any}\n", .{ control, split });
+    try std.testing.expectEqual(8, split.measure_passes);
+    try std.testing.expectEqual(control.ascii_bytes, split.ascii_bytes);
+    try std.testing.expect(split.bytes_scanned <= control.bytes_scanned + 8 * 64);
+}
+
 test "text work: each UTF-8 scan entry counts its seeks, width reads, and bytes" {
     const utf8 = @import("../utf8.zig");
     var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
