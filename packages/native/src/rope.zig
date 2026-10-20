@@ -1,5 +1,5 @@
 const std = @import("std");
-const builtin = @import("builtin");
+const text_work = @import("text-work.zig");
 const Allocator = std.mem.Allocator;
 
 /// This is a persistent/immutable rope - operations create new nodes without
@@ -469,8 +469,6 @@ pub fn Rope(comptime T: type) type {
         undo_depth: usize = 0,
         version: u64 = 0,
         marker_cache: MarkerCache,
-        /// Tests bound line seeks by counting marker lookups instead of timing them.
-        marker_lookups: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
         pub fn init(allocator: Allocator) error{OutOfMemory}!Self {
             return initWithConfig(allocator, .{});
@@ -1187,6 +1185,7 @@ pub fn Rope(comptime T: type) type {
 
         fn rebuildMarkerCache(self: *Self) !void {
             if (!marker_enabled) return;
+            text_work.add(.marker_rebuilds, 1);
 
             self.marker_cache.clear();
 
@@ -1219,6 +1218,7 @@ pub fn Rope(comptime T: type) type {
                     }
 
                     context.current_leaf += 1;
+                    text_work.add(.marker_leaves, 1);
                     context.current_weight += leaf_weight;
                     return .{};
                 }
@@ -1248,7 +1248,7 @@ pub fn Rope(comptime T: type) type {
 
         pub fn getMarker(self: *Self, tag: std.meta.Tag(T), occurrence: u32) ?MarkerPosition {
             if (!marker_enabled) return null;
-            if (builtin.is_test) self.marker_lookups += 1;
+            text_work.add(.marker_lookups, 1);
             const items = self.markerPositions(tag) orelse return null;
             if (occurrence >= items.len) return null;
             return items[occurrence];
