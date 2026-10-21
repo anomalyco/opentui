@@ -2008,6 +2008,39 @@ for (const internalBlockMode of ["coalesced", "top-level"] as const) {
     theme1.destroy()
     theme2.destroy()
   })
+
+  test(`${internalBlockMode} tables and horizontal rules follow syntaxStyle and fg changes`, async () => {
+    const theme = (rule: RGBA) => SyntaxStyle.fromStyles({ conceal: { fg: rule } }, renderer.nativeScene)
+    const text1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+    const rule1 = RGBA.fromValues(0.1, 0.2, 0.3, 1)
+    const text2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
+    const rule2 = RGBA.fromValues(0.3, 0.2, 0.1, 1)
+    const theme1 = theme(rule1)
+    const theme2 = theme(rule2)
+    const md = createMarkdownRenderable({
+      id: `markdown-table-rule-style-update-${internalBlockMode}`,
+      content: "Above\n\n---\n\n| Head |\n| --- |\n| Cell |",
+      syntaxStyle: theme1,
+      fg: text1,
+      internalBlockMode,
+    })
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(text1.toInts())
+    expect(findSpanContaining(captureSpans(), "────")?.fg?.toInts()).toEqual(rule1.toInts())
+
+    md.syntaxStyle = theme2
+    md.fg = text2
+    renderer.requestRender()
+    await renderMarkdownRenderable(md)
+
+    expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(text2.toInts())
+    expect(findSpanContaining(captureSpans(), "────")?.fg?.toInts()).toEqual(rule2.toInts())
+
+    theme1.destroy()
+    theme2.destroy()
+  })
 }
 
 test("fenced diff blocks color added and removed lines", async () => {
