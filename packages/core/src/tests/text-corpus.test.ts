@@ -1,37 +1,53 @@
 // Runs the shared text corpus that packages/native/src/tests/text-corpus_test.zig also runs.
 // The file's "format" entry documents the row keys; TypeScript cannot read virtual-line bytes,
-// so the retain and chunk_widths checks and the byte column of lines run only in Zig.
+// so the retain, chunk_widths, and fit checks and the byte column of lines run only in Zig.
 import { readFileSync } from "node:fs"
 import { expect, test } from "bun:test"
 import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { EditBuffer } from "../edit-buffer.js"
+import { EditorView } from "../editor-view.js"
 import { TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
-import type { WidthMethod } from "../types.js"
+import type { LineInfo, WidthMethod } from "../types.js"
 
 type Row = Record<string, any> & { id: string }
+type Bug = [string, string, string[]?]
 const corpus = JSON.parse(
   readFileSync(new URL("../../../native/src/tests/fixtures/text-corpus.json", import.meta.url), "utf8"),
-) as { checks: { ts: Record<string, number> }; rows: Row[] }
+) as { keys: string[]; checks: { ts: Record<string, number> }; rows: Row[] }
+const allMethods = ["wcwidth", "unicode", "no_zwj", "unicode_wide"]
 // no_zwj has no public TextBuffer method, and the control display is not public.
 const methods: Record<string, WidthMethod> = { wcwidth: "wcwidth", unicode: "unicode", unicode_wide: "unicode-wide" }
+const neverReversed = ["retain", "chunk_widths", "fit", "measure", "resize"]
 const counts: Record<string, number> = {}
 const decoder = new TextDecoder()
+
+/** Rows use only known keys, exactly one input, and known width methods; `bug` entries name a check that can be reversed. */
+function validate(row: Row): void {
+  const unknown = Object.keys(row).filter((key) => !corpus.keys.includes(key))
+  if (unknown.length > 0) throw new Error(`${row.id}: unknown keys ${unknown}`)
+  if (["text", "parts", "ops"].filter((key) => key in row).length !== 1) throw new Error(`${row.id}: needs one input`)
+  const bugs: Bug[] = row.bug ?? []
+  const names = [...(row.methods ?? []), ...bugs.flatMap(([, , only = []]) => only)]
+  if (names.some((name) => !allMethods.includes(name))) throw new Error(`${row.id}: unknown width method`)
+  if (bugs.some(([check]) => neverReversed.includes(check))) throw new Error(`${row.id}: that check cannot be reversed`)
+}
 
 function runRow(row: Row, method: string, failures: string[]): void {
   const context = new ResourceContext({ objectCapacity: 4096, renderCellsMax: 1 << 20 })
   const owned: { destroy(): void }[] = []
   const own = <T extends { destroy(): void }>(value: T): T => (owned.push(value), value)
+  const bugs: Bug[] = (row.bug ?? []).filter(([, , only]: Bug) => !only || only.includes(method))
+  const exercised = new Set<Bug>()
   const want = (key: string): any => {
     const value = row[key]
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value[method] : value
   }
+  // A check named by a `bug` entry for this method must fail; every other check must pass.
   const check = (name: string, ok: boolean): void => {
     counts[name] = (counts[name] ?? 0) + 1
-    const bug = (row.bug ?? []).find(
-      ([check, , only = []]: [string, string, string[]]) =>
-        check === name && (only.length === 0 || only.includes(method)),
-    )
+    const bug = bugs.find(([check]) => check === name)
+    if (bug) exercised.add(bug)
     if (ok === !bug) return
     failures.push(`${name} ${method}: ${bug ? `${bug[1]} passes` : "failed"}`)
   }
@@ -49,14 +65,12 @@ function runRow(row: Row, method: string, failures: string[]): void {
     return created
   }
   // [source line, source column, width] per virtual line.
-  const layout = (target: TextBufferView): number[][] => {
-    const info = target.lineInfo
-    return info.lineSources.map((source, i) => [
+  const layout = (info: LineInfo): number[][] =>
+    info.lineSources.map((source, i) => [
       source,
       info.lineStartCols[i] - info.lineStartCols[info.lineSources.indexOf(source)],
       info.lineWidthCols[i],
     ])
-  }
   const drawRows = (target: TextBufferView, width: number, height: number): string[] => {
     const screen = own(OptimizedBuffer.create(width, Math.max(height, 1), methods[method], { owner: context }))
     screen.clear()
@@ -71,11 +85,18 @@ function runRow(row: Row, method: string, failures: string[]): void {
       const edit = own(EditBuffer.create(methods[method], context))
       edit.setTabWidth(row.tab ?? 4)
       for (const op of row.ops) applyOp(edit, op)
-      if (want("result") !== undefined) check("result", edit.getText() === want("result"))
+      const text = edit.getText()
+      const editor = own(EditorView.create(edit, row.cols ?? 80, 1 << 10))
+      editor.setWrapMode(row.wrap ?? "none")
+      if (want("result") !== undefined) check("result", text === want("result"))
+      if (want("line_widths"))
+        check("line_widths", same(editor.getLogicalLineInfo().lineWidthCols, want("line_widths")))
+      if (want("max") !== undefined) check("max", editor.getLogicalLineInfo().lineWidthColsMax === want("max"))
+      check("fresh", same(layout(editor.getLineInfo()), layout(view(load([text])).lineInfo)))
       if (want("stops")) {
         edit.setCursor(0, 0)
         const seen: number[][] = []
-        for (let i = 0; i < edit.getText().length + 2; i++) {
+        for (let i = 0; i < text.length + 2; i++) {
           const { row: line, col } = edit.getCursorPosition()
           if (seen.length > 0 && same(seen[seen.length - 1], [line, col])) break
           seen.push([line, col])
@@ -88,6 +109,7 @@ function runRow(row: Row, method: string, failures: string[]): void {
     const parts: string[] = row.parts ?? [row.text]
     const buffer = load(parts)
     const text = parts.join("")
+    check("text", buffer.getPlainText() === text.replaceAll("\r\n", "\n"))
     const unwrapped = view(buffer, null)
     unwrapped.setWrapMode("none")
     if (want("width") !== undefined && !text.includes("\n"))
@@ -96,7 +118,7 @@ function runRow(row: Row, method: string, failures: string[]): void {
     if (want("max") !== undefined) check("max", unwrapped.logicalLineInfo.lineWidthColsMax === want("max"))
 
     const main = view(buffer)
-    const key = layout(main)
+    const key = layout(main.lineInfo)
     if (want("lines"))
       check(
         "lines",
@@ -115,17 +137,9 @@ function runRow(row: Row, method: string, failures: string[]): void {
       main.setWrapWidth(row.cols + 2)
       main.lineInfo
       main.setWrapWidth(row.cols)
-      check("resize", same(layout(main), layout(view(buffer))))
+      check("resize", same(layout(main.lineInfo), layout(view(buffer).lineInfo)))
     }
-    if (parts.length > 1) {
-      const fresh = load([text])
-      const freshUnwrapped = view(fresh, null)
-      freshUnwrapped.setWrapMode("none")
-      check(
-        "fresh",
-        same(key, layout(view(fresh))) && same(unwrapped.lineInfo.lineWidthCols, freshUnwrapped.lineInfo.lineWidthCols),
-      )
-    }
+    if (parts.length > 1) check("fresh", same(key, layout(view(load([text])).lineInfo)))
     if (want("draw")) {
       const target = view(buffer)
       const width = row.cols ?? 80
@@ -151,19 +165,25 @@ function runRow(row: Row, method: string, failures: string[]): void {
       let ok = true
       for (let cut = 1; cut < text.length; cut++) {
         if (text.charCodeAt(cut) >= 0xdc00 && text.charCodeAt(cut) <= 0xdfff) continue
-        ok &&= same(layout(view(load([text.slice(0, cut), text.slice(cut)]))), layout(view(load([text]))))
+        ok &&= same(
+          layout(view(load([text.slice(0, cut), text.slice(cut)])).lineInfo),
+          layout(view(load([text])).lineInfo),
+        )
       }
       check("split", ok)
     }
   } finally {
     for (const value of owned.reverse()) value.destroy()
     context.destroy()
+    // Every entry that names this method must have reversed a check that ran.
+    for (const bug of bugs) if (!exercised.has(bug)) failures.push(`${method}: bug entry ${bug[0]} never ran`)
   }
 }
 
 function applyOp(edit: EditBuffer, [name, ...args]: any[]): void {
   if (name === "repeat") {
-    for (let i = 0, before = edit.getText(); i <= before.length; i++, before = edit.getText()) {
+    const limit = edit.getText().length + 1
+    for (let i = 0, before = edit.getText(); i < limit; i++, before = edit.getText()) {
       applyOp(edit, args[0])
       if (edit.getText() === before) break
     }
@@ -179,8 +199,12 @@ function applyOp(edit: EditBuffer, [name, ...args]: any[]): void {
 
 for (const row of corpus.rows) {
   test(`text corpus: ${row.id}`, () => {
+    validate(row)
     const failures: string[] = []
-    for (const method of row.methods ?? Object.keys(methods)) if (methods[method]) runRow(row, method, failures)
+    for (const method of row.methods ?? allMethods) {
+      if (methods[method] && row.control === undefined) runRow(row, method, failures)
+      else counts.skipped = (counts.skipped ?? 0) + 1
+    }
     expect(failures).toEqual([])
   })
 }

@@ -17,6 +17,8 @@ const Run = struct {
     row: std.json.ObjectMap,
     method: utf8.WidthMethod,
     counts: *std.StringArrayHashMapUnmanaged(i64),
+    /// One flag per `bug` entry: set when a check that the entry names runs in this method.
+    exercised: []bool,
 
     fn get(self: Run, key: []const u8) ?Value {
         const value = self.row.get(key) orelse return null;
@@ -31,15 +33,20 @@ const Run = struct {
     fn check(self: Run, name: []const u8, ok: bool) !void {
         const entry = try self.counts.getOrPutValue(self.arena, name, 0);
         entry.value_ptr.* += 1;
-        const bug = for (if (self.row.get("bug")) |b| b.array.items else &.{}) |item| {
+        const bug = for (bugs(self.row), 0..) |item, i| {
             const fields = item.array.items;
-            if (!std.mem.eql(u8, fields[0].string, name)) continue;
-            if (fields.len > 2 and !contains(fields[2].array.items, @tagName(self.method))) continue;
+            if (!std.mem.eql(u8, fields[0].string, name) or !self.covers(item)) continue;
+            self.exercised[i] = true;
             break fields[1].string;
         } else null;
         if (ok == (bug == null)) return;
         std.debug.print("{s} {s} {s}: {s}{s}\n", .{ self.row.get("id").?.string, name, @tagName(self.method), bug orelse "failed", if (bug != null) " passes" else "" });
         return error.CorpusMismatch;
+    }
+
+    fn covers(self: Run, entry: Value) bool {
+        const fields = entry.array.items;
+        return fields.len < 3 or contains(fields[2].array.items, @tagName(self.method));
     }
 
     fn load(self: Run, parts: []const []const u8) !*TextBuffer {
@@ -60,26 +67,49 @@ const Run = struct {
     }
 };
 
+fn bugs(row: std.json.ObjectMap) []const Value {
+    return if (row.get("bug")) |b| b.array.items else &.{};
+}
+
 fn contains(list: []const Value, name: []const u8) bool {
     for (list) |item| if (std.mem.eql(u8, item.string, name)) return true;
     return false;
 }
 
-/// The lines keep every byte of the text, except the spaces, tabs, and U+200B where word wrap breaks.
-fn retains(text: []const u8, lines: []const u8, word: bool) bool {
+/// The lines hold every byte of the input in order. Only between lines may bytes be missing:
+/// line breaks, and in word wrap the spaces and tabs where the line wrapped.
+fn retains(input: []const u8, lines: []const []const u8, word: bool) bool {
     var i: usize = 0;
-    var j: usize = 0;
-    while (i < text.len) {
-        if (j < lines.len and text[i] == lines[j]) {
-            i += 1;
-            j += 1;
-        } else if (word and (text[i] == ' ' or text[i] == '\t')) {
-            i += 1;
-        } else if (word and std.mem.startsWith(u8, text[i..], "\u{200b}")) {
-            i += 3;
-        } else return false;
+    for (lines, 0..) |line, n| {
+        while (!std.mem.startsWith(u8, input[i..], line)) i = if (n > 0) skipBreak(input, i, word) orelse return false else return false;
+        i += line.len;
     }
-    return j == lines.len;
+    while (skipBreak(input, i, word)) |next| i = next;
+    return i == input.len;
+}
+
+/// A line may be wider than the wrap width only when one grapheme takes all of its cells.
+fn oneGraphemeWithCells(bytes: []const u8, tb: *TextBuffer, method: utf8.WidthMethod) bool {
+    var state: @import("uucode").grapheme.BreakState = .default;
+    var previous: ?u21 = null;
+    var start: usize = 0;
+    var with_cells: u32 = 0;
+    var pos: usize = 0;
+    while (pos <= bytes.len) : (pos += if (pos < bytes.len) utf8.decodeUtf8Unchecked(bytes, pos).len else 1) {
+        const cp: ?u21 = if (pos < bytes.len) utf8.decodeUtf8Unchecked(bytes, pos).cp else null;
+        if (previous != null and (cp == null or utf8.isGraphemeBreak(previous, cp.?, &state, .unicode))) {
+            if (utf8.calculateTextWidth(bytes[start..pos], tb.tabWidth(), tb.controlDisplay(), false, method) > 0) with_cells += 1;
+            start = pos;
+        }
+        previous = cp;
+    }
+    return with_cells <= 1;
+}
+
+fn skipBreak(input: []const u8, i: usize, word: bool) ?usize {
+    if (i >= input.len) return null;
+    if (input[i] == '\n' or input[i] == '\r' or (word and (input[i] == ' ' or input[i] == '\t'))) return i + 1;
+    return null;
 }
 
 fn plainText(arena: std.mem.Allocator, tb: *TextBuffer) ![]const u8 {
@@ -129,26 +159,32 @@ fn joinRows(arena: std.mem.Allocator, rows: []const Value) ![]const u8 {
     return out.items;
 }
 
-/// Layout checks of the loaded buffer at `cols`; with `fresh_text`, also against that text loaded as one chunk.
-fn layoutChecks(run: Run, tb: *TextBuffer, fresh_text: ?[]const u8) !void {
+/// Layout checks of the buffer loaded from `input` at `cols`; with `compare_fresh`, also against `input` loaded as one chunk.
+fn layoutChecks(run: Run, tb: *TextBuffer, input: []const u8, compare_fresh: bool) !void {
     const cols: ?u32 = if (run.row.get("cols") != null) run.int("cols", 0) else null;
     const v = try run.view(tb, cols);
     defer v.deinit();
     const key = try layoutKey(run.arena, v, tb);
     if (run.get("lines")) |lines| try run.check("lines", std.mem.eql(u8, key, try expectedKey(run.arena, lines)));
     if (run.row.get("truncate") == null) {
-        var retained: std.ArrayList(u8) = .empty;
-        var widths_ok = true;
-        for (v.getVirtualLines()) |line| for (line.chunks.items) |chunk| {
-            const bytes = chunk.chunk.getBytes(tb.memRegistry())[chunk.byte_start_in_chunk..][0..chunk.byte_len];
-            try retained.appendSlice(run.arena, bytes);
-            if (std.mem.indexOfScalar(u8, bytes, '\t') == null) widths_ok = widths_ok and chunk.width_cols == utf8.calculateTextWidth(bytes, tb.tabWidth(), tb.controlDisplay(), false, run.method);
-        };
-        var text: std.ArrayList(u8) = .empty;
-        for (try plainText(run.arena, tb)) |b| if (b != '\n' and b != '\r') try text.append(run.arena, b);
         const word = if (run.row.get("wrap")) |w| std.mem.eql(u8, w.string, "word") else false;
-        try run.check("retain", retains(text.items, retained.items, word));
+        var lines: std.ArrayList([]const u8) = .empty;
+        var widths_ok = true;
+        var fits = true;
+        for (v.getVirtualLines()) |line| {
+            var bytes: std.ArrayList(u8) = .empty;
+            for (line.chunks.items) |chunk| {
+                const chunk_bytes = chunk.chunk.getBytes(tb.memRegistry())[chunk.byte_start_in_chunk..][0..chunk.byte_len];
+                try bytes.appendSlice(run.arena, chunk_bytes);
+                if (std.mem.indexOfScalar(u8, chunk_bytes, '\t') == null) widths_ok = widths_ok and chunk.width_cols == utf8.calculateTextWidth(chunk_bytes, tb.tabWidth(), tb.controlDisplay(), false, run.method);
+            }
+            try lines.append(run.arena, if (word) try std.mem.replaceOwned(u8, run.arena, bytes.items, "\u{200b}", "") else bytes.items);
+            if (cols) |width| fits = fits and (line.width_cols <= width or oneGraphemeWithCells(bytes.items, tb, run.method));
+        }
+        // Word wrap may drop U+200B anywhere; it takes no cell.
+        try run.check("retain", retains(if (word) try std.mem.replaceOwned(u8, run.arena, input, "\u{200b}", "") else input, lines.items, word));
         try run.check("chunk_widths", widths_ok);
+        if (cols != null and run.row.get("wrap") != null) try run.check("fit", fits);
     }
     if (cols) |width| if (run.row.get("wrap") != null) {
         const measured = try v.measureForDimensions(width, 1 << 20);
@@ -163,14 +199,12 @@ fn layoutChecks(run: Run, tb: *TextBuffer, fresh_text: ?[]const u8) !void {
         defer again.deinit();
         try run.check("resize", std.mem.eql(u8, try layoutKey(run.arena, v, tb), try layoutKey(run.arena, again, tb)));
     };
-    const source = fresh_text orelse return;
-    const fresh_tb = try run.load(&.{source});
+    if (!compare_fresh) return;
+    const fresh_tb = try run.load(&.{input});
     defer fresh_tb.deinit();
     const fresh = try run.view(fresh_tb, cols);
     defer fresh.deinit();
-    var same = std.mem.eql(u8, key, try layoutKey(run.arena, fresh, fresh_tb));
-    for (0..tb.lineCount()) |row| same = same and tb.lineWidthAt(@intCast(row)) == fresh_tb.lineWidthAt(@intCast(row));
-    try run.check("fresh", same);
+    try run.check("fresh", std.mem.eql(u8, key, try layoutKey(run.arena, fresh, fresh_tb)));
 }
 
 fn runRow(run: Run) !void {
@@ -204,7 +238,7 @@ fn runRow(run: Run) !void {
     if (run.get("max")) |m| try run.check("max", tb.lineWidthColsMax() == m.integer);
     if (run.get("result")) |r| try run.check("result", std.mem.eql(u8, text, r.string));
     const joined = try std.mem.concat(run.arena, u8, parts.items);
-    try layoutChecks(run, tb, if (eb != null) text else if (parts.items.len > 1) joined else null);
+    try layoutChecks(run, tb, if (eb != null) text else joined, eb != null or parts.items.len > 1);
 
     if (run.get("draw")) |rows| {
         const v = try run.view(tb, if (row.get("cols") == null) null else run.int("cols", 0));
@@ -295,6 +329,30 @@ fn splitChecks(run: Run, text: []const u8) !void {
     try run.check("split", same);
 }
 
+/// Rows use only known keys, exactly one input, and known width methods; `bug` entries name a check that can be reversed.
+fn validate(row: std.json.ObjectMap, keys: []const Value) !void {
+    for (row.keys()) |key| if (!contains(keys, key)) return error.UnknownKey;
+    if (@as(u8, @intFromBool(row.contains("text"))) + @intFromBool(row.contains("parts")) + @intFromBool(row.contains("ops")) != 1) return error.InputKey;
+    var names: std.ArrayList(Value) = .empty;
+    defer names.deinit(gpa);
+    if (row.get("methods")) |m| try names.appendSlice(gpa, m.array.items);
+    for (bugs(row)) |entry| {
+        const fields = entry.array.items;
+        if (fields.len < 2 or fields.len > 3) return error.BugEntry;
+        for ([_][]const u8{ "retain", "chunk_widths", "fit", "measure", "resize" }) |never| if (std.mem.eql(u8, fields[0].string, never)) return error.BugEntry;
+        if (fields.len == 3) try names.appendSlice(gpa, fields[2].array.items);
+    }
+    for (names.items) |name| _ = std.meta.stringToEnum(utf8.WidthMethod, name.string) orelse return error.UnknownMethod;
+}
+
+test "text corpus: retention allows missing bytes only between lines" {
+    try std.testing.expect(retains("a b\tc", &.{ "a", "b", "c" }, true));
+    try std.testing.expect(retains("a\n  b", &.{ "a", "  b" }, true));
+    try std.testing.expect(!retains("a b", &.{"ab"}, true));
+    try std.testing.expect(!retains("a b", &.{ "a", "b" }, false));
+    try std.testing.expect(!retains("ab", &.{"a"}, true));
+}
+
 test "text corpus: every row gives its expected result in every width method" {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -304,12 +362,22 @@ test "text corpus: every row gives its expected result in every width method" {
     defer pools.deinit();
     var counts: std.StringArrayHashMapUnmanaged(i64) = .empty;
     var failed = false;
+    const keys = corpus.object.get("keys").?.array.items;
     for (corpus.object.get("rows").?.array.items) |row| {
+        errdefer std.debug.print("row {s}: malformed\n", .{if (row.object.get("id")) |id| id.string else "?"});
+        try validate(row.object, keys);
         const methods = if (row.object.get("methods")) |m| m.array.items else &.{};
         for (std.enums.values(utf8.WidthMethod)) |method| {
             if (methods.len > 0 and !contains(methods, @tagName(method))) continue;
-            runRow(.{ .arena = arena, .pools = &pools, .row = row.object, .method = method, .counts = &counts }) catch |err| {
+            const run: Run = .{ .arena = arena, .pools = &pools, .row = row.object, .method = method, .counts = &counts, .exercised = try arena.alloc(bool, bugs(row.object).len) };
+            @memset(run.exercised, false);
+            runRow(run) catch |err| {
                 if (@as(anyerror, err) != error.CorpusMismatch) return err;
+                failed = true;
+            };
+            // Every entry that names this method must have reversed a check that ran.
+            for (bugs(row.object), run.exercised) |entry, used| if (run.covers(entry) and !used) {
+                std.debug.print("{s} {s}: bug entry {s} never ran\n", .{ row.object.get("id").?.string, @tagName(method), entry.array.items[0].string });
                 failed = true;
             };
         }
