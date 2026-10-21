@@ -8,6 +8,7 @@
     "**/zig-pkg/**",
     "packages/core/src/lib/tree-sitter/default-parsers.ts",
     "packages/web/public/recordings/*.json",
-    "packages/core/src/lib/stdin-parser.conformance.json"
+    "packages/core/src/lib/stdin-parser.conformance.json",
+    "packages/native/src/tests/fixtures/text-corpus.json"
   ]
 }
