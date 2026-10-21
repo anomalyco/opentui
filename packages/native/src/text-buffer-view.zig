@@ -4,6 +4,7 @@ const tb = @import("text-buffer.zig");
 const seg_mod = @import("text-buffer-segment.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 const NativeRenderable = @import("native-renderable.zig").NativeRenderable;
 
 const UnifiedTextBuffer = tb.UnifiedTextBuffer;
@@ -517,6 +518,7 @@ pub const UnifiedTextBufferView = struct {
             .cached_line_vline_counts = &self.cached_line_vline_counts,
         };
 
+        text_work.add(.layouts, 1);
         const calculated = if (self.wrap_mode == .none or self.wrap_width == null)
             calculateUnwrappedVirtualLines(virtual_allocator, self.text_buffer, output)
         else switch (self.wrap_mode) {
@@ -1530,10 +1532,12 @@ pub const UnifiedTextBufferView = struct {
             }
         }
 
+        text_work.add(.measure_passes, 1);
         var result: MeasureResult = .{ .line_count = 0, .width_cols_max = 0 };
         // No-wrap path avoids allocations by using marker-based line widths.
         if (width == 0 or self.wrap_mode == .none) {
             result.line_count = self.text_buffer.lineCount();
+            text_work.add(.measure_lines, result.line_count);
             var row: u32 = 0;
             while (row < result.line_count) : (row += 1) {
                 result.width_cols_max = @max(result.width_cols_max, self.text_buffer.lineWidthAt(row));
@@ -1604,6 +1608,7 @@ pub const UnifiedTextBufferView = struct {
             fn line_end_callback(ctx_ptr: *anyopaque, line_info: iter_mod.LineInfo) void {
                 const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (ctx.failed) return;
+                text_work.add(.lines_laid_out, 1);
 
                 const first_vline_idx: u32 = @intCast(ctx.output.virtual_lines.items.len);
                 ctx.output.cached_line_first_vline.append(ctx.allocator, first_vline_idx) catch {
@@ -2362,6 +2367,7 @@ pub const UnifiedTextBufferView = struct {
             fn line_end_callback(ctx_ptr: *anyopaque, line_info: iter_mod.LineInfo) void {
                 const wctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (wctx.failed) return;
+                text_work.add(if (calculation == .render) .lines_laid_out else .measure_lines, 1);
 
                 var used_measure_cache = false;
                 var measure_cache_chunk: ?*const TextChunk = null;
