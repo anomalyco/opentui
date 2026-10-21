@@ -1123,8 +1123,15 @@ export class MarkdownRenderable extends Renderable {
 
     if (row.marginBottom !== marginBottom) row.marginBottom = marginBottom
     if (marker.width !== markerWidth) marker.width = markerWidth
-    if (marker.chunks[0]?.text !== markerText) {
-      marker.content = new StyledText([this.createChunk(markerText, "markup.list")])
+    const current = marker.chunks[0]
+    const next = this.createChunk(markerText, "markup.list")
+    if (
+      current?.text !== next.text ||
+      !colorsEqual(current.fg, next.fg) ||
+      !colorsEqual(current.bg, next.bg) ||
+      current.attributes !== next.attributes
+    ) {
+      marker.content = new StyledText([next])
     }
   }
 
@@ -2055,7 +2062,7 @@ export class MarkdownRenderable extends Renderable {
           this.destroyUnusedDefaultRenderable(custom.renderable)
         }
 
-        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token)
+        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token, forceTableRefresh)
         existing.renderable.marginBottom = 0
         if (existing.marginTop !== block.marginTop) {
           this.applyMargins(existing.renderable, block.marginTop, 0)
