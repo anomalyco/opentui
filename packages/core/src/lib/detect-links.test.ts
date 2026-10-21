@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test"
-import { detectLinks } from "./detect-links.js"
+import { detectLinks, sanitizeLinkTarget } from "./detect-links.js"
 import { ResourceContext } from "../buffer.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import type { TextChunk } from "../text-buffer.js"
@@ -364,6 +364,55 @@ describe("detectLinks", () => {
     const result = detectLinks([chunk(content)], { content, highlights: [] })
 
     expect(result.filter((item) => item.link).map((item) => item.link?.url)).toEqual([url])
+  })
+
+  test("truncates a highlighted destination at control characters", () => {
+    const target = "custom://example.test/path"
+    const injected = "\u001b]52;c;QQ==\u0007"
+    const content = `[Click here](${target}${injected})`
+    const targetStart = content.indexOf(target)
+    const urlEnd = targetStart + target.length + injected.length
+    const highlights: SimpleHighlight[] = [
+      [0, 1, "markup.link"],
+      [1, 11, "markup.link.label"],
+      [11, targetStart, "markup.link"],
+      [targetStart, urlEnd, "markup.link.url"],
+      [urlEnd, content.length, "markup.link"],
+    ]
+    const chunks = [chunk("["), chunk("Click here"), chunk("]("), chunk(target + injected), chunk(")")]
+
+    const result = detectLinks(chunks, { content, highlights })
+
+    for (const item of result) {
+      if (item.link) expect(item.link.url).not.toMatch(/[\x00-\x1f\x7f-\x9f]/)
+    }
+    expect(result.find((c) => c.text === "Click here")!.link).toEqual({ url: target })
+  })
+
+  test("truncates a highlighted URL scope at control characters", () => {
+    const target = "https://example.test/path"
+    const injected = "\u001b]52;c;QQ==\u0007"
+    const content = `// see ${target}${injected}`
+    const start = content.indexOf(target)
+    const highlights: SimpleHighlight[] = [
+      [0, content.length, "comment"],
+      [start, start + target.length + injected.length, "string.special.url"],
+    ]
+    const chunks = [chunk("// see "), chunk(target + injected)]
+
+    const result = detectLinks(chunks, { content, highlights })
+
+    for (const item of result) {
+      if (item.link) expect(item.link.url).not.toMatch(/[\x00-\x1f\x7f-\x9f]/)
+    }
+    expect(result.find((c) => c.text.startsWith(target))!.link).toEqual({ url: target })
+  })
+
+  test("sanitizeLinkTarget truncates at the first control byte", () => {
+    expect(sanitizeLinkTarget("https://example.test/path")).toBe("https://example.test/path")
+    expect(sanitizeLinkTarget("https://example.test/path\u001b]52;c;QQ==\u0007")).toBe("https://example.test/path")
+    expect(sanitizeLinkTarget("https://example.test/\u009b2;title")).toBe("https://example.test/")
+    expect(sanitizeLinkTarget("\u001b]2;title\u0007")).toBe("")
   })
 
   test("excludes concealed formatting markers without stripping literal URL characters", () => {
