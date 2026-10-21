@@ -527,7 +527,7 @@ pub const CliRenderer = struct {
 
         self.syncWidthMethod();
         self.resetFallbackPaletteState();
-        nextBuffer.setBlendBackdropColor(ansi.rgbColor(ansi.red(self.backgroundColor), ansi.green(self.backgroundColor), ansi.blue(self.backgroundColor), 255));
+        nextBuffer.setBlendBackdropColor(self.backgroundColor);
 
         currentBuffer.clear(self.backgroundColor, CLEAR_CHAR);
         nextBuffer.clear(self.backgroundColor, null);
@@ -847,7 +847,7 @@ pub const CliRenderer = struct {
         next.commit();
         self.width = width;
         self.height = height;
-        self.nextRenderBuffer.setBlendBackdropColor(ansi.rgbColor(ansi.red(self.backgroundColor), ansi.green(self.backgroundColor), ansi.blue(self.backgroundColor), 255));
+        self.nextRenderBuffer.setBlendBackdropColor(self.backgroundColor);
         self.currentRenderBuffer.clear(ansi.rgbColor(0, 0, 0, 255), CLEAR_CHAR);
         self.nextRenderBuffer.clear(self.backgroundColor, null);
         if (newHitGrids) |grids| {
@@ -874,7 +874,9 @@ pub const CliRenderer = struct {
 
     pub fn setBackgroundColor(self: *CliRenderer, rgba: RGBA) void {
         self.backgroundColor = rgba;
-        self.nextRenderBuffer.setBlendBackdropColor(ansi.rgbColor(ansi.red(rgba), ansi.green(rgba), ansi.blue(rgba), 255));
+        // Keep the real alpha: forcing 255 makes a fully transparent background
+        // composite as an opaque color, defeating emitColor's alpha==0 path.
+        self.nextRenderBuffer.setBlendBackdropColor(rgba);
 
         // Do not mirror renderer background to terminal default background via
         // OSC 11 for now. In Ghostty, once OSC 11 has been used, later system
