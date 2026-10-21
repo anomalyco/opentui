@@ -2747,10 +2747,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
+  // Decode a stdout write chunk into display text.
+  private decodeStdoutChunk(chunk: unknown): string {
+    if (typeof chunk === "string") return chunk
+    if (chunk instanceof Uint8Array) {
+      return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString("utf8")
+    }
+    return chunk == null ? "" : String(chunk)
+  }
+
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
     const resolvedCallback = typeof encoding === "function" ? encoding : callback
-    const resolvedEncoding = typeof encoding === "string" ? encoding : undefined
-    const text = typeof chunk === "string" ? chunk : (chunk?.toString(resolvedEncoding) ?? "")
+    const text = this.decodeStdoutChunk(chunk)
 
     if (this._externalOutputMode === "capture-stdout" && this._screenMode === "split-footer" && this._splitHeight > 0) {
       // Capture mode intentionally diverts stdout into split commit snapshots

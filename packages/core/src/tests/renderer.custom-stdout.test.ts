@@ -1842,6 +1842,29 @@ test("suspend resolves idle waiters when an output-idle render was scheduled", a
   expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("captured-before-suspend"))
 })
 
+test("split-footer capture-stdout decodes Uint8Array writes as text", async () => {
+  const stdout = createCollectingStdout(80, 24)
+  const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
+    screenMode: "split-footer",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  await renderer.setupTerminal()
+  renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
+  await renderer.idle()
+  stdout.clear()
+
+  // A plain Uint8Array must decode like a Buffer, not as comma-separated bytes (anomalyco/opentui#1639).
+  stdout.write(new TextEncoder().encode("hello-u8\n"))
+  await renderer.idle()
+  await renderer.nativeScene.driver.idle()
+
+  const output = stdout.bytes().toString("utf8")
+  expect(output).toContain("hello-u8")
+  expect(output).not.toContain("104,101,108")
+})
+
 // ---- Dimension fallback ----
 
 test.each([
