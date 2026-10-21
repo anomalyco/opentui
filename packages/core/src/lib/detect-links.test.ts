@@ -330,6 +330,15 @@ describe("detectLinks", () => {
     ])
   })
 
+  test("stops bare URLs at control characters so a link cannot inject terminal escapes", () => {
+    const url = "http://example.test/path"
+    const content = `See ${url}\u001b]52;c;QQ==\u0007 tail`
+
+    const result = detectLinks([chunk(content)], { content, highlights: [] })
+
+    expect(result.filter((item) => item.link).map((item) => item.link?.url)).toEqual([url])
+  })
+
   test("excludes concealed formatting markers without stripping literal URL characters", () => {
     for (const marker of ["*", "**", "_", "__", "~~"]) {
       const url = "https://example.test/path_*~"
