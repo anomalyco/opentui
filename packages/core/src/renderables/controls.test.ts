@@ -161,7 +161,7 @@ const scrolling: [string, object, string, string][] = [
     "keys",
     { scrollX: true },
     "down j up k right l left h pagedown pageup end home a",
-    "2,0 4,0 2,0 0,0 0,4 0,8 0,4 0,0 5,0 0,0 90,0 0,0 !0,0",
+    "2,0 4,0 2,0 0,0 0,4 0,8 0,4 0,0 5,0 1,0 91,0 0,0 !0,0",
   ],
   ["keys without scrollX", {}, "right l end", "0,0 0,0 90,0"],
   [
@@ -184,7 +184,7 @@ const scrolling: [string, object, string, string][] = [
     `thumb drag, first report at column ${x}`,
     {},
     `press:19,0 move:${x},2 move:19,4 release:${x},4 press:5,5 move:19,5 move:19,8 release:19,8`,
-    "0,0 19,0 38,0 38,0 38,0 38,0 38,0 38,0",
+    "0,0 20,0 40,0 40,0 40,0 40,0 40,0 40,0",
   ]),
 ]
 

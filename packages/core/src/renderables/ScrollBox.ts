@@ -90,6 +90,11 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
   return sanitized as Omit<T, ScrollBoxPaddingKey>
 }
 
+/** The size a scroll bar keeps across its own axis: the configured cell count, or one cell. */
+function scrollBarMinSize(size: unknown): number {
+  return typeof size === "number" && Number.isFinite(size) && size > 0 ? size : 1
+}
+
 export class ScrollBoxRenderable extends BoxRenderable {
   static override readonly nativeIntegration = this.defineNativeIntegration(BoxRenderable.nativeIntegration)
   static idCounter = 0
@@ -342,7 +347,13 @@ export class ScrollBoxRenderable extends BoxRenderable {
       children.push(this.content)
       this.viewport.add(this.content)
 
+      // A scroll bar must not shrink below its own size. The wrapper's flex basis is
+      // the full width (the content is 100% of the viewport), so the bar overflows the
+      // root, and a shrinkable bar takes a share of that overflow in proportion to its
+      // basis. That leaves the wrapper, and everything inside it, with a fractional
+      // width that Yoga rounds up for text, so text drew one cell past its parent.
       this.verticalScrollBar = new ScrollBarRenderable(ctx, {
+        minWidth: scrollBarMinSize(verticalScrollbarOptions?.width ?? scrollbarOptions?.width),
         ...scrollbarOptions,
         ...verticalScrollbarOptions,
         arrowOptions: {
@@ -361,6 +372,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       super.add(this.verticalScrollBar)
 
       this.horizontalScrollBar = new ScrollBarRenderable(ctx, {
+        minHeight: scrollBarMinSize(horizontalScrollbarOptions?.height ?? scrollbarOptions?.height),
         ...scrollbarOptions,
         ...horizontalScrollbarOptions,
         arrowOptions: {

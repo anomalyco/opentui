@@ -1952,4 +1952,29 @@ describe("ScrollBoxRenderable - text layout", () => {
       expect(frame[afterRow - 1]).toContain("line 24")
     })
   }
+
+  test("text beside a fixed-width sibling stays inside its row", async () => {
+    const overflows: string[] = []
+    for (let width = 20; width <= 60; width++) {
+      for (const scrollbar of [true, false]) {
+        const scrollBox = new ScrollBoxRenderable(testRenderer, {
+          width,
+          height: 10,
+          verticalScrollbarOptions: { visible: scrollbar },
+        })
+        testRenderer.root.add(scrollBox)
+        const row = new BoxRenderable(testRenderer, { flexDirection: "row", gap: 1 })
+        row.add(new BoxRenderable(testRenderer, { width: 1, height: 1 }))
+        const text = new TextRenderable(testRenderer, { content: "x".repeat(200) })
+        row.add(text)
+        scrollBox.add(row)
+        await renderOnce()
+
+        const overflow = text.x + text.width - (row.x + row.width)
+        if (overflow !== 0) overflows.push(`width=${width} scrollbar=${scrollbar} overflow=${overflow}`)
+        scrollBox.destroyRecursively()
+      }
+    }
+    expect(overflows).toEqual([])
+  })
 })
