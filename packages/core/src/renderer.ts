@@ -1,5 +1,6 @@
 import { appendFileSync, writeFileSync } from "node:fs"
 import { Writable } from "node:stream"
+import { StringDecoder } from "node:string_decoder"
 import { ANSI } from "./ansi.js"
 import { destroyTimelineEngine } from "./animation/Timeline.js"
 import { Renderable, RootRenderable } from "./Renderable.js"
@@ -1061,6 +1062,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private externalOutputQueue: ExternalOutputQueue
   private pendingExternalOutputMode: ExternalOutputMode | null = null
+  private stdoutDecoder: StringDecoder | null = null
   private realStdoutWrite: (chunk: any, encoding?: any, callback?: any) => boolean
 
   private _useConsole: boolean = true
@@ -1898,6 +1900,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private applyExternalOutputMode(mode: ExternalOutputMode): void {
     this._externalOutputMode = mode
     this.stdout.write = mode === "capture-stdout" ? this.interceptStdoutWrite : this.realStdoutWrite
+    this.stdoutDecoder?.end()
   }
 
   private afterExternalOutputModeChanged(previousMode: ExternalOutputMode, mode: ExternalOutputMode): void {
@@ -2747,18 +2750,26 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  // Decode a stdout write chunk into display text.
-  private decodeStdoutChunk(chunk: unknown): string {
-    if (typeof chunk === "string") return chunk
-    if (chunk instanceof Uint8Array) {
-      return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString("utf8")
+  // Decode a stdout write chunk into display text, buffering all chunks to handle split multi-byte sequences correctly.
+  private decodeStdoutChunk(chunk: unknown, encoding?: string): string {
+    this.stdoutDecoder ??= new StringDecoder("utf8") //lazy initialization
+    if (typeof chunk === "string") {
+      const normalized = encoding?.toLowerCase()
+      if (normalized && normalized !== "utf8" && normalized !== "utf-8" && Buffer.isEncoding(normalized)) {
+        return this.stdoutDecoder.write(Buffer.from(chunk, normalized))
+      }
+      return this.stdoutDecoder.end() + chunk
     }
-    return chunk == null ? "" : String(chunk)
+    if (chunk instanceof Uint8Array) {
+      return this.stdoutDecoder.write(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+    }
+    return this.stdoutDecoder.end() + (chunk == null ? "" : String(chunk))
   }
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
     const resolvedCallback = typeof encoding === "function" ? encoding : callback
-    const text = this.decodeStdoutChunk(chunk)
+    const resolvedEncoding = typeof encoding === "string" ? encoding : undefined
+    const text = this.decodeStdoutChunk(chunk, resolvedEncoding)
 
     if (this._externalOutputMode === "capture-stdout" && this._screenMode === "split-footer" && this._splitHeight > 0) {
       // Capture mode intentionally diverts stdout into split commit snapshots
@@ -4720,6 +4731,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this._externalOutputMode = "passthrough"
     this.pendingExternalOutputMode = null
+    this.stdoutDecoder = null
     this.stdout.write = this.realStdoutWrite
 
     const discardInput = this._terminalIsSetup && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED

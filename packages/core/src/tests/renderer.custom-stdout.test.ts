@@ -1842,7 +1842,7 @@ test("suspend resolves idle waiters when an output-idle render was scheduled", a
   expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("captured-before-suspend"))
 })
 
-test("split-footer capture-stdout decodes Uint8Array writes as text", async () => {
+test("split-footer capture-stdout decodes every Writable#write chunk shape", async () => {
   const stdout = createCollectingStdout(80, 24)
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
     screenMode: "split-footer",
@@ -1855,14 +1855,24 @@ test("split-footer capture-stdout decodes Uint8Array writes as text", async () =
   await renderer.idle()
   stdout.clear()
 
-  // A plain Uint8Array must decode like a Buffer, not as comma-separated bytes (anomalyco/opentui#1639).
   stdout.write(new TextEncoder().encode("hello-u8\n"))
+  stdout.write(Buffer.from("hello-b64\n").toString("base64"), "base64")
+
+  const split = Buffer.from("caf\u00e9\n")
+  stdout.write(split.subarray(0, 4))
+  stdout.write(split.subarray(4))
   await renderer.idle()
   await renderer.nativeScene.driver.idle()
 
   const output = stdout.bytes().toString("utf8")
   expect(output).toContain("hello-u8")
   expect(output).not.toContain("104,101,108")
+
+  expect(output).toContain("hello-b64")
+  expect(output).not.toContain("aGVsbG8")
+
+  expect(output).toContain("\u00e9")
+  expect(output).not.toContain("\ufffd")
 })
 
 // ---- Dimension fallback ----
