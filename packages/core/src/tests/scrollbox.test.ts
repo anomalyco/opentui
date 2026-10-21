@@ -11,6 +11,7 @@ import { createTestRenderer, type TestRenderer, type MockMouse, MockTreeSitterCl
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { TextareaRenderable } from "../renderables/Textarea.js"
 import { CodeRenderable } from "../renderables/Code.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
@@ -1911,4 +1912,44 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
     const newMaxScrollTop = Math.max(0, scrollBox.scrollHeight - scrollBox.viewport.height)
     expect(scrollBox.scrollTop).toBe(newMaxScrollTop)
   })
+})
+
+describe("ScrollBoxRenderable - text layout", () => {
+  for (const kind of ["text", "textarea"] as const) {
+    test(`${kind} taller than the viewport keeps its line count as its height`, async () => {
+      const scrollBox = new ScrollBoxRenderable(testRenderer, {
+        width: 40,
+        height: 10,
+        stickyScroll: true,
+        stickyStart: "bottom",
+      })
+      testRenderer.root.add(scrollBox)
+
+      const lines = Array.from({ length: 25 }, (_, i) => `line ${i}`).join("\n")
+      const tall =
+        kind === "text"
+          ? new TextRenderable(testRenderer, { content: lines })
+          : new TextareaRenderable(testRenderer, { initialValue: lines })
+      // A row lays the text out under an AtMost width, which is the measure path
+      // that used to clamp the height (e.g. a spinner beside a long command).
+      const row = new BoxRenderable(testRenderer, { flexDirection: "row", gap: 1 })
+      row.add(new TextRenderable(testRenderer, { content: "*" }))
+      row.add(tall)
+      const next = new TextRenderable(testRenderer, { content: "after" })
+      scrollBox.add(row)
+      scrollBox.add(next)
+      await renderOnce()
+
+      expect(tall.height).toBe(25)
+      expect(next.y - tall.y).toBe(25)
+      expect(scrollBox.scrollHeight).toBe(26)
+
+      // Scrolled to the bottom, the last line sits directly above the next child
+      // instead of being overdrawn by it.
+      const frame = captureCharFrame().split("\n")
+      const afterRow = frame.findIndex((row) => row.includes("after"))
+      expect(afterRow).toBeGreaterThan(0)
+      expect(frame[afterRow - 1]).toContain("line 24")
+    })
+  }
 })
