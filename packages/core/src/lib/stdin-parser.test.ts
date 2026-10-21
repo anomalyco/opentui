@@ -631,6 +631,32 @@ describe("StdinParser", () => {
     ])
   })
 
+  // Windows Terminal's win32-input-mode (DEC private mode 9001) reports every
+  // key event as `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`. The sequences below are
+  // captured from Windows Terminal 1.24 and from the specification #4999.
+  //
+  // This encoding matters because the legacy one cannot express a modifier
+  // combination at all: a Ctrl+Tab arrives as the same byte as a Tab.
+  describe("win32-input-mode", () => {
+    table([
+      ["plain key", "\x1b[49;1;49;1;96;1_", [k("1", { raw: "\x1b[49;1;49;1;96;1_" })]],
+      ["ctrl+letter", "\x1b[66;0;2;1;104;1_", [k("b", { raw: "\x1b[66;0;2;1;104;1_", ctrl: true })]],
+      ["alt+letter", "\x1b[68;32;100;1;98;1_", [k("d", { raw: "\x1b[68;32;100;1;98;1_", meta: true })]],
+      ["tab", "\x1b[9;1;9;1;96;1_", [k("tab", { raw: "\x1b[9;1;9;1;96;1_" })]],
+      ["ctrl+shift+tab", "\x1b[9;15;0;1;120;1_", [k("tab", { raw: "\x1b[9;15;0;1;120;1_", ctrl: true, shift: true })]],
+      [
+        "key release",
+        "\x1b[74;36;10;0;104;1_",
+        [k("j", { raw: "\x1b[74;36;10;0;104;1_", ctrl: true, eventType: "release" })],
+      ],
+      ["ctrl key down", "\x1b[17;1;0;1;104;1_", [k("ctrl", { raw: "\x1b[17;1;0;1;104;1_", ctrl: true })]],
+    ])
+
+    test("a win32 key event survives a split at any byte boundary", () => {
+      assertChunkInvariant(buf("\x1b[9;15;0;1;120;1_"))
+    })
+  })
+
   describe("mouse: SGR protocol", () => {
     table([
       // Button press/release
