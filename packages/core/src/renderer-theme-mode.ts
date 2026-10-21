@@ -42,12 +42,14 @@ type ThemeWaiter = {
 
 export class RendererThemeMode {
   private static readonly QUERY_TIMEOUT_MS = 250
+  private static readonly POLL_INTERVAL_MS = 3000
 
   private _themeMode: ThemeMode | null = null
   private themeQueryPending = true
   private themeOscForeground: string | null = null
   private themeOscBackground: string | null = null
   private themeRefreshTimeoutId: TimerHandle | null = null
+  private themePollTimeoutId: TimerHandle | null = null
   private waiters = new Set<ThemeWaiter>()
 
   constructor(
@@ -94,6 +96,11 @@ export class RendererThemeMode {
 
   public dispose(): void {
     this.cancelRefresh()
+
+    if (this.themePollTimeoutId !== null) {
+      this.clock.clearTimeout(this.themePollTimeoutId)
+      this.themePollTimeoutId = null
+    }
 
     for (const waiter of this.waiters) {
       if (waiter.timeoutHandle !== null) {
@@ -157,6 +164,20 @@ export class RendererThemeMode {
   private completeThemeQuery(): void {
     this.clearThemeRefreshTimeout()
     this.themeQueryPending = false
+    this.schedulePoll()
+  }
+
+  // Terminals that never send CSI ?997 (e.g. iTerm2) would otherwise never
+  // re-check after the first query, so poll as a fallback.
+  private schedulePoll(): void {
+    if (this.themePollTimeoutId !== null) {
+      return
+    }
+
+    this.themePollTimeoutId = this.clock.setTimeout(() => {
+      this.themePollTimeoutId = null
+      this.requestThemeOscColors()
+    }, RendererThemeMode.POLL_INTERVAL_MS)
   }
 
   private requestThemeOscColors(): void {
