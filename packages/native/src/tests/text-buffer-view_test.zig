@@ -4300,7 +4300,7 @@ fn splitsGrapheme(tb: *TextBuffer, mode: text_buffer_view.WrapMode) bool {
                 last = cp;
             }
             const first = utf8.decodeUtf8Unchecked(bytes, 0).cp;
-            const combining = first != 0x200D and utf8.zeroWidthPrefixLen(bytes, tb.tabWidth(), .hidden, .unicode) > 0;
+            const combining = first != 0x200D and utf8.findGraphemePosByWidth(bytes, 0, tb.tabWidth(), .hidden, false, false, .unicode).byte_offset > 0;
             const allow_combining = mode == .char or (!has_cjk_words and last.? <= 0x7F and utf8.isWordCodepoint(last.?));
             if (!(allow_combining and combining) and !utf8.isGraphemeBreak(last, first, &state, .unicode)) return true;
         };

@@ -293,7 +293,6 @@ test "text work: each UTF-8 scan entry counts its seeks, width reads, and bytes"
     try expectAfter(utf8.getPrevGraphemeStart("\u{e9}\u{200b}", 5, 4, .hidden, .unicode), .{ .prefix_seeks = 1, .grapheme_width_reads = 1, .bytes_scanned = 10 });
     try expectAfter(utf8.getPrevGraphemeStart("a\u{e9}", 3, 4, .hidden, .wcwidth), .{ .prefix_seeks = 1, .bytes_scanned = 3 });
     try expectAfter(utf8.getGraphemeWidthAt("a\u{e9}", 1, 4, .hidden, .unicode), .{ .grapheme_width_reads = 1 });
-    try expectAfter(utf8.zeroWidthPrefixLen("\u{301}\u{e9}a", 4, .hidden, .unicode), .{ .bytes_scanned = 4 });
     // Whole-slice scans on the ASCII hint return at once and count nothing.
     try expectAfter(utf8.calculateTextWidth("a\u{e9}", 4, .hidden, false, .unicode), .{ .bytes_scanned = 3 });
     try expectAfter(utf8.calculateTextWidth("abc", 4, .hidden, true, .unicode), .{});
