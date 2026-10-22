@@ -156,13 +156,6 @@ test "Context input ABI parses into caller records and resolves timeouts" {
     // Input time is independent of pump time but must not go backwards.
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, f.feed("b", 9));
     try std.testing.expectEqual(@as(u32, 1), f.drain.count);
-    // CURSOR_POSITION makes CSI 1 ; N R a cursor position report instead of Shift+F3.
-    for ([_]struct { u32, u8 }{ .{ c.OT_INPUT_EXPECT_CURSOR_POSITION, c.OT_INPUT_REPLY }, .{ 0, c.OT_INPUT_KEY } }) |case| {
-        try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, case[0]));
-        try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[1;2R", 40_000_000));
-        try std.testing.expectEqual(@as(u32, 1), f.drain.count);
-        try std.testing.expectEqual(case[1], f.records[0].kind);
-    }
     // Expectations defer an awaited reply.
     try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, c.OT_INPUT_EXPECT_REPLIES));
     try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[?62", 50_000_000));
@@ -287,5 +280,17 @@ test "Context input ABI applies the terminal's Kitty keyboard state" {
     try std.testing.expectEqual(c.OT_OK, ot_session_input_feed(context, &session, null, 0, 2 + c.OT_INPUT_TIMEOUT_NS, &records, records.len, &payload, payload.len, &drain));
     try std.testing.expectEqual(@as(u32, 1), drain.count);
     try std.testing.expectEqual(@as(u32, c.OT_INPUT_REPLY_FRAGMENT), records[0].flags);
+    // The terminal, not the host's request, says whether Kitty keyboard is on. CPR claims CSI 1 ; N R.
+    for ([_]struct { u32, bool, u8 }{
+        .{ c.OT_INPUT_EXPECT_KITTY_KEYBOARD, false, c.OT_INPUT_KEY },
+        .{ 0, true, c.OT_INPUT_REPLY },
+        .{ c.OT_INPUT_EXPECT_CURSOR_POSITION, false, c.OT_INPUT_REPLY },
+    }) |case| {
+        try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(context, &session, case[0]));
+        (try context.core.raw().getSessionRenderer(id)).terminal.state.kitty_keyboard = case[1];
+        try std.testing.expectEqual(c.OT_OK, ot_session_input_feed(context, &session, "\x1b[1;2R", 6, 3 + c.OT_INPUT_TIMEOUT_NS, &records, records.len, &payload, payload.len, &drain));
+        try std.testing.expectEqual(@as(u32, 1), drain.count);
+        try std.testing.expectEqual(case[2], records[0].kind);
+    }
     try std.testing.expectEqual(c.OT_OK, abi.ot_session_cancel(context, &session));
 }

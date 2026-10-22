@@ -937,8 +937,8 @@ pub const Session = struct {
         }
         self.last_input_ns = now_ns;
         var expect = self.input_expect;
-        // Setup pushes Kitty flags before the terminal can send Kitty-encoded keys.
-        if (self.renderer) |value| expect.kitty_keyboard = expect.kitty_keyboard or value.terminal.state.kitty_keyboard;
+        // The host only requests Kitty keyboard; setup pushes its flags once the terminal reports support.
+        if (self.renderer) |value| expect.kitty_keyboard = value.terminal.state.kitty_keyboard;
         self.input.setExpectations(expect);
         const consumed = self.input.feed(bytes, now_ns, sink);
         return .{ .consumed = consumed, .discarded = self.input.discarded_count, .deadline_ns = self.input.deadlineNs() };

@@ -613,20 +613,13 @@ test "input parser replies, focus, and mouse reports are not keys" {
 }
 
 test "input parser cursor position reports and F3 share CSI R forms" {
+    // Core's conformance vectors decide which forms are F3; these rows pin the reply flags.
     const plain: ip.Expectations = .{};
-    const pixel: ip.Expectations = .{ .replies = true };
     const cpr: ip.Expectations = .{ .replies = true, .cursor_position = true };
     const kitty: ip.Expectations = .{ .kitty_keyboard = true };
     for ([_]struct { ip.Expectations, []const u8, Expect }{
-        // A report always has a row and a column, so an awaited one leaves unmodified F3 a key.
-        .{ plain, "\x1b[R", k(K.f(3), NONE) },
-        .{ cpr, "\x1b[R", k(K.f(3), NONE) },
-        .{ plain, "\x1b[1;5R", k(K.f(3), CTRL) },
-        .{ pixel, "\x1b[1;2R", k(K.f(3), SHIFT) },
         .{ cpr, "\x1b[1;2R", report("\x1b[1;2R") },
-        // The Kitty protocol sends F3 as CSI 13 ~.
         .{ kitty, "\x1b[R", reply("\x1b[R") },
-        .{ kitty, "\x1b[1;2R", report("\x1b[1;2R") },
         .{ plain, "\x1b[12;40R", report("\x1b[12;40R") },
         .{ plain, "\x1b[1;1R", report("\x1b[1;1R") },
         .{ plain, "\x1b[1;1:1R", reply("\x1b[1;1:1R") },

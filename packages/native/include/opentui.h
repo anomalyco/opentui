@@ -2911,7 +2911,7 @@ ot_status ot_session_input_feed(
  * makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply instead of a
  * modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting and makes
  * CSI R and CSI 1 ; N R replies, since the Kitty protocol sends F3 as CSI 13 ~;
- * the session also applies it while its terminal has Kitty keyboard enabled.
+ * a session with a renderer applies its terminal's negotiated state instead.
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 
