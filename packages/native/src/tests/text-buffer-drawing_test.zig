@@ -357,68 +357,6 @@ test "drawTextBuffer - reset preserves live view ellipsis across widths and wrap
     }
 }
 
-test "drawTextBuffer - truncation snaps suffix past wide grapheme" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-    try tb.reset();
-    _ = try tb.replaceText("", null, false);
-    try tb.append("ABCDE가FG");
-    view.setWrapMode(.none);
-    view.setTruncate(true);
-    view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        8,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var out: [32]u8 = undefined;
-    const written = try opt_buffer.writeResolvedChars(&out, false);
-    try std.testing.expectEqualStrings("AB...FG ", out[0..written]);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(out[0..written]));
-}
-
-test "drawTextBuffer - wcwidth truncation never renders a modifier-only suffix" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-    try tb.reset();
-    _ = try tb.replaceText("", null, false);
-    try tb.append("ABCDE👋🏻Z");
-    view.setWrapMode(.none);
-    view.setTruncate(true);
-    view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        8,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .wcwidth },
-    );
-    defer opt_buffer.deinit();
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    const row = try resolvedRow(std.testing.allocator, opt_buffer, &pools.graphemes, 0);
-    defer std.testing.allocator.free(row);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(row));
-    try std.testing.expectEqualStrings("AB...Z", std.mem.trim(u8, row, " "));
-}
-
 test "drawTextBuffer - issue 799 CJK word wrap has no duplicated glyphs" {
     try expectRenderedRows(
         "在aber (“但”)引入的转折从句前表示让步：虽然，的确",

@@ -1033,6 +1033,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _suspendedMouseEnabled: boolean = false
   private _previousControlState: RendererControlState = RendererControlState.IDLE
   private capturedRenderable?: Renderable
+  private pressedRenderable?: Renderable
   private lastOverRenderableNum: number = 0
   private lastOverRenderable?: Renderable
 
@@ -1594,13 +1595,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       run(() => this.emit(CliRenderEvents.FOCUSED_RENDERABLE, renderable, previous))
     }
     if (failure) throw failure.error
-  }
-
-  private setCapturedRenderable(renderable: Renderable | undefined): void {
-    if (this.capturedRenderable === renderable) {
-      return
-    }
-    this.capturedRenderable = renderable
   }
 
   public get widthMethod(): WidthMethod {
@@ -3147,7 +3141,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.nativeSession.control({ kind: "mouse", mode: "disabled" })
     }
     this._useMouse = false
-    this.setCapturedRenderable(undefined)
+    this.capturedRenderable = undefined
     this.stdinParser?.resetMouseState()
   }
 
@@ -3590,6 +3584,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private processSingleMouseEvent(mouseEvent: RawMouseEvent): boolean {
+    // A left drag belongs to the node that got the left press: the first motion report can already be past it.
+    // Every left down or up ends the record, also one that returns early; other events keep it.
+    const pressed = this.pressedRenderable
+    const left = mouseEvent.button === MouseButton.LEFT
+    if (left && (mouseEvent.type === "down" || mouseEvent.type === "up")) this.pressedRenderable = undefined
     if (this._splitHeight > 0) {
       if (mouseEvent.y < this.renderOffset) {
         return false
@@ -3729,38 +3728,30 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (this.capturedRenderable && mouseEvent.type === "up") {
-      const event = new MouseEvent(this.capturedRenderable, {
-        ...mouseEvent,
-        type: "drag-end",
-      })
-      this.sendMouseEvent(this.capturedRenderable, event)
-      this.sendMouseEvent(this.capturedRenderable, new MouseEvent(this.capturedRenderable, mouseEvent))
-      if (maybeRenderable) {
-        const event = new MouseEvent(maybeRenderable, {
-          ...mouseEvent,
-          type: "drop",
-          source: this.capturedRenderable,
-        })
-        this.sendMouseEvent(maybeRenderable, event)
-      }
-      this.lastOverRenderable = this.capturedRenderable
-      this.lastOverRenderableNum = this.capturedRenderable.num
-      this.setCapturedRenderable(undefined)
+      const source = this.capturedRenderable
+      this.sendMouseEvent(source, new MouseEvent(source, { ...mouseEvent, type: "drag-end" }))
+      this.sendMouseEvent(source, new MouseEvent(source, mouseEvent))
+      this.lastOverRenderable = source
+      this.lastOverRenderableNum = source.num
+      this.capturedRenderable = undefined
       // Dropping the renderable needs to push another frame when the renderer is not live
       // to update the hit grid, otherwise capturedRenderable won't be in the hit grid and will not receive mouse events
       this.requestRender()
+      // A source does not drop onto itself or its subtree; until that frame the hit grid still holds the source.
+      if (maybeRenderable && this.isWithinContainer(maybeRenderable, source)) return true
+      if (maybeRenderable) {
+        this.sendMouseEvent(maybeRenderable, new MouseEvent(maybeRenderable, { ...mouseEvent, type: "drop", source }))
+      }
     }
 
+    const isLeftDrag = left && mouseEvent.type === "drag"
+    const target = isLeftDrag && pressed && !pressed.isDestroyed ? pressed : maybeRenderable
     let event: MouseEvent | undefined
-    if (maybeRenderable) {
-      if (mouseEvent.type === "drag" && mouseEvent.button === MouseButton.LEFT) {
-        this.setCapturedRenderable(maybeRenderable)
-      } else {
-        this.setCapturedRenderable(undefined)
-      }
-      event = this.dispatchMouseEvent(maybeRenderable, mouseEvent)
+    if (target) {
+      if (isLeftDrag) this.capturedRenderable = target
+      else if (left && mouseEvent.type === "down") this.pressedRenderable = target
+      event = this.dispatchMouseEvent(target, mouseEvent)
     } else {
-      this.setCapturedRenderable(undefined)
       this.lastOverRenderable = undefined
     }
 
@@ -4073,7 +4064,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._resolution = null
     this.lib.sessionSetImageResolution(this.nativeSession.context, this.nativeSession.session, 0, 0, 0, 0)
 
-    this.setCapturedRenderable(undefined)
+    this.capturedRenderable = undefined
     this.stdinParser?.resetMouseState()
 
     if (splitFooterActive) {
@@ -4631,7 +4622,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.handleStdinParserFailure(error)
     }
     this._useMouse = false
-    this.setCapturedRenderable(undefined)
+    this.capturedRenderable = undefined
 
     this.removeCleanupListener(this.stdin, "data", this.stdinListener)
     this.stopTerminalKeepAlive()

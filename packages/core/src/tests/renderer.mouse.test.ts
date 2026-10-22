@@ -846,258 +846,111 @@ describe("renderer handleMouseData", () => {
     }
   })
 
-  test("drag capture delivers drag-end and drop with source", async () => {
+  // Steps: `move|down|drag|up|scroll:x,y[:right|:ctrl]`, `frame` (render once), `kill:id` (destroy), `clear`
+  // (clearSelection), or `console` (show it). A spans x 1-6, B x 12-17, and selectable S x 20-25, all y 1-4; B's
+  // child C spans x 16-17, y 1-2.
+  // Each node logs `id:type`, then `@target` when the event bubbled and `(source id)` when it names a drag source.
+  const pointerPaths: [string, string, string][] = [
+    [
+      "left drag captures the source until release",
+      "move:2,2 down:2,2 drag:3,2 drag:13,2 drag:14,2 up:14,2",
+      "A:over A:move A:down A:drag B:over(A) A:drag A:drag A:drag-end A:up B:drop(A) B:up",
+    ],
+    [
+      "right drag routes by hit test",
+      "move:2,2 down:2,2:right drag:13,2 drag:3,2 up:3,2:right",
+      "A:over A:move A:down A:out B:over B:drag B:out A:over A:drag A:up",
+    ],
+    [
+      "release on empty space skips drop",
+      "down:2,2 drag:3,2 drag:39,19 up:39,19",
+      "A:down A:drag A:drag A:drag-end A:up",
+    ],
+    [
+      "first drag report off the pressed node",
+      "down:2,2 scroll:13,2 drag:13,2 frame drag:14,2 up:14,2",
+      "A:down B:scroll B:over A:drag A:drag A:drag-end A:up B:drop(A) B:up",
+    ],
+    [
+      "destroyed pressed node falls back to the hit",
+      "down:2,2 kill:A drag:13,2 drag:14,2 up:14,2",
+      "A:down B:over B:drag B:drag B:drag-end B:up",
+    ],
+    ["release over the source before a frame", "down:2,2 drag:3,2 up:3,2", "A:down A:drag A:drag-end A:up"],
+    ["release off the pressed node without a drag report", "down:2,2 up:13,2", "A:down B:up"],
+    [
+      "left drag after a right release",
+      "down:2,2 up:2,2:right drag:13,2 up:13,2",
+      "A:down A:up B:over A:drag A:drag-end A:up B:drop(A) B:up",
+    ],
+    [
+      "right press during a left press",
+      "down:2,2 down:13,2:right drag:14,2 up:14,2 up:14,2:right",
+      "A:down B:down A:drag A:drag-end A:up B:drop(A) B:up B:up",
+    ],
+    [
+      "press that starts a selection",
+      "down:2,2 down:21,2 clear drag:13,2 up:13,2",
+      "A:down S:down B:over B:drag B:drag-end B:up",
+    ],
+    [
+      "ctrl press that extends a selection",
+      "down:21,2 drag:22,2 up:22,2 down:2,2:ctrl clear drag:13,2 up:13,2",
+      "S:down S:drag S:up B:over B:drag B:drag-end B:up",
+    ],
+    [
+      "release in the console ends the press",
+      "down:2,2 console drag:2,17 up:2,17 down:3,17 drag:13,2 up:13,2",
+      "A:down B:over B:drag B:drag-end B:up",
+    ],
+    [
+      "release over a child of the source",
+      "down:13,2 drag:14,2 frame drag:16,1 up:16,1",
+      "B:down B:drag C:over(B) B:over@C(B) B:drag B:drag-end B:up",
+    ],
+  ]
+
+  test.each(pointerPaths)("pointer path: %s", async (_, steps, expected) => {
     try {
-      const source = new TestRenderable(renderer, {
-        id: "source",
-        position: "absolute",
-        left: 1,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      const target = new TestRenderable(renderer, {
-        id: "target",
-        position: "absolute",
-        left: 12,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      renderer.root.add(source)
-      renderer.root.add(target)
+      const log: string[] = []
+      const nodes = new Map<string, TestRenderable>()
+      for (const [id, left, top, width, parent] of [
+        ["A", 1, 1, 6, ""],
+        ["B", 12, 1, 6, ""],
+        ["S", 20, 1, 6, ""],
+        ["C", 4, 0, 2, "B"],
+      ] as const) {
+        const node = new TestRenderable(renderer, {
+          id,
+          position: "absolute",
+          left,
+          top,
+          width,
+          height: width === 2 ? 2 : 4,
+        })
+        node.selectable = id === "S"
+        node.onMouse = (event) =>
+          log.push(
+            `${id}:${event.type}${event.target === node ? "" : `@${event.target?.id}`}${event.source ? `(${event.source.id})` : ""}`,
+          )
+        ;(nodes.get(parent) ?? renderer.root).add(node)
+        nodes.set(id, node)
+      }
       await renderOnce()
-
-      const events: string[] = []
-      let dropSource: Renderable | undefined
-      let overSource: Renderable | undefined
-      let targetDragged = false
-
-      source.onMouseDrag = () => {
-        events.push("drag:source")
+      for (const step of steps.split(" ")) {
+        const [kind, at, button] = step.split(":")
+        const [x, y] = (at ?? "").split(",").map(Number)
+        const pressed = button === "right" ? MouseButtons.RIGHT : MouseButtons.LEFT
+        if (kind === "frame") await renderOnce()
+        else if (kind === "kill") nodes.get(at)!.destroy()
+        else if (kind === "clear") renderer.clearSelection()
+        else if (kind === "console") renderer.console.show()
+        else if (kind === "scroll") await mockMouse.scroll(x, y, "up")
+        else if (kind === "move" || kind === "drag") await mockMouse.moveTo(x, y)
+        else if (kind === "down") await mockMouse.pressDown(x, y, pressed, { modifiers: { ctrl: button === "ctrl" } })
+        else await mockMouse.release(x, y, pressed)
       }
-      source.onMouseDragEnd = () => {
-        events.push("drag-end:source")
-      }
-      source.onMouseUp = () => {
-        events.push("up:source")
-      }
-      target.onMouseDrop = (event) => {
-        events.push("drop:target")
-        dropSource = event.source
-      }
-      target.onMouseOver = (event) => {
-        overSource = event.source
-      }
-      target.onMouseDrag = () => {
-        targetDragged = true
-      }
-
-      await mockMouse.drag(source.x + 1, source.y + 1, target.x + 1, target.y + 1)
-
-      expect(events).toContain("drag-end:source")
-      expect(events).toContain("up:source")
-      expect(events).toContain("drop:target")
-      expect(dropSource).toBe(source)
-      expect(overSource).toBe(source)
-      expect(targetDragged).toBe(false)
-    } finally {
-      renderer.destroy()
-    }
-  })
-
-  test("captured drag release fires drop then mouse up on target", async () => {
-    try {
-      const source = new TestRenderable(renderer, {
-        id: "source-drop-order",
-        position: "absolute",
-        left: 1,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      const target = new TestRenderable(renderer, {
-        id: "target-drop-order",
-        position: "absolute",
-        left: 12,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      renderer.root.add(source)
-      renderer.root.add(target)
-      await renderOnce()
-
-      const events: string[] = []
-      target.onMouseDrop = () => {
-        events.push("drop")
-      }
-      target.onMouseUp = () => {
-        events.push("up")
-      }
-
-      await mockMouse.drag(source.x + 1, source.y + 1, target.x + 1, target.y + 1)
-
-      expect(events).toEqual(["drop", "up"])
-    } finally {
-      renderer.destroy()
-    }
-  })
-
-  test("captured drag keeps routing drag events to source", async () => {
-    try {
-      const source = new TestRenderable(renderer, {
-        id: "source-capture",
-        position: "absolute",
-        left: 1,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      const target = new TestRenderable(renderer, {
-        id: "target-capture",
-        position: "absolute",
-        left: 12,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      renderer.root.add(source)
-      renderer.root.add(target)
-      await renderOnce()
-
-      let sourceDragCount = 0
-      let targetDragCount = 0
-      source.onMouseDrag = () => {
-        sourceDragCount++
-      }
-      target.onMouseDrag = () => {
-        targetDragCount++
-      }
-
-      await mockMouse.pressDown(source.x + 1, source.y + 1)
-      await mockMouse.moveTo(source.x + 2, source.y + 1)
-      await mockMouse.moveTo(target.x + 1, target.y + 1)
-      await mockMouse.moveTo(target.x + 2, target.y + 1)
-      await mockMouse.release(target.x + 2, target.y + 1)
-
-      expect(sourceDragCount).toBeGreaterThan(1)
-      expect(targetDragCount).toBe(0)
-    } finally {
-      renderer.destroy()
-    }
-  })
-
-  test("captured drag does not emit out on the captured renderable", async () => {
-    try {
-      const source = new TestRenderable(renderer, {
-        id: "source",
-        position: "absolute",
-        left: 1,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      const target = new TestRenderable(renderer, {
-        id: "target",
-        position: "absolute",
-        left: 12,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      renderer.root.add(source)
-      renderer.root.add(target)
-      await renderOnce()
-
-      let outCount = 0
-      source.onMouseOut = () => {
-        outCount++
-      }
-
-      await mockMouse.drag(source.x + 1, source.y + 1, target.x + 1, target.y + 1)
-
-      expect(outCount).toBe(0)
-    } finally {
-      renderer.destroy()
-    }
-  })
-
-  test("non-left drag does not capture and routes by hit test", async () => {
-    try {
-      const source = new TestRenderable(renderer, {
-        id: "source-right-drag",
-        position: "absolute",
-        left: 1,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      const target = new TestRenderable(renderer, {
-        id: "target-right-drag",
-        position: "absolute",
-        left: 12,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      renderer.root.add(source)
-      renderer.root.add(target)
-      await renderOnce()
-
-      let sourceDragCount = 0
-      let targetDragCount = 0
-      source.onMouseDrag = () => {
-        sourceDragCount++
-      }
-      target.onMouseDrag = () => {
-        targetDragCount++
-      }
-
-      await mockMouse.drag(source.x + 1, source.y + 1, target.x + 1, target.y + 1, MouseButtons.RIGHT)
-
-      expect(sourceDragCount).toBeGreaterThan(0)
-      expect(targetDragCount).toBeGreaterThan(0)
-    } finally {
-      renderer.destroy()
-    }
-  })
-
-  test("non-captured drag emits over/out transitions", async () => {
-    try {
-      const source = new TestRenderable(renderer, {
-        id: "source-drag-hover",
-        position: "absolute",
-        left: 1,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      const target = new TestRenderable(renderer, {
-        id: "target-drag-hover",
-        position: "absolute",
-        left: 12,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      renderer.root.add(source)
-      renderer.root.add(target)
-      await renderOnce()
-
-      const events: string[] = []
-      source.onMouseOver = () => events.push("over:source")
-      source.onMouseOut = () => events.push("out:source")
-      target.onMouseOver = () => events.push("over:target")
-
-      await mockMouse.moveTo(source.x + 1, source.y + 1)
-      await mockMouse.drag(source.x + 1, source.y + 1, target.x + 1, target.y + 1, MouseButtons.RIGHT)
-
-      expect(events).toContain("over:source")
-      expect(events).toContain("out:source")
-      expect(events).toContain("over:target")
-      expect(events.indexOf("out:source")).toBeGreaterThan(events.indexOf("over:source"))
-      expect(events.indexOf("over:target")).toBeGreaterThan(events.indexOf("out:source"))
+      expect(log.join(" ")).toBe(expected)
     } finally {
       renderer.destroy()
     }
@@ -1298,59 +1151,6 @@ describe("renderer handleMouseData", () => {
 
       expect(downCount).toBe(1)
       expect(renderer.hasSelection).toBe(false)
-    } finally {
-      renderer.destroy()
-    }
-  })
-
-  test("captured drag release on empty space skips drop", async () => {
-    try {
-      const source = new TestRenderable(renderer, {
-        id: "source-empty-drop",
-        position: "absolute",
-        left: 1,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      const target = new TestRenderable(renderer, {
-        id: "target-empty-drop",
-        position: "absolute",
-        left: 15,
-        top: 1,
-        width: 6,
-        height: 4,
-      })
-      renderer.root.add(source)
-      renderer.root.add(target)
-      await renderOnce()
-
-      let dragEndCount = 0
-      let upCount = 0
-      let dropCount = 0
-      source.onMouseDragEnd = () => {
-        dragEndCount++
-      }
-      source.onMouseUp = () => {
-        upCount++
-      }
-      target.onMouseDrop = () => {
-        dropCount++
-      }
-
-      const startX = source.x + 1
-      const startY = source.y + 1
-      const endX = renderer.width - 1
-      const endY = renderer.height - 1
-
-      await mockMouse.pressDown(startX, startY)
-      await mockMouse.moveTo(source.x + 2, startY)
-      await mockMouse.moveTo(endX, endY)
-      await mockMouse.release(endX, endY)
-
-      expect(dragEndCount).toBe(1)
-      expect(upCount).toBe(1)
-      expect(dropCount).toBe(0)
     } finally {
       renderer.destroy()
     }

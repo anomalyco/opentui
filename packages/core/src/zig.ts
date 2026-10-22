@@ -4743,9 +4743,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    // Node FFI rejects negative zero for integer arguments.
-    const column = toFFII32(x, "Text view x") || 0
-    const row = toFFII32(y, "Text view y") || 0
+    const column = toFFII32(x, "Text view x")
+    const row = toFFII32(y, "Text view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_text_view")
     nativeResult(
       "ot_buffer_draw_text_view",
@@ -4763,8 +4762,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    const column = toFFII32(x, "Editor view x") || 0
-    const row = toFFII32(y, "Editor view y") || 0
+    const column = toFFII32(x, "Editor view x")
+    const row = toFFII32(y, "Editor view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_editor_view")
     nativeResult(
       "ot_buffer_draw_editor_view",
@@ -4782,8 +4781,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = toFFII32(x, "Scene text x") || 0
-    const row = toFFII32(y, "Scene text y") || 0
+    const column = toFFII32(x, "Scene text x")
+    const row = toFFII32(y, "Scene text y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
     nativeResult(
       "ot_buffer_draw_scene_text",

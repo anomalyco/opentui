@@ -3,6 +3,11 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { OptimizedBuffer, type BufferAccess } from "./buffer.js"
 import { RGBA } from "./lib/RGBA.js"
 import { NativeImage } from "./image.js"
+import { TextBuffer } from "./text-buffer.js"
+import { TextBufferView } from "./text-buffer-view.js"
+import { EditBuffer } from "./edit-buffer.js"
+import { EditorView } from "./editor-view.js"
+import { createTestRenderer } from "./testing/test-renderer.js"
 
 let resourceContext: ResourceContext
 beforeEach(() => {
@@ -225,6 +230,37 @@ describe("OptimizedBuffer", () => {
       expect(draws.map(([draw]) => failure(draw))).toEqual(draws.map(([, message]) => `RangeError: ${message}`))
     } finally {
       image.dispose()
+    }
+  })
+
+  it("accepts -0 like 0 in integer arguments on every runtime", async () => {
+    const white = RGBA.fromInts(255, 255, 255)
+    const { renderer } = await createTestRenderer({ width: 8, height: 2 })
+    const textBuffer = TextBuffer.create("unicode", resourceContext)
+    const textView = TextBufferView.create(textBuffer)
+    const editBuffer = EditBuffer.create("unicode", resourceContext)
+    const editorView = EditorView.create(editBuffer, 8, 2)
+    textBuffer.setText("hello\nworld")
+    editBuffer.setText("hello\nworld")
+    const draw = (paint: () => void) => (buffer.clear(), paint(), buffer.getSpanLines())
+    const calls: Record<string, (z: number) => unknown> = {
+      pushScissorRect: (z) =>
+        draw(() => (buffer.pushScissorRect(z, z, 2, 2), buffer.fillRect(0, 0, 20, 5, white), buffer.popScissorRect())),
+      drawTextBuffer: (z) => draw(() => buffer.drawTextBuffer(textView, z, z)),
+      drawEditorView: (z) => draw(() => buffer.drawEditorView(editorView, z, z)),
+      "TextBuffer.getTextRange": (z) => textBuffer.getTextRange(z, 3),
+      "EditBuffer.setCursor": (z) => (editBuffer.setCursor(z, z), editBuffer.getCursorPosition()),
+      renderer: (z) => [renderer.hitTest(z, z), renderer.getLinkAt(z, z), renderer.getLinkIdAt(z, z)],
+    }
+    try {
+      const results = (z: number) => Object.entries(calls).map(([name, call]) => [name, call(z)])
+      expect(results(-0)).toEqual(results(0))
+    } finally {
+      editorView.destroy()
+      editBuffer.destroy()
+      textView.destroy()
+      textBuffer.destroy()
+      renderer.destroy()
     }
   })
 
