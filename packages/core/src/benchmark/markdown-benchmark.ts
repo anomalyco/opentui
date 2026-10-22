@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import { MarkdownRenderable, SyntaxStyle, createCliRenderer, parseColor } from "../index.js"
-import { resolveRenderLib } from "../zig.js"
 import { Command } from "commander"
 import path from "node:path"
 import { existsSync } from "node:fs"
@@ -9,8 +8,6 @@ import { mkdir, mkdtemp, readFile, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 
 const realStdoutWrite = process.stdout.write.bind(process.stdout)
-const nativeLib = resolveRenderLib()
-const nativeBuildOptions = nativeLib.getBuildOptions()
 
 const WORDS = [
   "alpha",
@@ -99,29 +96,6 @@ type MemoryStats = {
   }
 }
 
-type NativeMemorySample = {
-  totalRequestedBytes: number
-  activeAllocations: number
-  smallAllocations: number
-  largeAllocations: number
-  requestedBytesValid: boolean
-}
-
-type NativeMemoryStats = {
-  samples: number
-  start: NativeMemorySample
-  end: NativeMemorySample
-  delta: NativeMemorySample
-  peak: NativeMemorySample
-  requestedBytesReliable: boolean
-  fields: {
-    totalRequestedBytes: MemoryFieldStats
-    activeAllocations: MemoryFieldStats
-    smallAllocations: MemoryFieldStats
-    largeAllocations: MemoryFieldStats
-  }
-}
-
 type TimingStats = {
   count: number
   averageMs: number
@@ -142,7 +116,6 @@ type ScenarioResult = {
   timingMode: "content-set" | "style-refresh"
   updateStats: TimingStats
   memoryStats?: MemoryStats
-  nativeMemoryStats?: NativeMemoryStats
   contentStats: {
     initialChars: number
     finalChars: number
@@ -218,7 +191,6 @@ type SuiteConfig = {
 
 type MemorySampler = {
   jsSamples: MemorySample[]
-  nativeSamples: NativeMemorySample[]
   recordIteration: (iteration: number) => void
   stop: () => void
 }
@@ -255,8 +227,6 @@ type OutputMeta = {
   seed: number
   memInterval: number
   memSampleEvery: number
-  gpaSafeStats: boolean
-  gpaMemoryLimitTracking: boolean
 }
 
 const program = new Command()
@@ -363,45 +333,51 @@ const renderer = await createCliRenderer({
 
 renderer.requestRender = () => {}
 
-const syntaxStyleA = SyntaxStyle.fromStyles({
-  default: { fg: parseColor("#E6EDF3") },
-  "markup.heading": { fg: parseColor("#88C0D0"), bold: true },
-  "markup.heading.1": { fg: parseColor("#8FBCBB"), bold: true },
-  "markup.heading.2": { fg: parseColor("#81A1C1"), bold: true },
-  "markup.heading.3": { fg: parseColor("#5E81AC"), bold: true },
-  "markup.bold": { fg: parseColor("#ECEFF4"), bold: true },
-  "markup.strong": { fg: parseColor("#ECEFF4"), bold: true },
-  "markup.italic": { fg: parseColor("#E5E9F0"), italic: true },
-  "markup.list": { fg: parseColor("#B48EAD") },
-  "markup.raw": { fg: parseColor("#A3BE8C") },
-  "markup.raw.block": { fg: parseColor("#A3BE8C") },
-  "markup.raw.inline": { fg: parseColor("#A3BE8C") },
-  "markup.link": { fg: parseColor("#81A1C1"), underline: true },
-  "markup.link.label": { fg: parseColor("#88C0D0"), underline: true },
-  "markup.link.url": { fg: parseColor("#88C0D0"), underline: true },
-  "punctuation.special": { fg: parseColor("#616E88") },
-  conceal: { fg: parseColor("#4C566A") },
-})
+const syntaxStyleA = SyntaxStyle.fromStyles(
+  {
+    default: { fg: parseColor("#E6EDF3") },
+    "markup.heading": { fg: parseColor("#88C0D0"), bold: true },
+    "markup.heading.1": { fg: parseColor("#8FBCBB"), bold: true },
+    "markup.heading.2": { fg: parseColor("#81A1C1"), bold: true },
+    "markup.heading.3": { fg: parseColor("#5E81AC"), bold: true },
+    "markup.bold": { fg: parseColor("#ECEFF4"), bold: true },
+    "markup.strong": { fg: parseColor("#ECEFF4"), bold: true },
+    "markup.italic": { fg: parseColor("#E5E9F0"), italic: true },
+    "markup.list": { fg: parseColor("#B48EAD") },
+    "markup.raw": { fg: parseColor("#A3BE8C") },
+    "markup.raw.block": { fg: parseColor("#A3BE8C") },
+    "markup.raw.inline": { fg: parseColor("#A3BE8C") },
+    "markup.link": { fg: parseColor("#81A1C1"), underline: true },
+    "markup.link.label": { fg: parseColor("#88C0D0"), underline: true },
+    "markup.link.url": { fg: parseColor("#88C0D0"), underline: true },
+    "punctuation.special": { fg: parseColor("#616E88") },
+    conceal: { fg: parseColor("#4C566A") },
+  },
+  renderer.nativeScene,
+)
 
-const syntaxStyleB = SyntaxStyle.fromStyles({
-  default: { fg: parseColor("#F8F8F2") },
-  "markup.heading": { fg: parseColor("#A6E22E"), bold: true },
-  "markup.heading.1": { fg: parseColor("#F92672"), bold: true },
-  "markup.heading.2": { fg: parseColor("#66D9EF"), bold: true },
-  "markup.heading.3": { fg: parseColor("#E6DB74") },
-  "markup.bold": { fg: parseColor("#F8F8F2"), bold: true },
-  "markup.strong": { fg: parseColor("#F8F8F2"), bold: true },
-  "markup.italic": { fg: parseColor("#F8F8F2"), italic: true },
-  "markup.list": { fg: parseColor("#F92672") },
-  "markup.raw": { fg: parseColor("#E6DB74") },
-  "markup.raw.block": { fg: parseColor("#E6DB74") },
-  "markup.raw.inline": { fg: parseColor("#E6DB74") },
-  "markup.link": { fg: parseColor("#66D9EF"), underline: true },
-  "markup.link.label": { fg: parseColor("#E6DB74"), underline: true },
-  "markup.link.url": { fg: parseColor("#66D9EF"), underline: true },
-  "punctuation.special": { fg: parseColor("#75715E") },
-  conceal: { fg: parseColor("#75715E") },
-})
+const syntaxStyleB = SyntaxStyle.fromStyles(
+  {
+    default: { fg: parseColor("#F8F8F2") },
+    "markup.heading": { fg: parseColor("#A6E22E"), bold: true },
+    "markup.heading.1": { fg: parseColor("#F92672"), bold: true },
+    "markup.heading.2": { fg: parseColor("#66D9EF"), bold: true },
+    "markup.heading.3": { fg: parseColor("#E6DB74") },
+    "markup.bold": { fg: parseColor("#F8F8F2"), bold: true },
+    "markup.strong": { fg: parseColor("#F8F8F2"), bold: true },
+    "markup.italic": { fg: parseColor("#F8F8F2"), italic: true },
+    "markup.list": { fg: parseColor("#F92672") },
+    "markup.raw": { fg: parseColor("#E6DB74") },
+    "markup.raw.block": { fg: parseColor("#E6DB74") },
+    "markup.raw.inline": { fg: parseColor("#E6DB74") },
+    "markup.link": { fg: parseColor("#66D9EF"), underline: true },
+    "markup.link.label": { fg: parseColor("#E6DB74"), underline: true },
+    "markup.link.url": { fg: parseColor("#66D9EF"), underline: true },
+    "punctuation.special": { fg: parseColor("#75715E") },
+    conceal: { fg: parseColor("#75715E") },
+  },
+  renderer.nativeScene,
+)
 
 const markdown = new MarkdownRenderable(renderer, {
   id: "markdown-bench",
@@ -451,8 +427,6 @@ await outputResults(
     seed,
     memInterval,
     memSampleEvery,
-    gpaSafeStats: nativeBuildOptions.gpaSafeStats,
-    gpaMemoryLimitTracking: nativeBuildOptions.gpaMemoryLimitTracking,
   },
   results,
   scenarioLines,
@@ -848,7 +822,6 @@ async function runStaticScenario(plan: StaticScenarioPlan, ctx: RunContext): Pro
   const durations: number[] = []
   const measurementStart = Date.now()
   const memStart = shouldSampleMemory(ctx) ? readMemorySample() : null
-  const nativeMemStart = shouldSampleMemory(ctx) ? readNativeMemorySample() : null
   const sampler = createMemorySampler(ctx)
 
   for (let i = 0; i < plan.iterations; i += 1) {
@@ -863,7 +836,6 @@ async function runStaticScenario(plan: StaticScenarioPlan, ctx: RunContext): Pro
 
   const elapsedMs = Date.now() - measurementStart
   const memEnd = shouldSampleMemory(ctx) ? readMemorySample() : null
-  const nativeMemEnd = shouldSampleMemory(ctx) ? readNativeMemorySample() : null
   sampler.stop()
 
   return {
@@ -876,10 +848,6 @@ async function runStaticScenario(plan: StaticScenarioPlan, ctx: RunContext): Pro
     timingMode: "content-set",
     updateStats: computeTimingStats(durations),
     memoryStats: memStart && memEnd ? computeMemoryStats(sampler.jsSamples, memStart, memEnd) : undefined,
-    nativeMemoryStats:
-      nativeMemStart && nativeMemEnd
-        ? computeNativeMemoryStats(sampler.nativeSamples, nativeMemStart, nativeMemEnd)
-        : undefined,
     contentStats: {
       initialChars: plan.content.length,
       finalChars: plan.content.length,
@@ -911,7 +879,6 @@ async function runStreamingScenario(plan: StreamingScenarioPlan, ctx: RunContext
 
   const measurementStart = Date.now()
   const memStart = shouldSampleMemory(ctx) ? readMemorySample() : null
-  const nativeMemStart = shouldSampleMemory(ctx) ? readNativeMemorySample() : null
   const sampler = createMemorySampler(ctx)
 
   const measured = await runStreamingIterations(state, ctx, plan.iterations, true, sampler)
@@ -923,7 +890,6 @@ async function runStreamingScenario(plan: StreamingScenarioPlan, ctx: RunContext
 
   const elapsedMs = Date.now() - measurementStart
   const memEnd = shouldSampleMemory(ctx) ? readMemorySample() : null
-  const nativeMemEnd = shouldSampleMemory(ctx) ? readNativeMemorySample() : null
   sampler.stop()
 
   return {
@@ -936,10 +902,6 @@ async function runStreamingScenario(plan: StreamingScenarioPlan, ctx: RunContext
     timingMode: "content-set",
     updateStats: computeTimingStats(measured.durations),
     memoryStats: memStart && memEnd ? computeMemoryStats(sampler.jsSamples, memStart, memEnd) : undefined,
-    nativeMemoryStats:
-      nativeMemStart && nativeMemEnd
-        ? computeNativeMemoryStats(sampler.nativeSamples, nativeMemStart, nativeMemEnd)
-        : undefined,
     contentStats: {
       initialChars: plan.baseContent.length,
       finalChars: state.content.length,
@@ -972,7 +934,6 @@ async function runStyleScenario(plan: StyleScenarioPlan, ctx: RunContext): Promi
   const durations: number[] = []
   const measurementStart = Date.now()
   const memStart = shouldSampleMemory(ctx) ? readMemorySample() : null
-  const nativeMemStart = shouldSampleMemory(ctx) ? readNativeMemorySample() : null
   const sampler = createMemorySampler(ctx)
 
   for (let i = 0; i < plan.iterations; i += 1) {
@@ -987,7 +948,6 @@ async function runStyleScenario(plan: StyleScenarioPlan, ctx: RunContext): Promi
 
   const elapsedMs = Date.now() - measurementStart
   const memEnd = shouldSampleMemory(ctx) ? readMemorySample() : null
-  const nativeMemEnd = shouldSampleMemory(ctx) ? readNativeMemorySample() : null
   sampler.stop()
 
   return {
@@ -1000,10 +960,6 @@ async function runStyleScenario(plan: StyleScenarioPlan, ctx: RunContext): Promi
     timingMode: "style-refresh",
     updateStats: computeTimingStats(durations),
     memoryStats: memStart && memEnd ? computeMemoryStats(sampler.jsSamples, memStart, memEnd) : undefined,
-    nativeMemoryStats:
-      nativeMemStart && nativeMemEnd
-        ? computeNativeMemoryStats(sampler.nativeSamples, nativeMemStart, nativeMemEnd)
-        : undefined,
     contentStats: {
       initialChars: plan.content.length,
       finalChars: plan.content.length,
@@ -1446,24 +1402,11 @@ function readMemorySample(): MemorySample {
   }
 }
 
-function readNativeMemorySample(): NativeMemorySample {
-  const stats = nativeLib.getAllocatorStats()
-  return {
-    totalRequestedBytes: stats.totalRequestedBytes,
-    activeAllocations: stats.activeAllocations,
-    smallAllocations: stats.smallAllocations,
-    largeAllocations: stats.largeAllocations,
-    requestedBytesValid: stats.requestedBytesValid,
-  }
-}
-
 function createMemorySampler(ctx: RunContext): MemorySampler {
   const jsSamples: MemorySample[] = []
-  const nativeSamples: NativeMemorySample[] = []
 
   const pushSample = (): void => {
     jsSamples.push(readMemorySample())
-    nativeSamples.push(readNativeMemorySample())
   }
 
   if (ctx.memInterval > 0) {
@@ -1472,7 +1415,6 @@ function createMemorySampler(ctx: RunContext): MemorySampler {
     }, ctx.memInterval)
     return {
       jsSamples,
-      nativeSamples,
       recordIteration: () => {},
       stop: () => clearInterval(timer),
     }
@@ -1481,7 +1423,6 @@ function createMemorySampler(ctx: RunContext): MemorySampler {
   if (ctx.memSampleEvery > 0) {
     return {
       jsSamples,
-      nativeSamples,
       recordIteration: (iteration: number) => {
         if (iteration % ctx.memSampleEvery === 0) {
           pushSample()
@@ -1493,7 +1434,6 @@ function createMemorySampler(ctx: RunContext): MemorySampler {
 
   return {
     jsSamples,
-    nativeSamples,
     recordIteration: () => {},
     stop: () => {},
   }
@@ -1522,48 +1462,12 @@ function computeMemoryStats(samples: MemorySample[], start: MemorySample, end: M
   }
 }
 
-function computeNativeMemoryStats(
-  samples: NativeMemorySample[],
-  start: NativeMemorySample,
-  end: NativeMemorySample,
-): NativeMemoryStats {
-  const all = [start, ...samples, end]
-  const requestedBytesReliable = all.every((sample) => sample.requestedBytesValid)
-  const peak = { ...start }
-  for (const sample of all) {
-    updateNativePeak(sample, peak)
-  }
-
-  return {
-    samples: all.length,
-    start,
-    end,
-    delta: diffNativeMemory(start, end),
-    peak,
-    requestedBytesReliable,
-    fields: {
-      totalRequestedBytes: computeFieldStats(all.map((s) => s.totalRequestedBytes)),
-      activeAllocations: computeFieldStats(all.map((s) => s.activeAllocations)),
-      smallAllocations: computeFieldStats(all.map((s) => s.smallAllocations)),
-      largeAllocations: computeFieldStats(all.map((s) => s.largeAllocations)),
-    },
-  }
-}
-
 function updatePeak(sample: MemorySample, peak: MemorySample): void {
   peak.rss = Math.max(peak.rss, sample.rss)
   peak.heapTotal = Math.max(peak.heapTotal, sample.heapTotal)
   peak.heapUsed = Math.max(peak.heapUsed, sample.heapUsed)
   peak.external = Math.max(peak.external, sample.external)
   peak.arrayBuffers = Math.max(peak.arrayBuffers, sample.arrayBuffers)
-}
-
-function updateNativePeak(sample: NativeMemorySample, peak: NativeMemorySample): void {
-  peak.totalRequestedBytes = Math.max(peak.totalRequestedBytes, sample.totalRequestedBytes)
-  peak.activeAllocations = Math.max(peak.activeAllocations, sample.activeAllocations)
-  peak.smallAllocations = Math.max(peak.smallAllocations, sample.smallAllocations)
-  peak.largeAllocations = Math.max(peak.largeAllocations, sample.largeAllocations)
-  peak.requestedBytesValid = peak.requestedBytesValid && sample.requestedBytesValid
 }
 
 function diffMemory(start: MemorySample, end: MemorySample): MemorySample {
@@ -1573,16 +1477,6 @@ function diffMemory(start: MemorySample, end: MemorySample): MemorySample {
     heapUsed: end.heapUsed - start.heapUsed,
     external: end.external - start.external,
     arrayBuffers: end.arrayBuffers - start.arrayBuffers,
-  }
-}
-
-function diffNativeMemory(start: NativeMemorySample, end: NativeMemorySample): NativeMemorySample {
-  return {
-    totalRequestedBytes: end.totalRequestedBytes - start.totalRequestedBytes,
-    activeAllocations: end.activeAllocations - start.activeAllocations,
-    smallAllocations: end.smallAllocations - start.smallAllocations,
-    largeAllocations: end.largeAllocations - start.largeAllocations,
-    requestedBytesValid: start.requestedBytesValid && end.requestedBytesValid,
   }
 }
 
@@ -1643,8 +1537,6 @@ async function outputResults(
       seed: meta.seed,
       memInterval: meta.memInterval,
       memSampleEvery: meta.memSampleEvery,
-      gpaSafeStats: meta.gpaSafeStats,
-      gpaMemoryLimitTracking: meta.gpaMemoryLimitTracking,
     },
     results: resultsList,
   }
@@ -1653,7 +1545,6 @@ async function outputResults(
     writeLine(
       `markdown-benchmark suite=${meta.suiteName} timing=frame-independent iters=${meta.iterations} warmup=${meta.warmupIterations}`,
     )
-    writeLine(`native-build gpaSafeStats=${meta.gpaSafeStats} gpaMemoryLimitTracking=${meta.gpaMemoryLimitTracking}`)
     for (const line of scenarioLines) {
       writeLine(line)
     }
@@ -1688,15 +1579,8 @@ function formatBytes(value: number): string {
   return `${sign}${scaled.toFixed(2)}${units[unitIndex]}`
 }
 
-function formatAllocs(value: number): string {
-  const intValue = Math.trunc(value)
-  const sign = intValue > 0 ? "+" : ""
-  return `${sign}${intValue.toLocaleString("en-US")} allocs`
-}
-
 function formatScenarioResult(result: ScenarioResult): string {
   const jsMem = result.memoryStats
-  const nativeMem = result.nativeMemoryStats
 
   const jsMemSummary = jsMem
     ? ` jsMemDeltaRss=${formatBytes(jsMem.delta.rss)}` +
@@ -1706,19 +1590,7 @@ function formatScenarioResult(result: ScenarioResult): string {
       ` jsMemPeakRss=${formatBytes(jsMem.peak.rss)}`
     : ""
 
-  const nativeMemSummary = nativeMem
-    ? ` nativeMemDeltaReq=${nativeMem.requestedBytesReliable ? formatBytes(nativeMem.delta.totalRequestedBytes) : "invalid"}` +
-      ` nativeMemDeltaReqBytes=${nativeMem.requestedBytesReliable ? `${Math.trunc(nativeMem.delta.totalRequestedBytes)}B` : "invalid"}` +
-      ` nativeMemDeltaActive=${formatAllocs(nativeMem.delta.activeAllocations)}` +
-      ` nativeMemDeltaSmall=${formatAllocs(nativeMem.delta.smallAllocations)}` +
-      ` nativeMemDeltaLarge=${formatAllocs(nativeMem.delta.largeAllocations)}` +
-      ` nativeMemPeakReq=${nativeMem.requestedBytesReliable ? formatBytes(nativeMem.peak.totalRequestedBytes) : "invalid"}` +
-      ` nativeMemPeakReqBytes=${nativeMem.requestedBytesReliable ? `${Math.trunc(nativeMem.peak.totalRequestedBytes)}B` : "invalid"}` +
-      ` nativeMemPeakActive=${formatAllocs(nativeMem.peak.activeAllocations)}` +
-      ` nativeMemReqReliable=${nativeMem.requestedBytesReliable}`
-    : ""
-
-  return `scenario=${result.name} category=${result.category} mode=${result.timingMode} iters=${result.updateStats.count} elapsedMs=${result.elapsedMs} avgMs=${result.updateStats.averageMs.toFixed(3)} medianMs=${result.updateStats.medianMs.toFixed(3)} p95Ms=${result.updateStats.p95Ms.toFixed(3)} minMs=${result.updateStats.minMs.toFixed(3)} maxMs=${result.updateStats.maxMs.toFixed(3)} chars=${result.contentStats.finalChars}${jsMemSummary}${nativeMemSummary}`
+  return `scenario=${result.name} category=${result.category} mode=${result.timingMode} iters=${result.updateStats.count} elapsedMs=${result.elapsedMs} avgMs=${result.updateStats.averageMs.toFixed(3)} medianMs=${result.updateStats.medianMs.toFixed(3)} p95Ms=${result.updateStats.p95Ms.toFixed(3)} minMs=${result.updateStats.minMs.toFixed(3)} maxMs=${result.updateStats.maxMs.toFixed(3)} chars=${result.contentStats.finalChars}${jsMemSummary}`
 }
 
 function writeLine(line: string): void {
@@ -1769,8 +1641,6 @@ async function runSpawnedScenarios(plans: ScenarioPlan[]): Promise<void> {
       seed,
       memInterval,
       memSampleEvery,
-      gpaSafeStats: nativeBuildOptions.gpaSafeStats,
-      gpaMemoryLimitTracking: nativeBuildOptions.gpaMemoryLimitTracking,
     },
     results,
     scenarioLines,

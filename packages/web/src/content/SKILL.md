@@ -24,6 +24,13 @@ Design for a terminal app, not a browser. Use the available columns and rows eff
 - `/docs/components` maps to `docs/components/overview.mdx`.
 - Every other `/docs/<slug>` URL maps to `docs/<slug>.mdx` relative to this skill root.
 - From the repository root, prepend `packages/web/src/content/` to each source path.
+- `/docs/releases/<version>` maps to `docs/releases/<version>.md`, the release notes of that version.
+
+## Versions
+
+The docs describe the release or branch that this skill came from. Each release notes file lists what changed in that
+release and links the pages it affects. When a project uses an older `@opentui/core` than the docs describe, read the
+notes of the newer releases before you use an API, and prefer what the project's version provides.
 
 ## Choose packages
 
@@ -63,6 +70,7 @@ Use public package entry points instead of source-file deep imports.
 - Extensions: `/docs/plugins/slots`, `/docs/extend/runtime-plugins`
 - Keymap: `/docs/keymap/overview`
 - Integrations: `/docs/reference/ssh`, `/docs/reference/three`, `/docs/reference/qr-encoder`
+- Native: `/docs/native/overview`
 - Ship: `/docs/ship/deploy`, `/docs/reference/standalone-executables`
 - Reference: `/docs/reference/api-index`, `/docs/reference/package-entrypoints`, `/docs/reference/env-vars`, `/docs/reference/native-image`
 
@@ -99,12 +107,18 @@ Use public package entry points instead of source-file deep imports.
 | `deploy`, `bundle`, `bun-executable`, `nodejs-esm`, `node-sea`, `ssh-deployment`                                     | `docs/ship/deploy.mdx`                      |
 | `standalone`, `executable`, `bun-compile`, `node-sea`, `node-assets`                                                 | `docs/reference/standalone-executables.mdx` |
 | `api`, `symbols`, `exports`, `public-api`, `api-index`, `lookup`                                                     | `docs/reference/api-index.mdx`              |
+| `native`, `native-rendering`, `native-scene`, `native-api`                                                           | `docs/native/overview.mdx`                  |
 | `package-exports`, `entrypoints`, `subpath-exports`, `imports`                                                       | `docs/reference/package-entrypoints.mdx`    |
 | `env`, `environment`, `configuration`, `flags`                                                                       | `docs/reference/env-vars.mdx`               |
 | `native-image`, `image-decode`, `png`, `jpeg`, `webp`, `gif`, `rgba`, `pixels`, `resize`                             | `docs/reference/native-image.mdx`           |
 
 For a component request, read `docs/components/overview.mdx`, then open `docs/components/<name>.mdx`. For plugin slot
 details, start at `docs/plugins/slots.mdx`, then open the Core, React, or Solid page.
+
+For native applications, read `docs/native/overview.mdx`, `docs/native/resources.mdx`, and `docs/native/frames.mdx` in order.
+`docs/native/core.mdx` explains Core's TypeScript integration, not a native-language API.
+Read `docs/native/host-io-time.mdx` for Session clocks, terminal delivery, and native file operations.
+Then choose `docs/native/c.mdx` or `docs/native/zig.mdx` for a native program.
 
 ## Current skill entry pages
 
@@ -134,6 +148,7 @@ details, start at `docs/plugins/slots.mdx`, then open the Core, React, or Solid 
 - `docs/reference/ssh.mdx`
 - `docs/reference/three.mdx`
 - `docs/reference/qr-encoder.mdx`
+- `docs/native/overview.mdx`
 - `docs/ship/deploy.mdx`
 - `docs/reference/standalone-executables.mdx`
 - `docs/reference/api-index.mdx`

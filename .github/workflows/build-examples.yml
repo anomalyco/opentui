@@ -7,6 +7,10 @@ on:
         description: "Version being released"
         required: true
         type: string
+      npmPackagesArtifact:
+        description: "Name of the npm packages artifact"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -36,7 +40,7 @@ jobs:
       - name: Download npm packages artifact
         uses: actions/download-artifact@v8
         with:
-          name: npm-packages-${{ inputs.version }}
+          name: ${{ inputs.npmPackagesArtifact }}
 
       - name: Extract and install npm packages
         run: |

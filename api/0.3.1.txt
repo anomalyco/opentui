@@ -1,0 +1,4 @@
+base 0.3.0
++ @opentui/core: interface SplitFooterReplayResetOptions
++ @opentui/core: method CliRenderer.resetSplitFooterForReplay(options?: SplitFooterReplayResetOptions): void
++ @opentui/core: property SplitFooterReplayResetOptions.clearSavedLines?: boolean

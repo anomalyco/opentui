@@ -21,7 +21,7 @@ Read [Runtime and platform support](/docs/getting-started/runtime-support) for r
 | `@opentui/core/runtime-plugin`                   | Bun only                 | Runtime-module plugin factory, module identifiers, rewrite options, and runtime entry types           | [Runtime module loading](/docs/extend/runtime-plugins)           |
 | `@opentui/core/runtime-plugin-support`           | Bun only                 | Install core runtime-module support as an import side effect, and export its setup API                | [Runtime module loading](/docs/extend/runtime-plugins)           |
 | `@opentui/core/runtime-plugin-support/configure` | Bun only                 | Export configurable `ensureRuntimePluginSupport()` without import-time installation                   | [Runtime module loading](/docs/extend/runtime-plugins)           |
-| `@opentui/core/yoga`                             | Bun and Node.js          | Native Yoga facade, enums, constants, layout values, and callbacks                                    | [Yoga API](/docs/reference/yoga)                                 |
+| `@opentui/core/yoga`                             | Bun and Node.js          | Native Yoga facade, enums, constants, layout values, callbacks, and errors                            | [Yoga API](/docs/reference/yoga)                                 |
 | `@opentui/core/tree-sitter/update-assets`        | Build time, with Bun CLI | Tree-sitter asset updater and command-line runner                                                     | [Tree-sitter](/docs/reference/tree-sitter)                       |
 | `@opentui/core/parser.worker`                    | Bun and Node.js worker   | Parser worker module with no named application exports                                                | [Tree-sitter](/docs/reference/tree-sitter)                       |
 | `@opentui/core/node-assets`                      | Node.js build time       | Node single-executable asset manifest                                                                 | [Standalone executables](/docs/reference/standalone-executables) |
@@ -95,9 +95,9 @@ The framework paths include the encoder and renderable exports. They are not reg
 
 ## `@opentui/ssh`
 
-| Entry point    | Runtime                              | Purpose                                                                                     | Workflow                   |
-| -------------- | ------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------- |
-| `@opentui/ssh` | Bun 1.3.0 or Node.js 26.4.0 or later | SSH server builder, authentication, middleware, sessions, logging, errors, and public types | [SSH](/docs/reference/ssh) |
+| Entry point    | Runtime                               | Purpose                                                                                     | Workflow                   |
+| -------------- | ------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------- |
+| `@opentui/ssh` | Bun 1.3.14 or Node.js 26.4.0 or later | SSH server builder, authentication, middleware, sessions, logging, errors, and public types | [SSH](/docs/reference/ssh) |
 
 The package has no framework subpaths. Pass the session renderer to the React or Solid root API.
 
@@ -108,4 +108,4 @@ The package has no framework subpaths. Pass the session renderer to the React or
 | `@opentui/three`                 | Bun only | Three.js WebGPU renderer, renderable, sprites, effects, resource pools, physics adapters, and `THREE` | [Three.js WebGPU](/docs/reference/three)               |
 | `@opentui/three/runtime-modules` | Bun only | Runtime-module map that contains the `@opentui/three` root                                            | [Runtime module loading](/docs/extend/runtime-plugins) |
 
-Both entry points require Bun. The package declares Bun 1.3.0 or newer.
+Both entry points require Bun. The package declares Bun 1.3.14 or newer.

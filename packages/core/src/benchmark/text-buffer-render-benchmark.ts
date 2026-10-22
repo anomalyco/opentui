@@ -65,6 +65,7 @@ type ScenarioResult = {
 
 type BenchmarkContext = {
   renderer: TestRenderer
+  buffer: OptimizedBuffer
   renderOnce: () => Promise<void>
   width: number
   height: number
@@ -195,10 +196,12 @@ const { renderer, renderOnce } = await createTestRenderer({
   useMouse: false,
 })
 
-const ctx: BenchmarkContext = { renderer, renderOnce, width, height }
+let buffer: OptimizedBuffer | undefined
 const results: ScenarioResult[] = []
 
 try {
+  buffer = OptimizedBuffer.create(width, height, "unicode", { owner: renderer.nativeScene })
+  const ctx: BenchmarkContext = { renderer, renderOnce, width, height, buffer }
   for (const scenario of selectedScenarios) {
     writeLine(outputEnabled, `Running ${scenario.name}...`)
     const result = await runScenario(scenario, ctx, iterations, warmupIterations)
@@ -206,7 +209,9 @@ try {
     writeLine(outputEnabled, `  avg=${result.avgMs.toFixed(4)}ms p95=${result.p95Ms.toFixed(4)}ms`)
   }
 } finally {
+  buffer?.destroy()
   renderer.destroy()
+  await renderer.closed
 }
 
 if (outputEnabled) {
@@ -253,10 +258,9 @@ function createScenarios(): ScenarioDefinition[] {
       description: "Direct TextBufferView draw with plain wrapped transcript",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
-        const textBuffer = TextBuffer.create("unicode")
+        const buffer = ctx.buffer
+        const textBuffer = TextBuffer.create("unicode", ctx.renderer.nativeScene)
         textBuffer.setText(createPlainTranscript(140))
 
         const view = TextBufferView.create(textBuffer)
@@ -282,10 +286,9 @@ function createScenarios(): ScenarioDefinition[] {
       description: "Direct styled TextBufferView draw with many spans and links",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
-        const textBuffer = TextBuffer.create("unicode")
+        const buffer = ctx.buffer
+        const textBuffer = TextBuffer.create("unicode", ctx.renderer.nativeScene)
         textBuffer.setStyledText(createStyledTranscript(120))
 
         const view = TextBufferView.create(textBuffer)
@@ -311,10 +314,9 @@ function createScenarios(): ScenarioDefinition[] {
       description: "Direct styled TextBufferView draw with active selection",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
-        const textBuffer = TextBuffer.create("unicode")
+        const buffer = ctx.buffer
+        const textBuffer = TextBuffer.create("unicode", ctx.renderer.nativeScene)
         const styled = createStyledTranscript(120)
         textBuffer.setStyledText(styled)
 
@@ -342,10 +344,9 @@ function createScenarios(): ScenarioDefinition[] {
       description: "Direct EditorView draw with wrapped content and selection",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
-        const editBuffer = EditBuffer.create("unicode")
+        const buffer = ctx.buffer
+        const editBuffer = EditBuffer.create("unicode", ctx.renderer.nativeScene)
         editBuffer.setText(createEditorDocument(220))
         const view = EditorView.create(editBuffer, ctx.width - 2, ctx.height - 2)
         view.setWrapMode("word")
@@ -445,7 +446,6 @@ function createScenarios(): ScenarioDefinition[] {
       description: "Render-tree Textarea editor view with selection and wrapping",
       setup: async (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
         const root = new BoxRenderable(ctx.renderer, {
           id: "bench-textarea-root",
@@ -494,7 +494,6 @@ function createScenarios(): ScenarioDefinition[] {
 
 async function buildTextNodeFeedTree(ctx: BenchmarkContext): Promise<TextNodeFeedTreeState> {
   clearRoot(ctx.renderer)
-  resetBuffers(ctx.renderer)
 
   let renderablesPerIteration = 0
   const texts: TextRenderable[] = []
@@ -589,7 +588,6 @@ async function buildTextNodeFeedTree(ctx: BenchmarkContext): Promise<TextNodeFee
 
 async function buildDenseTextNodeTree(ctx: BenchmarkContext): Promise<TextNodeFeedTreeState> {
   clearRoot(ctx.renderer)
-  resetBuffers(ctx.renderer)
 
   let renderablesPerIteration = 0
   const texts: TextRenderable[] = []
@@ -646,7 +644,6 @@ async function buildDenseTextNodeTree(ctx: BenchmarkContext): Promise<TextNodeFe
 
 async function buildTextFeedTree(ctx: BenchmarkContext): Promise<TextFeedTreeState> {
   clearRoot(ctx.renderer)
-  resetBuffers(ctx.renderer)
 
   let renderablesPerIteration = 0
   const textNodes: TextRenderable[] = []
@@ -719,6 +716,9 @@ async function runScenario(
   iterations: number,
   warmupIterations: number,
 ): Promise<ScenarioResult> {
+  ctx.buffer.clearScissorRects()
+  ctx.buffer.clearOpacity()
+  ctx.buffer.clear(COLORS.transparent)
   const runtime = await scenario.setup(ctx)
 
   try {
@@ -759,7 +759,6 @@ async function runScenario(
   } finally {
     await runtime.teardown?.()
     clearRoot(ctx.renderer)
-    resetBuffers(ctx.renderer)
   }
 }
 
@@ -806,15 +805,6 @@ function createEditorDocument(lines: number): string {
 function clearRoot(renderer: TestRenderer): void {
   for (const child of renderer.root.getChildren()) {
     child.destroyRecursively()
-  }
-}
-
-function resetBuffers(renderer: TestRenderer): void {
-  const buffers: OptimizedBuffer[] = [renderer.currentRenderBuffer, renderer.nextRenderBuffer]
-  for (const buffer of buffers) {
-    buffer.clearScissorRects()
-    buffer.clearOpacity()
-    buffer.clear(COLORS.transparent)
   }
 }
 

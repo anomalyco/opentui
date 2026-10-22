@@ -4,6 +4,7 @@ import { parseKeypress, type ParseKeypressOptions } from "./parse.keypress.js"
 test("parseKeypress - Kitty keyboard protocol disabled by default", () => {
   // Kitty sequences should fall back to regular parsing when disabled
   const result = parseKeypress("\x1b[97u")!
+  // 044: pins main; the conformance vectors make an unrecognized CSI sequence a response, not a key.
   expect(result.name).toBe("")
   expect(result.code).toBeUndefined()
 })
@@ -236,6 +237,7 @@ test("parseKeypress - Kitty keyboard invalid codepoint", () => {
   const options: ParseKeypressOptions = { useKittyKeyboard: true }
   const result = parseKeypress("\x1b[1114112u", options)! // Invalid codepoint > 0x10FFFF
   // Should fall back to regular parsing when Kitty fails
+  // 044: pins main; the conformance vectors make an unrecognized CSI sequence a response, not a key.
   expect(result.name).toBe("")
   expect(result.ctrl).toBe(true)
   expect(result.meta).toBe(true)

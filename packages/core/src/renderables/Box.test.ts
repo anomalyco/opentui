@@ -24,12 +24,12 @@ function getCellIndex(x: number, y: number): number {
 }
 
 function getCellChar(x: number, y: number): string {
-  return String.fromCodePoint(testRenderer.currentRenderBuffer.buffers.char[getCellIndex(x, y)])
+  return testRenderer.currentRenderBuffer.withBuffers(({ char }) => String.fromCodePoint(char[getCellIndex(x, y)]))
 }
 
 function getCellForeground(x: number, y: number): [number, number, number, number] {
   const index = getCellIndex(x, y) * 4
-  return RGBA.fromArray(testRenderer.currentRenderBuffer.buffers.fg.slice(index, index + 4)).toInts()
+  return testRenderer.currentRenderBuffer.withBuffers(({ fg }) => RGBA.fromArray(fg.slice(index, index + 4)).toInts())
 }
 
 describe("BoxRenderable - focusable option", () => {
@@ -175,7 +175,7 @@ describe("BoxRenderable - borderStyle validation", () => {
 })
 
 describe("BoxRenderable - border titles (top and bottom)", () => {
-  test("renders top and bottom titles on their respective borders", async () => {
+  test("renders top and bottom titles on their respective borders and rejects titles over the byte limit", async () => {
     const box = new BoxRenderable(testRenderer, {
       id: "border-title-box",
       border: true,
@@ -186,6 +186,24 @@ describe("BoxRenderable - border titles (top and bottom)", () => {
       bottomTitle: "Bot",
       bottomTitleAlignment: "right",
     })
+    const assign = (title: "title" | "bottomTitle", text: string) => {
+      try {
+        box[title] = text
+      } catch (error) {
+        return String(error)
+      }
+    }
+    const limit = "RangeError: Buffer text exceeds the native byte limit"
+    // A 3-byte character straddles the 65,536-byte limit.
+    expect([assign("title", "a".repeat(65_537)), assign("bottomTitle", "世".repeat(21_846))]).toEqual([limit, limit])
+    expect([box.title, box.bottomTitle]).toEqual(["Top", "Bot"])
+    for (const [title, text] of [
+      ["title", "a".repeat(65_536)],
+      ["bottomTitle", "世".repeat(21_845) + "a"],
+      ["title", "Top"],
+      ["bottomTitle", "Bot"],
+    ] as const)
+      expect(assign(title, text)).toBeUndefined()
 
     testRenderer.root.add(box)
     await renderOnce()
@@ -251,13 +269,15 @@ describe("BoxRenderable - transparent border blending", () => {
     await renderOnce()
 
     const buffer = testRenderer.currentRenderBuffer
-    expect(buffer.buffers.char[0]).toBe("┃".codePointAt(0)!)
-    expect({
-      fg: RGBA.fromArray(buffer.buffers.fg.slice(0, 4)).toInts(),
-      bg: RGBA.fromArray(buffer.buffers.bg.slice(0, 4)).toInts(),
-    }).toEqual({
-      fg: panel.toInts(),
-      bg: panel.toInts(),
+    buffer.withBuffers(({ char, fg, bg }) => {
+      expect(char[0]).toBe("┃".codePointAt(0)!)
+      expect({
+        fg: RGBA.fromArray(fg.slice(0, 4)).toInts(),
+        bg: RGBA.fromArray(bg.slice(0, 4)).toInts(),
+      }).toEqual({
+        fg: panel.toInts(),
+        bg: panel.toInts(),
+      })
     })
   })
 })
@@ -370,62 +390,6 @@ describe("BoxRenderable - focus-within", () => {
 })
 
 describe("BoxRenderable - no-op rendering", () => {
-  test("skips drawBox for transparent layout-only boxes", () => {
-    const box = new BoxRenderable(testRenderer, {
-      id: "layout-only",
-      width: 10,
-      height: 5,
-    })
-
-    let called = false
-    const buffer = {
-      drawBox() {
-        called = true
-      },
-    }
-
-    ;(box as any).renderSelf(buffer)
-    expect(called).toBe(false)
-  })
-
-  test("still draws boxes with a visible fill", () => {
-    const box = new BoxRenderable(testRenderer, {
-      id: "filled-box",
-      width: 10,
-      height: 5,
-      backgroundColor: "#112233",
-    })
-
-    let called = false
-    const buffer = {
-      drawBox() {
-        called = true
-      },
-    }
-
-    ;(box as any).renderSelf(buffer)
-    expect(called).toBe(true)
-  })
-
-  test("still draws boxes with borders", () => {
-    const box = new BoxRenderable(testRenderer, {
-      id: "bordered-box",
-      width: 10,
-      height: 5,
-      border: true,
-    })
-
-    let called = false
-    const buffer = {
-      drawBox() {
-        called = true
-      },
-    }
-
-    ;(box as any).renderSelf(buffer)
-    expect(called).toBe(true)
-  })
-
   test("renders titles with titleColor even if border is transparent", async () => {
     const box = new BoxRenderable(testRenderer, {
       id: "title-color-transparent-border",

@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { RGBA } from "../lib/RGBA.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
-import { resolveRenderLib, type NativeRenderStats, type RenderLib } from "../zig.js"
-import type { OptimizedBuffer } from "../buffer.js"
-import type { Pointer } from "../platform/ffi.js"
-
-const fg = RGBA.fromInts(255, 255, 255, 255)
+import type { NativeRenderStats } from "../zig.js"
 
 function expectInitialStats(stats: NativeRenderStats): void {
   expect(stats.nativeLastFrameTime).toBe(0)
@@ -25,86 +20,67 @@ function expectRenderedStats(stats: NativeRenderStats, expectedFrameCount: numbe
   expect(stats.nativeStdoutWriteTime).toBeGreaterThanOrEqual(0)
 }
 
-function createNativeRenderer(lib: RenderLib, width: number, height: number): Pointer {
-  const rendererPtr = lib.createRenderer(width, height, { bufferedOutput: "memory" })
-  if (!rendererPtr) {
-    throw new Error("Failed to create native render-stats test renderer")
-  }
-  lib.setUseThread(rendererPtr, false)
-  return rendererPtr
-}
-
-function warmNativeRenderer(lib: RenderLib, rendererPtr: Pointer): OptimizedBuffer {
-  const nextBuffer = lib.getNextBuffer(rendererPtr)
-  lib.render(rendererPtr, false)
-  return nextBuffer
-}
-
 describe("native renderer stats", () => {
-  const lib = resolveRenderLib()
-  let rendererPtr: Pointer | null = null
+  let renderer: TestRenderer | null = null
 
-  afterEach(() => {
-    if (rendererPtr) {
-      lib.destroyRenderer(rendererPtr)
-      rendererPtr = null
-    }
+  afterEach(async () => {
+    renderer?.destroy()
+    await renderer?.closed
+    renderer = null
   })
 
-  test("getRenderStats exposes initialized values before the first render", () => {
-    rendererPtr = createNativeRenderer(lib, 4, 3)
+  test("cellsUpdated counts changed diff cells for native scene renders", async () => {
+    const result = await createTestRenderer({ width: 4, height: 2 })
+    renderer = result.renderer
+    await result.renderOnce()
 
-    expectInitialStats(lib.getRenderStats(rendererPtr))
+    expectRenderedStats(renderer.getNativeStats(), 1, 8)
+    expect(renderer.getNativeStats().averageCellsUpdated).toBe(8)
+
+    const text = new TextRenderable(renderer, { content: "abc", width: 3, height: 1 })
+    renderer.root.add(text)
+    await result.renderOnce()
+
+    expectRenderedStats(renderer.getNativeStats(), 2, 3)
+
+    await result.renderOnce()
+
+    expectRenderedStats(renderer.getNativeStats(), 3, 0)
+
+    text.content = "axc"
+    await result.renderOnce()
+
+    expectRenderedStats(renderer.getNativeStats(), 4, 1)
   })
 
-  test("cellsUpdated counts changed diff cells for direct native renders", () => {
-    rendererPtr = createNativeRenderer(lib, 4, 2)
-    const nextBuffer = warmNativeRenderer(lib, rendererPtr)
+  test("forced native renders count the full render surface", async () => {
+    const result = await createTestRenderer({ width: 5, height: 2 })
+    renderer = result.renderer
+    await result.renderOnce()
 
-    expectRenderedStats(lib.getRenderStats(rendererPtr), 1, 8)
-    expect(lib.getRenderStats(rendererPtr).averageCellsUpdated).toBe(8)
+    renderer.root.add(new TextRenderable(renderer, { content: "xy", width: 2, height: 1 }))
+    await result.renderOnce()
+    expectRenderedStats(renderer.getNativeStats(), 2, 2)
 
-    nextBuffer.drawText("abc", 0, 0, fg)
-    lib.render(rendererPtr, false)
+    // @ts-expect-error - request the renderer-owned full repaint in this regression test
+    renderer.forceFullRepaintRequested = true
+    await result.renderOnce()
 
-    expectRenderedStats(lib.getRenderStats(rendererPtr), 2, 3)
-
-    nextBuffer.drawText("abc", 0, 0, fg)
-    lib.render(rendererPtr, false)
-
-    expectRenderedStats(lib.getRenderStats(rendererPtr), 3, 0)
-
-    nextBuffer.drawText("axc", 0, 0, fg)
-    lib.render(rendererPtr, false)
-
-    expectRenderedStats(lib.getRenderStats(rendererPtr), 4, 1)
-  })
-
-  test("forced native renders count the full render surface", () => {
-    rendererPtr = createNativeRenderer(lib, 5, 2)
-    const nextBuffer = warmNativeRenderer(lib, rendererPtr)
-
-    nextBuffer.drawText("xy", 0, 0, fg)
-    lib.render(rendererPtr, false)
-    expectRenderedStats(lib.getRenderStats(rendererPtr), 2, 2)
-
-    nextBuffer.drawText("xy", 0, 0, fg)
-    lib.render(rendererPtr, true)
-
-    expectRenderedStats(lib.getRenderStats(rendererPtr), 3, 10)
+    expectRenderedStats(renderer.getNativeStats(), 3, 10)
   })
 })
 
 describe("test renderer native render stats", () => {
   let renderer: TestRenderer | null = null
 
-  afterEach(() => {
+  afterEach(async () => {
     renderer?.destroy()
+    await renderer?.closed
     renderer = null
   })
 
   test("createTestRenderer exposes native stats after renderOnce", async () => {
-    const testRenderer = await createTestRenderer({ width: 10, height: 4, useThread: false })
+    const testRenderer = await createTestRenderer({ width: 10, height: 4 })
     renderer = testRenderer.renderer
 
     expectInitialStats(testRenderer.getNativeStats())

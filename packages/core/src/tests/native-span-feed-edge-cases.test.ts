@@ -1,25 +1,51 @@
 import { test, expect } from "bun:test"
 import { NativeSpanFeed } from "../NativeSpanFeed.js"
 import { resolveRenderLib } from "../zig.js"
+import { SpanInfoStruct } from "../zig-structs.js"
 
 const lib = resolveRenderLib()
 
-function writeData(stream: NativeSpanFeed, text: string): void {
-  const data = new TextEncoder().encode(text)
-  lib.streamWrite(stream.streamPtr, data)
-}
-
-function commitData(stream: NativeSpanFeed): void {
-  lib.streamCommit(stream.streamPtr)
+for (const thrown of [undefined, null, false, 0]) {
+  test(`falsy handler error ${String(thrown)} is preserved through release and deferred delivery`, () => {
+    const stream = NativeSpanFeed.create({ chunkSize: 8, initialChunks: 1 })
+    try {
+      stream.onData(() => {
+        throw thrown
+      })
+      stream.onData(() => {
+        throw new Error("later error")
+      })
+      lib.unregisterNativeSpanFeedStream(stream.streamPtr)
+      expect(lib.streamWrite(stream.streamPtr, "x")).toBe(0)
+      expect(lib.streamCommit(stream.streamPtr)).toBe(0)
+      const expectOriginalError = () => {
+        let caught = false
+        let actual: unknown
+        try {
+          stream.drainAll()
+        } catch (error) {
+          caught = true
+          actual = error
+        }
+        expect(caught).toBe(true)
+        expect(actual).toBe(thrown)
+      }
+      expectOriginalError()
+      expect(lib.streamGetStats(stream.streamPtr)?.outstandingSpans).toBe(0)
+      ;(stream as any).queuePendingHandlerError(thrown)
+      expectOriginalError()
+    } finally {
+      stream.close()
+    }
+  })
 }
 
 function produceData(stream: NativeSpanFeed, text: string): void {
-  writeData(stream, text)
-  commitData(stream)
+  lib.streamWrite(stream.streamPtr, text)
+  lib.streamCommit(stream.streamPtr)
 }
 
-test("throwing handler does not prevent state buffer decrements", () => {
-  // Decrement must happen even if a handler throws.
+test("throwing handler still releases its spans", () => {
   const stream = NativeSpanFeed.create({ chunkSize: 256, initialChunks: 1 })
 
   const received: string[] = []
@@ -112,31 +138,25 @@ test("streamWrite rejects null pointers for non-zero writes without trapping", (
   stream.close()
 })
 
-test("decrementRefcount with out-of-bounds chunkIndex does not crash or corrupt", () => {
-  const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1 })
-
-  const received: string[] = []
-  let closedOnSpan = -1
-
-  stream.onData((data) => {
-    const text = new TextDecoder().decode(data)
-    received.push(text)
-    if (closedOnSpan < 0) {
-      closedOnSpan = 0
-      // Force an empty state buffer to exercise the guard.
-      ;(stream as any).stateBuffer = new Uint8Array(0)
-    }
-  })
-  for (let i = 0; i < 5; i++) {
-    const msg = new TextEncoder().encode(`s${i}`)
-    lib.streamWrite(stream.streamPtr, msg)
-    lib.streamCommit(stream.streamPtr)
-  }
-
-  stream.drainAll()
-  expect(received).toEqual(["s0", "s1", "s2", "s3", "s4"])
-
-  stream.close()
+test("native release rejects stale identities after slot reuse", () => {
+  const ptr = lib.createNativeSpanFeed({ chunkSize: 8, initialChunks: 1, maxBytes: 8n })
+  const buffer = new Uint8Array(SpanInfoStruct.size)
+  expect(lib.streamWrite(ptr, "original")).toBe(0)
+  expect(lib.streamDrainSpans(ptr, buffer, 1)).toBe(1)
+  const first = SpanInfoStruct.unpack(buffer.buffer)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId + 0x100000000n)).toBe(-3)
+  expect(lib.streamReleaseSpan(ptr, 0xffffffff, first.releaseId)).toBe(-3)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId)).toBe(0)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId)).toBe(-3)
+  expect(lib.streamWrite(ptr, "retained")).toBe(0)
+  expect(lib.streamDrainSpans(ptr, buffer, 1)).toBe(1)
+  const second = SpanInfoStruct.unpack(buffer.buffer)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId)).toBe(-3)
+  expect(lib.streamWrite(ptr, "blocked!")).toBe(-2)
+  expect(lib.streamGetStats(ptr)?.outstandingBytes).toBe(8n)
+  expect(lib.destroyNativeSpanFeed(ptr)).toBe(-5)
+  expect(lib.streamReleaseSpan(ptr, second.slotIndex, second.releaseId)).toBe(0)
+  expect(lib.destroyNativeSpanFeed(ptr)).toBe(0)
 })
 
 test("toArrayBuffer aliases Zig-owned chunk memory", () => {
@@ -163,63 +183,20 @@ test("toArrayBuffer aliases Zig-owned chunk memory", () => {
   stream.close()
 })
 
-test("state buffer view stays current across chunk growth", () => {
-  // StateBuffer events must keep the TS view in sync after growth.
-  const stream = NativeSpanFeed.create({
-    chunkSize: 32,
-    initialChunks: 1,
-  })
-
-  const allData: string[] = []
-  stream.onData((data) => {
-    allData.push(new TextDecoder().decode(data))
-  })
-
-  for (let i = 0; i < 20; i++) {
-    const msg = new TextEncoder().encode(`msg${i.toString().padStart(2, "0")}`)
-    lib.streamWrite(stream.streamPtr, msg)
+test.each([
+  ["twenty commits grow the chunk pool", Array.from({ length: 20 }, (_, i) => new TextEncoder().encode(`msg${i}`))],
+  ["one write spans eight chunks", [Uint8Array.from({ length: 256 }, (_, i) => i)]],
+])("delivers every byte in order and releases every span when %s", (_name, writes) => {
+  const stream = NativeSpanFeed.create({ chunkSize: 32, initialChunks: 1 })
+  const received: number[] = []
+  stream.onData((data) => void received.push(...data))
+  for (const data of writes) {
+    lib.streamWrite(stream.streamPtr, data)
     lib.streamCommit(stream.streamPtr)
   }
-
   stream.drainAll()
-
-  const allContent = allData.join("")
-  for (let i = 0; i < 20; i++) {
-    const expected = `msg${i.toString().padStart(2, "0")}`
-    expect(allContent).toContain(expected)
-  }
-  expect(allContent.length).toBe(20 * 5)
-
-  stream.close()
-})
-
-test("state buffer view stays current when writes span multiple chunks", () => {
-  const chunkSize = 32
-  const stream = NativeSpanFeed.create({ chunkSize, initialChunks: 1 })
-
-  const allData: Uint8Array[] = []
-  stream.onData((data) => {
-    allData.push(new Uint8Array(data)) // copy to avoid aliasing
-  })
-
-  const bigWrite = new Uint8Array(256)
-  for (let i = 0; i < 256; i++) bigWrite[i] = i & 0xff
-  lib.streamWrite(stream.streamPtr, bigWrite)
-
-  lib.streamCommit(stream.streamPtr)
-  stream.drainAll()
-  const received = new Uint8Array(allData.reduce((sum, d) => sum + d.length, 0))
-  let offset = 0
-  for (const chunk of allData) {
-    received.set(chunk, offset)
-    offset += chunk.length
-  }
-
-  expect(received.length).toBe(256)
-  for (let i = 0; i < 256; i++) {
-    expect(received[i]).toBe(i & 0xff)
-  }
-
+  expect(received).toEqual(writes.flatMap((data) => [...data]))
+  expect(lib.streamGetStats(stream.streamPtr)?.outstandingSpans).toBe(0)
   stream.close()
 })
 

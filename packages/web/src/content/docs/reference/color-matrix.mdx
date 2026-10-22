@@ -31,7 +31,11 @@ frameBuffer.colorMatrixUniform(
 ```
 
 Both methods mutate the buffer and return `void`. The matrix must contain exactly 16 floats. A different length throws
-`RangeError` before the native call.
+`RangeError` before the native call. A non-finite `strength` also throws `RangeError`.
+
+Native code rejects a non-finite matrix coefficient, a target that is not a `TargetChannel` value, and a mask with more
+triplets than the Context's `renderCellsMax`. A direct call then throws `NativeError`. In a paint hook, the frame fails
+when native code plays the recording.
 
 `colorMatrix()` transforms only mask entries. `colorMatrixUniform()` transforms every buffer cell.
 
@@ -56,11 +60,11 @@ result = C + (transformed - C) * effectiveStrength
 `strength = 0` keeps the original value. `strength = 1` uses the complete matrix result. Strength is not clamped, so a
 negative value or a value above one extrapolates.
 
-Intermediate calculations can be below `0` or above `1`. The stored buffer is RGBA8. Each final channel is clamped to
-`0..1`, rounded to `0..255`, and written to storage. The native source comments that say no clamping describe the float
-calculation, not the RGBA8 write.
+Intermediate calculations can be below `0` or above `1`. The stored buffer is RGBA8. Native code clamps each final
+channel to `0..1`, rounds it to `0..255`, and writes it to storage. The native source comments that say no clamping
+describe the float calculation, not the RGBA8 write.
 
-Matrix coefficients are not checked for finite values. A non-finite calculated channel is stored as zero.
+Native code stores a calculated channel that is not finite, for example after overflow, as zero.
 
 ## Target channels
 
@@ -70,7 +74,7 @@ Matrix coefficients are not checked for finite values. A non-finite calculated c
 | `TargetChannel.BG`   | `2`   | Background only           |
 | `TargetChannel.Both` | `3`   | Foreground and background |
 
-Use the enum values. Other runtime numbers are outside the supported TypeScript contract.
+Use the enum values. Core and native code reject other numbers.
 
 ## Cell mask
 
@@ -84,23 +88,26 @@ The effective strength is `methodStrength * perCellStrength`.
 
 Mask behavior is exact:
 
-- The TypeScript wrapper uses `Math.floor(cellMask.length / 3)`. It ignores one or two trailing floats.
-- Negative, non-finite, or values above the native `u32` coordinate range are skipped.
+- Native code reads `Math.floor(cellMask.length / 3)` triplets. It ignores one or two trailing floats.
+- Native code skips a coordinate that is negative, not finite, or above the native `u32` range.
 - Positive fractional coordinates truncate toward zero.
-- Coordinates outside the buffer are skipped.
-- A non-finite or zero effective strength is skipped.
-- Duplicate coordinates apply the matrix more than once in mask order.
+- Native code skips coordinates outside the buffer.
+- Native code skips a triplet whose effective strength is zero or not finite.
+- Duplicate coordinates apply the matrix more than once, in mask order.
 
-The mask ignores the active scissor stack. Limit coordinates in the mask when the transform must stay in a clipped
-region.
+The mask ignores the active scissor and opacity stacks. Limit coordinates in the mask when the transform must stay in a
+clipped region.
 
 ## Uniform behavior
 
-`colorMatrixUniform()` uses a four-cell SIMD path and a scalar remainder. `strength === 0` returns in TypeScript.
-Non-finite strength returns in native code.
+`colorMatrixUniform()` uses a four-cell SIMD path and a scalar remainder. With `strength === 0`, native code returns
+without a change.
 
 Uniform transforms ignore the active scissor and opacity stacks. They process `width * height` stored cells, including
 blank and continuation cells.
+
+In a paint hook, native code plays the transform on the frame at that node's place in paint order. A uniform transform
+then changes the whole frame as painted up to that point, not only the node's area.
 
 ## Cell color semantics
 
@@ -110,8 +117,8 @@ It then writes a new explicit RGB color. A transformed indexed or default color 
 The methods do not change characters, continuation tags, image placements, text attributes, or hyperlink IDs. They
 can change foreground and background alpha if the fourth matrix row does so.
 
-The transform has no retained allocation or cleanup method. The supplied arrays are borrowed only for the synchronous
-call.
+The transform has no retained allocation or cleanup method. Native code reads the supplied arrays only during the
+call. In a paint hook, the recording keeps a copy of them.
 
 ## Exported matrices
 

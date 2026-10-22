@@ -2,7 +2,7 @@ name: Format and Lint
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "[0-9]+.[0-9]+.x"]
 
 permissions:
   contents: read

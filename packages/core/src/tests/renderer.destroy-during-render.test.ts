@@ -1,14 +1,18 @@
-import { test, expect } from "bun:test"
+import { test, expect, spyOn } from "bun:test"
 import { Readable } from "node:stream"
 import { Renderable } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
-import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
+import { BoxRenderable } from "../renderables/Box.js"
+import { CliRenderEvents, type CliRenderer } from "../renderer.js"
+import { assertRendererReleased, processListenerCounts, settle } from "../testing/harness.js"
+import { createTestRenderer } from "../testing/test-renderer.js"
+import { RecordingWriteStream } from "../testing/test-streams.js"
 
 class DestroyingRenderable extends Renderable {
   protected renderSelf(_buffer: OptimizedBuffer, _deltaTime: number): void {}
 }
 
-test("destroying renderer during frame callback should synchronously clean up terminal state", async () => {
+test("destroying renderer during frame callback restores input synchronously and drains terminal shutdown", async () => {
   const rawModeCalls: boolean[] = []
   const stdin = new Readable({ read() {} }) as NodeJS.ReadStream & {
     setRawMode: (enabled: boolean) => NodeJS.ReadStream
@@ -18,130 +22,120 @@ test("destroying renderer during frame callback should synchronously clean up te
     return stdin
   }
 
-  const { renderer } = await createTestRenderer({ stdin })
-  const lib = (renderer as any).lib as { suspendRenderer: (rendererPtr: unknown) => void }
-  const originalSuspendRenderer = lib.suspendRenderer.bind(lib)
-  let suspendCalls = 0
+  const stdout = new RecordingWriteStream()
+  const { renderer } = await createTestRenderer({
+    stdin,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    bufferedOutput: "stdout",
+  })
+  await renderer.setupTerminal()
+  await renderer.idle()
+  stdout.clear()
   let cleanupObserved = false
 
-  lib.suspendRenderer = (rendererPtr: unknown) => {
-    suspendCalls++
-    originalSuspendRenderer(rendererPtr)
-  }
-
   renderer.setFrameCallback(async () => {
     renderer.destroy()
-    cleanupObserved = true
-
-    expect(rawModeCalls.at(-1)).toBe(false)
-    expect(suspendCalls).toBe(1)
+    cleanupObserved = rawModeCalls.at(-1) === false && stdin.isPaused()
   })
 
   renderer.start()
-
-  await new Promise((resolve) => setTimeout(resolve, 100))
+  await renderer.closed
 
   expect(cleanupObserved).toBe(true)
+  expect(stdout.text()).toContain("\x1b[?2004l")
+  expect(stdout.text()).toContain("\x1b[?1006l")
 })
 
-test("destroying renderer during frame callback should not crash", async () => {
-  const { renderer } = await createTestRenderer({})
+const phases: Record<string, (renderer: CliRenderer, destroy: () => void) => Renderable | void> = {
+  "frame callback": (renderer, destroy) => renderer.setFrameCallback(async () => destroy()),
+  "post-process": (renderer, destroy) => renderer.addPostProcessFn(destroy),
+  requestAnimationFrame: (renderer, destroy) => void renderer.requestAnimationFrame(destroy),
+  renderBefore: (renderer, destroy) =>
+    new DestroyingRenderable(renderer, { width: 10, height: 1, renderBefore: destroy }),
+  renderAfter: (renderer, destroy) => new BoxRenderable(renderer, { width: 10, height: 1, renderAfter: destroy }),
+}
 
-  let destroyedDuringRender = false
-
-  renderer.setFrameCallback(async () => {
-    destroyedDuringRender = true
-    renderer.destroy()
-  })
-
-  renderer.start()
-
-  await new Promise((resolve) => setTimeout(resolve, 100))
-
-  expect(destroyedDuringRender).toBe(true)
-
-  // If we got here without a segfault, the test passes
-})
-
-test("destroying renderer during post-process should not crash", async () => {
-  const { renderer } = await createTestRenderer({})
-
-  let destroyedDuringPostProcess = false
-
-  renderer.addPostProcessFn(() => {
-    destroyedDuringPostProcess = true
-    renderer.destroy()
-  })
-
-  renderer.start()
-
-  await new Promise((resolve) => setTimeout(resolve, 100))
-
-  expect(destroyedDuringPostProcess).toBe(true)
-
-  // If we got here without a segfault, the test passes
-})
-
-test("destroying renderer during root render should not crash", async () => {
-  const { renderer } = await createTestRenderer({})
-
-  let destroyedDuringRender = false
-
-  // Override the root's render method to destroy the renderer
-  const originalRender = renderer.root.render.bind(renderer.root)
-  renderer.root.render = (buffer, deltaTime) => {
-    originalRender(buffer, deltaTime)
-    if (!destroyedDuringRender) {
-      destroyedDuringRender = true
+for (const [phase, install] of Object.entries(phases)) {
+  test(`destroying renderer during ${phase} releases the renderer`, async () => {
+    const listeners = processListenerCounts()
+    const { renderer } = await createTestRenderer({})
+    let calls = 0
+    const renderable = install(renderer, () => {
+      calls++
       renderer.destroy()
-    }
-  }
+    })
+    if (renderable) renderer.root.add(renderable)
+    renderer.start()
 
-  renderer.start()
+    await renderer.closed
 
-  await new Promise((resolve) => setTimeout(resolve, 100))
-
-  expect(destroyedDuringRender).toBe(true)
-
-  // If we got here without a segfault, the test passes
-})
-
-test("destroying renderer during requestAnimationFrame should not crash", async () => {
-  const { renderer } = await createTestRenderer({})
-
-  let destroyedDuringAnimationFrame = false
-
-  requestAnimationFrame(() => {
-    destroyedDuringAnimationFrame = true
-    renderer.destroy()
+    expect(calls).toBe(1)
+    expect(renderable?.isDestroyed ?? true).toBe(true)
+    await assertRendererReleased(renderer, listeners)
   })
+}
 
-  await new Promise((resolve) => setTimeout(resolve, 100))
+// Teardown abandons a frame that waits for the terminal. That is not a render failure.
+const frameWaits: Record<string, (stdout: RecordingWriteStream, renderer: CliRenderer) => Promise<void> | void> = {
+  "terminal setup": (_stdout, renderer) => void renderer.setupTerminal().catch(() => {}),
+  "frame presentation": async (stdout, renderer) => {
+    await renderer.setupTerminal()
+    stdout.hold()
+    renderer.setBackgroundColor("#202020")
+  },
+}
 
-  expect(destroyedDuringAnimationFrame).toBe(true)
-})
+for (const [wait, enter] of Object.entries(frameWaits)) {
+  for (const teardown of ["destroy", "Session failure"] as const) {
+    test(`${teardown} while a frame waits for ${wait} reports no render error`, async () => {
+      const listeners = processListenerCounts()
+      const stdout = new RecordingWriteStream()
+      const { renderer, renderOnce } = await createTestRenderer({
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        bufferedOutput: "stdout",
+        consoleMode: "disabled",
+      })
+      const renderErrors: unknown[] = []
+      renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => renderErrors.push(error))
+      const logged = spyOn(console, "error").mockImplementation(() => {})
+      try {
+        await enter(stdout, renderer)
+        const frame = renderOnce()
+        await settle()
+        expect(renderer.getSchedulerState().isRendering).toBe(true)
+        if (teardown === "destroy") renderer.destroy()
+        else stdout.destroy(new Error("ECONNRESET"))
+        stdout.release()
+        await frame
+        await assertRendererReleased(renderer, listeners)
 
-test("destroying renderer during renderBefore should not crash", async () => {
-  const { renderer } = await createTestRenderer({})
-
-  let destroyedDuringRenderBefore = false
-
-  const renderable = new DestroyingRenderable(renderer, {
-    id: "destroy-render-before",
-    width: 10,
-    height: 1,
-    renderBefore() {
-      if (!destroyedDuringRenderBefore) {
-        destroyedDuringRenderBefore = true
-        renderer.destroy()
+        expect(renderErrors).toEqual([])
+        // Only a running renderer reports a Session failure; a pending setup rejects its caller instead.
+        expect(logged.mock.calls.length).toBe(teardown === "Session failure" && wait !== "terminal setup" ? 1 : 0)
+      } finally {
+        logged.mockRestore()
       }
-    },
-  })
+    })
+  }
+}
 
-  renderer.root.add(renderable)
-  renderer.start()
-
-  await new Promise((resolve) => setTimeout(resolve, 100))
-
-  expect(destroyedDuringRenderBefore).toBe(true)
+test("a Session closed by its owner during setup does not report the interruption", async () => {
+  const { renderer } = await createTestRenderer({ consoleMode: "disabled" })
+  const logged = spyOn(console, "error").mockImplementation(() => {})
+  try {
+    const setup = renderer.setupTerminal()
+    const closing = renderer.nativeScene.driver.close()
+    await expect(setup).rejects.toThrow("interrupted by close")
+    await closing
+    renderer.destroy()
+    await renderer.closed
+    expect(
+      logged.mock.calls
+        .flat()
+        .map(String)
+        .filter((line) => line.includes("interrupted by close")),
+    ).toEqual([])
+  } finally {
+    logged.mockRestore()
+  }
 })

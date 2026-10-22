@@ -301,7 +301,9 @@ describe("Textarea - Selection Tests", () => {
     })
 
     it("should render selection properly when drawing to buffer", async () => {
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "Hello World",
@@ -419,7 +421,9 @@ describe("Textarea - Selection Tests", () => {
     })
 
     it("should render selection highlighting at correct screen position with viewport scroll", async () => {
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from({ length: 15 }, (_, i) => `Line${i}`).join("\n"),
@@ -447,7 +451,7 @@ describe("Textarea - Selection Tests", () => {
       const selectedText = editor.getSelectedText()
       expect(selectedText).toBe(`Line${viewport.offsetY}`.substring(0, 5))
 
-      const { bg } = buffer.buffers
+      const bg = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       for (let cellX = editor.x; cellX < editor.x + 5; cellX++) {
@@ -465,7 +469,9 @@ describe("Textarea - Selection Tests", () => {
     })
 
     it("should render selection correctly with empty lines between content", async () => {
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "AAAA\n\nBBBB\n\nCCCC",
@@ -487,7 +493,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, 0, 0)
 
-      const { bg } = buffer.buffers
+      const bg = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       for (let cellX = 0; cellX < 4; cellX++) {
@@ -678,41 +684,42 @@ describe("Textarea - Selection Tests", () => {
       expect(editor.getSelectedText()).toBe("World")
     })
 
-    it("should select with shift+down", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Line 1\nLine 2\nLine 3",
-        width: 40,
-        height: 10,
-        selectable: true,
-      })
-
-      editor.focus()
-
-      currentMockInput.pressArrow("down", { shift: true })
-
-      // Inclusive selection: the cell under the moved cursor (the 'L' of
-      // "Line 2") is selected too.
-      expect(editor.hasSelection()).toBe(true)
-      const selectedText = editor.getSelectedText()
-      expect(selectedText).toBe("Line 1\nL")
-    })
-
-    it("should select with shift+up", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Line 1\nLine 2\nLine 3",
-        width: 40,
-        height: 10,
-        selectable: true,
-      })
-
-      editor.focus()
-      editor.gotoLine(2)
-
-      currentMockInput.pressArrow("up", { shift: true })
-
-      expect(editor.hasSelection()).toBe(true)
-      const selectedText = editor.getSelectedText()
-      expect(selectedText.includes("Line 2")).toBe(true)
+    it("should move and select with up and down onto grapheme starts", async () => {
+      // Cell selection includes the cell under the moved cursor. In the #1289 text, column 5 of the
+      // first line is a boundary and column 6 is inside 码; column 5 of the second line is inside 签.
+      const lines = "Line 1\nLine 2\nLine 3"
+      const cjk = "的[代码签名政策](\n因此签名批准者角色"
+      const cases = [
+        [lines, "cell", 0, 0, "down", true, 1, 0, "Line 1\nL"],
+        [lines, "cell", 2, 0, "up", true, 1, 0, "Line 2\nL"],
+        [cjk, "cell", 0, 5, "down", false, 1, 4, ""],
+        [cjk, "cell", 1, 6, "up", false, 0, 5, ""],
+        [cjk, "cell", 0, 5, "down", true, 1, 4, "码签名政策](\n因此签"],
+        [cjk, "boundary", 0, 5, "down", true, 1, 4, "码签名政策](\n因此"],
+        [cjk, "cell", 1, 6, "up", true, 0, 5, "码签名政策](\n因此签名"],
+        [cjk, "boundary", 1, 6, "up", true, 0, 5, "码签名政策](\n因此签"],
+      ] as const
+      for (const [text, occupancy, row, col, key, shift, toRow, toCol, selected] of cases) {
+        const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+          initialValue: text,
+          width: 40,
+          height: 10,
+          selectable: true,
+          selectionOccupancy: occupancy,
+        })
+        editor.focus()
+        editor.editBuffer.setCursorToLineCol(row, col)
+        currentMockInput.pressArrow(key, { shift })
+        const where = `${JSON.stringify(text)} ${occupancy} (${row},${col}) ${shift ? "shift+" : ""}${key}`
+        const { visualRow, visualCol } = editor.editorView.getVisualCursor()
+        expect({ where, visualRow, visualCol, selected: editor.getSelectedText() }).toEqual({
+          where,
+          visualRow: toRow,
+          visualCol: toCol,
+          selected,
+        })
+        editor.destroy()
+      }
     })
 
     it("should select to line start with shift+home", async () => {
@@ -1111,9 +1118,11 @@ describe("Textarea - Selection Tests", () => {
 
   describe("Selection After Resize", () => {
     it("should maintain selection correctly after resize - same text selected and rendered properly", async () => {
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from({ length: 30 }, (_, i) => `Line ${i.toString().padStart(2, "0")}`).join("\n"),
         width: 40,
         height: 10,
@@ -1137,7 +1146,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, editor.x, editor.y)
 
-      const { bg: bgBefore } = buffer.buffers
+      const bgBefore = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       const selectedCellsBefore: Array<{ x: number; y: number }> = []
@@ -1155,7 +1164,6 @@ describe("Textarea - Selection Tests", () => {
 
       editor.width = 50
       editor.height = 15
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const selectedTextAfter = editor.getSelectedText()
@@ -1169,7 +1177,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, editor.x, editor.y)
 
-      const { bg: bgAfter } = buffer.buffers
+      const bgAfter = buffer.withBuffers(({ bg }) => bg.slice())
 
       const selectedCellsAfter: Array<{ x: number; y: number }> = []
       for (let y = 0; y < editor.height; y++) {
@@ -1190,9 +1198,11 @@ describe("Textarea - Selection Tests", () => {
     })
 
     it("should maintain exact same text selected after wrap width changes", async () => {
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "AAAAA BBBBB CCCCC DDDDD EEEEE FFFFF GGGGG HHHHH",
         width: 50,
         height: 10,
@@ -1217,7 +1227,6 @@ describe("Textarea - Selection Tests", () => {
 
       editor.width = 15
       editor.height = 15
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const selectedTextAfterNarrow = editor.getSelectedText()
@@ -1231,7 +1240,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, editor.x, editor.y)
 
-      const { bg: bgNarrow } = buffer.buffers
+      const bgNarrow = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       let selectedCellsNarrow = 0
@@ -1250,7 +1259,6 @@ describe("Textarea - Selection Tests", () => {
 
       editor.width = 50
       editor.height = 10
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const selectedTextAfterWide = editor.getSelectedText()
@@ -1264,7 +1272,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, editor.x, editor.y)
 
-      const { bg: bgWide } = buffer.buffers
+      const bgWide = buffer.withBuffers(({ bg }) => bg.slice())
 
       let selectedCellsWide = 0
       for (let y = 0; y < editor.height; y++) {
@@ -1285,9 +1293,11 @@ describe("Textarea - Selection Tests", () => {
     })
 
     it("should handle resize during active mouse selection drag", async () => {
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from({ length: 50 }, (_, i) => `Line ${i}`).join("\n"),
         width: 40,
         height: 10,
@@ -1306,7 +1316,6 @@ describe("Textarea - Selection Tests", () => {
 
       editor.width = 30
       editor.height = 8
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       await currentMouse.moveTo(editor.x + 10, editor.y + 2)
@@ -1320,7 +1329,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, editor.x, editor.y)
 
-      const { bg: bgAfterResize } = buffer.buffers
+      const bgAfterResize = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       let selectedCellsAfterResize = 0
@@ -1342,9 +1351,11 @@ describe("Textarea - Selection Tests", () => {
     })
 
     it("should maintain selection correctly when renderable position changes during resize", async () => {
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from({ length: 20 }, (_, i) => `Line ${i.toString().padStart(2, "0")}`).join("\n"),
         left: 10,
         top: 5,
@@ -1372,7 +1383,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, editor.x, editor.y)
 
-      const { bg: bgBefore } = buffer.buffers
+      const bgBefore = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       const selectedCellsBeforeCount = countSelectedCells(bgBefore, bufferWidth, editor, 1, 1, 0)
@@ -1380,7 +1391,6 @@ describe("Textarea - Selection Tests", () => {
 
       editor.left = 20
       editor.top = 10
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const newX = editor.x
@@ -1400,7 +1410,7 @@ describe("Textarea - Selection Tests", () => {
       buffer.clear(RGBA.fromValues(0, 0, 0, 1))
       buffer.drawEditorView(editor.editorView, editor.x, editor.y)
 
-      const { bg: bgAfter } = buffer.buffers
+      const bgAfter = buffer.withBuffers(({ bg }) => bg.slice())
       const selectedCellsAfterCount = countSelectedCells(bgAfter, bufferWidth, editor, 1, 1, 0)
 
       expect(selectedCellsAfterCount).toBe(selectedCellsBeforeCount)
@@ -1411,7 +1421,7 @@ describe("Textarea - Selection Tests", () => {
     })
 
     it("should keep cursor within textarea bounds after resize causes wrapping with scrolled selection", async () => {
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from(
           { length: 50 },
           (_, i) =>
@@ -1448,7 +1458,6 @@ describe("Textarea - Selection Tests", () => {
       expect(viewportAfterSelection.offsetY).toBeGreaterThan(0)
 
       editor.width = 8
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const viewportAfterResize = editor.editorView.getViewport()

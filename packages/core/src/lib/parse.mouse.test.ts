@@ -314,6 +314,7 @@ describe("MouseParser SGR mode", () => {
     test("scroll release (m) is not classified as scroll", () => {
       // Some terminals send release for scroll too; the parser should not
       // report that as a scroll event.
+      // 044: pins main; the conformance vectors make a wheel release a response with no mouse event.
       const e = parser.parseMouseEvent(encodeSGR(64, 10, 5, false))!
       expect(e.type).not.toBe("scroll")
     })

@@ -35,7 +35,7 @@ const firstDraw = new TimeToFirstDrawRenderable(renderer, {
 renderer.root.add(firstDraw)
 ```
 
-On its first `renderSelf()` call, the renderable stores `performance.now()` in `runtimeMs`. Later draws continue to display that same value. `reset()` clears it and requests another render. The next draw captures a new timestamp.
+The renderable draws in its `renderSelf()` [paint hook](/docs/extend/custom-renderables#use-paint-hooks). On the first call, it stores `performance.now()` in `runtimeMs`. Later draws show that same value. `reset()` clears it and requests another render. The next draw captures a new timestamp.
 
 ```typescript
 console.log(firstDraw.runtimeMs) // null before the first draw
@@ -80,8 +80,8 @@ The core renderable and both framework wrappers accept these options in addition
 | `alignSelf`  | layout alignment | `"center"`             | Cross-axis alignment                                                    |
 
 User-supplied layout values override the width, height, shrink, and alignment defaults. The Core constructor floors
-`precision` and clamps it to zero. A non-finite Core value becomes `2`. React and Solid currently assign the prop
-directly after construction and bypass that normalization. Pass an integer from 0 through 100 to either wrapper.
+`precision` and raises a negative value to `0`. A non-finite Core value becomes `2`. React and Solid currently assign
+the prop directly after construction and bypass that normalization. Pass an integer from 0 through 100 to either wrapper.
 Negative and infinite wrapper values can throw when the component draws, and `NaN` produces zero decimal places.
 
 The rendered line is `${label}: ${runtimeMs.toFixed(precision)}ms`. OpenTUI centers it by display-cell width and truncates it at a grapheme boundary.

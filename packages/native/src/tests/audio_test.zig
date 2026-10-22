@@ -96,9 +96,14 @@ test "PCM stream accepts unaligned bytes fragmented inside samples and frames" {
             try testing.expectEqual(@as(u64, offset), stats.bytes_received);
         }
         try expectStatusOk(audio.endStream(engine, id));
-        _ = try waitForBufferedFrames(engine, id, 24);
         var output: [16]f32 = undefined;
-        try expectStatusOk(audio.mixToBuffer(engine, &output, 8, 2));
+        // 24 frames are below the startup threshold: playback starts only after the worker publishes end of input,
+        // and a mix before that returns silence without consuming frames.
+        for (0..5_000) |_| {
+            try expectStatusOk(audio.mixToBuffer(engine, &output, 8, 2));
+            if (hasSignal(&output)) break;
+            testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+        }
         for (1..8) |frame| {
             try testing.expectApproxEqAbs(@as(f32, 0.25), output[frame * 2], 0.0001);
             try testing.expectApproxEqAbs(@as(f32, -0.5), output[frame * 2 + 1], 0.0001);

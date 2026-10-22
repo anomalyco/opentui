@@ -1,10 +1,13 @@
+import { createRequire } from "node:module"
+import type { Duplex } from "node:stream"
 import { expect, test } from "bun:test"
-import { TextRenderable } from "@opentui/core"
+import { NativeSession, TextRenderable } from "@opentui/core"
 import { Client, type ClientChannel } from "ssh2"
+import { createServer } from "../../index.js"
 import type { Session } from "../../types.js"
-import { createHarness, deferred, SHELL_PTY, sleep, waitFor } from "../support.js"
+import { createHarness, deferred, HOST_KEY, SHELL_PTY, sleep, waitFor } from "../support.js"
 
-const { mkServer, openShell, openShellOn, conns } = createHarness()
+const { mkServer, openShell, openShellOn, conns, track } = createHarness()
 
 test("idleTimeout reaps a session that sends no input", async () => {
   const server = mkServer(
@@ -164,3 +167,109 @@ test("two shells on one connection have independent lifecycles", async () => {
   sessions[1]!.write("B-ALIVE")
   expect(await bReceived).toContain("B-ALIVE")
 }, 15000)
+
+// ssh2 keeps a paused channel open until its readable side ends, even after the shell or connection closes.
+test.each(["connection", "shell", "local"] as const)(
+  "a paused shell with a full window closed by %s releases its Session and input",
+  async (close) => {
+    const shellOnly = close === "shell"
+    const { Channel } = createRequire(import.meta.url)("ssh2/lib/Channel.js")
+    const pause = Channel.prototype.pause
+    const write = NativeSession.prototype.write
+    const paused = deferred<Duplex & { outgoing: { window: number } }>()
+    const middleware = deferred<void>()
+    let driver: NativeSession | undefined
+    let end: (() => void) | undefined
+    let handlers = 0
+    let closes = 0
+    let arrivals = 0
+    let clientClosed = false
+    const errors: unknown[] = []
+    Channel.prototype.pause = function (this: { server?: boolean }) {
+      const result = pause.call(this)
+      if (this.server) paused.resolve(this as never)
+      return result
+    }
+    NativeSession.prototype.write = function (this: NativeSession, bytes: Uint8Array) {
+      driver = this
+      return write.call(this, bytes)
+    }
+    try {
+      const server = track(
+        createServer({
+          auth: "open",
+          startupBanner: false,
+          hostKey: { pem: HOST_KEY },
+          limits: { session: { global: 1 } },
+          onError: (error) => errors.push(error),
+        })
+          .use(async (session, next) => {
+            if (++arrivals > 1) session.deny("CAPACITY")
+            end = () => session.end()
+            session.write("PAUSED")
+            if (shellOnly) session.write(Buffer.alloc(3_500_000))
+            session.onClose(() => closes++)
+            await middleware.promise
+            return next()
+          })
+          .serve(() => {
+            handlers++
+          }),
+      )
+      const { port } = await server.listen(0)
+      const client = new Client()
+      conns.push(client)
+      client.on("close", () => {
+        clientClosed = true
+      })
+      const stream = await new Promise<ClientChannel>((resolve, reject) => {
+        client.on("ready", () => client.shell((error, channel) => (error ? reject(error) : resolve(channel))))
+        client.on("error", reject)
+        client.connect({ host: "127.0.0.1", port, username: "paused" })
+      })
+      if (!shellOnly) stream.resume()
+      stream.write(Buffer.alloc(262_144))
+      const channel = await paused.promise
+      const channelClosed = new Promise((resolve) => channel.once("close", resolve))
+      await waitFor(
+        () =>
+          channel.readableLength > 0 && (!shellOnly || (channel.outgoing.window === 0 && channel.writableLength > 0)),
+        1000,
+        5,
+      )
+      expect(driver?.usesOutput(channel as never)).toBe(true)
+      expect(driver?.disposed).toBe(false)
+
+      if (close === "local") end!()
+      else if (shellOnly) stream.close()
+      else client.destroy()
+      await Promise.race([channelClosed, sleep(3000).then(() => Promise.reject(new Error("channel did not close")))])
+      expect(driver?.disposed).toBe(true)
+      if (close === "local") await driver?.closed
+      expect(["data", "error", "drain"].map((event) => channel.listenerCount(event))).toEqual([0, 0, 0])
+      expect(handlers).toBe(0)
+      if (close !== "connection") {
+        // The connection survives; capacity is free again only after the closed shell released it.
+        const output = await new Promise<string>((resolve, reject) => {
+          client.shell((error, probe) => {
+            if (error) return reject(error)
+            let data = ""
+            probe.on("data", (bytes: Buffer) => (data += bytes.toString()))
+            probe.on("close", () => resolve(data))
+            probe.on("error", reject)
+          })
+        })
+        expect(output).toBe("CAPACITY\r\n")
+        expect(clientClosed).toBe(false)
+      }
+      await server.close()
+      expect(closes).toBe(1)
+      expect(errors).toEqual([])
+    } finally {
+      middleware.resolve()
+      Channel.prototype.pause = pause
+      NativeSession.prototype.write = write
+    }
+  },
+  15_000,
+)

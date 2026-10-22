@@ -9,7 +9,7 @@ import { existsSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { Command } from "commander"
-import { BoxRenderable, RGBA, borderCharsToArray, type BorderCharacters } from "../index.js"
+import { BoxRenderable, OptimizedBuffer, RGBA, borderCharsToArray, type BorderCharacters } from "../index.js"
 import { createTestRenderer, type TestRenderer } from "../testing.js"
 
 type ScenarioKind = "direct-buffer" | "render-tree"
@@ -58,6 +58,7 @@ type TimingStats = {
 
 type BenchmarkContext = {
   renderer: TestRenderer
+  buffer: OptimizedBuffer
   renderOnce: () => Promise<void>
   width: number
   height: number
@@ -101,17 +102,17 @@ const SUITES = {
 const cp = (value: number): string => String.fromCodePoint(value)
 
 const EMPTY_BORDER_CHARS: BorderCharacters = {
-  topLeft: "",
-  topRight: "",
-  bottomLeft: "",
-  bottomRight: "",
+  topLeft: " ",
+  topRight: " ",
+  bottomLeft: " ",
+  bottomRight: " ",
   horizontal: " ",
-  vertical: "",
-  topT: "",
-  bottomT: "",
-  leftT: "",
-  rightT: "",
-  cross: "",
+  vertical: " ",
+  topT: " ",
+  bottomT: " ",
+  leftT: " ",
+  rightT: " ",
+  cross: " ",
 }
 
 const SPLIT_BORDER_CHARS: BorderCharacters = {
@@ -243,16 +244,12 @@ const { renderer, renderOnce } = await createTestRenderer({
 
 renderer.requestRender = () => {}
 
-const ctx: BenchmarkContext = {
-  renderer,
-  renderOnce,
-  width,
-  height,
-}
-
+let buffer: OptimizedBuffer | undefined
 const results: ScenarioResult[] = []
 
 try {
+  buffer = OptimizedBuffer.create(width, height, "unicode", { owner: renderer.nativeScene })
+  const ctx: BenchmarkContext = { renderer, renderOnce, width, height, buffer }
   for (const scenario of selectedScenarios) {
     writeLine(outputEnabled, `Running ${scenario.name}...`)
     const result = await runScenario(scenario, ctx, iterations, warmupIterations)
@@ -263,7 +260,9 @@ try {
     )
   }
 } finally {
+  buffer?.destroy()
   renderer.destroy()
+  await renderer.closed
 }
 
 if (outputEnabled) {
@@ -296,9 +295,8 @@ function createScenarios(): ScenarioDefinition[] {
       kind: "direct-buffer",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
+        const buffer = ctx.buffer
         const specs = createFillPanelSpecs(ctx.width, ctx.height)
 
         return {
@@ -318,9 +316,8 @@ function createScenarios(): ScenarioDefinition[] {
       kind: "direct-buffer",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
+        const buffer = ctx.buffer
         const variants = createTitleVariants(ctx.width, ctx.height)
 
         return {
@@ -338,9 +335,8 @@ function createScenarios(): ScenarioDefinition[] {
       kind: "direct-buffer",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
+        const buffer = ctx.buffer
         const specs = createLeftBorderStackSpecs(ctx.width, ctx.height, MESSAGE_BORDER_COLORS, COLORS.transparent)
 
         return {
@@ -360,9 +356,8 @@ function createScenarios(): ScenarioDefinition[] {
       kind: "direct-buffer",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
+        const buffer = ctx.buffer
         const specs = createPromptComboSpecs(ctx.width, ctx.height)
 
         return {
@@ -382,9 +377,8 @@ function createScenarios(): ScenarioDefinition[] {
       kind: "direct-buffer",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
+        const buffer = ctx.buffer
         const specs = createToastSpecs(ctx.width)
 
         return {
@@ -404,9 +398,8 @@ function createScenarios(): ScenarioDefinition[] {
       kind: "direct-buffer",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
+        const buffer = ctx.buffer
         const specs = createScrolledLeftBorderSpecs(ctx.width, ctx.height)
         const scissor = {
           x: 2,
@@ -434,9 +427,8 @@ function createScenarios(): ScenarioDefinition[] {
       kind: "direct-buffer",
       setup: (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
-        const buffer = ctx.renderer.currentRenderBuffer
+        const buffer = ctx.buffer
         const specs = createLeftBorderStackSpecs(ctx.width, ctx.height, [COLORS.transparent], COLORS.panel)
 
         return {
@@ -503,6 +495,9 @@ async function runScenario(
   iterations: number,
   warmupIterations: number,
 ): Promise<ScenarioResult> {
+  ctx.buffer.clearScissorRects()
+  ctx.buffer.clearOpacity()
+  ctx.buffer.clear(COLORS.transparent)
   const runtime = await scenario.setup(ctx)
 
   try {
@@ -547,13 +542,11 @@ async function runScenario(
   } finally {
     await runtime.teardown?.()
     clearRoot(ctx.renderer)
-    resetBuffers(ctx.renderer)
   }
 }
 
 async function buildOpencodeScreenTree(ctx: BenchmarkContext): Promise<OpencodeScreenTree> {
   clearRoot(ctx.renderer)
-  resetBuffers(ctx.renderer)
 
   const allBoxes: BoxRenderable[] = []
   const messageBodies: BoxRenderable[] = []
@@ -957,15 +950,6 @@ function createScrolledLeftBorderSpecs(width: number, height: number): DrawBoxOp
 function clearRoot(renderer: TestRenderer): void {
   for (const child of renderer.root.getChildren()) {
     child.destroyRecursively()
-  }
-}
-
-function resetBuffers(renderer: TestRenderer): void {
-  const buffers = [renderer.currentRenderBuffer, renderer.nextRenderBuffer]
-  for (const buffer of buffers) {
-    buffer.clearScissorRects()
-    buffer.clearOpacity()
-    buffer.clear(COLORS.transparent)
   }
 }
 

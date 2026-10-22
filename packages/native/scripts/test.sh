@@ -8,6 +8,7 @@ for argument in "$@"; do
   esac
 done
 
+sh src/vendor/update-zig-deps.sh --check
 zig build test --summary all "$@"
 if [ -n "$test_filter" ]; then
   (cd examples/hello && zig build test "$test_filter")

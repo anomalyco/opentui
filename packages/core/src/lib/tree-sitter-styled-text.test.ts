@@ -1,3 +1,4 @@
+import { ResourceContext } from "../buffer.js"
 import { test, expect, beforeAll, afterAll, describe } from "bun:test"
 import { TreeSitterClient } from "./tree-sitter/client.js"
 import { treeSitterToStyledText, treeSitterToTextChunks } from "./tree-sitter-styled-text.js"
@@ -10,37 +11,46 @@ import { mkdir } from "fs/promises"
 import type { SimpleHighlight } from "./tree-sitter/types.js"
 
 describe("TreeSitter Styled Text", () => {
+  let resourceContext: ResourceContext
   let client: TreeSitterClient
   let syntaxStyle: SyntaxStyle
   const dataPath = join(tmpdir(), "tree-sitter-styled-text-test")
 
   beforeAll(async () => {
+    resourceContext = new ResourceContext({ objectCapacity: 64, renderCellsMax: 1 })
     await mkdir(dataPath, { recursive: true })
     client = new TreeSitterClient({ dataPath })
     await client.initialize()
 
     // Create a syntax style similar to common themes
-    syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromInts(255, 255, 255, 255) }, // white
-      keyword: { fg: RGBA.fromInts(255, 100, 100, 255), bold: true }, // red bold
-      string: { fg: RGBA.fromInts(100, 255, 100, 255) }, // green
-      number: { fg: RGBA.fromInts(100, 100, 255, 255) }, // blue
-      function: { fg: RGBA.fromInts(255, 255, 100, 255), italic: true }, // yellow italic
-      comment: { fg: RGBA.fromInts(128, 128, 128, 255), italic: true }, // gray italic
-      variable: { fg: RGBA.fromInts(200, 200, 255, 255) }, // light blue
-      type: { fg: RGBA.fromInts(255, 200, 100, 255) }, // orange
-      "markup.heading": { fg: RGBA.fromInts(255, 200, 200, 255), bold: true }, // light red bold
-      "markup.strong": { bold: true }, // bold
-      "markup.italic": { italic: true }, // italic
-      "markup.raw": { fg: RGBA.fromInts(200, 255, 200, 255) }, // light green
-      "markup.quote": { fg: RGBA.fromInts(180, 180, 180, 255), italic: true }, // gray italic
-      "markup.list": { fg: RGBA.fromInts(255, 200, 100, 255) }, // orange
-    })
+    syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        default: { fg: RGBA.fromInts(255, 255, 255, 255) }, // white
+        keyword: { fg: RGBA.fromInts(255, 100, 100, 255), bold: true }, // red bold
+        string: { fg: RGBA.fromInts(100, 255, 100, 255) }, // green
+        number: { fg: RGBA.fromInts(100, 100, 255, 255) }, // blue
+        function: { fg: RGBA.fromInts(255, 255, 100, 255), italic: true }, // yellow italic
+        comment: { fg: RGBA.fromInts(128, 128, 128, 255), italic: true }, // gray italic
+        variable: { fg: RGBA.fromInts(200, 200, 255, 255) }, // light blue
+        type: { fg: RGBA.fromInts(255, 200, 100, 255) }, // orange
+        "markup.heading": { fg: RGBA.fromInts(255, 200, 200, 255), bold: true }, // light red bold
+        "markup.strong": { bold: true }, // bold
+        "markup.italic": { italic: true }, // italic
+        "markup.raw": { fg: RGBA.fromInts(200, 255, 200, 255) }, // light green
+        "markup.quote": { fg: RGBA.fromInts(180, 180, 180, 255), italic: true }, // gray italic
+        "markup.list": { fg: RGBA.fromInts(255, 200, 100, 255) }, // orange
+      },
+      resourceContext,
+    )
   })
 
   afterAll(async () => {
-    await client.destroy()
-    syntaxStyle.destroy()
+    try {
+      await client.destroy()
+      syntaxStyle?.destroy()
+    } finally {
+      resourceContext.destroy()
+    }
   })
 
   test("should convert JavaScript code to styled text", async () => {
@@ -977,12 +987,15 @@ Normal paragraph with [link](https://example.com).`
         [13, 19, "markup.link.url"], // Child: url with different color
       ]
 
-      const testStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        "markup.link": { fg: RGBA.fromInts(100, 100, 255, 255), underline: true }, // Blue underlined
-        "markup.link.label": { fg: RGBA.fromInts(165, 214, 255, 255) }, // Light blue (no underline specified)
-        "markup.link.url": { fg: RGBA.fromInts(88, 166, 255, 255) }, // Different blue (no underline specified)
-      })
+      const testStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          "markup.link": { fg: RGBA.fromInts(100, 100, 255, 255), underline: true }, // Blue underlined
+          "markup.link.label": { fg: RGBA.fromInts(165, 214, 255, 255) }, // Light blue (no underline specified)
+          "markup.link.url": { fg: RGBA.fromInts(88, 166, 255, 255) }, // Different blue (no underline specified)
+        },
+        resourceContext,
+      )
 
       const content = "[Link text](url)"
 
@@ -1044,12 +1057,15 @@ Normal paragraph with [link](https://example.com).`
         [0, 10, "text.special.highlighted"], // Most specific: adds underline
       ]
 
-      const testStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        text: { fg: RGBA.fromInts(200, 200, 200, 255) }, // Gray
-        "text.special": { bold: true }, // Add bold, no color change
-        "text.special.highlighted": { underline: true, fg: RGBA.fromInts(255, 255, 100, 255) }, // Add underline and yellow
-      })
+      const testStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          text: { fg: RGBA.fromInts(200, 200, 200, 255) }, // Gray
+          "text.special": { bold: true }, // Add bold, no color change
+          "text.special.highlighted": { underline: true, fg: RGBA.fromInts(255, 255, 100, 255) }, // Add underline and yellow
+        },
+        resourceContext,
+      )
 
       const content = "test text "
       const chunks = treeSitterToTextChunks(content, mockHighlights, testStyle)
@@ -1076,13 +1092,16 @@ Normal paragraph with [link](https://example.com).`
         [10, 15, "container.part3"], // Child: yet another color
       ]
 
-      const testStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        container: { underline: true }, // Only underline, no color
-        "container.part1": { fg: RGBA.fromInts(255, 100, 100, 255) }, // Red
-        "container.part2": { fg: RGBA.fromInts(100, 255, 100, 255) }, // Green
-        "container.part3": { fg: RGBA.fromInts(100, 100, 255, 255) }, // Blue
-      })
+      const testStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          container: { underline: true }, // Only underline, no color
+          "container.part1": { fg: RGBA.fromInts(255, 100, 100, 255) }, // Red
+          "container.part2": { fg: RGBA.fromInts(100, 255, 100, 255) }, // Green
+          "container.part3": { fg: RGBA.fromInts(100, 100, 255, 255) }, // Blue
+        },
+        resourceContext,
+      )
 
       const content = "part1part2part3"
       const chunks = treeSitterToTextChunks(content, mockHighlights, testStyle)
@@ -1135,12 +1154,15 @@ Normal paragraph with [link](https://example.com).`
       )
       expect(labelHasParentLink).toBe(false) // Confirms label is NOT nested
 
-      const linkStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        "markup.link": { underline: true }, // Brackets and parens
-        "markup.link.label": { fg: RGBA.fromInts(165, 214, 255, 255), underline: true }, // Must set underline!
-        "markup.link.url": { fg: RGBA.fromInts(88, 166, 255, 255), underline: true }, // Must set underline!
-      })
+      const linkStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          "markup.link": { underline: true }, // Brackets and parens
+          "markup.link.label": { fg: RGBA.fromInts(165, 214, 255, 255), underline: true }, // Must set underline!
+          "markup.link.url": { fg: RGBA.fromInts(88, 166, 255, 255), underline: true }, // Must set underline!
+        },
+        resourceContext,
+      )
 
       const styledText = await treeSitterToStyledText(markdownCode, "markdown", linkStyle, client, {
         conceal: { enabled: false },
@@ -1173,12 +1195,15 @@ Normal paragraph with [link](https://example.com).`
         [12, 15, "number"], // "123"
       ]
 
-      const testStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        keyword: { fg: RGBA.fromInts(255, 100, 100, 255), bold: true },
-        string: { fg: RGBA.fromInts(100, 255, 100, 255) },
-        number: { fg: RGBA.fromInts(100, 100, 255, 255) },
-      })
+      const testStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          keyword: { fg: RGBA.fromInts(255, 100, 100, 255), bold: true },
+          string: { fg: RGBA.fromInts(100, 255, 100, 255) },
+          number: { fg: RGBA.fromInts(100, 100, 255, 255) },
+        },
+        resourceContext,
+      )
 
       const content = "const 'str' 123"
       const chunks = treeSitterToTextChunks(content, mockHighlights, testStyle)
@@ -1208,11 +1233,14 @@ Normal paragraph with [link](https://example.com).`
         [2, 8, "parent.child"], // Child is INSIDE parent
       ]
 
-      const nestedStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        parent: { underline: true },
-        "parent.child": { fg: RGBA.fromInts(200, 100, 100, 255) }, // No underline specified
-      })
+      const nestedStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          parent: { underline: true },
+          "parent.child": { fg: RGBA.fromInts(200, 100, 100, 255) }, // No underline specified
+        },
+        resourceContext,
+      )
 
       const nestedContent = "0123456789"
       const nestedChunks = treeSitterToTextChunks(nestedContent, nestedHighlights, nestedStyle)
@@ -1229,11 +1257,14 @@ Normal paragraph with [link](https://example.com).`
         [5, 10, "typeB"], // Second range (NOT nested)
       ]
 
-      const siblingStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        typeA: { underline: true, fg: RGBA.fromInts(100, 100, 255, 255) },
-        typeB: { fg: RGBA.fromInts(255, 100, 100, 255) }, // No underline
-      })
+      const siblingStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          typeA: { underline: true, fg: RGBA.fromInts(100, 100, 255, 255) },
+          typeB: { fg: RGBA.fromInts(255, 100, 100, 255) }, // No underline
+        },
+        resourceContext,
+      )
 
       const siblingContent = "0123456789"
       const siblingChunks = treeSitterToTextChunks(siblingContent, siblingHighlights, siblingStyle)
@@ -1254,11 +1285,14 @@ Normal paragraph with [link](https://example.com).`
         [0, 10, "parent.child"],
       ]
 
-      const testStyle = SyntaxStyle.fromStyles({
-        default: { fg: RGBA.fromInts(255, 255, 255, 255) },
-        parent: { bold: true, italic: true, underline: true },
-        "parent.child": { bold: false, fg: RGBA.fromInts(200, 200, 200, 255) }, // Override bold, set color
-      })
+      const testStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: RGBA.fromInts(255, 255, 255, 255) },
+          parent: { bold: true, italic: true, underline: true },
+          "parent.child": { bold: false, fg: RGBA.fromInts(200, 200, 200, 255) }, // Override bold, set color
+        },
+        resourceContext,
+      )
 
       const content = "test text "
       const chunks = treeSitterToTextChunks(content, mockHighlights, testStyle)

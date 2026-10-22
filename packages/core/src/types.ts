@@ -4,6 +4,7 @@ import type { Selection } from "./lib/selection.js"
 import type { Renderable } from "./Renderable.js"
 import type { InternalKeyHandler, KeyHandler } from "./lib/KeyHandler.js"
 import type { EditBufferRenderable } from "./renderables/EditBufferRenderable.js"
+import type { NativeScene } from "./NativeScene.js"
 
 export const TextAttributes = {
   NONE: 0,
@@ -133,10 +134,36 @@ export interface TerminalCapabilities {
   notifications: boolean
   explicit_cursor_positioning: boolean
   remote: boolean
+  /** The terminal answered the OSC 7501 program status query. */
+  program_status: boolean
   multiplexer: TerminalMultiplexer
   image_protocol?: ImageRenderProtocol
   terminal: TerminalInfo
 }
+
+export type ProgramStatusKind = "permission" | "question" | "auth"
+
+interface ProgramStatusRecord {
+  /** Record path such as `build/test`. Omit it to address the root record. */
+  id?: string
+  /** Stable program identifier such as `cargo` or `terraform`. */
+  app?: string
+  /** Short label for the record. */
+  title?: string
+  /** One line that says what the record is doing, waiting for, or finished. */
+  message?: string
+}
+
+/**
+ * One OSC 7501 Program Status Protocol report. Each report replaces its record:
+ * a field missing from the report is missing from the record afterwards.
+ * `clear` removes the addressed record and every record beneath it.
+ */
+export type ProgramStatus =
+  | (ProgramStatusRecord & { state: "idle" | "done" | "error" })
+  | (ProgramStatusRecord & { state: "working"; progress?: number })
+  | (ProgramStatusRecord & { state: "blocked"; kind?: ProgramStatusKind; progress?: number })
+  | { state: "clear"; id?: string }
 
 export interface RendererEvents {
   resize: (width: number, height: number) => void
@@ -151,10 +178,7 @@ export interface RendererEvents {
 }
 
 export interface RenderContext extends EventEmitter {
-  addToHitGrid: (x: number, y: number, width: number, height: number, id: number) => void
-  pushHitGridScissorRect: (x: number, y: number, width: number, height: number) => void
-  popHitGridScissorRect: () => void
-  clearHitGridScissorRects: () => void
+  readonly nativeScene: NativeScene
   width: number
   height: number
   terminalWidth?: number
@@ -163,6 +187,8 @@ export interface RenderContext extends EventEmitter {
   /** Monotonic, bumped once per `loop()` iteration. Lets renderables dedupe per-frame work. */
   frameId: number
   requestRender: () => void
+  requestAnimationFrame: (callback: FrameRequestCallback) => number
+  cancelAnimationFrame: (handle: number) => void
   setCursorPosition: (x: number, y: number, visible: boolean) => void
   setCursorStyle: (options: CursorStyleOptions) => void
   setCursorColor: (color: RGBA) => void

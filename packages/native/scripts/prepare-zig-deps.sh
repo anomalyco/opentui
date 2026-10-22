@@ -50,7 +50,11 @@ if is_ready; then
 fi
 
 mkdir -p "$TEMP_DIR"
-tar -xzf "$ARCHIVE" -C "$TEMP_DIR"
+# Keep both names relative. GNU tar reads an archive path like C:/... as a remote host.
+(
+  cd -- "$ROOT_DIR"
+  tar -xzf src/vendor/zig-deps.tar.gz -C ".zig-deps.$$.tmp"
+)
 printf '%s\n' "$ARCHIVE_ID" > "$TEMP_DIR/.ready"
 rm -rf "$DEPS_DIR"
 mv "$TEMP_DIR" "$DEPS_DIR"

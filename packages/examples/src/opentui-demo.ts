@@ -1042,7 +1042,7 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   if (globalTabController) {
-    renderer.root.remove(globalTabController)
+    globalTabController.destroyRecursively()
     globalTabController = null
   }
 

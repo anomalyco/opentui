@@ -545,9 +545,10 @@ fn benchEditThenRebuild(
         }
     }
 
-    // Insert new line (adds marker)
+    // Insert new lines (markers). One insert allocates about 1.5 KiB, so timing a
+    // single insert measures whether it crosses into an untouched arena page.
     {
-        const name = "Insert newline: insert marker + rebuild (~200 markers)";
+        const name = "Insert newline: 1k marker inserts at random positions (~200 markers)";
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
@@ -555,12 +556,13 @@ fn benchEditThenRebuild(
                 defer arena.deinit();
 
                 var rope = try createRope(arena.allocator(), 10000, 50);
-                // Markers are automatically indexed in the tree structure
+                var prng = std.Random.DefaultPrng.init(42);
+                const random = prng.random();
 
                 const timer = bench_utils.BenchTimer.start(io);
-                // Insert new line (marker) at position 100
-                try rope.insert(100, .{ .marker = {} });
-                // Markers are automatically indexed in the tree structure
+                for (0..1000) |_| {
+                    try rope.insert(random.uintAtMost(u32, rope.count()), .{ .marker = {} });
+                }
                 stats.record(timer.read());
             }
 

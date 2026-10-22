@@ -18,7 +18,7 @@ Test the smallest observable boundary that can fail:
 4. Use the React or Solid test utility when framework effects and reconciliation are part of the behavior.
 5. Use `@opentui/keymap/testing` for Keymap layers, addons, focus, dispatch, and diagnostics without a terminal renderer.
 
-`@opentui/core/testing` provides a real `CliRenderer` with native in-memory output. It also provides input, mouse, clock, capability, Tree-sitter, spy, and frame-recording helpers. The default setup does not write frames to the host terminal.
+`@opentui/core/testing` creates a real `CliRenderer`. Its native Session encodes each frame. The default setup sends those bytes to an in-memory sink that discards them, so it does not write frames to the host terminal. The package also has input, mouse, clock, capability, Tree-sitter, spy, and frame-recording helpers.
 
 ## Test renderer
 
@@ -42,7 +42,7 @@ try {
 
 ### Setup semantics and defaults
 
-The helper constructs `CliRenderer` directly. It does not call `createCliRenderer()` or `setupTerminal()`. The default mock stdin has no `setRawMode()`. Thus, default tests do not change host raw mode. A supplied stream with `setRawMode()` still receives normal input setup. The helper also creates the native renderer and applies normal thread defaults.
+The helper constructs `CliRenderer` directly. It does not call `createCliRenderer()` or `setupTerminal()`. The default mock stdin has no `setRawMode()`, so default tests do not change host raw mode. A supplied stream with `setRawMode()` still receives normal input setup. The `CliRenderer` constructor still creates the native Session and the native scene.
 
 | Setting              | Test default                                                                       |
 | -------------------- | ---------------------------------------------------------------------------------- |
@@ -56,7 +56,7 @@ The helper constructs `CliRenderer` directly. It does not call `createCliRendere
 
 The legacy `kittyKeyboard: true` option maps to `useKittyKeyboard: { events: true }` and configures the mock key encoder. `otherModifiersMode` enables modifyOtherKeys-style sequences only when Kitty mode is off. Kitty mode takes precedence.
 
-Tests own cleanup. Always call `setup.renderer.destroy()` in `finally` or test teardown. Use `createCliRenderer()` with custom streams when a test must exercise the real output transport. The test renderer defaults to native memory output even when you supply stream objects.
+Tests own cleanup. Always call `setup.renderer.destroy()` or `await setup.dispose()` in `finally` or test teardown. Use `createCliRenderer()` with custom streams when a test must exercise the real output transport. By default, the test renderer uses the in-memory sink even when you supply stream objects.
 
 ### Returned setup
 
@@ -65,18 +65,20 @@ Tests own cleanup. Always call `setup.renderer.destroy()` in `finally` or test t
 | `renderer`                          | The `CliRenderer` instance (`TestRenderer` is a type alias)                                |
 | `mockInput`                         | Keyboard driver created by `createMockKeys()`                                              |
 | `mockMouse`                         | SGR mouse driver created by `createMockMouse()`                                            |
-| `renderOnce()`                      | Wait for feed backpressure if present, then run one renderer loop pass                     |
+| `renderOnce()`                      | Wait for a frame in progress, then run one renderer loop pass                              |
 | `flush(options?)`                   | Call `waitForVisualIdle()` with `maxPasses` as the frame limit. The default is `20`        |
 | `waitFor(predicate, options?)`      | Check a sync or async predicate while scheduled rendering can progress                     |
 | `waitForFrame(predicate, options?)` | Check captured text while scheduled rendering can progress, then return the matching frame |
 | `waitForVisualIdle(options?)`       | Wait for no scheduled work or consecutive zero-cell-update frames                          |
-| `captureCharFrame()`                | Decode the current character buffer as text                                                |
+| `captureCharFrame()`                | Decode the characters of the last committed frame as text                                  |
 | `captureSpans()`                    | Return `{ cols, rows, cursor: [x, y], lines }` with styled spans                           |
 | `externalOutput`                    | Recorder for split-footer external-output commits                                          |
 | `getNativeStats()`                  | Return the current native render stats                                                     |
-| `resize(width, height)`             | Invoke the renderer's test resize path                                                     |
+| `resize(width, height)`             | Call `renderer.resize(width, height)`                                                      |
+| `dispose()`                         | Destroy the renderer and wait for `renderer.closed`. Rejects when the Session failed       |
+| `[Symbol.asyncDispose]()`           | Same as `dispose()`, for `await using`                                                     |
 
-`renderOnce()` always starts one loop pass, even when the scheduler has no pending work. The wait helpers do not force a frame.
+`renderOnce()` always starts one loop pass, even when the scheduler has no pending work. When that pass renders a frame, `renderOnce()` returns after the frame's output completes. The wait helpers do not force a frame.
 
 ### Waiting for observable output
 
@@ -95,7 +97,7 @@ try {
 }
 ```
 
-Wait limit options accept numbers. Missing, nonnumeric, non-finite, and non-positive values use their defaults. Other values are floored. A value greater than `0` and less than `1` therefore becomes `0`.
+Wait limit options accept numbers. Missing, nonnumeric, non-finite, and non-positive values use their defaults. The helpers floor other values. A value greater than `0` and less than `1` therefore becomes `0`.
 
 | Helper                | Options                      | Default bound |
 | --------------------- | ---------------------------- | ------------- |
@@ -110,11 +112,13 @@ Wait limit options accept numbers. Missing, nonnumeric, non-finite, and non-posi
 
 These are frame and scheduler bounds, not wall-clock timeouts. A wait can remain pending when a manual clock does not advance a scheduled render timer. Advance the clock in the test when the renderer uses `ManualClock`.
 
-On exhaustion, wait errors report `frameId`, `nativeFrameCount`, `cellsUpdated`, `isRunning`, `isRendering`, and `hasScheduledRender`. `waitForFrame()` also reports the last captured frame. See [Rendering diagnostics](/docs/test-and-debug/rendering-diagnostics) for the meaning of these values.
+On exhaustion, wait errors report `frameId`, `destroyed`, `isRunning`, `isRendering`, and `hasScheduledRender`. They also report `nativeFrameCount` and `cellsUpdated` when the renderer is not destroyed. `waitForFrame()` also reports the last captured frame. See [Rendering diagnostics](/docs/test-and-debug/rendering-diagnostics) for the meaning of these values.
 
 ### Styled frames
 
-`captureCharFrame()` decodes the current character buffer. Use it for text assertions and snapshots. `captureSpans()` preserves dimensions, cursor coordinates, and each line's styled spans:
+Both capture functions read the Session's current cell buffer. That buffer holds the last committed frame. It does not show a frame that is still painting. After a change, call `renderOnce()` before you capture, or use `waitForFrame()`.
+
+`captureCharFrame()` decodes the characters in that buffer. Use it for text assertions and snapshots. `captureSpans()` preserves dimensions, cursor coordinates, and each line's styled spans:
 
 ```typescript
 const setup = await createTestRenderer({ width: 20, height: 4 })
@@ -132,7 +136,7 @@ try {
 
 ### External output
 
-The setup listens for `external_output` events. It records `text`, `rows`, snapshot `width` and `height`, `rowColumns`, `startOnNewLine`, and `trailingNewline`. Recording does not consume the renderer's native output queue.
+The setup listens for `external_output` events. It records `text`, `rows`, snapshot `width` and `height`, `rowColumns`, `startOnNewLine`, and `trailingNewline`. The recorder does not consume the renderer's native output queue.
 
 | Method                      | Behavior                                              |
 | --------------------------- | ----------------------------------------------------- |
@@ -230,11 +234,11 @@ try {
 
 The baseline disables feature booleans. It uses `unicode: "unicode"`, `osc52_support: "unknown"`, `multiplexer: "none"`, `image_protocol: "auto"`, and `remote: false`. Terminal name and version are empty, and `from_xtversion` is `false`.
 
-`setRendererCapabilities(renderer, overrides?)` builds a complete fixture, replaces the renderer's test capability state, and returns the fixture. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for production detection timing.
+`setRendererCapabilities(renderer, overrides?)` builds a complete fixture, makes `renderer.capabilities` return it, and returns the fixture. It does not change the native Session capabilities. A later capability reply from the terminal replaces the fixture. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for production detection timing.
 
 ## ManualClock
 
-`ManualClock` implements OpenTUI's clock interface without wall-clock waits. It starts at zero. It supports `now`, `setTime`, timeout and interval scheduling, clearing, `advance`, and `runAll`.
+`ManualClock` implements OpenTUI's clock interface without wall-clock waits. It starts at zero. It supports `now`, `setTime`, timeout and interval scheduling, clearing, `advance`, and `runAll`. `pendingTimerCount` reports the number of scheduled timeouts and active intervals.
 
 ```typescript
 const { ManualClock } = await import("@opentui/core/testing")
@@ -252,7 +256,7 @@ clock.advance(1)
 console.log(fired) // true
 ```
 
-Times and delays are floored. Negative delays advance by zero. Timers at one timestamp fire in registration order. `setTime()` runs due timers when time moves forward. It directly changes the time when time moves backward. Use `runAll()` only for finite work because an active interval keeps scheduling work.
+`ManualClock` floors times and delays. Negative delays advance by zero. Timers at one timestamp fire in registration order. `setTime()` runs due timers when time moves forward. It directly changes the time when time moves backward. Use `runAll()` only for finite work because an active interval keeps scheduling work.
 
 ## MockTreeSitterClient
 
@@ -296,7 +300,7 @@ spy.reset()
 
 ## TestRecorder
 
-`TestRecorder` listens to renderer `frame` events. It captures the character buffer after each completed render pass.
+`TestRecorder` listens to renderer `frame` events. Core emits `frame` after a frame's output completes. At each event, the recorder reads the Session's current cell buffer.
 
 ```typescript
 import { TextRenderable } from "@opentui/core"

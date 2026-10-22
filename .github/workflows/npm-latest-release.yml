@@ -17,6 +17,21 @@ on:
         required: false
         type: string
         default: ""
+      npmPackagesArtifact:
+        description: "Name of the npm packages artifact to publish. Defaults to npm-packages-<version>."
+        required: false
+        type: string
+        default: ""
+      smokeTest:
+        description: "Run the packed Node smoke tests before publishing. False when the caller ran them."
+        required: false
+        type: boolean
+        default: true
+      distTag:
+        description: "npm dist-tag to publish under. When empty, npm-publish.ts chooses it."
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
   id-token: write
@@ -53,86 +68,11 @@ jobs:
         if: ${{ inputs.prepareVersion != '' }}
         run: bun run prepare-release "${{ inputs.prepareVersion }}" --no-install
 
-      - name: Install dependencies
-        run: bun install
-
-      - name: Download npm packages artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: npm-packages-${{ inputs.version }}
-
       - name: Extract npm packages
-        run: |
-          echo "Extracting npm packages..."
-          unzip -q npm-packages.zip
-
-          # Copy core dist
-          if [ -d "npm-packages/core-dist" ]; then
-            cp -r npm-packages/core-dist packages/core/dist
-            echo "Copied core dist"
-          fi
-
-          if [ -d "npm-packages/three-dist" ]; then
-            cp -r npm-packages/three-dist packages/three/dist
-            echo "Copied three dist"
-          fi
-
-          if [ -d "npm-packages/qrcode-dist" ]; then
-            cp -r npm-packages/qrcode-dist packages/qrcode/dist
-            echo "Copied qrcode dist"
-          fi
-
-          # Copy native packages to core's node_modules
-          if [ -d "npm-packages/core-native-packages" ]; then
-            mkdir -p packages/core/node_modules/@opentui
-
-            # Replace Bun-managed symlinks with the packaged native directories.
-            rm -rf packages/core/node_modules/@opentui/core-darwin-x64
-            rm -rf packages/core/node_modules/@opentui/core-darwin-arm64
-            rm -rf packages/core/node_modules/@opentui/core-linux-x64
-            rm -rf packages/core/node_modules/@opentui/core-linux-arm64
-            rm -rf packages/core/node_modules/@opentui/core-linux-x64-musl
-            rm -rf packages/core/node_modules/@opentui/core-linux-arm64-musl
-            rm -rf packages/core/node_modules/@opentui/core-win32-x64
-            rm -rf packages/core/node_modules/@opentui/core-win32-arm64
-
-            cp -r npm-packages/core-native-packages/* packages/core/node_modules/@opentui/
-            echo "Copied native packages"
-          fi
-
-          # Copy other package dists
-          if [ -d "npm-packages/react-dist" ]; then
-            cp -r npm-packages/react-dist packages/react/dist
-            echo "Copied react dist"
-          fi
-
-          if [ -d "npm-packages/solid-dist" ]; then
-            cp -r npm-packages/solid-dist packages/solid/dist
-            echo "Copied solid dist"
-          fi
-
-          if [ -d "npm-packages/keymap-dist" ]; then
-            cp -r npm-packages/keymap-dist packages/keymap/dist
-            echo "Copied keymap dist"
-          fi
-
-          if [ -d "npm-packages/ssh-dist" ]; then
-            cp -r npm-packages/ssh-dist packages/ssh/dist
-            echo "Copied ssh dist"
-          fi
-
-          echo "Package extraction complete"
-
-      - name: Run packed Node smoke tests
-        run: |
-          cd packages/core
-          bun run test:dist --skip-build
-          cd ../solid
-          bun run test:dist --skip-build
-          cd ../keymap
-          bun run test:dist --skip-build
-          cd ../ssh
-          bun run test:dist --skip-build
+        uses: ./.github/actions/extract-npm-packages
+        with:
+          artifact: ${{ inputs.npmPackagesArtifact || format('npm-packages-{0}', inputs.version) }}
+          smoke-test: ${{ inputs.smokeTest }}
 
       - name: Publish packages (dry-run)
         if: ${{ inputs.isDryRun }}
@@ -189,7 +129,8 @@ jobs:
           echo "PRODUCTION MODE - Publishing to npm"
           echo "=========================================="
 
-          # The publish script runs pre-publish validation before publishing.
+          # Validates, publishes dependencies first, and skips versions an earlier attempt already
+          # published. The release workflow then waits in its own job until npm serves every package.
           bun run publish
 
           echo ""
@@ -198,3 +139,4 @@ jobs:
           echo "=========================================="
         env:
           CI: true
+          NPM_DIST_TAG: ${{ inputs.distTag }}

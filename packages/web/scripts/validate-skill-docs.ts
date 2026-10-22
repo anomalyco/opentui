@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { execFileSync } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 
@@ -39,6 +40,7 @@ async function main() {
 
     const skillContent = await readFile(join(REPO_ROOT, SKILL_SOURCE_PATH), "utf8")
     violations.push(...validateSkillIndex(index, skillContent))
+    violations.push(...validateOnlySkill())
 
     if (violations.length > 0) {
       console.error("Skill doc validation failed:\n")
@@ -194,6 +196,19 @@ function validateSkillIndex(index: DocsIndex, content: string): Violation[] {
   }
 
   return violations
+}
+
+function validateOnlySkill(): Violation[] {
+  const paths = execFileSync("git", ["ls-files", "--", ":(glob)**/SKILL.md"], { cwd: REPO_ROOT, encoding: "utf8" })
+  return paths
+    .split("\n")
+    .filter((path) => path && path !== SKILL_SOURCE_PATH)
+    .map((sourcePath) => ({
+      rule: "only-skill",
+      sourcePath,
+      lineNumber: 1,
+      message: `${SKILL_SOURCE_PATH} must be the only tracked SKILL.md; npx skills add anomalyco/opentui --skill opentui finds it only when no other skill is in a conventional location such as .opencode/skills/`,
+    }))
 }
 
 function normalizeDocUrl(url: string): "/docs" | `/docs/${string}` {

@@ -114,6 +114,41 @@ Documentation can be dense, but it must use the same restrained design language.
 - Prefer monospace box-drawing diagrams to images. Set them in a `text` fence that starts with a box-drawing corner.
 - Those fences use the article typeface at body size. They have no code frame and no copy control.
 
+## Versions And Releases
+
+The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it for deployment.
+
+- `/docs` documents the release that npm serves as `latest`. Its content (`RELEASE_CONTENT` in `scripts/build-site.ts`)
+  comes from that release's tag. The site code, release notes, and API history come from main.
+- `/docs/next` documents main. It is marked unreleased and is not indexed.
+- Site code on main must build the latest release's docs content. `build-web.yml` checks this on pull requests that
+  change the site, its content, or the API history.
+- Write documentation links as logical `/docs/...` URLs. Pages map them to their channel with `channelUrl()`. Do not
+  link to `/docs/next` from content.
+- Docs pages show the version at the right end of the site header: the release and `next`, with the current one in
+  the text color. Each links to the same page in its channel. The site links keep their place on every route. The
+  footer's line ends with the current version, muted, where it fits on that line. The main-branch docs also open each
+  page with a notice. Do not put the version in the page navigation.
+- `/docs/releases/<version>` shows a release's notes and its API changes. `/docs/api/<module>` lists every export with
+  the release that added it. Below the hairline that ends the article, above the previous and next links, a closed
+  `Changes` disclosure lists the page's three most recent releases with changes. Each release's version stands above
+  its entries. It is not an article section; the outline links to it.
+- Release notes are `src/content/docs/releases/<version>.md`. The format is in `src/lib/release-notes.ts`. The release
+  process drafts them with opencode (`scripts/release-notes.ts`). To edit the notes before a release, run
+  `bun run release-notes [patch|minor|major]` from the repository root, edit the file, and then release. Edit them like
+  other docs after a release too; they stay current on both channels.
+- `api/<version>.txt` at the repository root records each release's API changes (`api/README.md`), including the C
+  ABI of `opentui.h`. The release process writes it, and the release workflow compares it with the published packages
+  (`api.ts verify`). Do not edit it by hand. `api.ts squash <version>` drops the releases before a version once
+  nobody uses them.
+- The `opentui.h` section of `reference/api-index.mdx` maps C declarations to the native guides, like the package
+  sections do for exports.
+- A release from a maintenance branch, such as 0.5.x, writes its API file and release notes on that branch. Copy both
+  to main: the site reads them from main.
+- `bun run dev` and `bun run build` render both channels from the working tree. Unreleased API changes need a source
+  snapshot: set `OPENTUI_API_CURRENT` to a file from `bun run api:current --out <file>`.
+- Check a full build with `bun run build:site --release <version>` and `bun run preview:site`.
+
 ## Exceptions
 
 Accessibility, comprehension, and task completion take priority over visual minimalism.

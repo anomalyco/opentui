@@ -1,0 +1,48 @@
+name: Restore native bottle
+description: Restore linked native libraries when native inputs and the Zig version are unchanged.
+inputs:
+  zig-version:
+    description: Zig version that must have produced the bottle
+    required: true
+outputs:
+  cache-hit:
+    description: true only when the restored bottle matches the current native inputs
+    value: ${{ steps.decide.outputs.hit }}
+  key:
+    description: Cache key for this native input set
+    value: ${{ steps.hash.outputs.key }}
+runs:
+  using: composite
+  steps:
+    - id: hash
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        key="$(bun scripts/native-bottle.ts key --zig "${{ inputs.zig-version }}")"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        echo "Native bottle key: $key"
+
+    - id: restore
+      uses: actions/cache/restore@v5
+      continue-on-error: true
+      with:
+        path: packages/native/lib
+        key: ${{ steps.hash.outputs.key }}
+        enableCrossOsArchive: true
+
+    - id: decide
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        hit=false
+        if [ "${{ steps.restore.outputs.cache-hit }}" = "true" ] &&
+          bun scripts/native-bottle.ts verify --zig "${{ inputs.zig-version }}"; then
+          hit=true
+        else
+          echo "Native bottle miss; the native library will be built"
+          rm -rf packages/native/lib
+        fi
+        echo "hit=$hit" >> "$GITHUB_OUTPUT"
+        echo "Native bottle hit: $hit"

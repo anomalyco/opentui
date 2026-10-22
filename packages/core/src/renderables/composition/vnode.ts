@@ -151,6 +151,9 @@ export function wrapWithDelegates<T extends InstanceType<RenderableConstructor>>
 ): T {
   if (!delegateMap || Object.keys(delegateMap).length === 0) return instance
 
+  // Discover derived fields before attachment can register the proxy as a lifecycle owner.
+  instance.refreshHooks()
+
   const getDescendant = (id: string): Renderable | undefined => {
     return (instance as Renderable).findDescendantById(id)
   }

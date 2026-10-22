@@ -150,8 +150,19 @@ Register custom renderables as JSX intrinsic elements.
 import { BoxRenderable } from "@opentui/core"
 import { extend } from "@opentui/solid"
 
+declare module "@opentui/solid" {
+  interface OpenTUIComponents {
+    custom_box: typeof BoxRenderable
+  }
+}
+
 extend({ custom_box: BoxRenderable })
 ```
+
+The `declare module` block adds the element to the JSX types.
+Solid calls the constructor with `{ id }` only. After construction, Solid applies each JSX prop to the instance.
+A class that reads a value only from its constructor options does not get that value from JSX.
+Read [Custom renderables](/docs/extend/custom-renderables) to draw custom content and to adapt such classes.
 
 ### `getComponentCatalogue()`
 

@@ -42,10 +42,12 @@ OpenCode uses OpenTUI in production for millions of users.
 Install the OpenTUI documentation as a skill for your AI coding assistant with [`npx skills`](https://skills.sh):
 
 ```bash
-npx skills add anomalyco/opentui --skill opentui
+npx skills add https://opentui.com --skill opentui
 ```
 
-Add `-g` to install the skill globally.
+Add `-g` to install the skill globally. The skill matches the latest release, and `npx skills update` moves it to each
+new release. Install from `https://opentui.com/docs/next` to follow the main branch. A skill installed with
+`npx skills add anomalyco/opentui` follows the main branch; run the command above to switch it to releases.
 
 ## Development
 

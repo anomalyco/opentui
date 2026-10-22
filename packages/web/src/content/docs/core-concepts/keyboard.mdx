@@ -53,11 +53,16 @@ Use `prependListener()` when listener order matters. Remove listeners when their
 | `number`                          | `boolean`                          | Whether legacy parsing identified a digit.                                   |
 | `code`                            | `string \| undefined`              | A recognized terminal key code.                                              |
 | `capsLock`, `numLock`             | `boolean \| undefined`             | Kitty lock state when reported.                                              |
-| `baseCode`                        | `number \| undefined`              | Kitty base-layout code point for layout-stable matching.                     |
+| `baseCode`                        | `number \| undefined`              | Kitty base-layout code point: the US QWERTY key at the same position.        |
 
 `sequence` is not always equal to `raw`. For example, a Kitty control sequence can produce `name: "space"` and `sequence: " "`.
 
 Compare direct events with canonical names such as `"return"`, `"escape"`, and `"space"`. Component alias maps do not rewrite direct `KeyEvent.name` values.
+
+Core's key bindings (`exitOnCtrlC` and component key bindings) fall back to `baseCode` when the typed key is one non-ASCII character, or when the base-layout key is a digit.
+The fallback is for layouts whose keys cannot type the binding's character: Korean Ctrl+ㅊ matches Ctrl+C, and AZERTY Ctrl+& matches Ctrl+1.
+Any other ASCII key matches as typed, so Dvorak Ctrl+J stays Ctrl+J.
+Some punctuation on non-Latin layouts therefore does not fall back, for example Hebrew `'` on the W key, Greek `;` on the Q key, or Russian `.` on the `/` key.
 
 ## Control propagation
 

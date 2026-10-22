@@ -1,4 +1,4 @@
-import { createTimeline, type JSAnimation, Timeline } from "@opentui/core"
+import { getTimelineEngine, type JSAnimation, Timeline } from "@opentui/core"
 import { CliRenderer, createCliRenderer, TextRenderable, BoxRenderable, type KeyEvent } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
@@ -7,47 +7,59 @@ class TimelineExample {
   private _subTimeline1: Timeline
   private _subTimeline2: Timeline
   private renderer: CliRenderer
-  private boxObject: BoxRenderable
-  private alternatingObject: BoxRenderable
+  private readonly animationEngine: ReturnType<typeof getTimelineEngine>
+  private boxObject!: BoxRenderable
+  private alternatingObject!: BoxRenderable
   private parentContainer: BoxRenderable
 
-  private statusLine1: TextRenderable
-  private statusLine2: TextRenderable
-  private statusLine3: TextRenderable
-  private statusLine4: TextRenderable
-  private statusLine5: TextRenderable
-  private statusLine6: TextRenderable
-  private statusLine7: TextRenderable
-  private statusLine8: TextRenderable
-  private statusLine9: TextRenderable
+  private statusLine1!: TextRenderable
+  private statusLine2!: TextRenderable
+  private statusLine3!: TextRenderable
+  private statusLine4!: TextRenderable
+  private statusLine5!: TextRenderable
+  private statusLine6!: TextRenderable
+  private statusLine7!: TextRenderable
+  private statusLine8!: TextRenderable
+  private statusLine9!: TextRenderable
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer
+    this.animationEngine = getTimelineEngine(renderer)
 
-    this._mainTimeline = createTimeline({
+    this._mainTimeline = new Timeline({
       duration: 10000,
       loop: true,
     })
 
-    this._subTimeline1 = createTimeline({
+    this._subTimeline1 = new Timeline({
       duration: 8000,
       autoplay: false,
     })
 
-    this._subTimeline2 = createTimeline({
+    this._subTimeline2 = new Timeline({
       duration: 6000,
       autoplay: false,
     })
-
-    this.setupAnimations()
-
-    this._mainTimeline.sync(this._subTimeline1, 0)
-    this._mainTimeline.sync(this._subTimeline2, 3000)
 
     this.parentContainer = new BoxRenderable(renderer, {
       id: "timeline-container",
       zIndex: 10,
     })
+    try {
+      this.setupViews(renderer)
+      this.setupAnimations()
+      this._mainTimeline.sync(this._subTimeline1, 0)
+      this._mainTimeline.sync(this._subTimeline2, 3000)
+      this.animationEngine.register(this._mainTimeline)
+    } catch (error) {
+      try {
+        this.parentContainer.destroyRecursively()
+      } catch {}
+      throw error
+    }
+  }
+
+  private setupViews(renderer: CliRenderer): void {
     this.renderer.root.add(this.parentContainer)
 
     this.boxObject = new BoxRenderable(renderer, {
@@ -278,13 +290,7 @@ class TimelineExample {
     this.parentContainer.add(this.statusLine9)
   }
 
-  public update(deltaTime: number): void {
-    this._mainTimeline.update(deltaTime)
-
-    this.updateVisuals()
-  }
-
-  private updateVisuals(): void {
+  public update = async (): Promise<void> => {
     // Update timeline progress bars
     const mainProgress = (this._mainTimeline.currentTime / this._mainTimeline.duration) * 58
     const sub1Progress = (this._subTimeline1.currentTime / this._subTimeline1.duration) * 28
@@ -614,50 +620,45 @@ class TimelineExample {
     this._mainTimeline.pause()
   }
 
-  public stop(): void {
-    this._mainTimeline.pause()
-  }
-
   public destroy(): void {
-    const timelineContainer = this.renderer.root.getRenderable("timeline-container")
-    if (timelineContainer) this.renderer.root.remove(timelineContainer)
+    this.renderer.removeFrameCallback(this.update)
+    this._mainTimeline.pause()
+    this.animationEngine.unregister(this._mainTimeline)
+    this.parentContainer.destroyRecursively()
   }
 }
 
-let currentExample: TimelineExample | null = null
+const examples = new WeakMap<CliRenderer, TimelineExample>()
 
 export function run(renderer: CliRenderer): void {
   renderer.start()
   renderer.setBackgroundColor("#000028")
 
-  currentExample = new TimelineExample(renderer)
-  currentExample.start()
+  const example = new TimelineExample(renderer)
+  examples.set(renderer, example)
+  example.start()
 
-  renderer.setFrameCallback(async (deltaTime: number) => {
-    if (currentExample) {
-      currentExample.update(deltaTime)
-    }
-  })
+  renderer.setFrameCallback(example.update)
 
-  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+  const keyHandler = (key: KeyEvent) => {
     if (key.name === "p") {
-      currentExample?.pause()
+      example.pause()
     }
 
     if (key.name === "r") {
-      currentExample?.start()
+      example.start()
     }
+  }
+  renderer.keyInput.on("keypress", keyHandler)
+  renderer.root.getRenderable("timeline-container")!.once("destroyed", () => {
+    renderer.keyInput.off("keypress", keyHandler)
   })
 }
 
 export function destroy(renderer: CliRenderer): void {
-  if (currentExample) {
-    currentExample.stop()
-    currentExample.destroy()
-    currentExample = null
-  }
-
-  renderer.clearFrameCallbacks()
+  const example = examples.get(renderer)
+  examples.delete(renderer)
+  example?.destroy()
 }
 
 if (import.meta.main) {

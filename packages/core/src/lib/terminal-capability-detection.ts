@@ -11,6 +11,7 @@
  * - Pixel Resolution: ESC[4;height;widtht
  * - OSC 99 notification capability query response
  * - iTerm2 OSC 1337 feature-reporting response
+ * - OSC 7501 program status query response
  */
 
 /**
@@ -68,6 +69,11 @@ export function isCapabilityResponse(sequence: string): boolean {
   // iTerm2 feature reporting response. The native parser decides whether the
   // feature string contains the Notifications feature code.
   if (/\x1b\]1337;Capabilities=[\s\S]*?(?:\x07|\x1b\\)/.test(sequence)) {
+    return true
+  }
+
+  // OSC 7501 program status query response: ESC ] 7501 ; ? [: pairs] ST
+  if (/\x1b\]7501; *\?[^\x07\x1b]*(?:\x07|\x1b\\)/.test(sequence)) {
     return true
   }
 

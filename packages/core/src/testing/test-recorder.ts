@@ -103,8 +103,28 @@ export class TestRecorder {
    */
   private captureFrame(): void {
     const currentBuffer = this.renderer.currentRenderBuffer
-    const frameBytes = currentBuffer.getRealCharBytes(true)
-    const frame = this.decoder.decode(frameBytes)
+    const { frame, buffers } = currentBuffer.withBuffers((cells) => {
+      const frameBytes = currentBuffer.getRealCharBytes(true)
+      const frame = this.decoder.decode(frameBytes)
+      let buffers: RecordedBuffers | undefined
+
+      // Copy the frame before now(), which can resize or destroy the renderer.
+      if (this.recordBuffers.fg || this.recordBuffers.bg || this.recordBuffers.attributes) {
+        buffers = {}
+
+        if (this.recordBuffers.fg) {
+          buffers.fg = new Uint16Array(cells.fg)
+        }
+        if (this.recordBuffers.bg) {
+          buffers.bg = new Uint16Array(cells.bg)
+        }
+        if (this.recordBuffers.attributes) {
+          buffers.attributes = new Uint8Array(cells.attributes)
+        }
+      }
+
+      return { frame, buffers }
+    })
 
     const recordedFrame: RecordedFrame = {
       frame,
@@ -112,20 +132,8 @@ export class TestRecorder {
       frameNumber: this.frameNumber++,
     }
 
-    // Optionally record buffer data from currentRenderBuffer
-    if (this.recordBuffers.fg || this.recordBuffers.bg || this.recordBuffers.attributes) {
-      const buffers = currentBuffer.buffers
-      recordedFrame.buffers = {}
-
-      if (this.recordBuffers.fg) {
-        recordedFrame.buffers.fg = new Uint16Array(buffers.fg)
-      }
-      if (this.recordBuffers.bg) {
-        recordedFrame.buffers.bg = new Uint16Array(buffers.bg)
-      }
-      if (this.recordBuffers.attributes) {
-        recordedFrame.buffers.attributes = new Uint8Array(buffers.attributes)
-      }
+    if (buffers) {
+      recordedFrame.buffers = buffers
     }
 
     this.frames.push(recordedFrame)

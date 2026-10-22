@@ -14,7 +14,6 @@ The demo requires Bun and WebGPU.
 | C                           | Show GPU, image transport, and renderer diagnostics |
 | Backtick or `"`             | Toggle the captured console                         |
 | `.`                         | Toggle renderer statistics                          |
-| Ctrl+A                      | Log native arena allocation                         |
 | Ctrl+G                      | Dump the hit grid                                   |
 | Shift+L / Shift+S / Shift+A | Start / stop / use automatic rendering              |
 | Escape                      | Return to the selector, or quit in standalone mode  |

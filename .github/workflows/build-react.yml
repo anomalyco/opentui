@@ -2,19 +2,22 @@ name: Build React
 
 on:
   push:
-    branches: [main]
+    branches: [main, "[0-9]+.[0-9]+.x"]
   pull_request:
-    branches: [main]
+    branches: [main, "[0-9]+.[0-9]+.x"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Each commit gets its own group. In a shared group, the next push cancels a waiting run, and that
+  # commit gets no CI.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ZIG_VERSION: 0.16.0
 
 jobs:
   test:
@@ -22,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-8vcpu-ubuntu-2404, blacksmith-8vcpu-windows-2025]
+        os: [blacksmith-8vcpu-ubuntu-2404]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -36,28 +39,24 @@ jobs:
         with:
           bun-version: 1.4.1
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          use-cache: false
-
-      - name: Restore Zig cache
-        if: runner.os != 'Windows'
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-0.16.0-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-0.16.0-
-
       - name: Install dependencies
         run: bun install
 
+      - name: Restore native host bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-host-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
       - name: Build core
-        run: |
-          cd packages/core
-          bun run build:native --skip-symbols
-          bun run build:lib
+        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
 
       - name: Build
         run: |

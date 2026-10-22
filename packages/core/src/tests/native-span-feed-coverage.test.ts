@@ -4,18 +4,9 @@ import { resolveRenderLib } from "../zig.js"
 
 const lib = resolveRenderLib()
 
-function writeData(stream: NativeSpanFeed, text: string): void {
-  const data = new TextEncoder().encode(text)
-  lib.streamWrite(stream.streamPtr, data)
-}
-
-function commitData(stream: NativeSpanFeed): void {
-  lib.streamCommit(stream.streamPtr)
-}
-
 function produceData(stream: NativeSpanFeed, text: string): void {
-  writeData(stream, text)
-  commitData(stream)
+  lib.streamWrite(stream.streamPtr, text)
+  lib.streamCommit(stream.streamPtr)
 }
 
 test("attach replays ChunkAdded and receives subsequent data", () => {

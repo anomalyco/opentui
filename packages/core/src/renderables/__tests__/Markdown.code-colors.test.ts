@@ -11,9 +11,7 @@ let captureSpans: () => CapturedFrame
 let mockTreeSitterClients: MockTreeSitterClient[] = []
 const HIGHLIGHT_TIMEOUT_MS = 5000
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-})
+let syntaxStyle: SyntaxStyle
 
 async function flushAsync(): Promise<void> {
   await Promise.resolve()
@@ -45,13 +43,16 @@ beforeEach(async () => {
   mockTreeSitterClients = []
   const testRenderer = await createTestRenderer({ width: 60, height: 20 })
   renderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, renderer.nativeScene!)
   captureSpans = testRenderer.captureSpans
 })
 
 afterEach(async () => {
   if (renderer) {
     renderer.destroy()
+    await renderer.closed
   }
+  syntaxStyle?.destroy()
   for (const client of mockTreeSitterClients) {
     client.resolveAllHighlightOnce()
     await client.destroy()

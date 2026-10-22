@@ -1,0 +1,8 @@
+fd11249ba7c39276030a4ff62805cfe9c3e8ec96e86f68f70704ef8df109c20d  zig-deps.tar.gz
+b71e122f514c799f0e572af9776cfc8256381edb34a5d5f901e3120f1b18a71f  update-zig-deps.sh
+7ca5be7c38dd7fd8cdbe886d54c92b7a123dd83d1f23bf77fb6383342e7c2058  zig-deps/ghostty-build.zig
+49d111317e7c10eba3f4ba202f31b38d15559cc24a781b4340506c9bb380c804  zig-deps/ghostty-build.zig.zon
+2116b6cfc3b1100737e2c89cf73a61633256a6f3984ef86e281cf4288923ff99  zig-deps/ghostty-shared-deps.patch
+af387d67c09f42ed570d6689baeaaafe0ac9be31c8cf43baa142ea92e0b56d35  zig-deps/yoga-cache-rounding.patch
+d2fe0fab77db38bb9d83342b6f5b0fe9108c3c7e39e4ea76d30e41ac53bdf774  zig-deps/yoga-error-boundary.patch
+0cf089ecac82b8a07ccc75e22a0141e2195425da0d04847e94aca4de7a21338b  zig-deps/yoga-node-reuse.patch

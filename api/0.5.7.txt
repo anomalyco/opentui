@@ -1,0 +1,44 @@
+base 0.5.6
+- @opentui/core: constructor Selection(anchorRenderable: Renderable, anchor: { x: number; y: number; }, focus: { x: number; y: number; })
++ @opentui/core: constructor Selection(anchorRenderable: Renderable, anchor: { x: number; y: number; }, focus: { x: number; y: number; }, behavior?: SelectionBehavior)
+- @opentui/core: method CliRenderer.startSelection(renderable: Renderable, x: number, y: number): void
++ @opentui/core: method CliRenderer.startSelection(renderable: Renderable, x: number, y: number, behavior?: SelectionBehavior): void
++ @opentui/core: method EditorView.convertSelectionToCell(): boolean
++ @opentui/core: method EditorView.getSelectionOccupancy(): SelectionOccupancy
++ @opentui/core: method EditorView.gotoVisualLineEnd(): void
+- @opentui/core: method EditorView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean, followCursor?: boolean): boolean
++ @opentui/core: method EditorView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean, followCursor?: boolean, behavior?: SelectionBehavior): boolean
++ @opentui/core: method EditorView.setSelectionColors(bgColor?: RGBA, fgColor?: RGBA): void
++ @opentui/core: method EditorView.setSelectionInclusive(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void
++ @opentui/core: method EditorView.setSelectionOccupancy(occupancy: SelectionOccupancy): void
+- @opentui/core: method EditorView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean, followCursor?: boolean): boolean
++ @opentui/core: method EditorView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean, followCursor?: boolean, behavior?: SelectionBehavior): boolean
++ @opentui/core: method TextBufferView.getSelectionOccupancy(): SelectionOccupancy
+- @opentui/core: method TextBufferView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA): boolean
++ @opentui/core: method TextBufferView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, behavior?: SelectionBehavior): boolean
++ @opentui/core: method TextBufferView.setSelectionOccupancy(occupancy: SelectionOccupancy): void
+- @opentui/core: method TextBufferView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA): boolean
++ @opentui/core: method TextBufferView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, behavior?: SelectionBehavior): boolean
++ @opentui/core: property EditBufferOptions.selectionOccupancy?: SelectionOccupancy
++ @opentui/core: property EditBufferRenderable.selectionOccupancy: SelectionOccupancy
++ @opentui/core: property LocalSelectionBounds.behavior: SelectionBehavior
+- @opentui/core: property RenderContext.startSelection: (renderable: Renderable, x: number, y: number) => void
++ @opentui/core: property RenderContext.startSelection: (renderable: Renderable, x: number, y: number, behavior?: SelectionBehavior) => void
++ @opentui/core: property RenderLib.editorViewConvertSelectionToCell: (view: EditorViewHandle) => boolean
++ @opentui/core: property RenderLib.editorViewGotoVisualLineEnd: (view: EditorViewHandle) => void
+- @opentui/core: property RenderLib.editorViewSetLocalSelection: (view: EditorViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean, followCursor: boolean) => boolean
++ @opentui/core: property RenderLib.editorViewSetLocalSelection: (view: EditorViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean, followCursor: boolean, behavior?: SelectionBehavior) => boolean
++ @opentui/core: property RenderLib.editorViewSetSelectionColors: (view: EditorViewHandle, bgColor: RGBA | null, fgColor: RGBA | null) => void
++ @opentui/core: property RenderLib.editorViewSetSelectionInclusive: (view: EditorViewHandle, start: number, end: number, bgColor: RGBA | null, fgColor: RGBA | null) => void
++ @opentui/core: property RenderLib.editorViewSetSelectionOccupancy: (view: EditorViewHandle, occupancy: SelectionOccupancy) => void
+- @opentui/core: property RenderLib.editorViewUpdateLocalSelection: (view: EditorViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean, followCursor: boolean) => boolean
++ @opentui/core: property RenderLib.editorViewUpdateLocalSelection: (view: EditorViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean, followCursor: boolean, behavior?: SelectionBehavior) => boolean
++ @opentui/core: property RenderLib.textBufferViewGetSelectionOccupancy: (view: TextBufferViewHandle) => SelectionOccupancy
+- @opentui/core: property RenderLib.textBufferViewSetLocalSelection: (view: TextBufferViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null) => boolean
++ @opentui/core: property RenderLib.textBufferViewSetLocalSelection: (view: TextBufferViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, behavior?: SelectionBehavior) => boolean
++ @opentui/core: property RenderLib.textBufferViewSetSelectionOccupancy: (view: TextBufferViewHandle, occupancy: SelectionOccupancy) => void
+- @opentui/core: property RenderLib.textBufferViewUpdateLocalSelection: (view: TextBufferViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null) => boolean
++ @opentui/core: property RenderLib.textBufferViewUpdateLocalSelection: (view: TextBufferViewHandle, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, behavior?: SelectionBehavior) => boolean
++ @opentui/core: property Selection.behavior: SelectionBehavior
++ @opentui/core: type SelectionBehavior = "cell" | "word" | "line"
++ @opentui/core: type SelectionOccupancy = "cell" | "boundary"

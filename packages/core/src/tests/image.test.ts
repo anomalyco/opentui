@@ -7,9 +7,10 @@ import { fileURLToPath } from "node:url"
 import { deflateSync, inflateSync } from "node:zlib"
 
 import { describe, expect, test } from "bun:test"
+import { ResourceContext } from "../buffer.js"
 import { ImageError, ImageLoadError, NativeImage, imageInfo, type ImageErrorCode } from "../image.js"
-import { toArrayBuffer } from "../platform/ffi.js"
 import { resolveRenderLib } from "../zig.js"
+import { withStubbedSymbols } from "./native-symbol-stubs.js"
 
 const PNG_1X1 = Uint8Array.from(
   Buffer.from(
@@ -669,6 +670,59 @@ describe("NativeImage", () => {
     expect(() => image.ensureEncodedPng()).toThrow("disposed")
   })
 
+  test("rejects access after explicit Context teardown and disposes cleanly", () => {
+    const owner = new ResourceContext({ objectCapacity: 2, renderCellsMax: 1 })
+    const image = NativeImage.fromPixels(Uint8Array.of(1, 2, 3, 255), 1, 1, { owner })
+    owner.destroy()
+    expect(() => image.raw()).toThrow("destroyed")
+    image.dispose()
+    image.dispose()
+  })
+
+  test("image calls pass transient buffer owners directly and output handles as Uint32Array", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 4, renderCellsMax: 1 })
+    const handle = lib.imageCreateFromRgba(context, Uint8Array.of(1, 2, 3, 255), 1, 1, 4).handle!
+    const data = Uint8Array.of(1, 2, 3, 4)
+    const destination = new Uint8Array(4)
+    const background = Uint8Array.of(8, 9, 10, 255)
+    // [symbol, call, borrowed input as [argument index, source], output handle argument index]
+    const calls = [
+      ["ot_image_inspect", () => lib.imageInfo(context, data), [1, data], 3],
+      ["ot_image_decode", () => lib.imageDecode(context, data), [1, data], 3],
+      ["ot_image_create_pixels", () => lib.imageCreateFromRgba(context, data, 1, 1, 4), [1, data], 8],
+      ["ot_image_get_info", () => lib.imageGetInfo(handle), null, 2],
+      ["ot_image_retain", () => lib.imageRetain(handle), null, 2],
+      ["ot_image_clone", () => lib.imageClone(handle), null, 3],
+      ["ot_image_copy_pixels", () => lib.imageCopyPixels(handle, destination, 4, false), [2, destination], null],
+      ["ot_image_resize", () => lib.imageResize(handle, 1, 1, 0), null, 5],
+      ["ot_image_extract", () => lib.imageExtract(handle, 0, 0, 1, 1), null, 6],
+      ["ot_image_extend", () => lib.imageExtend(handle, 0, 0, 0, 0, background), [6, background], 7],
+      ["ot_image_transform", () => lib.imageTransform(handle, 0), null, 3],
+      ["ot_image_composite", () => lib.imageComposite(handle, handle, 0, 0, 0, 255), null, 7],
+    ] as const
+    try {
+      withStubbedSymbols(Object.fromEntries(calls.map(([name]) => [name, () => -1])), (stubbed) => {
+        for (const [name, call, input, output] of calls) {
+          call()
+          const args = stubbed[name]![0]!
+          if (input) {
+            const [index, source] = input
+            expect(args[index]).toBeInstanceOf(Uint8Array)
+            expect(args[index].buffer).toBe(source.buffer)
+            expect([args[index].byteOffset, args[index].byteLength]).toEqual([source.byteOffset, source.byteLength])
+          }
+          if (output !== null) expect(args[output]).toBeInstanceOf(Uint32Array)
+        }
+        // A short background fails before native access.
+        expect(lib.imageExtend(handle, 0, 0, 0, 0, Uint8Array.of(1, 2, 3))).toEqual({ status: 7, handle: null })
+        expect(stubbed.ot_image_extend).toHaveLength(1)
+      })
+    } finally {
+      lib.destroyContext(context)
+    }
+  })
+
   test("retains independently disposable references without copying", () => {
     const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
     const retained = image.retain()
@@ -698,16 +752,14 @@ describe("NativeImage", () => {
       expect([...raw.data]).toEqual([...pixels])
       expect(() => image.info()).toThrow("disposed")
 
-      const pointer = resolveRenderLib().imageGetPixelsPtr(handle)
-      expect(pointer).not.toBeNull()
-      const alias = new Uint8Array(toArrayBuffer(pointer!, 0, pixels.byteLength))
+      expect(resolveRenderLib().imageGetInfo(handle).status).toBe(1)
       raw.data[0] = 42
-      expect(alias[0]).toBe(42)
+      expect(raw.data[0]).toBe(42)
     } finally {
       raw.dispose()
       raw.dispose()
     }
-    expect(resolveRenderLib().imageGetPixelsPtr(handle)).toBeNull()
+    expect(() => resolveRenderLib().imageGetInfo(handle)).toThrow()
   })
 
   test("takeRaw reports deferred PNG decode errors", async () => {

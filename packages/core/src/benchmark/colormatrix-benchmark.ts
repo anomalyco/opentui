@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { performance } from "node:perf_hooks"
-import { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 
 type Scenario = { width: number; height: number; mode: "uniform" | "mask25" | "mask100" }
@@ -67,54 +67,60 @@ function formatNs(value: number): number {
 }
 
 function fillBufferColors(buffer: OptimizedBuffer): void {
-  const { fg, bg } = buffer.buffers
-
-  for (let i = 0; i < fg.length; i += 4) {
-    fg.set(RGBA.fromValues(Math.random(), Math.random(), Math.random(), 1).buffer, i)
-    bg.set(RGBA.fromValues(Math.random(), Math.random(), Math.random(), 1).buffer, i)
-  }
+  buffer.withBuffers(({ fg, bg }) => {
+    for (let i = 0; i < fg.length; i += 4) {
+      fg.set(RGBA.fromValues(Math.random(), Math.random(), Math.random(), 1).buffer, i)
+      bg.set(RGBA.fromValues(Math.random(), Math.random(), Math.random(), 1).buffer, i)
+    }
+  })
 }
 
 function runScenario({ width, height, mode }: Scenario): ScenarioResult {
-  const buffer = OptimizedBuffer.create(width, height, "unicode", {
-    id: `colormatrix-bench-${mode}-${width}x${height}`,
-  })
-  const cellMask = mode === "mask25" ? generateCellMask(width, height, 0.25) : generateCellMask(width, height, 1)
-  const cellCount = mode === "uniform" ? width * height : cellMask.length / 3
+  const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: width * height })
+  try {
+    const buffer = OptimizedBuffer.create(width, height, "unicode", {
+      owner,
+      id: `colormatrix-bench-${mode}-${width}x${height}`,
+    })
+    const cellMask = mode === "mask25" ? generateCellMask(width, height, 0.25) : generateCellMask(width, height, 1)
+    const cellCount = mode === "uniform" ? width * height : cellMask.length / 3
 
-  fillBufferColors(buffer)
+    fillBufferColors(buffer)
 
-  for (let i = 0; i < WARMUP_ITERATIONS; i++) {
-    if (mode === "uniform") {
-      buffer.colorMatrixUniform(sepiaMatrix, 1.0, 3)
-    } else {
-      buffer.colorMatrix(sepiaMatrix, cellMask, 1.0, 3)
+    for (let i = 0; i < WARMUP_ITERATIONS; i++) {
+      if (mode === "uniform") {
+        buffer.colorMatrixUniform(sepiaMatrix, 1.0, 3)
+      } else {
+        buffer.colorMatrix(sepiaMatrix, cellMask, 1.0, 3)
+      }
     }
-  }
 
-  const samples = new Array<number>(ITERATIONS)
-  for (let i = 0; i < ITERATIONS; i++) {
-    const start = performance.now()
-    if (mode === "uniform") {
-      buffer.colorMatrixUniform(sepiaMatrix, 1.0, 3)
-    } else {
-      buffer.colorMatrix(sepiaMatrix, cellMask, 1.0, 3)
+    const samples = new Array<number>(ITERATIONS)
+    for (let i = 0; i < ITERATIONS; i++) {
+      const start = performance.now()
+      if (mode === "uniform") {
+        buffer.colorMatrixUniform(sepiaMatrix, 1.0, 3)
+      } else {
+        buffer.colorMatrix(sepiaMatrix, cellMask, 1.0, 3)
+      }
+      samples[i] = performance.now() - start
     }
-    samples[i] = performance.now() - start
-  }
 
-  buffer.destroy()
+    buffer.destroy()
 
-  const stats = calculateStats(samples)
+    const stats = calculateStats(samples)
 
-  return {
-    size: `${width}x${height}`,
-    cells: cellCount,
-    mode,
-    avgMs: formatMs(stats.avgMs),
-    avgNsPerCell: formatNs((stats.avgMs * 1_000_000) / cellCount),
-    medianMs: formatMs(stats.medianMs),
-    p95Ms: formatMs(stats.p95Ms),
+    return {
+      size: `${width}x${height}`,
+      cells: cellCount,
+      mode,
+      avgMs: formatMs(stats.avgMs),
+      avgNsPerCell: formatNs((stats.avgMs * 1_000_000) / cellCount),
+      medianMs: formatMs(stats.medianMs),
+      p95Ms: formatMs(stats.p95Ms),
+    }
+  } finally {
+    owner.destroy()
   }
 }
 

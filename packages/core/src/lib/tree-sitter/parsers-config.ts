@@ -17,12 +17,23 @@ export default {
     },
     {
       filetype: "typescript",
-      aliases: ["typescriptreact"],
       wasm: "https://github.com/tree-sitter/tree-sitter-typescript/releases/download/v0.23.2/tree-sitter-typescript.wasm",
       queries: {
         highlights: [
           "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/ecma/highlights.scm",
           "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/typescript/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "typescriptreact",
+      wasm: "https://github.com/tree-sitter/tree-sitter-typescript/releases/download/v0.23.2/tree-sitter-tsx.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/ecma/highlights.scm",
+          "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/typescript/highlights.scm",
+          // NOTE: Pinned before the commentstring `#set!` directives, which web-tree-sitter rejects
+          "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/a8c082b4f5b3b70bde2ffb08cc112dfd7e515fb3/queries/jsx/highlights.scm",
         ],
       },
     },

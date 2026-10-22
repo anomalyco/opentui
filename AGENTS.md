@@ -9,6 +9,10 @@
   input-driven work and test lifecycle failures.
 - Do not interchange byte lengths, code points, graphemes, and terminal display-cell widths.
 - `oxfmt` is the formatting source of truth (`semi: false`, `printWidth: 120`); avoid unrelated formatting churn.
+- In delegated tasks, name the local rendering behavior, owned files, and required checks. Describe ordinary
+  renderer work as correctness and compatibility testing; reserve security terminology for actual security work.
+  Use concrete scopes such as frame parity, callback ordering, resource cleanup, or loopback SSH output tests.
+  Request an independent correctness review and a separate reproduction check of actionable findings.
 
 ## Tooling And Runtimes
 

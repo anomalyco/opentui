@@ -1,6 +1,5 @@
 import {
   BoxRenderable,
-  RootRenderable,
   type CliRenderer,
   type Renderable,
   type ScrollbackRenderContext,
@@ -46,7 +45,6 @@ function normalizeSnapshotDimension(value: number | undefined, axis: "width" | "
 
 function createSnapshotRendererValue(
   renderContext: ScrollbackRenderContext["renderContext"],
-  root: BoxRenderable,
   width: number,
   height: number,
   firstLineOffset: number,
@@ -57,11 +55,6 @@ function createSnapshotRendererValue(
   let offset = firstLineOffset
 
   Object.defineProperties(renderer, {
-    root: {
-      value: root,
-      enumerable: true,
-      configurable: true,
-    },
     width: {
       get: snapshotWidth,
       enumerable: true,
@@ -93,31 +86,9 @@ function createSnapshotRendererValue(
   }
 }
 
-function runLifecyclePasses(renderContext: ScrollbackRenderContext["renderContext"]): void {
-  for (const renderable of renderContext.getLifecyclePasses()) {
-    renderable.onLifecyclePass?.call(renderable)
-  }
-}
-
 function clearLifecyclePasses(renderContext: ScrollbackRenderContext["renderContext"]): void {
   for (const renderable of [...renderContext.getLifecyclePasses()]) {
     renderContext.unregisterLifecyclePass(renderable)
-  }
-}
-
-function measureSnapshotHeight(renderContext: ScrollbackRenderContext["renderContext"], root: Renderable): number {
-  const measureRoot = new RootRenderable(renderContext)
-
-  try {
-    measureRoot.add(root)
-    runLifecyclePasses(renderContext)
-    measureRoot.calculateLayout()
-    return Math.max(1, Math.trunc(root.getLayoutNode().getComputedLayout().height))
-  } finally {
-    if (root.parent === measureRoot) {
-      measureRoot.remove(root)
-    }
-    measureRoot.destroyRecursively()
   }
 }
 
@@ -127,7 +98,7 @@ function resolveSnapshotHeight(
   snapshotRenderer: SnapshotRendererBinding,
 ): number {
   for (let pass = 0; pass < MAX_AUTO_HEIGHT_PASSES; pass++) {
-    const measuredHeight = measureSnapshotHeight(renderContext, root)
+    const measuredHeight = renderContext.nativeScene!.measureSnapshot(root)
 
     if (measuredHeight === snapshotRenderer.getHeight()) {
       clearLifecyclePasses(renderContext)
@@ -139,7 +110,7 @@ function resolveSnapshotHeight(
 
   // Give up on converging the synthetic height and let the final render rerun
   // lifecycle passes against the last consistent tree state.
-  return measureSnapshotHeight(renderContext, root)
+  return renderContext.nativeScene!.measureSnapshot(root)
 }
 
 export function createScrollbackWriter(
@@ -155,7 +126,13 @@ export function createScrollbackWriter(
         ? Math.min(width, ctx.width - ctx.tailColumn)
         : width
     const firstLineOffset = width - firstLineWidth
-    const root = new BoxRenderable(ctx.renderContext, {
+    const snapshotRenderer = createSnapshotRendererValue(
+      ctx.renderContext,
+      width,
+      height ?? Math.max(1, ctx.renderContext.height),
+      firstLineOffset,
+    )
+    const root = new BoxRenderable(snapshotRenderer.renderer, {
       id: `solid-scrollback-root-${solidScrollbackRootCounter++}`,
       position: "absolute",
       left: 0,
@@ -167,13 +144,7 @@ export function createScrollbackWriter(
       shouldFill: false,
       flexDirection: "column",
     })
-    const snapshotRenderer = createSnapshotRendererValue(
-      ctx.renderContext,
-      root,
-      width,
-      height ?? Math.max(1, ctx.renderContext.height),
-      firstLineOffset,
-    )
+    Object.defineProperty(snapshotRenderer.renderer, "root", { value: root, enumerable: true, configurable: true })
 
     let dispose: DisposeFn | undefined
     let disposed = false

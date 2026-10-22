@@ -1,93 +1,79 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable, TextRenderable } from "@opentui/core"
+import { createServer } from "../../index.js"
 import type { Session } from "../../types.js"
-import { createHarness, waitFor } from "../support.js"
+import { createHarness, HOST_KEY, waitFor } from "../support.js"
 
-const SENTINEL = "RENDER-OK"
-const ANSI = /\x1b[[\]][0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
-const { mkServer, openShellOn } = createHarness()
+const { track, mkServer, openShellOn } = createHarness()
 
-function stripAnsi(s: string): string {
-  return s.replace(ANSI, "")
-}
-
-test("the handler renders an OpenTUI screen to the client", async () => {
-  const server = mkServer((s) => {
-    const box = new BoxRenderable(s.renderer, { width: "100%", height: "100%", border: true })
-    box.add(new TextRenderable(s.renderer, { content: SENTINEL }))
-    s.renderer.root.add(box)
-  })
-  const { port } = await server.listen(0)
-
-  const received = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("no frame containing sentinel")), 8000)
-    openShellOn(port, "render-tester")
-      .then(({ conn, stream }) => {
-        let buf = ""
-        stream.on("data", (d: Buffer) => {
-          buf += d.toString("utf8")
-          if (stripAnsi(buf).includes(SENTINEL)) {
-            clearTimeout(timer)
-            stream.close()
-            conn.end()
-            resolve(buf)
-          }
-        })
+test("SSH sessions isolate frames, order middleware/raw output, resize before notifying, and restore", async () => {
+  const sessions = new Map<string, Session>()
+  const errors: unknown[] = []
+  const server = track(
+    createServer({ startupBanner: false, hostKey: { pem: HOST_KEY }, onError: (error) => errors.push(error) })
+      .use((session, next) => {
+        session.write(`BEFORE_${session.identity.username}`)
+        return next()
       })
-      .catch(reject)
-  })
-
-  expect(stripAnsi(received)).toContain(SENTINEL)
-})
-
-test("session exposes identity, term, and pty dimensions", async () => {
-  let captured: Session | undefined
-  const server = mkServer((s) => {
-    captured = s
-    s.renderer.root.add(new TextRenderable(s.renderer, { content: "dims" }))
-  })
+      .serve((session) => {
+        sessions.set(session.identity.username, session)
+        const box = new BoxRenderable(session.renderer, { border: true, width: "100%", height: "100%" })
+        box.add(new TextRenderable(session.renderer, { content: `FRAME_${session.identity.username}` }))
+        session.renderer.root.add(box)
+      }),
+  )
   const { port } = await server.listen(0)
-  const { conn } = await openShellOn(port, "render-tester", {
+  const a = await openShellOn(port, "alpha", {
     term: "xterm-256color",
     cols: 100,
     rows: 30,
     width: 0,
     height: 0,
   })
-  await waitFor(() => captured !== undefined)
-  conn.end()
-
-  expect(captured!.identity.method).toBe("none")
-  expect(captured!.identity.username).toBe("render-tester")
-  expect(captured!.term).toBe("xterm-256color")
-  expect(captured!.cols).toBe(100)
-  expect(captured!.rows).toBe(30)
-  expect(captured!.hasPty).toBe(true)
-  expect(captured!.remoteAddress.address).toBe("127.0.0.1")
-  expect(captured!.remoteAddress.port).toBeGreaterThan(0)
-})
-
-test("forwards client resize to the session and renderer", async () => {
-  const resizes: Array<[number, number]> = []
-  let captured: Session | undefined
-  const server = mkServer((s) => {
-    captured = s
-    s.onResize((c, r) => resizes.push([c, r]))
-    s.renderer.root.add(new TextRenderable(s.renderer, { content: "resize" }))
+  const b = await openShellOn(port, "beta")
+  let outputA = ""
+  let outputB = ""
+  a.stream.on("data", (bytes: Buffer) => {
+    outputA += bytes.toString()
   })
-  const { port } = await server.listen(0)
-  const { conn, stream } = await openShellOn(port, "render-tester")
-  await waitFor(() => captured !== undefined)
-
-  stream.setWindow(40, 120, 0, 0) // rows, cols, height, width
+  b.stream.on("data", (bytes: Buffer) => {
+    outputB += bytes.toString()
+  })
+  await waitFor(() => outputA.includes("FRAME_alpha") && outputB.includes("FRAME_beta"))
+  const first = sessions.get("alpha")!
+  const second = sessions.get("beta")!
+  expect(first.identity).toEqual({ method: "none", username: "alpha" })
+  expect(first.term).toBe("xterm-256color")
+  expect([first.cols, first.rows]).toEqual([100, 30])
+  expect(first.hasPty).toBe(true)
+  expect(first.remoteAddress.address).toBe("127.0.0.1")
+  expect(first.remoteAddress.port).toBeGreaterThan(0)
+  expect(first.renderer).not.toBe(second.renderer)
+  expect(outputA).not.toContain("beta")
+  expect(outputB).not.toContain("alpha")
+  first.write("AFTER_alpha")
+  await waitFor(() => outputA.includes("AFTER_alpha"))
+  expect(outputA.indexOf("BEFORE_alpha")).toBeLessThan(outputA.indexOf("\x1b[?1049h"))
+  expect(outputA.indexOf("FRAME_alpha")).toBeLessThan(outputA.indexOf("AFTER_alpha"))
+  const resizes: Array<[number, number]> = []
+  first.onResize((cols, rows) => {
+    expect([first.cols, first.rows, first.renderer.width, first.renderer.height]).toEqual([cols, rows, cols, rows])
+    resizes.push([cols, rows])
+  })
+  a.stream.setWindow(40, 120, 0, 0)
   await waitFor(() => resizes.length > 0)
-  conn.end()
-
   expect(resizes.at(-1)).toEqual([120, 40])
-  expect(captured!.cols).toBe(120)
-  expect(captured!.rows).toBe(40)
-  expect(captured!.renderer.width).toBe(120)
-  expect(captured!.renderer.height).toBe(40)
+  expect([second.cols, second.rows]).toEqual([80, 24])
+  const closed = new Promise<void>((resolve) => a.stream.once("close", resolve))
+  first.end()
+  await closed
+  await first.renderer.closed
+  expect(outputA).toContain("\x1b[?1049l")
+  expect(second.renderer.isDestroyed).toBe(false)
+  await server.close()
+  await second.renderer.closed
+  await waitFor(() => outputB.includes("\x1b[?1049l"))
+  expect(errors).toEqual([])
 })
 
 // The package creates the renderer, so it destroys it on disconnect; the handler

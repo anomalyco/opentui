@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const bench_utils = @import("../bench-utils.zig");
 const text_buffer = @import("../text-buffer.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
@@ -68,13 +69,13 @@ fn benchSetText(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     // Small text
     {
@@ -172,6 +173,7 @@ fn benchWrap(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     text: []const u8,
     wrap_width: u32,
     wrap_mode: WrapMode,
@@ -182,7 +184,6 @@ fn benchWrap(
     var stats: BenchStats = .{};
     var final_tb_mem: usize = 0;
     var final_view_mem: usize = 0;
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     for (0..iterations) |i| {
         var tb = try UnifiedTextBuffer.init(allocator, pool, link_pool, .unicode);
@@ -239,10 +240,55 @@ fn benchWrap(
     };
 }
 
+/// Rewraps one word-wrapped view across widths, as terminal resizes do.
+fn benchRewrap(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
+    line: []const u8,
+    repeat: usize,
+) !BenchResult {
+    const text = try allocator.alloc(u8, line.len * repeat);
+    defer allocator.free(text);
+    for (0..repeat) |i| @memcpy(text[i * line.len ..][0..line.len], line);
+
+    var tb = try UnifiedTextBuffer.init(allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    try tb.setText(text);
+    var view = try UnifiedTextBufferView.init(allocator, tb);
+    defer view.deinit();
+    view.setWrapMode(.word);
+    view.setWrapWidth(80);
+    _ = view.getVirtualLineCount();
+
+    const widths = [_]u32{ 79, 43, 96, 80, 61, 120, 37 };
+    const iterations = widths.len * 10;
+    var stats: BenchStats = .{};
+    var checksum: u64 = 0;
+    for (0..iterations) |i| {
+        const timer = bench_utils.BenchTimer.start(io);
+        view.setWrapWidth(widths[i % widths.len]);
+        checksum +%= view.getVirtualLineCount();
+        stats.record(timer.read());
+    }
+    std.mem.doNotOptimizeAway(checksum);
+    return .{
+        .name = "",
+        .min_ns = stats.min_ns,
+        .avg_ns = stats.avg(),
+        .max_ns = stats.max_ns,
+        .total_ns = stats.total_ns,
+        .iterations = iterations,
+        .mem_stats = null,
+    };
+}
+
 fn benchMeasureForDimensionsLayout(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     text: []const u8,
     streaming: bool,
     measure_width: u32,
@@ -255,7 +301,6 @@ fn benchMeasureForDimensionsLayout(
     var stats: BenchStats = .{};
     var final_tb_mem: usize = 0;
     var final_view_mem: usize = 0;
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     const token = "token ";
     const newline = "\n";
@@ -325,8 +370,8 @@ pub fn run(
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    // Global pool and unicode data are initialized once in bench.zig
-    const pool = gp.initGlobalPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var all_results: std.ArrayList(BenchResult) = .empty;
     errdefer all_results.deinit(allocator);
@@ -334,7 +379,7 @@ pub fn run(
     const iterations: usize = 10;
 
     // Run setText benchmarks
-    const setText_results = try benchSetText(io, allocator, pool, iterations, show_mem, bench_filter);
+    const setText_results = try benchSetText(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, setText_results);
 
     var text_multiline: ?[]u8 = null;
@@ -374,7 +419,8 @@ pub fn run(
         var bench_result = try benchMeasureForDimensionsLayout(
             io,
             allocator,
-            pool,
+            &pools.graphemes,
+            &pools.links,
             text_multiline.?,
             scenario.streaming,
             scenario.width,
@@ -433,7 +479,8 @@ pub fn run(
         var bench_result = try benchWrap(
             io,
             allocator,
-            pool,
+            &pools.graphemes,
+            &pools.links,
             text,
             scenario.width,
             scenario.mode,
@@ -443,6 +490,19 @@ pub fn run(
         );
         bench_result.name = bench_name;
 
+        try all_results.append(allocator, bench_result);
+    }
+
+    const rewrap_scenarios = [_]struct { name: []const u8, line: []const u8, repeat: usize }{
+        .{ .name = "TextBufferView rewrap (word, mixed, 5000 lines)", .line = "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop wrap words here and there\n", .repeat = 5000 },
+        .{ .name = "TextBufferView rewrap (word, ASCII prose, 5000 lines)", .line = "The quick brown fox jumps over the lazy dog, again and again and again.\n", .repeat = 5000 },
+        .{ .name = "TextBufferView rewrap (word, CJK, 2000 lines)", .line = "\u{4e16}\u{754c}\u{4f60}\u{597d} \u{30c6}\u{30b9}\u{30c8} hello \u{1f30d} \u{4e2d}\u{6587}\u{6587}\u{672c}\u{6362}\u{884c}\u{6d4b}\u{8bd5}\n", .repeat = 2000 },
+        .{ .name = "TextBufferView rewrap (word, one long mixed line)", .line = "alpha \u{754c} e\u{301} beta gamma ", .repeat = 4000 },
+    };
+    for (rewrap_scenarios) |scenario| {
+        if (!bench_utils.matchesBenchFilter(scenario.name, bench_filter)) continue;
+        var bench_result = try benchRewrap(io, allocator, &pools.graphemes, &pools.links, scenario.line, scenario.repeat);
+        bench_result.name = scenario.name;
         try all_results.append(allocator, bench_result);
     }
 

@@ -1,6 +1,6 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const bench_utils = @import("../bench-utils.zig");
-const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const text_buffer = @import("../text-buffer.zig");
 
@@ -35,8 +35,8 @@ pub fn run(
     _: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    const pool = gp.initGlobalPool(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
 
@@ -48,7 +48,7 @@ pub fn run(
     if (bench_utils.matchesBenchFilter(tab_free_name, bench_filter)) {
         var stats: BenchStats = .{};
         for (0..sample_count) |_| {
-            var tb = try TextBuffer.init(allocator, pool, link_pool, .unicode);
+            var tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
             defer tb.deinit();
             try tb.setText(tab_free);
             const expected_width = tb.lineWidthAt(0);
@@ -77,7 +77,7 @@ pub fn run(
     if (bench_utils.matchesBenchFilter(one_tab_name, bench_filter)) {
         var stats: BenchStats = .{};
         for (0..sample_count) |_| {
-            var tb = try TextBuffer.init(allocator, pool, link_pool, .unicode);
+            var tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
             defer tb.deinit();
             try tb.setText(one_tab);
             const expected_width = tb.lineWidthAt(0);
@@ -111,7 +111,7 @@ pub fn run(
     if (bench_utils.matchesBenchFilter(set_text_name, bench_filter)) {
         var stats: BenchStats = .{};
         for (0..sample_count) |_| {
-            var tb = try TextBuffer.init(allocator, pool, link_pool, .unicode);
+            var tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
             defer tb.deinit();
 
             const timer = bench_utils.BenchTimer.start(io);

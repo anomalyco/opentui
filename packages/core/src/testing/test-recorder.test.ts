@@ -2,16 +2,14 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, type TestRenderer } from "./test-renderer.js"
 import { TestRecorder } from "./test-recorder.js"
 import { TextRenderable } from "../renderables/Text.js"
-
-async function waitForScheduledRender(): Promise<void> {
-  await new Promise<void>((resolve) => process.nextTick(resolve))
-  await Promise.resolve()
-}
+import { RGBA } from "../lib/RGBA.js"
+import { CliRenderEvents } from "../renderer.js"
 
 describe("TestRecorder", () => {
   let renderer: TestRenderer
   let recorder: TestRecorder
   let renderOnce: () => Promise<void>
+  const waitForScheduledRender = () => renderer.idle()
 
   beforeEach(async () => {
     const setup = await createTestRenderer({ width: 80, height: 24 })
@@ -385,6 +383,42 @@ describe("TestRecorder", () => {
     expect(frame1Fg).not.toBe(frame2Fg)
 
     recorderWithBuffers.stop()
+  })
+
+  test("captures text and planes before a timestamp callback resizes the renderer", async () => {
+    const foreground = RGBA.fromInts(10, 20, 30, 255)
+    const background = RGBA.fromInts(40, 50, 60, 255)
+    renderer.addPostProcessFn((buffer) => {
+      buffer.drawText("before", 0, 0, foreground, background)
+      buffer.withBuffers(({ attributes }) => {
+        attributes.fill(0x12345, 0, 6)
+      })
+    })
+    await renderOnce()
+    let calls = 0
+    recorder = new TestRecorder(renderer, {
+      recordBuffers: { fg: true, bg: true, attributes: true },
+      now: () => {
+        if (calls++ === 0) return 100
+        // Grow before acquiring any raw views, so the old implementation fails without reading freed aliases.
+        renderer.resize(81, 25)
+        return 110
+      },
+    })
+    recorder.rec()
+    renderer.emit(CliRenderEvents.FRAME)
+    recorder.stop()
+
+    const [frame] = recorder.recordedFrames
+    expect(frame.frame.startsWith("before")).toBe(true)
+    expect(frame.timestamp).toBe(10)
+    expect(frame.frameNumber).toBe(0)
+    expect(frame.buffers?.fg?.slice(0, 4)).toEqual(new Uint16Array([10, 20, 30, 255]))
+    expect(frame.buffers?.bg?.slice(0, 4)).toEqual(new Uint16Array([40, 50, 60, 255]))
+    expect(frame.buffers?.attributes?.slice(0, 6)).toEqual(new Uint8Array(6).fill(0x45))
+    expect(frame.buffers?.fg?.length).toBe(80 * 24 * 4)
+    expect(frame.buffers?.bg?.length).toBe(80 * 24 * 4)
+    expect(frame.buffers?.attributes?.length).toBe(80 * 24)
   })
 
   test("should have correct buffer sizes", async () => {

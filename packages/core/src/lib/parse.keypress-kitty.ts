@@ -377,7 +377,7 @@ export function parseKittyKeyboard(sequence: string): ParsedKey | null {
       key.name = char === " " ? "space" : char
 
       // Keep the raw Unicode codepoint from Kitty so higher-level matching can
-      // later turn `99` into `c` and use that as a layout-stable fallback.
+      // later turn `99` into `c` and fall back to it (see getBaseCodeKeyName).
       if (baseCodepoint) {
         key.baseCode = baseCodepoint
       }

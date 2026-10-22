@@ -1,0 +1,66 @@
+name: Build Web
+
+# Checks the documentation and builds the site as deploy.yml does, so a pull request that breaks the docs or the
+# site fails before it reaches main. Other changes can break the deploy too, for example a package change that the
+# API extraction for /docs/next cannot read; deploy.yml reports those on main and keeps the previous site online.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/web/**"
+      - "api/**"
+      - "bun.lock"
+      - ".github/workflows/build-web.yml"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to the pull request cancels the run of the previous one.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: 26.7.0
+
+jobs:
+  site:
+    name: Docs and Site
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    defaults:
+      run:
+        working-directory: packages/web
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate docs
+        run: |
+          bun run validate:docs:metadata
+          bun run validate:docs:links
+          bun run validate:docs:skill
+          bun run validate:docs:releases
+
+      - name: Check API history
+        run: bun run api:check
+
+      - name: Test site tooling
+        run: bun run test:site
+
+      - name: Build site
+        run: bun run build:site --out "$RUNNER_TEMP/site"

@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const ansi = @import("../ansi.zig");
 const bench_utils = @import("../bench-utils.zig");
 const buffer = @import("../buffer.zig");
@@ -63,10 +64,10 @@ fn generateManySmallChunks(allocator: std.mem.Allocator, chunks: u32) ![]u8 {
 fn setupTextBuffer(
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     text: []const u8,
     wrap_width: ?u32,
 ) !struct { *UnifiedTextBuffer, *UnifiedTextBufferView } {
-    const link_pool = link.initGlobalLinkPool(allocator);
     const tb = try UnifiedTextBuffer.init(allocator, pool, link_pool, .unicode);
     errdefer tb.deinit();
 
@@ -89,6 +90,7 @@ fn benchRenderColdCache(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -106,11 +108,11 @@ fn benchRenderColdCache(
     var final_buf_mem: usize = 0;
 
     for (0..iterations) |i| {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 120);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 120);
         defer tb.deinit();
         defer view.deinit();
 
-        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         buf.clear(CLEAR_BG, null);
@@ -147,6 +149,7 @@ fn benchWrapAndRender(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -166,11 +169,11 @@ fn benchWrapAndRender(
     var final_buf_mem: usize = 0;
 
     for (0..iterations) |i| {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 120);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 120);
         defer tb.deinit();
         defer view.deinit();
 
-        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         buf.clear(CLEAR_BG, null);
@@ -211,6 +214,7 @@ fn benchRenderWarmCache(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -228,7 +232,7 @@ fn benchRenderWarmCache(
     defer allocator.free(text);
 
     if (run_warm) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 120);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 120);
         defer tb.deinit();
         defer view.deinit();
 
@@ -236,7 +240,7 @@ fn benchRenderWarmCache(
         var final_buf_mem: usize = 0;
 
         for (0..iterations) |i| {
-            const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = pool });
+            const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .link_pool = link_pool, .pool = pool });
             defer buf.deinit();
 
             buf.clear(CLEAR_BG, null);
@@ -268,11 +272,11 @@ fn benchRenderWarmCache(
     }
 
     if (run_hot) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 120);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 120);
         defer tb.deinit();
         defer view.deinit();
 
-        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         var stats: BenchStats = .{};
@@ -303,6 +307,7 @@ fn benchRenderSmallResolution(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -320,11 +325,11 @@ fn benchRenderSmallResolution(
     defer allocator.free(text);
 
     if (run_no_wrap) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 80);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 80);
         defer tb.deinit();
         defer view.deinit();
 
-        const buf = try OptimizedBuffer.init(allocator, 80, 24, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 80, 24, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         var stats: BenchStats = .{};
@@ -360,11 +365,11 @@ fn benchRenderSmallResolution(
     }
 
     if (run_wrap) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 40);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 40);
         defer tb.deinit();
         defer view.deinit();
 
-        const buf = try OptimizedBuffer.init(allocator, 80, 24, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 80, 24, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         var stats: BenchStats = .{};
@@ -395,6 +400,7 @@ fn benchRenderMediumResolution(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -408,11 +414,11 @@ fn benchRenderMediumResolution(
     const text = try generateText(allocator, 1000, 120);
     defer allocator.free(text);
 
-    const tb, const view = try setupTextBuffer(allocator, pool, text, 200);
+    const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 200);
     defer tb.deinit();
     defer view.deinit();
 
-    const buf = try OptimizedBuffer.init(allocator, 200, 60, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, 200, 60, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var stats: BenchStats = .{};
@@ -453,6 +459,7 @@ fn benchRenderMassiveResolution(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -466,11 +473,11 @@ fn benchRenderMassiveResolution(
     const text = try generateText(allocator, 10000, 200);
     defer allocator.free(text);
 
-    const tb, const view = try setupTextBuffer(allocator, pool, text, 400);
+    const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 400);
     defer tb.deinit();
     defer view.deinit();
 
-    const buf = try OptimizedBuffer.init(allocator, 400, 200, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, 400, 200, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var stats: BenchStats = .{};
@@ -511,6 +518,7 @@ fn benchRenderMassiveLines(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -524,11 +532,11 @@ fn benchRenderMassiveLines(
     const text = try generateText(allocator, 50000, 60);
     defer allocator.free(text);
 
-    const tb, const view = try setupTextBuffer(allocator, pool, text, null);
+    const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, null);
     defer tb.deinit();
     defer view.deinit();
 
-    const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var stats: BenchStats = .{};
@@ -569,6 +577,7 @@ fn benchRenderOneMassiveLine(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -588,11 +597,11 @@ fn benchRenderOneMassiveLine(
     const text = try buf_builder.toOwnedSlice(allocator);
     defer allocator.free(text);
 
-    const tb, const view = try setupTextBuffer(allocator, pool, text, 80);
+    const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 80);
     defer tb.deinit();
     defer view.deinit();
 
-    const buf = try OptimizedBuffer.init(allocator, 80, 30, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, 80, 30, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var stats: BenchStats = .{};
@@ -633,6 +642,7 @@ fn benchRenderManySmallChunks(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -646,11 +656,11 @@ fn benchRenderManySmallChunks(
     const text = try generateManySmallChunks(allocator, 10000);
     defer allocator.free(text);
 
-    const tb, const view = try setupTextBuffer(allocator, pool, text, 80);
+    const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 80);
     defer tb.deinit();
     defer view.deinit();
 
-    const buf = try OptimizedBuffer.init(allocator, 80, 30, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, 80, 30, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var stats: BenchStats = .{};
@@ -691,6 +701,7 @@ fn benchRenderWithViewport(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -709,13 +720,13 @@ fn benchRenderWithViewport(
     defer allocator.free(text);
 
     if (run_viewport) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, null);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, null);
         defer tb.deinit();
         defer view.deinit();
 
         view.setViewport(.{ .x = 0, .y = 5000, .width = 100, .height = 30 });
 
-        const buf = try OptimizedBuffer.init(allocator, 100, 30, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 100, 30, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         var stats: BenchStats = .{};
@@ -740,11 +751,11 @@ fn benchRenderWithViewport(
     }
 
     if (run_no_viewport) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, null);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, null);
         defer tb.deinit();
         defer view.deinit();
 
-        const buf = try OptimizedBuffer.init(allocator, 100, 30, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 100, 30, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         var stats: BenchStats = .{};
@@ -775,6 +786,7 @@ fn benchRenderWithSelection(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
@@ -793,13 +805,13 @@ fn benchRenderWithSelection(
     defer allocator.free(text);
 
     if (run_selection) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 120);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 120);
         defer tb.deinit();
         defer view.deinit();
 
         view.setSelection(500, 1500, rgba(0.2, 0.4, 0.8, 1.0), rgba(1.0, 1.0, 1.0, 1.0));
 
-        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         var stats: BenchStats = .{};
@@ -824,11 +836,11 @@ fn benchRenderWithSelection(
     }
 
     if (run_no_selection) {
-        const tb, const view = try setupTextBuffer(allocator, pool, text, 120);
+        const tb, const view = try setupTextBuffer(allocator, pool, link_pool, text, 120);
         defer tb.deinit();
         defer view.deinit();
 
-        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = pool });
+        const buf = try OptimizedBuffer.init(allocator, 120, 40, .{ .link_pool = link_pool, .pool = pool });
         defer buf.deinit();
 
         var stats: BenchStats = .{};
@@ -861,45 +873,45 @@ pub fn run(
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    // Global pool and unicode data are initialized once in bench.zig
-    const pool = gp.initGlobalPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var all_results: std.ArrayList(BenchResult) = .empty;
     errdefer all_results.deinit(allocator);
 
     const iterations: usize = 10;
 
-    const cold_cache_results = try benchRenderColdCache(io, allocator, pool, iterations, show_mem, bench_filter);
+    const cold_cache_results = try benchRenderColdCache(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, cold_cache_results);
 
-    const warm_cache_results = try benchRenderWarmCache(io, allocator, pool, iterations, show_mem, bench_filter);
+    const warm_cache_results = try benchRenderWarmCache(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, warm_cache_results);
 
-    const wrap_render_results = try benchWrapAndRender(io, allocator, pool, iterations, show_mem, bench_filter);
+    const wrap_render_results = try benchWrapAndRender(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, wrap_render_results);
 
-    const small_res_results = try benchRenderSmallResolution(io, allocator, pool, iterations, show_mem, bench_filter);
+    const small_res_results = try benchRenderSmallResolution(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, small_res_results);
 
-    const medium_res_results = try benchRenderMediumResolution(io, allocator, pool, iterations, show_mem, bench_filter);
+    const medium_res_results = try benchRenderMediumResolution(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, medium_res_results);
 
-    const massive_res_results = try benchRenderMassiveResolution(io, allocator, pool, iterations, show_mem, bench_filter);
+    const massive_res_results = try benchRenderMassiveResolution(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, massive_res_results);
 
-    const massive_lines_results = try benchRenderMassiveLines(io, allocator, pool, iterations, show_mem, bench_filter);
+    const massive_lines_results = try benchRenderMassiveLines(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, massive_lines_results);
 
-    const one_massive_line_results = try benchRenderOneMassiveLine(io, allocator, pool, iterations, show_mem, bench_filter);
+    const one_massive_line_results = try benchRenderOneMassiveLine(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, one_massive_line_results);
 
-    const many_chunks_results = try benchRenderManySmallChunks(io, allocator, pool, iterations, show_mem, bench_filter);
+    const many_chunks_results = try benchRenderManySmallChunks(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, many_chunks_results);
 
-    const viewport_results = try benchRenderWithViewport(io, allocator, pool, iterations, show_mem, bench_filter);
+    const viewport_results = try benchRenderWithViewport(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, viewport_results);
 
-    const selection_results = try benchRenderWithSelection(io, allocator, pool, iterations, show_mem, bench_filter);
+    const selection_results = try benchRenderWithSelection(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, selection_results);
 
     return all_results.toOwnedSlice(allocator);

@@ -95,11 +95,10 @@ class DraggableTransparentBox extends BoxRenderable {
 
       case "drag":
         if (this.isDragging) {
-          this.x = event.x - this.dragOffsetX
-          this.y = event.y - this.dragOffsetY
-
-          this.x = Math.max(0, Math.min(this.x, this._ctx.width - this.width))
-          this.y = Math.max(4, Math.min(this.y, this._ctx.height - this.height))
+          this.x =
+            Math.max(0, Math.min(event.x - this.dragOffsetX, this._ctx.width - this.width)) - (this.parent?.x ?? 0)
+          this.y =
+            Math.max(4, Math.min(event.y - this.dragOffsetY, this._ctx.height - this.height)) - (this.parent?.y ?? 0)
 
           event.stopPropagation()
         }
@@ -128,7 +127,7 @@ ${fg("#A8A8B2")("Click and drag any transparent box to move it around • Watch 
 
   return (
     <box zIndex={10} marginTop={1}>
-      <text content={headerText} />
+      <text>{headerText}</text>
       {alphaBox50}
     </box>
   )

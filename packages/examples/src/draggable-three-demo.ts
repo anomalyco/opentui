@@ -244,7 +244,7 @@ export function destroy(renderer: CliRenderer): void {
 
   if (parentContainer) {
     const draggableThreeContainer = renderer.root.getRenderable("draggable-three-container")
-    if (draggableThreeContainer) renderer.root.remove(draggableThreeContainer)
+    draggableThreeContainer?.destroyRecursively()
     parentContainer = null
   }
 }

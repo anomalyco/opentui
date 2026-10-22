@@ -135,7 +135,7 @@ const AutocompleteDemo = () => {
     const newValue = inputValue().slice(0, store.index) + "@" + selected.display + " "
     setInputValue(newValue)
     input.value = newValue
-    input.cursorPosition = newValue.length
+    input.gotoBufferEnd()
     hide()
   }
 
@@ -143,7 +143,7 @@ const AutocompleteDemo = () => {
     setStore({
       visible: true,
       selected: 0,
-      index: input.cursorPosition,
+      index: input.editBuffer.getTextRange(0, input.cursorOffset).length,
       position: {
         x: anchor.x,
         y: anchor.y,

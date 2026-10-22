@@ -142,10 +142,12 @@ below. It shows the exact shared shape of all three installer option types:
 type RuntimeModuleExports = Record<string, unknown>
 type RuntimeModuleLoader = () => RuntimeModuleExports | Promise<RuntimeModuleExports>
 type RuntimeModuleEntry = RuntimeModuleExports | RuntimeModuleLoader
+type RuntimeSpecifierPreserve = readonly string[] | ReadonlySet<string> | ((specifier: string) => boolean)
 
 interface RuntimePluginSupportOptions {
   additional?: Record<string, RuntimeModuleEntry>
   core?: RuntimeModuleEntry
+  preserve?: RuntimeSpecifierPreserve
   rewrite?: {
     nodeModulesRuntimeSpecifiers?: boolean
     nodeModulesBareSpecifiers?: boolean
@@ -155,6 +157,10 @@ interface RuntimePluginSupportOptions {
 
 An entry is an export object or a zero-argument synchronous or asynchronous loader. Use a loader to defer an optional
 framework import. The `core` field replaces the host object mapped to `@opentui/core`.
+
+Use `preserve` to keep matching bare specifiers untouched when the host registers them through `build.module()`. Pass an
+array or set of exact specifiers, or a predicate. Specifiers in `core` and `additional` still map to
+`opentui:runtime-module:*` before `preserve` is checked.
 
 Both rewrite options apply to files under `node_modules`. `nodeModulesRuntimeSpecifiers` defaults to `true`.
 `nodeModulesBareSpecifiers` defaults to `false`.
@@ -185,10 +191,13 @@ After installation, these changes throw:
 
 - A new `additional` specifier
 - A different supplied `core` entry
+- Different supplied `preserve` options
 - Different supplied rewrite options
 
 The installer records additional keys, not replacement values. A later call with an existing key and a different
 entry returns `false`. It does not replace the installed entry. Build the complete map before the first call.
+Arrays and sets passed to `preserve` are compared as specifier sets, and an empty list counts as no `preserve` option.
+Predicates are compared by reference.
 
 Core, React, and Solid use separate installation guards. Their guards do not prevent you from stacking different host
 installers. Choose one installer to avoid competing maps for the same singleton specifiers.
@@ -217,7 +226,8 @@ specifiers or template-literal specifiers. Import-like text in comments or strin
 
 Bare-specifier rewriting outside `node_modules` resolves dependencies from recently rewritten plugin parents. The
 plugin retains at most 64 recent parents. Set `nodeModulesBareSpecifiers: true` only when a rewritten ESM package also
-needs this parent-based resolution for its bare imports.
+needs this parent-based resolution for its bare imports. Parent-based rewriting skips bare specifiers matched by
+`preserve`.
 
 ## Solid transform order
 

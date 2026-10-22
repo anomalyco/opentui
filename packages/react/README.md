@@ -1,6 +1,6 @@
 # @opentui/react
 
-A React renderer for building terminal user interfaces using [OpenTUI core](https://github.com/anomalyco/opentui). Create rich, interactive console applications with familiar React patterns and components.
+A React renderer for [OpenTUI Core](https://github.com/anomalyco/opentui). Build terminal user interfaces with React components, hooks, and state.
 
 ## Installation
 
@@ -32,7 +32,7 @@ createRoot(renderer).render(<App />)
 
 ## TypeScript Configuration
 
-For optimal TypeScript support, configure your `tsconfig.json`:
+Configure your `tsconfig.json`:
 
 ```json
 {
@@ -56,7 +56,7 @@ For optimal TypeScript support, configure your `tsconfig.json`:
   - [Styling](#styling)
 - [API Reference](#api-reference)
   - [createRoot(renderer)](#createrootrenderer)
-  - [render(element, config?)](#renderelement-config-deprecated)
+  - [render(element, config?)](#renderelement-config-removed)
   - [Hooks](#hooks)
     - [useRenderer()](#userenderer)
     - [useKeyboard(handler, options?)](#usekeyboardhandler-options)
@@ -93,7 +93,7 @@ For optimal TypeScript support, configure your `tsconfig.json`:
 
 ### Components
 
-OpenTUI React provides several built-in components that map to OpenTUI core renderables:
+OpenTUI React includes these built-in components. Each component maps to an OpenTUI Core renderable:
 
 **Layout & Display:**
 
@@ -102,13 +102,13 @@ OpenTUI React provides several built-in components that map to OpenTUI core rend
 - **`<scrollbox>`** - A scrollable box
 - **`<ascii-font>`** - Display ASCII art text with different font styles
 
-QR code support is available from `@opentui/qrcode/react` and must be registered explicitly with `registerQRCode()`.
+For QR codes, call `registerQRCode()` from `@opentui/qrcode/react`. It registers the `<qr-code>` element.
 
 **Input Components:**
 
 - **`<input>`** - Text input field
 - **`<textarea>`** - Multi-line text input field
-- **`<select>`** - Selection dropdown
+- **`<select>`** - Vertical list of options
 - **`<tab-select>`** - Tab-based selection
 
 **Code & Diff Components:**
@@ -119,11 +119,11 @@ QR code support is available from `@opentui/qrcode/react` and must be registered
 
 **Helpers:**
 
-- **`<span>`, `<strong>`, `<em>`, `<u>`, `<b>`, `<i>`, `<br>`** - Text modifiers (_must be used inside of the text component_)
+- **`<span>`, `<strong>`, `<em>`, `<u>`, `<b>`, `<i>`, `<br>`, `<a>`** - Text modifiers (_use them only inside a `<text>` component_)
 
 ### Styling
 
-Components can be styled using props or the `style` prop:
+Style a component with props or with the `style` prop:
 
 ```tsx
 // Direct props
@@ -158,13 +158,12 @@ createRoot(renderer).render(<App />)
 
 - `renderer`: A `CliRenderer` instance (typically created with `createCliRenderer()`)
 
-**Returns:** An object with a `render` method that accepts a React element.
+**Returns:** A root with a `render(node)` method and an `unmount()` method. `render(node)` accepts a React element.
+`unmount()` removes the React tree and keeps the renderer active. `renderer.destroy()` also unmounts the root.
 
-### `render(element, config?)` (Deprecated)
+### `render(element, config?)` (Removed)
 
-> **Deprecated:** Use `createRoot(renderer).render(node)` instead.
-
-Renders a React element to the terminal. This function is deprecated in favor of `createRoot`.
+> **Removed:** `@opentui/react` does not export `render()`. Use `createRoot(renderer).render(node)` instead.
 
 ### Hooks
 
@@ -174,6 +173,7 @@ Access the OpenTUI renderer instance.
 
 ```tsx
 import { useRenderer } from "@opentui/react"
+import { useEffect } from "react"
 
 function App() {
   const renderer = useRenderer()
@@ -211,7 +211,7 @@ function App() {
 - `options?`: Optional configuration object:
   - `release?`: Boolean to include key release events (default: `false`)
 
-By default, only receives press events (including key repeats with `repeated: true`). Set `options.release` to `true` to also receive release events.
+By default, the handler gets press events only. Press events include key repeats with `repeated: true`. Set `options.release` to `true` to also get release events.
 
 **Example with release events:**
 
@@ -269,7 +269,7 @@ function App() {
 
 #### `useFocus(handler)`
 
-Subscribe to terminal window focus events. Fires when the terminal window gains focus.
+Subscribe to terminal window focus events. The handler runs when the terminal window gains focus.
 
 ```tsx
 import { useFocus } from "@opentui/react"
@@ -289,7 +289,7 @@ function App() {
 
 #### `useBlur(handler)`
 
-Subscribe to terminal window blur events. Fires when the terminal window loses focus.
+Subscribe to terminal window blur events. The handler runs when the terminal window loses focus.
 
 ```tsx
 import { useBlur } from "@opentui/react"
@@ -309,7 +309,7 @@ function App() {
 
 #### `useSelectionHandler(handler)`
 
-Handle text selection events (e.g., when the user selects text via mouse drag).
+Handle text selection events, such as a mouse drag selection.
 
 ```tsx
 import { useSelectionHandler } from "@opentui/react"
@@ -353,7 +353,7 @@ function App() {
 
 #### `useTerminalDimensions()`
 
-Get current terminal dimensions and automatically update when the terminal is resized.
+Get the current terminal dimensions. The hook updates them when the terminal resizes.
 
 ```tsx
 import { useTerminalDimensions } from "@opentui/react"
@@ -378,7 +378,7 @@ function App() {
 
 #### `useTimeline(options?)`
 
-Create and manage animations using OpenTUI's timeline system. This hook automatically registers and unregisters the timeline with the animation engine.
+Create one `Timeline` for animations. The hook registers the timeline with the animation engine after mount. It pauses and unregisters the timeline during React effect cleanup.
 
 ```tsx
 import { useTimeline } from "@opentui/react"
@@ -418,8 +418,8 @@ function App() {
   - `duration?`: Animation duration in milliseconds (default: 1000)
   - `loop?`: Whether the timeline should loop (default: false)
   - `autoplay?`: Whether to automatically start the timeline (default: true)
-  - `onComplete?`: Callback when timeline completes
-  - `onPause?`: Callback when timeline is paused
+  - `onComplete?`: Callback when the timeline completes
+  - `onPause?`: Callback when the timeline pauses
 
 **Returns:** A `Timeline` instance with methods:
 
@@ -649,7 +649,7 @@ function App() {
 
 #### Select Component
 
-Dropdown selection component.
+Choose one option from a vertical list.
 
 ```tsx
 import type { SelectOption } from "@opentui/core"
@@ -684,16 +684,23 @@ function App() {
 
 #### Code Component
 
-```tsx
-import { RGBA, SyntaxStyle } from "@opentui/core"
+Create a theme once for its renderer, not during a component render. Release it after you destroy its consumers.
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  keyword: { fg: RGBA.fromHex("#ff6b6b"), bold: true }, // red, bold
-  string: { fg: RGBA.fromHex("#51cf66") }, // green
-  comment: { fg: RGBA.fromHex("#868e96"), italic: true }, // gray, italic
-  number: { fg: RGBA.fromHex("#ffd43b") }, // yellow
-  default: { fg: RGBA.fromHex("#ffffff") }, // white
-})
+```tsx
+import { createCliRenderer, RGBA, SyntaxStyle } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+
+const renderer = await createCliRenderer()
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    keyword: { fg: RGBA.fromHex("#ff6b6b"), bold: true }, // red, bold
+    string: { fg: RGBA.fromHex("#51cf66") }, // green
+    comment: { fg: RGBA.fromHex("#868e96"), italic: true }, // gray, italic
+    number: { fg: RGBA.fromHex("#ffd43b") }, // yellow
+    default: { fg: RGBA.fromHex("#ffffff") }, // white
+  },
+  renderer.nativeScene!,
+)
 
 const codeExample = `function hello() {
   // This is a comment
@@ -711,6 +718,14 @@ function App() {
     </box>
   )
 }
+
+try {
+  createRoot(renderer).render(<App />)
+  await renderer.closed
+} finally {
+  renderer.destroy()
+  syntaxStyle.destroy()
+}
 ```
 
 #### Line Number Component
@@ -719,18 +734,23 @@ Display code with line numbers, and optionally add diff highlights or diagnostic
 
 ```tsx
 import type { LineNumberRenderable } from "@opentui/core"
-import { RGBA, SyntaxStyle } from "@opentui/core"
+import { createCliRenderer, RGBA, SyntaxStyle } from "@opentui/core"
+import { createRoot } from "@opentui/react"
 import { useEffect, useRef } from "react"
 
-function App() {
-  const lineNumberRef = useRef<LineNumberRenderable>(null)
-
-  const syntaxStyle = SyntaxStyle.fromStyles({
+const renderer = await createCliRenderer()
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
     keyword: { fg: RGBA.fromHex("#C792EA") },
     string: { fg: RGBA.fromHex("#C3E88D") },
     number: { fg: RGBA.fromHex("#F78C6C") },
     default: { fg: RGBA.fromHex("#A6ACCD") },
-  })
+  },
+  renderer.nativeScene!,
+)
+
+function App() {
+  const lineNumberRef = useRef<LineNumberRenderable>(null)
 
   const codeContent = `function fibonacci(n: number): number {
   if (n <= 1) return n
@@ -765,13 +785,21 @@ console.log(fibonacci(10))`
     </box>
   )
 }
+
+try {
+  createRoot(renderer).render(<App />)
+  await renderer.closed
+} finally {
+  renderer.destroy()
+  syntaxStyle.destroy()
+}
 ```
 
 For a more complete example with interactive diff highlights and diagnostics, see [`examples/line-number.tsx`](examples/line-number.tsx).
 
 #### Diff Component
 
-Display unified or split-view diffs with syntax highlighting, customizable themes, and line number support. Supports multiple view modes (unified/split), word wrapping, and theme customization.
+Display a unified or split diff with syntax highlighting, line numbers, word wrapping, and custom colors.
 
 For a complete interactive example with theme switching and keybindings, see [`examples/diff.tsx`](examples/diff.tsx).
 
@@ -992,7 +1020,10 @@ createRoot(renderer).render(<App />)
 
 ## Component Extension
 
-You can create custom components by extending OpenTUIs base renderables:
+To create a custom component, extend an OpenTUI Core renderable class and register it with `extend()`.
+React calls the constructor with `{ id, ...props }`. After construction, React assigns the props to the instance again.
+This example overrides the `renderSelf()` [paint hook](https://opentui.com/docs/extend/custom-renderables#use-paint-hooks). The hook uses screen cell coordinates, so it places the label
+relative to `this.x` and `this.y`:
 
 ```tsx
 import {
@@ -1083,8 +1114,8 @@ npx react-devtools@7
 DEV=true bun run your-app.ts
 ```
 
-After the app starts, you should see the component tree in React DevTools. You can inspect and modify props in real-time, and changes will be reflected immediately in your terminal UI.
+After the app starts, React DevTools shows the component tree. You can inspect and change props while the app runs. The terminal UI shows each change.
 
 ### Process Exit with DevTools
 
-When DevTools is connected, the WebSocket connection may prevent your process from exiting naturally.
+When DevTools is connected, the WebSocket connection can keep your process from exiting on its own.

@@ -1,8 +1,9 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { join } from "node:path"
 import process from "node:process"
-import { fileURLToPath } from "node:url"
+
+import { publishedState, RELEASE_PACKAGES, type ReleasePackage } from "./npm-publish"
 
 interface PackageJson {
   name: string
@@ -17,63 +18,6 @@ interface VersionMismatch {
   expected: string
   actual: string
 }
-
-interface PackageConfig {
-  name: string
-  rootDir: string
-  distDir: string
-  requiresCore?: boolean
-}
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-const rootDir = resolve(__dirname, "..")
-
-// Package configurations
-const ALL_PACKAGES: PackageConfig[] = [
-  {
-    name: "@opentui/core",
-    rootDir: join(rootDir, "packages", "core"),
-    distDir: join(rootDir, "packages", "core", "dist"),
-  },
-  {
-    name: "@opentui/three",
-    rootDir: join(rootDir, "packages", "three"),
-    distDir: join(rootDir, "packages", "three", "dist"),
-    requiresCore: true,
-  },
-  {
-    name: "@opentui/qrcode",
-    rootDir: join(rootDir, "packages", "qrcode"),
-    distDir: join(rootDir, "packages", "qrcode", "dist"),
-    requiresCore: true,
-  },
-  {
-    name: "@opentui/react",
-    rootDir: join(rootDir, "packages", "react"),
-    distDir: join(rootDir, "packages", "react", "dist"),
-    requiresCore: true,
-  },
-  {
-    name: "@opentui/solid",
-    rootDir: join(rootDir, "packages", "solid"),
-    distDir: join(rootDir, "packages", "solid", "dist"),
-    requiresCore: true,
-  },
-  {
-    name: "@opentui/keymap",
-    rootDir: join(rootDir, "packages", "keymap"),
-    distDir: join(rootDir, "packages", "keymap", "dist"),
-    requiresCore: true,
-  },
-  {
-    name: "@opentui/ssh",
-    rootDir: join(rootDir, "packages", "ssh"),
-    distDir: join(rootDir, "packages", "ssh", "dist"),
-  },
-]
-
-const PACKAGES = ALL_PACKAGES
 
 function setupNpmAuth(): void {
   if (!process.env.NPM_AUTH_TOKEN) {
@@ -116,19 +60,23 @@ function verifyNpmAuth(): void {
   console.log("SUCCESS: NPM authentication verified")
 }
 
-function checkVersionExists(packageName: string, version: string): boolean {
-  try {
-    const versions: string[] = JSON.parse(
-      spawnSync("npm", ["view", packageName, "versions", "--json"], {}).stdout.toString().trim(),
-    )
-    return Array.isArray(versions) ? versions.includes(version) : versions === version
-  } catch {
-    // Package doesn't exist yet or network error - assume version doesn't exist
-    return false
+// A version that npm already has with identical contents is from an earlier attempt of this
+// release. The publish step skips it.
+async function checkPublishedState(directory: string, name: string, version: string): Promise<void> {
+  const state = await publishedState(directory)
+  if (state === "different") {
+    console.error(`ERROR: ${name}@${version} already exists on npm with different contents`)
+    console.error("Please update the version before publishing")
+    process.exit(1)
+  }
+  if (state === "identical") {
+    console.log(`SUCCESS: ${name}@${version} is already on npm with identical contents and will be skipped`)
+  } else {
+    console.log(`SUCCESS: ${name}@${version} is available on npm`)
   }
 }
 
-function validatePackage(config: PackageConfig): void {
+async function validatePackage(config: ReleasePackage): Promise<void> {
   console.log(`\nINFO: Validating ${config.name}...`)
 
   // Check if package.json exists
@@ -139,14 +87,6 @@ function validatePackage(config: PackageConfig): void {
   }
 
   const packageJson: PackageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"))
-
-  // Check if version already exists on npm
-  if (checkVersionExists(packageJson.name, packageJson.version)) {
-    console.error(`ERROR: ${packageJson.name}@${packageJson.version} already exists on npm`)
-    console.error("Please update the version before publishing")
-    process.exit(1)
-  }
-  console.log(`SUCCESS: Version ${packageJson.version} is available on npm`)
 
   // Check if dist directory exists
   if (!existsSync(config.distDir)) {
@@ -175,6 +115,8 @@ function validatePackage(config: PackageConfig): void {
   }
   console.log(`SUCCESS: Source and dist versions match`)
 
+  await checkPublishedState(config.distDir, packageJson.name, packageJson.version)
+
   // For core package, check optional dependencies versions
   if (config.name === "@opentui/core") {
     const mismatches: VersionMismatch[] = []
@@ -201,12 +143,7 @@ function validatePackage(config: PackageConfig): void {
           })
         }
 
-        // Also check if this version exists on npm
-        if (checkVersionExists(depName, packageJson.version)) {
-          console.error(`ERROR: ${depName}@${packageJson.version} already exists on npm`)
-          console.error("Please update the version before publishing")
-          process.exit(1)
-        }
+        await checkPublishedState(nativeDir, depName, nativePackageJson.version)
       }
     }
 
@@ -282,7 +219,7 @@ Continue with publishing? (y/n)
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   console.log("OpenTUI Pre-Publish Validation")
   console.log("=".repeat(50))
 
@@ -298,8 +235,8 @@ function main(): void {
 
   // Validate all packages
   console.log("\nINFO: Validating all packages...")
-  for (const packageConfig of PACKAGES) {
-    validatePackage(packageConfig)
+  for (const packageConfig of RELEASE_PACKAGES) {
+    await validatePackage(packageConfig)
   }
 
   // Get user confirmation
@@ -312,4 +249,4 @@ function main(): void {
   console.log("  • Run: bun run publish")
 }
 
-main()
+await main()

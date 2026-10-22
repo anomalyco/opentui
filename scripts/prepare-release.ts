@@ -98,11 +98,11 @@ ${lockstepPackages.map((pkg) => `- ${pkg.name}`).join("\n")}
 
 Next steps:
 1. Review the changes: git diff
-2. Build the packages: bun run build
-3. Commit the changes: git add -A && git commit -m "Release v${version}"
-4. Push the commit: git push
-5. Tag the release after the commit: git tag v${version} -m "Release v${version}"
-6. Push the tag to trigger the release workflow: git push origin v${version}
+2. Commit the changes: git add -A && git commit -m "Release v${version}"
+3. Get the commit onto main, pushed or through a pull request. release.yml releases each commit on
+   main that raises the version, and creates the v${version} tag.
+
+\`bun run release\` does all of this and follows the release.
   `)
 
 function getRequestedReleaseType(args: string[], explicitVersion?: string): ReleaseType | null {
