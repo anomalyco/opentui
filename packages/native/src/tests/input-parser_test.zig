@@ -620,6 +620,7 @@ test "input parser cursor position reports and F3 share CSI R forms" {
     for ([_]struct { ip.Expectations, []const u8, Expect }{
         .{ cpr, "\x1b[1;2R", report("\x1b[1;2R") },
         .{ kitty, "\x1b[R", reply("\x1b[R") },
+        .{ kitty, "\x1b[1;2R", report("\x1b[1;2R") },
         .{ plain, "\x1b[12;40R", report("\x1b[12;40R") },
         .{ plain, "\x1b[1;1R", report("\x1b[1;1R") },
         .{ plain, "\x1b[1;1:1R", reply("\x1b[1;1:1R") },

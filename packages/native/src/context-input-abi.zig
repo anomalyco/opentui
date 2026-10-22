@@ -82,7 +82,7 @@ pub fn ot_session_input_expect(context: ?*abi.ContextHandle, session: ?*const c.
     if (status != c.OT_OK) return status;
     if (session == null or flags & ~expect_flags != 0) return fail(context, error.InvalidOptions);
     const expect: input_parser.Expectations = .{
-        .replies = flags & c.OT_INPUT_EXPECT_REPLIES != 0,
+        .replies = flags & (c.OT_INPUT_EXPECT_REPLIES | c.OT_INPUT_EXPECT_CURSOR_POSITION) != 0,
         .kitty_keyboard = flags & c.OT_INPUT_EXPECT_KITTY_KEYBOARD != 0,
         .cursor_position = flags & c.OT_INPUT_EXPECT_CURSOR_POSITION != 0,
     };
@@ -156,9 +156,9 @@ test "Context input ABI parses into caller records and resolves timeouts" {
     // Input time is independent of pump time but must not go backwards.
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, f.feed("b", 9));
     try std.testing.expectEqual(@as(u32, 1), f.drain.count);
-    // Expectations defer an awaited reply.
-    try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, c.OT_INPUT_EXPECT_REPLIES));
-    try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[?62", 50_000_000));
+    // Expectations defer an awaited reply; CURSOR_POSITION implies REPLIES.
+    try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, c.OT_INPUT_EXPECT_CURSOR_POSITION));
+    try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[1;2", 50_000_000));
     try std.testing.expectEqual(c.OT_OK, f.feed("", 50_000_000 + c.OT_INPUT_TIMEOUT_NS));
     try std.testing.expectEqual(@as(u32, 0), f.drain.count);
     try std.testing.expectEqual(@as(u64, 0), f.drain.deadline_ns);
