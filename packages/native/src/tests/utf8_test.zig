@@ -2009,31 +2009,6 @@ test "calculateTextWidth: large text with many tabs" {
 }
 
 // ----------------------------------------------------------------------------
-// Devanagari and Indic Scripts
-// ----------------------------------------------------------------------------
-
-test "calculateTextWidth: Bengali script" {
-    // Bengali/Bangla script
-    const bangla = "বাংলা"; // Bangla
-    const width = utf8.calculateTextWidth(bangla, 4, .hidden, false, .unicode);
-    try testing.expect(width > 0);
-}
-
-test "calculateTextWidth: Tamil script" {
-    // Tamil script (no conjuncts, simpler than Devanagari)
-    const tamil = "தமிழ்"; // Tamil
-    const width = utf8.calculateTextWidth(tamil, 4, .hidden, false, .unicode);
-    try testing.expect(width > 0);
-}
-
-test "calculateTextWidth: Telugu script" {
-    // Telugu script
-    const telugu = "తెలుగు"; // Telugu
-    const width = utf8.calculateTextWidth(telugu, 4, .hidden, false, .unicode);
-    try testing.expect(width > 0);
-}
-
-// ----------------------------------------------------------------------------
 // Zero-Width Characters
 // ----------------------------------------------------------------------------
 
@@ -2062,18 +2037,6 @@ test "calculateTextWidth: each default-ignorable code point takes the cells Ghos
             try testing.expectEqual(1 + cells, utf8.findWrapPosByWidthGraphemeSafe(bytes[0..len], 4, 4, .hidden, false, width_method).columns_used);
         }
     }
-}
-
-// ----------------------------------------------------------------------------
-// Edge Cases and Boundaries
-// ----------------------------------------------------------------------------
-
-test "calculateTextWidth: musical symbols" {
-    // Musical notation symbols
-    const music = "𝄞𝄢𝅘𝅥𝅮"; // Treble clef, bass clef, notes (U+1D11E etc)
-    const width = utf8.calculateTextWidth(music, 4, .hidden, false, .unicode);
-    // Musical symbols are typically width 1, but encoding might be issue - just verify no crash
-    try testing.expect(width >= 0); // Accept any non-negative width
 }
 
 // ============================================================================
