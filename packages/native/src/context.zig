@@ -466,8 +466,8 @@ const SceneMeasure = struct {
 
     fn measure(data: ?*anyopaque, width: f32, width_mode: u32, height: f32, height_mode: u32) callconv(.c) yoga.ExternalYogaSize {
         const self: *SceneMeasure = @ptrCast(@alignCast(data.?));
-        const node = self.owner.sceneNode(self.handle) catch unreachable;
-        std.debug.assert(node.scene_node.?.handle.generation == self.handle.generation);
+        const node = (self.owner.sceneNode(self.handle) catch unreachable).scene_node.?;
+        std.debug.assert(node.handle.generation == self.handle.generation);
         std.debug.assert(self.owner.mutating and !self.owner.scene_measuring);
         self.owner.scene_measuring = true;
         defer self.owner.scene_measuring = false;
@@ -475,13 +475,19 @@ const SceneMeasure = struct {
         // call. Unlike native measurement failures, they do not poison the tree.
         var result: yoga.ExternalYogaSize = .{ .width = std.math.nan(f32), .height = std.math.nan(f32) };
         self.callback(self.handle.context_id, self.handle.slot, self.handle.generation, width, width_mode, height, height_mode, &result);
-        // Yoga warns about NaN and measures zero. A size beyond the i32 cell range
-        // would instead fail the whole frame in layout validation.
-        return .{ .width = cellRangeOrNan(result.width), .height = cellRangeOrNan(result.height) };
+        // Yoga would warn and measure zero for NaN or negative sizes. A size beyond the
+        // i32 cell range would fail the whole frame in layout validation. Yoga caches
+        // the zero, so Scene.retryFailedMeasures handles the node before the next solve.
+        const size: yoga.ExternalYogaSize = .{ .width = cellRangeOrZero(result.width), .height = cellRangeOrZero(result.height) };
+        if (size.width != result.width or size.height != result.height) {
+            node.measure_failed = true;
+            node.owner.measure_failed = true;
+        }
+        return size;
     }
 
-    fn cellRangeOrNan(value: f32) f32 {
-        return if (@as(f64, value) <= std.math.maxInt(i32)) value else std.math.nan(f32);
+    fn cellRangeOrZero(value: f32) f32 {
+        return if (value >= 0 and @as(f64, value) <= std.math.maxInt(i32)) value else 0;
     }
 };
 

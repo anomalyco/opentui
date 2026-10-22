@@ -759,8 +759,9 @@ export class NativeError extends Error {
   constructor(
     public readonly operation: string,
     public readonly status: NativeStatus,
+    reason = NativeStatus[status] ?? `status ${status}`,
   ) {
-    super(`${operation} failed: ${NativeStatus[status] ?? `status ${status}`}`)
+    super(`${operation} failed: ${reason}`)
     this.name = "NativeError"
   }
 }
@@ -1031,10 +1032,8 @@ function toSafeByteCount(value: number | bigint, label: string): number {
 }
 
 function toSafeFFIU32Length(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_FFI_U32) {
-    throw new RangeError(`${label} exceeds native u32 length limit`)
-  }
-
+  if (!Number.isInteger(value) || value < 0) throw new RangeError(`${label} must be a non-negative integer`)
+  if (value > MAX_FFI_U32) throw new RangeError(`${label} exceeds native u32 length limit`)
   return value
 }
 
@@ -3411,8 +3410,8 @@ export class FFIRenderLib {
   private readonly hitTestOutput = new Uint32Array(1)
   private readonly bufferStackInput = new Float32Array(1)
   private readonly bufferStackOutput = new Float32Array(1)
-  private drawTextBytes: Uint8Array | undefined
-  private drawBottomBytes: Uint8Array | undefined
+  private readonly drawTextBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
+  private readonly drawBottomBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
   private opentui: ReturnType<typeof getOpenTUILib>
   private iccCacheClient = false
   // Layout reads are synchronous and non-reentrant. Retain one backing buffer so
@@ -4744,9 +4743,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    // Node FFI rejects negative zero for integer arguments.
-    const column = toFFII32(x, "Text view x") || 0
-    const row = toFFII32(y, "Text view y") || 0
+    const column = toFFII32(x, "Text view x")
+    const row = toFFII32(y, "Text view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_text_view")
     nativeResult(
       "ot_buffer_draw_text_view",
@@ -4764,8 +4762,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    const column = toFFII32(x, "Editor view x") || 0
-    const row = toFFII32(y, "Editor view y") || 0
+    const column = toFFII32(x, "Editor view x")
+    const row = toFFII32(y, "Editor view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_editor_view")
     nativeResult(
       "ot_buffer_draw_editor_view",
@@ -4783,8 +4781,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = toFFII32(x, "Scene text x") || 0
-    const row = toFFII32(y, "Scene text y") || 0
+    const column = toFFII32(x, "Scene text x")
+    const row = toFFII32(y, "Scene text y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
     nativeResult(
       "ot_buffer_draw_scene_text",
@@ -5839,8 +5837,8 @@ export class FFIRenderLib {
       const record = scratch.records[encoded.operation]
       const source = encoded.source
       // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
-      const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const textBytes = this.drawTextBytes
+      const bottomBytes = this.drawBottomBytes
       const textLength = encodeDrawText(text, textBytes)
       const bottomLength = encodeDrawText(bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
@@ -6980,10 +6978,11 @@ export class FFIRenderLib {
         parent === null ? null : encodeContextHandle(context, parent, scratch.target.record, scratch.target.words)
       const childIndex = toSafeFFIU32Length(index, "Scene child index")
       const pointer = this.nativeContextPointer(context, "ot_scene_move_node")
-      nativeResult(
-        "ot_scene_move_node",
-        this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex),
-      )
+      const status = this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex)
+      // A move returns ObjectLimit for the Yoga depth limit; its other cause, 2^64 placements, cannot occur.
+      if (status === NativeStatus.ObjectLimit)
+        throw new NativeError("ot_scene_move_node", status, "Scene nesting depth exceeds the native limit")
+      nativeResult("ot_scene_move_node", status)
     } finally {
       this.sceneMoveRecord ??= scratch
     }
@@ -7053,8 +7052,9 @@ export class FFIRenderLib {
     const title = details.title ?? ""
     const bottomTitle = details.bottomTitle ?? ""
     if (typeof title !== "string" || typeof bottomTitle !== "string") throw new TypeError("Box titles must be strings")
-    const topBytes = sessionBytes(this.encoder.encode(title), "Box title length")
-    const bottomBytes = sessionBytes(this.encoder.encode(bottomTitle), "Box bottom title length")
+    // No JavaScript runs between these encodes and the call, so the drawText buffers can be shared.
+    const topLength = encodeDrawText(title, this.drawTextBytes)
+    const bottomLength = encodeDrawText(bottomTitle, this.drawBottomBytes)
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_scene_set_box_details")
       nativeResult(
@@ -7063,10 +7063,10 @@ export class FFIRenderLib {
           pointer,
           handle,
           record,
-          viewOrNull(topBytes),
-          topBytes.length,
-          viewOrNull(bottomBytes),
-          bottomBytes.length,
+          topLength === 0 ? null : this.drawTextBytes,
+          topLength,
+          bottomLength === 0 ? null : this.drawBottomBytes,
+          bottomLength,
         ),
       )
     })

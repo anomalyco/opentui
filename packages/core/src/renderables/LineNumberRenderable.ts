@@ -31,6 +31,17 @@ export interface LineNumberOptions extends RenderableOptions<LineNumberRenderabl
   showLineNumbers?: boolean
 }
 
+export interface GutterLayout {
+  minWidth: number
+  /** Columns before the line numbers, painted in each line's gutter color. Defaults to 1. */
+  paddingLeft: number
+  paddingRight: number
+  /** Reserve room for at least this many line-number digits. */
+  minDigits: number
+  /** Reserve at least this many columns for `after` signs, even when no line has one. */
+  minAfterWidth: number
+}
+
 const DEFAULT_GUTTER_FG = "#888888"
 const DEFAULT_GUTTER_BG = "transparent"
 
@@ -46,8 +57,7 @@ class GutterRenderable extends Renderable {
   private target: Renderable & LineInfoProvider
   private _fg: RGBA
   private _bg: RGBA
-  private _minWidth: number
-  private _paddingRight: number
+  private _layout: GutterLayout
   private _lineColorsGutter: Map<number, RGBA>
   private _lineColorsContent: Map<number, RGBA>
   private _lineSigns: Map<number, LineSign>
@@ -66,8 +76,7 @@ class GutterRenderable extends Renderable {
     options: {
       fg: RGBA
       bg: RGBA
-      minWidth: number
-      paddingRight: number
+      layout: GutterLayout
       lineColorsGutter: Map<number, RGBA>
       lineColorsContent: Map<number, RGBA>
       lineSigns: Map<number, LineSign>
@@ -89,8 +98,7 @@ class GutterRenderable extends Renderable {
       this.target = target
       this._fg = options.fg
       this._bg = options.bg
-      this._minWidth = options.minWidth
-      this._paddingRight = options.paddingRight
+      this._layout = options.layout
       this._lineColorsGutter = options.lineColorsGutter
       this._lineColorsContent = options.lineColorsContent
       this._lineSigns = options.lineSigns
@@ -165,9 +173,16 @@ class GutterRenderable extends Renderable {
     this.requestRender()
   }
 
+  public setLayout(layout: GutterLayout): void {
+    this._layout = layout
+    this.calculateSignWidths()
+    this.invalidateIntrinsicSize()
+    this.requestRender()
+  }
+
   private calculateSignWidths(): void {
     this._maxBeforeWidth = 0
-    this._maxAfterWidth = 0
+    this._maxAfterWidth = this._layout.minAfterWidth
 
     for (const sign of this._lineSigns.values()) {
       if (sign.before) {
@@ -192,8 +207,8 @@ class GutterRenderable extends Renderable {
       }
     }
 
-    const digits = maxLineNumber > 0 ? Math.floor(Math.log10(maxLineNumber)) + 1 : 1
-    const baseWidth = Math.max(this._minWidth, digits + this._paddingRight + 1) // +1 for left padding
+    const digits = Math.max(maxLineNumber > 0 ? Math.floor(Math.log10(maxLineNumber)) + 1 : 1, this._layout.minDigits)
+    const baseWidth = Math.max(this._layout.minWidth, digits + this._layout.paddingLeft + this._layout.paddingRight)
     return baseWidth + this._maxBeforeWidth + this._maxAfterWidth
   }
 
@@ -334,24 +349,23 @@ class GutterRenderable extends Renderable {
           currentX += this._maxBeforeWidth
         }
 
-        // Draw line number (right-aligned in its space with left padding of 1)
+        // Draw line number (right-aligned in its space, after the left padding)
         if (!this._hideLineNumbers.has(logicalLine)) {
           // Use custom line number if provided, otherwise use calculated line number
           const customLineNum = this._lineNumbers.get(logicalLine)
           const lineNum = customLineNum !== undefined ? customLineNum : logicalLine + 1 + this._lineNumberOffset
           const lineNumStr = lineNum.toString()
           const lineNumWidth = lineNumStr.length
-          const availableSpace = this.width - this._maxBeforeWidth - this._maxAfterWidth - this._paddingRight
-          const lineNumX = this._maxBeforeWidth + 1 + availableSpace - lineNumWidth - 1
+          const lineNumX = this.width - this._maxAfterWidth - this._layout.paddingRight - lineNumWidth
 
-          if (lineNumX >= this._maxBeforeWidth + 1) {
+          if (lineNumX >= this._maxBeforeWidth + this._layout.paddingLeft) {
             buffer.drawText(lineNumStr, lineNumX, i, this._fg, lineBg)
           }
         }
 
         // Draw 'after' sign if present
         if (sign?.after) {
-          const afterX = this.width - this._paddingRight - this._maxAfterWidth
+          const afterX = this.width - this._layout.paddingRight - this._maxAfterWidth
           const afterColor = sign.afterColor ? parseColor(sign.afterColor) : this._fg
           buffer.drawText(sign.after, afterX, i, afterColor, lineBg)
         }
@@ -383,8 +397,7 @@ export class LineNumberRenderable extends Renderable {
   private _lineSigns: Map<number, LineSign>
   private _fg: RGBA
   private _bg: RGBA
-  private _minWidth: number
-  private _paddingRight: number
+  private _layout: GutterLayout
   private _lineNumberOffset: number
   private _hideLineNumbers: Set<number>
   private _lineNumbers: Map<number, number>
@@ -428,8 +441,13 @@ export class LineNumberRenderable extends Renderable {
     try {
       this._fg = RGBA.clone(parseColor(options.fg ?? DEFAULT_GUTTER_FG))
       this._bg = RGBA.clone(parseColor(options.bg ?? DEFAULT_GUTTER_BG))
-      this._minWidth = options.minWidth ?? 3
-      this._paddingRight = options.paddingRight ?? 1
+      this._layout = {
+        minWidth: options.minWidth ?? 3,
+        paddingLeft: 1,
+        paddingRight: options.paddingRight ?? 1,
+        minDigits: 0,
+        minAfterWidth: 0,
+      }
       this._lineNumberOffset = options.lineNumberOffset ?? 0
       this._hideLineNumbers = options.hideLineNumbers ?? new Set()
       this._lineNumbers = options.lineNumbers ?? new Map()
@@ -473,8 +491,7 @@ export class LineNumberRenderable extends Renderable {
       this.gutter = new GutterRenderable(this.ctx, target, {
         fg: this._fg,
         bg: this._bg,
-        minWidth: this._minWidth,
-        paddingRight: this._paddingRight,
+        layout: this._layout,
         lineColorsGutter: this._lineColorsGutter,
         lineColorsContent: this._lineColorsContent,
         lineSigns: this._lineSigns,
@@ -719,6 +736,23 @@ export class LineNumberRenderable extends Renderable {
 
   public getLineSigns(): Map<number, LineSign> {
     return new Map(Array.from(this._lineSigns, ([line, sign]) => [line, cloneLineSign(sign)]))
+  }
+
+  public getGutterLayout(): GutterLayout {
+    return { ...this._layout }
+  }
+
+  public setGutterLayout(layout: GutterLayout): void {
+    if (
+      layout.minWidth === this._layout.minWidth &&
+      layout.paddingLeft === this._layout.paddingLeft &&
+      layout.paddingRight === this._layout.paddingRight &&
+      layout.minDigits === this._layout.minDigits &&
+      layout.minAfterWidth === this._layout.minAfterWidth
+    )
+      return
+    this._layout = { ...layout }
+    this.gutter?.setLayout(this._layout)
   }
 
   public set lineNumberOffset(value: number) {

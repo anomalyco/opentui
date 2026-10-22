@@ -224,6 +224,23 @@ getter for computed padding, margin, or border.
 
 `top`, `right`, `bottom`, `left`, and `overflow` have property getters. Assign an option to change its style.
 
+Assigning `null` or `undefined` to a layout option restores the default in [Supported options](#supported-options). A
+class that sizes itself, such as `InputRenderable` or `TabSelectRenderable`, restores its own `width` or `height`. Other
+class defaults, such as the row direction of `ScrollBoxRenderable`, are not restored, and `flexShrink` becomes `1`. A
+margin, padding, or gap edge becomes unset, so layout falls back to its shorthand again. Assigning `0` sets the edge
+instead:
+
+```typescript
+const box = new BoxRenderable(renderer, { paddingX: 2 })
+box.getPadding(Edge.Left) // { unit: Unit.Undefined, value: NaN }
+box.paddingLeft = 5 // pads the left side by 5
+box.paddingLeft = undefined // pads it by 2 again, from paddingX
+```
+
+To write back a `Value` that a getter returned, assign `undefined` for `Unit.Undefined`, `"auto"` for `Unit.Auto`,
+`` `${value}%` `` for `Unit.Percent`, and `value` for `Unit.Point`. Assigning a number to `width` or `height` also
+changes a `flexShrink` of `1` to `0`, so restore `getFlexShrink()` with them.
+
 ## Resize behavior
 
 A terminal resize keeps the same renderable instances. The renderer resizes its root and runs Yoga again with the new column and row counts.
@@ -292,6 +309,7 @@ Custom streams must call `renderer.resize(columns, rows)`. Local `process.stdout
 - `overflow: "scroll"` clips like a Yoga overflow mode, but it does not add scroll state. Use [ScrollBox](/docs/components/scrollbox).
 - Gap options belong to [Box](/docs/components/box), not every renderable class.
 - `visible = false` removes a renderable from layout.
+- A scene holds at most 256 levels, counting the root. An `add()` or `insertBefore()` that nests deeper throws `NativeError` with status `ObjectLimit`.
 - Text can contain fewer graphemes than cells or more UTF-16 units than cells. See [Text and terminal cells](/docs/core-concepts/text-and-cells).
 
 ## Next

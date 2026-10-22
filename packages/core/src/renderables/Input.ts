@@ -123,6 +123,10 @@ export class InputRenderable extends TextareaRenderable {
     })
   }
 
+  protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
+    return kind === "height" ? 1 : super.defaultDimension(kind)
+  }
+
   public get value(): string {
     return this.plainText
   }

@@ -5,6 +5,7 @@ import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { BoxRenderable } from "./Box.js"
+import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
 import { ArrowRenderable, ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
@@ -151,9 +152,10 @@ test("TabSelect paints the visible tabs, the underline, the description, and scr
   ])
 })
 
-// Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), or `auto:x,y`
-// (updateAutoScroll, then a 100 ms frame). Each step records scrollTop,scrollLeft and a "!" prefix when a key is not
-// handled; an auto step adds "-" when auto-scroll stopped. Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
+// Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
+// (updateAutoScroll, then a 100 ms frame), or `press|move|release:x,y` (left button, then a frame). Each step records
+// scrollTop,scrollLeft and a "!" prefix when a key is not handled; an auto step adds "-" when auto-scroll stopped.
+// Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
 const scrolling: [string, object, string, string][] = [
   [
     "keys",
@@ -176,6 +178,14 @@ const scrolling: [string, object, string, string][] = [
     "10,10 17,10 20,10 21,10 15,10 15,3 15,10 15,10-",
   ],
   ["auto-scroll without scrollX", {}, "#10 auto:0,5", "10,0 10,0-"],
+  // The thumb in column 19 owns the drag even when the first motion report is off it; a later drag from the
+  // content across the bar does not scroll.
+  ...["19", "18"].map((x): [string, object, string, string] => [
+    `thumb drag, first report at column ${x}`,
+    {},
+    `press:19,0 move:${x},2 move:19,4 release:${x},4 press:5,5 move:19,5 move:19,8 release:19,8`,
+    "0,0 19,0 38,0 38,0 38,0 38,0 38,0 38,0",
+  ]),
 ]
 
 test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
@@ -198,6 +208,10 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
       clock.advance(100)
       await setup.renderOnce()
       if (!scroll.live) token = "-"
+    } else if (kind === "press" || kind === "move" || kind === "release") {
+      const [x, y] = arg.split(",").map(Number)
+      await setup.mockMouse[kind === "press" ? "pressDown" : kind === "move" ? "moveTo" : "release"](x, y)
+      await setup.renderOnce()
     } else if (!scroll.handleKeyPress(key(step))) token = "!"
     expect([scroll.content.translateX + scroll.scrollLeft, scroll.content.translateY + scroll.scrollTop]).toEqual([
       0, 0,
@@ -268,6 +282,29 @@ test("box titles and arrow characters accept any text", async () => {
   arrow.arrowChars = { up: text.slice(1) }
   await setup.renderOnce()
   expect(errors).toEqual([])
+})
+
+// The nullish sweep builds each class with one option set; these sizes depend on other options.
+test("a nullish width or height restores the size that the class chose", () => {
+  const arrow = new ArrowRenderable(renderer, { direction: "up", width: 3 })
+  const terminal = new EmbeddedTerminalRenderable(renderer, { cols: 30, rows: 5, width: 12, height: 4 })
+  const tabs = new TabSelectRenderable(renderer, { options: [{ name: "a", description: "b" }], showDescription: false })
+  Object.assign(terminal, { width: null, height: null })
+  tabs.height = 7
+  tabs.height = null
+  const sizes = [arrow.getWidth(), terminal.getWidth(), terminal.getHeight(), tabs.getHeight()]
+  expect(sizes.map((size) => size.value)).toEqual([3, 30, 5, 2])
+  for (const node of [arrow, terminal, tabs]) node.destroyRecursively()
+})
+
+test("a nullish scrollbar visible write restores visibility that follows the scroll sizes", () => {
+  const bar = new ScrollBarRenderable(renderer, { orientation: "vertical" })
+  Object.assign(bar, { scrollSize: 10, viewportSize: 20, visible: true })
+  Object.assign(bar, { visible: null })
+  expect(bar.visible).toBe(false)
+  bar.scrollSize = 30
+  expect(bar.visible).toBe(true)
+  bar.destroyRecursively()
 })
 
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.

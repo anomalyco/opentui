@@ -20,6 +20,7 @@ import { InputRenderable } from "../renderables/Input.js"
 import { SliderRenderable } from "../renderables/Slider.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
+import { NativeError, NativeStatus } from "../zig.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -324,8 +325,9 @@ describe("Renderable - declared style getters", () => {
     ["getMaxWidth", (box) => box.getMaxWidth(), { maxWidth: 20 }, point(20)],
     ["getMaxHeight", (box) => box.getMaxHeight(), { maxHeight: 9 }, point(9)],
     ["getPadding", (box) => box.getPadding(Edge.Bottom), { paddingBottom: 1 }, point(1)],
+    ["getMargin", (box) => box.getMargin(Edge.All), { margin: "auto" }, { unit: Unit.Auto, value: NaN }],
     ["getPadding Top", (box) => box.getPadding(Edge.Top), { padding: 2, paddingX: 3, paddingY: 4 }, unset],
-    ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: 3 }, point(3)],
+    ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: "30%" }, percent(30)],
   ]
 
   test.each(cases)(
@@ -345,6 +347,29 @@ describe("Renderable - declared style getters", () => {
       expect(() => read(assigned)).not.toThrow()
     },
   )
+
+  // The nullish sweep writes no invalid values. An unset row cannot show that the write was ignored.
+  test.each(cases.filter((row) => typeof row[3] === "object" && row[3] !== unset))(
+    "%s ignores an invalid write",
+    (_, read, options) => {
+      const box = new BoxRenderable(testRenderer, options)
+      Object.assign(box, Object.fromEntries(Object.keys(options).map((key) => [key, NaN])))
+      expect(read(box)).toEqual(read(new BoxRenderable(testRenderer, options)))
+    },
+  )
+
+  test("a position write changes only its own edge, and an invalid one keeps the layout", async () => {
+    const box = new BoxRenderable(testRenderer, { position: "absolute", top: 1, left: 2, width: 1, height: 1 })
+    testRenderer.root.add(box)
+    box.left = 3
+    Object.assign(box, { right: NaN, bottom: "x" })
+    box.setPosition({ top: NaN })
+    await renderOnce()
+    expect([box.x, box.y, box.right, box.bottom]).toEqual([3, 1, undefined, undefined])
+    box.left = null
+    await renderOnce()
+    expect([box.x, box.y]).toEqual([0, 1])
+  })
 })
 
 describe("Renderable - Child Management", () => {
@@ -422,6 +447,31 @@ describe("Renderable - Child Management", () => {
 
     expect(() => (parent as any).remove("child")).toThrow("remove expects a renderable child object")
     expect(parent.getChildren()[0]).toBe(child)
+  })
+
+  test("add names the scene nesting limit and keeps the tree", async () => {
+    // The root and 255 descendants fill the 256 levels of the native scene.
+    let parent: Renderable = testRenderer.root
+    for (let level = 1; level < 256; level++) {
+      const next = new TestRenderable(testRenderer, {})
+      parent.add(next)
+      parent = next
+    }
+    const child = new TestRenderable(testRenderer, {})
+    const failure = (node: Renderable) => {
+      try {
+        parent.add(node)
+      } catch (error) {
+        return error instanceof NativeError && [error.operation, NativeStatus[error.status], error.message]
+      }
+    }
+    // A cycle at the same depth fails for its own cause.
+    expect([failure(child), failure(testRenderer.root.getChildren()[0])]).toEqual([
+      ["ot_scene_move_node", "ObjectLimit", "ot_scene_move_node failed: Scene nesting depth exceeds the native limit"],
+      ["ot_scene_move_node", "InvalidArgument", "ot_scene_move_node failed: InvalidArgument"],
+    ])
+    expect([child.parent, parent.getChildren().length]).toEqual([null, 0])
+    await renderOnce()
   })
 
   test("remove warns in dev when the object was never a child", () => {

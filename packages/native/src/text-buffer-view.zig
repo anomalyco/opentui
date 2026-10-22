@@ -4,6 +4,7 @@ const tb = @import("text-buffer.zig");
 const seg_mod = @import("text-buffer-segment.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 const NativeRenderable = @import("native-renderable.zig").NativeRenderable;
 
 const UnifiedTextBuffer = tb.UnifiedTextBuffer;
@@ -517,6 +518,7 @@ pub const UnifiedTextBufferView = struct {
             .cached_line_vline_counts = &self.cached_line_vline_counts,
         };
 
+        text_work.add(.layouts, 1);
         const calculated = if (self.wrap_mode == .none or self.wrap_width == null)
             calculateUnwrappedVirtualLines(virtual_allocator, self.text_buffer, output)
         else switch (self.wrap_mode) {
@@ -1530,10 +1532,12 @@ pub const UnifiedTextBufferView = struct {
             }
         }
 
+        text_work.add(.measure_passes, 1);
         var result: MeasureResult = .{ .line_count = 0, .width_cols_max = 0 };
         // No-wrap path avoids allocations by using marker-based line widths.
         if (width == 0 or self.wrap_mode == .none) {
             result.line_count = self.text_buffer.lineCount();
+            text_work.add(.measure_lines, result.line_count);
             var row: u32 = 0;
             while (row < result.line_count) : (row += 1) {
                 result.width_cols_max = @max(result.width_cols_max, self.text_buffer.lineWidthAt(row));
@@ -1604,6 +1608,7 @@ pub const UnifiedTextBufferView = struct {
             fn line_end_callback(ctx_ptr: *anyopaque, line_info: iter_mod.LineInfo) void {
                 const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (ctx.failed) return;
+                text_work.add(.lines_laid_out, 1);
 
                 const first_vline_idx: u32 = @intCast(ctx.output.virtual_lines.items.len);
                 ctx.output.cached_line_first_vline.append(ctx.allocator, first_vline_idx) catch {
@@ -2160,9 +2165,19 @@ pub const UnifiedTextBufferView = struct {
                     finalizePendingWord(wctx);
                     if (wctx.failed) return;
                 }
+                // Zero-width text that continues the previous chunk's grapheme stays with it; a pending word holds that grapheme.
+                var previous_cp: ?u21 = if (wctx.pending_word_pieces.items.len > 0) null else if (wctx.word_chunk) |previous| utf8.chunkWordClassEdges(previous.getBytes(wctx.text_buffer.memRegistry())).last_cp else null;
+                var break_state: @import("uucode").grapheme.BreakState = .default;
                 wctx.word_chunk = chunk;
                 wctx.word_chunk_col_start = 0;
                 wctx.word_chunk_byte_start = 0;
+                while (wctx.word_chunk_byte_start < chunk_bytes.len) : (wctx.word_chunk_byte_start += utf8.decodeUtf8Unchecked(chunk_bytes, wctx.word_chunk_byte_start).len) {
+                    const cp = utf8.decodeUtf8Unchecked(chunk_bytes, wctx.word_chunk_byte_start).cp;
+                    if (utf8.isGraphemeBreak(previous_cp, cp, &break_state, wctx.text_buffer.widthMethod())) break;
+                    previous_cp = cp;
+                }
+                if (utf8.calculateTextWidth(chunk_bytes[0..wctx.word_chunk_byte_start], wctx.text_buffer.tabWidth(), wctx.text_buffer.controlDisplay(), false, wctx.text_buffer.widthMethod()) > 0) wctx.word_chunk_byte_start = 0;
+                if (!addVirtualChunkSticky(wctx, chunk, 0, wctx.word_chunk_byte_start, 0, 0)) return;
                 const last_word_class = if (layout) |info| blk: {
                     var cjk_idx: usize = 0;
                     for (info.wrap_breaks) |wrap_break| {
@@ -2212,7 +2227,6 @@ pub const UnifiedTextBufferView = struct {
                         wctx.source_line_has_non_whitespace = true;
                     }
                 }
-                wctx.word_chunk = null;
             }
 
             /// One grapheme that is wider than the space left, plus the zero-width clusters
@@ -2362,6 +2376,7 @@ pub const UnifiedTextBufferView = struct {
             fn line_end_callback(ctx_ptr: *anyopaque, line_info: iter_mod.LineInfo) void {
                 const wctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (wctx.failed) return;
+                text_work.add(if (calculation == .render) .lines_laid_out else .measure_lines, 1);
 
                 var used_measure_cache = false;
                 var measure_cache_chunk: ?*const TextChunk = null;
@@ -2473,6 +2488,7 @@ pub const UnifiedTextBufferView = struct {
                     wctx.source_line_has_non_whitespace = false;
                     wctx.source_line_cjk_breaks = true;
                     wctx.word_line_last_cp = null;
+                    wctx.word_chunk = null;
                 }
                 if (comptime wrap_mode == .word and calculation == .measure) {
                     wctx.logical_measure_line_count = 0;

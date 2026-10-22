@@ -128,6 +128,9 @@ export interface Position {
   left?: number | "auto" | `${number}%`
 }
 
+// Indexed by Yoga edge: Edge.Left is 0 and Edge.Bottom is 3.
+const positionKeys = ["left", "top", "right", "bottom"] as const
+
 export interface BaseRenderableOptions {
   id?: string
 }
@@ -518,6 +521,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set visible(value: boolean) {
+    value ??= true
     if (this._visible === value) return
 
     this.runMutation(() => {
@@ -779,9 +783,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.top
   }
 
-  public set top(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ top: value })
+  public set top(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ top: value ?? undefined })
     }
   }
 
@@ -789,9 +793,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.right
   }
 
-  public set right(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ right: value })
+  public set right(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ right: value ?? undefined })
     }
   }
 
@@ -799,9 +803,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.bottom
   }
 
-  public set bottom(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ bottom: value })
+  public set bottom(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ bottom: value ?? undefined })
     }
   }
 
@@ -809,9 +813,9 @@ export abstract class Renderable extends BaseRenderable {
     return this._position.left
   }
 
-  public set left(value: number | "auto" | `${number}%` | undefined) {
-    if (isPositionType(value) || value === undefined) {
-      this.setPosition({ left: value })
+  public set left(value: number | "auto" | `${number}%` | null | undefined) {
+    if (isPositionType(value) || value == null) {
+      this.setPosition({ left: value ?? undefined })
     }
   }
 
@@ -837,12 +841,8 @@ export abstract class Renderable extends BaseRenderable {
     return this._destroyedLayout?.width ?? this.styledDimension("width")
   }
 
-  public set width(value: number | "auto" | `${number}%`) {
-    if (!isDimensionType(value) || this._width === value) {
-      return
-    }
-
-    this.setDimension(Dimension.Width, value)
+  public set width(value: number | "auto" | `${number}%` | null | undefined) {
+    this.setDimension("width", value)
   }
 
   public get height(): number {
@@ -851,6 +851,11 @@ export abstract class Renderable extends BaseRenderable {
       return layout.height === 0 ? this.styledDimension("height") : layout.height
     }
     return this._destroyedLayout?.height ?? this.styledDimension("height")
+  }
+
+  /** The `width` or `height` that a nullish write restores. A class that sizes itself overrides it. */
+  protected defaultDimension(_kind: "width" | "height"): number | "auto" | `${number}%` {
+    return "auto"
   }
 
   private styledDimension(kind: "width" | "height"): number {
@@ -877,18 +882,19 @@ export abstract class Renderable extends BaseRenderable {
     return layout
   }
 
-  public set height(value: number | "auto" | `${number}%`) {
-    if (!isDimensionType(value) || this._height === value) {
-      return
-    }
-
-    this.setDimension(Dimension.Height, value)
+  public set height(value: number | "auto" | `${number}%` | null | undefined) {
+    this.setDimension("height", value)
   }
 
-  private setDimension(dimension: Dimension, value: number | "auto" | `${number}%`): void {
+  private setDimension(kind: "width" | "height", input: number | "auto" | `${number}%` | null | undefined): void {
+    // A destroyed node ignores writes; a defaultDimension override may need its native context.
+    if (this.isFreed()) return
+    const value = input ?? this.defaultDimension(kind)
+    const key = kind === "width" ? "_width" : "_height"
+    if (!isDimensionType(value) || this[key] === value) return
     this.runMutation(() => {
-      const key = dimension === Dimension.Width ? "_width" : "_height"
       const disableShrink = typeof value === "number" && this._flexShrink === 1
+      const dimension = kind === "width" ? Dimension.Width : Dimension.Height
       sceneSetDimension(this._ctx.nativeScene, this, dimension, value, disableShrink)
       this[key] = value
       if (disableShrink) this._flexShrink = 0
@@ -1138,20 +1144,6 @@ export abstract class Renderable extends BaseRenderable {
     return this.yogaGetValue(YogaValueKind.Gap, gutter)
   }
 
-  private setPositions(positions: readonly (number | "auto" | `${number}%` | undefined)[]): void {
-    const units = new Uint32Array(Edge.Bottom + 1)
-    const values = new Float32Array(Edge.Bottom + 1)
-    let mask = 0
-    for (let edge = 0; edge <= Edge.Bottom; edge++) {
-      if (positions[edge] === undefined) continue
-      const value = parseYogaValue(positions[edge])
-      mask |= 1 << edge
-      units[edge] = value.unit
-      values[edge] = value.value
-    }
-    this._ctx.nativeScene.setPositions(this, mask, units, values)
-  }
-
   getComputedLayout(): Layout {
     const scene = this._ctx.nativeScene
     const revision = scene.observedLayoutRevision
@@ -1316,6 +1308,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   set position(positionType: PositionTypeString | null | undefined) {
+    positionType ??= "relative"
     if (!isPositionTypeType(positionType) || this._positionType === positionType) return
 
     this.runMutation(() => {
@@ -1330,6 +1323,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   set overflow(overflow: OverflowString | null | undefined) {
+    overflow ??= "visible"
     if (!isOverflowType(overflow) || this._overflow === overflow) return
 
     this.runMutation(() => {
@@ -1347,14 +1341,21 @@ export abstract class Renderable extends BaseRenderable {
     })
   }
 
+  // A present nullish key unsets its edge, as when the option is omitted. An absent or invalid key keeps it.
   private updateYogaPosition(position: Position): void {
-    const { top, right, bottom, left } = position
-    this.setPositions([
-      isPositionType(left) ? left : undefined,
-      isPositionType(top) ? top : undefined,
-      isPositionType(right) ? right : undefined,
-      isPositionType(bottom) ? bottom : undefined,
-    ])
+    const units = new Uint32Array(positionKeys.length)
+    const values = new Float32Array(positionKeys.length)
+    let mask = 0
+    for (let edge = 0; edge < positionKeys.length; edge++) {
+      const key = positionKeys[edge]
+      const input = position[key] ?? undefined
+      if (!(key in position) || (input !== undefined && !isPositionType(input))) continue
+      const value = parseYogaValue(input)
+      mask |= 1 << edge
+      units[edge] = value.unit
+      values[edge] = value.value
+    }
+    this._ctx.nativeScene.setPositions(this, mask, units, values)
   }
 
   public set flexGrow(grow: number | null | undefined) {
@@ -1401,66 +1402,39 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set flexBasis(basis: number | "auto" | null | undefined) {
-    if (isFlexBasisType(basis)) {
-      this.setFlexBasis(basis)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE, basis, isFlexBasisType)
   }
 
   public set minWidth(minWidth: number | `${number}%` | null | undefined) {
-    if (isSizeType(minWidth)) {
-      this.setMinWidth(minWidth)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE, minWidth, isSizeType)
   }
 
   public set maxWidth(maxWidth: number | `${number}%` | null | undefined) {
-    if (isSizeType(maxWidth)) {
-      this.setMaxWidth(maxWidth)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE, maxWidth, isSizeType)
   }
 
   public set minHeight(minHeight: number | `${number}%` | null | undefined) {
-    if (isSizeType(minHeight)) {
-      this.setMinHeight(minHeight)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE, minHeight, isSizeType)
   }
 
   public set maxHeight(maxHeight: number | `${number}%` | null | undefined) {
-    if (isSizeType(maxHeight)) {
-      this.setMaxHeight(maxHeight)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE, maxHeight, isSizeType)
   }
 
   public set margin(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.setMargin(Edge.All, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.All, margin, isMarginType)
   }
 
   public set marginX(marginX: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(marginX)) {
-      this.setMargin(Edge.Horizontal, marginX)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Horizontal, marginX, isMarginType)
   }
 
   public set marginY(marginY: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(marginY)) {
-      this.setMargin(Edge.Vertical, marginY)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Vertical, marginY, isMarginType)
   }
 
   public set marginTop(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.setMargin(Edge.Top, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Top, margin, isMarginType)
   }
 
   public get marginTop(): number | "auto" | `${number}%` {
@@ -1468,73 +1442,55 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set marginRight(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.setMargin(Edge.Right, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Right, margin, isMarginType)
   }
 
   public set marginBottom(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.setMargin(Edge.Bottom, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Bottom, margin, isMarginType)
   }
 
   public set marginLeft(margin: number | "auto" | `${number}%` | null | undefined) {
-    if (isMarginType(margin)) {
-      this.setMargin(Edge.Left, margin)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Margin, Edge.Left, margin, isMarginType)
   }
 
   public set padding(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.setPadding(Edge.All, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.All, padding, isPaddingType)
   }
 
   public set paddingX(paddingX: number | `${number}%` | null | undefined) {
-    if (isPaddingType(paddingX)) {
-      this.setPadding(Edge.Horizontal, paddingX)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Horizontal, paddingX, isPaddingType)
   }
 
   public set paddingY(paddingY: number | `${number}%` | null | undefined) {
-    if (isPaddingType(paddingY)) {
-      this.setPadding(Edge.Vertical, paddingY)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Vertical, paddingY, isPaddingType)
   }
 
   public set paddingTop(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.setPadding(Edge.Top, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Top, padding, isPaddingType)
   }
 
   public set paddingRight(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.setPadding(Edge.Right, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Right, padding, isPaddingType)
   }
 
   public set paddingBottom(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.setPadding(Edge.Bottom, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Bottom, padding, isPaddingType)
   }
 
   public set paddingLeft(padding: number | `${number}%` | null | undefined) {
-    if (isPaddingType(padding)) {
-      this.setPadding(Edge.Left, padding)
-      this.requestRender()
-    }
+    this.setStyleValue(YogaValueKind.Padding, Edge.Left, padding, isPaddingType)
+  }
+
+  // A nullish value unsets the style, as when the option is omitted, so an edge falls back to its shorthand again.
+  private setStyleValue(
+    kind: (typeof YogaValueKind)[keyof typeof YogaValueKind],
+    edge: number,
+    value: number | "auto" | `${number}%` | null | undefined,
+    isValid: (value: unknown) => boolean,
+  ): void {
+    if (value != null && !isValid(value)) return
+    this.yogaSetValue(kind, edge, value ?? undefined)
+    this.requestRender()
   }
 
   public setMeasureProvider(provider: MeasureFunction | null): void {
