@@ -20,7 +20,7 @@ comptime {
     for (std.meta.tags(input_parser.MouseAction)) |tag| checkTwin("MOUSE_", @tagName(tag), @intFromEnum(tag));
     for (std.meta.tags(input_parser.Protocol)) |tag| checkTwin("REPLY_", @tagName(tag), @intFromEnum(tag));
     for (std.meta.fields(input_parser.Modifiers), 0..) |field, bit| checkTwin("MOD_", field.name, 1 << bit);
-    for (std.meta.fields(input_parser.Expectations)[0..2], 0..) |field, bit| checkTwin("EXPECT_", field.name, 1 << bit);
+    for (std.meta.fields(input_parser.Expectations)[0..3], 0..) |field, bit| checkTwin("EXPECT_", field.name, 1 << bit);
     for (@typeInfo(input_parser.flags).@"struct".decls) |decl| checkTwin("", decl.name, @field(input_parser.flags, decl.name));
     for (@typeInfo(input_parser.key).@"struct".decls) |decl| {
         // Range bounds and the F(n) helper have no twin of their own.
@@ -42,7 +42,7 @@ fn checkTwin(comptime prefix: []const u8, comptime name: []const u8, comptime va
     if (!@hasDecl(c, twin) or @field(c, twin) != value) @compileError(twin ++ " differs from input_parser");
 }
 
-const expect_flags: u32 = c.OT_INPUT_EXPECT_REPLIES | c.OT_INPUT_EXPECT_KITTY_KEYBOARD;
+const expect_flags: u32 = c.OT_INPUT_EXPECT_REPLIES | c.OT_INPUT_EXPECT_KITTY_KEYBOARD | c.OT_INPUT_EXPECT_CURSOR_POSITION;
 
 pub fn ot_session_input_feed(
     context: ?*abi.ContextHandle,
@@ -84,6 +84,7 @@ pub fn ot_session_input_expect(context: ?*abi.ContextHandle, session: ?*const c.
     const expect: input_parser.Expectations = .{
         .replies = flags & c.OT_INPUT_EXPECT_REPLIES != 0,
         .kitty_keyboard = flags & c.OT_INPUT_EXPECT_KITTY_KEYBOARD != 0,
+        .cursor_position = flags & c.OT_INPUT_EXPECT_CURSOR_POSITION != 0,
     };
     context.?.core.sessionInputExpect(abi.handleFromC(session.?.*), expect) catch |err| return fail(context, err);
     return c.OT_OK;
@@ -155,6 +156,13 @@ test "Context input ABI parses into caller records and resolves timeouts" {
     // Input time is independent of pump time but must not go backwards.
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, f.feed("b", 9));
     try std.testing.expectEqual(@as(u32, 1), f.drain.count);
+    // CURSOR_POSITION makes CSI 1 ; N R a cursor position report instead of Shift+F3.
+    for ([_]struct { u32, u8 }{ .{ c.OT_INPUT_EXPECT_CURSOR_POSITION, c.OT_INPUT_REPLY }, .{ 0, c.OT_INPUT_KEY } }) |case| {
+        try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, case[0]));
+        try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[1;2R", 40_000_000));
+        try std.testing.expectEqual(@as(u32, 1), f.drain.count);
+        try std.testing.expectEqual(case[1], f.records[0].kind);
+    }
     // Expectations defer an awaited reply.
     try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, c.OT_INPUT_EXPECT_REPLIES));
     try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[?62", 50_000_000));
@@ -226,7 +234,7 @@ test "Context input ABI rejects malformed calls, foreign handles, and closed ses
     drain = f.drain;
     drain.abi_version += 1;
     try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_session_input_feed(context, &f.session, "a", 1, 0, &f.records, f.records.len, &f.payload, f.payload.len, &drain));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, &f.session, 4));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, &f.session, 8));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, null, 0));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_reset(context, null, 0));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_reset(context, &f.session, 2));

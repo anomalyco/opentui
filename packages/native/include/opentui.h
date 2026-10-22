@@ -2239,6 +2239,7 @@ typedef struct ot_session_pump_result {
 
 #define OT_INPUT_EXPECT_REPLIES UINT32_C(1)
 #define OT_INPUT_EXPECT_KITTY_KEYBOARD UINT32_C(2)
+#define OT_INPUT_EXPECT_CURSOR_POSITION UINT32_C(4)
 
 #define OT_INPUT_EVENTS_MIN UINT32_C(4)
 #define OT_INPUT_PAYLOAD_BYTES_MIN UINT32_C(4384)
@@ -2905,9 +2906,11 @@ ot_status ot_session_input_feed(
 
 /* flags is a combination of OT_INPUT_EXPECT_* bits; other bits must be zero.
  * Set REPLIES while any query is outstanding, including the capability queries
- * that setup publishes. It keeps a partial CSI reply waiting past the
- * timeout, and it makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply
- * instead of a modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting;
+ * that setup publishes. It keeps a partial CSI reply waiting past the timeout.
+ * Also set CURSOR_POSITION while a cursor position request is outstanding: it
+ * makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply instead of a
+ * modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting and makes
+ * CSI R and CSI 1 ; N R replies, since the Kitty protocol sends F3 as CSI 13 ~;
  * the session also applies it while its terminal has Kitty keyboard enabled.
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);

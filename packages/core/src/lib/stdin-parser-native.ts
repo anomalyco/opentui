@@ -102,13 +102,12 @@ function latin1(bytes: Uint8Array): string {
 }
 
 function expectationFlags(context: StdinParserProtocolContext): number {
-  const replies =
-    context.privateCapabilityRepliesActive ||
-    context.pixelResolutionQueryActive ||
-    context.explicitWidthCprActive ||
-    context.startupCursorCprActive
+  const cursorPosition = context.explicitWidthCprActive || context.startupCursorCprActive
+  const replies = context.privateCapabilityRepliesActive || context.pixelResolutionQueryActive || cursorPosition
   return (
-    (replies ? C.OT_INPUT_EXPECT_REPLIES : 0) | (context.kittyKeyboardEnabled ? C.OT_INPUT_EXPECT_KITTY_KEYBOARD : 0)
+    (replies ? C.OT_INPUT_EXPECT_REPLIES : 0) |
+    (context.kittyKeyboardEnabled ? C.OT_INPUT_EXPECT_KITTY_KEYBOARD : 0) |
+    (cursorPosition ? C.OT_INPUT_EXPECT_CURSOR_POSITION : 0)
   )
 }
 

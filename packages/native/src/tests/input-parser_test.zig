@@ -98,6 +98,10 @@ fn frag(raw: []const u8) Expect {
     return .{ .kind = .reply, .raw = raw, .flags = ip.flags.reply_fragment };
 }
 
+fn report(raw: []const u8) Expect {
+    return .{ .kind = .reply, .raw = raw, .flags = ip.flags.reply_cursor_position };
+}
+
 fn mouse(action: ip.MouseAction, button: u32, x: u16, y: u16, modifiers: Mods) Expect {
     return .{ .kind = .mouse, .action = @intFromEnum(action), .code = button, .x = x, .y = y, .mods = modifiers };
 }
@@ -581,7 +585,7 @@ test "input parser replies, focus, and mouse reports are not keys" {
         "\x1b[?1;0;6;9;15c",    "\x1b[?1;2$y",                      "\x1b[?25;1$y",                   "\x1b[>41;1;0c",
         "\x1b[?2026;2$y",       "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1b]10;rgb:ffff/ffff/ffff\x07", "\x1bP>|kitty(0.40)\x1b\\",
         "\x1b_Gi=1;OK\x1b\\",   "\x1b[201~",                        "\x1b[h",                         "\x1b[?997;1n",
-        "\x1b[R",               "\x1b[1;1:1R",                      "\x1b[<0M",                       "\x1b[?1u",
+        "\x1b[1R",              "\x1b[1;1:1R",                      "\x1b[<0M",                       "\x1b[?1u",
         "\x1b]4;0;#ffffff\x07", "\x1bP1+r4d73=1b5b\x1b\\",          "\x1b[=1c",                       "\x1b[1 q",
         "\x1b[\x80A",
     }) |bytes| {
@@ -608,18 +612,30 @@ test "input parser replies, focus, and mouse reports are not keys" {
     }
 }
 
-test "input parser cursor position reports and modified F3 share a form" {
-    try check("\x1b[1;5R", &.{k(K.f(3), CTRL)});
-    try check("\x1b[1;2R", &.{k(K.f(3), SHIFT)});
-    const cpr: Expect = .{ .kind = .reply, .raw = "\x1b[12;40R", .flags = ip.flags.reply_cursor_position };
-    try check("\x1b[12;40R", &.{cpr});
-    try check("\x1b[1;1R", &.{Expect{ .kind = .reply, .flags = ip.flags.reply_cursor_position }});
-    try check("\x1b[24;80R", &.{Expect{ .kind = .reply, .flags = ip.flags.reply_cursor_position }});
-    try check("\x1b[1;1:1R", &.{reply("\x1b[1;1:1R")});
-    var harness = try Harness.create();
-    defer harness.deinit();
-    harness.parser.setExpectations(.{ .replies = true });
-    try expectGot("", &.{Expect{ .kind = .reply, .raw = "\x1b[1;5R", .flags = ip.flags.reply_cursor_position }}, try harness.feed("\x1b[1;5R"));
+test "input parser cursor position reports and F3 share CSI R forms" {
+    const plain: ip.Expectations = .{};
+    const pixel: ip.Expectations = .{ .replies = true };
+    const cpr: ip.Expectations = .{ .replies = true, .cursor_position = true };
+    const kitty: ip.Expectations = .{ .kitty_keyboard = true };
+    for ([_]struct { ip.Expectations, []const u8, Expect }{
+        // A report always has a row and a column, so an awaited one leaves unmodified F3 a key.
+        .{ plain, "\x1b[R", k(K.f(3), NONE) },
+        .{ cpr, "\x1b[R", k(K.f(3), NONE) },
+        .{ plain, "\x1b[1;5R", k(K.f(3), CTRL) },
+        .{ pixel, "\x1b[1;2R", k(K.f(3), SHIFT) },
+        .{ cpr, "\x1b[1;2R", report("\x1b[1;2R") },
+        // The Kitty protocol sends F3 as CSI 13 ~.
+        .{ kitty, "\x1b[R", reply("\x1b[R") },
+        .{ kitty, "\x1b[1;2R", report("\x1b[1;2R") },
+        .{ plain, "\x1b[12;40R", report("\x1b[12;40R") },
+        .{ plain, "\x1b[1;1R", report("\x1b[1;1R") },
+        .{ plain, "\x1b[1;1:1R", reply("\x1b[1;1:1R") },
+    }) |case| {
+        var harness = try Harness.create();
+        defer harness.deinit();
+        harness.parser.setExpectations(case[0]);
+        try expectGot(case[1], &.{case[2]}, try harness.feed(case[1]));
+    }
 }
 
 // parse.keypress-kitty.test.ts and parse.keypress-kitty.protocol.test.ts
@@ -967,6 +983,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     const plain: ip.Expectations = .{};
     const kitty: ip.Expectations = .{ .kitty_keyboard = true };
     const replies: ip.Expectations = .{ .replies = true };
+    const cpr: ip.Expectations = .{ .replies = true, .cursor_position = true };
     for ([_]struct { ip.Expectations, []const u8, usize, []const u8, []const Expect }{
         // A fragment, and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
         .{ plain, "\x1b[", 1, "q", &.{ frag("\x1b["), ch('q') } },
@@ -1007,8 +1024,9 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ replies, "\x1b[?997;1", 0, "n", &.{reply("\x1b[?997;1n")} },
         .{ replies, "\x1b[?5", 0, "u", &.{reply("\x1b[?5u")} },
         .{ replies, "\x1b[?1", 0, "x", &.{ frag("\x1b[?1"), ch('x') } },
-        .{ replies, "\x1b[1;2", 0, "R", &.{Expect{ .kind = .reply, .raw = "\x1b[1;2R", .flags = ip.flags.reply_cursor_position }} },
-        .{ replies, "\x1b[24;", 0, "80R", &.{Expect{ .kind = .reply, .raw = "\x1b[24;80R", .flags = ip.flags.reply_cursor_position }} },
+        .{ cpr, "\x1b[1;2", 0, "R", &.{report("\x1b[1;2R")} },
+        .{ replies, "\x1b[1;2", 0, "R", &.{k(K.f(3), SHIFT)} },
+        .{ replies, "\x1b[24;", 0, "80R", &.{report("\x1b[24;80R")} },
         .{ replies, "\x1b[4;600", 0, ";800t", &.{reply("\x1b[4;600;800t")} },
         .{ replies, "\x1b[4;600;8", 0, "00t", &.{reply("\x1b[4;600;800t")} },
         .{ replies, "\x1b[1;5", 0, "A", &.{ frag("\x1b[1;5"), ch('A') } },
@@ -1213,7 +1231,7 @@ test "input parser arbitrary bytes with uneven time stay bounded" {
         const chunk = try arbitraryBytes(testing.allocator, &seed, 64);
         defer testing.allocator.free(chunk);
         harness.now += (next(&seed) % 30) * ms;
-        harness.parser.setExpectations(@bitCast(@as(u8, @intCast(next(&seed) % 4))));
+        harness.parser.setExpectations(@bitCast(@as(u8, @intCast(next(&seed) % 8))));
         _ = try harness.feed(chunk);
         if (next(&seed) % 4 == 0) _ = try harness.wait(20);
         harness.out.clearRetainingCapacity();
@@ -1333,8 +1351,20 @@ test "input parser passes Core's conformance vectors, whole and one byte at a ti
             } else try bytewise.append(allocator, null);
         }
         const expected = fields[2].array.items;
+        // The parser state the row needs, set as stdin-parser-native.ts expectationFlags sets it.
+        var expect: ip.Expectations = .{};
+        if (fields.len > 4) {
+            const context = fields[4].object;
+            if (context.get("kitty")) |kitty| expect.kitty_keyboard = kitty.bool;
+            if (context.get("pending")) |pending| for (pending.array.items) |query| {
+                expect.replies = true;
+                if (std.mem.eql(u8, query.string, "cpr")) {
+                    expect.cursor_position = true;
+                } else if (!std.mem.eql(u8, query.string, "pixel")) return error.UnknownConformanceQuery;
+            };
+        }
         for ([_][]const ?[]const u8{ whole.items, bytewise.items }) |steps| {
-            const got = try conformanceRun(allocator, steps);
+            const got = try conformanceRun(allocator, steps, expect);
             const same = got.len == expected.len and for (got, expected) |a, b| {
                 if (!std.mem.eql(u8, a, b.string)) break false;
             } else true;
@@ -1351,9 +1381,10 @@ test "input parser passes Core's conformance vectors, whole and one byte at a ti
 }
 
 /// Feeds each step, then lets the timeout pass once more, and writes every event in notation.
-fn conformanceRun(allocator: std.mem.Allocator, steps: []const ?[]const u8) ![]const []const u8 {
+fn conformanceRun(allocator: std.mem.Allocator, steps: []const ?[]const u8, expect: ip.Expectations) ![]const []const u8 {
     var harness = try Harness.create();
     defer harness.deinit();
+    harness.parser.setExpectations(expect);
     const timeout_ms = ip.timeout_ns / ms;
     for (steps) |step| _ = if (step) |bytes| try harness.feed(bytes) else try harness.wait(timeout_ms);
     _ = try harness.wait(timeout_ms);
@@ -1435,6 +1466,10 @@ fn coreKeyName(code: u32) ?[]const u8 {
         K.page_down => "pagedown",
         K.home => "home",
         K.end => "end",
+        K.f(1) => "f1",
+        K.f(2) => "f2",
+        K.f(3) => "f3",
+        K.f(4) => "f4",
         else => null,
     };
 }

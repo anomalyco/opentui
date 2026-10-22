@@ -21,7 +21,8 @@ comptime {
 pub const Expectations = packed struct(u8) {
     replies: bool = false,
     kitty_keyboard: bool = false,
-    _reserved: u6 = 0,
+    cursor_position: bool = false,
+    _reserved: u5 = 0,
 };
 
 /// Kitty's modifier layout: the wire parameter minus one.
@@ -697,12 +698,16 @@ pub const InputParser = struct {
                 };
                 break :rxvt value;
             } else null,
-            // Cursor position reports share this form: F3 needs modifiers and no awaited replies.
-            'R' => if (!self.expect.replies and fields.count == 2 and fields.single(0) == 1 and
-                fields.single(1) != null and fields.single(1).? > 1)
-                .{ .code = key.f(3), .mods = modsFromParam(fields.single(1).?) }
-            else
-                null,
+            // F3 shares CSI R and CSI 1 ; N R with replies. The Kitty protocol sends F3 as CSI 13 ~,
+            // and CSI 1 ; N R is a cursor position report while one is awaited.
+            'R' => if (self.expect.kitty_keyboard) null else switch (fields.count) {
+                0 => .{ .code = key.f(3) },
+                2 => if (!self.expect.cursor_position and fields.single(0) == 1 and (fields.single(1) orelse 0) > 1)
+                    .{ .code = key.f(3), .mods = modsFromParam(fields.single(1).?) }
+                else
+                    null,
+                else => null,
+            },
             'A'...'H', 'P', 'Q', 'S', 'Z', 'a'...'e' => letterKey(final, fields),
             else => null,
         };

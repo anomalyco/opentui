@@ -199,8 +199,9 @@ static void input_events(ot_context *context) {
     assert(ot_session_input_feed(context, &session, NULL, 0, drain.deadline_ns, records, OT_INPUT_EVENTS_MIN,
         payload, sizeof(payload), &drain) == OT_OK);
     assert(drain.count == 1 && records[0].code == OT_INPUT_KEY_ESCAPE && drain.deadline_ns == 0);
-    assert(ot_session_input_expect(context, &session, OT_INPUT_EXPECT_REPLIES | OT_INPUT_EXPECT_KITTY_KEYBOARD) == OT_OK);
-    assert(ot_session_input_expect(context, &session, 4) == OT_INVALID_ARGUMENT);
+    assert(ot_session_input_expect(context, &session,
+        OT_INPUT_EXPECT_REPLIES | OT_INPUT_EXPECT_KITTY_KEYBOARD | OT_INPUT_EXPECT_CURSOR_POSITION) == OT_OK);
+    assert(ot_session_input_expect(context, &session, 8) == OT_INVALID_ARGUMENT);
     assert(ot_session_input_reset(context, &session, 0) == OT_OK);
     assert(ot_session_destroy(context, &session) == OT_OK);
 }
