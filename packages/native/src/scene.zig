@@ -564,7 +564,6 @@ pub const Scene = struct {
     /// are allocation-free and do not scan the registry or shift sibling arrays.
     pub fn detachAll(self: *Scene) void {
         self.cancelFrame();
-        self.visibility_epoch +%= 1;
         var cursor = self.head;
         while (cursor) |value| : (cursor = value.scene_node.?.next) {
             yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.yoga_node)) catch unreachable;
