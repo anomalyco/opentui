@@ -1554,21 +1554,38 @@ test("Audio enforces the default decoder probe limit and accepts a configured ov
   audios.push(audio)
   expect(audio.startMixer()).toBe(true)
 
-  let defaultRejection: unknown
-  try {
-    await audio.playStream(
-      (async function* () {
-        yield taggedMp3
-      })(),
-    )
-  } catch (error) {
-    defaultRejection = error
+  // Rows: source bytes, whether the source ends, and whether the decoder fails between a stats poll and the next write.
+  const lib = resolveRenderLib()
+  const { audioGetStreamStats: getStats, audioWriteStream: write } = lib
+  for (const [bytes, ends, failBeforeWrite] of [
+    [taggedMp3, true, false],
+    [taggedMp3.subarray(0, 1024 * 1024), false, false],
+    [taggedMp3, true, true],
+  ] as const) {
+    let decoderFailed = false
+    const restoreStats = replaceMethod(lib, "audioGetStreamStats", (...args: Parameters<typeof getStats>) => {
+      const stats = getStats.apply(lib, args)
+      return decoderFailed && stats != null ? { ...stats, state: NativeAudioStreamState.Failed, errorCode: -3 } : stats
+    })
+    const restoreWrite = replaceMethod(lib, "audioWriteStream", (...args: Parameters<typeof write>) => {
+      decoderFailed = failBeforeWrite
+      return failBeforeWrite ? -1 : write.apply(lib, args)
+    })
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes)
+        if (ends) controller.close()
+      },
+    })
+    try {
+      await expect(audio.playStream(source)).rejects.toHaveProperty("context", { action: "decoder", errorCode: -3 })
+    } finally {
+      restoreWrite()
+      restoreStats()
+    }
+    expect(decoderFailed).toBe(failBeforeWrite)
+    expect(audio.getStats()?.voicesActive).toBe(0)
   }
-  expect(expectAudioStreamError(defaultRejection).context).toEqual({
-    action: "decoder",
-    errorCode: -3,
-  })
-  expect(audio.getStats()?.voicesActive).toBe(0)
 
   const stream = await audio.playStream(
     (async function* () {
