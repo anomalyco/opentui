@@ -8,7 +8,12 @@
 //! - a mutation kind: add an `Op` variant, its arm in `applyOn`, and a draw in
 //!   `generate` (and in `generateReply` if a hook reply may send it);
 //! - a shortcut's proof: add the counter it lowers to `expectReference`, which
-//!   checks every presented reference frame.
+//!   checks every presented reference frame;
+//! - a frame kind it must reach: count it in `Stats` and give it a minimum in
+//!   the test.
+//! The script has no editor, image, or linked text yet, so cursor, image, and
+//! link shortcuts are invisible to it: B3 adds those node kinds before its
+//! frame skip uses this harness as its gate.
 const std = @import("std");
 const testing = std.testing;
 const c = @import("context_abi_c");
@@ -20,6 +25,9 @@ const fixture = @import("scene_fixture_test.zig");
 const Fixture = fixture.Fixture;
 const Recording = @import("scene_record_test.zig").Recording;
 const expectBufferInvariants = @import("buffer-invariants.zig").expectBufferInvariants;
+const ghostty_vt = @import("../ghostty-vt.zig");
+const ansi = @import("../ansi.zig");
+const gp = @import("../grapheme.zig");
 
 const node_count_max = 40;
 const root_slot = 0;
@@ -30,7 +38,7 @@ const scaffold_slots = 3;
 const reference = 0;
 const candidate = 1;
 
-const Kind = enum { box, text };
+const Kind = enum { box, text, slider };
 
 /// One scripted step, drawn once and applied to both twins.
 const Op = union(enum) {
@@ -44,6 +52,7 @@ const Op = union(enum) {
     text: struct { slot: usize, seed: u32 },
     text_options: struct { slot: usize, options: scene.TextOptions },
     hooks: struct { slot: usize, flags: u32 },
+    slider: struct { slot: usize, value: f64, orientation: u32 },
     viewport: bool,
     resize: struct { width: u32, height: u32 },
 };
@@ -67,6 +76,7 @@ const Model = struct {
     hidden: [node_count_max]bool = @splat(false),
     hook_generation: [node_count_max]u64 = @splat(0),
     text_options: [node_count_max]scene.TextOptions = @splat(.{}),
+    hooks: [node_count_max]u32 = @splat(0),
 
     fn deinit(self: *Model) void {
         for (&self.children, &self.paint) |*children, *paint| {
@@ -118,6 +128,15 @@ const Model = struct {
         return next;
     }
 
+    /// Whether a hidden node lies strictly above `node`.
+    fn hiddenAbove(self: *const Model, node: usize) bool {
+        var cursor = self.parent[node];
+        while (cursor) |value| : (cursor = self.parent[value]) {
+            if (self.hidden[value]) return true;
+        }
+        return false;
+    }
+
     fn slotOf(self: *const Model, twin: usize, handle: context.Handle) ?usize {
         for (self.handles, 0..) |maybe, slot| {
             if (maybe) |pair| if (std.meta.eql(pair[twin], handle)) return slot;
@@ -134,8 +153,15 @@ const Stats = struct {
     frames: u32 = 0,
     reused: u32 = 0,
     filtered: u32 = 0,
-    requests: u32 = 0,
+    /// Filtered frames that also sent a host request.
+    filtered_requests: u32 = 0,
+    /// Frames with a hooked node under a hidden ancestor.
+    hidden_hooked: u32 = 0,
+    updates: u32 = 0,
+    resizes: u32 = 0,
+    layout_changes: u32 = 0,
     records: u32 = 0,
+    decoded: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -146,6 +172,10 @@ const Harness = struct {
     random: std.Random,
     stats: Stats = .{},
     bytes: [2]std.ArrayListUnmanaged(u8) = .{ .empty, .empty },
+    /// Decodes the candidate's bytes independently of the encoder.
+    terminal: ghostty_vt.vt.Terminal,
+    /// The decoder holds the whole screen: false after a resize until a forced frame.
+    decoder_synced: bool = true,
 
     fn init(random: std.Random) !Harness {
         var twins: [2]Fixture = undefined;
@@ -156,7 +186,7 @@ const Harness = struct {
             twin.cli.kittyHistoryNextImageId = 100 + @import("../grapheme.zig").IMAGE_ID_MASK + 1;
             if (index == reference) try twin.owner.sceneSetDebugFlags(twin.id, c.OT_SCENE_DEBUG_FULL_FRAME);
         }
-        var self: Harness = .{ .twins = twins, .random = random };
+        var self: Harness = .{ .twins = twins, .random = random, .terminal = try newTerminal(16, 6) };
         self.model.handles[root_slot] = .{ twins[0].root, twins[1].root };
         try self.apply(.{ .create = .{ .slot = viewport_slot, .kind = .box } });
         try self.apply(.{ .style = .{ .slot = viewport_slot, .group = c.OT_STYLE_DIMENSION, .kind = 0, .unit = 1, .value = 12, .flags = 1 } });
@@ -170,7 +200,17 @@ const Harness = struct {
         return self;
     }
 
+    fn newTerminal(width: u32, height: u32) !ghostty_vt.vt.Terminal {
+        var terminal: ghostty_vt.vt.Terminal = try .init(testing.io, testing.allocator, .{ .cols = @intCast(width), .rows = @intCast(height) });
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        // Grapheme clustering, as the renderer assumes.
+        stream.nextSlice("\x1b[?2027h");
+        return terminal;
+    }
+
     fn deinit(self: *Harness) void {
+        self.terminal.deinit(testing.allocator);
         self.model.deinit();
         for (&self.bytes) |*bytes| bytes.deinit(testing.allocator);
         for (self.twins) |twin| twin.deinit();
@@ -192,16 +232,29 @@ const Harness = struct {
                 self.model.hidden[value.slot] = false;
                 self.model.hook_generation[value.slot] = 0;
                 self.model.text_options[value.slot] = .{};
+                self.model.hooks[value.slot] = 0;
             },
             .move => |value| try self.model.move(value.slot, value.parent, value.index),
-            .destroy => |slot| try self.model.destroy(slot),
+            .destroy => |slot| {
+                try self.model.destroy(slot);
+                // Removal rehashes the token map before tombstones take half of its free slots.
+                for (self.twins) |f| try testing.expect(f.state.token_tombstones < (f.state.tokens.capacity() - f.state.tokens.count()) / 2 + 1);
+            },
+            .resize => |value| {
+                self.terminal.deinit(testing.allocator);
+                self.terminal = try newTerminal(value.width, value.height);
+                self.decoder_synced = false;
+            },
             .paint => |value| if (value.fields & c.OT_SCENE_PROPERTY_Z_INDEX != 0) {
                 self.model.z[value.slot] = value.paint.zIndex;
             },
             .style => |value| if (value.group == c.OT_STYLE_ENUM and value.kind == c.OT_STYLE_ENUM_DISPLAY) {
                 self.model.hidden[value.slot] = value.value != 0;
             },
-            .hooks => |value| self.model.hook_generation[value.slot] += 1,
+            .hooks => |value| {
+                self.model.hook_generation[value.slot] += 1;
+                self.model.hooks[value.slot] = value.flags;
+            },
             .text_options => |value| self.model.text_options[value.slot] = value.options,
             else => {},
         }
@@ -211,7 +264,12 @@ const Harness = struct {
         const f = self.twins[twin];
         switch (op) {
             .create => |value| {
-                const created = try f.owner.sceneCreateNode(f.id, if (value.kind == .box) c.OT_SCENE_BOX else c.OT_SCENE_TEXT, Model.num(value.slot));
+                const kind: u32 = switch (value.kind) {
+                    .box => c.OT_SCENE_BOX,
+                    .text => c.OT_SCENE_TEXT,
+                    .slider => c.OT_SCENE_SLIDER,
+                };
+                const created = try f.owner.sceneCreateNode(f.id, kind, Model.num(value.slot));
                 if (self.model.handles[value.slot] == null) self.model.handles[value.slot] = undefined;
                 self.model.handles[value.slot].?[twin] = created;
             },
@@ -222,11 +280,22 @@ const Harness = struct {
             .position => |value| try f.owner.sceneSetPositions(self.handle(twin, value.slot), 3, .{ 1, 1, 0, 0 }, .{ value.left, value.top, 0, 0 }),
             .focus => |value| try f.owner.sceneSetFocus(self.handle(twin, value.slot), value.focused),
             .text => |value| {
-                var bytes: [24]u8 = undefined;
-                const len = value.seed % bytes.len;
-                for (bytes[0..len], 0..) |*byte, index| byte.* = if ((value.seed >> @intCast(index % 8)) & 7 == 0) ' ' else @intCast('a' + (value.seed + index) % 26);
+                // ASCII words with a wide CJK cell and a combining mark, so graphemes reach the buffers.
+                var bytes: [64]u8 = undefined;
+                var len: usize = 0;
+                for (0..value.seed % 20) |index| {
+                    const piece: []const u8 = switch ((value.seed >> @intCast(index % 16)) % 11) {
+                        0 => " ",
+                        1 => "\u{754c}",
+                        2 => "e\u{301}",
+                        else => &.{@intCast('a' + (value.seed + index) % 26)},
+                    };
+                    @memcpy(bytes[len..][0..piece.len], piece);
+                    len += piece.len;
+                }
                 try f.owner.sceneSetText(self.handle(twin, value.slot), bytes[0..len]);
             },
+            .slider => |value| try f.owner.sceneSetSlider(self.handle(twin, value.slot), .{ .value = value.value, .orientation = value.orientation }),
             .text_options => |value| try f.owner.sceneSetTextOptions(self.handle(twin, value.slot), value.options),
             .hooks => |value| try f.owner.sceneSetHooks(self.handle(twin, value.slot), value.flags, self.model.hook_generation[value.slot] + 1, 1, 1),
             .viewport => |bound| try f.owner.sceneSetViewport(self.handle(twin, content_slot), if (bound) self.handle(twin, viewport_slot) else null),
@@ -254,9 +323,13 @@ const Harness = struct {
     fn generate(self: *Harness) ?Op {
         const random = self.random;
         const empty = random.intRangeLessThan(usize, scaffold_slots, node_count_max);
-        if (self.model.handles[empty] == null) return .{ .create = .{ .slot = empty, .kind = if (random.uintLessThan(u32, 3) == 0) .box else .text } };
+        if (self.model.handles[empty] == null) return .{ .create = .{ .slot = empty, .kind = switch (random.uintLessThan(u32, 8)) {
+            0, 1 => .box,
+            2 => .slider,
+            else => .text,
+        } } };
         const slot = self.liveSlot(scaffold_slots) orelse return null;
-        return switch (random.uintLessThan(u32, 20)) {
+        return switch (random.uintLessThan(u32, 21)) {
             // Moves favor the content so its children pass the filter cutoff.
             0...7 => blk: {
                 const parent: ?usize = switch (random.uintLessThan(u32, 8)) {
@@ -270,17 +343,54 @@ const Harness = struct {
             },
             8 => .{ .destroy = slot },
             9 => .{ .focus = .{ .slot = slot, .focused = random.boolean() } },
-            // Hooks stay on a few slots and half the changes clear them, so hook-free frames recur.
-            10 => blk: {
-                const hooked = random.intRangeLessThan(usize, scaffold_slots, scaffold_slots + 4);
-                if (self.model.handles[hooked] == null) break :blk self.generateReply(slot);
-                break :blk .{ .hooks = .{ .slot = hooked, .flags = if (random.boolean()) 0 else random.intRangeLessThan(u32, 1, 64) } };
-            },
+            10 => self.generateHooks() orelse self.generateReply(slot),
+            15 => self.generateHookedChange() orelse self.generateReply(slot),
             11 => if (random.boolean()) .{ .viewport = random.boolean() } else .{ .resize = .{ .width = random.intRangeAtMost(u32, 10, 20), .height = random.intRangeAtMost(u32, 4, 8) } },
             13, 14 => if (self.model.kind[slot] == .text) self.generateText(slot) else self.generateReply(slot),
             12 => .{ .paint = .{ .slot = content_slot, .fields = c.OT_SCENE_PROPERTY_TRANSLATE_Y, .paint = .{ .translateY = @floatFromInt(-random.intRangeAtMost(i32, 0, 12)) } } },
             else => self.generateReply(slot),
         };
+    }
+
+    /// Hooks stay on the root, a few slots, and content children, and half the changes clear
+    /// them, so hook-free frames that reuse work recur. Only the root may take LAYOUT_CHANGED.
+    fn generateHooks(self: *Harness) ?Op {
+        const random = self.random;
+        const clear = random.boolean();
+        return switch (random.uintLessThan(u32, 4)) {
+            0 => .{ .hooks = .{ .slot = root_slot, .flags = if (clear) 0 else c.OT_SCENE_HOOK_LAYOUT_CHANGED | (if (random.boolean()) c.OT_SCENE_HOOK_UPDATE else 0) } },
+            1 => blk: {
+                const children = self.model.children[content_slot].items;
+                if (children.len == 0) break :blk null;
+                const child = children[random.uintLessThan(usize, children.len)];
+                break :blk .{ .hooks = .{ .slot = child, .flags = if (clear) 0 else c.OT_SCENE_HOOK_RESIZE | (if (random.boolean()) c.OT_SCENE_HOOK_UPDATE else 0) } };
+            },
+            else => blk: {
+                const hooked = random.intRangeLessThan(usize, scaffold_slots, scaffold_slots + 4);
+                if (self.model.handles[hooked] == null) break :blk null;
+                const flags = random.intRangeLessThan(u32, 1, 128) & ~@as(u32, c.OT_SCENE_HOOK_LAYOUT_CHANGED);
+                break :blk .{ .hooks = .{ .slot = hooked, .flags = if (clear) 0 else flags } };
+            },
+        };
+    }
+
+    /// A size change on a content child with a RESIZE hook, or a display change on an ancestor
+    /// of a hooked node.
+    fn generateHookedChange(self: *Harness) ?Op {
+        const random = self.random;
+        const start = random.uintLessThan(usize, node_count_max);
+        for (0..node_count_max) |offset| {
+            const slot = (start + offset) % node_count_max;
+            if (slot == root_slot or self.model.handles[slot] == null or self.model.hooks[slot] & ~@as(u32, 64) == 0) continue;
+            if (self.model.hooks[slot] & c.OT_SCENE_HOOK_RESIZE != 0 and random.boolean()) {
+                return .{ .style = .{ .slot = slot, .group = c.OT_STYLE_DIMENSION, .kind = random.uintLessThan(u32, 2), .unit = 1, .value = @floatFromInt(random.intRangeAtMost(u32, 1, 6)), .flags = 1 } };
+            }
+            var ancestor = self.model.parent[slot] orelse return null;
+            while (ancestor != root_slot and random.boolean()) ancestor = self.model.parent[ancestor] orelse break;
+            if (ancestor == root_slot) return null;
+            return .{ .style = .{ .slot = ancestor, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = @floatFromInt(@intFromBool(!self.model.hidden[ancestor])), .flags = 0 } };
+        }
+        return null;
     }
 
     /// Ops a hook reply may also send.
@@ -290,19 +400,25 @@ const Harness = struct {
             0, 1 => blk: {
                 const fields = [_]u32{ c.OT_SCENE_PROPERTY_Z_INDEX, c.OT_SCENE_PROPERTY_OPACITY, c.OT_SCENE_PROPERTY_TRANSLATE_X, c.OT_SCENE_PROPERTY_BORDER, c.OT_SCENE_PROPERTY_BACKGROUND };
                 // Content children keep equal z most of the time, as scroll content does.
-                const field = fields[random.uintLessThan(usize, fields.len)];
+                // A border change also sets focusable, so focus moves change border colors.
+                var field = fields[random.uintLessThan(usize, fields.len)];
+                if (field == c.OT_SCENE_PROPERTY_BORDER) field |= c.OT_SCENE_PROPERTY_FOCUSABLE;
                 const z = if (self.model.parent[slot] == content_slot and random.uintLessThan(u32, 4) != 0) 0 else random.intRangeAtMost(i32, -2, 2);
                 break :blk .{ .paint = .{ .slot = slot, .fields = field, .paint = .{
                     .zIndex = z,
                     .opacity = @as(f32, @floatFromInt(random.uintLessThan(u32, 5))) / 4,
                     .translateX = @floatFromInt(random.intRangeAtMost(i32, -3, 3)),
                     .borderSides = random.uintLessThan(u32, 16),
+                    .focusable = random.boolean(),
                     .background = .{ random.int(u8), 0, 0, random.int(u8) },
                 } } };
             },
             2 => .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = @floatFromInt(@intFromBool(random.uintLessThan(u32, 4) == 0)), .flags = 0 } },
             3 => .{ .style = .{ .slot = slot, .group = c.OT_STYLE_DIMENSION, .kind = random.uintLessThan(u32, 2), .unit = 1, .value = @floatFromInt(random.intRangeAtMost(u32, 1, 6)), .flags = 1 } },
-            4 => if (self.model.kind[slot] == .text) self.generateText(slot) else .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_OVERFLOW, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 2)), .flags = 0 } },
+            4 => if (self.model.kind[slot] == .text) self.generateText(slot) else if (self.model.kind[slot] == .slider)
+                .{ .slider = .{ .slot = slot, .value = @floatFromInt(random.uintLessThan(u32, 101)), .orientation = random.uintLessThan(u32, 2) } }
+            else
+                .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_OVERFLOW, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 2)), .flags = 0 } },
             else => if (random.uintLessThan(u32, 3) == 0)
                 .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_POSITION_TYPE, .unit = 0, .value = @floatFromInt(1 + random.uintLessThan(u32, 2)), .flags = 0 } }
             else
@@ -380,7 +496,11 @@ const Harness = struct {
                     record = recording.view();
                 },
                 else => {
-                    self.stats.requests += 1;
+                    switch (first.kind) {
+                        c.OT_SCENE_FRAME_UPDATE => self.stats.updates += 1,
+                        c.OT_SCENE_FRAME_RESIZE => self.stats.resizes += 1,
+                        else => self.stats.layout_changes += 1,
+                    }
                     for (0..self.random.uintLessThan(u32, 3)) |_| {
                         const slot = self.liveSlot(scaffold_slots) orelse break;
                         try self.apply(self.generateReply(slot));
@@ -434,6 +554,10 @@ const Harness = struct {
         if (!try self.drive(spec)) return;
         try self.twins[reference].expectSameCells(self.twins[candidate]);
         try self.expectPaintOrder();
+        var hidden_hooked = false;
+        for (self.model.handles, 0..) |maybe, slot| {
+            if (maybe != null and self.model.hooks[slot] != 0 and self.model.hiddenAbove(slot)) hidden_hooked = true;
+        }
         const drafted = cellHash(self.twins[candidate].cli.getNextBuffer(), self.twins[candidate].cli.nextHitGrid);
         var statuses: [2]@import("../session.zig").RenderStatus = undefined;
         for (self.twins, 0..) |twin, index| {
@@ -450,20 +574,28 @@ const Harness = struct {
         // The encoder synced every drafted cell into the presented buffer, and the hits followed.
         try testing.expectEqual(drafted, cellHash(self.twins[candidate].cli.currentRenderBuffer, self.twins[candidate].cli.currentHitGrid));
         try self.expectSamePresentation();
+        if (spec.force) self.decoder_synced = true;
+        try self.expectDecoded();
         try self.expectReference();
         const work = (try self.twins[candidate].owner.sceneGetStats(self.twins[candidate].id)).frameWork;
         self.stats.frames += 1;
         self.stats.reused += @intFromBool(work.candidate_visits == 0);
         self.stats.filtered += @intFromBool(work.overlap_tests != 0);
-        self.stats.digest = std.hash.Wyhash.hash(self.stats.digest, std.mem.asBytes(&work));
+        self.stats.filtered_requests += @intFromBool(work.overlap_tests != 0 and work.host_requests != 0);
+        self.stats.hidden_hooked += @intFromBool(hidden_hooked);
+        // Field by field: the struct's padding is unspecified.
+        inline for (std.meta.fields(renderer.FrameWork)) |field| {
+            self.stats.digest = std.hash.Wyhash.hash(self.stats.digest, std.mem.asBytes(&@field(work, field.name)));
+        }
     }
 
-    /// A candidate frame that retained its work list paints in the model's order.
+    /// A candidate frame that retained its work list paints in the model's order. The model
+    /// sorts on every frame, as the scene does, so tie orders stay in step.
     fn expectPaintOrder(self: *Harness) !void {
         const f = self.twins[candidate];
-        if (f.state.work.items.len == 0) return;
         var order: [node_count_max]usize = undefined;
         const count = self.model.paintOrder(&order, 0, root_slot);
+        if (f.state.work.items.len == 0) return;
         var painted: usize = 0;
         for (f.state.work.items) |entry| {
             if (entry.node.scene_node.?.kind == c.OT_SCENE_ROOT or !entry.visible) continue;
@@ -503,7 +635,51 @@ const Harness = struct {
                 };
                 try testing.expectEqualSlices(u8, std.mem.asBytes(&first), std.mem.asBytes(&try layouts[1]));
             }
+            // Resize baselines and prepared text views, including culled children's (B2 invariant 3).
+            const nodes = .{ (try owners[0].owner.raw().getRenderable(pair[0])).scene_node.?, (try owners[1].owner.raw().getRenderable(pair[1])).scene_node.? };
+            try testing.expectEqual(nodes[0].resize_width, nodes[1].resize_width);
+            try testing.expectEqual(nodes[0].resize_height, nodes[1].resize_height);
+            if (nodes[0].text) |text| {
+                const views = .{ text.view, nodes[1].text.?.view };
+                try testing.expectEqualDeep(views[0].getViewport(), views[1].getViewport());
+                try testing.expectEqual(views[0].virtual_lines_dirty, views[1].virtual_lines_dirty);
+                try testing.expectEqual(views[0].truncation_applied, views[1].truncation_applied);
+            }
         }
+    }
+
+    /// The candidate's bytes, decoded by an independent terminal, show the presented cells.
+    /// Grapheme cells are skipped; colors are compared where the terminal holds RGB.
+    fn expectDecoded(self: *Harness) !void {
+        var stream = self.terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice(self.bytes[candidate].items);
+        if (!self.decoder_synced) return;
+        self.stats.decoded += 1;
+        const cli = self.twins[candidate].cli;
+        const pages = &self.terminal.screens.active.pages;
+        for (0..cli.height) |y| for (0..cli.width) |x| {
+            const cell = cli.currentRenderBuffer.get(@intCast(x), @intCast(y)).?;
+            if (cell.char & gp.CHAR_TYPE_MASK != 0) continue;
+            const decoded = pages.getCell(.{ .active = .{ .x = @intCast(x), .y = @intCast(y) } }).?;
+            const codepoint: u32 = decoded.cell.codepoint();
+            const glyph = if (cell.char == 0) ' ' else cell.char;
+            try testing.expectEqual(glyph, if (codepoint == 0) ' ' else codepoint);
+            const style = decoded.style();
+            switch (style.bg_color) {
+                .rgb => |rgb| try testing.expectEqual([3]u8{ ansi.red(cell.bg), ansi.green(cell.bg), ansi.blue(cell.bg) }, [3]u8{ rgb.r, rgb.g, rgb.b }),
+                else => {},
+            }
+            if (glyph != ' ') switch (style.fg_color) {
+                .rgb => |rgb| try testing.expectEqual([3]u8{ ansi.red(cell.fg), ansi.green(cell.fg), ansi.blue(cell.fg) }, [3]u8{ rgb.r, rgb.g, rgb.b }),
+                else => {},
+            };
+            const attributes = cell.attributes;
+            try testing.expectEqual(attributes & ansi.TextAttributes.BOLD != 0, style.flags.bold);
+            try testing.expectEqual(attributes & ansi.TextAttributes.ITALIC != 0, style.flags.italic);
+            try testing.expectEqual(attributes & ansi.TextAttributes.INVERSE != 0, style.flags.inverse);
+            try testing.expectEqual(attributes & ansi.TextAttributes.STRIKETHROUGH != 0, style.flags.strikethrough);
+        };
     }
 
     /// Every presented reference frame takes today's full path. Each Track B shortcut adds
@@ -540,8 +716,6 @@ const Harness = struct {
             }
             try testing.expectEqual(live, f.state.count);
             try testing.expectEqual(live, f.state.tokens.count());
-            // Churn rehashes the token map before tombstones take half of its free slots.
-            try testing.expect(f.state.token_tombstones < (f.state.tokens.capacity() - f.state.tokens.count()) / 2 + 1);
         }
     }
 
@@ -580,13 +754,22 @@ fn runParity(seed: u64, steps: usize) !Stats {
 
 test "Scene twin Sessions match a forced full-frame reference on every frame" {
     var total: Stats = .{};
-    for (0..32) |seed| {
+    for (0..64) |seed| {
         errdefer std.debug.print("seed {d}\n", .{seed});
-        const stats = try runParity(seed, 160);
+        const stats = try runParity(seed, 256);
         inline for (std.meta.fields(Stats)) |field| @field(total, field.name) +%= @field(stats, field.name);
     }
-    // The script reaches reuse, viewport filtering, host replies, and recordings.
-    try testing.expect(total.reused != 0 and total.filtered != 0 and total.requests != 0 and total.records != 0);
-    // Work counts read no clock: a seed replays to the same counts.
-    try testing.expectEqual((try runParity(7, 48)).digest, (try runParity(7, 48)).digest);
+    // Every frame kind B2 relies on is reached in quantity (about a quarter of today's counts),
+    // so a draw-rate change that starves one fails here. Counts at 64 × 256: reused 313, filtered
+    // 1,459, filtered with a request 576, hooked under a hidden ancestor 4,644, UPDATE 5,064,
+    // RESIZE 104, LAYOUT_CHANGED 2,354, recordings 1,448, decoded 15,443.
+    const minimums: Stats = .{ .reused = 75, .filtered = 350, .filtered_requests = 140, .hidden_hooked = 1100, .updates = 1250, .resizes = 25, .layout_changes = 580, .records = 360, .decoded = 3800 };
+    inline for (std.meta.fields(Stats)) |field| {
+        if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
+        errdefer std.debug.print("{s}: {d}\n", .{ field.name, @field(total, field.name) });
+        try testing.expect(@field(total, field.name) >= @field(minimums, field.name));
+    }
+    // Work counts read no clock: a seed that reaches reuse, every request kind, recordings,
+    // and filtering replays to the same counts.
+    try testing.expectEqual((try runParity(17, 256)).digest, (try runParity(17, 256)).digest);
 }
