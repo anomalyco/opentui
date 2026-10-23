@@ -54,18 +54,18 @@ test "text work: edits in a 10,000-line editor lay out the edited line at the ne
     const rows = [_]struct { mode: WrapMode, frame: Counts, measure: Counts }{
         .{
             .mode = .none,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171 },
             // Unwrapped measure reads the widest line from the rope metrics.
             .measure = .{ .measure_passes = 1 },
         },
         .{
             .mode = .word,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .ascii_bytes = 90 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .ascii_bytes = 90 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .ascii_bytes = 790_011 },
         },
         .{
             .mode = .char,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .prefix_seeks = 2 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .splices = 1, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .prefix_seeks = 2 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .prefix_seeks = 10_001 },
         },
     };
@@ -194,10 +194,11 @@ const ArenaPeak = struct {
     }
 };
 
-// Partial layouts leave replaced lines and word metadata in the view's arenas. A full layout that
-// frees them runs before an arena doubles past its size after the last full layout (plus 64 KiB),
-// so memory stays within twice a fresh layout's.
-test "text work: replaced lines and word metadata stay within twice a fresh layout" {
+// Partial layouts leave replaced lines and word metadata in the view's arenas. A full layout frees
+// them once the dead bytes exceed the live ones (plus 16 KiB), so the bytes stay within twice a
+// fresh layout's. Arena blocks grow by half each, and in-place growth depends on the page size,
+// so capacity is checked against 4 × a fresh layout's capacity in the same run, plus 64 KiB.
+test "text work: replaced lines and word metadata stay within a constant factor of a fresh layout" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
@@ -226,7 +227,7 @@ test "text work: replaced lines and word metadata stay within twice a fresh layo
         defer fresh.deinit();
         _ = fresh.getVirtualLineCount();
         errdefer std.debug.print("unwrapped: peak {d}, fresh {d}\n", .{ arena.peak, fresh.virtual_lines_arena.queryCapacity() });
-        try std.testing.expect(arena.peak <= 2 * fresh.virtual_lines_arena.queryCapacity() + slack);
+        try std.testing.expect(arena.peak <= 4 * fresh.virtual_lines_arena.queryCapacity() + slack);
     }
     // Word metadata: a one-line paragraph, and many lines whose edits alternate with width changes.
     const rows = [_]struct { line: []const u8, lines: usize, rewrap: bool }{
@@ -258,7 +259,7 @@ test "text work: replaced lines and word metadata stay within twice a fresh layo
         fresh.setWrapWidth(view.wrap_width);
         _ = fresh.getVirtualLineCount();
         errdefer std.debug.print("lines {d}: peak {d}, fresh {d}\n", .{ row.lines, storage.peak, fresh.word_layout.arena.queryCapacity() });
-        try std.testing.expect(storage.peak <= 2 * fresh.word_layout.arena.queryCapacity() + slack);
+        try std.testing.expect(storage.peak <= 4 * fresh.word_layout.arena.queryCapacity() + slack);
     }
 }
 
@@ -284,7 +285,7 @@ test "text work: an append measures and lays out a 5,000-line view once each" {
     _ = try view.measureForDimensions(40, 24);
     _ = view.getVirtualLineCount();
     // The second measure hits the cache; render lays out the last line again.
-    try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .measure_passes = 1, .measure_lines = 5_000, .line_seeks = 4, .line_seek_nodes = 57, .ascii_bytes = 154 });
+    try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .splices = 1, .measure_passes = 1, .measure_lines = 5_000, .line_seeks = 4, .line_seek_nodes = 57, .ascii_bytes = 154 });
 }
 
 test "text work: line lookups after an edit in a 10,000-line buffer" {

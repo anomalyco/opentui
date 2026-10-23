@@ -748,6 +748,7 @@ pub const UnifiedTextBufferView = struct {
     }
 
     fn splice(self: *Self, change: LineChange, staged: VirtualLineOutput) bool {
+        text_work.add(.splices, 1);
         const allocator = self.virtual_lines_arena.allocator();
         const line_count_old = self.cached_line_vline_counts.items.len;
         const end = change.first + change.old_count;

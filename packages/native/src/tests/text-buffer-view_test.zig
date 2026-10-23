@@ -339,37 +339,50 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    // The append adds enough lines that the splice must grow the arrays: the sweep fails the
-    // staging allocations, the splice's, and the truncation's.
-    var failed_at: [2]usize = .{ 0, 0 };
-    for ([_]bool{ false, true }, &failed_at) |truncate, *failures| for (0..64) |failure| {
-        var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-        defer tb.deinit();
-        const view = try TextBufferView.init(tracking.allocator(), tb);
-        defer view.deinit();
-        const full = try TextBufferView.init(std.testing.allocator, tb);
-        defer full.deinit();
-        for ([_]*TextBufferView{ view, full }) |current| {
-            current.setWrapMode(if (truncate) .none else .word);
-            current.setWrapWidth(17);
-            if (truncate) current.setViewport(.{ .x = 0, .y = 0, .width = 17, .height = 1_000 });
-            current.setTruncate(truncate);
+    // The sweep fails each allocation of the partial layout in turn until the layout succeeds.
+    // With in-place growth refused, the allocations depend only on request sizes, and the 60
+    // appended lines make the splice grow its arrays into a new arena block in both modes.
+    for ([_]bool{ false, true }) |truncate| {
+        var reached_splice = false;
+        var failure: usize = 0;
+        while (true) : (failure += 1) {
+            // Growing an arena block in place depends on the allocator's page size; refuse it, so
+            // every new block is a counted allocation and the sequence is the same everywhere.
+            var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+            const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+            defer tb.deinit();
+            const view = try TextBufferView.init(tracking.allocator(), tb);
+            defer view.deinit();
+            const full = try TextBufferView.init(std.testing.allocator, tb);
+            defer full.deinit();
+            for ([_]*TextBufferView{ view, full }) |current| {
+                current.setWrapMode(if (truncate) .none else .word);
+                current.setWrapWidth(17);
+                if (truncate) current.setViewport(.{ .x = 0, .y = 0, .width = 17, .height = 1_000 });
+                current.setTruncate(truncate);
+            }
+            full.force_full_layout = true;
+            try tb.setText("alpha \u{754c} e\u{301} word word word word\n" ** 20);
+            _ = view.getVirtualLines();
+            try tb.append("\ntail \u{754c} words that wrap" ** 60);
+            tracking.fail_index = tracking.alloc_index + failure;
+            _ = text_work.take();
+            _ = view.getVirtualLines();
+            const work = text_work.take();
+            errdefer std.debug.print("truncate {} failure {d}\n", .{ truncate, failure });
+            try std.testing.expectEqual(@as(u64, 1), work.layouts);
+            const failed = tracking.has_induced_failure;
+            if (failed) {
+                // A failed layout stays dirty; a failed truncation of the spliced lines stays pending.
+                try std.testing.expect(view.virtual_lines_dirty or !view.truncation_applied);
+                if (view.virtual_lines_dirty and work.splices == 1) reached_splice = true;
+            }
+            tracking.fail_index = std.math.maxInt(usize);
+            try expectSameAsFullLayout(view, full);
+            if (!failed) break;
         }
-        full.force_full_layout = true;
-        try tb.setText("alpha \u{754c} e\u{301} word word word word\n" ** 20);
-        _ = view.getVirtualLines();
-        try tb.append("\ntail \u{754c} words that wrap" ** 400);
-        tracking.fail_index = tracking.alloc_index + failure;
-        _ = view.getVirtualLines();
-        if (tracking.has_induced_failure) {
-            failures.* += 1;
-            try std.testing.expect(view.virtual_lines_dirty or !view.truncation_applied);
-        }
-        tracking.fail_index = std.math.maxInt(usize);
-        try expectSameAsFullLayout(view, full);
-    };
-    try std.testing.expectEqual([2]usize{ 9, 6 }, failed_at);
+        try std.testing.expect(failure > 0 and reached_splice);
+    }
 }
 
 test "TextBufferView rewrap reuses virtual line allocation without retaining cleared layout" {

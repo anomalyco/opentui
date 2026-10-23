@@ -12,6 +12,8 @@ pub const Counts = struct {
     rope_diff_nodes: u64 = 0,
     /// Logical lines after an edited range whose stored offsets a layout moves.
     lines_shifted: u64 = 0,
+    /// Partial layouts that reach the splice of their staged lines.
+    splices: u64 = 0,
     /// `measureForDimensions` calls that miss the measure cache.
     measure_passes: u64 = 0,
     measure_lines: u64 = 0,
