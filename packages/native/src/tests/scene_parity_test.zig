@@ -77,6 +77,7 @@ const Model = struct {
     hook_generation: [node_count_max]u64 = @splat(0),
     text_options: [node_count_max]scene.TextOptions = @splat(.{}),
     hooks: [node_count_max]u32 = @splat(0),
+    focusable: [node_count_max]bool = @splat(false),
 
     fn deinit(self: *Model) void {
         for (&self.children, &self.paint) |*children, *paint| {
@@ -157,6 +158,10 @@ const Stats = struct {
     filtered_requests: u32 = 0,
     /// Frames with a hooked node under a hidden ancestor.
     hidden_hooked: u32 = 0,
+    /// Host replies that hid an ancestor of the requesting node mid-frame.
+    reply_hides: u32 = 0,
+    /// RESIZE requests from children of the viewport content.
+    content_resizes: u32 = 0,
     updates: u32 = 0,
     resizes: u32 = 0,
     layout_changes: u32 = 0,
@@ -233,6 +238,7 @@ const Harness = struct {
                 self.model.hook_generation[value.slot] = 0;
                 self.model.text_options[value.slot] = .{};
                 self.model.hooks[value.slot] = 0;
+                self.model.focusable[value.slot] = false;
             },
             .move => |value| try self.model.move(value.slot, value.parent, value.index),
             .destroy => |slot| {
@@ -245,8 +251,9 @@ const Harness = struct {
                 self.terminal = try newTerminal(value.width, value.height);
                 self.decoder_synced = false;
             },
-            .paint => |value| if (value.fields & c.OT_SCENE_PROPERTY_Z_INDEX != 0) {
-                self.model.z[value.slot] = value.paint.zIndex;
+            .paint => |value| {
+                if (value.fields & c.OT_SCENE_PROPERTY_Z_INDEX != 0) self.model.z[value.slot] = value.paint.zIndex;
+                if (value.fields & c.OT_SCENE_PROPERTY_FOCUSABLE != 0) self.model.focusable[value.slot] = value.paint.focusable and value.paint.borderSides != 0;
             },
             .style => |value| if (value.group == c.OT_STYLE_ENUM and value.kind == c.OT_STYLE_ENUM_DISPLAY) {
                 self.model.hidden[value.slot] = value.value != 0;
@@ -342,7 +349,10 @@ const Harness = struct {
                 break :blk .{ .move = .{ .slot = slot, .parent = parent, .index = random.uintLessThan(u32, @intCast(siblings + 2)) } };
             },
             8 => .{ .destroy = slot },
-            9 => .{ .focus = .{ .slot = slot, .focused = random.boolean() } },
+            // Focus moves favor nodes with focusable borders, where focus changes the border color.
+            9 => .{ .focus = .{ .slot = for (scaffold_slots..node_count_max) |candidate_slot| {
+                if (self.model.handles[candidate_slot] != null and self.model.focusable[candidate_slot] and random.boolean()) break candidate_slot;
+            } else slot, .focused = random.boolean() } },
             10 => self.generateHooks() orelse self.generateReply(slot),
             15 => self.generateHookedChange() orelse self.generateReply(slot),
             11 => if (random.boolean()) .{ .viewport = random.boolean() } else .{ .resize = .{ .width = random.intRangeAtMost(u32, 10, 20), .height = random.intRangeAtMost(u32, 4, 8) } },
@@ -359,7 +369,7 @@ const Harness = struct {
         const clear = random.boolean();
         return switch (random.uintLessThan(u32, 4)) {
             0 => .{ .hooks = .{ .slot = root_slot, .flags = if (clear) 0 else c.OT_SCENE_HOOK_LAYOUT_CHANGED | (if (random.boolean()) c.OT_SCENE_HOOK_UPDATE else 0) } },
-            1 => blk: {
+            1, 2 => blk: {
                 const children = self.model.children[content_slot].items;
                 if (children.len == 0) break :blk null;
                 const child = children[random.uintLessThan(usize, children.len)];
@@ -501,10 +511,18 @@ const Harness = struct {
                         c.OT_SCENE_FRAME_RESIZE => self.stats.resizes += 1,
                         else => self.stats.layout_changes += 1,
                     }
+                    const requester = self.model.slotOf(reference, first.node).?;
+                    if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) self.stats.content_resizes += 1;
                     for (0..self.random.uintLessThan(u32, 3)) |_| {
                         const slot = self.liveSlot(scaffold_slots) orelse break;
                         try self.apply(self.generateReply(slot));
                     }
+                    // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
+                    // ancestor of a node it already stamped (B2 invariant 7).
+                    if (self.model.parent[requester]) |parent| if (parent != root_slot and self.random.uintLessThan(u32, 4) == 0) {
+                        try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
+                        self.stats.reply_hides += 1;
+                    };
                 },
             }
         }
@@ -759,11 +777,13 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         const stats = try runParity(seed, 256);
         inline for (std.meta.fields(Stats)) |field| @field(total, field.name) +%= @field(stats, field.name);
     }
-    // Every frame kind B2 relies on is reached in quantity (about a quarter of today's counts),
-    // so a draw-rate change that starves one fails here. Counts at 64 × 256: reused 313, filtered
-    // 1,459, filtered with a request 576, hooked under a hidden ancestor 4,644, UPDATE 5,064,
-    // RESIZE 104, LAYOUT_CHANGED 2,354, recordings 1,448, decoded 15,443.
-    const minimums: Stats = .{ .reused = 75, .filtered = 350, .filtered_requests = 140, .hidden_hooked = 1100, .updates = 1250, .resizes = 25, .layout_changes = 580, .records = 360, .decoded = 3800 };
+    // Every frame kind B2 relies on is reached in quantity (about a quarter of today's counts;
+    // decoded frames at about half), and each minimum fails if the draw that produces its kind
+    // is removed. Counts at 64 x 256: reused 359, filtered 556, filtered with a request 177,
+    // hooked under a hidden ancestor 8,236, reply hid the requester's parent 77, content-child
+    // RESIZE 67 (12 without the content-child hook draw), UPDATE 3,255, RESIZE 70,
+    // LAYOUT_CHANGED 2,234, recordings 514, decoded 15,753 (about 5,700 without the re-sync).
+    const minimums: Stats = .{ .reused = 85, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 20, .content_resizes = 35, .updates = 800, .resizes = 18, .layout_changes = 550, .records = 130, .decoded = 9000 };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
         errdefer std.debug.print("{s}: {d}\n", .{ field.name, @field(total, field.name) });
