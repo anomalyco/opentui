@@ -148,9 +148,11 @@ test "text work: line lookups after an edit in a 10,000-line buffer" {
     try tb.append("\nappended");
     _ = tb.lineWidthAt(10_000);
     try expectWork(.{ .line_seeks = 1, .line_seek_nodes = 17 });
-    // One highlight over every line seeks its first line and walks the rest.
+    // A highlight seeks its first line and walks the leaves of the lines it covers.
     try tb.addHighlightByCharRange(0, tb.getLength(), 1, 1, 0);
-    try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 29 });
+    try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 29, .highlight_leaves = 30_003 });
+    try tb.addHighlightByCharRange(5_000 * 80 + 3, 5_000 * 80 + 9, 1, 1, 0);
+    try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 30, .highlight_leaves = 3 });
 
     // Zero-width appends have no weight; balancing counts their leaves, so the depth stays logarithmic.
     const zero_width = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);

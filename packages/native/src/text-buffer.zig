@@ -4,6 +4,7 @@ const compatibility_io = if (builtin.is_test) std.testing.io else if (@hasDecl(@
 const Allocator = std.mem.Allocator;
 const seg_mod = @import("text-buffer-segment.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
+const text_work = @import("text-work.zig");
 const mem_registry_mod = @import("mem-registry.zig");
 const ss = @import("syntax-style.zig");
 const gp = @import("grapheme.zig");
@@ -1517,6 +1518,7 @@ pub const UnifiedTextBuffer = struct {
 
             fn visit(ctx: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
                 const walk: *@This() = @ptrCast(@alignCast(ctx));
+                text_work.add(.highlight_leaves, 1);
                 if (!segment.isBreak()) {
                     walk.weight += segment.measure().weight();
                     return .{};

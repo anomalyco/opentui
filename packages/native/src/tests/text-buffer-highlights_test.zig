@@ -1,4 +1,5 @@
 const std = @import("std");
+const iter_mod = @import("../text-buffer-iterators.zig");
 const TestPools = @import("test-pools.zig").TestPools;
 const text_buffer = @import("../text-buffer.zig");
 const ansi = @import("../ansi.zig");
@@ -198,10 +199,11 @@ test "TextBuffer styled seek - range highlights visit only overlapping lines" {
         try tb.addHighlightByCharRange(case.start, case.end, 1, 1, 0);
         const work = text_work.take();
         const lines_spanned = case.last - case.first + 1;
-        // One descent finds the first line, and each spanned line costs one more.
-        const depth = tb.rope().root.depth();
-        try std.testing.expect(work.line_seeks <= lines_spanned + 2);
-        try std.testing.expect(work.line_seek_nodes <= (lines_spanned + 2) * depth);
+        // Two descents find the first line; the walk then reads each spanned line's three leaves.
+        try std.testing.expectEqual(case.first, iter_mod.firstLineEndingAfter(tb.rope(), case.start));
+        try std.testing.expectEqual(2, work.line_seeks);
+        try std.testing.expect(work.line_seek_nodes <= 2 * tb.rope().root.depth());
+        try std.testing.expect(work.highlight_leaves <= 3 * lines_spanned);
         try std.testing.expectEqual(lines_spanned, tb.getHighlightCount());
         try std.testing.expectEqual(0, tb.getLineHighlights(case.first - 1).len);
         try std.testing.expectEqual(case.start - case.first * 2, tb.getLineHighlights(case.first)[0].col_start);

@@ -14,6 +14,8 @@ pub const Counts = struct {
     /// Line lookups by rope descent, and the branches they visit.
     line_seeks: u64 = 0,
     line_seek_nodes: u64 = 0,
+    /// Leaves a highlight walks after it finds its first line.
+    highlight_leaves: u64 = 0,
     /// Rope nodes whose metrics a tab-width change recomputes.
     remeasure_nodes: u64 = 0,
     /// Linear steps over render-cluster records before each drawn virtual chunk.
