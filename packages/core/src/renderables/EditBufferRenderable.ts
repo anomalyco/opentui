@@ -267,7 +267,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   get cursorOffset(): number {
-    return this.visualCursor.offset
+    return this.editorView.isDestroyed ? emptyVisualCursor.offset : this.editBuffer.getCursorPosition().offset
   }
 
   set cursorOffset(offset: number) {
