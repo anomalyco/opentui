@@ -155,7 +155,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       this.scrollY += delta
     }
 
-    if (this._wrapMode === "none") {
+    if (this._wrapMode === "none" && !this._truncate) {
       if (direction === "left") {
         this.scrollX -= delta
       } else if (direction === "right") {

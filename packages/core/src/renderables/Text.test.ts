@@ -2180,37 +2180,31 @@ describe("TextRenderable Selection", () => {
       expect(text.scrollY).toBe(2)
     })
 
-    it("should handle mouse scroll events for horizontal scrolling with unwrapped text", async () => {
-      resize(80, 5)
-
-      const wideText =
-        "This is a very long line that extends way beyond the visible area and should definitely need scrolling"
-      const { text } = await createTextRenderable(currentRenderer, {
-        content: wideText,
-        wrapMode: "none",
-        width: 20,
-        maxWidth: 20,
-      })
-
+    // Text paints through the native scene and Code through its own view. A truncated line fits its box, so
+    // sideways steps have nothing to reveal; vertical steps still scroll.
+    it.each([
+      ["Text", false, 3, "DEFGHIJKLM"],
+      ["Text", true, 0, "ABC...WXYZ"],
+      ["Code", false, 3, "DEFGHIJKLM"],
+      ["Code", true, 0, "ABC...WXYZ"],
+    ])("sideways wheel steps over unwrapped %s with truncate %j", async (kind, truncate, scrollX, row) => {
+      const content = "abcdefghijklmnopqrstuvwxyz\nABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      const options = { content, wrapMode: "none" as const, width: 10, height: 1, truncate }
+      const text =
+        kind === "Text"
+          ? new TextRenderable(currentRenderer, options)
+          : new CodeRenderable(currentRenderer, {
+              ...options,
+              syntaxStyle: SyntaxStyle.create(currentRenderer.nativeScene),
+              treeSitterClient: new MockTreeSitterClient(),
+            })
+      currentRenderer.root.add(text)
       await renderOnce()
-
-      expect(text.scrollX).toBe(0)
-      expect(text.scrollY).toBe(0)
-
-      // Scroll right
-      for (let i = 0; i < 5; i++) {
-        await currentMouse.scroll(text.x + 1, text.y, "right")
+      for (const direction of ["down", "right", "right", "right", "right", "left"] as const) {
+        await currentMouse.scroll(1, 0, direction)
       }
       await renderOnce()
-
-      expect(text.scrollX).toBe(5)
-
-      // Scroll left
-      await currentMouse.scroll(text.x + 1, text.y, "left")
-      await currentMouse.scroll(text.x + 1, text.y, "left")
-      await renderOnce()
-
-      expect(text.scrollX).toBe(3)
+      expect([text.scrollY, text.scrollX, captureFrame().split("\n")[0].slice(0, 10)]).toEqual([1, scrollX, row])
     })
 
     it("should not allow horizontal scrolling when text is wrapped", async () => {
