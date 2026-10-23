@@ -4,6 +4,7 @@ const buffer = @import("buffer.zig");
 const events = @import("event-emitter.zig");
 const link = @import("link.zig");
 const ansi = @import("ansi.zig");
+const text_work = @import("text-work.zig");
 
 pub const RGBA = buffer.RGBA;
 
@@ -77,6 +78,7 @@ pub const SyntaxStyle = struct {
         errdefer prepared.deinit();
         try prepared.name_to_id.ensureTotalCapacity(prepared.allocator, self.name_to_id.count());
         try prepared.id_to_style.ensureTotalCapacity(prepared.allocator, self.id_to_style.count());
+        text_work.add(.style_entries_copied, self.name_to_id.count());
         var names = self.name_to_id.iterator();
         while (names.next()) |entry| {
             const name = try prepared.allocator.dupe(u8, entry.key_ptr.*);
@@ -111,6 +113,7 @@ pub const SyntaxStyle = struct {
     }
 
     pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
+        text_work.add(.style_registrations, 1);
         if (self.name_to_id.get(name)) |existing_id| {
             self.id_to_style.getPtr(existing_id).?.* = definition;
             return existing_id;

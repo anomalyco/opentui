@@ -304,3 +304,88 @@ test "text work: each UTF-8 scan entry counts its seeks, width reads, and bytes"
     try expectAfter(utf8.findPosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .wcwidth), .{ .prefix_seeks = 1, .bytes_scanned = 2 });
     try expectAfter(utf8.findGraphemePosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .unicode), .{ .prefix_seeks = 1, .bytes_scanned = 2 });
 }
+
+test "text work: styled text on a buffer that borrows a style registers every chunk and scans the object table" {
+    const ctx = @import("../context.zig");
+    const bytes = "const x = 1;\nfoo";
+    // 8 chunks of 2 bytes that alternate 2 styles.
+    var chunks: [8]ctx.StyledTextChunk = undefined;
+    for (&chunks, 0..) |*chunk, index| chunk.* = if (index % 2 == 0)
+        .{ .byte_count = 2, .foreground = .{ 255, 0, 0, 255 } }
+    else
+        .{ .byte_count = 2, .attributes = 1 };
+    // Zero borrowers: the buffer owns the style that styled text creates. `copied` is per set: the
+    // second set copies the `chunkN` names of the first too. A borrowed style measures each chunk;
+    // `scanned` is the "\nf" chunk on the scalar path.
+    const rows = [_]struct { capacity: u32, borrowers: u32, slots: u64, copied: [2]u64, scanned: u64 }{
+        .{ .capacity = 64, .borrowers = 0, .slots = 0, .copied = .{ 0, 0 }, .scanned = 0 },
+        .{ .capacity = 64, .borrowers = 1, .slots = 128, .copied = .{ 4, 12 }, .scanned = 2 },
+        .{ .capacity = 64, .borrowers = 8, .slots = 128, .copied = .{ 4, 12 }, .scanned = 2 },
+        .{ .capacity = 4096, .borrowers = 1, .slots = 8192, .copied = .{ 4, 12 }, .scanned = 2 },
+    };
+    for (rows) |row| {
+        errdefer std.debug.print("capacity {d}, borrowers {d}\n", .{ row.capacity, row.borrowers });
+        const owner = try ctx.Context.init(std.testing.allocator, std.testing.io, .{ .object_capacity = row.capacity });
+        defer owner.deinit() catch unreachable;
+        const style = try owner.createSyntaxStyle();
+        for ([_][]const u8{ "keyword", "string", "comment" }) |name| _ = try owner.syntaxStyleRegister(style, name, .{ .fg = null, .bg = null, .attributes = 1 });
+        var buffers: [8]ctx.Handle = undefined;
+        for (buffers[0..@max(row.borrowers, 1)]) |*buffer| {
+            buffer.* = try owner.createTextBuffer(.unicode);
+            if (row.borrowers > 0) try owner.textBufferSetSyntaxStyle(buffer.*, style);
+        }
+        _ = text_work.take();
+        _ = try owner.syntaxStyleRegister(style, "type", .{ .fg = null, .bg = null, .attributes = 2 });
+        try expectWork(.{ .style_registrations = 1, .style_dependent_slots = row.slots });
+        // The last borrower reuses the `chunkN` names of the first.
+        for ([_]ctx.Handle{ buffers[0], buffers[@max(row.borrowers, 1) - 1] }, row.copied) |buffer, copied| {
+            try owner.textBufferSetStyledText(buffer, bytes, &chunks);
+            try expectWork(.{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 8, .style_entries_copied = copied, .style_dependent_slots = row.slots, .bytes_scanned = row.scanned });
+        }
+    }
+}
+
+test "text work: highlights added one range at a time rebuild the spans of their line each time" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const line = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+    const text = try repeatLines(allocator, line, 100);
+    defer allocator.free(text);
+    const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    const view = try TextBufferView.init(allocator, tb);
+    defer view.deinit();
+    try tb.setText(text);
+    // A 24-row viewport over the 100 lines, so spans built per drawn line can show their bound.
+    view.setViewport(.{ .x = 0, .y = 0, .width = 80, .height = 24 });
+    const screen = try OptimizedBuffer.init(allocator, 80, 24, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer screen.deinit();
+    screen.drawTextBuffer(view, 0, 0);
+    // Build the line markers once, so neither row pays for it.
+    try tb.addHighlightByCharRange(0, 1, 1, 1, 0);
+    // 100 lines of 10 words: one range per word, alone or inside one transaction.
+    const rows = [_]struct { transaction: bool, add: Counts }{
+        .{ .transaction = false, .add = .{ .marker_lookups = 23_190, .line_span_builds = 1_000, .line_span_highlights = 5_500 } },
+        .{ .transaction = true, .add = .{ .marker_lookups = 23_190, .line_span_builds = 100, .line_span_highlights = 1_000 } },
+    };
+    for (rows) |row| {
+        errdefer std.debug.print("transaction {}\n", .{row.transaction});
+        tb.clearAllHighlights();
+        _ = text_work.take();
+        if (row.transaction) tb.startHighlightsTransaction();
+        for (0..100) |row_index| {
+            var words = std.mem.tokenizeScalar(u8, line, ' ');
+            while (words.next()) |word| {
+                // Highlight offsets exclude line breaks.
+                const start: u32 = @intCast(row_index * line.len + words.index - word.len);
+                try tb.addHighlightByCharRange(start, start + @as(u32, @intCast(word.len)), 1, 1, 0);
+            }
+        }
+        if (row.transaction) tb.endHighlightsTransaction();
+        try expectWork(row.add);
+        // Drawing reads the spans built above; it builds none.
+        screen.drawTextBuffer(view, 0, 0);
+        try expectWork(.{ .clusters_drawn = 1_344 });
+    }
+}

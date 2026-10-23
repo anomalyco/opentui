@@ -38,6 +38,8 @@ const StreamHandler = struct {
         if (action == .set_mode or action == .reset_mode or action == .restore_mode) {
             if (value.mode == .@"132_column") return;
         }
+        // Ghostty answers and stores Kitty drag and drop commands without a drop effect; OpenTUI has none.
+        if (action == .kitty_dnd) return;
         self.base.vt(action, value);
     }
 
@@ -296,7 +298,7 @@ pub const EmbeddedTerminal = struct {
         return count;
     }
 
-    fn writePty(handler: *ghostty.TerminalStream.Handler, data: [:0]const u8) void {
+    fn writePty(handler: *ghostty.TerminalStream.Handler, data: []const u8) void {
         const self: *EmbeddedTerminal = @fieldParentPtr("terminal", handler.terminal);
         if (self.response_error != null) return;
         if (data.len > response_limit - @min(self.responses.items.len, response_limit)) {

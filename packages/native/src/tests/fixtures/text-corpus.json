@@ -10,7 +10,7 @@
     "checks counts how many times each runner runs each check (skipped counts TypeScript's skipped row and method pairs), so a runner change cannot skip one silently."
   ],
   "keys": ["id", "text", "parts", "ops", "methods", "tab", "control", "wrap", "cols", "offset", "width", "line_widths", "max", "lines", "draw", "draw_at", "select", "range", "stops", "result", "truncate", "split", "bug"],
-  "checks": {"zig": {"chunk_widths": 747, "draw": 43, "draw_at": 61, "fit": 326, "fresh": 263, "line_widths": 9, "lines": 42, "max": 9, "measure": 326, "range": 11, "resize": 326, "result": 37, "retain": 747, "select": 21, "split": 112, "stops": 9, "width": 321}, "ts": {"draw": 33, "draw_at": 46, "fresh": 199, "line_widths": 7, "lines": 34, "max": 7, "measure": 244, "range": 9, "resize": 244, "result": 28, "select": 16, "skipped": 123, "split": 81, "stops": 7, "text": 595, "width": 305}},
+  "checks": {"zig": {"chunk_widths": 748, "draw": 43, "draw_at": 61, "fit": 326, "fresh": 263, "line_widths": 9, "lines": 42, "max": 9, "measure": 326, "range": 11, "resize": 326, "result": 37, "retain": 748, "select": 21, "split": 112, "stops": 9, "width": 322}, "ts": {"draw": 33, "draw_at": 46, "fresh": 199, "line_widths": 7, "lines": 34, "max": 7, "measure": 244, "range": 9, "resize": 244, "result": 28, "select": 16, "skipped": 123, "split": 81, "stops": 7, "text": 596, "width": 306}},
   "rows": [
     {"id": "wrap/fragmented-overflowing-separator", "parts": ["hello", " ", "world"], "wrap": "word", "cols": 5, "methods": ["unicode"], "lines": [[0, 0, 5, "hello"], [0, 6, 5, "world"]]},
     {"id": "wrap/fragmented-rope-word-boundary", "parts": ["hello my good ", "f", "riend"], "wrap": "word", "cols": 18, "methods": ["wcwidth"], "lines": [[0, 0, 14, "hello my good "], [0, 14, 6, "friend"]], "range": [[0, 14, "hello my good "], [14, 20, "friend"]]},
@@ -241,6 +241,7 @@
     {"id": "width/devanagari-conjuncts", "text": "क\u094dत", "methods": ["unicode"], "width": 2},
     {"id": "width/devanagari-conjuncts-2", "text": "ज\u094dञ", "methods": ["unicode"], "width": 2},
     {"id": "width/devanagari-conjuncts-3", "text": "क\u094d\u200dष", "methods": ["unicode"], "width": 2},
+    {"id": "width/consonant-after-vedic-jihvamuliya", "text": "\u1cf5क", "methods": ["unicode"], "width": 2},
     {"id": "width/chinese-traditional-characters", "text": "繁體中文", "methods": ["unicode"], "width": 8},
     {"id": "width/chinese-simplified-characters", "text": "简体中文", "methods": ["unicode"], "width": 8},
     {"id": "width/japanese-mixed-scripts", "text": "ひらがな漢字カタカナ", "methods": ["unicode"], "width": 20},

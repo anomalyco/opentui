@@ -477,6 +477,9 @@ fn applyDependencies(
             .@"emit-themes" = false,
             .i18n = false,
             .@"lib-version-string" = GHOSTTY_VT_VERSION,
+            // The embedded terminal draws cells only, so it must not answer Kitty graphics or glyph
+            // protocol commands. Kitty graphics also needs wuffs, which the vendored archive does not carry.
+            .@"vt-features" = "-kitty-graphics,-glyph-protocol",
         })) |ghostty| {
             module.addImport("ghostty_vt", ghostty.module("ghostty-vt"));
         }
