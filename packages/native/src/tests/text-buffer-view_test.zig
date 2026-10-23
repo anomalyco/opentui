@@ -4456,6 +4456,48 @@ fn expectSameAsFullLayout(edited: *TextBufferView, full: *TextBufferView) !void 
     };
 }
 
+// With a first-line offset, line 0's first row is narrower: a line that moves to or from row 0
+// (delete line 0, its undo and redo, a prepended line) is laid out again in both ropes.
+test "TextBufferView a line that moves to or from line 0 wraps for its new row" {
+    const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
+        const edit = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+        defer edit.deinit();
+        var views: [2]*TextBufferView = undefined;
+        for (&views, [_]bool{ false, true }) |*view, full| {
+            view.* = try TextBufferView.init(std.testing.allocator, edit.tb);
+            view.*.force_full_layout = full;
+            view.*.setWrapMode(mode);
+            view.*.setWrapWidth(10);
+            view.*.setFirstLineOffset(5);
+        }
+        defer for (views) |view| view.deinit();
+        try edit.setText("hello\nworld long line");
+        try edit.setCursor(1, 0);
+        try edit.insertText("x");
+        for (0..5) |step| {
+            errdefer std.debug.print("mode {s} step {d}\n", .{ @tagName(mode), step });
+            switch (step) {
+                0 => {},
+                1 => {
+                    try edit.setCursor(0, 0);
+                    try edit.deleteLine();
+                },
+                2 => _ = try edit.undo(),
+                3 => _ = try edit.redo(),
+                4 => {
+                    try edit.setCursor(0, 0);
+                    try edit.insertText("new\n");
+                },
+                else => unreachable,
+            }
+            try expectSameAsFullLayout(views[0], views[1]);
+        }
+    }
+}
+
 // Each view keeps its layout across the edits of an iteration, as an editor does, and re-lays out
 // only the lines that changed. A twin with `force_full_layout` on the same buffer checks that
 // exactly, with no exception; a fresh buffer checks it where chunk boundaries do not split a
