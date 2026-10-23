@@ -459,13 +459,14 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
         try f.owner.sceneMoveNode(node, f.root, @intCast(1 + index));
     }
     const red: context.StyledTextChunk = .{ .byte_count = 3, .foreground = .{ 1, 0, 0, 1 } };
-    const Write = enum { none, scene_same, scene_styled_same, same, styled_same, batch_same, defaults, highlight, shared_styled_same, syntax_style, scene_new, styled_new, tab_width, wrap_mode, clear, append, stale_slot };
+    const Write = enum { none, scene_same, scene_styled_same, same, styled_same, batch_same, batch_new, defaults, highlight, shared_styled_same, syntax_style, scene_new, styled_new, tab_width, wrap_mode, clear, append, stale_slot };
+    // `batch_new` and `scene_new` keep the byte count, so only the byte comparison sees the change.
     // After a clear or an append, the replacement slot still holds "c\tde" but the text does not.
     const rows = [_]struct { Write, u64 }{
-        .{ .none, 0 },       .{ .scene_same, 0 }, .{ .scene_styled_same, 0 }, .{ .same, 0 },               .{ .styled_same, 0 },
-        .{ .batch_same, 0 }, .{ .defaults, 0 },   .{ .highlight, 0 },         .{ .shared_styled_same, 0 }, .{ .syntax_style, 0 },
-        .{ .scene_new, 1 },  .{ .styled_new, 1 }, .{ .tab_width, 1 },         .{ .wrap_mode, 1 },          .{ .clear, 1 },
-        .{ .append, 1 },     .{ .stale_slot, 1 }, .{ .clear, 1 },             .{ .stale_slot, 1 },
+        .{ .none, 0 },         .{ .scene_same, 0 }, .{ .scene_styled_same, 0 }, .{ .same, 0 },      .{ .styled_same, 0 },
+        .{ .batch_same, 0 },   .{ .batch_new, 1 },  .{ .defaults, 0 },          .{ .highlight, 0 }, .{ .shared_styled_same, 0 },
+        .{ .syntax_style, 0 }, .{ .scene_new, 1 },  .{ .styled_new, 1 },        .{ .tab_width, 1 }, .{ .wrap_mode, 1 },
+        .{ .clear, 1 },        .{ .append, 1 },     .{ .stale_slot, 1 },        .{ .clear, 1 },     .{ .stale_slot, 1 },
     };
     _ = try presentWork(f, .{});
     var expected: [rows.len]u64 = undefined;
@@ -477,15 +478,16 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
             .scene_styled_same => try f.owner.sceneSetStyledText(label, "ab", &.{.{ .byte_count = 2, .foreground = .{ 1, 0, 0, 1 } }}),
             .same => try f.owner.textBufferSetText(texts[0], "c\td"),
             .styled_same => try f.owner.textBufferSetStyledText(texts[0], "c\td", &.{red}),
-            .batch_same => {
+            .batch_same, .batch_new => {
                 var info: [1]context.Context.TextReplacementInfo = undefined;
-                try f.owner.textBufferReplaceStyledBatch(&.{.{ .buffer = texts[0], .view = views[0], .bytes = "c\td", .chunks = &.{red} }}, &info);
+                const bytes = if (row[0] == .batch_same) "c\td" else "c\nd";
+                try f.owner.textBufferReplaceStyledBatch(&.{.{ .buffer = texts[0], .view = views[0], .bytes = bytes, .chunks = &.{red} }}, &info);
             },
             .defaults => try f.owner.textBufferSetDefaults(texts[0], .{ .fields = .{ .foreground = true }, .foreground = .{ 0, 1, 0, 1 } }),
             .highlight => try f.owner.textBufferHighlight(texts[0], .{ .add_range = .{ .start = 0, .end = 1, .style_id = 1 } }),
             .shared_styled_same => try f.owner.textBufferSetStyledText(texts[1], "c\td", &.{red}),
             .syntax_style => try f.owner.textBufferSetSyntaxStyle(texts[0], style),
-            .scene_new => try f.owner.sceneSetText(label, "abc"),
+            .scene_new => try f.owner.sceneSetStyledText(label, "a\n", &.{.{ .byte_count = 2 }}),
             .styled_new => try f.owner.textBufferSetStyledText(texts[0], "c\tde", &.{.{ .byte_count = 4 }}),
             .tab_width => try f.owner.textBufferSetTabWidth(texts[0], 8),
             .wrap_mode => try f.owner.textViewCommand(views[0], .{ .wrap_mode = .char }),

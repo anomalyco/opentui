@@ -3758,7 +3758,7 @@ pub const Context = struct {
     /// differ whenever the slot is not the text.
     fn holdsBytes(text: anytype, bytes: []const u8) bool {
         const registry = &text.buffer.mem_registry;
-        const current = registry.get(@as(?u8, text.input_mem_id) orelse return false) orelse return false;
+        const current = registry.get(@as(?u8, text.input_mem_id) orelse return false).?;
         return registry.buffers.items.len == 1 and text.buffer.getByteSize() == bytes.len and std.mem.eql(u8, current, bytes);
     }
 
