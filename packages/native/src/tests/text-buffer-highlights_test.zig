@@ -6,6 +6,7 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ss = @import("../syntax-style.zig");
 const utf8 = @import("../utf8.zig");
+const text_work = @import("../text-work.zig");
 const owned_styled = @import("owned-styled-text.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
@@ -193,9 +194,9 @@ test "TextBuffer styled seek - range highlights visit only overlapping lines" {
     };
     for (cases) |case| {
         tb.clearAllHighlights();
-        const lookups_before = tb.rope().marker_lookups;
+        _ = text_work.take();
         try tb.addHighlightByCharRange(case.start, case.end, 1, 1, 0);
-        const lookups = tb.rope().marker_lookups - lookups_before;
+        const lookups = text_work.take().marker_lookups;
         const lines_spanned = case.last - case.first + 1;
         // Each binary search probe reads three markers and each spanned line at most five.
         try std.testing.expect(lookups <= 3 * (std.math.log2_int_ceil(u32, line_count) + 1) + 5 * lines_spanned);

@@ -14,6 +14,7 @@ const native_image = @import("image.zig");
 
 const logger = @import("logger.zig");
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 const api = @import("context_abi_c");
 
 pub const RGBA = ansi.RGBA;
@@ -2406,6 +2407,7 @@ pub const OptimizedBuffer = struct {
 
                 while (special_idx < render_clusters.len and render_clusters[special_idx].byte_start + render_clusters[special_idx].byte_len <= byte_offset) {
                     special_idx += 1;
+                    text_work.add(.cluster_scan_steps, 1);
                 }
 
                 text_buffer_loop: while (byte_offset < byte_end) {
@@ -2444,6 +2446,7 @@ pub const OptimizedBuffer = struct {
                     mark_base = null;
 
                     if (rendered_col_in_vline < horizontal_offset) {
+                        text_work.add(.left_skip_steps, 1);
                         document_cell_offset += cluster_width_cols;
                         rendered_col_in_vline += cluster_width_cols;
                         col += cluster_width_cols;
@@ -2718,6 +2721,7 @@ pub const OptimizedBuffer = struct {
                         mark_base = .{ .x = @intCast(currentX), .char = char };
                     }
 
+                    text_work.add(.clusters_drawn, 1);
                     document_cell_offset += cluster_width_cols;
                     currentX += @as(i32, @intCast(cluster_width_cols));
                     rendered_col_in_vline += cluster_width_cols;

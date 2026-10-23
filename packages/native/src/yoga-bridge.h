@@ -45,6 +45,7 @@ uint32_t otYogaNodeCalculateLayout(YGNodeRef node, float width, float height,
 uint32_t otYogaNodeMarkDirty(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback) OT_YOGA_NOEXCEPT;
 void otYogaNodeInvalidateMeasure(YGNodeRef node) OT_YOGA_NOEXCEPT;
+void otYogaNodeForgetMeasurements(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeLayoutGetEdge(YGNodeConstRef node, uint32_t kind, uint32_t edge,
                                  float* out) OT_YOGA_NOEXCEPT;

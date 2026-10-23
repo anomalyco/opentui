@@ -795,6 +795,32 @@ test "renderer preserves wide grapheme when continuation and next cell colors ma
     try std.testing.expectEqualStrings(text, std.mem.trimEnd(u8, screen, " "));
 }
 
+test "renderer updates text after a default-ignorable code point where Ghostty shows it" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    // A left-to-right mark after a base, and a tag character at the line start: each takes no cell.
+    const rows = [_]struct { []const u8, []const u8 }{ .{ "a\u{200e}", "abcdeZ" }, .{ "\u{e0041}", "bcdeZ" } };
+    for (rows) |row| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 1, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        for ([_][]const u8{ "bcdef", "bcdeZ" }, [_]bool{ true, false }) |tail, force| {
+            var line: [16]u8 = undefined;
+            try test_renderer.renderer.getNextBuffer().drawText(try std.fmt.bufPrint(&line, "{s}{s}", .{ row[0], tail }), 0, 0, white, black, 0);
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(force));
+        }
+        var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 8, .rows = 1 });
+        defer terminal.deinit(std.testing.allocator);
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice(test_renderer.memory.bytes.items);
+        const screen = try terminal.plainString(std.testing.allocator);
+        defer std.testing.allocator.free(screen);
+        try std.testing.expectEqualStrings(row[1], std.mem.trimEnd(u8, screen, " "));
+    }
+}
+
 test "renderer closes each attributed run before the next run starts" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

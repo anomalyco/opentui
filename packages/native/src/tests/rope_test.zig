@@ -1528,7 +1528,7 @@ test "Rope - split_at_weight at boundary" {
 
     // Split at weight 30 (boundary between second and third item)
     const splitter = makeWeightedSplitter();
-    const result = try WeightedRope.Node.split_at_weight(rope.root, 30, arena.allocator(), rope.empty_leaf, &splitter);
+    const result = try WeightedRope.Node.split_at_weight(rope.root, 30, null, arena.allocator(), rope.empty_leaf, &splitter);
 
     // Left should have weight 30 (first two items)
     try std.testing.expectEqual(@as(u32, 30), result.left.metrics().weight());
@@ -1544,7 +1544,7 @@ test "Rope - split_at_weight inside leaf" {
 
     // Split at weight 40 (inside the single leaf)
     const splitter = makeWeightedSplitter();
-    const result = try WeightedRope.Node.split_at_weight(rope.root, 40, arena.allocator(), rope.empty_leaf, &splitter);
+    const result = try WeightedRope.Node.split_at_weight(rope.root, 40, null, arena.allocator(), rope.empty_leaf, &splitter);
 
     // Left should have weight 40
     try std.testing.expectEqual(@as(u32, 40), result.left.metrics().weight());
@@ -1591,7 +1591,7 @@ test "Rope - deleteRangeByWeight" {
 
     // Delete weight range [10, 30) - removes the second item (weight 20)
     const splitter = makeWeightedSplitter();
-    try rope.deleteRangeByWeight(10, 30, &splitter);
+    try rope.replaceRangeByWeight(10, 30, .left, .left, &.{}, &splitter);
 
     // Should have removed weight 20
     try std.testing.expectEqual(@as(u32, 80), rope.totalWeight());
