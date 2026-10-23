@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../../testing/test-renderer.js"
 import { stringWidth } from "../../platform/runtime.js"
 import { createTextareaRenderable } from "./renderable-test-utils.js"
@@ -485,8 +485,11 @@ describe("Textarea - Buffer Tests", () => {
       expect(visualCursor!.logicalCol).toBe(content.length)
       expect(visualCursor!.visualCol).toBe(content.length)
 
-      // Verify cursor is at the end
+      // Verify cursor is at the end, without asking the view (and its layout) for the visual cursor
+      const visualRead = spyOn(editor.editorView, "getVisualCursor")
       expect(editor.cursorOffset).toBe(11)
+      expect(visualRead).not.toHaveBeenCalled()
+      visualRead.mockRestore()
       expect(editor.plainText).toBe("Hello World")
     })
   })
