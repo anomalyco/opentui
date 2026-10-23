@@ -4,7 +4,7 @@
     "A step is one read: a string (its UTF-8 bytes), an array of byte values, or null (the Escape timeout passes).",
     "After the last step the timeout passes once more. The result must not change when each step arrives one byte at a time.",
     "expected lists every event in order: key(NAME ctrl meta shift release), mouse(TYPE X,Y bBUTTON), response(SEQUENCE), paste(TEXT).",
-    "NAME, SEQUENCE, and TEXT are JSON strings as JavaScript JSON.stringify writes them (C0 controls as lowercase \\u00xx, non-ASCII literal).",
+    "NAME, SEQUENCE, and TEXT are JSON strings as JavaScript JSON.stringify writes them (\\b \\t \\n \\f \\r short, other C0 controls as lowercase \\u00xx, non-ASCII literal).",
     "SEQUENCE is the response bytes read as latin1 (one code point per byte); TEXT is the paste bytes read as UTF-8.",
     "A row with an issue id is wrong on main; its test is a todo until the native port fixes it. issue is null on a row with context but no issue id.",
     "context is the parser state that the row needs. Without it the row runs in legacy keyboard mode with no query pending: the state after start-up.",

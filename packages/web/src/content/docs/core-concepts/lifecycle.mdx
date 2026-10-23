@@ -85,13 +85,13 @@ Renderer destruction performs these actions:
 
 - Removes renderer signal, process, resize, input, and warning listeners.
 - Stops renderer timers, frame scheduling, capability detection, and memory snapshots.
-- Disables raw input, removes the data listener, pauses the input stream, and clears parser state.
+- Removes the data listener, pauses the input stream, and clears parser state.
 - Starts ordered split-footer flushing and terminal restoration, and restores the configured `stdout.write` method.
 - Emits the renderer `destroy` event.
 - Releases the renderable tree, console overlay, native resources, and stream ownership as cleanup completes.
 - Calls `onDestroy` after host cleanup. Use `closed` to wait for output and native teardown. OpenTUI logs callback errors.
 
-The native shutdown sequence resets text attributes and the mouse pointer. It disables mouse, focus, paste, keyboard, and color-scheme modes that OpenTUI enabled. It exits the alternate screen, resets the terminal title, cursor color, and cursor style, and shows the cursor. OpenTUI also sets stdin raw mode to `false`.
+The native shutdown sequence resets text attributes and the mouse pointer. It disables mouse, focus, paste, keyboard, and color-scheme modes that OpenTUI enabled. It exits the alternate screen, resets the terminal title, cursor color, and cursor style, and shows the cursor. OpenTUI sets stdin raw mode to `false` only after the sequence ends, so the terminal does not echo late mouse reports.
 
 `clearOnShutdown: false` keeps the renderer-owned main-screen region visible. It does not skip terminal mode restoration.
 

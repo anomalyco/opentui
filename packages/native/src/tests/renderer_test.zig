@@ -753,46 +753,49 @@ test "renderer preserves wide grapheme when continuation and next cell colors ma
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    var test_renderer = try TestRenderer.create(std.testing.allocator, 6, 1, &pools.graphemes, &pools.links);
-    defer test_renderer.deinit();
-    try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM", "ghostty"));
-    try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM_VERSION", "1.3.1"));
+    // OpenTUI text and the host (Ghostty) agree on Unicode 17 widths: U+1F6D9 is unassigned there, and
+    // a consonant after U+1CF5 starts its own cell.
+    for ([_][]const u8{ "✅ X", "\u{1F6D9} X", "\u{1CF5}\u{0915} X" }) |text| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 6, 1, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM", "ghostty"));
+        try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM_VERSION", "1.3.1"));
 
-    const text = "✅ X";
-    const foreground = ansi.rgbColor(255, 255, 255, 255);
-    const background = ansi.rgbColor(0, 0, 0, 255);
-    var next = test_renderer.renderer.getNextBuffer();
-    try next.drawText(text, 0, 0, foreground, background, 0);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+        const foreground = ansi.rgbColor(255, 255, 255, 255);
+        const background = ansi.rgbColor(0, 0, 0, 255);
+        var next = test_renderer.renderer.getNextBuffer();
+        try next.drawText(text, 0, 0, foreground, background, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
 
-    next = test_renderer.renderer.getNextBuffer();
-    try next.drawText(text, 0, 0, foreground, background, 0);
-    const colors = [_]buffer.RGBA{
-        ansi.rgbColor(200, 0, 0, 255),
-        ansi.rgbColor(0, 200, 0, 255),
-        ansi.rgbColor(0, 200, 0, 255),
-        ansi.rgbColor(0, 0, 200, 255),
-    };
-    for (colors, 0..) |color, x| {
-        var cell = next.get(@intCast(x), 0).?;
-        cell.fg = color;
-        next.setRaw(@intCast(x), 0, cell);
+        next = test_renderer.renderer.getNextBuffer();
+        try next.drawText(text, 0, 0, foreground, background, 0);
+        const colors = [_]buffer.RGBA{
+            ansi.rgbColor(200, 0, 0, 255),
+            ansi.rgbColor(0, 200, 0, 255),
+            ansi.rgbColor(0, 200, 0, 255),
+            ansi.rgbColor(0, 0, 200, 255),
+        };
+        for (colors, 0..) |color, x| {
+            var cell = next.get(@intCast(x), 0).?;
+            cell.fg = color;
+            next.setRaw(@intCast(x), 0, cell);
+        }
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+
+        var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{
+            .cols = 6,
+            .rows = 1,
+        });
+        defer terminal.deinit(std.testing.allocator);
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice("\x1b[?2027h");
+        stream.nextSlice(test_renderer.memory.bytes.items);
+
+        const screen = try terminal.plainString(std.testing.allocator);
+        defer std.testing.allocator.free(screen);
+        try std.testing.expectEqualStrings(text, std.mem.trimEnd(u8, screen, " "));
     }
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
-
-    var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{
-        .cols = 6,
-        .rows = 1,
-    });
-    defer terminal.deinit(std.testing.allocator);
-    var stream = terminal.vtStream();
-    defer stream.deinit();
-    stream.nextSlice("\x1b[?2027h");
-    stream.nextSlice(test_renderer.memory.bytes.items);
-
-    const screen = try terminal.plainString(std.testing.allocator);
-    defer std.testing.allocator.free(screen);
-    try std.testing.expectEqualStrings(text, std.mem.trimEnd(u8, screen, " "));
 }
 
 test "renderer updates text after a default-ignorable code point where Ghostty shows it" {

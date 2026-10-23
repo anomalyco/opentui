@@ -8,10 +8,10 @@ MANIFEST="$VENDOR_DIR/zig-deps.sha256"
 LC_ALL=C
 export LC_ALL
 
-GHOSTTY_COMMIT=727b8a02f8734840de664c060678dd66f01931f6
-GHOSTTY_SHA256=1cdde6bd3c1071de0f4ba489ee526361045e967170e8b50ca6f1d3fe0c624adf
-UUCODE_GHOSTTY_COMMIT=2826a37a4562284fdacd8fa029d49509cc9bffcd
-UUCODE_GHOSTTY_SHA256=7e76fc7fab1e7ac728c52b35bbb3e5b8c639841abfc7fe1a4bcb13050594bc9e
+GHOSTTY_COMMIT=aeda37b305ee3d897ff1bfeddfe39d7fa9366a74
+GHOSTTY_SHA256=5ee98bf64d6cd93deded555b83d335ca20aca799536d1c7cae1a5d6b7799038e
+UUCODE_GHOSTTY_COMMIT=9d55524551411b493cca41ca06363625d90aff1e
+UUCODE_GHOSTTY_SHA256=68d23543cb2c6c5dfdbdf38b38375e0c6d412a5c5fb72ce06bd139f7a4d25132
 UUCODE_OPENTUI_COMMIT=8ad04b756f85a5ba1ac8d2b8cb48d0946f06b630
 UUCODE_OPENTUI_SHA256=f1ce9f0038c46cc75fdd4e8469baac0dce60e20517d8d32ed813bfa9906fefc2
 YOGA_VERSION=3.2.1
@@ -104,6 +104,12 @@ for name in uucode-ghostty uucode-opentui; do
   mkdir -p "$DEPS_DIR/$name"
   cp -R "$SOURCE_DIR/$name/LICENSE.md" "$SOURCE_DIR/$name/build.zig" "$SOURCE_DIR/$name/build.zig.zon" \
     "$SOURCE_DIR/$name/src" "$SOURCE_DIR/$name/ucd" "$DEPS_DIR/$name/"
+done
+# Ghostty needs the newer uucode code, but its Unicode 18 data would give the embedded terminal other
+# widths than OpenTUI text (Unicode 17) and most hosts. Keep OpenTUI's Unicode 17 data files in both
+# copies; revisit this on the next Ghostty update.
+(cd "$DEPS_DIR/uucode-opentui/ucd" && find . -name '*.txt') | while read -r path; do
+  cp "$DEPS_DIR/uucode-opentui/ucd/$path" "$DEPS_DIR/uucode-ghostty/ucd/$path"
 done
 
 extract "$TMP_DIR/yoga.tar.gz" "$SOURCE_DIR/yoga"

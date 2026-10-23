@@ -12,7 +12,7 @@ class DestroyingRenderable extends Renderable {
   protected renderSelf(_buffer: OptimizedBuffer, _deltaTime: number): void {}
 }
 
-test("destroying renderer during frame callback restores input synchronously and drains terminal shutdown", async () => {
+test("destroying renderer during frame callback pauses input synchronously and drains terminal shutdown", async () => {
   const rawModeCalls: boolean[] = []
   const stdin = new Readable({ read() {} }) as NodeJS.ReadStream & {
     setRawMode: (enabled: boolean) => NodeJS.ReadStream
@@ -35,13 +35,14 @@ test("destroying renderer during frame callback restores input synchronously and
 
   renderer.setFrameCallback(async () => {
     renderer.destroy()
-    cleanupObserved = rawModeCalls.at(-1) === false && stdin.isPaused()
+    cleanupObserved = rawModeCalls.at(-1) === true && stdin.isPaused()
   })
 
   renderer.start()
   await renderer.closed
 
   expect(cleanupObserved).toBe(true)
+  expect(rawModeCalls.at(-1)).toBe(false)
   expect(stdout.text()).toContain("\x1b[?2004l")
   expect(stdout.text()).toContain("\x1b[?1006l")
 })

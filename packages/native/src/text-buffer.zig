@@ -4,7 +4,6 @@ const compatibility_io = if (builtin.is_test) std.testing.io else if (@hasDecl(@
 const Allocator = std.mem.Allocator;
 const seg_mod = @import("text-buffer-segment.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
-const text_work = @import("text-work.zig");
 const mem_registry_mod = @import("mem-registry.zig");
 const ss = @import("syntax-style.zig");
 const gp = @import("grapheme.zig");
@@ -12,6 +11,7 @@ const ansi = @import("ansi.zig");
 const link = @import("link.zig");
 
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 
 const logger = @import("logger.zig");
 
@@ -1388,6 +1388,8 @@ pub const UnifiedTextBuffer = struct {
     }
 
     fn buildLineSpans(self: *const Self, highlights: []const Highlight, spans: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
+        text_work.add(.line_span_builds, 1);
+        text_work.add(.line_span_highlights, highlights.len);
         spans.clearRetainingCapacity();
         // Collect all boundary columns
         const Event = struct {
