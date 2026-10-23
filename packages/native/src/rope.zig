@@ -64,7 +64,6 @@ pub fn Rope(comptime T: type) type {
         pub const Branch = struct {
             left: *const Node,
             right: *const Node,
-            left_metrics: Metrics,
             total_metrics: Metrics,
 
             fn is_balanced(self: *const Branch) bool {
@@ -138,16 +137,14 @@ pub fn Rope(comptime T: type) type {
             }
 
             pub fn init_branch(left: *const Node, right: *const Node) Node {
-                const left_metrics = left.metrics();
                 var total_metrics = Metrics{};
-                total_metrics.add(left_metrics);
+                total_metrics.add(left.metrics());
                 total_metrics.add(right.metrics());
                 total_metrics.depth += 1;
 
                 return .{ .branch = .{
                     .left = left,
                     .right = right,
-                    .left_metrics = left_metrics,
                     .total_metrics = total_metrics,
                 } };
             }
@@ -169,7 +166,7 @@ pub fn Rope(comptime T: type) type {
             pub fn get(self: *const Node, index: u32) ?*const T {
                 return switch (self.*) {
                     .branch => |*b| {
-                        const left_count = b.left_metrics.count;
+                        const left_count = b.left.metrics().count;
                         if (index < left_count) {
                             return b.left.get(index);
                         }
@@ -211,7 +208,7 @@ pub fn Rope(comptime T: type) type {
             fn walk_from_internal(self: *const Node, start_index: u32, ctx: *anyopaque, f: WalkerFn, current_index: *u32) WalkerResult {
                 return switch (self.*) {
                     .branch => |*b| {
-                        const left_count = b.left_metrics.count;
+                        const left_count = b.left.metrics().count;
                         if (start_index >= left_count) {
                             return b.right.walk_from_internal(start_index - left_count, ctx, f, current_index);
                         }
@@ -276,7 +273,7 @@ pub fn Rope(comptime T: type) type {
                 return switch (node.*) {
                     .leaf => unreachable,
                     .branch => |*b| {
-                        const left_count = b.left_metrics.count;
+                        const left_count = b.left.metrics().count;
                         if (index < left_count) {
                             const result = try split_at(b.left, index, allocator, empty_leaf);
                             const new_right = try join_balanced(result.right, b.right, allocator);
@@ -311,7 +308,7 @@ pub fn Rope(comptime T: type) type {
                         .leaf => try new_branch(allocator, left, right),
                         .branch => |*b| {
                             const new_right = try join_balanced(b.right, right, allocator);
-                            if (new_right.metrics().size() > b.left_metrics.size() * 3) {
+                            if (new_right.metrics().size() > b.left.metrics().size() * 3) {
                                 switch (new_right.*) {
                                     .branch => |*nr| {
                                         const new_left = try join_balanced(b.left, nr.left, allocator);
@@ -383,7 +380,7 @@ pub fn Rope(comptime T: type) type {
                         return .{ .left = left_node, .right = right_node };
                     },
                     .branch => |*b| {
-                        const left_weight = b.left_metrics.weight();
+                        const left_weight = b.left.metrics().weight();
 
                         if (target_weight < left_weight or (target_weight == left_weight and bias == .right)) {
                             const result = try split_at_weight(b.left, target_weight, bias, allocator, empty_leaf, split_leaf_fn);
@@ -566,7 +563,6 @@ pub fn Rope(comptime T: type) type {
                     total_metrics.depth += 1;
 
                     const mutable = @constCast(branch);
-                    mutable.left_metrics = left_metrics;
                     mutable.total_metrics = total_metrics;
                     break :blk total_metrics;
                 },
@@ -602,7 +598,7 @@ pub fn Rope(comptime T: type) type {
         fn walkFromNode(self: *const Self, node: *const Node, start_index: u32, ctx: *anyopaque, f: Node.WalkerFn, current_index: *u32) Node.WalkerResult {
             return switch (node.*) {
                 .branch => |*b| {
-                    const left_count = b.left_metrics.count;
+                    const left_count = b.left.metrics().count;
                     if (start_index >= left_count) {
                         return self.walkFromNode(b.right, start_index - left_count, ctx, f, current_index);
                     }
@@ -964,13 +960,13 @@ pub fn Rope(comptime T: type) type {
             var leaf_index: u32 = 0;
             while (true) switch (node.*) {
                 .branch => |*b| {
-                    const left_weight = b.left_metrics.weight();
+                    const left_weight = b.left.metrics().weight();
                     if (weight < start_weight + left_weight) {
                         node = b.left;
                     } else {
                         node = b.right;
                         start_weight += left_weight;
-                        leaf_index += b.left_metrics.count;
+                        leaf_index += b.left.metrics().count;
                     }
                 },
                 .leaf => |*l| return .{ .leaf = &l.data, .start_weight = start_weight, .leaf_index = leaf_index },
@@ -989,7 +985,7 @@ pub fn Rope(comptime T: type) type {
             var position: Position = .{ .leaf_index = 0, .weight = 0 };
             while (node.* == .branch) {
                 text_work.add(.line_seek_nodes, 1);
-                const left = node.branch.left_metrics;
+                const left = node.branch.left.metrics();
                 if (rest < counted(&left)) {
                     node = node.branch.left;
                 } else {
@@ -1011,7 +1007,7 @@ pub fn Rope(comptime T: type) type {
             var total: u32 = 0;
             while (node.* == .branch) {
                 text_work.add(.line_seek_nodes, 1);
-                const left = node.branch.left_metrics;
+                const left = node.branch.left.metrics();
                 if (rest < key(&left)) {
                     node = node.branch.left;
                 } else {

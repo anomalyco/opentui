@@ -585,11 +585,11 @@ pub const EditBuffer = struct {
         var row: u32 = 0;
         while (node.* == .branch) {
             const branch = node.branch;
-            if (remaining < branch.left_metrics.weight()) {
+            if (remaining < branch.left.metrics().weight()) {
                 node = branch.left;
             } else {
-                remaining -= branch.left_metrics.weight();
-                row += branch.left_metrics.custom.newline_count;
+                remaining -= branch.left.metrics().weight();
+                row += branch.left.metrics().custom.newline_count;
                 node = branch.right;
             }
         }

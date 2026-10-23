@@ -10,6 +10,8 @@ const TextChunk = seg_mod.TextChunk;
 
 test "TextChunk keeps cold cache state out of rope leaves" {
     try testing.expect(@sizeOf(TextChunk) <= 24);
+    // Branches store only their total metrics; children give theirs on demand.
+    try testing.expectEqual(64, @sizeOf(UnifiedRope.Node));
 }
 
 test "TextChunk layout cache retries and releases partial allocations" {
