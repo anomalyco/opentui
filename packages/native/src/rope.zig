@@ -99,6 +99,11 @@ pub fn Rope(comptime T: type) type {
                 }
                 return self.count;
             }
+
+            /// Balancing size: the weight plus the leaf count, so leaves without weight still count.
+            fn size(self: *const Metrics) u64 {
+                return @as(u64, self.weight()) + self.count;
+            }
         };
 
         pub const Branch = struct {
@@ -108,14 +113,10 @@ pub fn Rope(comptime T: type) type {
             total_metrics: Metrics,
 
             fn is_balanced(self: *const Branch) bool {
-                const left_weight = self.left.metrics().weight();
-                const right_weight = self.right.metrics().weight();
-                const total_weight = left_weight + right_weight;
-
-                if (total_weight == 0) return true;
-
-                const max_side = (total_weight * 3) / 4;
-                return left_weight <= max_side and right_weight <= max_side;
+                const left_size = self.left.metrics().size();
+                const right_size = self.right.metrics().size();
+                const max_side = ((left_size + right_size) * 3) / 4;
+                return left_size <= max_side and right_size <= max_side;
             }
         };
 
@@ -343,23 +344,19 @@ pub fn Rope(comptime T: type) type {
                 if (left_count == 0) return right;
                 if (right_count == 0) return left;
 
-                const left_weight: u64 = left.metrics().weight();
-                const right_weight: u64 = right.metrics().weight();
-                const total_weight = left_weight + right_weight;
-
-                if (total_weight > 0) {
-                    const max_side = (total_weight * 3) / 4;
-                    if (left_weight <= max_side and right_weight <= max_side) {
-                        return try new_branch(allocator, left, right);
-                    }
+                const left_size = left.metrics().size();
+                const right_size = right.metrics().size();
+                const max_side = ((left_size + right_size) * 3) / 4;
+                if (left_size <= max_side and right_size <= max_side) {
+                    return try new_branch(allocator, left, right);
                 }
 
-                if (left_weight > right_weight * 3) {
+                if (left_size > right_size * 3) {
                     return switch (left.*) {
                         .leaf => try new_branch(allocator, left, right),
                         .branch => |*b| {
                             const new_right = try join_balanced(b.right, right, allocator);
-                            if (@as(u64, new_right.metrics().weight()) > @as(u64, b.left_metrics.weight()) * 3) {
+                            if (new_right.metrics().size() > b.left_metrics.size() * 3) {
                                 switch (new_right.*) {
                                     .branch => |*nr| {
                                         const new_left = try join_balanced(b.left, nr.left, allocator);
@@ -377,7 +374,7 @@ pub fn Rope(comptime T: type) type {
                     .leaf => try new_branch(allocator, left, right),
                     .branch => |*b| {
                         const new_left = try join_balanced(left, b.left, allocator);
-                        if (@as(u64, new_left.metrics().weight()) > @as(u64, b.right.metrics().weight()) * 3) {
+                        if (new_left.metrics().size() > b.right.metrics().size() * 3) {
                             switch (new_left.*) {
                                 .branch => |*nl| {
                                     const new_right = try join_balanced(nl.right, b.right, allocator);

@@ -151,12 +151,12 @@ test "text work: line lookups after an edit in a 10,000-line buffer" {
     try tb.addHighlightByCharRange(0, tb.getLength(), 1, 1, 0);
     try expectWork(.{ .marker_lookups = 30_044 });
 
-    // Zero-width appends join without weight, so each one deepens the rope.
+    // Zero-width appends have no weight; balancing counts their leaves, so the depth stays logarithmic.
     const zero_width = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
     defer zero_width.deinit();
     try zero_width.setText(text);
     for (0..200) |_| try zero_width.append("\u{200b}");
-    try std.testing.expectEqual(215, zero_width.rope().root.depth());
+    try std.testing.expect(zero_width.rope().root.depth() <= 2 * std.math.log2_int_ceil(u32, zero_width.rope().count()));
     _ = text_work.take();
     _ = zero_width.lineWidthAt(9_999);
     try expectWork(.{ .marker_rebuilds = 1, .marker_leaves = 30_199, .marker_lookups = 1 });
