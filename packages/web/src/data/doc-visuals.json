@@ -4494,8 +4494,8 @@
           "background": 3
         },
         {
-          "text": "    ",
-          "width": 4,
+          "text": "     ",
+          "width": 5,
           "foreground": 2,
           "background": 4
         },
@@ -4506,8 +4506,8 @@
           "background": 4
         },
         {
-          "text": "     ",
-          "width": 5,
+          "text": "    ",
+          "width": 4,
           "foreground": 2,
           "background": 4
         },
@@ -7473,14 +7473,8 @@
       ],
       [
         {
-          "text": "value 0.5",
-          "width": 9,
-          "foreground": 4,
-          "background": 1
-        },
-        {
-          "text": "  ",
-          "width": 2,
+          "text": "           ",
+          "width": 11,
           "foreground": 2,
           "background": 1
         },
@@ -7493,8 +7487,14 @@
       ],
       [
         {
-          "text": "           ",
-          "width": 11,
+          "text": "value 0.5",
+          "width": 9,
+          "foreground": 4,
+          "background": 1
+        },
+        {
+          "text": "  ",
+          "width": 2,
           "foreground": 2,
           "background": 1
         },
