@@ -840,8 +840,11 @@ pub const Scene = struct {
                         if (operation.kind == .placed) node.placement = 0;
                     },
                     .prepass => {
+                        // The batch starts before placed children refresh, so their replies' stale marks survive it.
+                        if (operation.placement == 0 and node.viewport != null and
+                            (node.children_observed != self.layout_epoch or self.forcesFullFrame())) node.children_observed = children_refreshing;
                         // A resize callback can append to the live placement Set.
-                        self.feedback.appendAssumeCapacity(operation);
+                        self.feedback.appendAssumeCapacity(.{ .node = operation.node, .kind = .prepass, .placement = 1 });
                         const start = self.feedback.items.len;
                         for (node.children.items) |child| {
                             const state = child.scene_node.?;
@@ -867,7 +870,6 @@ pub const Scene = struct {
                                 self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
                                 // Refresh repeats its last result until a solve or a stale mark changes an input.
                                 if (node.children_observed == self.layout_epoch and !self.forcesFullFrame()) continue;
-                                node.children_observed = children_refreshing;
                                 for (node.paint_children.items, 0..) |child, index| {
                                     const state = child.scene_node.?;
                                     if (state.prepared_frame != active.frame_id or state.prepared_round != active.rounds) continue;

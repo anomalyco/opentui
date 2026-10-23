@@ -470,7 +470,7 @@ const StaleReply = struct {
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame.
 test "Scene frame work counts viewport refresh and culling work" {
-    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, destroy_reply };
+    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, placed_reply, destroy_reply };
     const sizes = [_]u32{ 16, 256, 4096 };
     const expected = [sizes.len][std.meta.fields(Frame).len][5]u64{
         .{
@@ -487,6 +487,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 16, 0, 23, 0, 1 }, // cancelled
             .{ 32, 0, 44, 1, 2 }, // stale_reply
             .{ 32, 0, 44, 1, 2 }, // stale_requester
+            .{ 32, 0, 44, 1, 2 }, // placed_reply
             .{ 31, 60, 54, 1, 2 }, // destroy_reply
         },
         .{
@@ -503,6 +504,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 256, 0, 263, 0, 1 }, // cancelled
             .{ 512, 0, 524, 1, 2 }, // stale_reply
             .{ 512, 0, 524, 1, 2 }, // stale_requester
+            .{ 512, 0, 524, 1, 2 }, // placed_reply
             .{ 511, 12, 522, 1, 2 }, // destroy_reply
         },
         .{
@@ -519,6 +521,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 4096, 0, 4103, 0, 1 }, // cancelled
             .{ 8192, 0, 8204, 1, 2 }, // stale_reply
             .{ 8192, 0, 8204, 1, 2 }, // stale_requester
+            .{ 8192, 0, 8204, 1, 2 }, // placed_reply
             .{ 8191, 12, 8202, 1, 2 }, // destroy_reply
         },
     };
@@ -611,8 +614,17 @@ test "Scene frame work counts viewport refresh and culling work" {
                     break :blk try presentStepped(f, StaleReply{ .target = rows[n - 2] });
                 },
                 // ... or destroys the last row, whose refresh is still queued.
-                .destroy_reply => blk: {
+                // ... or on a row moved in place, which refreshes as placed before the batch.
+                .placed_reply => blk: {
+                    try f.owner.sceneSetTextOptions(rows[n - 2], .{});
                     try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 2, 1);
+                    try f.owner.sceneMoveNode(rows[n - 2], content, @intCast(n - 2));
+                    const result = try presentStepped(f, StaleReply{ .target = rows[n - 2] });
+                    try testing.expect((try f.owner.raw().getRenderable(rows[n - 2])).scene_node.?.text.?.view.truncation_applied);
+                    break :blk result;
+                },
+                .destroy_reply => blk: {
+                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 3, 1);
                     break :blk try presentStepped(f, StaleReply{ .target = rows[n - 1], .destroy = true });
                 },
             };
