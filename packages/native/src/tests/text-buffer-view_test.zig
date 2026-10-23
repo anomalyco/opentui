@@ -339,7 +339,10 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    for ([_]bool{ false, true }) |truncate| for (0..12) |failure| {
+    // The append adds enough lines that the splice must grow the arrays: the sweep fails the
+    // staging allocations, the splice's, and the truncation's.
+    var failed_at: [2]usize = .{ 0, 0 };
+    for ([_]bool{ false, true }, &failed_at) |truncate, *failures| for (0..64) |failure| {
         var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
         const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
         defer tb.deinit();
@@ -356,13 +359,17 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
         full.force_full_layout = true;
         try tb.setText("alpha \u{754c} e\u{301} word word word word\n" ** 20);
         _ = view.getVirtualLines();
-        try tb.append("tail \u{754c} words that wrap\nand a new line of words");
+        try tb.append("\ntail \u{754c} words that wrap" ** 400);
         tracking.fail_index = tracking.alloc_index + failure;
         _ = view.getVirtualLines();
-        if (tracking.has_induced_failure) try std.testing.expect(view.virtual_lines_dirty or !view.truncation_applied);
+        if (tracking.has_induced_failure) {
+            failures.* += 1;
+            try std.testing.expect(view.virtual_lines_dirty or !view.truncation_applied);
+        }
         tracking.fail_index = std.math.maxInt(usize);
         try expectSameAsFullLayout(view, full);
     };
+    try std.testing.expectEqual([2]usize{ 9, 6 }, failed_at);
 }
 
 test "TextBufferView rewrap reuses virtual line allocation without retaining cleared layout" {
