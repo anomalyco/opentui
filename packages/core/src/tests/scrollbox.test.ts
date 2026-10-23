@@ -182,17 +182,17 @@ describe("ScrollBoxRenderable - culled content layout freshness", () => {
       sizeChanges: 1,
     },
     {
-      name: "a row relaid out while culled renders at its new position once scrolled into view",
+      name: "a row moved by a culled relayout renders at its new position once scrolled into view",
       act: async (scrollbox, rows) => {
         rows[10].height = 3
         await renderOnce()
-        scrollbox.scrollTo(rows[10].y - scrollbox.content.y)
+        // rows[11] moved down by 2 while culled; its public position must say so.
+        scrollbox.scrollTo(rows[11].y - scrollbox.content.y - 1)
       },
       lines: [
-        [0, "row-10 "],
-        [1, null],
-        [2, null],
-        [3, "row-11 "],
+        [0, null],
+        [1, "row-11 "],
+        [2, "row-12 "],
       ],
     },
   ]

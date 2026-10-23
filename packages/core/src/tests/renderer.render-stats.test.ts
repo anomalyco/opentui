@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import type { NativeFrameWork, NativeRenderStats } from "../zig.js"
@@ -109,6 +110,25 @@ describe("native renderer stats", () => {
       await renderer.closed
       renderer = null
     }
+  })
+
+  test("a culled ScrollBox refreshes its rows only on frames that change layout", async () => {
+    const result = await createTestRenderer({ width: 40, height: 10 })
+    renderer = result.renderer
+    const scrollbox = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%" })
+    renderer.root.add(scrollbox)
+    for (let i = 0; i < 1_000; i++) scrollbox.add(new TextRenderable(renderer, { content: `row ${i}` }))
+    const refreshes = async () => {
+      await result.renderOnce()
+      return renderer!.getNativeStats().frameWork.viewportChildRefreshes
+    }
+    // The first frame lays out and refreshes every row, once per layout round.
+    expect(await refreshes()).toBeGreaterThanOrEqual(1_000)
+    expect(await refreshes()).toBe(0)
+    scrollbox.scrollTo(500)
+    expect(await refreshes()).toBe(0)
+    scrollbox.add(new TextRenderable(renderer, { content: "appended" }))
+    expect(await refreshes()).toBe(1_001)
   })
 })
 
