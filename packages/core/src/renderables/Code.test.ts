@@ -320,28 +320,38 @@ test("content work: each streamed delta sends the whole text to the highlighter 
       new CodeRenderable(currentRenderer, { ...options, filetype: "markdown", drawUnstyledText: false }),
     markdown: (options: any) => new MarkdownRenderable(currentRenderer, { ...options, internalBlockMode: "top-level" }),
   }
-  // Calls and bytes per native entry point; the document is ASCII, so highlighter units are bytes too.
-  const entries = { styled_text: "ot_text_buffer_set_styled_text", text: "ot_text_buffer_set_text" } as const
-  const work: Record<string, { deltas: number; worker_bytes: number; styled_text: number[]; text: number[] }> = {}
-  for (const [mode, create] of Object.entries(rows)) {
-    const mockClient = new MockTreeSitterClient()
-    mockClient.setMockResult({ highlights: [[0, 1, "keyword"]] })
-    const contents = recordHighlightContents(mockClient)
-    const target = create({ content: "", syntaxStyle, streaming: true, treeSitterClient: mockClient, width: "100%" })
-    currentRenderer.root.add(target)
-    await renderOnce()
-    const counts = (work[mode] = { deltas: 0, worker_bytes: 0, styled_text: [0, 0], text: [0, 0] })
-    const originals = { styled_text: symbols[entries.styled_text], text: symbols[entries.text] }
-    for (const key of ["styled_text", "text"] as const) {
-      symbols[entries[key]] = (...args) => {
-        counts[key][0]++
-        counts[key][1] += args[3]
-        return originals[key](...args)
-      }
+  // Calls and bytes by mode and by every native symbol that takes bytes. Text arrives as Uint8Array (handles and
+  // chunk records are wider arrays); the output read fills a Uint8Array, so it is left out.
+  const work: Record<string, number[]> = {}
+  let mode = ""
+  const count = (name: string, bytes: number) => {
+    if (!mode) return
+    const entry = (work[`${mode} ${name}`] ??= [0, 0])
+    entry[0]++
+    entry[1] += bytes
+  }
+  const originals = { ...symbols }
+  for (const [name, original] of Object.entries(originals)) {
+    if (typeof original !== "function" || name === "ot_session_read_output") continue
+    symbols[name] = (...args) => {
+      for (const arg of args) if (arg instanceof Uint8Array) count(name, arg.length)
+      return original(...args)
     }
-    contents.length = 0
-    try {
-      for (let end = 32; end < doc.length + 32; end += 32, counts.deltas++) {
+  }
+  try {
+    for (const [name, create] of Object.entries(rows)) {
+      const mockClient = new MockTreeSitterClient()
+      mockClient.setMockResult({ highlights: [[0, 1, "keyword"]] })
+      const target = create({ content: "", syntaxStyle, streaming: true, treeSitterClient: mockClient, width: "100%" })
+      currentRenderer.root.add(target)
+      await renderOnce()
+      mode = name
+      // The document is ASCII, so highlighter units are bytes. A new highlighter request must be counted here too.
+      const highlightOnce = mockClient.highlightOnce.bind(mockClient)
+      mockClient.highlightOnce = (content, filetype) => (
+        count("highlightOnce", content.length), highlightOnce(content, filetype)
+      )
+      for (let end = 32; end < doc.length + 32; end += 32) {
         target.content = doc.slice(0, end)
         await renderOnce()
         // Finish each highlight before the next delta, so the counts do not depend on timing.
@@ -352,17 +362,21 @@ test("content work: each streamed delta sends the whole text to the highlighter 
         }
         expect(mockClient.isHighlighting()).toBe(false)
       }
-    } finally {
-      for (const key of ["styled_text", "text"] as const) symbols[entries[key]] = originals[key]
+      mode = ""
+      target.destroyRecursively()
     }
-    counts.worker_bytes = contents.reduce((sum, content) => sum + content.length, 0)
-    target.destroyRecursively()
+  } finally {
+    Object.assign(symbols, originals)
   }
-  // Code sends the 371-byte document 6.7 times over; Markdown resends its open block.
+  // 12 deltas of 32 bytes: Code sends the 371-byte document 6.7 times over; Markdown resends its open block.
   expect(doc.length).toBe(371)
   expect(work).toEqual({
-    code: { deltas: 12, worker_bytes: 2483, styled_text: [12, 2483], text: [0, 0] },
-    markdown: { deltas: 12, worker_bytes: 1362, styled_text: [28, 1566], text: [1, 10] },
+    "code highlightOnce": [12, 2483],
+    "code ot_text_buffer_set_styled_text": [12, 2483],
+    "markdown highlightOnce": [16, 1362],
+    "markdown ot_text_buffer_set_styled_text": [28, 1566],
+    "markdown ot_scene_set_styled_text": [2, 4],
+    "markdown ot_text_buffer_set_text": [1, 10],
   })
 })
 
