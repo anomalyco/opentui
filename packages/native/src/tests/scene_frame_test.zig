@@ -438,74 +438,174 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     (try f.owner.raw().getSession(f.id)).cancel();
 }
 
-test "Scene frame work counts viewport refresh and culling work" {
-    const f = try Fixture.init(testing.allocator, 8, 4, .{});
-    defer f.deinit();
-    const viewport = try f.owner.sceneCreateNode(f.id, 1, 2);
-    try f.owner.sceneSetStyle(viewport, 4, 0, 0, 1, 4, 1);
-    try f.owner.sceneSetStyle(viewport, 4, 1, 0, 1, 2, 1);
-    try f.owner.sceneSetStyle(viewport, 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
-    try f.owner.sceneMoveNode(viewport, f.root, 0);
-    const content = try f.owner.sceneCreateNode(f.id, 1, 3);
-    try f.owner.sceneSetStyle(content, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
-    try f.owner.sceneMoveNode(content, viewport, 0);
-    try f.owner.sceneSetViewport(content, viewport);
-    var rows: [16]context.Handle = undefined;
-    for (&rows, 0..) |*row_handle, index| {
-        const row = try f.owner.sceneCreateNode(f.id, 2, @intCast(4 + index));
-        row_handle.* = row;
-        try f.owner.sceneSetText(row, &.{'a' + @as(u8, @intCast(index))});
-        try f.owner.sceneSetStyle(row, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
-        try f.owner.sceneSetStyle(row, 4, 0, 0, 1, 8, 1);
-        try f.owner.sceneMoveNode(row, content, @intCast(index));
+/// Drives one frame through every host request, replying with `reply`, then presents it.
+fn presentStepped(f: Fixture, reply: anytype) !FrameWork {
+    var request = try f.owner.sceneFrameStep(f.id, null, options);
+    while (request.kind != c.OT_SCENE_FRAME_DONE) {
+        try reply.apply(f, request);
+        request = try f.owner.sceneFrameStep(f.id, request, options);
     }
-    // Every frame refreshes and overlap-tests all 16 rows, but paints and hits only the 2 visible ones,
-    // clipped to the 4-column viewport.
-    var expected: FrameWork = .{
-        .work_frame_id = 1,
-        .candidate_visits = 19,
-        .paint_visits = 19,
-        .view_preparations = 24,
-        .geometry_reads = 19,
-        .yoga_solves = 1,
-        .feedback_operations = 42,
-        .visibility_steps = 14,
-        .viewport_child_refreshes = 16,
-        .overlap_tests = 32,
-        .members_painted = 4,
-        .member_cells = 8,
-        .cells_cleared = 64,
-        .hit_cells_written = 24,
-        .hit_cells_cleared = 64,
-        .hit_cells_compared = 32,
-        .rows_diffed = 4,
-        .full_path_reasons = FrameWork.full_path_screen,
-        .layout_rounds = 1,
-    };
-    try testing.expectEqual(expected, try presentWork(f, .{}));
-    // An unchanged frame skips the solve and geometry reads and queues less feedback.
-    expected.work_frame_id = 2;
-    expected.geometry_reads = 0;
-    expected.yoga_solves = 0;
-    expected.feedback_operations = 21;
-    expected.rows_compared = 4;
-    expected.rows_diffed = 0;
-    expected.full_path_reasons = 0;
-    try testing.expectEqual(expected, try presentWork(f, .{}));
-    try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
-    expected.work_frame_id = 3;
-    expected.rows_diffed = 2;
-    try testing.expectEqual(expected, try presentWork(f, .{}));
-    // A RESIZE request from the second row defers the rest of its batch to feedback; they still count as refreshes.
-    try f.owner.sceneSetHooks(rows[1], c.OT_SCENE_HOOK_RESIZE, 1, 8, 1);
-    try f.owner.sceneSetStyle(rows[1], 4, 0, 0, 1, 6, 1);
-    const done = try f.step(try f.step(null, options, c.OT_SCENE_FRAME_RESIZE, rows[1]), options, c.OT_SCENE_FRAME_DONE, null);
-    _ = try f.owner.sceneFrameCommit(f.id, done, false);
+    _ = try f.owner.sceneFrameCommit(f.id, request, false);
     try drain(f.owner, f.id);
-    const resized = try work(f);
-    try testing.expectEqual(@as(u64, 16), resized.viewport_child_refreshes);
-    try testing.expectEqual(@as(u64, 35), resized.feedback_operations);
-    try testing.expectEqual(@as(u32, 1), resized.host_requests);
+    return work(f);
+}
+
+const NoReply = struct {
+    fn apply(_: NoReply, _: Fixture, _: scene.FrameRequest) !void {}
+};
+
+/// A RESIZE reply that changes text options on `target`, or destroys it.
+const StaleReply = struct {
+    target: context.Handle,
+    truncate: bool = true,
+    destroy: bool = false,
+    fn apply(self: StaleReply, f: Fixture, request: scene.FrameRequest) !void {
+        if (request.kind != c.OT_SCENE_FRAME_RESIZE) return;
+        if (self.destroy) return f.owner.sceneDestroyNode(self.target);
+        try f.owner.sceneSetTextOptions(self.target, .{ .truncate = self.truncate });
+    }
+};
+
+// A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
+// one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
+// host requests, and layout rounds of that frame.
+test "Scene frame work counts viewport refresh and culling work" {
+    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, destroy_reply };
+    const sizes = [_]u32{ 16, 256, 4096 };
+    const expected = [sizes.len][std.meta.fields(Frame).len][5]u64{
+        .{
+            .{ 16, 14, 24, 0, 1 }, // first
+            .{ 16, 14, 24, 0, 1 }, // unchanged
+            .{ 16, 14, 24, 0, 1 }, // scroll
+            .{ 16, 14, 24, 0, 1 }, // grow
+            .{ 16, 14, 24, 0, 1 }, // options_prepare
+            .{ 16, 14, 24, 0, 1 }, // options_color
+            .{ 16, 14, 24, 0, 1 }, // measure_text
+            .{ 16, 15, 23, 0, 1 }, // hidden
+            .{ 16, 15, 23, 0, 1 }, // hidden_unchanged
+            .{ 16, 15, 23, 0, 1 }, // cancelled
+            .{ 32, 33, 44, 1, 2 }, // stale_reply
+            .{ 32, 33, 44, 1, 2 }, // stale_requester
+            .{ 31, 129, 54, 1, 2 }, // destroy_reply
+        },
+        .{
+            .{ 256, 14, 264, 0, 1 }, // first
+            .{ 256, 14, 264, 0, 1 }, // unchanged
+            .{ 256, 14, 264, 0, 1 }, // scroll
+            .{ 256, 14, 264, 0, 1 }, // grow
+            .{ 256, 14, 264, 0, 1 }, // options_prepare
+            .{ 256, 14, 264, 0, 1 }, // options_color
+            .{ 256, 14, 264, 0, 1 }, // measure_text
+            .{ 256, 15, 263, 0, 1 }, // hidden
+            .{ 256, 15, 263, 0, 1 }, // hidden_unchanged
+            .{ 256, 15, 263, 0, 1 }, // cancelled
+            .{ 512, 33, 524, 1, 2 }, // stale_reply
+            .{ 512, 33, 524, 1, 2 }, // stale_requester
+            .{ 511, 33, 522, 1, 2 }, // destroy_reply
+        },
+        .{
+            .{ 4096, 14, 4104, 0, 1 }, // first
+            .{ 4096, 14, 4104, 0, 1 }, // unchanged
+            .{ 4096, 14, 4104, 0, 1 }, // scroll
+            .{ 4096, 14, 4104, 0, 1 }, // grow
+            .{ 4096, 14, 4104, 0, 1 }, // options_prepare
+            .{ 4096, 14, 4104, 0, 1 }, // options_color
+            .{ 4096, 14, 4104, 0, 1 }, // measure_text
+            .{ 4096, 15, 4103, 0, 1 }, // hidden
+            .{ 4096, 15, 4103, 0, 1 }, // hidden_unchanged
+            .{ 4096, 15, 4103, 0, 1 }, // cancelled
+            .{ 8192, 33, 8204, 1, 2 }, // stale_reply
+            .{ 8192, 33, 8204, 1, 2 }, // stale_requester
+            .{ 8191, 33, 8202, 1, 2 }, // destroy_reply
+        },
+    };
+    var all: [sizes.len][std.meta.fields(Frame).len][5]u64 = undefined;
+    for (sizes, &all) |n, *actual| {
+        const f = try Fixture.init(testing.allocator, 8, 4, .{ .limits = .{ .object_capacity = 8192 } });
+        defer f.deinit();
+        const viewport = try f.owner.sceneCreateNode(f.id, 1, 2);
+        try f.owner.sceneSetStyle(viewport, 4, 0, 0, 1, 4, 1);
+        try f.owner.sceneSetStyle(viewport, 4, 1, 0, 1, 2, 1);
+        try f.owner.sceneSetStyle(viewport, 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+        try f.owner.sceneMoveNode(viewport, f.root, 0);
+        const content = try f.owner.sceneCreateNode(f.id, 1, 3);
+        try f.owner.sceneSetStyle(content, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+        try f.owner.sceneMoveNode(content, viewport, 0);
+        try f.owner.sceneSetViewport(content, viewport);
+        const rows = try testing.allocator.alloc(context.Handle, n);
+        defer testing.allocator.free(rows);
+        for (rows, 0..) |*row_handle, index| {
+            const row = try f.owner.sceneCreateNode(f.id, 2, @intCast(4 + index));
+            row_handle.* = row;
+            try f.owner.sceneSetText(row, &.{'a' + @as(u8, @intCast(index % 26))});
+            try f.owner.sceneSetStyle(row, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+            try f.owner.sceneSetStyle(row, 4, 0, 0, 1, 8, 1);
+            try f.owner.sceneMoveNode(row, content, @intCast(index));
+        }
+        const culled = rows[n / 2];
+        for (std.enums.values(Frame)) |frame| {
+            const w = switch (frame) {
+                .first, .unchanged, .hidden_unchanged => try presentWork(f, .{}),
+                .scroll => blk: {
+                    try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
+                    break :blk try presentWork(f, .{});
+                },
+                // A culled row grows: the frame solves.
+                .grow => blk: {
+                    try f.owner.sceneSetStyle(rows[n - 1], 4, 1, 0, 1, 2, 1);
+                    break :blk try presentWork(f, .{});
+                },
+                .options_prepare => blk: {
+                    try f.owner.sceneSetTextOptions(culled, .{ .truncate = true });
+                    break :blk try presentWork(f, .{});
+                },
+                // A color change on a culled row prepares nothing.
+                .options_color => blk: {
+                    try f.owner.sceneSetTextOptions(culled, .{ .truncate = true, .foreground = .{ 1, 2, 3, 255 } });
+                    break :blk try presentWork(f, .{});
+                },
+                // Text replaced on a culled row without a Yoga measure function does not solve.
+                .measure_text => blk: {
+                    try f.owner.sceneSetMeasure(rows[n / 2 + 1], null);
+                    _ = try presentWork(f, .{});
+                    try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
+                    break :blk try presentWork(f, .{});
+                },
+                // A hidden row at the top overlaps the viewport with its zeroed layout.
+                .hidden => blk: {
+                    try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 0 });
+                    try f.owner.sceneSetStyle(rows[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+                    break :blk try presentWork(f, .{});
+                },
+                // A culled row's RESIZE request, cancelled; the next frame does not solve.
+                .cancelled => blk: {
+                    try f.owner.sceneSetHooks(rows[n - 2], c.OT_SCENE_HOOK_RESIZE, 1, 8, 1);
+                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 2, 1);
+                    const request = try f.step(null, options, c.OT_SCENE_FRAME_RESIZE, rows[n - 2]);
+                    try f.owner.sceneFrameCancel(f.id, request.frame_id);
+                    break :blk try presentStepped(f, NoReply{});
+                },
+                // A culled row's RESIZE reply changes text options on an already refreshed row.
+                .stale_reply => blk: {
+                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 3, 1);
+                    break :blk try presentStepped(f, StaleReply{ .target = culled, .truncate = false });
+                },
+                // ... or on the requesting row itself.
+                .stale_requester => blk: {
+                    try f.owner.sceneSetTextOptions(rows[n - 2], .{});
+                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 1, 1);
+                    break :blk try presentStepped(f, StaleReply{ .target = rows[n - 2] });
+                },
+                // ... or destroys the last row, whose refresh is still queued.
+                .destroy_reply => blk: {
+                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 2, 1);
+                    break :blk try presentStepped(f, StaleReply{ .target = rows[n - 1], .destroy = true });
+                },
+            };
+            actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds };
+        }
+    }
+    try testing.expectEqual(expected, all);
 }
 
 // The bench's scenes at small sizes. Columns: every FrameWork field after work_frame_id, in
