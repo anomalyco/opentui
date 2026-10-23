@@ -191,6 +191,8 @@ const Attempt = struct {
     requests: u32 = 0,
     request_id: u64 = 0,
     pending: ?FrameRequest = null,
+    // Scene.visibility_epoch when this round stamped prepared_visible.
+    visibility_epoch: u64 = 0,
 };
 
 pub const ImageState = struct {
@@ -243,11 +245,15 @@ pub const Node = struct {
         needs_layout: bool = true,
         display_none: bool = false,
         clips_children: bool = false,
+        // Visible with every ancestor when this round prepared the node.
+        prepared_visible: bool = false,
     } = .{},
     paint: Paint = .{},
     layout: Layout = .{},
     observed_layout: Layout = .{},
     viewport: ?handles.Handle = null,
+    // A filtered parent's layout_epoch when every child last refreshed, refreshing while a batch runs, or 0.
+    children_observed: u64 = 0,
     focus_frame: u64 = 0,
     text: ?*Text = null,
     editor: ?*Editor = null,
@@ -291,6 +297,8 @@ const PreparationFrame = struct {
 };
 
 const no_slot = std.math.maxInt(u32);
+// A filtered parent's children_observed while its refresh batch runs; no layout_epoch reaches it.
+const children_refreshing = std.math.maxInt(u64);
 
 /// A prepared member of a recorded frame. Handles survive the host's record batch.
 const PaintMember = struct {
@@ -356,6 +364,8 @@ pub const Scene = struct {
     cancelled_paint: bool = false,
     last_frame_id: u64 = 0,
     layout_epoch: u64 = 0,
+    // Changes with any display or ancestry change, so stamped visibility goes stale mid-attempt.
+    visibility_epoch: u64 = 0,
     solve_frame: u64 = 0,
     solve_round: u32 = 0,
     layout_pending: bool = false,
@@ -500,6 +510,7 @@ pub const Scene = struct {
             node.placement = self.last_placement;
         } else if (destination == null) node.placement = 0;
         node.layout_flags.needs_layout = true;
+        self.visibility_epoch +%= 1;
         self.preparation_dirty = true;
         self.work.clearRetainingCapacity();
     }
@@ -535,6 +546,7 @@ pub const Scene = struct {
         if (self.focus) |focused| {
             if (std.meta.eql(focused, node.handle)) self.focus = null;
         }
+        self.visibility_epoch +%= 1;
         self.preparation_dirty = true;
         self.work.clearRetainingCapacity();
         const storage: native.NodeStorage = .{
@@ -672,8 +684,20 @@ pub const Scene = struct {
         self.layout_hook_count += @intFromBool(flags & scene_layout_hook_flags != 0);
         node.hook_flags = flags;
         node.hook_generation = generation;
+        self.invalidateObservation(value);
+    }
+
+    /// The node's next refresh may differ although its layout did not change: its filtered
+    /// parent refreshes every child in the next round.
+    pub fn markObservationStale(value: *native.NativeRenderable) void {
+        const parent = (value.scene_node orelse return).parent orelse return;
+        parent.scene_node.?.children_observed = 0;
+    }
+
+    pub fn invalidateObservation(self: *Scene, value: *native.NativeRenderable) void {
         self.preparation_dirty = true;
         self.work.clearRetainingCapacity();
+        markObservationStale(value);
     }
 
     pub fn cancelFrame(self: *Scene) void {
@@ -815,8 +839,11 @@ pub const Scene = struct {
                         if (operation.kind == .placed) node.placement = 0;
                     },
                     .prepass => {
+                        // The batch starts before placed children refresh, so their replies' stale marks survive it.
+                        if (operation.placement == 0 and node.viewport != null and
+                            (node.children_observed != self.layout_epoch or self.forcesFullFrame())) node.children_observed = children_refreshing;
                         // A resize callback can append to the live placement Set.
-                        self.feedback.appendAssumeCapacity(operation);
+                        self.feedback.appendAssumeCapacity(.{ .node = operation.node, .kind = .prepass, .placement = 1 });
                         const start = self.feedback.items.len;
                         for (node.children.items) |child| {
                             const state = child.scene_node.?;
@@ -840,6 +867,8 @@ pub const Scene = struct {
                             sortChildren(node, active.frame_id);
                             if (node.viewport != null) {
                                 self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
+                                // Refresh repeats its last result until a solve or a stale mark changes an input.
+                                if (node.children_observed == self.layout_epoch and !self.forcesFullFrame()) continue;
                                 for (node.paint_children.items, 0..) |child, index| {
                                     const state = child.scene_node.?;
                                     if (state.prepared_frame != active.frame_id or state.prepared_round != active.rounds) continue;
@@ -862,7 +891,11 @@ pub const Scene = struct {
                         // Drain every direct refresh before selecting a fixed update batch.
                         const filter = try self.childFilter(objects, value);
                         const parent_layout = if (filter != null) try composedLayout(value, false) else Layout{};
-                        if (node.viewport != null) active.filter_selected = true;
+                        if (node.viewport != null) {
+                            active.filter_selected = true;
+                            // A stale mark during the batch keeps it unobserved for the next round.
+                            if (node.children_observed == children_refreshing) node.children_observed = self.layout_epoch;
+                        }
                         var index = node.paint_children.items.len;
                         while (index != 0) {
                             index -= 1;
@@ -995,6 +1028,11 @@ pub const Scene = struct {
     }
 
     fn isVisibleMember(self: *Scene, value: *native.NativeRenderable) !bool {
+        const node = value.scene_node.?;
+        const active = self.attempt.?;
+        // Preparation enters only visible nodes, so its stamp answers until a display or ancestry change.
+        if (node.prepared_frame == active.frame_id and node.prepared_round == active.rounds and
+            active.visibility_epoch == self.visibility_epoch and !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
         var cursor: ?*native.NativeRenderable = value;
         var depth: u32 = 0;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
@@ -1100,6 +1138,7 @@ pub const Scene = struct {
             node.prepared_frame = active.frame_id;
             node.prepared_round = active.rounds;
             node.feedback_state = .unseen;
+            node.layout_flags.prepared_visible = entry.visible;
             if (!phases) {
                 if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
                 // With hooks, hidden roots never enter refresh; placed hidden children still do.
@@ -1113,6 +1152,7 @@ pub const Scene = struct {
                 node.layout_flags.needs_layout = false;
             }
         }
+        active.visibility_epoch = self.visibility_epoch;
         if (phases and self.work.items.len != 0) {
             const node = self.work.items[0].node.scene_node.?;
             self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .update });

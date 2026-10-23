@@ -51,6 +51,8 @@ const Op = union(enum) {
     focus: struct { slot: usize, focused: bool },
     text: struct { slot: usize, seed: u32 },
     text_options: struct { slot: usize, options: scene.TextOptions },
+    /// Removes the Yoga measure function, so later text changes do not solve.
+    measure: usize,
     hooks: struct { slot: usize, flags: u32 },
     slider: struct { slot: usize, value: f64, orientation: u32 },
     viewport: bool,
@@ -78,6 +80,10 @@ const Model = struct {
     text_options: [node_count_max]scene.TextOptions = @splat(.{}),
     hooks: [node_count_max]u32 = @splat(0),
     focusable: [node_count_max]bool = @splat(false),
+    /// The viewport content filters its children.
+    bound: bool = false,
+    /// Text whose Yoga measure function was removed.
+    unmeasured: [node_count_max]bool = @splat(false),
 
     fn deinit(self: *Model) void {
         for (&self.children, &self.paint) |*children, *paint| {
@@ -160,8 +166,14 @@ const Stats = struct {
     hidden_hooked: u32 = 0,
     /// Host replies that hid an ancestor of the requesting node mid-frame.
     reply_hides: u32 = 0,
+    /// Host replies that detached the requesting node mid-frame.
+    reply_detaches: u32 = 0,
     /// RESIZE requests from children of the viewport content.
     content_resizes: u32 = 0,
+    /// Replies to those requests that changed text on a content child, mid-batch.
+    content_reply_texts: u32 = 0,
+    /// Text replaced on a filtered content child without a measure function, so without a solve.
+    unmeasured_texts: u32 = 0,
     updates: u32 = 0,
     resizes: u32 = 0,
     layout_changes: u32 = 0,
@@ -239,6 +251,7 @@ const Harness = struct {
                 self.model.text_options[value.slot] = .{};
                 self.model.hooks[value.slot] = 0;
                 self.model.focusable[value.slot] = false;
+                self.model.unmeasured[value.slot] = false;
             },
             .move => |value| try self.model.move(value.slot, value.parent, value.index),
             .destroy => |slot| {
@@ -263,6 +276,9 @@ const Harness = struct {
                 self.model.hooks[value.slot] = value.flags;
             },
             .text_options => |value| self.model.text_options[value.slot] = value.options,
+            .viewport => |bound| self.model.bound = bound,
+            .measure => |slot| self.model.unmeasured[slot] = true,
+            .text => |value| self.stats.unmeasured_texts += @intFromBool(self.model.unmeasured[value.slot] and self.model.bound and self.model.parent[value.slot] == content_slot),
             else => {},
         }
     }
@@ -304,6 +320,7 @@ const Harness = struct {
             },
             .slider => |value| try f.owner.sceneSetSlider(self.handle(twin, value.slot), .{ .value = value.value, .orientation = value.orientation }),
             .text_options => |value| try f.owner.sceneSetTextOptions(self.handle(twin, value.slot), value.options),
+            .measure => |slot| try f.owner.sceneSetMeasure(self.handle(twin, slot), null),
             .hooks => |value| try f.owner.sceneSetHooks(self.handle(twin, value.slot), value.flags, self.model.hook_generation[value.slot] + 1, 1, 1),
             .viewport => |bound| try f.owner.sceneSetViewport(self.handle(twin, content_slot), if (bound) self.handle(twin, viewport_slot) else null),
             .resize => |value| try f.owner.resizeSessionRenderer(f.id, value.width, value.height),
@@ -436,12 +453,16 @@ const Harness = struct {
         };
     }
 
-    /// A text replacement, or new text options: color, attributes, or layout options alone.
+    /// A text replacement, new text options (color, attributes, or layout options alone), or
+    /// the measure function's removal.
     fn generateText(self: *Harness, slot: usize) Op {
         const random = self.random;
         var options = self.model.text_options[slot];
-        switch (random.uintLessThan(u32, 6)) {
+        // Without a measure function, a replacement does not solve: the case B2 marks stale.
+        if (self.model.unmeasured[slot] and random.boolean()) return .{ .text = .{ .slot = slot, .seed = random.int(u32) } };
+        switch (random.uintLessThan(u32, 7)) {
             0 => return .{ .text = .{ .slot = slot, .seed = random.int(u32) } },
+            6 => return .{ .measure = slot },
             1 => options.foreground = .{ random.int(u8), 255, 255, 255 },
             2 => options.attributes = random.uintLessThan(u32, 16),
             3 => options.wrap_mode = random.enumValue(@import("../text-buffer-view.zig").WrapMode),
@@ -512,16 +533,37 @@ const Harness = struct {
                         else => self.stats.layout_changes += 1,
                     }
                     const requester = self.model.slotOf(reference, first.node).?;
-                    if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) self.stats.content_resizes += 1;
+                    if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) {
+                        self.stats.content_resizes += 1;
+                        // A text change on a content child in the middle of the refresh batch (B2 argon-2).
+                        const children = self.model.children[content_slot].items;
+                        const start = self.random.uintLessThan(usize, children.len);
+                        for (0..children.len) |offset| {
+                            const target = children[(start + offset) % children.len];
+                            if (self.model.kind[target] != .text) continue;
+                            // Truncation changes the view without a solve.
+                            var options = self.model.text_options[target];
+                            options.truncate = !options.truncate;
+                            try self.apply(.{ .text_options = .{ .slot = target, .options = options } });
+                            self.stats.content_reply_texts += 1;
+                            break;
+                        }
+                    }
                     for (0..self.random.uintLessThan(u32, 3)) |_| {
                         const slot = self.liveSlot(scaffold_slots) orelse break;
                         try self.apply(self.generateReply(slot));
                     }
                     // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
                     // ancestor of a node it already stamped (B2 invariant 7).
+                    // Detaching it instead makes the walk meet a node whose ancestry moved.
                     if (self.model.parent[requester]) |parent| if (parent != root_slot and self.random.uintLessThan(u32, 4) == 0) {
-                        try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
-                        self.stats.reply_hides += 1;
+                        if (requester >= scaffold_slots and self.random.boolean()) {
+                            try self.apply(.{ .move = .{ .slot = requester, .parent = null, .index = 0 } });
+                            self.stats.reply_detaches += 1;
+                        } else {
+                            try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
+                            self.stats.reply_hides += 1;
+                        }
                     };
                 },
             }
@@ -710,6 +752,11 @@ const Harness = struct {
         try testing.expect(work.candidate_visits != 0);
         try testing.expect(work.cells_cleared >= 2 * cells);
         try testing.expect(work.hit_cells_cleared >= 2 * cells);
+        // Every round refreshes every child of a bound, visible content (B2 W3).
+        const content_shown = !self.model.hidden[content_slot] and !self.model.hiddenAbove(content_slot);
+        if (self.model.bound and content_shown) try testing.expect(work.viewport_child_refreshes >= self.model.children[content_slot].items.len);
+        // Every member that feedback visits walks to the root (B2 W4).
+        if (work.feedback_operations != 0) try testing.expect(work.visibility_steps != 0);
     }
 
     /// The tree each twin holds matches the model.
@@ -779,11 +826,12 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     }
     // Every frame kind B2 relies on is reached in quantity (about a quarter of today's counts;
     // decoded frames at about half), and each minimum fails if the draw that produces its kind
-    // is removed. Counts at 64 x 256: reused 359, filtered 556, filtered with a request 177,
-    // hooked under a hidden ancestor 8,236, reply hid the requester's parent 77, content-child
-    // RESIZE 67 (12 without the content-child hook draw), UPDATE 3,255, RESIZE 70,
-    // LAYOUT_CHANGED 2,234, recordings 514, decoded 15,753 (about 5,700 without the re-sync).
-    const minimums: Stats = .{ .reused = 85, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 20, .content_resizes = 35, .updates = 800, .resizes = 18, .layout_changes = 550, .records = 130, .decoded = 9000 };
+    // is removed. Counts at 64 x 256: reused 583, filtered 1,242, filtered with a request 510,
+    // hooked under a hidden ancestor 6,038, reply hid the requester's parent 46, reply detached
+    // the requester 40, content-child RESIZE 54, a truncation change in its reply 53, unmeasured
+    // content text replaced 17, UPDATE 3,254, RESIZE 78, LAYOUT_CHANGED 2,015, recordings 667,
+    // decoded 15,256.
+    const minimums: Stats = .{ .reused = 145, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 10, .reply_detaches = 10, .content_resizes = 30, .content_reply_texts = 15, .unmeasured_texts = 5, .updates = 650, .resizes = 18, .layout_changes = 460, .records = 130, .decoded = 9000 };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
         errdefer std.debug.print("{s}: {d}\n", .{ field.name, @field(total, field.name) });
