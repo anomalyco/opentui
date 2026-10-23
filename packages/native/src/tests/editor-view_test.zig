@@ -943,6 +943,22 @@ test "EditorView - visual cursor should stay on same line when moving to line en
     }
 }
 
+// The view switches back to the edit buffer and frees the placeholder; its next layout must not
+// diff against the freed placeholder rope.
+test "EditorView - clearing a drawn placeholder lays out the edit buffer afresh" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
+    defer ev.deinit();
+    try eb.setText("");
+    try owned_styled.setPlaceholder(ev, &.{.{ .text = "type a message, press enter to send it\n" ** 200 }});
+    _ = ev.getVirtualLines();
+    ev.clearPlaceholder();
+    try std.testing.expectEqual(@as(usize, 1), ev.getVirtualLines().len);
+}
+
 test "EditorView - placeholder with styled text renders with correct highlights" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

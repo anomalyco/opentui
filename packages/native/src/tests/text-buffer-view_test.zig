@@ -285,6 +285,19 @@ test "TextBufferView live word metadata follows views history and buffer switche
         view.setWrapWidth(41);
         try expectSameWrap(view);
     }
+    // A switch forgets the old buffer's rope, which a reset of that buffer frees.
+    var buffers: [2]*TextBuffer = undefined;
+    inline for (&buffers, .{ "hello\n", "alpha\n" }) |*buffer, line| {
+        buffer.* = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        try buffer.*.setText(line ** 5_000);
+    }
+    defer for (buffers) |buffer| buffer.deinit();
+    const switched = try TextBufferView.init(std.testing.allocator, buffers[0]);
+    defer switched.deinit();
+    _ = switched.getVirtualLines();
+    switched.switchToBuffer(buffers[1]);
+    try buffers[0].reset();
+    try std.testing.expectEqual(@as(usize, 5_001), switched.getVirtualLines().len);
     view.switchToBuffer(other);
     try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();

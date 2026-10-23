@@ -994,6 +994,8 @@ pub const UnifiedTextBufferView = struct {
         self.word_layout.reset(.free_all);
         self.text_buffer = buffer;
         self.virtual_lines_dirty = true;
+        // The old buffer may free the rope that the baseline points at.
+        self.baseline = null;
     }
 
     pub fn switchToOriginalBuffer(self: *Self) void {
