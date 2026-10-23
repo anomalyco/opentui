@@ -45,7 +45,7 @@ fn repeatText(allocator: std.mem.Allocator, unit: []const u8, bytes: usize) ![]u
     return text;
 }
 
-test "text work: edits in a 10,000-line editor lay out the whole document at the next frame" {
+test "text work: edits in a 10,000-line editor lay out the edited line at the next frame" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
@@ -54,18 +54,18 @@ test "text work: edits in a 10,000-line editor lay out the whole document at the
     const rows = [_]struct { mode: WrapMode, frame: Counts, measure: Counts }{
         .{
             .mode = .none,
-            .frame = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 8, .line_seek_nodes = 124, .clusters_drawn = 3_171 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 13, .line_seek_nodes = 201, .clusters_drawn = 3_171 },
             // Unwrapped measure reads the widest line from the rope metrics.
             .measure = .{ .measure_passes = 1 },
         },
         .{
             .mode = .word,
-            .frame = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 8, .line_seek_nodes = 124, .clusters_drawn = 3_171, .ascii_bytes = 790_011 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 13, .line_seek_nodes = 201, .clusters_drawn = 3_171, .ascii_bytes = 90 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .ascii_bytes = 790_011 },
         },
         .{
             .mode = .char,
-            .frame = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 8, .line_seek_nodes = 124, .clusters_drawn = 3_171, .prefix_seeks = 10_001 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 13, .line_seek_nodes = 201, .clusters_drawn = 3_171, .prefix_seeks = 2 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .prefix_seeks = 10_001 },
         },
     };
@@ -124,26 +124,48 @@ test "text work: a burst of K edits lays the editor out once, at the next frame"
             try std.testing.expectEqual([2]u64{ 0, 0 }, [2]u64{ burst.layouts, burst.lines_laid_out });
             screen.drawEditorView(ev, 0, 0);
             const frame = text_work.take();
-            try std.testing.expectEqual([2]u64{ 1, lines }, [2]u64{ frame.layouts, frame.lines_laid_out });
+            try std.testing.expectEqual([2]u64{ 1, 1 }, [2]u64{ frame.layouts, frame.lines_laid_out });
         };
     }
+    // Replaced lines stay in the layout arena until a full layout resets it, which runs once the
+    // dead lines outnumber the live ones (plus 1,024): 3,000 one-line frames, 1,000 lines.
+    const text = try repeatLines(allocator, line, 1_000);
+    defer allocator.free(text);
+    const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
+    defer eb.deinit();
+    const view = try TextBufferView.init(allocator, eb.getTextBuffer());
+    defer view.deinit();
+    view.setWrapMode(.word);
+    view.setWrapWidth(120);
+    try eb.setText(text);
+    try eb.setCursor(10, 0);
+    _ = view.getVirtualLineCount();
+    _ = text_work.take();
+    for (0..3_000) |frame| {
+        if (frame % 2 == 0) try eb.insertText("x") else try eb.backspace();
+        _ = view.getVirtualLineCount();
+    }
+    // Each frame leaves 2 dead lines (the old one and the staged copy), so every 1,013th frame lays
+    // out all 1,000 lines.
+    try std.testing.expectEqual(3_000 + 2 * 999, text_work.take().lines_laid_out);
 }
 
-test "text work: the frame after one edit lays out every line of the document" {
+test "text work: the frame after one edit lays out only the lines it changed" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
     const line = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor in";
     const paste = "pasted line of text that is shorter than the wrap width\n" ** 100;
     const Op = enum { insert, delete, paste, undo, enter, join };
-    // Lines laid out = document lines × `per_line` + `extra`; offsets moved for `shifted` lines.
-    const rows = [_]struct { op: Op, per_line: u64, extra: i64, shifted: u64 }{
-        .{ .op = .insert, .per_line = 1, .extra = 0, .shifted = 0 },
-        .{ .op = .delete, .per_line = 1, .extra = 0, .shifted = 0 },
-        .{ .op = .paste, .per_line = 1, .extra = 100, .shifted = 0 },
-        .{ .op = .undo, .per_line = 1, .extra = 0, .shifted = 0 },
-        .{ .op = .enter, .per_line = 1, .extra = 1, .shifted = 0 },
-        .{ .op = .join, .per_line = 1, .extra = -1, .shifted = 0 },
+    // Lines laid out = document lines × `per_line` + `extra`. Before dirty line ranges, every
+    // row was 1 × the document (paste +100, Enter +1, join −1).
+    const rows = [_]struct { op: Op, per_line: u64, extra: i64 }{
+        .{ .op = .insert, .per_line = 0, .extra = 1 },
+        .{ .op = .delete, .per_line = 0, .extra = 1 },
+        .{ .op = .paste, .per_line = 0, .extra = 101 },
+        .{ .op = .undo, .per_line = 0, .extra = 1 },
+        .{ .op = .enter, .per_line = 0, .extra = 2 },
+        .{ .op = .join, .per_line = 0, .extra = 1 },
     };
     for ([_]u64{ 1_000, 10_000 }) |lines| {
         const text = try repeatLines(allocator, line, lines);
@@ -179,7 +201,8 @@ test "text work: the frame after one edit lays out every line of the document" {
             if (viewport) screen.drawEditorView(ev, 0, 0) else _ = plain.getVirtualLineCount();
             const frame = text_work.take();
             const laid_out: u64 = @intCast(@as(i64, @intCast(lines * row.per_line)) + row.extra);
-            try std.testing.expectEqual([3]u64{ 1, laid_out, row.shifted }, [3]u64{ frame.layouts, frame.lines_laid_out, frame.lines_shifted });
+            // Every edit is at row 10 (a join at row 9), so the offsets of the lines after row 10 move.
+            try std.testing.expectEqual([3]u64{ 1, laid_out, lines - 11 }, [3]u64{ frame.layouts, frame.lines_laid_out, frame.lines_shifted });
         };
     }
 }
@@ -205,8 +228,8 @@ test "text work: an append measures and lays out a 5,000-line view once each" {
     _ = try view.measureForDimensions(40, 24);
     _ = try view.measureForDimensions(40, 24);
     _ = view.getVirtualLineCount();
-    // The second measure hits the cache; render lays the document out again.
-    try expectWork(.{ .layouts = 1, .lines_laid_out = 5_000, .measure_passes = 1, .measure_lines = 5_000, .ascii_bytes = 355_083 });
+    // The second measure hits the cache; render lays out the last line again.
+    try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .measure_passes = 1, .measure_lines = 5_000, .line_seeks = 5, .line_seek_nodes = 71, .ascii_bytes = 154 });
 }
 
 test "text work: line lookups after an edit in a 10,000-line buffer" {

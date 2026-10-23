@@ -1037,7 +1037,8 @@ pub fn Rope(comptime T: type) type {
                     // Both cursors stand at the same leaf index, so a shared subtree is shared leaves.
                     shared += nodes[0].count();
                     if (shared >= limit) return limit;
-                    if (lens[0] == 0 or lens[1] == 0) return shared;
+                    // A tree whose leaves are all shared has at least `limit` of them.
+                    std.debug.assert(lens[0] > 0 and lens[1] > 0);
                     for (&nodes, &lens, &stacks) |*node, *len, *stack| {
                         len.* -= 1;
                         node.* = stack[len.*];

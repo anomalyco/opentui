@@ -22,30 +22,44 @@ pub const Coords = struct {
     col: u32,
 };
 
+pub const SegmentCallback = *const fn (ctx: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void;
+pub const LineEndCallback = *const fn (ctx: *anyopaque, line_info: LineInfo) void;
+
 /// This is the most efficient way to iterate lines and their content
-pub fn walkLinesAndSegments(
+pub fn walkLinesAndSegments(rope: *const UnifiedRope, ctx: *anyopaque, segment_callback: SegmentCallback, line_end_callback: LineEndCallback) void {
+    walkLineRange(rope, 0, .{ .leaf_index = 0, .weight = 0 }, std.math.maxInt(u32), ctx, segment_callback, line_end_callback);
+}
+
+/// Walks `count` lines from line `first`, whose linestart leaf and weight are `start`.
+pub fn walkLineRange(
     rope: *const UnifiedRope,
+    first: u32,
+    start: UnifiedRope.Position,
+    count: u32,
     ctx: *anyopaque,
-    segment_callback: *const fn (ctx: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void,
-    line_end_callback: *const fn (ctx: *anyopaque, line_info: LineInfo) void,
+    segment_callback: SegmentCallback,
+    line_end_callback: LineEndCallback,
 ) void {
-    if (rope.count() == 0) {
+    if (rope.count() == 0 or count == 0) {
         return;
     }
 
     const WalkContext = struct {
         user_ctx: *anyopaque,
-        seg_callback: *const fn (ctx: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void,
-        line_callback: *const fn (ctx: *anyopaque, line_info: LineInfo) void,
-        current_line_idx: u32 = 0,
-        current_col_offset: u32 = 0,
-        line_start_seg: u32 = 0,
-        current_seg_idx: u32 = 0,
+        seg_callback: SegmentCallback,
+        line_callback: LineEndCallback,
+        first_seg: u32,
+        lines_left: u32,
+        current_line_idx: u32,
+        current_col_offset: u32,
+        line_start_seg: u32,
+        current_seg_idx: u32,
         line_width_cols: u32 = 0,
         chunk_idx_in_line: u32 = 0,
 
-        fn walker(walk_ctx_ptr: *anyopaque, seg: *const Segment, idx: u32) UnifiedRope.Node.WalkerResult {
+        fn walker(walk_ctx_ptr: *anyopaque, seg: *const Segment, relative_idx: u32) UnifiedRope.Node.WalkerResult {
             const walk_ctx = @as(*@This(), @ptrCast(@alignCast(walk_ctx_ptr)));
+            const idx = walk_ctx.first_seg + relative_idx;
 
             if (seg.asText()) |chunk| {
                 walk_ctx.seg_callback(walk_ctx.user_ctx, walk_ctx.current_line_idx, chunk, walk_ctx.chunk_idx_in_line);
@@ -65,10 +79,11 @@ pub fn walkLinesAndSegments(
                 walk_ctx.line_start_seg = idx + 1;
                 walk_ctx.line_width_cols = 0;
                 walk_ctx.chunk_idx_in_line = 0;
+                walk_ctx.lines_left -= 1;
             }
 
             walk_ctx.current_seg_idx = idx + 1;
-            return .{};
+            return .{ .keep_walking = walk_ctx.lines_left > 0 };
         }
     };
 
@@ -76,8 +91,15 @@ pub fn walkLinesAndSegments(
         .user_ctx = ctx,
         .seg_callback = segment_callback,
         .line_callback = line_end_callback,
+        .first_seg = start.leaf_index,
+        .lines_left = count,
+        .current_line_idx = first,
+        .current_col_offset = start.weight,
+        .line_start_seg = start.leaf_index,
+        .current_seg_idx = start.leaf_index,
     };
-    rope.walk(&walk_ctx, WalkContext.walker) catch {};
+    rope.walk_from(start.leaf_index, &walk_ctx, WalkContext.walker) catch {};
+    if (walk_ctx.lines_left == 0) return;
 
     // Emit final line if we have content after last break OR if we had at least one break
     // (A trailing break creates an empty final line)
@@ -107,6 +129,15 @@ pub fn getMaxLineWidth(rope: *const UnifiedRope) u32 {
 pub fn getTotalWidth(rope: *const UnifiedRope) u32 {
     const metrics = rope.root.metrics();
     return metrics.custom.total_width_cols;
+}
+
+fn leaves(metrics: *const UnifiedRope.Metrics) u32 {
+    return metrics.count;
+}
+
+/// Linestart leaves among the first `leaf_index + 1` leaves, by one descent.
+pub fn lineStartsThroughLeaf(rope: *const UnifiedRope, leaf_index: u32) u32 {
+    return rope.countThrough(leaves, linestarts, leaf_index);
 }
 
 fn linestarts(metrics: *const UnifiedRope.Metrics) u32 {

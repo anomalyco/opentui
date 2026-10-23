@@ -67,8 +67,14 @@ pub const TextChunkColdState = struct {
 pub const ChunkLayoutCache = struct {
     allocator: Allocator,
     first: ?*TextChunkColdState = null,
+    /// Every arena reset or swap of the owning buffer clears the cache first, so views use
+    /// this count to tell that rope nodes they kept may be gone.
+    clears: u64 = 0,
+    /// Freed entries. Word-break storage borrows entry slices and must not outlive one.
+    releases: u64 = 0,
 
     pub fn clear(self: *ChunkLayoutCache) void {
+        self.clears +%= 1;
         self.release(false);
     }
 
@@ -89,6 +95,7 @@ pub const ChunkLayoutCache = struct {
                 continue;
             }
             entry.* = cold.next_layout_cache;
+            self.releases +%= 1;
             self.allocator.free(cold.wrap_breaks.?.ptr[0..cold.wrap_breaks_capacity]);
             cold.cjk_breaks.deinit(self.allocator);
             cold.wrap_breaks = null;
