@@ -164,9 +164,8 @@ fn cellHash(f: Fixture) u64 {
 /// Paints a frame that may reuse the last committed paint list, checks its order against the
 /// model, and compares it with a frame prepared from scratch. Returns whether work was reused.
 fn expectFrame(f: Fixture, model: *Model) !bool {
-    const steps = f.state.test_prepare_steps;
     try fixture.repaint(f.owner, f.id, frame_options.background, true, 0);
-    const reused = f.state.test_prepare_steps == steps;
+    const reused = f.state.painted.?.work.candidate_visits == 0;
     var order: [node_count_max]usize = undefined;
     const count = model.paintOrder(&order, 0, 0);
     var painted: usize = 0;

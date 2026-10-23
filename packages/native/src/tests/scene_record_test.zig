@@ -14,7 +14,6 @@ const options: scene.FrameOptions = .{
     .max_layout_rounds = 8,
     .max_host_requests = 64,
 };
-const unlimited = std.math.maxInt(u32);
 const before_after = c.OT_SCENE_HOOK_RENDER_BEFORE | c.OT_SCENE_HOOK_RENDER_AFTER;
 const self_after = c.OT_SCENE_HOOK_RENDER_SELF | c.OT_SCENE_HOOK_RENDER_AFTER;
 
@@ -122,7 +121,7 @@ pub const Recording = struct {
 };
 
 fn submit(f: Fixture, request: scene.FrameRequest, recording: *const Recording) !scene.FrameRequest {
-    return f.owner.sceneFrameStepWithRecording(f.id, request, options, unlimited, recording.view());
+    return f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view());
 }
 
 /// Submits a recording. A rejected one must leave no attempt, draft, snapshot, or hits; both leave no stack entries.
@@ -516,7 +515,7 @@ test "Scene record rejects malformed streams before presenting cells" {
     }
     const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
     var misaligned: [24]u8 align(8) = undefined;
-    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStepWithRecording(f.id, request, options, unlimited, misaligned[1..17]));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStepWithRecording(f.id, request, options, misaligned[1..17]));
     try testing.expectError(error.StaleFrame, f.owner.sceneFrameStep(f.id, request, options));
 }
 
@@ -529,18 +528,18 @@ test "Scene record acknowledgements require the exact request and a recording on
     var limited = options;
     limited.max_host_requests = 2;
     const empty: Recording = .{};
-    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStepWithRecording(f.id, null, limited, unlimited, empty.view()));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStepWithRecording(f.id, null, limited, empty.view()));
     const update = try f.step(null, limited, c.OT_SCENE_FRAME_UPDATE, f.root);
     try testing.expectError(error.StaleFrame, f.owner.sceneFramePaintSlots(f.id, update));
-    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStepWithRecording(f.id, update, limited, unlimited, empty.view()));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStepWithRecording(f.id, update, limited, empty.view()));
     const request = try f.owner.sceneFrameStep(f.id, update, limited);
     try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_RECORD), request.kind);
     try testing.expectEqual(@as(u32, 2), f.state.attempt.?.requests);
     try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStep(f.id, request, limited));
     var forged = request;
     forged.request_id += 1;
-    try testing.expectError(error.StaleFrame, f.owner.sceneFrameStepWithRecording(f.id, forged, limited, unlimited, empty.view()));
-    const done = try f.owner.sceneFrameStepWithRecording(f.id, request, limited, unlimited, empty.view());
+    try testing.expectError(error.StaleFrame, f.owner.sceneFrameStepWithRecording(f.id, forged, limited, empty.view()));
+    const done = try f.owner.sceneFrameStepWithRecording(f.id, request, limited, empty.view());
     try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_DONE), done.kind);
     try testing.expectEqual(ansi.rgbColor(2, 0, 0, 255), f.cli.getNextBuffer().get(0, 0).?.bg);
     try f.owner.sceneFrameCancel(f.id, done.frame_id);

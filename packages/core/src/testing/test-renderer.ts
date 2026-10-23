@@ -6,6 +6,7 @@ import {
   type CliRendererFrameEvent,
 } from "../renderer.js"
 import type { NativeRenderStats } from "../zig.js"
+import { nativeConstants } from "../native-abi.generated.js"
 import { createMockKeys } from "./mock-keys.js"
 import { createMockMouse } from "./mock-mouse.js"
 import { createTestStdin, createTestStdout } from "./test-streams.js"
@@ -16,6 +17,8 @@ export interface TestRendererOptions extends CliRendererConfig {
   height?: number
   kittyKeyboard?: boolean
   otherModifiersMode?: boolean
+  /** Every frame rebuilds its native preparation and paint lists instead of reusing the last frame's (`OT_SCENE_DEBUG_FULL_FRAME`). Output is unchanged. */
+  nativeSceneFullFrame?: boolean
 }
 export type TestRenderer = CliRenderer
 export type MockInput = ReturnType<typeof createMockKeys>
@@ -198,14 +201,19 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
   // Convert legacy kittyKeyboard boolean to new format
   const useKittyKeyboard = options.kittyKeyboard ? { events: true } : options.useKittyKeyboard
 
+  const { nativeSceneFullFrame, ...rendererOptions } = options
   const renderer = await setupTestRenderer({
-    ...options,
+    ...rendererOptions,
     useKittyKeyboard,
     screenMode: options.screenMode ?? "main-screen",
     footerHeight: options.footerHeight ?? 12,
     consoleMode: options.consoleMode ?? "disabled",
     externalOutputMode: options.externalOutputMode ?? "passthrough",
   })
+  if (nativeSceneFullFrame) {
+    const session = renderer["nativeSession"]
+    renderer["lib"].sceneSetDebugFlags(session.context, session.session, nativeConstants.OT_SCENE_DEBUG_FULL_FRAME)
+  }
   const externalOutput = new TestExternalOutputRecorder(renderer)
 
   const mockInput = createMockKeys(renderer, {

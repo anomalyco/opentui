@@ -98,9 +98,9 @@ It does not stop propagation. It also does not undo a new selection that already
 
 `over` and `out` report changes to the top hit target. They are not browser enter and leave events, and they bubble like other mouse events.
 
-After a left-button drag starts on a renderable, OpenTUI captures later drag events to that source. No public pointer-capture API exists.
+The renderable that received the left-button press owns the drag, even when the first motion report is already outside it. OpenTUI captures the drag events to that source. If no renderable owns the press (the press hit nothing, started or extended a text selection that was cleared before the first motion report, or its renderable was destroyed), the renderable under the pointer becomes the source. No public pointer-capture API exists.
 
-On release, the source receives `drag-end` and `up`. The renderable under the pointer receives `drop` with `event.source`, then its normal `up` event.
+On release, the source receives `drag-end` and `up`. The renderable under the pointer receives `drop` with `event.source`, then its normal `up` event. When the renderable under the pointer is the source or one of its descendants, no `drop` and no second `up` are sent, so an ancestor's `onMouseDrop` does not fire for that release. From the first frame after the drag starts, the source itself is left out of hit testing, so a release over its own cells reaches the renderable beneath it.
 
 Right-button and middle-button drags follow hit testing without this capture. A selectable-text drag follows the selection path instead.
 

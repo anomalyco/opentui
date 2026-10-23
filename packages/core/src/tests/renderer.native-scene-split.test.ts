@@ -495,13 +495,14 @@ test.each(["writer", "geometry", "measurement"] as const)(
         if (kind === "writer") throw new Error("writer failed")
         if (kind === "geometry") return { root, width: NaN, height: 1 }
         let fail = true
-        root.setMeasureProvider(() => {
+        const child = new BoxRenderable(renderContext, {})
+        child.setMeasureProvider(() => {
           if (fail) throw new Error("measurement failed")
           return { width: 12, height: 3 }
         })
+        root.add(child)
         expect(() => renderContext.nativeScene.measureSnapshot(root!)).toThrow("measurement failed")
         fail = false
-        root.invalidateIntrinsicSize()
         expect(renderContext.nativeScene.measureSnapshot(root)).toBe(3)
         throw new Error("writer failed")
       }),

@@ -233,6 +233,8 @@ test "embedded terminal redraws changed rows and default colors and clips compos
     const black = ansi.rgbColor(0, 0, 0, 255);
     const red = ansi.rgbColor(255, 0, 0, 255);
     const blue = ansi.rgbColor(0, 0, 255, 255);
+    const green = ansi.rgbColor(0, 255, 0, 255);
+    const palette_red = ansi.rgbColor(0xcc, 0x66, 0x66, 255);
     // No step invalidates or writes row 1, so the row 1 sentinel survives unless every row is redrawn.
     const steps = [_]struct { write: []const u8, fg: buffer.RGBA, bg: buffer.RGBA, full: bool }{
         .{ .write = "\x1b[1;1Hb", .fg = white, .bg = black, .full = false },
@@ -245,6 +247,11 @@ test "embedded terminal redraws changed rows and default colors and clips compos
         .{ .write = "\x1b]111\x07", .fg = white, .bg = black, .full = true },
         .{ .write = "\x1b]4;0;rgb:00/ff/00\x07", .fg = white, .bg = black, .full = true },
         .{ .write = "\x1b[?5h\x1bc", .fg = white, .bg = black, .full = true },
+        // DECSTR and RIS restore palette color 1 on screen, not only in the OSC 4 reply.
+        .{ .write = "\x1b]4;1;rgb:00/ff/00\x07\x1b[1;1H\x1b[31mb", .fg = green, .bg = black, .full = true },
+        .{ .write = "\x1b[!p", .fg = palette_red, .bg = black, .full = true },
+        .{ .write = "\x1b]4;1;rgb:00/ff/00\x07\x1b[1;1H\x1b[31mb", .fg = green, .bg = black, .full = true },
+        .{ .write = "\x1bc\x1b[31mb", .fg = palette_red, .bg = black, .full = true },
     };
     for (steps, 0..) |step, index| {
         errdefer std.debug.print("step {d}\n", .{index});
@@ -379,6 +386,13 @@ test "embedded terminal selection highlights text without unused cells" {
             .highlight = .{ "##......", "........", "........" },
         },
         .{
+            // Unicode 17 widths, as in OpenTUI text: U+1F6D9 is unassigned (1 cell), and a consonant after
+            // U+1CF5 starts its own cell.
+            .output = "a\u{1F6D9}b\u{1CF5}\u{0915}",
+            .text = "a\u{1F6D9}b\u{1CF5}\u{0915}",
+            .highlight = .{ "#####...", "........", "........" },
+        },
+        .{
             .output = "e\xcc\x81 \xf0\x9f\x98\x80",
             .text = "e\xcc\x81 \xf0\x9f\x98\x80",
             .highlight = .{ "####....", "........", "........" },
@@ -387,6 +401,12 @@ test "embedded terminal selection highlights text without unused cells" {
             .output = "abcdefg\xe7\x95\x8c",
             .text = "abcdefg\xe7\x95\x8c",
             .highlight = .{ "#######.", "##......", "........" },
+        },
+        .{
+            // DECSTR turns off ISO protection (SPA/EPA), so the erase clears the cells.
+            .output = "\x1bVpr\x1bW\x1b[!p\x1b[1;1H\x1b[K",
+            .text = "",
+            .highlight = .{ "........", "........", "........" },
         },
     };
 
@@ -489,6 +509,10 @@ test "embedded terminal drains generated PTY responses incrementally" {
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 20, .rows = 4 });
     defer terminal.deinit();
 
+    const set_colors = "\x1b]4;1;rgb:00/ff/00\x1b\\\x1b]10;rgb:11/22/33\x1b\\\x1b]11;rgb:44/55/66\x1b\\\x1b]12;rgb:77/88/99\x1b\\";
+    const ask_colors = "\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
+    // RIS and DECSTR restore the palette but keep the dynamic colors, as xterm does.
+    const reset_colors = "\x1b]4;1;rgb:cccc/6666/6666\x1b\\\x1b]10;rgb:1111/2222/3333\x1b\\\x1b]11;rgb:4444/5555/6666\x1b\\\x1b]12;rgb:7777/8888/9999\x1b\\";
     const cases = [_]struct { query: []const u8, reply: []const u8 }{
         .{ .query = "\x1b[5n", .reply = "\x1b[0n" },
         .{ .query = "\x1b[c", .reply = "\x1b[?62;22c" },
@@ -496,14 +520,24 @@ test "embedded terminal drains generated PTY responses incrementally" {
         .{ .query = "\x1b[=c", .reply = "\x1bP!|00000000\x1b\\" },
         .{ .query = "\x1b]10;?\x07", .reply = "\x1b]10;rgb:ffff/ffff/ffff\x07" },
         .{ .query = "\x1b]11;?\x1b\\", .reply = "\x1b]11;rgb:0000/0000/0000\x1b\\" },
+        // No Kitty graphics: the support probe gets no reply, so programs use text.
+        .{ .query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\", .reply = "" },
+        // No glyph protocol: the compositor never draws registered glyphs.
+        .{ .query = "\x1b_25a1;s\x1b\\\x1b_25a1;q;cp=41\x1b\\", .reply = "" },
+        // No Kitty drag and drop: queries get no reply and registrations keep no state.
+        .{ .query = "\x1b]72;t=q\x1b\\\x1b]72;t=p\x1b\\\x1b]72;t=a;text/plain\x1b\\", .reply = "" },
+        .{ .query = set_colors ++ "\x1bc" ++ ask_colors, .reply = reset_colors },
+        .{ .query = set_colors ++ "\x1b[!p" ++ ask_colors, .reply = reset_colors },
     };
     for (cases) |case| {
         try terminal.write(case.query);
-        var output: [64]u8 = undefined;
+        var output: [128]u8 = undefined;
         const first_len = try terminal.drainResponses(output[0..2]);
         const rest_len = try terminal.drainResponses(output[first_len..]);
         try std.testing.expectEqualStrings(case.reply, output[0 .. first_len + rest_len]);
     }
+    try std.testing.expectEqual(0, @sizeOf(@TypeOf(terminal.terminal.screens.active.kitty_images)));
+    try std.testing.expectEqual(null, terminal.terminal.kitty_dnd);
 }
 
 test "embedded terminal preserves queued responses when the bound is reached" {

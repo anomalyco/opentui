@@ -11,6 +11,7 @@ const ansi = @import("ansi.zig");
 const link = @import("link.zig");
 
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 
 const logger = @import("logger.zig");
 
@@ -155,7 +156,7 @@ pub const UnifiedTextBuffer = struct {
 
     /// Accessor: get line width at a given row.
     pub fn lineWidthAt(self: *const Self, row: u32) u32 {
-        return iter_mod.lineWidthAt(@constCast(&self._rope), row);
+        return iter_mod.lineWidthAt(&self._rope, row);
     }
 
     /// Accessor: get maximum line width across all lines.
@@ -164,11 +165,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn getGraphemeWidthAt(self: *const Self, row: u32, col: u32) u32 {
-        return iter_mod.getGraphemeWidthAt(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
+        return iter_mod.getGraphemeWidthAt(&self._rope, &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
     }
 
     pub fn getPrevGraphemeWidth(self: *const Self, row: u32, col: u32) u32 {
-        return iter_mod.getPrevGraphemeWidth(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
+        return iter_mod.getPrevGraphemeWidth(&self._rope, &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
     }
 
     pub fn textEndOffset(self: *const Self) u32 {
@@ -176,7 +177,7 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn graphemeBoundsAtOffset(self: *const Self, offset: u32) ?struct { start: u32, end: u32 } {
-        const rope_ptr = @constCast(&self._rope);
+        const rope_ptr = &self._rope;
         const coords = iter_mod.offsetToCoords(rope_ptr, offset) orelse return null;
         const bounds = iter_mod.getGraphemeBoundsAt(
             rope_ptr,
@@ -192,7 +193,7 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn cursorUnitBoundsAtOffset(self: *const Self, offset: u32) ?struct { start: u32, end: u32 } {
-        const rope_ptr = @constCast(&self._rope);
+        const rope_ptr = &self._rope;
         const coords = iter_mod.offsetToCoords(rope_ptr, offset) orelse return null;
         const bounds = iter_mod.getCursorUnitBoundsAt(
             rope_ptr,
@@ -505,8 +506,6 @@ pub const UnifiedTextBuffer = struct {
                 .allocator = self.allocator,
                 .empty_leaf = &empty_document_sentinel,
                 .config = previous.config,
-                .version = previous.version,
-                .marker_cache = UnifiedRope.MarkerCache.init(self.allocator),
             };
         }
         self.markAllViewsDirty();
@@ -536,7 +535,6 @@ pub const UnifiedTextBuffer = struct {
         self.arena.* = replacement_arena;
         self._rope = replacement_rope;
         self._rope.allocator = self.allocator;
-        self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
 
         self.mem_registry.clear();
 
@@ -694,7 +692,6 @@ pub const UnifiedTextBuffer = struct {
             std.mem.swap(std.heap.ArenaAllocator, self.arena, &prepared.arena);
             self._rope = prepared.rope;
             self._rope.allocator = self.allocator;
-            self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
             std.mem.swap(@TypeOf(self.line_highlights), &self.line_highlights, &prepared.highlights);
             std.mem.swap(@TypeOf(self.line_spans), &self.line_spans, &prepared.spans);
             self.internal_highlight_count = prepared.internal_count;
@@ -820,8 +817,6 @@ pub const UnifiedTextBuffer = struct {
             result.segments.items,
             self._rope.config,
         );
-        prepared.rope.version = self._rope.version;
-        prepared.rope.version += 1;
 
         const highlights = &prepared.highlights;
         const spans = &prepared.spans;
@@ -916,17 +911,9 @@ pub const UnifiedTextBuffer = struct {
         var result = try self.textToSegments(self.global_allocator, text, mem_id, byte_offset, true);
         defer result.segments.deinit(result.allocator);
         // The segments are the document. Do not build an empty rope just to replace it.
-        // Candidate copies must not query this rope's shared marker cache.
-        const candidate = if (replacement_arena) |arena| blk: {
-            var next = try UnifiedRope.from_sliceWithConfig(
-                arena.allocator(),
-                result.segments.items,
-                self._rope.config,
-            );
-            next.version = self._rope.version;
-            next.version += 1;
-            break :blk next;
-        } else blk: {
+        const candidate = if (replacement_arena) |arena|
+            try UnifiedRope.from_sliceWithConfig(arena.allocator(), result.segments.items, self._rope.config)
+        else blk: {
             var next = self._rope;
             try next.setSegments(result.segments.items);
             break :blk next;
@@ -961,11 +948,9 @@ pub const UnifiedTextBuffer = struct {
             std.mem.swap(std.heap.ArenaAllocator, self.arena, arena);
             self._rope = candidate;
             self._rope.allocator = self.allocator;
-            self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
         } else {
             if (replacement_owned != null) self._rope.clear_history();
             self._rope.root = candidate.root;
-            self._rope.version = candidate.version;
         }
         self.internal_highlight_count = 0;
         std.mem.swap(@TypeOf(self.line_highlights), &self.line_highlights, &highlights);
@@ -1030,16 +1015,14 @@ pub const UnifiedTextBuffer = struct {
 
         var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
         defer replacement_arena.deinit();
-        var candidate = UnifiedRope.from_sliceWithConfig(replacement_arena.allocator(), segments, self._rope.config) catch
+        const candidate = UnifiedRope.from_sliceWithConfig(replacement_arena.allocator(), segments, self._rope.config) catch
             return TextBufferError.OutOfMemory;
-        candidate.version = self._rope.version +% 1;
         self.mem_registry.buffers.ensureTotalCapacity(self.global_allocator, 1) catch return TextBufferError.OutOfMemory;
 
         self.layout_cache.clear();
         std.mem.swap(std.heap.ArenaAllocator, self.arena, &replacement_arena);
         self._rope = candidate;
         self._rope.allocator = self.allocator;
-        self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
         self.mem_registry.clear();
         self.mem_registry.buffers.appendAssumeCapacity(.{ .data = bytes, .owned = true, .active = true });
         self.markAllViewsDirty();
@@ -1063,11 +1046,10 @@ pub const UnifiedTextBuffer = struct {
 
         // Canonical appends preserve the leading linestart, but public rope edits
         // can remove it. Stage the root until fallible end-marker repair finishes.
-        // insert_slice changes only root/version; history and caches remain shared.
+        // insert_slice changes only the root; history remains shared.
         var candidate = self._rope;
         try candidate.insert_slice(candidate.count(), result.segments.items);
         self._rope.root = candidate.root;
-        self._rope.version = candidate.version;
 
         self.markAllViewsDirty();
     }
@@ -1406,6 +1388,8 @@ pub const UnifiedTextBuffer = struct {
     }
 
     fn buildLineSpans(self: *const Self, highlights: []const Highlight, spans: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
+        text_work.add(.line_span_builds, 1);
+        text_work.add(.line_span_highlights, highlights.len);
         spans.clearRetainingCapacity();
         // Collect all boundary columns
         const Event = struct {
@@ -1520,45 +1504,60 @@ pub const UnifiedTextBuffer = struct {
         }
         // Highlight offsets exclude newlines, unlike rope weights and offsetToCoords.
         // Seek by line end so empty lines at the starting boundary are skipped too.
-        var line_idx = self.firstLineEndingAfter(char_start, line_count);
-        while (line_idx < line_count) : (line_idx += 1) {
-            const marker = self._rope.getMarker(.linestart, line_idx) orelse break;
-            const line_start = marker.global_weight - line_idx;
-            if (line_start >= char_end) break;
-            const width = iter_mod.lineWidthAt(&self._rope, line_idx);
-            const col_start = char_start -| line_start;
-            const col_end = @min(char_end - line_start, width);
-            if (col_start < col_end) {
-                try additions.ensureUnusedCapacity(self.global_allocator, 1);
-                additions.appendAssumeCapacity(try self.prepareHighlight(line_idx, .{
-                    .col_start = col_start,
-                    .col_end = col_end,
-                    .style_id = style_id,
-                    .priority = priority,
-                    .hl_ref = hl_ref,
-                    .internal = false,
-                }));
-            }
-            if (line_start + width >= char_end) break;
-        }
-        try self.commitHighlights(additions.items);
-    }
+        const first_row = iter_mod.firstLineEndingAfter(&self._rope, char_start);
+        const first = iter_mod.lineStart(&self._rope, first_row).?;
+        // One walk over the covered leaves: each break ends a line.
+        const Walk = struct {
+            buffer: *Self,
+            additions: *std.ArrayListUnmanaged(HighlightAddition),
+            highlight: Highlight,
+            char_start: u32,
+            char_end: u32,
+            row: u32,
+            line_weight: u32,
+            weight: u32,
+            done: bool = false,
 
-    /// Returns the first line whose newline-excluded end offset is past `offset`.
-    fn firstLineEndingAfter(self: *Self, offset: u32, line_count: u32) u32 {
-        var left: u32 = 0;
-        var right: u32 = line_count;
-        while (left < right) {
-            const mid = left + (right - left) / 2;
-            const marker = self._rope.getMarker(.linestart, mid) orelse return left;
-            const line_end = marker.global_weight - mid + iter_mod.lineWidthAt(&self._rope, mid);
-            if (line_end <= offset) {
-                left = mid + 1;
-            } else {
-                right = mid;
+            fn visit(ctx: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
+                const walk: *@This() = @ptrCast(@alignCast(ctx));
+                text_work.add(.highlight_leaves, 1);
+                if (!segment.isBreak()) {
+                    walk.weight += segment.measure().weight();
+                    return .{};
+                }
+                walk.endLine() catch |err| return .{ .err = err };
+                walk.row += 1;
+                walk.weight += 1;
+                walk.line_weight = walk.weight;
+                return .{ .keep_walking = !walk.done };
             }
-        }
-        return left;
+
+            fn endLine(walk: *@This()) TextBufferError!void {
+                const line_start = walk.line_weight - walk.row;
+                const width = walk.weight - walk.line_weight;
+                walk.done = line_start + width >= walk.char_end;
+                if (line_start >= walk.char_end) return;
+                var highlight = walk.highlight;
+                highlight.col_start = walk.char_start -| line_start;
+                highlight.col_end = @min(walk.char_end - line_start, width);
+                if (highlight.col_start >= highlight.col_end) return;
+                try walk.additions.ensureUnusedCapacity(walk.buffer.global_allocator, 1);
+                walk.additions.appendAssumeCapacity(try walk.buffer.prepareHighlight(walk.row, highlight));
+            }
+        };
+        var walk: Walk = .{
+            .buffer = self,
+            .additions = &additions,
+            .highlight = .{ .col_start = 0, .col_end = 0, .style_id = style_id, .priority = priority, .hl_ref = hl_ref, .internal = false },
+            .char_start = char_start,
+            .char_end = char_end,
+            .row = first_row,
+            .line_weight = first.weight,
+            .weight = first.weight,
+        };
+        self._rope.walk_from(first.leaf_index, &walk, Walk.visit) catch |err| return @as(TextBufferError, @errorCast(err));
+        if (!walk.done) try walk.endLine();
+        try self.commitHighlights(additions.items);
     }
 
     /// Remove all highlights with a specific reference ID

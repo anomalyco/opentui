@@ -100,10 +100,10 @@ test "Scene box details and paint replaced during a record batch paint live and 
         if (exit == 1) continue;
         if (exit == 2) {
             try owner.sceneDestroyNode(fixture.root);
-            try testing.expectError(error.StaleFrame, owner.sceneFrameStepWithRecording(fixture.session, request, options, std.math.maxInt(u32), &.{}));
+            try testing.expectError(error.StaleFrame, owner.sceneFrameStepWithRecording(fixture.session, request, options, &.{}));
             continue;
         }
-        const done = try owner.sceneFrameStepWithRecording(fixture.session, request, options, std.math.maxInt(u32), &.{});
+        const done = try owner.sceneFrameStepWithRecording(fixture.session, request, options, &.{});
         try testing.expectEqual(@as(u32, 0), done.kind);
         const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
         try expectRow(target, 0, "A-new------B");

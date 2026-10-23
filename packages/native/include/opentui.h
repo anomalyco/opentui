@@ -7,11 +7,11 @@
 extern "C" {
 #endif
 
-/* Experimental context and session ABI, version 1. This header does not stabilize the
+/* Experimental context and session ABI, version 2. This header does not stabilize the
  * library's legacy renderer, Yoga, or other FFI exports. Use matching headers
  * and artifacts. The restricted scene surface supports roots, boxes, plain text,
  * sliders, standard arrows, editor views, and images. */
-#define OT_CONTEXT_ABI_VERSION UINT32_C(1)
+#define OT_CONTEXT_ABI_VERSION UINT32_C(2)
 
 typedef int32_t ot_status;
 #define OT_OK INT32_C(0)
@@ -414,6 +414,19 @@ typedef struct ot_scene_layout {
     double screen_y;
 } ot_scene_layout;
 
+#define OT_SCENE_FULL_PATH_FORCED UINT32_C(1)
+#define OT_SCENE_FULL_PATH_SCREEN UINT32_C(2)
+#define OT_SCENE_FULL_PATH_IMAGES UINT32_C(4)
+
+/* Fields from work_frame_id on count the work of the last presented scene
+ * frame: preparation, paint, encoding, and the hit-grid commit. They are
+ * deterministic work counts, not times, and their values may change between
+ * versions as the renderer does less work. Cancelled, failed, and skipped frames,
+ * non-scene renders, and snapshot-only split renders leave them unchanged.
+ * work_frame_id is the frame_id of the counted frame, or zero before the first.
+ * full_path_reasons holds OT_SCENE_FULL_PATH_* bits: FORCED (debug flag),
+ * SCREEN (forced, invalidated, or palette-changed encode), IMAGES
+ * (image placements present). */
 typedef struct ot_scene_stats {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -426,6 +439,28 @@ typedef struct ot_scene_stats {
     uint32_t average_cells_updated;
     uint32_t render_time_valid;
     uint32_t stdout_write_time_valid;
+    uint64_t work_frame_id;
+    uint64_t candidate_visits;
+    uint64_t paint_visits;
+    uint64_t view_preparations;
+    uint64_t geometry_reads;
+    uint64_t yoga_solves;
+    uint64_t feedback_operations;
+    uint64_t visibility_steps;
+    uint64_t viewport_child_refreshes;
+    uint64_t overlap_tests;
+    uint64_t members_painted;
+    uint64_t member_cells;
+    uint64_t cells_cleared;
+    uint64_t hit_cells_written;
+    uint64_t hit_cells_cleared;
+    uint64_t hit_cells_compared;
+    uint64_t rows_compared;
+    uint64_t rows_diffed;
+    uint32_t full_path_reasons;
+    uint32_t host_requests;
+    uint32_t layout_rounds;
+    uint32_t reserved;
 } ot_scene_stats;
 
 typedef struct ot_scene_cursor_state {
@@ -455,7 +490,6 @@ typedef struct ot_scene_cursor_state {
 #define OT_SCENE_FRAME_RESIZE UINT32_C(2)
 #define OT_SCENE_FRAME_LAYOUT_CHANGED UINT32_C(3)
 #define OT_SCENE_FRAME_RECORD UINT32_C(4)
-#define OT_SCENE_FRAME_YIELD UINT32_C(5)
 
 typedef struct ot_scene_hooks {
     uint32_t struct_size;
@@ -575,43 +609,27 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * Native code retains its membership, destination, and storage identity. DONE
  * does not acquire a buffer lease automatically. Acquire qualified access below
  * only when needed, and explicitly commit or cancel the draft before another frame.
- * During preparation without an explicit YIELD, render, resize, buffer draw,
- * buffer borrowing, setup, and suspend reject with OT_FRAME_BUSY. Close,
- * cancellation, root destruction, and owner teardown invalidate preparation
- * attempts. At an explicit YIELD, an accepted dimension change cancels the
- * attempt; rejection preserves it. Suspension validates terminal phase first
- * and cancels only a preparation/feedback YIELD, without discarding admitted output.
+ * During preparation, render, resize, buffer draw, buffer borrowing, setup, and
+ * suspend reject with OT_FRAME_BUSY. Close, cancellation, root destruction, and
+ * owner teardown invalidate preparation attempts.
  * After DONE, destroying nodes or the root leaves painted cells and capture intact
  * without repainting. Commit, frame or Session cancellation, and owner teardown
  * still end draft access.
  *
- * Painting never yields. max_work_items is a positive quota for preparation node
- * visits, candidate-view preparation, and feedback records. Hook replies clamp
- * remaining work without replenishing it; an exact YIELD reply starts another work
- * quota. Zero rejects without consuming a request. A mutation accepted at a YIELD
- * that dirties preparation restarts it once; the rest of the attempt, including
- * later hook replies, runs without yields, so steady mutations cannot exhaust
- * max_layout_rounds.
- * YIELD names the root and requires the exact returned ticket; num, width,
- * height, and hook_generation are zero. It grants no buffer access or commit
- * authority and does not count against max_host_requests. Request IDs increase
- * across both hooks and YIELD. UINT32_MAX selects synchronous preparation only on
- * begin or an exact YIELD reply. A hook reply cannot switch an already-bounded run
- * to uncharged preparation. The quota bounds counted work items, not cells or
- * elapsed time. Yoga, allocation/reservation, final paint-list preparation and
- * publication, painting, and output encoding remain synchronous.
+ * Preparation and painting never yield: each step runs until it returns a host
+ * request, DONE, or an error.
  *
  * Geometry observations are produced after phase publication.
  * Geometry is not ticket authority and must not be echoed in acknowledgements.
  * Each flag marks a valid snapshot; absent snapshots are zeroed, including for
- * RECORD, DONE, and YIELD. Observation failures do not fail the step: a caller
+ * RECORD and DONE. Observation failures do not fail the step: a caller
  * needing that observation must use the checked layout query.
  * Accepted mutations may invalidate these snapshots before the next step.
  * out_geometry requires exact size/version and zero reserved before advancement.
  * All buffers are borrowed only for this call. previous may alias out_request;
  * the two output records must be distinct. */
 ot_status ot_scene_frame_step_with_geometry(ot_context *, const ot_handle *session,
-    const ot_scene_frame_request *previous, const ot_scene_frame_options *, uint32_t max_work_items,
+    const ot_scene_frame_request *previous, const ot_scene_frame_options *,
     const uint8_t *recording, uint32_t recording_length,
     ot_scene_frame_request *out_request, ot_scene_frame_geometry *out_geometry);
 /* Copy the slots of the exact pending RECORD request. out_count receives the total
@@ -837,6 +855,18 @@ ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t obse
 ot_status ot_scene_paint(ot_context *, const ot_handle *session, const uint16_t background[4], uint32_t use_mouse, uint32_t excluded_hit_num, ot_scene_frame_request *out_frame);
 ot_status ot_scene_hit_test(ot_context *, const ot_handle *session, int32_t x, int32_t y, uint32_t *out_num);
 ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_stats *out_stats);
+#define OT_SCENE_DEBUG_FULL_FRAME UINT32_C(1)
+/* Diagnostic switches for tests. FULL_FRAME rebuilds each frame's preparation
+ * and paint lists instead of reusing the last frame's, and every later shortcut
+ * that skips frame work also tests it; Yoga still solves only a dirty tree, and
+ * geometry is read only for nodes laid out since the last solve. Output is
+ * unchanged; only the work counts in ot_scene_stats differ, and frames report
+ * OT_SCENE_FULL_PATH_FORCED. A closed or cancelled Session returns
+ * OT_SESSION_CLOSED, a failed one OT_OUTPUT_FAILED, other bits
+ * OT_INVALID_ARGUMENT, a Session without a scene OT_INVALID_PHASE, and an active
+ * frame attempt, draft, or frame lease OT_FRAME_BUSY. Rejection keeps the flags.
+ * Flags persist for the Session. */
+ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
 /* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
  * Colors use normalized float channels. Output requires exact size/version. */
 ot_status ot_scene_get_cursor_state(ot_context *, const ot_handle *session, ot_scene_cursor_state *out_state);
@@ -2127,8 +2157,173 @@ typedef struct ot_session_pump_result {
     uint64_t deadline_ns;
 } ot_session_pump_result;
 
+#define OT_INPUT_KEY UINT32_C(1)
+#define OT_INPUT_MOUSE UINT32_C(2)
+#define OT_INPUT_PASTE UINT32_C(3)
+#define OT_INPUT_FOCUS UINT32_C(4)
+#define OT_INPUT_REPLY UINT32_C(5)
+
+#define OT_INPUT_KEY_PRESS UINT32_C(1)
+#define OT_INPUT_KEY_REPEAT UINT32_C(2)
+#define OT_INPUT_KEY_RELEASE UINT32_C(3)
+#define OT_INPUT_MOUSE_DOWN UINT32_C(1)
+#define OT_INPUT_MOUSE_UP UINT32_C(2)
+#define OT_INPUT_MOUSE_MOVE UINT32_C(3)
+#define OT_INPUT_MOUSE_DRAG UINT32_C(4)
+#define OT_INPUT_MOUSE_SCROLL UINT32_C(5)
+#define OT_INPUT_MOUSE_BUTTON_NONE UINT32_C(255)
+#define OT_INPUT_FOCUS_OUT UINT32_C(0)
+#define OT_INPUT_FOCUS_IN UINT32_C(1)
+
+/* Modifier bits use Kitty's layout: the wire modifier parameter minus one. Mouse
+ * events report only Shift, Alt, and Ctrl. */
+#define OT_INPUT_MOD_SHIFT UINT32_C(1)
+#define OT_INPUT_MOD_ALT UINT32_C(2)
+#define OT_INPUT_MOD_CTRL UINT32_C(4)
+#define OT_INPUT_MOD_SUPER UINT32_C(8)
+#define OT_INPUT_MOD_HYPER UINT32_C(16)
+#define OT_INPUT_MOD_META UINT32_C(32)
+#define OT_INPUT_MOD_CAPS_LOCK UINT32_C(64)
+#define OT_INPUT_MOD_NUM_LOCK UINT32_C(128)
+
+#define OT_INPUT_KEY_KITTY UINT32_C(1)
+#define OT_INPUT_KEY_TEXT_TRUNCATED UINT32_C(2)
+#define OT_INPUT_PASTE_START UINT32_C(1)
+#define OT_INPUT_PASTE_END UINT32_C(2)
+#define OT_INPUT_REPLY_FRAGMENT UINT32_C(1)
+#define OT_INPUT_REPLY_CURSOR_POSITION UINT32_C(2)
+
+#define OT_INPUT_REPLY_CSI UINT32_C(1)
+#define OT_INPUT_REPLY_SS3 UINT32_C(2)
+#define OT_INPUT_REPLY_OSC UINT32_C(3)
+#define OT_INPUT_REPLY_DCS UINT32_C(4)
+#define OT_INPUT_REPLY_APC UINT32_C(5)
+
+/* Key codes are Unicode scalars; functional keys use the Kitty keyboard protocol
+ * assignments. Escape, Enter, Tab, and Backspace are 27, 13, 9, and 127. A key
+ * typed from the private-use area shares the Kitty range, as in every Kitty
+ * protocol terminal. Code 0 is a text-only key (input method output). */
+#define OT_INPUT_KEY_ESCAPE UINT32_C(27)
+#define OT_INPUT_KEY_ENTER UINT32_C(13)
+#define OT_INPUT_KEY_TAB UINT32_C(9)
+#define OT_INPUT_KEY_BACKSPACE UINT32_C(127)
+#define OT_INPUT_KEY_INSERT UINT32_C(57348)
+#define OT_INPUT_KEY_DELETE UINT32_C(57349)
+#define OT_INPUT_KEY_LEFT UINT32_C(57350)
+#define OT_INPUT_KEY_RIGHT UINT32_C(57351)
+#define OT_INPUT_KEY_UP UINT32_C(57352)
+#define OT_INPUT_KEY_DOWN UINT32_C(57353)
+#define OT_INPUT_KEY_PAGE_UP UINT32_C(57354)
+#define OT_INPUT_KEY_PAGE_DOWN UINT32_C(57355)
+#define OT_INPUT_KEY_HOME UINT32_C(57356)
+#define OT_INPUT_KEY_END UINT32_C(57357)
+#define OT_INPUT_KEY_CAPS_LOCK UINT32_C(57358)
+#define OT_INPUT_KEY_SCROLL_LOCK UINT32_C(57359)
+#define OT_INPUT_KEY_NUM_LOCK UINT32_C(57360)
+#define OT_INPUT_KEY_PRINT_SCREEN UINT32_C(57361)
+#define OT_INPUT_KEY_PAUSE UINT32_C(57362)
+#define OT_INPUT_KEY_MENU UINT32_C(57363)
+#define OT_INPUT_KEY_F1 UINT32_C(57364) /* F(n) is 57363 + n, n in 1..35 */
+#define OT_INPUT_KEY_F35 UINT32_C(57398)
+#define OT_INPUT_KEY_KP_0 UINT32_C(57399) /* KP(n) is 57399 + n, n in 0..9 */
+#define OT_INPUT_KEY_KP_9 UINT32_C(57408)
+#define OT_INPUT_KEY_KP_DECIMAL UINT32_C(57409)
+#define OT_INPUT_KEY_KP_DIVIDE UINT32_C(57410)
+#define OT_INPUT_KEY_KP_MULTIPLY UINT32_C(57411)
+#define OT_INPUT_KEY_KP_SUBTRACT UINT32_C(57412)
+#define OT_INPUT_KEY_KP_ADD UINT32_C(57413)
+#define OT_INPUT_KEY_KP_ENTER UINT32_C(57414)
+#define OT_INPUT_KEY_KP_EQUAL UINT32_C(57415)
+#define OT_INPUT_KEY_KP_SEPARATOR UINT32_C(57416)
+#define OT_INPUT_KEY_KP_LEFT UINT32_C(57417)
+#define OT_INPUT_KEY_KP_RIGHT UINT32_C(57418)
+#define OT_INPUT_KEY_KP_UP UINT32_C(57419)
+#define OT_INPUT_KEY_KP_DOWN UINT32_C(57420)
+#define OT_INPUT_KEY_KP_PAGE_UP UINT32_C(57421)
+#define OT_INPUT_KEY_KP_PAGE_DOWN UINT32_C(57422)
+#define OT_INPUT_KEY_KP_HOME UINT32_C(57423)
+#define OT_INPUT_KEY_KP_END UINT32_C(57424)
+#define OT_INPUT_KEY_KP_INSERT UINT32_C(57425)
+#define OT_INPUT_KEY_KP_DELETE UINT32_C(57426)
+#define OT_INPUT_KEY_KP_BEGIN UINT32_C(57427)
+#define OT_INPUT_KEY_MEDIA_PLAY UINT32_C(57428)
+#define OT_INPUT_KEY_MEDIA_PAUSE UINT32_C(57429)
+#define OT_INPUT_KEY_MEDIA_PLAY_PAUSE UINT32_C(57430)
+#define OT_INPUT_KEY_MEDIA_REVERSE UINT32_C(57431)
+#define OT_INPUT_KEY_MEDIA_STOP UINT32_C(57432)
+#define OT_INPUT_KEY_MEDIA_FAST_FORWARD UINT32_C(57433)
+#define OT_INPUT_KEY_MEDIA_REWIND UINT32_C(57434)
+#define OT_INPUT_KEY_MEDIA_TRACK_NEXT UINT32_C(57435)
+#define OT_INPUT_KEY_MEDIA_TRACK_PREVIOUS UINT32_C(57436)
+#define OT_INPUT_KEY_MEDIA_RECORD UINT32_C(57437)
+#define OT_INPUT_KEY_LOWER_VOLUME UINT32_C(57438)
+#define OT_INPUT_KEY_RAISE_VOLUME UINT32_C(57439)
+#define OT_INPUT_KEY_MUTE_VOLUME UINT32_C(57440)
+#define OT_INPUT_KEY_LEFT_SHIFT UINT32_C(57441)
+#define OT_INPUT_KEY_LEFT_CONTROL UINT32_C(57442)
+#define OT_INPUT_KEY_LEFT_ALT UINT32_C(57443)
+#define OT_INPUT_KEY_LEFT_SUPER UINT32_C(57444)
+#define OT_INPUT_KEY_LEFT_HYPER UINT32_C(57445)
+#define OT_INPUT_KEY_LEFT_META UINT32_C(57446)
+#define OT_INPUT_KEY_RIGHT_SHIFT UINT32_C(57447)
+#define OT_INPUT_KEY_RIGHT_CONTROL UINT32_C(57448)
+#define OT_INPUT_KEY_RIGHT_ALT UINT32_C(57449)
+#define OT_INPUT_KEY_RIGHT_SUPER UINT32_C(57450)
+#define OT_INPUT_KEY_RIGHT_HYPER UINT32_C(57451)
+#define OT_INPUT_KEY_RIGHT_META UINT32_C(57452)
+#define OT_INPUT_KEY_ISO_LEVEL3_SHIFT UINT32_C(57453)
+#define OT_INPUT_KEY_ISO_LEVEL5_SHIFT UINT32_C(57454)
+
+#define OT_INPUT_EXPECT_REPLIES UINT32_C(1)
+#define OT_INPUT_EXPECT_KITTY_KEYBOARD UINT32_C(2)
+#define OT_INPUT_EXPECT_CURSOR_POSITION UINT32_C(4)
+
+#define OT_INPUT_EVENTS_MIN UINT32_C(4)
+#define OT_INPUT_PAYLOAD_BYTES_MIN UINT32_C(4384)
+#define OT_INPUT_TIMEOUT_NS UINT64_C(20000000)
+
+/* One parsed input event. raw and text are byte spans into the payload buffer of
+ * the same call. kind selects the meaning of action, code, x, and y:
+ * KEY: action is OT_INPUT_KEY_PRESS/REPEAT/RELEASE, code a key code, base_code a
+ * nonzero base-layout scalar when the terminal reports one, text what an editor
+ * inserts. MOUSE: action is OT_INPUT_MOUSE_*, code a button (0..2, 8+, or NONE)
+ * or a scroll direction (0 up, 1 down, 2 left, 3 right), x and y a zero-based
+ * cell. PASTE: text is one chunk of pasted bytes and raw is empty. FOCUS: action
+ * is OT_INPUT_FOCUS_IN/OUT. REPLY: code is an OT_INPUT_REPLY_* protocol and raw
+ * the wire bytes. flags hold the kind's OT_INPUT_* flags. */
+typedef struct ot_input_event {
+    uint8_t kind;
+    uint8_t action;
+    uint8_t modifiers;
+    uint8_t flags;
+    uint32_t code;
+    uint32_t base_code;
+    uint16_t x;
+    uint16_t y;
+    uint32_t raw_offset;
+    uint32_t raw_len;
+    uint32_t text_offset;
+    uint32_t text_len;
+} ot_input_event;
+
+/* Initialize struct_size and abi_version. The remaining fields are output-only.
+ * consumed is the number of input bytes parsed; call again with the rest when it
+ * is less than byte_count. A call can consume nothing after it reported events.
+ * deadline_ns is nonzero when a partial unit waits for the timeout: call feed
+ * with zero bytes at or after it. discarded is a saturating lifetime count of
+ * overlong units dropped. */
+typedef struct ot_input_drain {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t consumed;
+    uint32_t count;
+    uint32_t payload_len;
+    uint32_t discarded;
+    uint64_t deadline_ns;
+} ot_input_drain;
+
 /* Zero-initialize, then set struct_size to sizeof(ot_context_options) and
- * abi_version to OT_CONTEXT_ABI_VERSION. Version 1 requires the exact size,
+ * abi_version to OT_CONTEXT_ABI_VERSION. Version 2 requires the exact size,
  * zero flags, zero reserved fields, and positive resource limits.
  * object_capacity is the initial count of native object slots, not bytes. A full
  * table doubles, up to 4194304 slots or object_capacity, whichever is larger;
@@ -2206,7 +2401,7 @@ ot_status ot_context_destroy(ot_context *context);
 ot_status ot_context_get_last_error(ot_context *context, ot_context_error *out_error);
 
 /* Copy up to capacity records in arrival order without allocation or callbacks.
- * Version 1 C contexts hold at most 64 records and drop newest on overflow.
+ * Version 2 C contexts hold at most 64 records and drop newest on overflow.
  * records may be NULL only when capacity is zero. A zero-capacity drain reports
  * queue pressure without removing records. out_drain must have the exact size
  * and version. The caller owns both outputs for the call. Outputs and queued
@@ -2721,6 +2916,49 @@ ot_status ot_session_pump(
     uint64_t now_ns,
     uint32_t work_budget,
     ot_session_pump_result *out_result);
+
+/* Parse terminal input into events written to caller-owned records and payload.
+ * bytes may be NULL only when byte_count is zero; zero bytes only resolves the
+ * timeout. now_ns is a host monotonic clock in nanoseconds that must not go
+ * backwards across feeds; it is independent of the pump clock. capacity must be
+ * at least OT_INPUT_EVENTS_MIN and payload_capacity at least
+ * OT_INPUT_PAYLOAD_BYTES_MIN; the call consumes input until either runs low and
+ * reports consumed. A bracketed paste arrives as one or more PASTE records from
+ * START to END. Records and payload are borrowed for the call and never retained.
+ * bytes, records, payload, and out_drain must not overlap.
+ * Accepted in any open session state; closing, closed, failed, and cancelled
+ * sessions reject. A rejected call leaves out_drain, the records, and parser
+ * state unchanged. No allocation, no I/O. */
+ot_status ot_session_input_feed(
+    ot_context *context,
+    const ot_handle *session,
+    const uint8_t *bytes,
+    uint32_t byte_count,
+    uint64_t now_ns,
+    ot_input_event *records,
+    uint32_t capacity,
+    uint8_t *payload,
+    uint32_t payload_capacity,
+    ot_input_drain *out_drain);
+
+/* flags is a combination of OT_INPUT_EXPECT_* bits; other bits must be zero.
+ * Set REPLIES while any query is outstanding, including the capability queries
+ * that setup publishes. It keeps a partial CSI reply waiting past the timeout.
+ * CURSOR_POSITION, which implies REPLIES, marks a cursor position request: it
+ * makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply instead of a
+ * modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting and makes
+ * CSI R and CSI 1 ; N R replies, since the Kitty protocol sends F3 as CSI 13 ~;
+ * a session with a renderer applies its terminal's negotiated state instead.
+ * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
+ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
+
+#define OT_INPUT_RESET_KEEP_REPLY UINT32_C(1)
+
+/* Drop any partial unit and mouse button state. Expectations are kept. flags is
+ * 0 or OT_INPUT_RESET_KEEP_REPLY. Call with KEEP_REPLY after feeding the input
+ * drained on resume: then a partial CSI unit that may begin a reply survives
+ * while REPLIES is set, and waits for its rest without a deadline. */
+ot_status ot_session_input_reset(ot_context *context, const ot_handle *session, uint32_t flags);
 
 /* Maximum ordinary atomic write in an empty queue, excluding control reservations
  * and bounded by both chunk storage and span slots, at most UINT32_MAX bytes.

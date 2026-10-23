@@ -1,7 +1,9 @@
 // Import all test modules
 const text_buffer_tests = @import("tests/text-buffer_test.zig");
 const text_buffer_highlights_tests = @import("tests/text-buffer-highlights_test.zig");
+const text_work_tests = @import("tests/text-work_test.zig");
 const text_buffer_view_tests = @import("tests/text-buffer-view_test.zig");
+const text_corpus_tests = @import("tests/text-corpus_test.zig");
 const text_buffer_selection_tests = @import("tests/text-buffer-selection_test.zig");
 const text_buffer_selection_gesture_tests = @import("tests/text-buffer-selection-gesture_test.zig");
 const text_buffer_selection_viewport_tests = @import("tests/text-buffer-selection_viewport_test.zig");
@@ -47,7 +49,6 @@ const scene_box_details_tests = @import("tests/scene_box_details_test.zig");
 const scene_order_tests = @import("tests/scene_order_test.zig");
 const scene_frame_tests = @import("tests/scene_frame_test.zig");
 const scene_record_tests = @import("tests/scene_record_test.zig");
-const scene_budget_tests = @import("tests/scene_budget_test.zig");
 const session_renderer_tests = @import("tests/session-renderer_test.zig");
 const session_terminal_tests = @import("tests/session-terminal_test.zig");
 const session_controls_tests = @import("tests/session-controls_test.zig");
@@ -58,6 +59,7 @@ const split_scrollback_tests = @import("tests/split-scrollback_test.zig");
 const audio_tests = @import("tests/audio_test.zig");
 const yoga_tests = @import("tests/yoga_test.zig");
 const ansi_tests = @import("tests/ansi_test.zig");
+const input_parser_tests = @import("tests/input-parser_test.zig");
 const ghostty_vt_tests = @import("tests/ghostty_vt_test.zig");
 const embedded_terminal_tests = @import("embedded-terminal/tests.zig");
 const image_tests = @import("tests/image_test.zig");
@@ -72,6 +74,7 @@ const context_editor_abi_tests = @import("context-editor-abi.zig");
 const context_image_abi_tests = @import("context-image-abi.zig");
 const context_output_abi_tests = @import("context-output-abi.zig");
 const context_terminal_abi_tests = @import("context-terminal-abi.zig");
+const context_input_abi_tests = @import("context-input-abi.zig");
 const context_text_abi_tests = @import("context-text-abi.zig");
 const context_unicode_abi_tests = @import("context-unicode-abi.zig");
 const context_reuse_tests = @import("tests/context-reuse_test.zig");
@@ -88,7 +91,9 @@ const session_split_tests = @import("tests/session-split_test.zig");
 comptime {
     _ = text_buffer_tests;
     _ = text_buffer_highlights_tests;
+    _ = text_work_tests;
     _ = text_buffer_view_tests;
+    _ = text_corpus_tests;
     _ = text_buffer_selection_tests;
     _ = text_buffer_selection_gesture_tests;
     _ = text_buffer_selection_viewport_tests;
@@ -134,7 +139,6 @@ comptime {
     _ = scene_order_tests;
     _ = scene_frame_tests;
     _ = scene_record_tests;
-    _ = scene_budget_tests;
     _ = session_renderer_tests;
     _ = session_terminal_tests;
     _ = session_controls_tests;
@@ -145,6 +149,7 @@ comptime {
     _ = audio_tests;
     _ = yoga_tests;
     _ = ansi_tests;
+    _ = input_parser_tests;
     _ = ghostty_vt_tests;
     _ = embedded_terminal_tests;
     _ = image_tests;
@@ -157,6 +162,7 @@ comptime {
     _ = context_image_abi_tests;
     _ = context_output_abi_tests;
     _ = context_terminal_abi_tests;
+    _ = context_input_abi_tests;
     _ = context_text_abi_tests;
     _ = context_unicode_abi_tests;
     _ = context_reuse_tests;

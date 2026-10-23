@@ -22,7 +22,7 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 //    That needs the right to bypass the branch and tag rules. A maintenance branch takes only versions of its
 //    line. The draft keeps notes already in place, such as from `bun run release-notes`, and dates them the
 //    release day. --no-notes skips the draft; a dry run commits no notes. A push run in a terminal shows the notes and
-//    asks before it commits. Prereleases record neither file.
+//    asks before it commits. `bun run fmt` formats the notes before the commit. Prereleases record neither file.
 // 3. Follows the release.yml run of the tag push, and reports when every package is published and
 //    when npm serves them all.
 //
@@ -306,11 +306,14 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
         console.log(`Drafting the release notes of ${version}...`)
         run("bun", ["packages/web/scripts/release-notes.ts", "draft", version], { inherit: true })
         notesFile = notes
+        run("bun", ["run", "fmt"])
         // A push publishes the notes with the release, so a person reads them first when one is present.
         if (options.mode === "push" && process.stdin.isTTY) await confirmNotes(notes)
       }
       // A dry run switches back to the branch, which would delete notes that it committed.
       if (options.mode !== "dry-run" && existsSync(join(repoRoot, notes))) notesFile = notes
+      // The draft and any edits made at the prompt must pass `bun run fmt:check`.
+      if (notesFile) run("bun", ["run", "fmt"])
       git("add", "--", apiFile, ...(notesFile ? [notes] : []))
       stopIfInterrupted()
     }

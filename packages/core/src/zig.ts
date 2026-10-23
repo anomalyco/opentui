@@ -32,6 +32,7 @@ export type {
   BuildOptions,
   NativeAudioCaptureStats,
   NativeAudioStreamStats,
+  NativeFrameWork,
   NativeRenderStats,
 }
 
@@ -74,6 +75,7 @@ import type {
   AudioStats,
   BuildOptions,
   AllocatorStats,
+  NativeFrameWork,
   NativeRenderStats,
   NativeImageInfo,
 } from "./zig-structs.js"
@@ -408,7 +410,6 @@ export enum NativeSceneFrame {
   Resize = nativeConstants.OT_SCENE_FRAME_RESIZE,
   LayoutChanged = nativeConstants.OT_SCENE_FRAME_LAYOUT_CHANGED,
   Record = nativeConstants.OT_SCENE_FRAME_RECORD,
-  Yield = nativeConstants.OT_SCENE_FRAME_YIELD,
 }
 
 export enum NativeScenePaintPhase {
@@ -703,6 +704,13 @@ export enum NativeSessionPumpStatus {
 
 export interface NativeSessionPumpResult {
   status: NativeSessionPumpStatus
+  deadlineNs: bigint | null
+}
+
+/** One `ot_session_input_feed` call: input consumed, records written, and when to call again. */
+export interface NativeInputDrain {
+  consumed: number
+  count: number
   deadlineNs: bigint | null
 }
 
@@ -1015,6 +1023,24 @@ let globalTraceSymbols: Record<string, number[]> | null = null
 let globalFFILogPath: string | null = null
 let exitHandlerRegistered = false
 
+/** Reads the `ot_scene_stats` fields from `work_frame_id` up to `reserved`, camel-casing their names. */
+function readFrameWork(
+  layout: (typeof nativeLayouts)["ot_scene_stats"],
+  output: BigUint64Array,
+  words: Uint32Array,
+): NativeFrameWork {
+  const result: Record<string, number> = {}
+  let counting = false
+  for (const [field, { offset, type }] of Object.entries(layout.fields)) {
+    if (field === "reserved") break
+    counting ||= field === "work_frame_id"
+    if (!counting) continue
+    const name = field.replace(/_(.)/g, (_, letter: string) => letter.toUpperCase())
+    result[name] = type === "u64" ? toNumber(output[offset / 8]) : words[offset / 4]
+  }
+  return result as NativeFrameWork
+}
+
 function toNumber(value: number | bigint): number {
   return typeof value === "bigint" ? Number(value) : value
 }
@@ -1307,7 +1333,7 @@ function encodeDrawColors(
   return background !== undefined
 }
 
-const DIAGNOSTIC_QUEUE_MAX = 64 // Version 1 C Contexts hold at most 64 diagnostic records.
+const DIAGNOSTIC_QUEUE_MAX = 64 // Version 2 C Contexts hold at most 64 diagnostic records.
 const DIAGNOSTIC_BATCH = 8 // Eight 4 KiB records keep the cached drain storage near 33 KB.
 
 function createDiagnosticDrainRecord() {
@@ -4739,9 +4765,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    // Node FFI rejects negative zero for integer arguments.
-    const column = toFFII32(x, "Text view x") || 0
-    const row = toFFII32(y, "Text view y") || 0
+    const column = toFFII32(x, "Text view x")
+    const row = toFFII32(y, "Text view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_text_view")
     nativeResult(
       "ot_buffer_draw_text_view",
@@ -4759,8 +4784,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    const column = toFFII32(x, "Editor view x") || 0
-    const row = toFFII32(y, "Editor view y") || 0
+    const column = toFFII32(x, "Editor view x")
+    const row = toFFII32(y, "Editor view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_editor_view")
     nativeResult(
       "ot_buffer_draw_editor_view",
@@ -4778,8 +4803,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = toFFII32(x, "Scene text x") || 0
-    const row = toFFII32(y, "Scene text y") || 0
+    const column = toFFII32(x, "Scene text x")
+    const row = toFFII32(y, "Scene text y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
     nativeResult(
       "ot_buffer_draw_scene_text",
@@ -6471,6 +6496,70 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /**
+   * Parses terminal input into `ot_input_event` records (`records` must be 4-byte aligned) and
+   * their payload bytes. Stops when either buffer runs low; call again with the unconsumed rest.
+   */
+  public sessionInputFeed(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    bytes: Uint8Array,
+    nowNs: bigint,
+    records: Uint8Array,
+    payload: Uint8Array,
+  ): NativeInputDrain {
+    const layout = nativeLayouts.ot_input_drain
+    const handle = encodeContextHandle(context, session)
+    const input = sessionBytes(bytes, "Session input length")
+    const now = toFFIU64(nowNs, "Session input nowNs")
+    const recordView = sessionBytes(records, "Session input records length")
+    const payloadView = sessionBytes(payload, "Session input payload length")
+    if (recordView.byteOffset % nativeLayouts.ot_input_event.alignment !== 0) {
+      throw new RangeError("Session input records must be aligned to ot_input_event")
+    }
+    const capacity = Math.floor(recordView.byteLength / nativeLayouts.ot_input_event.size)
+    const output = new BigUint64Array(layout.size / 8)
+    const words = new Uint32Array(output.buffer)
+    words[layout.fields.struct_size.offset / 4] = layout.size
+    words[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+    const pointer = this.nativeContextPointer(context, "ot_session_input_feed")
+    nativeResult(
+      "ot_session_input_feed",
+      this.opentui.symbols.ot_session_input_feed(
+        pointer,
+        handle,
+        input.byteLength === 0 ? null : input,
+        input.byteLength,
+        now,
+        recordView,
+        capacity,
+        payloadView,
+        payloadView.byteLength,
+        output,
+      ),
+    )
+    const deadline = output[layout.fields.deadline_ns.offset / 8]!
+    return {
+      consumed: words[layout.fields.consumed.offset / 4]!,
+      count: words[layout.fields.count.offset / 4]!,
+      deadlineNs: deadline === 0n ? null : deadline,
+    }
+  }
+
+  /** `flags` combines `OT_INPUT_EXPECT_*` bits. Emits nothing; the next feed re-evaluates. */
+  public sessionInputExpect(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const value = toSafeFFIU32Length(flags, "Session input expectations")
+    const pointer = this.nativeContextPointer(context, "ot_session_input_expect")
+    nativeResult("ot_session_input_expect", this.opentui.symbols.ot_session_input_expect(pointer, handle, value))
+  }
+
+  public sessionInputReset(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const pointer = this.nativeContextPointer(context, "ot_session_input_reset")
+    nativeResult("ot_session_input_reset", this.opentui.symbols.ot_session_input_reset(pointer, handle, flags))
+  }
+
   /** Discards terminal input queued on process stdin. Best effort; see `ot_terminal_flush_input`. */
   public terminalFlushInput(): void {
     nativeResult("ot_terminal_flush_input", this.opentui.symbols.ot_terminal_flush_input())
@@ -7532,7 +7621,6 @@ export class FFIRenderLib {
     session: SessionHandle,
     previous: NativeSceneFrameRequest | null,
     options: NativeSceneFrameOptions,
-    maxWorkItems?: number,
     recording: Uint8Array | null = null,
   ): NativeSceneFrameRequest {
     const layout = nativeLayouts.ot_scene_frame_options
@@ -7561,8 +7649,6 @@ export class FFIRenderLib {
         options.preserveUnwritten ?? false,
         "Scene preserve unwritten cells",
       )
-      const workBudget = maxWorkItems === undefined ? 0xffffffff : toSafeFFIU32Length(maxWorkItems, "Scene work budget")
-      if (workBudget === 0) throw new RangeError("Scene work budget must be positive")
       const recordingLength = recording === null ? 0 : toSafeFFIU32Length(recording.byteLength, "Scene recording")
       const recordingView = recordingLength === 0 ? null : recording
       const output = encodeSceneFrameRequest(context, previous, scratch)
@@ -7578,7 +7664,6 @@ export class FFIRenderLib {
           previous === null ? null : output,
           config,
           output,
-          workBudget,
           recordingView,
           recordingLength,
           geometry,
@@ -7591,7 +7676,6 @@ export class FFIRenderLib {
             handle,
             previous === null ? null : output,
             config,
-            workBudget,
             recordingView,
             recordingLength,
             output,
@@ -7647,7 +7731,6 @@ export class FFIRenderLib {
     previous: BigUint64Array | null,
     config: Uint32Array,
     output: BigUint64Array,
-    workBudget: number,
     recording: Uint8Array | null,
     recordingLength: number,
     geometry: Uint32Array,
@@ -7662,7 +7745,6 @@ export class FFIRenderLib {
             handle,
             previous,
             config,
-            workBudget,
             recording,
             recordingLength,
             output,
@@ -7793,6 +7875,14 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /** @internal Tests set this through `createTestRenderer({ nativeSceneFullFrame })`. */
+  public sceneSetDebugFlags(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const value = toSafeFFIU32Length(flags, "Scene debug flags")
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_debug_flags")
+    nativeResult("ot_scene_set_debug_flags", this.opentui.symbols.ot_scene_set_debug_flags(pointer, handle, value))
+  }
+
   public sceneGetStats(context: NativeContextHandle, session: SessionHandle): NativeRenderStats {
     const layout = nativeLayouts.ot_scene_stats
     const handle = encodeContextHandle(context, session)
@@ -7817,6 +7907,7 @@ export class FFIRenderLib {
         words[layout.fields.stdout_write_time_valid.offset / 4] !== 0
           ? times[layout.fields.stdout_write_time.offset / 8]
           : undefined,
+      frameWork: readFrameWork(layout, output, words),
     }
   }
 

@@ -46,13 +46,9 @@ fn view(owner: *Owner, id: ?*const c.ot_handle) !*ctx.Editor {
     return owner.core.raw().getEditorView(abi.handleFromC((id orelse return error.InvalidOptions).*));
 }
 
-pub const prepareBuffer = ctx.Context.prepareTextBuffer;
-
 fn prepareWordLine(value: *ctx.Edit) !void {
-    try prepareBuffer(value.buffer.tb);
     const rope = value.buffer.tb.rope();
-    const marker = rope.getMarker(.linestart, value.buffer.getPrimaryCursor().row) orelse return;
-    var index = marker.leaf_index + 1;
+    var index = (iter.lineStart(rope, value.buffer.getPrimaryCursor().row) orelse return).leaf_index + 1;
     while (index < rope.count()) : (index += 1) {
         const segment = rope.get(index).?;
         if (segment.isBreak() or segment.isLineStart()) break;
@@ -124,7 +120,6 @@ pub fn ot_edit_buffer_get_position(context: ?*Owner, id: ?*const c.ot_handle, qu
     if (query > c.OT_EDIT_POSITION_LINE_START or (query < c.OT_EDIT_POSITION_OFFSET and a != 0) or
         (query != c.OT_EDIT_POSITION_COORDS and b != 0)) return fail(owner, error.InvalidOptions);
     const value = edit(owner, id) catch |err| return fail(owner, err);
-    prepareBuffer(value.buffer.tb) catch |err| return fail(owner, err);
     const rope = value.buffer.tb.rope();
     if (query == c.OT_EDIT_POSITION_NEXT_WORD or query == c.OT_EDIT_POSITION_PREV_WORD)
         prepareWordLine(value) catch |err| return fail(owner, err);
@@ -430,7 +425,6 @@ pub fn ot_editor_view_measure(context: ?*Owner, id: ?*const c.ot_handle, width: 
     _ = record(c.ot_editor_measure, out) catch |err| return fail(owner, err);
     if (width > std.math.maxInt(i32) or height > std.math.maxInt(i32)) return fail(owner, error.InvalidOptions);
     const value = view(owner, id) catch |err| return fail(owner, err);
-    prepareBuffer(value.view.text_buffer_view.text_buffer) catch |err| return fail(owner, err);
     const measured = value.view.text_buffer_view.measureForDimensions(width, height) catch |err| return fail(owner, err);
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_measure), .abi_version = c.OT_CONTEXT_ABI_VERSION, .line_count = measured.line_count, .width_cols_max = measured.width_cols_max };
     return c.OT_OK;

@@ -236,3 +236,191 @@ test "Rope fuzz - positional operations" {
 
     try verifyInvariants(&rope);
 }
+
+const TestPools = @import("test-pools.zig").TestPools;
+const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
+const TextBuffer = @import("../text-buffer.zig").UnifiedTextBuffer;
+const utf8 = @import("../utf8.zig");
+const iter_mod = @import("../text-buffer-iterators.zig");
+const text_work = @import("../text-work.zig");
+const seg_mod = @import("../text-buffer-segment.zig");
+const Segment = seg_mod.Segment;
+const UnifiedRope = seg_mod.UnifiedRope;
+
+/// Pieces that put breaks, zero-width, wide, and tab cells at chunk edges.
+const text_pieces = [_][]const u8{ "a", "bc", "\t", "世", "e", "\u{0301}", "\u{200d}", "\u{200b}", "👍", "\u{1F3FD}", "\r", "\n", "\r\n", "\x01", "🇺", "🇸", "x\ty", "ab\ncd", "\n\n" };
+/// Pieces whose widths do not depend on where chunks split, so edited text measures like fresh text.
+const fresh_pieces = [_][]const u8{ "a", "bc", "\t", "世", "世界", "\u{200b}", "\n", "\r\n", "\n\r\n", "\n\n", "ab\ncd", "x\ty", "\x01", "", "\t\t" };
+
+fn randomText(random: std.Random, pieces: []const []const u8, out: []u8) []const u8 {
+    var len: usize = 0;
+    for (0..random.uintAtMost(usize, 3)) |_| {
+        const piece = pieces[random.uintLessThan(usize, pieces.len)];
+        @memcpy(out[len..][0..piece.len], piece);
+        len += piece.len;
+    }
+    return out[0..len];
+}
+
+/// Every line query of the edited buffer equals the same query on the text loaded as one chunk.
+fn verifyEditedEqualsFresh(pools: *TestPools, tb: *TextBuffer, method: utf8.WidthMethod) !void {
+    const text = try std.testing.allocator.alloc(u8, tb.getByteSize());
+    defer std.testing.allocator.free(text);
+    const fresh = try TextBuffer.initWithOptions(std.testing.allocator, &pools.graphemes, &pools.links, method, .{ .control_display = tb.controlDisplay() });
+    defer fresh.deinit();
+    fresh.setTabWidth(tb.tabWidth());
+    try fresh.setText(text[0..tb.getPlainTextIntoBuffer(text)]);
+    const rope = tb.rope();
+    try std.testing.expectEqual(fresh.getLineCount(), tb.getLineCount());
+    try std.testing.expectEqual(fresh.lineWidthColsMax(), tb.lineWidthColsMax());
+    for (0..tb.getLineCount()) |row| {
+        try std.testing.expectEqual(iter_mod.lineStart(fresh.rope(), @intCast(row)).?.weight, iter_mod.lineStart(rope, @intCast(row)).?.weight);
+        try std.testing.expectEqual(fresh.lineWidthAt(@intCast(row)), tb.lineWidthAt(@intCast(row)));
+    }
+    try std.testing.expectEqual(fresh.textEndOffset(), tb.textEndOffset());
+    for (0..tb.textEndOffset() + 2) |offset| {
+        try std.testing.expectEqual(iter_mod.offsetToCoords(fresh.rope(), @intCast(offset)), iter_mod.offsetToCoords(rope, @intCast(offset)));
+    }
+    for (0..tb.getLength() + 2) |cell| {
+        try std.testing.expectEqual(iter_mod.firstLineEndingAfter(fresh.rope(), @intCast(cell)), iter_mod.firstLineEndingAfter(rope, @intCast(cell)));
+    }
+}
+
+/// Checks the line queries against positions found by walking every leaf.
+fn verifyLineMetrics(tb: *TextBuffer) !void {
+    const rope = tb.rope();
+    const Walk = struct {
+        starts: std.ArrayList(UnifiedRope.Position) = .empty,
+        weight: u32 = 0,
+
+        fn visit(ctx: *anyopaque, segment: *const Segment, index: u32) UnifiedRope.Node.WalkerResult {
+            const walk: *@This() = @ptrCast(@alignCast(ctx));
+            if (segment.isLineStart()) walk.starts.append(std.testing.allocator, .{ .leaf_index = index, .weight = walk.weight }) catch |err| return .{ .err = err };
+            walk.weight += segment.measure().weight();
+            return .{};
+        }
+    };
+    var walk: Walk = .{};
+    defer walk.starts.deinit(std.testing.allocator);
+    try rope.walk(&walk, Walk.visit);
+    const line_count = tb.getLineCount();
+    try std.testing.expectEqual(walk.starts.items.len, line_count);
+    try std.testing.expectEqual(rope.root.metrics().custom.newline_count + 1, line_count);
+    try std.testing.expectEqual(null, iter_mod.lineStart(rope, line_count));
+    var widest: u32 = 0;
+    for (walk.starts.items, 0..) |start, row| {
+        _ = text_work.take();
+        try std.testing.expectEqual(start, iter_mod.lineStart(rope, @intCast(row)).?);
+        try std.testing.expect(text_work.take().line_seek_nodes < rope.root.depth());
+        widest = @max(widest, tb.lineWidthAt(@intCast(row)));
+    }
+    try std.testing.expectEqual(widest, tb.lineWidthColsMax());
+    // An offset belongs to the last line that starts at or before it; a break ends its line.
+    var row: u32 = 0;
+    for (0..walk.weight + 1) |offset_index| {
+        const offset: u32 = @intCast(offset_index);
+        while (row + 1 < line_count and walk.starts.items[row + 1].weight <= offset) row += 1;
+        const coords = iter_mod.offsetToCoords(rope, offset).?;
+        try std.testing.expectEqual(iter_mod.Coords{ .row = row, .col = offset - walk.starts.items[row].weight }, coords);
+        try std.testing.expectEqual(offset, iter_mod.coordsToOffset(rope, coords.row, coords.col).?);
+    }
+    try std.testing.expectEqual(null, iter_mod.offsetToCoords(rope, walk.weight + 1));
+}
+
+fn runRandomEdits(pools: *TestPools, pieces: []const []const u8, compare_fresh: bool) !void {
+    var bytes: [64]u8 = undefined;
+    for (std.enums.values(utf8.WidthMethod)) |method| for (0..40) |seed| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
+        defer eb.deinit();
+        const tb = eb.getTextBuffer();
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        for (0..60) |step| {
+            errdefer std.debug.print("method {s} seed {d} step {d}\n", .{ @tagName(method), seed, step });
+            const rows = tb.getLineCount();
+            const row = random.uintLessThan(u32, rows);
+            try eb.setCursor(row, random.uintAtMost(u32, tb.lineWidthAt(row)));
+            const total = tb.textEndOffset();
+            const a = random.uintAtMost(u32, total);
+            const b = random.uintAtMost(u32, total);
+            const ignore = struct {
+                fn handle(_: *anyopaque) void {}
+            };
+            switch (random.uintLessThan(u8, 10)) {
+                0 => try eb.setText(randomText(random, pieces, &bytes)),
+                1, 2 => try eb.insertText(randomText(random, pieces, &bytes)),
+                3 => try eb.backspace(),
+                4 => try eb.deleteForward(),
+                5 => {
+                    const other = random.uintLessThan(u32, rows);
+                    try eb.deleteRange(eb.getPrimaryCursor(), .{ .row = other, .col = random.uintAtMost(u32, tb.lineWidthAt(other)), .desired_col = 0, .offset = 0 });
+                },
+                // The buffer keeps appended bytes, so each append owns a copy.
+                6 => try tb.appendWithOwnership(try std.testing.allocator.dupe(u8, randomText(random, pieces, &bytes)), true),
+                7 => _ = eb.undo() catch |err| if (err != error.Stop) return err,
+                8 => if (random.boolean()) {
+                    _ = eb.redo() catch |err| if (err != error.Stop) return err;
+                } else eb.setTabWidth(if (random.boolean()) 2 else 8),
+                9 => try eb.replaceRange(@min(a, b), @max(a, b), randomText(random, pieces, &bytes), .{ .ctx = eb, .handle = ignore.handle }),
+                else => unreachable,
+            }
+            try verifyLineMetrics(tb);
+            const cursor = eb.getPrimaryCursor();
+            try std.testing.expectEqual(iter_mod.coordsToOffset(tb.rope(), cursor.row, cursor.col).?, cursor.offset);
+            if (compare_fresh) try verifyEditedEqualsFresh(pools, tb, method);
+        }
+    };
+}
+
+test "Rope fuzz - text line queries match a walk under random edits" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    try runRandomEdits(&pools, &text_pieces, false);
+}
+
+test "Rope fuzz - edited text answers line queries like fresh text" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    try runRandomEdits(&pools, &fresh_pieces, true);
+}
+
+test "Rope fuzz - an insert next to zero-width pieces lands where it lands in one piece" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // The marks follow "ab" or open the line; their pieces make tree shapes that one piece does not.
+    for ([_][]const u8{ "\u{0301}", "\u{200b}" }) |mark| for ([_][]const u8{ "ab", "" }) |head| for (0..12) |count| for ([_]u32{ 0, 2, 4 }) |col| {
+        errdefer std.debug.print("mark {any} head \"{s}\" count {d} col {d}\n", .{ mark, head, count, col });
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(std.testing.allocator);
+        try text.appendSlice(std.testing.allocator, head);
+        for (0..count) |_| try text.appendSlice(std.testing.allocator, mark);
+        try text.appendSlice(std.testing.allocator, "cdef"[0 .. 4 - head.len]);
+        var results: [2][64]u8 = undefined;
+        var lens: [2]usize = undefined;
+        for (0..2) |pieces| {
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+            defer eb.deinit();
+            if (pieces == 0) try eb.setText(text.items) else {
+                try eb.setText(head);
+                for (0..count) |_| try eb.getTextBuffer().append(mark);
+                try eb.getTextBuffer().append("cdef"[0 .. 4 - head.len]);
+            }
+            try eb.setCursor(0, col);
+            try eb.insertText("Z");
+            lens[pieces] = eb.getText(&results[pieces]);
+        }
+        try std.testing.expectEqualStrings(results[0][0..lens[0]], results[1][0..lens[1]]);
+    };
+    // Marks typed at one place, with typing elsewhere between them, stay in typed order.
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+    defer eb.deinit();
+    try eb.setText("abc\ndef\nghi\njkl");
+    for ([_][]const u8{ "\u{0300}", "\u{0301}", "\u{0302}" }, [_]u32{ 1, 0, 1 }) |mark, col| {
+        try eb.setCursor(0, 3);
+        try eb.insertText(mark);
+        try eb.setCursor(1, col);
+        try eb.insertText("x");
+    }
+    var out: [64]u8 = undefined;
+    try std.testing.expectStringStartsWith(out[0..eb.getText(&out)], "abc\u{0300}\u{0301}\u{0302}\n");
+}

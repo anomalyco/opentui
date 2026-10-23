@@ -1,4 +1,5 @@
 const std = @import("std");
+const iter_mod = @import("../text-buffer-iterators.zig");
 const TestPools = @import("test-pools.zig").TestPools;
 const text_buffer = @import("../text-buffer.zig");
 const ansi = @import("../ansi.zig");
@@ -6,6 +7,7 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ss = @import("../syntax-style.zig");
 const utf8 = @import("../utf8.zig");
+const text_work = @import("../text-work.zig");
 const owned_styled = @import("owned-styled-text.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
@@ -193,12 +195,15 @@ test "TextBuffer styled seek - range highlights visit only overlapping lines" {
     };
     for (cases) |case| {
         tb.clearAllHighlights();
-        const lookups_before = tb.rope().marker_lookups;
+        _ = text_work.take();
         try tb.addHighlightByCharRange(case.start, case.end, 1, 1, 0);
-        const lookups = tb.rope().marker_lookups - lookups_before;
+        const work = text_work.take();
         const lines_spanned = case.last - case.first + 1;
-        // Each binary search probe reads three markers and each spanned line at most five.
-        try std.testing.expect(lookups <= 3 * (std.math.log2_int_ceil(u32, line_count) + 1) + 5 * lines_spanned);
+        // Two descents find the first line; the walk then reads each spanned line's three leaves.
+        try std.testing.expectEqual(case.first, iter_mod.firstLineEndingAfter(tb.rope(), case.start));
+        try std.testing.expectEqual(2, work.line_seeks);
+        try std.testing.expect(work.line_seek_nodes <= 2 * tb.rope().root.depth());
+        try std.testing.expect(work.highlight_leaves <= 3 * lines_spanned);
         try std.testing.expectEqual(lines_spanned, tb.getHighlightCount());
         try std.testing.expectEqual(0, tb.getLineHighlights(case.first - 1).len);
         try std.testing.expectEqual(case.start - case.first * 2, tb.getLineHighlights(case.first)[0].col_start);

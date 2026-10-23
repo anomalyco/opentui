@@ -951,6 +951,36 @@ test "OptimizedBuffer drawTextChecked skips complete zero width UTF-8 codepoints
     try std.testing.expectEqual(@as(u32, 'Z'), target.buffer.char[5]);
 }
 
+test "OptimizedBuffer drawText, encodeUnicode, and text layout give a cluster that starts with a base its cells" {
+    const utf8 = @import("../utf8.zig");
+    const EncodedUnicode = @import("../encoded-unicode.zig").EncodedUnicode;
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // A tag character joins the base before it; a jamo filler starts a syllable with the one after it.
+    // wcwidth layout sums the filler and the syllable, while drawing measures a cluster by its first code point.
+    const rows = [_]struct { text: []const u8, cells: u32, wcwidth_layout: ?u32 }{
+        .{ .text = "a\u{e0041}b", .cells = 2, .wcwidth_layout = 2 },
+        .{ .text = "a\u{115f}\u{ac00}b", .cells = 4, .wcwidth_layout = null },
+        .{ .text = "a\u{1160}\u{11a8}b", .cells = 3, .wcwidth_layout = null },
+    };
+    for (rows) |row| for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        errdefer std.debug.print("width_method={t} text={x}\n", .{ width_method, row.text });
+        const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method);
+        defer content.deinit();
+        try content.setText(row.text);
+        if (if (width_method == .wcwidth) row.wcwidth_layout else row.cells) |layout| try std.testing.expectEqual(layout, content.lineWidthAt(0));
+        const encoded = try EncodedUnicode.init(std.testing.allocator, &pools.graphemes, row.text, width_method);
+        defer encoded.deinit(std.testing.allocator, &pools.graphemes);
+        var encoded_cells: u32 = 0;
+        for (encoded.chars) |char| encoded_cells += char.width;
+        try std.testing.expectEqual(row.cells, encoded_cells);
+        const target = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = width_method });
+        defer target.deinit();
+        try target.drawText(row.text, 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+        try std.testing.expectEqual(@as(u32, 'b'), target.buffer.char[row.cells - 1]);
+    };
+}
+
 /// A cluster that a cell cannot hold and the text that every checked draw must render in its place.
 /// An editor shows a control as notation instead.
 const UnprintableText = struct { bytes: []const u8, blank: []const u8, notation: ?[]const u8 = null, line_break: bool = false };

@@ -99,12 +99,16 @@ const root = createRoot(renderer)
 root.render(<App />)
 ```
 
+A later `root.render(node)` updates the mounted tree in place and keeps component state, as in `react-dom`. It also
+retries a tree that failed with an uncaught error.
+
 For plugin slots, see [Plugin slots](/docs/plugins/slots) and [React plugin slots](/docs/plugins/react).
 
 ## Lifecycle and cleanup
 
-The React root does not own the renderer. `root.unmount()` removes the React tree and runs React effect cleanup while
-the renderer stays active. `renderer.destroy()` releases the terminal and renderer resources. It also unmounts the
+The React root does not own the renderer. `root.unmount()` removes the React tree while the renderer stays active.
+Called outside React work, it runs React effect cleanup before it returns; called from an effect, it runs the cleanup
+right after the current commit. `renderer.destroy()` releases the terminal and renderer resources. It also unmounts the
 React root.
 
 The code that creates the renderer owns `renderer.destroy()`. Call it on every application shutdown path. See

@@ -17,7 +17,7 @@ fn createTestBuffer(allocator: std.mem.Allocator, line_count: u32, chars_per_lin
     defer segments.deinit(allocator);
 
     for (0..line_count) |i| {
-        // Add text segment
+        try segments.append(allocator, .{ .linestart = {} });
         try segments.append(allocator, .{
             .text = TextChunk{
                 .mem_id = 0,

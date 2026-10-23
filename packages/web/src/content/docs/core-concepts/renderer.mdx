@@ -96,16 +96,6 @@ A registered `Timeline` owns its live request when the timeline engine is attach
 
 Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedulerState()` reports running, rendering, and scheduled-work state for diagnostics.
 
-### Cooperative frames
-
-Set `nativeSceneWorkBudget` to a positive unsigned 32-bit integer to let a frame yield to the event loop during preparation. The budget counts preparation visits, view-preparation entries, and feedback records between yields. Without this option, preparation does not yield.
-
-If a change made while the frame waits at a yield affects layout, preparation restarts once. The rest of that frame runs without yields.
-
-The budget does not limit elapsed time or cells. Yoga, sibling sorting, publication of the prepared tree, painting, and output encoding still run synchronously. Painting runs in one native call and never yields, so no event-loop work can change the scene while native code paints. The scheduler also cannot interrupt an application callback.
-
-A resize can change the renderer size while a frame waits at a yield. Core then cancels that frame attempt and starts a new one at the new size. The new attempt keeps all accepted changes and the side effects of callbacks that already ran. Cancellation does not roll anything back. Output that the Session already queued keeps its order and its completion tracking.
-
 Use the renderer-owned [animation APIs](/docs/application-apis/animation#animation-callbacks) rather than process-global animation callbacks when you host multiple sessions.
 
 ## Read capability state

@@ -936,6 +936,39 @@ test "Yoga finite-percent patch keeps a deep percent chain and its margins finit
     try std.testing.expect(std.math.isFinite(layout.top));
 }
 
+test "Yoga absolute-edge rounding patch is opt-in per config and keeps children inside their parents" {
+    const api = @import("context_abi_c");
+    for ([_]u32{ 0, 1 }) |enabled| {
+        const config = yoga.yogaConfigCreate();
+        defer std.debug.assert(yoga.yogaConfigFree(config));
+        yoga.configSetRoundsPositionsFromAbsoluteEdges(config, enabled);
+        const root = yoga.yogaNodeCreateWithConfig(config);
+        defer yoga.yogaNodeFreeRecursive(root);
+        const parent = yoga.yogaNodeCreateWithConfig(config);
+        const child = yoga.yogaNodeCreateWithConfig(config);
+        yoga.yogaNodeInsertChild(root, parent, 0);
+        yoga.yogaNodeInsertChild(parent, child, 0);
+        // The parent's edges round from 0.5 to 1; the child's absolute edges from 1.1 to 1.
+        for ([_]struct { node: yoga.YGNodeRef, margin: f32, size: f32 }{
+            .{ .node = parent, .margin = 0.5, .size = 20 },
+            .{ .node = child, .margin = 0.6, .size = 5 },
+        }) |item| {
+            for ([_]u32{ api.OT_EDGE_LEFT, api.OT_EDGE_TOP }) |edge| {
+                yoga.yogaNodeStyleSetValue(item.node, @intFromEnum(yoga.YogaValueKind.margin), edge, @intFromEnum(yoga.YogaUnit.point), item.margin);
+            }
+            yoga.yogaNodeStyleSetValue(item.node, @intFromEnum(yoga.YogaValueKind.width), 0, @intFromEnum(yoga.YogaUnit.point), item.size);
+            yoga.yogaNodeStyleSetValue(item.node, @intFromEnum(yoga.YogaValueKind.height), 0, @intFromEnum(yoga.YogaUnit.point), item.size);
+        }
+        yoga.yogaNodeCalculateLayout(root, 40, 40, @intFromEnum(yoga.YogaDirection.ltr));
+
+        var layout: yoga.ExternalYogaLayout = undefined;
+        yoga.yogaNodeGetComputedLayout(child, &layout);
+        // Upstream rounds the child's 0.6 offset on its own, to 1.
+        const offset: f32 = if (enabled != 0) 0 else 1;
+        try std.testing.expectEqual([_]f32{ offset, offset, 5, 5 }, [_]f32{ layout.left, layout.top, layout.width, layout.height });
+    }
+}
+
 test "Yoga cache-rounding patch keeps upstream cache decisions and rounds only comparable axes" {
     const values = [_]f32{ std.math.nan(f32), -1, 0, 9.6, 10, 10.4, 11 };
     const scales = [_]f32{ 0, 1, 2, 0.5 };

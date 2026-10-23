@@ -378,9 +378,6 @@ pub const Segment = union(enum) {
     brk: void,
     linestart: void,
 
-    /// Define which union tags are markers (for O(1) line lookup)
-    pub const MarkerTypes = &[_]std.meta.Tag(Segment){ .brk, .linestart };
-
     /// Metrics for aggregation in the rope tree
     /// These enable O(log n) row/col coordinate mapping and efficient line queries
     pub const Metrics = struct {
@@ -388,21 +385,43 @@ pub const Segment = union(enum) {
         total_bytes: u32 = 0,
         linestart_count: u32 = 0,
         newline_count: u32 = 0,
-        max_line_width_cols: u32 = 0,
+        /// Cells before the first break, after the last break, and of the widest line between
+        /// two breaks. Lines can span leaves, so the widest line needs all three to combine.
+        line_width_first: u32 = 0,
+        line_width_last: u32 = 0,
+        line_width_inner_max: u32 = 0,
         /// Whether all text segments in subtree are ASCII-only (for fast wrapping paths)
         ascii_only: bool = true,
         has_tabs: bool = false,
 
         pub fn add(self: *Metrics, other: Metrics) void {
+            // Combine the line widths before the totals change.
+            if (other.newline_count == 0) {
+                self.line_width_last += other.total_width_cols;
+                if (self.newline_count == 0) self.line_width_first += other.total_width_cols;
+            } else if (self.newline_count == 0) {
+                self.line_width_first += other.line_width_first;
+                self.line_width_last = other.line_width_last;
+                self.line_width_inner_max = other.line_width_inner_max;
+            } else {
+                self.line_width_inner_max = @max(
+                    @max(self.line_width_inner_max, other.line_width_inner_max),
+                    self.line_width_last + other.line_width_first,
+                );
+                self.line_width_last = other.line_width_last;
+            }
+
             self.total_width_cols += other.total_width_cols;
             self.total_bytes += other.total_bytes;
             self.linestart_count += other.linestart_count;
             self.newline_count += other.newline_count;
 
-            self.max_line_width_cols = @max(self.max_line_width_cols, other.max_line_width_cols);
-
             self.ascii_only = self.ascii_only and other.ascii_only;
             self.has_tabs = self.has_tabs or other.has_tabs;
+        }
+
+        pub fn lineWidthMax(self: *const Metrics) u32 {
+            return @max(@max(self.line_width_first, self.line_width_last), self.line_width_inner_max);
         }
 
         /// Get the balancing weight for the rope
@@ -424,7 +443,8 @@ pub const Segment = union(enum) {
                     .total_bytes = byte_len,
                     .linestart_count = 0,
                     .newline_count = 0,
-                    .max_line_width_cols = chunk.width_cols,
+                    .line_width_first = chunk.width_cols,
+                    .line_width_last = chunk.width_cols,
                     .ascii_only = is_ascii,
                     .has_tabs = chunk.hasTab(),
                 };
@@ -434,7 +454,6 @@ pub const Segment = union(enum) {
                 .total_bytes = 0,
                 .linestart_count = 0,
                 .newline_count = 1,
-                .max_line_width_cols = 0,
                 .ascii_only = true,
             },
             .linestart => Metrics{
@@ -442,7 +461,6 @@ pub const Segment = union(enum) {
                 .total_bytes = 0,
                 .linestart_count = 1,
                 .newline_count = 0,
-                .max_line_width_cols = 0,
                 .ascii_only = true,
             },
         };

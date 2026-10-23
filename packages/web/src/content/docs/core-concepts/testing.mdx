@@ -38,7 +38,7 @@ try {
 }
 ```
 
-`createTestRenderer(options)` requires an options object. `TestRendererOptions` extends `CliRendererConfig` and adds `width`, `height`, `kittyKeyboard`, and `otherModifiersMode`.
+`createTestRenderer(options)` requires an options object. `TestRendererOptions` extends `CliRendererConfig` and adds `width`, `height`, `kittyKeyboard`, `otherModifiersMode`, and `nativeSceneFullFrame`.
 
 ### Setup semantics and defaults
 
@@ -55,6 +55,8 @@ The helper constructs `CliRenderer` directly. It does not call `createCliRendere
 | height               | `options.height`, custom `stdout.rows`, host `process.stdout.rows`, then `24`      |
 
 The legacy `kittyKeyboard: true` option maps to `useKittyKeyboard: { events: true }` and configures the mock key encoder. `otherModifiersMode` enables modifyOtherKeys-style sequences only when Kitty mode is off. Kitty mode takes precedence.
+
+`nativeSceneFullFrame: true` makes every native frame rebuild its preparation and paint lists instead of reusing the last frame's. Yoga still solves only when layout changed. Output is the same; only `getNativeStats().frameWork` differs, so a test can compare work counts with and without it.
 
 Tests own cleanup. Always call `setup.renderer.destroy()` or `await setup.dispose()` in `finally` or test teardown. Use `createCliRenderer()` with custom streams when a test must exercise the real output transport. By default, the test renderer uses the in-memory sink even when you supply stream objects.
 

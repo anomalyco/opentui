@@ -770,14 +770,7 @@ export const DOC_MANIFEST = {
   }),
   "native/core": page("native", 5, "How Core uses native", "internals", {
     status: "Maintained Core integration",
-    searchSymbols: [
-      "NativeScene",
-      "NativeSession",
-      "ResourceContext",
-      "NativeResourceOwner",
-      "BufferAccess",
-      "nativeSceneWorkBudget",
-    ],
+    searchSymbols: ["NativeScene", "NativeSession", "ResourceContext", "NativeResourceOwner", "BufferAccess"],
     related: [
       "native/overview",
       "core-concepts/rendering-pipeline",

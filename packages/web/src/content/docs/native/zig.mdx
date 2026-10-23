@@ -188,8 +188,7 @@ Keep callback data and borrowed environment state alive until the Context no lon
 The public module also exports raw primitives such as `CliRenderer` and `OptimizedBuffer`.
 Each raw primitive has its own lifetime contract. Importing the module does not give raw objects the Context's checks.
 
-For host drawing and scheduling yields, call `sceneFrameStepWithRecording` until it returns a `DONE` draft.
+For host drawing, call `sceneFrameStepWithRecording` until it returns a `DONE` draft.
 Then commit the draft with `sceneFrameCommit`, as above.
-Each call takes a work quota (`max_work_items`).
 To answer a `RECORD` request, pass a recording for the slots that `sceneFramePaintSlots` returns. Pass `null` for every other request.
 The [frame protocol](/docs/native/frames) explains when to resume, commit, cancel, and complete output.

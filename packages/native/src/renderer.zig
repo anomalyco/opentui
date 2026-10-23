@@ -103,6 +103,50 @@ pub const RenderStatsSnapshot = struct {
     averageCellsUpdated: u32,
     renderTime: ?f64,
     outputWriteTime: ?f64,
+    frameWork: FrameWork,
+};
+
+/// Work counts of one scene frame: scene paint, encoding, and hit-grid commit.
+/// Counts are deterministic; none reads a clock.
+pub const FrameWork = struct {
+    work_frame_id: u64 = 0,
+    candidate_visits: u64 = 0,
+    paint_visits: u64 = 0,
+    view_preparations: u64 = 0,
+    geometry_reads: u64 = 0,
+    yoga_solves: u64 = 0,
+    feedback_operations: u64 = 0,
+    visibility_steps: u64 = 0,
+    viewport_child_refreshes: u64 = 0,
+    overlap_tests: u64 = 0,
+    members_painted: u64 = 0,
+    member_cells: u64 = 0,
+    cells_cleared: u64 = 0,
+    hit_cells_written: u64 = 0,
+    hit_cells_cleared: u64 = 0,
+    hit_cells_compared: u64 = 0,
+    rows_compared: u64 = 0,
+    rows_diffed: u64 = 0,
+    full_path_reasons: u32 = 0,
+    host_requests: u32 = 0,
+    layout_rounds: u32 = 0,
+
+    pub const full_path_forced: u32 = 1;
+    pub const full_path_screen: u32 = 2;
+    pub const full_path_images: u32 = 4;
+
+    /// Adds the encoder's counts to a scene frame's counts.
+    fn merge(self: FrameWork, encode: FrameWork) FrameWork {
+        var result = self;
+        inline for (std.meta.fields(FrameWork)) |field| {
+            if (comptime std.mem.eql(u8, field.name, "full_path_reasons")) {
+                result.full_path_reasons |= encode.full_path_reasons;
+            } else {
+                @field(result, field.name) += @field(encode, field.name);
+            }
+        }
+        return result;
+    }
 };
 
 pub const SplitFooterTransition = struct {
@@ -278,8 +322,15 @@ pub const CliRenderer = struct {
         render_time: ?f64,
         split_state: ?SplitFrameState = null,
         snapshot_only: bool = false,
+        work: ?FrameWork = null,
     } = null,
     presentationFailed: bool = false,
+    /// Set by a Session only while it commits a scene draft.
+    scene_work: ?FrameWork = null,
+    /// Written by each encode.
+    encode_work: FrameWork = .{},
+    /// The last presented scene frame.
+    last_frame_work: FrameWork = .{},
 
     renderStats: struct {
         lastFrameTime: f64,
@@ -810,6 +861,7 @@ pub const CliRenderer = struct {
             .averageCellsUpdated = getStatAverage(u32, &self.statSamples.cellsUpdated),
             .renderTime = self.renderStats.renderTime,
             .outputWriteTime = self.renderStats.outputWriteTime,
+            .frameWork = self.last_frame_work,
         };
     }
 
@@ -1140,6 +1192,11 @@ pub const CliRenderer = struct {
         self.renderStats.renderTime = pending.render_time;
         if (pending.split_state) |state| self.restoreSplitFrameState(state);
         if (!pending.snapshot_only) {
+            if (pending.work) |work| {
+                self.last_frame_work = work;
+                if (!self.hitGridResizeInvalidated) self.last_frame_work.hit_cells_compared += self.nextHitGrid.len;
+                self.last_frame_work.hit_cells_cleared += self.nextHitGrid.len;
+            }
             self.commitPendingHitGrid();
             self.commitPendingImageState();
         } else {
@@ -1227,6 +1284,8 @@ pub const CliRenderer = struct {
             self.rollbackSplitFrame(start_split_state);
             return self.finishUnpublishedFrame(status);
         }
+        // A Session hands over scene work only for frames that paint the footer.
+        std.debug.assert(self.scene_work == null or paint_footer);
         if (deferred) {
             self.pendingPresentation = .{
                 .timestamp_us = now,
@@ -1234,6 +1293,7 @@ pub const CliRenderer = struct {
                 .render_time = if (paint_footer) self.renderStats.renderTime else null,
                 .split_state = if (split != null) self.splitFrameState() else null,
                 .snapshot_only = !paint_footer,
+                .work = if (self.scene_work) |work| work.merge(self.encode_work) else null,
             };
             if (split != null) self.restoreSplitFrameState(start_split_state);
             self.renderStats = previous_stats;
@@ -2861,6 +2921,9 @@ pub const CliRenderer = struct {
         const palette_force = self.last_rendered_palette_epoch == null or self.last_rendered_palette_epoch.? != self.palette_epoch;
         const should_force = force or self.force_full_repaint or palette_force;
         const has_image_state = self.nextRenderBuffer.image_placements.items.len != 0 or self.currentImages.items.len != 0;
+        self.encode_work = .{
+            .full_path_reasons = (if (should_force) FrameWork.full_path_screen else 0) | (if (has_image_state) FrameWork.full_path_images else 0),
+        };
         if (self.nextRenderBuffer.image_placements.items.len != 0) {
             self.materializeFallbackImages() catch {
                 self.imageRenderFailed = true;
@@ -2938,6 +3001,7 @@ pub const CliRenderer = struct {
             const y = @as(u32, @intCast(uy));
 
             if (use_row_equality) {
+                self.encode_work.rows_compared += 1;
                 const row_start = @as(usize, y) * self.width;
                 const row_end = row_start + self.width;
                 if (std.mem.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
@@ -2946,6 +3010,7 @@ pub const CliRenderer = struct {
                     std.mem.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
             }
 
+            self.encode_work.rows_diffed += 1;
             var runLength: u32 = 0;
             const cells_updated_before_row = cellsUpdated;
 
@@ -3333,6 +3398,7 @@ pub const CliRenderer = struct {
         }
 
         self.nextRenderBuffer.clear(self.backgroundColor, null);
+        self.encode_work.cells_cleared += @as(u64, self.width) * self.height;
     }
 
     pub fn setDebugOverlay(self: *CliRenderer, enabled: bool, corner: DebugOverlayCorner) void {

@@ -172,19 +172,11 @@ A callback error, such as one from a measurement provider, can throw after nativ
 
 Core runs node hooks synchronously and does not await their returned promises.
 A record request returns control to JavaScript once per frame, before painting. It does not give the event loop a turn.
-
-A scheduling yield is a different request, `OT_SCENE_FRAME_YIELD`.
-Native code returns it only during preparation, and only when you set the renderer option `nativeSceneWorkBudget` to a positive unsigned 32-bit integer.
-Without that option, preparation does not yield.
-By default, the Session scheduler continues the frame in a later event-loop turn with `setImmediate()`.
-`NativeScene.paint()` returns a promise only when the frame yields.
-While a frame waits at a yield, `suspend()` and `destroy()` cancel it without presenting a frame. After `resume()`, the
-next frame paints every change, including changes made while suspended. A resize that changes the size at a yield
-starts a new attempt at the new size.
+`NativeScene.paint()` runs the whole frame in one synchronous call: no event-loop work runs between preparation and painting.
+The Session scheduler runs one ready callback per turn, so Sessions take turns at least once per frame.
 
 Core's internal driver sets `max_layout_rounds` to `8` and `max_host_requests` to `65_536`.
-The work budget and the request limit do not interrupt Yoga or a slow JavaScript hook.
-See the native [yield contract](/docs/native/frames#yield-between-pieces-of-work) for counted work and resize behavior.
+The request limit does not interrupt Yoga or a slow JavaScript hook.
 
 Two other waits occur outside node hooks:
 

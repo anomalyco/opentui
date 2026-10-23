@@ -240,12 +240,18 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try dimensions(f.owner, slider, 2, 1);
     try f.owner.sceneSetSlider(slider, .{ .value = 50 });
     try f.owner.sceneMoveNode(slider, children[10], 0);
+    // Feedback skips a hidden viewport child: no update request and no text view refresh.
+    const hidden = try f.owner.sceneCreateNode(f.id, 2, 4);
+    try f.owner.sceneSetText(hidden, "hidden");
+    try f.owner.sceneSetStyle(hidden, 0, 9, 0, 0, 1, 0);
+    try f.owner.sceneMoveNode(hidden, content, 16);
     try f.owner.sceneSetPaint(content, .{ .translateY = -20 });
     try repaint(f.owner, f.id, frame_options.background, true, 0);
     try f.owner.sceneSetPaint(content, .{});
     try repaint(f.owner, f.id, frame_options.background, true, 0);
     try dimensions(f.owner, slider, 8, 1);
     for (children) |child| try f.owner.sceneSetHooks(child, 1, 1, 10, 2);
+    try f.owner.sceneSetHooks(hidden, 1, 1, 0, 0);
     try f.owner.sceneSetHooks(slider, 3, 1, 2, 1);
     try f.owner.sceneFrameCancel(f.id, f.state.last_frame_id);
     var request = try f.step(null, frame_options, 1, children[0]);
@@ -268,6 +274,7 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try testing.expectEqual((try f.owner.raw().getRenderable(slider)).scene_node.?.token, f.cli.nextHitGrid[7]);
     try testing.expectEqual((try f.owner.raw().getRenderable(children[10])).scene_node.?.token, f.cli.nextHitGrid[8]);
     try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0 and f.state.work.items.len == 0);
+    try testing.expect((try f.owner.raw().getRenderable(hidden)).scene_node.?.text.?.view.getViewport() == null);
 }
 
 fn viewportAllocationFailures(allocator: std.mem.Allocator) !void {
@@ -279,7 +286,7 @@ fn viewportAllocationFailures(allocator: std.mem.Allocator) !void {
     var children: [16]context.Handle = undefined;
     try filterChildren(f.owner, f.id, content, &children);
     const text = try f.owner.sceneCreateNode(f.id, 2, 3);
-    try f.owner.sceneSetText(text, "wrapped text");
+    try f.owner.sceneSetText(text, "e\xcc\x81 wrapped text");
     try f.owner.sceneMoveNode(text, children[0], 0);
     try f.owner.sceneSetViewport(content, f.root);
     try f.owner.sceneSetFocus(text, true);

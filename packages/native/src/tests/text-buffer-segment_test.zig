@@ -10,6 +10,8 @@ const TextChunk = seg_mod.TextChunk;
 
 test "TextChunk keeps cold cache state out of rope leaves" {
     try testing.expect(@sizeOf(TextChunk) <= 24);
+    // Branches store only their total metrics; children give theirs on demand.
+    try testing.expectEqual(64, @sizeOf(UnifiedRope.Node));
 }
 
 test "TextChunk layout cache retries and releases partial allocations" {
@@ -352,7 +354,7 @@ test "Segment.measure - text chunk" {
     const metrics = seg.measure();
 
     try testing.expectEqual(@as(u32, 10), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), metrics.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 10), metrics.lineWidthMax());
     try testing.expect(metrics.ascii_only);
 }
 
@@ -383,7 +385,7 @@ test "Segment.measure - break" {
     const metrics = seg.measure();
 
     try testing.expectEqual(@as(u32, 0), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 0), metrics.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 0), metrics.lineWidthMax());
     try testing.expect(metrics.ascii_only);
 }
 
@@ -427,109 +429,54 @@ test "Segment.asText" {
     try testing.expect(brk_seg.asText() == null);
 }
 
-test "Metrics.add - two text segments" {
-    var left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    };
-
-    left.add(right);
-
-    try testing.expectEqual(@as(u32, 15), left.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), left.max_line_width_cols);
-    try testing.expect(left.ascii_only);
+/// Leaf metrics for a token: `|` is a break; `5` is 5 ASCII cells; `5n` is 5 non-ASCII cells.
+fn leafMetrics(token: []const u8) !Segment.Metrics {
+    if (std.mem.eql(u8, token, "|")) return (Segment{ .brk = {} }).measure();
+    const ascii = token[token.len - 1] != 'n';
+    const width = try std.fmt.parseInt(u32, token[0 .. token.len - @intFromBool(!ascii)], 10);
+    return (Segment{ .text = .{ .mem_id = 0, .byte_start = 0, .byte_end = width, .width_cols = width, .flags = if (ascii) TextChunk.Flags.ASCII_ONLY else 0 } }).measure();
 }
 
-test "Metrics.add - text, break, text" {
-    var left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const middle: Segment.Metrics = .{
-        .total_width_cols = 0,
-        .max_line_width_cols = 0,
-        .ascii_only = true,
-    };
-
-    left.add(middle);
-
-    try testing.expectEqual(@as(u32, 10), left.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), left.max_line_width_cols);
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    };
-
-    left.add(right);
-
-    try testing.expectEqual(@as(u32, 15), left.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), left.max_line_width_cols);
+fn foldMetrics(leaves: []const Segment.Metrics) Segment.Metrics {
+    var result: Segment.Metrics = .{};
+    for (leaves) |leaf| result.add(leaf);
+    return result;
 }
 
-test "Metrics.add - multiple breaks" {
-    var metrics: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
+test "Metrics.add - line widths combine across leaves in any grouping" {
+    // Each `add` case: no break on either side, a break on the right only, on the left only, and on both.
+    const cases = [_]struct { leaves: []const u8, first: u32, last: u32, inner_max: u32, ascii: bool = true }{
+        .{ .leaves = "", .first = 0, .last = 0, .inner_max = 0 },
+        .{ .leaves = "10 5", .first = 15, .last = 15, .inner_max = 0 },
+        .{ .leaves = "10 | 5", .first = 10, .last = 5, .inner_max = 0 },
+        .{ .leaves = "2 3 | 4", .first = 5, .last = 4, .inner_max = 0 },
+        .{ .leaves = "2 | 3 4", .first = 2, .last = 7, .inner_max = 0 },
+        .{ .leaves = "|", .first = 0, .last = 0, .inner_max = 0 },
+        .{ .leaves = "| |", .first = 0, .last = 0, .inner_max = 0 },
+        .{ .leaves = "2 | | 7", .first = 2, .last = 7, .inner_max = 0 },
+        .{ .leaves = "3 | 4 4 | 2", .first = 3, .last = 2, .inner_max = 8 },
+        .{ .leaves = "1 | 9 | 1 1 | 3", .first = 1, .last = 3, .inner_max = 9 },
+        .{ .leaves = "| 6 0 2n |", .first = 0, .last = 0, .inner_max = 8, .ascii = false },
     };
-
-    metrics.add(.{
-        .total_width_cols = 0,
-        .max_line_width_cols = 0,
-        .ascii_only = true,
-    });
-
-    metrics.add(.{
-        .total_width_cols = 20,
-        .max_line_width_cols = 20,
-        .ascii_only = true,
-    });
-
-    try testing.expectEqual(@as(u32, 30), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 20), metrics.max_line_width_cols);
-
-    metrics.add(.{
-        .total_width_cols = 0,
-        .max_line_width_cols = 0,
-        .ascii_only = true,
-    });
-
-    metrics.add(.{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    });
-
-    try testing.expectEqual(@as(u32, 35), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 20), metrics.max_line_width_cols);
-}
-
-test "Metrics.add - non-ASCII propagation" {
-    var left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = false,
-    };
-
-    left.add(right);
-    try testing.expect(!left.ascii_only);
+    for (cases) |case| {
+        errdefer std.debug.print("leaves \"{s}\"\n", .{case.leaves});
+        var leaves: std.ArrayList(Segment.Metrics) = .empty;
+        defer leaves.deinit(testing.allocator);
+        var tokens = std.mem.tokenizeScalar(u8, case.leaves, ' ');
+        while (tokens.next()) |token| try leaves.append(testing.allocator, try leafMetrics(token));
+        const whole = foldMetrics(leaves.items);
+        try testing.expectEqual(case.first, whole.line_width_first);
+        try testing.expectEqual(case.last, whole.line_width_last);
+        try testing.expectEqual(case.inner_max, whole.line_width_inner_max);
+        try testing.expectEqual(case.ascii, whole.ascii_only);
+        // Rope branches group leaves in any shape: every 2- and 3-way grouping gives the same metrics.
+        for (0..leaves.items.len + 1) |a| for (a..leaves.items.len + 1) |b| {
+            var grouped = foldMetrics(leaves.items[0..a]);
+            grouped.add(foldMetrics(leaves.items[a..b]));
+            grouped.add(foldMetrics(leaves.items[b..]));
+            try testing.expectEqual(whole, grouped);
+        };
+    }
 }
 
 test "UnifiedRope - basic operations" {
@@ -567,7 +514,7 @@ test "UnifiedRope - basic operations" {
     const metrics = rope.root.metrics();
     try testing.expectEqual(@as(u32, 5), rope.count());
     try testing.expectEqual(@as(u32, 15), metrics.custom.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), metrics.custom.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 10), metrics.custom.lineWidthMax());
 }
 
 test "UnifiedRope - empty rope metrics" {
@@ -601,7 +548,7 @@ test "UnifiedRope - single text segment" {
     const metrics = rope.root.metrics();
     try testing.expectEqual(@as(u32, 2), rope.count());
     try testing.expectEqual(@as(u32, 20), metrics.custom.total_width_cols);
-    try testing.expectEqual(@as(u32, 20), metrics.custom.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 20), metrics.custom.lineWidthMax());
 }
 
 test "UnifiedRope - multiple lines with varying widths" {
@@ -646,31 +593,5 @@ test "UnifiedRope - multiple lines with varying widths" {
     const metrics = rope.root.metrics();
     try testing.expectEqual(@as(u32, 8), rope.count());
     try testing.expectEqual(@as(u32, 55), metrics.custom.total_width_cols);
-    try testing.expectEqual(@as(u32, 30), metrics.custom.max_line_width_cols);
-}
-
-fn combineMetrics(left: Segment.Metrics, right: Segment.Metrics) Segment.Metrics {
-    var result = left;
-    result.add(right);
-    return result;
-}
-
-test "combineMetrics helper function" {
-    const left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    };
-
-    const combined = combineMetrics(left, right);
-
-    try testing.expectEqual(@as(u32, 15), combined.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), combined.max_line_width_cols);
-    try testing.expect(combined.ascii_only);
+    try testing.expectEqual(@as(u32, 30), metrics.custom.lineWidthMax());
 }

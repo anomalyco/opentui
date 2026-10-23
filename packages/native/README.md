@@ -23,7 +23,7 @@ file operations, Session deadlines, and native diagnostic clocks.
 - [`include/opentui.h`](include/opentui.h) defines the checked `ot_*` C ABI for
   Contexts, Sessions, scenes, drawing, text, editors, styles, leases, clipboard,
   and diagnostics.
-  The ABI is experimental and at version 1. Core renders through it.
+  The ABI is experimental and at version 2. Core renders through it.
 - [`../core/src/zig.ts`](../core/src/zig.ts) supplies TypeScript wrappers over that
   checked ABI. Its checked signatures, callbacks, constants, and record layouts come
   from [`native-abi.generated.ts`](../core/src/native-abi.generated.ts).
