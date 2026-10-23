@@ -92,6 +92,14 @@ export interface MarkdownOptions extends RenderableOptions<MarkdownRenderable> {
   conceal?: boolean
   /** Controls concealment inside fenced code blocks rendered by CodeRenderable. */
   concealCode?: boolean
+  /**
+   * Controls the visible ` (url)` suffix of concealed `[label](url)` links.
+   * - "auto" (default): hide the suffix when the terminal supports OSC 8 hyperlinks.
+   * - "always": keep the suffix and still emit OSC 8. Use this when the rendered text may reach a
+   *   viewer without OSC 8: a multiplexer that drops it, another client attached to the same
+   *   session, or copied screen text.
+   */
+  linkUrls?: "auto" | "always"
   treeSitterClient?: TreeSitterClient
   /**
    * Enable streaming mode for incremental content updates.
@@ -289,6 +297,7 @@ export class MarkdownRenderable extends Renderable {
   private _bg?: RGBA
   private _conceal: boolean
   private _concealCode: boolean
+  private _linkUrls: "auto" | "always"
   private _treeSitterClient?: TreeSitterClient
   private _tableOptions?: MarkdownTableOptions
   private _renderNode?: MarkdownOptions["renderNode"]
@@ -366,6 +375,7 @@ export class MarkdownRenderable extends Renderable {
     content: "",
     conceal: true,
     concealCode: false,
+    linkUrls: "auto",
     streaming: false,
     internalBlockMode: "coalesced",
   } satisfies Partial<MarkdownOptions>
@@ -383,6 +393,7 @@ export class MarkdownRenderable extends Renderable {
       this._bg = options.bg ? RGBA.clone(parseColor(options.bg)) : undefined
       this._conceal = options.conceal ?? this._contentDefaultOptions.conceal
       this._concealCode = options.concealCode ?? this._contentDefaultOptions.concealCode
+      this._linkUrls = options.linkUrls ?? this._contentDefaultOptions.linkUrls
       this._content = options.content ?? this._contentDefaultOptions.content
       this._treeSitterClient = options.treeSitterClient
       this._tableOptions = cloneTableOptions(options.tableOptions)
@@ -488,6 +499,21 @@ export class MarkdownRenderable extends Renderable {
       this._concealCode = value
       this.markStyleDirty()
     }
+  }
+
+  get linkUrls(): "auto" | "always" {
+    return this._linkUrls
+  }
+
+  set linkUrls(value: "auto" | "always") {
+    if (this.isDestroyed || this._linkUrls === value) return
+    const hidden = this.hidesLinkUrls()
+    this._linkUrls = value
+    if (hidden !== this.hidesLinkUrls()) this.handleCapabilities()
+  }
+
+  private hidesLinkUrls(): boolean {
+    return this._linkUrls === "auto" && this.ctx.capabilities?.hyperlinks === true
   }
 
   get streaming(): boolean {
@@ -658,7 +684,7 @@ export class MarkdownRenderable extends Renderable {
             this.renderInlineTokenWithStyle(child as MarkedToken, chunks, "markup.link.label", linkHref)
           }
           if (
-            (this.ctx.capabilities?.hyperlinks !== true || !isSupportedLinkTarget(token.href)) &&
+            (!this.hidesLinkUrls() || !isSupportedLinkTarget(token.href)) &&
             token.text !== token.href &&
             token.raw !== token.text &&
             token.raw !== `<${token.text}>`
@@ -789,10 +815,7 @@ export class MarkdownRenderable extends Renderable {
       if (!label) continue
       const destination = content.slice(urlStart, urlEnd)
       const url = group === "markup.link.url" ? normalizeMarkdownLinkTarget(destination) : destination
-      if (
-        (this.ctx.capabilities?.hyperlinks !== true || !isSupportedLinkTarget(url)) &&
-        content.slice(label[0], label[1]) !== url
-      ) {
+      if ((!this.hidesLinkUrls() || !isSupportedLinkTarget(url)) && content.slice(label[0], label[1]) !== url) {
         continue
       }
 

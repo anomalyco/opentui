@@ -2203,6 +2203,73 @@ for (const hyperlinks of [false, true]) {
   })
 }
 
+test('linkUrls "always" keeps visible link URLs while emitting hyperlinks', async () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  resizeRenderer(160, 20)
+  const md = createMarkdownRenderable({
+    id: "markdown-link-urls-always",
+    content:
+      "Before [Prose](https://example.com/named-prose) after https://example.com/bare " +
+      "[https://example.com/identical](https://example.com/identical)\n\n" +
+      "| Named |\n|---|\n| [Table](https://example.com/named-table) |",
+    syntaxStyle,
+    linkUrls: "always",
+    tableOptions: { widthMode: "content" },
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+
+  const frame = captureFrame()
+  expect(frame).toContain("Before Prose (https://example.com/named-prose) after")
+  expect(frame).toContain("│Table (https://example.com/named-table)│")
+  expect(frame.split("https://example.com/bare")).toHaveLength(2)
+  expect(frame.split("https://example.com/identical")).toHaveLength(2)
+
+  for (const [text, url] of [
+    ["Prose", "https://example.com/named-prose"],
+    ["Table", "https://example.com/named-table"],
+    ["https://example.com/named-prose", "https://example.com/named-prose"],
+    ["https://example.com/named-table", "https://example.com/named-table"],
+  ] as const) {
+    const position = findRenderedText(text)
+    expect(renderer.getLinkAt(position.x, position.y)).toBe(url)
+    expect(renderer.getLinkAt(position.x + text.length - 1, position.y)).toBe(url)
+  }
+})
+
+test("changing linkUrls updates rendered links in place", async () => {
+  setRendererCapabilities(renderer, { hyperlinks: true })
+  resizeRenderer(160, 20)
+  const md = createMarkdownRenderable({
+    id: "markdown-link-urls-toggle",
+    content: "Read [Docs](https://example.com/docs) now\n\n| Named |\n|---|\n| [Table](https://example.com/table) |",
+    syntaxStyle,
+    tableOptions: { widthMode: "content" },
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  expect(md.linkUrls).toBe("auto")
+  expect(captureFrame()).toContain("Read Docs now")
+  expect(captureFrame()).toContain("│Table│")
+
+  md.linkUrls = "always"
+  await renderMarkdownRenderable(md)
+  expect(captureFrame()).toContain("Read Docs (https://example.com/docs) now")
+  expect(captureFrame()).toContain("│Table (https://example.com/table)│")
+
+  renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: false }))
+  await renderMarkdownRenderable(md)
+  expect(captureFrame()).toContain("Read Docs (https://example.com/docs) now")
+
+  renderer.emit("capabilities", setRendererCapabilities(renderer, { hyperlinks: true }))
+  md.linkUrls = "auto"
+  await renderMarkdownRenderable(md)
+  expect(captureFrame()).toContain("Read Docs now")
+  expect(captureFrame()).toContain("│Table│")
+})
+
 test("one-character and formatted prose and table labels preserve hyperlinks", async () => {
   setRendererCapabilities(renderer, { hyperlinks: true })
   const md = createMarkdownRenderable({

@@ -78,6 +78,12 @@ const markdown = new MarkdownRenderable(renderer, {
 
 `concealCode` controls concealment inside fenced code blocks separately. Its default is `false`.
 
+Concealed `[label](url)` links show `label (url)`. When the terminal supports OSC 8 hyperlinks, the
+default `linkUrls: "auto"` shows only the label and keeps the URL in the hyperlink. Set
+`linkUrls: "always"` to keep the visible URL and still emit OSC 8, for output that may reach a viewer
+without OSC 8: a multiplexer that drops it, another client attached to the same session, or copied
+screen text.
+
 ## Streaming updates
 
 Use streaming mode when content arrives in chunks. Keep `streaming: true` while you append chunks.
@@ -281,6 +287,7 @@ const markdown = new MarkdownRenderable(renderer, {
 | `bg`                | `ColorInput`                                                                    | -             | Base background color, also used by inner code blocks         |
 | `conceal`           | `boolean`                                                                       | `true`        | Hide markdown markers in markdown text                        |
 | `concealCode`       | `boolean`                                                                       | `false`       | Hide markers inside fenced code blocks                        |
+| `linkUrls`          | `"auto" \| "always"`                                                            | `"auto"`      | Show link URLs next to labels: only without OSC 8, or always  |
 | `streaming`         | `boolean`                                                                       | `false`       | Incremental mode. Set `false` to finalize                     |
 | `tableOptions`      | `MarkdownTableOptions`                                                          | -             | Options for markdown table rendering                          |
 | `internalBlockMode` | `"coalesced" \| "top-level"`                                                    | `"coalesced"` | Experimental: expose top-level blocks as separate renderables |
