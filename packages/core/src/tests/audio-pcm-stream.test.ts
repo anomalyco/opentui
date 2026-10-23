@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { createServer } from "node:http"
-import { Audio, AudioStream, AudioStreamError, type AudioStreamOptions } from "../index.js"
+import { Audio, AudioStream, type AudioStreamOptions } from "../index.js"
 import { resolveRenderLib } from "../zig.js"
 
 const audios: Audio[] = []
@@ -270,7 +270,7 @@ test("PCM rejects an incomplete final frame and non-finite samples through share
     await stream.closed
     expect(stream.state).toBe("errored")
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toBeInstanceOf(AudioStreamError)
+    expect(errors[0]).toHaveProperty("context", { action: "decoder", errorCode: -3 })
     expect(audio.getStats()!.voicesActive).toBe(0)
   }
 })
