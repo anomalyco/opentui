@@ -226,6 +226,7 @@ pub const EditorView = struct {
     }
 
     pub fn setSelectionFollowCursor(self: *EditorView, enabled: bool) void {
+        self.settle();
         self.selection_follow_cursor = enabled;
     }
 
@@ -288,11 +289,7 @@ pub const EditorView = struct {
         }
     }
 
-    pub fn updateBeforeRender(self: *EditorView) void {
-        _ = self.updateCursorBeforeRender();
-    }
-
-    fn updateCursorBeforeRender(self: *EditorView) ?VisualCursor {
+    pub fn updateCursorBeforeRender(self: *EditorView) ?VisualCursor {
         self.updatePlaceholderVisibility();
         // A selection set after a cursor change does not cancel the scroll that the change made due.
         if (self.followsCursor()) self.follow_pending = true;
@@ -301,13 +298,13 @@ pub const EditorView = struct {
 
     /// Automatically ensures cursor is visible before rendering
     pub fn getVirtualLines(self: *EditorView) []const VirtualLine {
-        self.updateBeforeRender();
+        _ = self.updateCursorBeforeRender();
         return self.text_buffer_view.getVirtualLines();
     }
 
     /// Automatically ensures cursor is visible before rendering
     pub fn getCachedLineInfo(self: *EditorView) tbv.LineInfo {
-        self.updateBeforeRender();
+        _ = self.updateCursorBeforeRender();
         return self.text_buffer_view.getCachedLineInfo();
     }
 
@@ -349,6 +346,7 @@ pub const EditorView = struct {
     }
 
     pub fn setSelection(self: *EditorView, start: u32, end: u32, bgColor: ?tb.RGBA, fgColor: ?tb.RGBA) void {
+        self.settle();
         self.selection_updates_cursor = false;
         self.text_buffer_view.setSelection(start, end, bgColor, fgColor);
     }
@@ -359,6 +357,7 @@ pub const EditorView = struct {
     }
 
     pub fn setSelectionInclusive(self: *EditorView, start: u32, end: u32, bgColor: ?tb.RGBA, fgColor: ?tb.RGBA) void {
+        self.settle();
         self.selection_updates_cursor = false;
         self.text_buffer_view.setSelectionInclusiveStyle(start, end, tbv.SelectionStyle.rgb(bgColor, fgColor));
     }

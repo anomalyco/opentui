@@ -3553,7 +3553,12 @@ pub const Context = struct {
         // Cursor commands synchronously update every view of the edit buffer.
         try view.edit.checkMutable();
         if (command == .tab_indicator) try validateTabIndicator(command.tab_indicator);
-        try view.prepareView();
+        // Cursor and text changes only make a scroll due; visual moves need the layout.
+        switch (command) {
+            .move_up, .move_down, .goto_line_end => try view.prepareView(),
+            .wrap_mode => if (view.view.follow_pending) try view.prepareView(),
+            .delete_selection, .cursor_offset, .tab_indicator => {},
+        }
         switch (command) {
             .move_up => view.view.moveUpVisual(),
             .move_down => view.view.moveDownVisual(),
@@ -3590,7 +3595,7 @@ pub const Context = struct {
     pub fn editorPrepareView(self: *Context, handle: Handle, follow_cursor: bool) !*Editor {
         try self.checkSceneRead();
         const view = try self.getEditorView(handle);
-        if (follow_cursor) view.view.updateBeforeRender();
+        if (follow_cursor) _ = view.view.updateCursorBeforeRender();
         try view.prepareView();
         return view;
     }
@@ -3682,10 +3687,10 @@ pub const Context = struct {
         const view = if (is_editor) value.view.text_buffer_view else value.view;
         const buffer = if (is_editor) value.edit.buffer.tb else value.text.buffer;
         const local = options.operation == .local or options.operation == .local_update;
-        if (is_editor and local and value.view.follow_pending) try value.prepareView();
         if (options.foreground) |color| try buf.validateColor(color);
         if (options.background) |color| try buf.validateColor(color);
         if (local) {
+            if (is_editor and value.view.follow_pending) try value.prepareView();
             if (view.getViewport()) |viewport| {
                 const x = if (view.wrap_mode == .none) std.math.cast(i32, viewport.x) orelse return error.InvalidOptions else 0;
                 const y = std.math.cast(i32, viewport.y) orelse return error.InvalidOptions;

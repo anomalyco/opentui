@@ -58,7 +58,9 @@ fn followFresh(pools: *TestPools, eb: *EditBuffer, ev: *EditorView, vp: Viewport
     fresh.setViewport(vp, false);
     const cursor = eb.getPrimaryCursor();
     try fresh_buffer.setCursor(cursor.row, cursor.col);
-    return .{ fresh.getViewport().?, fresh.getVisualCursor() };
+    // The visual cursor settles the fresh view, so the reference does not rely on `getViewport`.
+    const vcursor = fresh.getVisualCursor();
+    return .{ fresh.text_buffer_view.getViewport().?, vcursor };
 }
 
 // Edits only make a scroll due. The first read after a burst, whichever it is, scrolls once from
@@ -106,6 +108,7 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
                 14 => {
                     const end = random.uintAtMost(u32, eb.tb.rope().totalWeight());
                     ev.setSelection(random.uintAtMost(u32, end), end, null, null);
+                    settled = ev.text_buffer_view.getViewport().?; // Selecting applies a due scroll.
                     switch (random.uintLessThan(u8, 3)) {
                         0 => try ev.deleteSelectedText(),
                         1 => _ = try ev.replaceSelectedText(""),
@@ -173,10 +176,14 @@ test "EditorView - undo and redo scroll like setCursor on the restored text" {
 test "EditorView - view calls apply a due scroll first, as if the viewport was read before them" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    // The cursor moves below the viewport (row 8 from y 0) or above it (row 2 from y 6).
-    const rows = [_]struct { call: u8, row: u32 }{
-        .{ .call = 0, .row = 8 }, .{ .call = 1, .row = 2 }, .{ .call = 2, .row = 8 }, .{ .call = 3, .row = 8 },
-        .{ .call = 4, .row = 8 }, .{ .call = 5, .row = 2 }, .{ .call = 6, .row = 8 }, .{ .call = 7, .row = 8 },
+    // The cursor moves below the viewport (row 8 from y 0) or above it (row 2 from y 6). Calls 8-11
+    // stop following the cursor and then move it: only the scroll due before applies. Call 12: the
+    // frame scrolls back to a cursor that a viewport change left behind.
+    const rows = [_]struct { call: u8, row: u32, y: ?u32 = null }{
+        .{ .call = 0, .row = 8 },          .{ .call = 1, .row = 2 }, .{ .call = 2, .row = 8 },  .{ .call = 3, .row = 8 },
+        .{ .call = 4, .row = 8 },          .{ .call = 5, .row = 2 }, .{ .call = 6, .row = 8 },  .{ .call = 7, .row = 8 },
+        .{ .call = 8, .row = 8, .y = 6 },  .{ .call = 9, .row = 8 }, .{ .call = 10, .row = 8 }, .{ .call = 11, .row = 2, .y = 1 },
+        .{ .call = 12, .row = 2, .y = 1 },
     };
     for (rows) |row| {
         var results: [2]struct { Viewport, Cursor } = undefined;
@@ -187,6 +194,10 @@ test "EditorView - view calls apply a due scroll first, as if the viewport was r
             defer ev.deinit();
             try eb.setText("0 line\n1 line\n2 line\n3 line\n4 line\n5 line\n6 line\n7 line\n8 line\n9 line");
             ev.setViewport(.{ .x = 0, .y = if (row.row < 6) 6 else 0, .width = 5, .height = 4 }, false);
+            if (row.call == 10) {
+                ev.setSelectionFollowCursor(true);
+                ev.setSelection(0, 1, null, null);
+            }
             try eb.setCursor(row.row, 3);
             if (read_first) _ = ev.getViewport();
             switch (row.call) {
@@ -198,12 +209,22 @@ test "EditorView - view calls apply a due scroll first, as if the viewport was r
                 5 => ev.moveDownVisual(),
                 6 => _ = ev.setLocalSelection(1, 1, 3, 1, null, null, true),
                 7 => _ = ev.updateLocalSelection(1, 1, 3, 1, null, null, true),
+                8 => ev.setSelection(0, 1, null, null),
+                9 => ev.setSelectionInclusive(0, 1, null, null),
+                10 => ev.setSelectionFollowCursor(false),
+                11 => ev.setSelection(0, 1, null, null),
+                12 => {
+                    ev.setViewport(.{ .x = 0, .y = 6, .width = 5, .height = 4 }, false);
+                    _ = ev.getVirtualLines();
+                },
                 else => unreachable,
             }
+            if (row.call >= 8 and row.call <= 11) try eb.setCursor(if (row.row < 6) 9 else 0, 0);
             result.* = .{ ev.getViewport().?, eb.getPrimaryCursor() };
         }
         errdefer std.debug.print("call {d}\n", .{row.call});
         try std.testing.expectEqualDeep(results[1], results[0]);
+        if (row.y) |y| try std.testing.expectEqual(y, results[0][0].y);
     }
 }
 
@@ -611,7 +632,7 @@ test "EditorView - small viewport cursor movement preserves scrolling margins" {
             try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
 
             if (height == 1) {
-                ev.updateBeforeRender();
+                _ = ev.updateCursorBeforeRender();
                 try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
                 ev.moveDownVisual();
                 try std.testing.expectEqual(@as(u32, 4), ev.getPrimaryCursor().row);
@@ -676,7 +697,7 @@ test "EditorView - small viewport accepts empty buffers and zero dimensions" {
             .{ .x = 0, .y = 0, .width = 0, .height = 1 },
         }) |vp| {
             ev.setViewport(vp, true);
-            ev.updateBeforeRender();
+            _ = ev.updateCursorBeforeRender();
             try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
             try std.testing.expectEqualDeep(vp, ev.getViewport().?);
         }
@@ -950,7 +971,7 @@ test "EditorView - placeholder with styled text renders with correct highlights"
     const written = eb.getText(&out_buffer);
     try std.testing.expectEqual(@as(usize, 0), written);
 
-    ev.updateBeforeRender();
+    _ = ev.updateCursorBeforeRender();
 
     const tbv_ptr = ev.getTextBufferView();
 
