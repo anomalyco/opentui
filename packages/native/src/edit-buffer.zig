@@ -422,7 +422,7 @@ pub const EditBuffer = struct {
 
         // Prepare root/end-marker repairs without touching shared history or marker caches.
         var candidate = self.tb.rope().*;
-        try candidate.insertSliceByWeight(insert_offset, result.segments.items, &self.segment_splitter);
+        try candidate.insertSliceByWeight(insert_offset, insertBias(cursor), result.segments.items, &self.segment_splitter);
         // A merge can change the width before the insert, but the text after it keeps its weight.
         const end_offset = candidate.totalWeight() - (self.tb.rope().totalWeight() - insert_offset);
         try self.autoStoreUndo();
@@ -522,7 +522,7 @@ pub const EditBuffer = struct {
         if (!has_deletion and bytes.len > 0) {
             deleted_cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), deleted_cursor.row, deleted_cursor.col) orelse
                 return EditBufferError.InvalidCursor;
-            try inserted.insertSliceByWeight(deleted_cursor.offset, segments.segments.items, &self.segment_splitter);
+            try inserted.insertSliceByWeight(deleted_cursor.offset, insertBias(deleted_cursor), segments.segments.items, &self.segment_splitter);
         }
         var inserted_cursor = deleted_cursor;
         for (segments.segments.items) |segment| {
@@ -566,6 +566,11 @@ pub const EditBuffer = struct {
         self.cursor = cursor;
         self.tb.markViewsDirty();
         self.publishCursor(true);
+    }
+
+    /// An insert goes before zero-width text at a line start and after it elsewhere, as in one chunk.
+    fn insertBias(cursor: Cursor) UnifiedRope.Node.Bias {
+        return if (cursor.col == 0) .right else .left;
     }
 
     /// A weight lies on both sides of zero-weight leaves. A range takes those at its start only from a line start,

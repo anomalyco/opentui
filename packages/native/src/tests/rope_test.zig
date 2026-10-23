@@ -1613,7 +1613,7 @@ test "Rope - insertSliceByWeight" {
         .{ .value = 2, .weight = 20 },
     };
     const splitter = makeWeightedSplitter();
-    try rope.insertSliceByWeight(10, &insert_items, &splitter);
+    try rope.insertSliceByWeight(10, .left, &insert_items, &splitter);
 
     // Should have added weight 20
     try std.testing.expectEqual(@as(u32, 60), rope.totalWeight());

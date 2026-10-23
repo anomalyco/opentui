@@ -305,3 +305,44 @@ test "Rope fuzz - text line metrics match the lines under random edits" {
         }
     };
 }
+
+test "Rope fuzz - an insert next to zero-width pieces lands where it lands in one piece" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // The marks follow "ab" or open the line; their pieces make tree shapes that one piece does not.
+    for ([_][]const u8{ "\u{0301}", "\u{200b}" }) |mark| for ([_][]const u8{ "ab", "" }) |head| for (0..12) |count| for ([_]u32{ 0, 2, 4 }) |col| {
+        errdefer std.debug.print("mark {any} head \"{s}\" count {d} col {d}\n", .{ mark, head, count, col });
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(std.testing.allocator);
+        try text.appendSlice(std.testing.allocator, head);
+        for (0..count) |_| try text.appendSlice(std.testing.allocator, mark);
+        try text.appendSlice(std.testing.allocator, "cdef"[0 .. 4 - head.len]);
+        var results: [2][64]u8 = undefined;
+        var lens: [2]usize = undefined;
+        for (0..2) |pieces| {
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+            defer eb.deinit();
+            if (pieces == 0) try eb.setText(text.items) else {
+                try eb.setText(head);
+                for (0..count) |_| try eb.getTextBuffer().append(mark);
+                try eb.getTextBuffer().append("cdef"[0 .. 4 - head.len]);
+            }
+            try eb.setCursor(0, col);
+            try eb.insertText("Z");
+            lens[pieces] = eb.getText(&results[pieces]);
+        }
+        try std.testing.expectEqualStrings(results[0][0..lens[0]], results[1][0..lens[1]]);
+    };
+    // Marks typed at one place, with typing elsewhere between them, stay in typed order.
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+    defer eb.deinit();
+    try eb.setText("abc\ndef\nghi\njkl");
+    for ([_][]const u8{ "\u{0300}", "\u{0301}", "\u{0302}" }, [_]u32{ 1, 0, 1 }) |mark, col| {
+        try eb.setCursor(0, 3);
+        try eb.insertText(mark);
+        try eb.setCursor(1, col);
+        try eb.insertText("x");
+    }
+    var out: [64]u8 = undefined;
+    try std.testing.expectStringStartsWith(out[0..eb.getText(&out)], "abc\u{0300}\u{0301}\u{0302}\n");
+}

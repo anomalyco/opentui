@@ -1003,12 +1003,13 @@ pub fn Rope(comptime T: type) type {
             try self.applyEndsInvariant();
         }
 
-        pub fn insertSliceByWeight(self: *Self, weight: u32, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !void {
+        /// `bias` picks the side of the zero-weight leaves at `weight`, so the tree shape cannot.
+        pub fn insertSliceByWeight(self: *Self, weight: u32, bias: Node.Bias, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !void {
             if (items.len == 0) return;
 
             const insert_root = try rootFromSlice(self.allocator, items);
 
-            const split_result = try Node.split_at_weight(self.root, weight, null, self.allocator, self.empty_leaf, split_leaf_fn);
+            const split_result = try Node.split_at_weight(self.root, weight, bias, self.allocator, self.empty_leaf, split_leaf_fn);
 
             const left_joined = try self.joinWithBoundary(split_result.left, insert_root, split_leaf_fn);
             self.root = try self.joinWithBoundary(left_joined, split_result.right, split_leaf_fn);
