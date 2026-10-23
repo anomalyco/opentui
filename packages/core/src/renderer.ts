@@ -1080,6 +1080,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _terminalIsSetup: boolean = false
 
   private externalOutputQueue: ExternalOutputQueue
+  private readonly stdoutDecoder = new TextDecoder("utf-8", { ignoreBOM: true })
   private pendingExternalOutputMode: ExternalOutputMode | null = null
   private realStdoutWrite: (chunk: any, encoding?: any, callback?: any) => boolean
 
@@ -1907,6 +1908,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error('externalOutputMode "capture-stdout" requires screenMode "split-footer"')
     }
 
+    if (mode === "passthrough") this.flushStdoutDecoder()
     if (this._isDestroyed) {
       // A destroyed renderer cannot paint captured rows, so it never captures stdout again.
       this.pendingExternalOutputMode = null
@@ -1980,6 +1982,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private applyPendingExternalOutputModeIfReady(): void {
     if (this.rendering) return
     const pendingMode = this.pendingExternalOutputMode
+    if (pendingMode === "passthrough") this.flushStdoutDecoder()
     if (
       pendingMode === null ||
       (this.externalOutputQueue.size > 0 && !(pendingMode === "capture-stdout" && this._screenMode === "split-footer"))
@@ -2784,10 +2787,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
+  private flushStdoutDecoder(): void {
+    const text = this.stdoutDecoder.decode()
+    if (text && !this.nativeSession.error && !this.nativeSession.disposed) this.interceptStdoutWrite(text)
+  }
+
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
     const resolvedCallback = typeof encoding === "function" ? encoding : callback
     const resolvedEncoding = typeof encoding === "string" ? encoding : undefined
-    const text = typeof chunk === "string" ? chunk : (chunk?.toString(resolvedEncoding) ?? "")
+    let text: string
+    if (Buffer.isBuffer(chunk) && (!resolvedEncoding || /^utf-?8$/i.test(resolvedEncoding))) {
+      text = this.stdoutDecoder.decode(chunk, { stream: true })
+    } else {
+      text = typeof chunk === "string" ? chunk : (chunk?.toString(resolvedEncoding) ?? "")
+      if (text.length > 0) text = this.stdoutDecoder.decode() + text
+    }
 
     if (this._externalOutputMode === "capture-stdout" && this._screenMode === "split-footer" && this._splitHeight > 0) {
       // Capture mode intentionally diverts stdout into split commit snapshots
