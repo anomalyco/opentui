@@ -254,14 +254,7 @@ export const DOC_MANIFEST = {
     canonicalSection: "Extend / Custom UI",
     primaryNav: false,
     status: "Advanced",
-    searchSymbols: [
-      "BaseRenderable",
-      "Renderable",
-      "render",
-      "measure",
-      "nativeIntegration",
-      "defineNativeIntegration",
-    ],
+    searchSymbols: ["BaseRenderable", "Renderable", "render", "measure", "nativeIntegration", "refreshHooks"],
     related: ["core-concepts/renderables", "core-concepts/lifecycle", "bindings/react", "bindings/solid"],
   }),
 

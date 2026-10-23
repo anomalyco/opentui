@@ -18,7 +18,14 @@ components usually hide.
 This renderable measures an intrinsic width and draws one row of cells:
 
 ```typescript example=rule
-import { RGBA, Renderable, type OptimizedBuffer, type RenderableOptions, type RenderContext } from "@opentui/core"
+import {
+  RGBA,
+  Renderable,
+  type NativeRenderableIntegration,
+  type OptimizedBuffer,
+  type RenderableOptions,
+  type RenderContext,
+} from "@opentui/core"
 import { MeasureMode } from "@opentui/core/yoga"
 
 interface RuleOptions extends RenderableOptions<RuleRenderable> {
@@ -27,11 +34,10 @@ interface RuleOptions extends RenderableOptions<RuleRenderable> {
 }
 
 export class RuleRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "custom",
     body: "host",
-    construction: "prototype",
-  })
+  }
 
   private _columns: number
   private _color: RGBA
@@ -203,14 +209,27 @@ But a request on every draw still creates a continuous rerender loop.
 
 ### Update hooks
 
-Assign callbacks directly, such as `box.renderAfter = callback`. OpenTUI also supports subclass methods and class-field hooks.
+Pass `renderBefore` and `renderAfter` as options, or assign them and `onLifecyclePass` directly, such as
+`box.renderAfter = callback`. A subclass overrides `renderSelf()`, `onUpdate()`, `onResize()`, and `onLayoutResize()`
+as methods, and `super` calls work as usual.
 
-If you replace or delete a hook descriptor through reflection, call `box.refreshHooks()` afterward.
-Paint and style changes do not rediscover hook descriptors automatically.
+Core reads a node's hooks from its class when it constructs the node. It does not find a hook that you add through
+reflection: an instance class field, `Object.defineProperty()`, or an assignment to the `renderSelf`, `onUpdate`,
+`onResize`, or `onLayoutResize` of one node. Such a hook does nothing until you call `node.refreshHooks()`. The node
+runs its class's hooks until then. An `onLifecyclePass` class field is the one exception: attaching the node registers
+it.
 
-OpenTUI discovers class-field hooks when the node is attached and before frame or lifecycle work.
-An intermediate constructor can attach the node before derived fields initialize.
-If you need those hooks before the next discovery, call `refreshHooks()` after construction.
+`renderBefore`, `renderAfter`, and `onLifecyclePass` are accessors, so TypeScript rejects a class field that overrides
+one. Assign them in the constructor instead, such as `this.renderAfter = callback`:
+
+```typescript
+import { BoxRenderable } from "@opentui/core"
+
+class MarkedBox extends BoxRenderable {
+  // @ts-expect-error TS2610: a class field cannot override the renderAfter accessor
+  override renderAfter = () => {}
+}
+```
 
 ### Declare native integration
 
@@ -218,13 +237,9 @@ If you need those hooks before the next discovery, call `refreshHooks()` after c
 Built-ins declare the node kind, a native or host body, lifecycle work, the generic paint hooks, and buffering.
 Core uses this description to register and dispatch hooks.
 
-Declare the description with `defineNativeIntegration()` before you create instances.
+Declare the description as the class's static `nativeIntegration`, typed `NativeRenderableIntegration`.
 The `RuleRenderable` example declares kind `"custom"` and body `"host"` because its JavaScript method draws the cells.
-
-Use `construction: "prototype"` only when the class adds no hook fields during construction.
-Use `"fields"` when it does. A subclass without its own description still gets hook-field discovery after construction,
-also when an intermediate constructor attaches the node early.
-An ordinary custom `Renderable` can use that default discovery without a declaration.
+An ordinary custom `Renderable` can inherit the base description without a declaration.
 
 The `body` field has two forms:
 
@@ -243,8 +258,7 @@ buffered. `bufferComposition: "native"` declares that native code composes the n
 For intrinsic size, use a measure provider, as in [Measure intrinsic size](#measure-intrinsic-size).
 The shared-text [subclass example](/docs/extend/editing#renderable-base-classes) shows how to select a resource-backed text node.
 
-Declared prototype methods keep normal `super` behavior. Direct hook assignments use the same registration path.
-Reflection still requires `refreshHooks()`, as described above.
+Prototype methods keep normal `super` behavior. Reflection still requires `refreshHooks()`, as described above.
 
 ## Handle coordinates, clipping, and buffering
 

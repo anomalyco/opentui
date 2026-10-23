@@ -288,15 +288,19 @@ The base then creates the protected wrappers and binds the view to the node.
 This complete example uses that path:
 
 ```typescript example=shared-text
-import { TextBufferRenderable, type RenderContext, type TextBufferOptions } from "@opentui/core"
+import {
+  TextBufferRenderable,
+  type NativeRenderableIntegration,
+  type RenderContext,
+  type TextBufferOptions,
+} from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 
 class SharedText extends TextBufferRenderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...TextBufferRenderable.nativeIntegration,
     kind: "text_view",
-    construction: "prototype",
-  })
+  }
 
   constructor(ctx: RenderContext, options: TextBufferOptions) {
     super(ctx, options, true)
