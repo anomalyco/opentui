@@ -16,6 +16,7 @@ const text_buffer_view = @import("text-buffer-view.zig");
 const logger = @import("logger.zig");
 const utf8 = @import("utf8.zig");
 const syntax_style = @import("syntax-style.zig");
+const text_work = @import("text-work.zig");
 const edit_buffer = @import("edit-buffer.zig");
 const editor_view = @import("editor-view.zig");
 const ansi = @import("ansi.zig");
@@ -2470,6 +2471,8 @@ pub const Context = struct {
         }
         const copy = try self.allocator.dupe(u8, bytes);
         prepared.bytes = copy;
+        text_work.add(.styled_text_sets, 1);
+        text_work.add(.styled_text_bytes, copy.len);
         if (retained_style != null) try style.retainLinks(&self.links);
         try text.buffer.prepareOwnedStyledText(&prepared.buffer, copy, text.input_mem_id, style, ranges[0..range_count], &prepared.links, retained_style);
         prepared.buffer_ready = true;
@@ -3374,6 +3377,7 @@ pub const Context = struct {
         // Buffers subscribe before borrowing a style; construction has no dependents to scan.
         const listeners = style.emitter.listeners.get(.Destroy) orelse return;
         if (listeners.items.len == 0) return;
+        text_work.add(.style_dependent_slots, self.objects.slots.len);
         for (self.objects.slots) |slot| {
             if (slot.kind == .edit_buffer and slot.ptr != null) {
                 const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));
@@ -3388,6 +3392,7 @@ pub const Context = struct {
     fn invalidateStyleDependents(self: *Context, style: *const syntax_style.SyntaxStyle) void {
         const listeners = style.emitter.listeners.get(.Destroy) orelse return;
         if (listeners.items.len == 0) return;
+        text_work.add(.style_dependent_slots, self.objects.slots.len);
         for (self.objects.slots) |slot| {
             if (slot.kind == .edit_buffer and slot.ptr != null) {
                 const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));

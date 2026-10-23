@@ -304,3 +304,114 @@ test "text work: each UTF-8 scan entry counts its seeks, width reads, and bytes"
     try expectAfter(utf8.findPosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .wcwidth), .{ .prefix_seeks = 1, .bytes_scanned = 2 });
     try expectAfter(utf8.findGraphemePosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .unicode), .{ .prefix_seeks = 1, .bytes_scanned = 2 });
 }
+
+/// Checks only the styled-content counters, so these rows do not move when layout or rope work does.
+fn expectContentWork(expected: Counts) !void {
+    const work = text_work.take();
+    const actual: Counts = .{
+        .styled_text_sets = work.styled_text_sets,
+        .styled_text_bytes = work.styled_text_bytes,
+        .style_registrations = work.style_registrations,
+        .style_entries_copied = work.style_entries_copied,
+        .style_dependent_slots = work.style_dependent_slots,
+        .line_span_builds = work.line_span_builds,
+        .line_span_highlights = work.line_span_highlights,
+    };
+    if (std.meta.eql(expected, actual)) return;
+    std.debug.print("expected {any}\nfound    {any}\n", .{ expected, actual });
+    return error.TestExpectedEqual;
+}
+
+test "text work: styled text on a buffer that borrows a style registers every chunk and scans the object table" {
+    const Context = @import("../context.zig").Context;
+    const bytes = "const x = 1;\nfoo";
+    const chunks = [_]@import("../context.zig").StyledTextChunk{
+        .{ .byte_count = 6, .foreground = .{ 255, 0, 0, 255 } },
+        .{ .byte_count = 5 },
+        .{ .byte_count = 1 },
+        .{ .byte_count = 4, .attributes = 1 },
+    };
+    // Zero borrowers: the buffer owns the style that styled text creates.
+    const rows = [_]struct { capacity: u32, borrowers: u32, register: Counts, first: Counts, again: Counts }{
+        .{
+            .capacity = 64,
+            .borrowers = 0,
+            .register = .{ .style_registrations = 1 },
+            .first = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 2 },
+            .again = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 2 },
+        },
+        .{
+            .capacity = 64,
+            .borrowers = 1,
+            .register = .{ .style_registrations = 1, .style_dependent_slots = 128 },
+            .first = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 4, .style_entries_copied = 4, .style_dependent_slots = 128 },
+            .again = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 4, .style_entries_copied = 8, .style_dependent_slots = 128 },
+        },
+        .{
+            .capacity = 64,
+            .borrowers = 8,
+            .register = .{ .style_registrations = 1, .style_dependent_slots = 128 },
+            .first = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 4, .style_entries_copied = 4, .style_dependent_slots = 128 },
+            .again = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 4, .style_entries_copied = 8, .style_dependent_slots = 128 },
+        },
+        .{
+            .capacity = 4096,
+            .borrowers = 1,
+            .register = .{ .style_registrations = 1, .style_dependent_slots = 8192 },
+            .first = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 4, .style_entries_copied = 4, .style_dependent_slots = 8192 },
+            .again = .{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 4, .style_entries_copied = 8, .style_dependent_slots = 8192 },
+        },
+    };
+    for (rows) |row| {
+        errdefer std.debug.print("capacity {d}, borrowers {d}\n", .{ row.capacity, row.borrowers });
+        const owner = try Context.init(std.testing.allocator, std.testing.io, .{ .object_capacity = row.capacity });
+        defer owner.deinit() catch unreachable;
+        const style = try owner.createSyntaxStyle();
+        for ([_][]const u8{ "keyword", "string", "comment" }) |name| _ = try owner.syntaxStyleRegister(style, name, .{ .fg = null, .bg = null, .attributes = 1 });
+        var buffers: [8]@import("../context.zig").Handle = undefined;
+        for (buffers[0..@max(row.borrowers, 1)]) |*buffer| {
+            buffer.* = try owner.createTextBuffer(.unicode);
+            if (row.borrowers > 0) try owner.textBufferSetSyntaxStyle(buffer.*, style);
+        }
+        _ = text_work.take();
+        _ = try owner.syntaxStyleRegister(style, "type", .{ .fg = null, .bg = null, .attributes = 2 });
+        try expectContentWork(row.register);
+        try owner.textBufferSetStyledText(buffers[0], bytes, &chunks);
+        try expectContentWork(row.first);
+        // The last borrower reuses the `chunkN` names of the first.
+        try owner.textBufferSetStyledText(buffers[@max(row.borrowers, 1) - 1], bytes, &chunks);
+        try expectContentWork(row.again);
+    }
+}
+
+test "text work: highlights added one range at a time rebuild the spans of their line each time" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const line = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+    const text = try repeatLines(allocator, line, 100);
+    defer allocator.free(text);
+    const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    try tb.setText(text);
+    // 100 lines of 10 words: one range per word, alone or inside one transaction.
+    const rows = [_]struct { transaction: bool, work: Counts }{
+        .{ .transaction = false, .work = .{ .line_span_builds = 1_000, .line_span_highlights = 5_500 } },
+        .{ .transaction = true, .work = .{ .line_span_builds = 100, .line_span_highlights = 1_000 } },
+    };
+    for (rows) |row| {
+        tb.clearAllHighlights();
+        _ = text_work.take();
+        if (row.transaction) tb.startHighlightsTransaction();
+        for (0..100) |row_index| {
+            var words = std.mem.tokenizeScalar(u8, line, ' ');
+            while (words.next()) |word| {
+                // Highlight offsets exclude line breaks.
+                const start: u32 = @intCast(row_index * line.len + words.index - word.len);
+                try tb.addHighlightByCharRange(start, start + @as(u32, @intCast(word.len)), 1, 1, 0);
+            }
+        }
+        if (row.transaction) tb.endHighlightsTransaction();
+        try expectContentWork(row.work);
+    }
+}

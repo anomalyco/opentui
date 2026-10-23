@@ -11,6 +11,7 @@ const ansi = @import("ansi.zig");
 const link = @import("link.zig");
 
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 
 const logger = @import("logger.zig");
 
@@ -1406,6 +1407,8 @@ pub const UnifiedTextBuffer = struct {
     }
 
     fn buildLineSpans(self: *const Self, highlights: []const Highlight, spans: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
+        text_work.add(.line_span_builds, 1);
+        text_work.add(.line_span_highlights, highlights.len);
         spans.clearRetainingCapacity();
         // Collect all boundary columns
         const Event = struct {
