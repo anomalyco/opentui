@@ -54,18 +54,18 @@ test "text work: edits in a 10,000-line editor lay out the edited line at the ne
     const rows = [_]struct { mode: WrapMode, frame: Counts, measure: Counts }{
         .{
             .mode = .none,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 13, .line_seek_nodes = 201, .clusters_drawn = 3_171 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171 },
             // Unwrapped measure reads the widest line from the rope metrics.
             .measure = .{ .measure_passes = 1 },
         },
         .{
             .mode = .word,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 13, .line_seek_nodes = 201, .clusters_drawn = 3_171, .ascii_bytes = 90 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .ascii_bytes = 90 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .ascii_bytes = 790_011 },
         },
         .{
             .mode = .char,
-            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 13, .line_seek_nodes = 201, .clusters_drawn = 3_171, .prefix_seeks = 2 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 93, .lines_shifted = 9_989, .line_seeks = 12, .line_seek_nodes = 186, .clusters_drawn = 3_171, .prefix_seeks = 2 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .prefix_seeks = 10_001 },
         },
     };
@@ -127,27 +127,6 @@ test "text work: a burst of K edits lays the editor out once, at the next frame"
             try std.testing.expectEqual([2]u64{ 1, 1 }, [2]u64{ frame.layouts, frame.lines_laid_out });
         };
     }
-    // Replaced lines stay in the layout arena until a full layout resets it, which runs once the
-    // dead lines outnumber the live ones (plus 1,024): 3,000 one-line frames, 1,000 lines.
-    const text = try repeatLines(allocator, line, 1_000);
-    defer allocator.free(text);
-    const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
-    defer eb.deinit();
-    const view = try TextBufferView.init(allocator, eb.getTextBuffer());
-    defer view.deinit();
-    view.setWrapMode(.word);
-    view.setWrapWidth(120);
-    try eb.setText(text);
-    try eb.setCursor(10, 0);
-    _ = view.getVirtualLineCount();
-    _ = text_work.take();
-    for (0..3_000) |frame| {
-        if (frame % 2 == 0) try eb.insertText("x") else try eb.backspace();
-        _ = view.getVirtualLineCount();
-    }
-    // Each frame leaves 2 dead lines (the old one and the staged copy), so every 1,013th frame lays
-    // out all 1,000 lines.
-    try std.testing.expectEqual(3_000 + 2 * 999, text_work.take().lines_laid_out);
 }
 
 test "text work: the frame after one edit lays out only the lines it changed" {
@@ -207,6 +186,82 @@ test "text work: the frame after one edit lays out only the lines it changed" {
     }
 }
 
+/// Peak capacity of `arena` against a full layout of the final text, in bytes.
+const ArenaPeak = struct {
+    peak: usize = 0,
+    fn sample(self: *ArenaPeak, arena: *const std.heap.ArenaAllocator) void {
+        self.peak = @max(self.peak, arena.queryCapacity());
+    }
+};
+
+// Partial layouts leave replaced lines and word metadata in the view's arenas. A full layout that
+// frees them runs before an arena doubles past its size after the last full layout (plus 64 KiB),
+// so memory stays within twice a fresh layout's.
+test "text work: replaced lines and word metadata stay within twice a fresh layout" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const slack = 64 * 1024;
+    // A long unwrapped line typed into at moving positions: every frame replaces its whole row.
+    {
+        const long = try repeatText(allocator, "a", 20_000);
+        defer allocator.free(long);
+        const text = try std.mem.concat(allocator, u8, &.{ long, "\nend" });
+        defer allocator.free(text);
+        const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
+        defer eb.deinit();
+        const view = try TextBufferView.init(allocator, eb.getTextBuffer());
+        defer view.deinit();
+        try eb.setText(text);
+        _ = view.getVirtualLineCount();
+        var arena: ArenaPeak = .{};
+        var prng = std.Random.DefaultPrng.init(7);
+        for (0..2_000) |i| {
+            if (i % 10 == 0) try eb.setCursor(0, prng.random().uintAtMost(u32, 20_000));
+            try eb.insertText("b");
+            _ = view.getVirtualLineCount();
+            arena.sample(view.virtual_lines_arena);
+        }
+        const fresh = try TextBufferView.init(allocator, eb.getTextBuffer());
+        defer fresh.deinit();
+        _ = fresh.getVirtualLineCount();
+        errdefer std.debug.print("unwrapped: peak {d}, fresh {d}\n", .{ arena.peak, fresh.virtual_lines_arena.queryCapacity() });
+        try std.testing.expect(arena.peak <= 2 * fresh.virtual_lines_arena.queryCapacity() + slack);
+    }
+    // Word metadata: a one-line paragraph, and many lines whose edits alternate with width changes.
+    const rows = [_]struct { line: []const u8, lines: usize, rewrap: bool }{
+        .{ .line = "word " ** 40, .lines = 1, .rewrap = false },
+        .{ .line = "alpha \u{754c} e\u{301} words and more words", .lines = 200, .rewrap = true },
+    };
+    for (rows) |row| {
+        const text = try repeatLines(allocator, row.line, row.lines);
+        defer allocator.free(text);
+        const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
+        defer eb.deinit();
+        const view = try TextBufferView.init(allocator, eb.getTextBuffer());
+        defer view.deinit();
+        view.setWrapMode(.word);
+        view.setWrapWidth(20);
+        try eb.setText(text);
+        try eb.setCursor(@intCast(row.lines / 2), 3);
+        _ = view.getVirtualLineCount();
+        var storage: ArenaPeak = .{};
+        for (0..3_000) |frame| {
+            if (frame % 2 == 0) try eb.insertText("x") else try eb.backspace();
+            if (row.rewrap) view.setWrapWidth(if (frame % 4 < 2) 20 else 21);
+            _ = view.getVirtualLineCount();
+            storage.sample(&view.word_layout.arena);
+        }
+        const fresh = try TextBufferView.init(allocator, eb.getTextBuffer());
+        defer fresh.deinit();
+        fresh.setWrapMode(.word);
+        fresh.setWrapWidth(view.wrap_width);
+        _ = fresh.getVirtualLineCount();
+        errdefer std.debug.print("lines {d}: peak {d}, fresh {d}\n", .{ row.lines, storage.peak, fresh.word_layout.arena.queryCapacity() });
+        try std.testing.expect(storage.peak <= 2 * fresh.word_layout.arena.queryCapacity() + slack);
+    }
+}
+
 test "text work: an append measures and lays out a 5,000-line view once each" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
@@ -229,7 +284,7 @@ test "text work: an append measures and lays out a 5,000-line view once each" {
     _ = try view.measureForDimensions(40, 24);
     _ = view.getVirtualLineCount();
     // The second measure hits the cache; render lays out the last line again.
-    try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .measure_passes = 1, .measure_lines = 5_000, .line_seeks = 5, .line_seek_nodes = 71, .ascii_bytes = 154 });
+    try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .measure_passes = 1, .measure_lines = 5_000, .line_seeks = 4, .line_seek_nodes = 57, .ascii_bytes = 154 });
 }
 
 test "text work: line lookups after an edit in a 10,000-line buffer" {

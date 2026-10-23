@@ -210,6 +210,10 @@ const WordLayoutStorage = struct {
     layouts: std.ArrayListUnmanaged(utf8.ChunkLayoutInfo) = .empty,
     lines: std.ArrayListUnmanaged(LineLayouts) = .empty,
     releases: u64 = 0,
+    /// Bytes of the entries that lines use, and of those that splices dropped; the dropped ones
+    /// stay in the arena until a reset.
+    live_bytes: usize = 0,
+    dead_bytes: usize = 0,
 
     const LineLayouts = struct {
         start: u32,
@@ -221,14 +225,30 @@ const WordLayoutStorage = struct {
         _ = self.arena.reset(mode);
         self.layouts = .empty;
         self.lines = .empty;
+        self.live_bytes = 0;
+        self.dead_bytes = 0;
+    }
+
+    /// Counts a layout that borrowed slices still count for, so dropped bytes are not underestimated.
+    fn layoutBytes(layout: utf8.ChunkLayoutInfo) usize {
+        return @sizeOf(utf8.ChunkLayoutInfo) + (layout.wrap_breaks.len + layout.cjk_breaks.len) * @sizeOf(utf8.LayoutWrapBreak);
     }
 
     /// Replaces the entries of `old_count` lines at `first` with `new_count` absent ones.
     fn spliceLines(self: *WordLayoutStorage, first: u32, old_count: u32, new_count: u32) Allocator.Error!void {
-        const allocator = self.arena.allocator();
-        try self.lines.ensureUnusedCapacity(allocator, new_count -| old_count);
-        self.lines.replaceRangeAssumeCapacity(first, old_count, &.{});
-        @memset(self.lines.addManyAtAssumeCapacity(first, new_count), .absent);
+        var dropped: usize = 0;
+        for (self.lines.items[first..][0..old_count]) |entry| {
+            if (entry.len == LineLayouts.absent.len) continue;
+            for (self.layouts.items[entry.start..][0..entry.len]) |layout| dropped += layoutBytes(layout);
+        }
+        self.dead_bytes += dropped;
+        self.live_bytes -|= dropped;
+        if (new_count > old_count) {
+            _ = try self.lines.addManyAt(self.arena.allocator(), first, new_count - old_count);
+        } else {
+            self.lines.replaceRangeAssumeCapacity(first, old_count - new_count, &.{});
+        }
+        @memset(self.lines.items[first..][0..new_count], .absent);
     }
 };
 
@@ -308,9 +328,10 @@ pub const UnifiedTextBufferView = struct {
     word_layout: WordLayoutStorage,
     /// The rope and buffer state the current layout was built from.
     baseline: ?LayoutBaseline = null,
-    /// Virtual lines that partial layouts replaced since the last full layout; their chunk
-    /// lists stay in the arena until a full layout resets it.
-    dead_virtual_lines: u32 = 0,
+    /// Arena bytes that the layout uses, and that partial layouts left behind: replaced chunk
+    /// lists, staging lists, and outgrown arrays. A full layout frees the dead ones.
+    arena_live_bytes: usize = 0,
+    arena_dead_bytes: usize = 0,
     /// Tests set this to compare partial layouts with full ones.
     force_full_layout: bool = false,
 
@@ -554,17 +575,16 @@ pub const UnifiedTextBufferView = struct {
 
         const change = self.changedLines();
         const word_storage = self.wrap_mode == .word and self.wrap_width != null;
-        // Partial layouts leave dead lines in the arena and detached chunks in the chunk layout
-        // cache; a full layout reclaims both once the dead lines outnumber the live ones.
-        const garbage = self.dead_virtual_lines > self.virtual_lines.items.len + 1024;
-        // A change of every line is a full layout, which also reclaims detached chunk layouts.
-        const full = self.virtual_lines_dirty or change == null or garbage or
-            (change.?.first == 0 and change.?.new_count == self.text_buffer.getLineCount());
+        // Partial layouts leave dead bytes in the arenas, and detached chunks in the chunk layout
+        // cache. Once the dead bytes outgrow the live ones, a full layout frees them all.
+        const garbage = self.arena_dead_bytes > self.arena_live_bytes +| garbage_slack_bytes;
+        const word_garbage = word_storage and self.word_layout.dead_bytes > self.word_layout.live_bytes +| garbage_slack_bytes;
+        const full = self.virtual_lines_dirty or change == null or garbage;
         // Relayouts reuse capacity bounded by the text, so a narrow layout does not pin its peak.
         const keep: std.heap.ArenaAllocator.ResetMode = .{ .retain_with_limit = 1024 *| @as(usize, self.text_buffer.getLineCount()) +| 16 *| @as(usize, self.text_buffer.getByteSize()) };
         if (!word_storage) {
             self.word_layout.reset(.free_all);
-        } else if (garbage or change == null or self.word_layout.releases != self.text_buffer.layout_cache.releases or
+        } else if (word_garbage or change == null or self.word_layout.releases != self.text_buffer.layout_cache.releases or
             self.word_layout.lines.items.len != self.cached_line_vline_counts.items.len)
         {
             self.word_layout.reset(keep);
@@ -585,7 +605,10 @@ pub const UnifiedTextBufferView = struct {
         }
 
         const cache = &self.text_buffer.layout_cache;
-        if (full) self.dead_virtual_lines = 0;
+        if (full) {
+            self.arena_live_bytes = chunkBytes(self.virtual_lines.items) + self.arrayBytes();
+            self.arena_dead_bytes = 0;
+        }
         // A full word layout frees detached entries; storage built in it borrows only live ones.
         self.word_layout.releases = cache.releases;
         const rope = self.text_buffer.rope();
@@ -598,15 +621,31 @@ pub const UnifiedTextBufferView = struct {
         self.text_buffer.clearViewDirty(self.view_id);
     }
 
+    const garbage_slack_bytes = 16 * 1024;
+
+    fn chunkBytes(lines: []const VirtualLine) usize {
+        var bytes: usize = 0;
+        for (lines) |line| bytes += line.chunks.capacity * @sizeOf(VirtualChunk);
+        return bytes;
+    }
+
+    fn arrayBytes(self: *const Self) usize {
+        var bytes = self.virtual_lines.capacity * @sizeOf(VirtualLine);
+        inline for (.{ "cached_line_starts", "cached_line_widths", "cached_line_sources", "cached_line_wrap_indices", "cached_line_first_vline", "cached_line_vline_counts" }) |field| {
+            bytes += @field(self, field).capacity * @sizeOf(u32);
+        }
+        return bytes;
+    }
+
     /// The lines that changed since the layout's baseline, or null when only a full layout is safe:
     /// no baseline, a reset arena (its nodes may be reused), or new tab widths (leaves change in
-    /// place). The word preflight follows the whole document's ASCII flag, but an ASCII line lays
+    /// place), or a change of every line. The word preflight follows the whole document's ASCII flag, but an ASCII line lays
     /// out the same either way, so a flip needs no full layout.
     fn changedLines(self: *const Self) ?LineChange {
         if (self.force_full_layout) return null;
         const baseline = self.baseline orelse return null;
         const rope = self.text_buffer.rope();
-        // A buffer switch sets `virtual_lines_dirty`, so the baseline is always this buffer's.
+        // A buffer switch drops the baseline, so it is always this buffer's.
         if (baseline.clears != self.text_buffer.layout_cache.clears or
             baseline.tab_generation != self.text_buffer.tab_metrics_generation) return null;
         if (baseline.root == rope.root) return .{ .first = 0, .old_count = 0, .new_count = 0, .weight_delta = 0 };
@@ -617,28 +656,31 @@ pub const UnifiedTextBufferView = struct {
         const line_count_new = rope.root.metrics().custom.linestart_count;
         const leaves_old = old.count();
         const leaves_new = rope.count();
-        // Lines are counted by linestart leaves, so both ropes must start with one and the layout
-        // must have one entry per line.
-        if (leaves_old == 0 or leaves_new == 0 or line_count_old != self.cached_line_vline_counts.items.len) return null;
+        // Lines are counted by linestart leaves, so both ropes must start with one. Only raw rope
+        // edits make one that does not.
+        if (leaves_old == 0 or leaves_new == 0) return null;
         if (!old.get(0).?.isLineStart() or !rope.get(0).?.isLineStart()) return null;
+        std.debug.assert(line_count_old == self.cached_line_vline_counts.items.len);
 
         const limit = @min(leaves_old, leaves_new);
         const prefix = rope.sharedLeaves(old.root, .start, limit) orelse return null;
         const suffix_leaves = rope.sharedLeaves(old.root, .end, limit - prefix) orelse return null;
-        // The first changed leaf's line; a change at the end of a rope is in its last line.
-        const first = @min(
-            iter_mod.lineStartsThroughLeaf(&old, @min(prefix, leaves_old - 1)),
-            iter_mod.lineStartsThroughLeaf(rope, @min(prefix, leaves_new - 1)),
-        ) - 1;
-        // Lines that start inside the shared suffix are unchanged.
+        // The first changed leaf's line; a change at the end of a rope is in its last line. Both ropes
+        // give the same line: their leaves before it are the same, and no rope ends with a break,
+        // so the leaf after a shared break is a linestart in both.
+        const first = iter_mod.lineStartsThroughLeaf(rope, @min(prefix, leaves_new - 1)) - 1;
+        // Lines that start inside the shared suffix are unchanged. A suffix line starts at or after
+        // the first changed leaf, so it is never at or before `first`.
         var suffix = @min(
             suffixLines(&old, line_count_old, leaves_old - suffix_leaves),
             suffixLines(rope, line_count_new, leaves_new - suffix_leaves),
         );
-        suffix = @min(suffix, @min(line_count_old, line_count_new) - first);
         // The first line's first row is narrower, so line 0 moves to or from a later row only by
         // a new layout, in either rope.
         if (first == 0 and self.first_line_offset > 0) suffix = @min(suffix, @min(line_count_old, line_count_new) - 1);
+        // A change of every line lays out fully: it rebuilds word metadata and reclaims detached
+        // chunk layouts.
+        if (first == 0 and suffix == 0) return null;
         return .{
             .first = first,
             .old_count = line_count_old - first - suffix,
@@ -714,6 +756,14 @@ pub const UnifiedTextBufferView = struct {
         const vline_end: u32 = if (end < line_count_old) self.cached_line_first_vline.items[end] else @intCast(self.virtual_lines.items.len);
         const vline_old = vline_end - vline_start;
         const vline_new: u32 = @intCast(staged.virtual_lines.items.len);
+        const old_bytes = chunkBytes(self.virtual_lines.items[vline_start..vline_end]);
+        const new_bytes = chunkBytes(staged.virtual_lines.items);
+        const array_bytes = self.arrayBytes();
+        // The staging lists are copied in, and an array that grows leaves its old buffer behind.
+        var staged_bytes = staged.virtual_lines.capacity * @sizeOf(VirtualLine);
+        inline for (.{ "cached_line_starts", "cached_line_widths", "cached_line_sources", "cached_line_wrap_indices", "cached_line_first_vline", "cached_line_vline_counts" }) |field| {
+            staged_bytes += @field(staged, field).capacity * @sizeOf(u32);
+        }
         // A failed splice leaves the arrays mixed; the caller discards them all and lays out fully.
         // The builder counts staged virtual lines from 0.
         for (staged.cached_line_first_vline.items) |*first_vline| first_vline.* += vline_start;
@@ -724,21 +774,24 @@ pub const UnifiedTextBufferView = struct {
         inline for (.{ "cached_line_first_vline", "cached_line_vline_counts" }) |field| {
             @field(self, field).replaceRange(allocator, change.first, change.old_count, @field(staged, field).items) catch return false;
         }
-        self.dead_virtual_lines +|= vline_old + vline_new;
+
+        const grown_bytes = self.arrayBytes() - array_bytes;
+        self.arena_dead_bytes += old_bytes + staged_bytes + if (grown_bytes > 0) array_bytes else 0;
+        self.arena_live_bytes = self.arena_live_bytes + new_bytes + grown_bytes -| old_bytes;
 
         // Every line after the change moves by the change's weight, lines, and rows.
         const line_delta = @as(i64, change.new_count) - change.old_count;
         const vline_delta = @as(i64, vline_new) - vline_old;
         const lines_after = self.cached_line_first_vline.items[change.first + change.new_count ..];
         const vlines_after = vline_start + vline_new;
-        if (change.weight_delta != 0 or line_delta != 0) {
-            for (self.virtual_lines.items[vlines_after..], self.cached_line_starts.items[vlines_after..], self.cached_line_sources.items[vlines_after..]) |*vline, *start, *source| {
-                vline.document_cell_offset = shifted(vline.document_cell_offset, change.weight_delta);
-                start.* = vline.document_cell_offset;
-                vline.source_line = shifted(@intCast(vline.source_line), line_delta);
-                source.* = @intCast(vline.source_line);
-            }
-        }
+        if (change.weight_delta != 0) for (self.virtual_lines.items[vlines_after..], self.cached_line_starts.items[vlines_after..]) |*vline, *start| {
+            vline.document_cell_offset = shifted(vline.document_cell_offset, change.weight_delta);
+            start.* = vline.document_cell_offset;
+        };
+        if (line_delta != 0) for (self.virtual_lines.items[vlines_after..], self.cached_line_sources.items[vlines_after..]) |*vline, *source| {
+            vline.source_line = shifted(@intCast(vline.source_line), line_delta);
+            source.* = @intCast(vline.source_line);
+        };
         if (vline_delta != 0) for (lines_after) |*first_vline| {
             first_vline.* = shifted(first_vline.*, vline_delta);
         };
@@ -746,7 +799,9 @@ pub const UnifiedTextBufferView = struct {
 
         if (self.truncation_applied and self.truncate and self.viewport != null) {
             // Lines outside the change keep their truncation; on failure every line retries.
+            // A truncated line leaves its untruncated chunk list behind.
             if (!self.applyTruncation(vline_start, vline_start + vline_new)) self.truncation_applied = false;
+            self.arena_dead_bytes += new_bytes;
         }
         return true;
     }
@@ -2350,6 +2405,7 @@ pub const UnifiedTextBufferView = struct {
                                 layout = .{ .wrap_breaks = breaks.toOwnedSlice(layout_allocator) catch break :save false, .word_classes = classes };
                             }
                             storage.layouts.append(layout_allocator, layout.?) catch break :save false;
+                            storage.live_bytes += WordLayoutStorage.layoutBytes(layout.?);
                             break :save true;
                         };
                         if (!saved) {
