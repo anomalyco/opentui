@@ -80,6 +80,11 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
         const ev = try EditorView.init(std.testing.allocator, eb, random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10));
         defer ev.deinit();
         ev.setWrapMode(random.enumValue(text_buffer.WrapMode));
+        // A twin that lays out every line each time: the editor's partial layouts must equal it.
+        const twin = try EditorView.init(std.testing.allocator, eb, ev.getViewport().?.width, ev.getViewport().?.height);
+        defer twin.deinit();
+        twin.text_buffer_view.force_full_layout = true;
+        twin.setWrapMode(ev.text_buffer_view.wrap_mode);
         const margin = margins[random.uintLessThan(usize, margins.len)];
         ev.setScrollMargin(margin);
         var settled = ev.getViewport().?;
@@ -97,7 +102,10 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
                 7 => ev.moveUpVisual(),
                 8 => ev.moveDownVisual(),
                 9 => try eb.setCursor(random.uintLessThan(u32, eb.tb.lineCount() + 1), random.uintLessThan(u32, 40)),
-                10 => ev.setViewportSize(random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10)),
+                10 => {
+                    ev.setViewportSize(random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10));
+                    twin.setViewportSize(ev.text_buffer_view.getViewport().?.width, ev.text_buffer_view.getViewport().?.height);
+                },
                 11 => try eb.setText(pieces[random.uintLessThan(usize, pieces.len)]),
                 12 => if (eb.canUndo()) {
                     _ = try eb.undo();
@@ -130,6 +138,11 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
             const vp = ev.text_buffer_view.getViewport().?;
             const vcursor = ev.getVisualCursor();
             settled = vp;
+            const want = twin.text_buffer_view.getLogicalLineInfo();
+            const got = ev.text_buffer_view.getLogicalLineInfo();
+            inline for (.{ "line_start_cols", "line_width_cols", "line_sources", "line_wraps" }) |field| {
+                try std.testing.expectEqualSlices(u32, @field(want, field), @field(got, field));
+            }
             try std.testing.expectEqualDeep(expected[0], vp);
             try std.testing.expectEqual(expected[1].visual_row, vcursor.visual_row);
             try std.testing.expectEqual(expected[1].visual_col, vcursor.visual_col);
@@ -941,6 +954,22 @@ test "EditorView - visual cursor should stay on same line when moving to line en
 
         if (i > 25) break;
     }
+}
+
+// The view switches back to the edit buffer and frees the placeholder; its next layout must not
+// diff against the freed placeholder rope.
+test "EditorView - clearing a drawn placeholder lays out the edit buffer afresh" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
+    defer ev.deinit();
+    try eb.setText("");
+    try owned_styled.setPlaceholder(ev, &.{.{ .text = "type a message, press enter to send it\n" ** 200 }});
+    _ = ev.getVirtualLines();
+    ev.clearPlaceholder();
+    try std.testing.expectEqual(@as(usize, 1), ev.getVirtualLines().len);
 }
 
 test "EditorView - placeholder with styled text renders with correct highlights" {

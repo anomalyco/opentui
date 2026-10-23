@@ -4,6 +4,7 @@ const text_buffer = @import("../text-buffer.zig");
 const iter_mod = @import("../text-buffer-iterators.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
 const seg_mod = @import("../text-buffer-segment.zig");
+const text_work = @import("../text-work.zig");
 const ansi = @import("../ansi.zig");
 const link = @import("../link.zig");
 
@@ -32,6 +33,13 @@ test "TextBufferView reuses word metadata across widths and layout capacity acro
     _ = view.getVirtualLines();
     try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
     try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
+    // An edit re-lays out its lines; the next width change still reads every other line's metadata.
+    try tb.append("tail \u{754c}\nmore");
+    _ = view.getVirtualLines();
+    _ = text_work.take();
+    view.setWrapWidth(78);
+    _ = view.getVirtualLines();
+    try std.testing.expectEqual(@as(u64, 0), text_work.take().bytes_scanned);
     try tb.setText(text); // the first edit merges each grown arena into one block
     _ = view.getVirtualLines();
     tracking.fail_index = tracking.alloc_index;
@@ -256,6 +264,40 @@ test "TextBufferView live word metadata follows views history and buffer switche
             }
         }
     }
+    // A sibling's full layout frees the layouts of a medium chunk that an edit detached, and undo
+    // brings the chunk back while this view's word storage still borrows them.
+    for ([_]bool{ false, true }) |whole_line| {
+        try edit.setText("first line\n" ++ "\u{754c}\u{754c} " ** 200 ++ "\nlast line");
+        try edit.insertText("x");
+        view.setWrapWidth(40);
+        _ = view.getVirtualLines();
+        // A partial layout of line 0 keeps the cached layout of line 1's medium chunk.
+        try edit.insertText("z");
+        _ = view.getVirtualLines();
+        const medium = edit.tb.rope().get(iter_mod.lineStart(edit.tb.rope(), 1).?.leaf_index + 1).?.asText().?;
+        try std.testing.expect(medium.getCachedLayoutInfo(edit.tb.tabWidth(), .unicode) != null);
+        try edit.setCursor(1, 4);
+        if (whole_line) try edit.deleteLine() else try edit.insertText("y");
+        second.setWrapWidth(if (whole_line) 30 else 31);
+        _ = second.getVirtualLines();
+        _ = try edit.undo();
+        _ = view.getVirtualLines();
+        view.setWrapWidth(41);
+        try expectSameWrap(view);
+    }
+    // A switch forgets the old buffer's rope, which a reset of that buffer frees.
+    var buffers: [2]*TextBuffer = undefined;
+    inline for (&buffers, .{ "hello\n", "alpha\n" }) |*buffer, line| {
+        buffer.* = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        try buffer.*.setText(line ** 5_000);
+    }
+    defer for (buffers) |buffer| buffer.deinit();
+    const switched = try TextBufferView.init(std.testing.allocator, buffers[0]);
+    defer switched.deinit();
+    _ = switched.getVirtualLines();
+    switched.switchToBuffer(buffers[1]);
+    try buffers[0].reset();
+    try std.testing.expectEqual(@as(usize, 5_001), switched.getVirtualLines().len);
     view.switchToBuffer(other);
     try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
@@ -290,6 +332,56 @@ test "TextBufferView live word metadata discards partial allocation on failure" 
         tracking.fail_index = std.math.maxInt(usize);
         const measured = try view.measureForDimensions(17, 24);
         try std.testing.expectEqual(measured.line_count, view.getVirtualLineCount());
+    }
+}
+
+test "TextBufferView a partial layout that fails reports it and lays out fully on retry" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    // The sweep fails each allocation of the partial layout in turn until the layout succeeds.
+    // With in-place growth refused, the allocations depend only on request sizes, and the 60
+    // appended lines make the splice grow its arrays into a new arena block in both modes.
+    for ([_]bool{ false, true }) |truncate| {
+        var reached_splice = false;
+        var failure: usize = 0;
+        while (true) : (failure += 1) {
+            // Growing an arena block in place depends on the allocator's page size; refuse it, so
+            // every new block is a counted allocation and the sequence is the same everywhere.
+            var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+            const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+            defer tb.deinit();
+            const view = try TextBufferView.init(tracking.allocator(), tb);
+            defer view.deinit();
+            const full = try TextBufferView.init(std.testing.allocator, tb);
+            defer full.deinit();
+            for ([_]*TextBufferView{ view, full }) |current| {
+                current.setWrapMode(if (truncate) .none else .word);
+                current.setWrapWidth(17);
+                if (truncate) current.setViewport(.{ .x = 0, .y = 0, .width = 17, .height = 1_000 });
+                current.setTruncate(truncate);
+            }
+            full.force_full_layout = true;
+            try tb.setText("alpha \u{754c} e\u{301} word word word word\n" ** 20);
+            _ = view.getVirtualLines();
+            try tb.append("\ntail \u{754c} words that wrap" ** 60);
+            tracking.fail_index = tracking.alloc_index + failure;
+            _ = text_work.take();
+            _ = view.getVirtualLines();
+            const work = text_work.take();
+            errdefer std.debug.print("truncate {} failure {d}\n", .{ truncate, failure });
+            try std.testing.expectEqual(@as(u64, 1), work.layouts);
+            const failed = tracking.has_induced_failure;
+            if (failed) {
+                // A failed layout stays dirty; a failed truncation of the spliced lines stays pending.
+                try std.testing.expect(view.virtual_lines_dirty or !view.truncation_applied);
+                if (view.virtual_lines_dirty and work.splices == 1) reached_splice = true;
+            }
+            tracking.fail_index = std.math.maxInt(usize);
+            try expectSameAsFullLayout(view, full);
+            if (!failed) break;
+        }
+        try std.testing.expect(failure > 0 and reached_splice);
     }
 }
 
@@ -4319,72 +4411,190 @@ fn lineBytes(line: text_buffer_view.VirtualLine, tb: *TextBuffer, out: []u8) []c
     return out[0..len];
 }
 
-fn expectSameWrap(edited: *TextBuffer, width: u32, mode: text_buffer_view.WrapMode) !void {
-    var bytes: [1024]u8 = undefined;
-    const len = edited.getPlainTextIntoBuffer(&bytes);
+fn expectSameWrap(edited: *TextBufferView) !void {
+    var bytes: [4096]u8 = undefined;
+    const tb = edited.getTextBuffer();
+    const len = tb.getPlainTextIntoBuffer(&bytes);
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    const fresh = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, edited.widthMethod());
+    const fresh_tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, tb.widthMethod());
+    defer fresh_tb.deinit();
+    fresh_tb.setTabWidth(tb.tabWidth());
+    try fresh_tb.setText(bytes[0..len]);
+    const fresh = try TextBufferView.init(std.testing.allocator, fresh_tb);
     defer fresh.deinit();
-    fresh.setTabWidth(edited.tabWidth());
-    try fresh.setText(bytes[0..len]);
-    const views = [_]*TextBufferView{
-        try TextBufferView.init(std.testing.allocator, edited),
-        try TextBufferView.init(std.testing.allocator, fresh),
-    };
-    defer for (views) |view| view.deinit();
-    for (views) |view| {
-        view.setWrapMode(mode);
-        view.setWrapWidth(width);
-    }
-    const expected = views[1].getVirtualLines();
-    const actual = views[0].getVirtualLines();
-    errdefer std.debug.print("text \"{f}\" width {d} mode {s} method {s}\n", .{ std.zig.fmtString(bytes[0..len]), width, @tagName(mode), @tagName(edited.widthMethod()) });
+    fresh.setWrapMode(edited.wrap_mode);
+    fresh.setWrapWidth(edited.wrap_width);
+    fresh.setFirstLineOffset(edited.first_line_offset);
+    const expected = fresh.getVirtualLines();
+    const actual = edited.getVirtualLines();
+    errdefer std.debug.print("text \"{f}\" width {?d} mode {s} method {s}\n", .{ std.zig.fmtString(bytes[0..len]), edited.wrap_width, @tagName(edited.wrap_mode), @tagName(tb.widthMethod()) });
     try std.testing.expectEqual(expected.len, actual.len);
     for (expected, actual) |want, got| {
         try std.testing.expectEqual(want.width_cols, got.width_cols);
         try std.testing.expectEqual(want.source_line, got.source_line);
         try std.testing.expectEqual(want.source_col_start, got.source_col_start);
+        try std.testing.expectEqual(want.document_cell_offset, got.document_cell_offset);
         var want_bytes: [256]u8 = undefined;
         var got_bytes: [256]u8 = undefined;
-        try std.testing.expectEqualStrings(lineBytes(want, fresh, &want_bytes), lineBytes(got, edited, &got_bytes));
+        try std.testing.expectEqualStrings(lineBytes(want, fresh_tb, &want_bytes), lineBytes(got, tb, &got_bytes));
     }
 }
 
+/// A layout that re-laid out only changed lines equals a full layout of the same rope: the same
+/// chunks, windows, offsets, and line queries.
+fn expectSameAsFullLayout(edited: *TextBufferView, full: *TextBufferView) !void {
+    const expected = full.getVirtualLines();
+    const actual = edited.getVirtualLines();
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |want, got| {
+        try std.testing.expectEqual(want.chunks.items.len, got.chunks.items.len);
+        for (want.chunks.items, got.chunks.items) |want_chunk, got_chunk| {
+            // Each view owns its truncation ellipsis.
+            var expected_chunk = want_chunk;
+            if (want_chunk.chunk == &full.ellipsis_chunk) expected_chunk.chunk = &edited.ellipsis_chunk;
+            try std.testing.expectEqual(expected_chunk, got_chunk);
+        }
+        var want_fields = want;
+        var got_fields = got;
+        want_fields.chunks = .empty;
+        got_fields.chunks = .empty;
+        try std.testing.expectEqualDeep(want_fields, got_fields);
+    }
+    const want_info = full.getLogicalLineInfo();
+    const got_info = edited.getLogicalLineInfo();
+    inline for (.{ "line_start_cols", "line_width_cols", "line_sources", "line_wraps" }) |field| {
+        try std.testing.expectEqualSlices(u32, @field(want_info, field), @field(got_info, field));
+    }
+    const want_wrap = full.getWrapInfo();
+    const got_wrap = edited.getWrapInfo();
+    try std.testing.expectEqualSlices(u32, want_wrap.line_first_vline, got_wrap.line_first_vline);
+    try std.testing.expectEqualSlices(u32, want_wrap.line_vline_counts, got_wrap.line_vline_counts);
+    const tb = edited.getTextBuffer();
+    for (0..tb.getLineCount()) |row| for (0..tb.lineWidthAt(@intCast(row)) + 2) |col| {
+        try std.testing.expectEqual(full.findVisualLineIndex(@intCast(row), @intCast(col)), edited.findVisualLineIndex(@intCast(row), @intCast(col)));
+    };
+}
+
+// With a first-line offset, line 0's first row is narrower: a line that moves to or from row 0
+// (delete line 0, its undo and redo, a prepended line) is laid out again in both ropes.
+test "TextBufferView a line that moves to or from line 0 wraps for its new row" {
+    const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
+        const edit = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+        defer edit.deinit();
+        var views: [2]*TextBufferView = undefined;
+        for (&views, [_]bool{ false, true }) |*view, full| {
+            view.* = try TextBufferView.init(std.testing.allocator, edit.tb);
+            view.*.force_full_layout = full;
+            view.*.setWrapMode(mode);
+            view.*.setWrapWidth(10);
+            view.*.setFirstLineOffset(5);
+        }
+        defer for (views) |view| view.deinit();
+        try edit.setText("hello\nworld long line");
+        try edit.setCursor(1, 0);
+        try edit.insertText("x");
+        for (0..5) |step| {
+            errdefer std.debug.print("mode {s} step {d}\n", .{ @tagName(mode), step });
+            switch (step) {
+                0 => {},
+                1 => {
+                    try edit.setCursor(0, 0);
+                    try edit.deleteLine();
+                },
+                2 => _ = try edit.undo(),
+                3 => _ = try edit.redo(),
+                4 => {
+                    try edit.setCursor(0, 0);
+                    try edit.insertText("new\n");
+                },
+                else => unreachable,
+            }
+            try expectSameAsFullLayout(views[0], views[1]);
+        }
+    }
+}
+
+// Each view keeps its layout across the edits of an iteration, as an editor does, and re-lays out
+// only the lines that changed. A twin with `force_full_layout` on the same buffer checks that
+// exactly, with no exception; a fresh buffer checks it where chunk boundaries do not split a
+// grapheme (E4).
 test "TextBufferView edited text wraps like freshly loaded text" {
     const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     const tokens = [_][]const u8{
-        "a", "b",        " ",                  "\t", "\n",       "\u{65e5}", "e\u{301}", "\u{1f44d}\u{1f3fd}", "\u{1f468}\u{200d}\u{1f469}",
-        "-", "\u{200b}", "\u{1f1fa}\u{1f1f8}", "x",  "\u{ac00}", "\u{301}",  "\u{304b}", "\r\n",
+        "a",     "b",        " ",                  "\t", "\n",       "\u{65e5}", "e\u{301}", "\u{1f44d}\u{1f3fd}", "\u{1f468}\u{200d}\u{1f469}",
+        "-",     "\u{200b}", "\u{1f1fa}\u{1f1f8}", "x",  "\u{ac00}", "\u{301}",  "\u{304b}", "\r\n",               "\r",
+        "word ",
     };
+    const modes = [_]text_buffer_view.WrapMode{ .none, .char, .word };
+    const widths = [_]u32{ 1, 2, 3, 4, 7, 80 };
     const methods = std.enums.values(@import("../utf8.zig").WidthMethod);
     var prng = std.Random.DefaultPrng.init(0x0508);
     const random = prng.random();
     for (0..300) |iteration| {
         const edit = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, methods[iteration % methods.len], null);
         defer edit.deinit();
-        for (0..12) |_| {
+        // One edited view and one full-layout twin per mode and width, all on the same buffer.
+        var views: [modes.len * widths.len][2]*TextBufferView = undefined;
+        for (&views, 0..) |*pair, index| {
+            for (pair, [_]bool{ false, true }) |*view, full| {
+                view.* = try TextBufferView.init(std.testing.allocator, edit.tb);
+                view.*.force_full_layout = full;
+                view.*.setWrapMode(modes[index / widths.len]);
+                view.*.setWrapWidth(widths[index % widths.len]);
+                if (iteration % 3 == 0) view.*.setFirstLineOffset(2);
+                // A viewport as wide as the wrap width truncates the lines wider than it.
+                if (iteration % 4 == 1) {
+                    view.*.setViewport(.{ .x = 0, .y = 0, .width = widths[index % widths.len], .height = 1_000 });
+                    view.*.setTruncate(true);
+                }
+            }
+        }
+        defer for (views) |pair| for (pair) |view| view.deinit();
+        for (0..14) |step| {
+            errdefer std.debug.print("iteration {d} step {d}\n", .{ iteration, step });
             const total = edit.tb.rope().totalWeight();
-            if (total > 0 and random.uintLessThan(u8, 4) == 0) {
-                var start = random.uintAtMost(u32, total);
-                var end = @min(total, start + random.uintAtMost(u32, 3));
-                if (edit.tb.cursorUnitBoundsAtOffset(start)) |bounds| start = bounds.start;
-                if (edit.tb.cursorUnitBoundsAtOffset(end)) |bounds| end = if (bounds.start == end) end else bounds.end;
-                const start_coords = iter_mod.offsetToCoords(edit.tb.rope(), start).?;
-                const end_coords = iter_mod.offsetToCoords(edit.tb.rope(), end).?;
-                try edit.deleteRange(.{ .row = start_coords.row, .col = start_coords.col }, .{ .row = end_coords.row, .col = end_coords.col });
-            } else {
-                var offset = random.uintAtMost(u32, total);
-                if (edit.tb.cursorUnitBoundsAtOffset(offset)) |bounds| offset = bounds.start;
-                try edit.setCursorByOffset(offset);
-                for (0..random.intRangeAtMost(usize, 1, 3)) |_| try edit.insertText(tokens[random.uintLessThan(usize, tokens.len)]);
+            switch (random.uintLessThan(u8, 10)) {
+                0, 1 => if (total > 0) {
+                    var start = random.uintAtMost(u32, total);
+                    var end = @min(total, start + random.uintAtMost(u32, 3));
+                    if (edit.tb.cursorUnitBoundsAtOffset(start)) |bounds| start = bounds.start;
+                    if (edit.tb.cursorUnitBoundsAtOffset(end)) |bounds| end = if (bounds.start == end) end else bounds.end;
+                    const start_coords = iter_mod.offsetToCoords(edit.tb.rope(), start).?;
+                    const end_coords = iter_mod.offsetToCoords(edit.tb.rope(), end).?;
+                    try edit.deleteRange(.{ .row = start_coords.row, .col = start_coords.col }, .{ .row = end_coords.row, .col = end_coords.col });
+                },
+                2, 3, 4 => {
+                    var offset = random.uintAtMost(u32, total);
+                    if (edit.tb.cursorUnitBoundsAtOffset(offset)) |bounds| offset = bounds.start;
+                    try edit.setCursorByOffset(offset);
+                    // Up to 6 tokens at once is a paste.
+                    for (0..random.intRangeAtMost(usize, 1, 6)) |_| try edit.insertText(tokens[random.uintLessThan(usize, tokens.len)]);
+                },
+                5 => try edit.backspace(),
+                6 => try edit.deleteForward(),
+                7 => _ = edit.undo() catch |err| if (err != error.Stop) return err,
+                8 => _ = edit.redo() catch |err| if (err != error.Stop) return err,
+                9 => if (random.boolean()) {
+                    edit.setTabWidth(if (random.boolean()) 2 else 4);
+                } else for (&views) |*pair| for (pair) |view| view.setWrapWidth(view.wrap_width.? % 7 + 1),
+                else => unreachable,
             }
-            for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
-                if (splitsGrapheme(edit.tb, mode)) continue;
-                for ([_]u32{ 1, 2, 3, 4, 5, 7 }) |width| try expectSameWrap(edit.tb, width, mode);
-            }
+            // Views read at different times see different ranges of changed lines. A count read
+            // lays out without truncating.
+            for (views) |pair| switch (random.uintLessThan(u8, 4)) {
+                0 => {},
+                1 => _ = pair[0].getVirtualLineCount(),
+                else => {
+                    try expectSameAsFullLayout(pair[0], pair[1]);
+                    if (!pair[0].truncate and !splitsGrapheme(edit.tb, pair[0].wrap_mode)) try expectSameWrap(pair[0]);
+                },
+            };
         }
     }
 }

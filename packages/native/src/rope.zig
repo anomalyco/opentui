@@ -1019,6 +1019,45 @@ pub fn Rope(comptime T: type) type {
             return total + counted(&node.metrics());
         }
 
+        pub const Side = enum { start, end };
+        const shared_leaves_depth_max = 96;
+
+        /// Leaves at the start (or end) of this rope that are the same leaf as in `other`, at most
+        /// `limit`. Edits keep every leaf they do not touch, so a walk that skips the subtrees both
+        /// trees share finds them in O(depth²) steps. Null when a tree is too deep for the stack.
+        pub fn sharedLeaves(self: *const Self, other: *const Node, comptime side: Side, limit: u32) ?u32 {
+            if (self.root.depth() > shared_leaves_depth_max or other.depth() > shared_leaves_depth_max) return null;
+            var stacks: [2][shared_leaves_depth_max]*const Node = undefined;
+            var lens: [2]usize = .{ 0, 0 };
+            var nodes: [2]*const Node = .{ self.root, other };
+            var shared: u32 = 0;
+            while (true) {
+                text_work.add(.rope_diff_nodes, 1);
+                if (nodes[0] == nodes[1]) {
+                    // Both cursors stand at the same leaf index, so a shared subtree is shared leaves.
+                    shared += nodes[0].count();
+                    if (shared >= limit) return limit;
+                    // A tree whose leaves are all shared has at least `limit` of them.
+                    std.debug.assert(lens[0] > 0 and lens[1] > 0);
+                    for (&nodes, &lens, &stacks) |*node, *len, *stack| {
+                        len.* -= 1;
+                        node.* = stack[len.*];
+                    }
+                    continue;
+                }
+                // Descend the larger node; two different leaves end the shared run.
+                const larger: usize = if (nodes[0].* == .branch and (nodes[1].* == .leaf or nodes[0].count() >= nodes[1].count())) 0 else 1;
+                const branch = switch (nodes[larger].*) {
+                    .branch => |*b| b,
+                    .leaf => return shared,
+                };
+                std.debug.assert(lens[larger] < shared_leaves_depth_max);
+                stacks[larger][lens[larger]] = if (side == .start) branch.right else branch.left;
+                lens[larger] += 1;
+                nodes[larger] = if (side == .start) branch.left else branch.right;
+            }
+        }
+
         /// Undo/Redo operations
         pub fn store_undo(self: *Self, meta: []const u8) !void {
             const undo_node = try self.create_undo_node(self.root, meta);

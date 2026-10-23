@@ -201,15 +201,79 @@ pub const LocalSelection = struct {
 
 pub const TextBufferView = UnifiedTextBufferView;
 
-// Width-independent metadata for the current view layout, in rope traversal
-// order. Nothing is attached to chunks or retained by their undo roots.
+// Width-independent metadata for the current view layout: per logical line, the
+// layouts of its chunks. Nothing is attached to chunks or retained by their undo
+// roots. Entries can borrow a chunk layout cache's slices, so the storage is valid
+// only while that cache has freed nothing (`releases`).
 const WordLayoutStorage = struct {
     arena: std.heap.ArenaAllocator,
     layouts: std.ArrayListUnmanaged(utf8.ChunkLayoutInfo) = .empty,
+    lines: std.ArrayListUnmanaged(LineLayouts) = .empty,
+    releases: u64 = 0,
+    /// Bytes of the entries that lines use, and of those that splices dropped; the dropped ones
+    /// stay in the arena until a reset.
+    live_bytes: usize = 0,
+    dead_bytes: usize = 0,
+
+    const LineLayouts = struct {
+        start: u32,
+        len: u32,
+        const absent: LineLayouts = .{ .start = 0, .len = std.math.maxInt(u32) };
+    };
 
     fn reset(self: *WordLayoutStorage, mode: std.heap.ArenaAllocator.ResetMode) void {
         _ = self.arena.reset(mode);
         self.layouts = .empty;
+        self.lines = .empty;
+        self.live_bytes = 0;
+        self.dead_bytes = 0;
+    }
+
+    /// Counts a layout that borrowed slices still count for, so dropped bytes are not underestimated.
+    fn layoutBytes(layout: utf8.ChunkLayoutInfo) usize {
+        return @sizeOf(utf8.ChunkLayoutInfo) + (layout.wrap_breaks.len + layout.cjk_breaks.len) * @sizeOf(utf8.LayoutWrapBreak);
+    }
+
+    /// Replaces the entries of `old_count` lines at `first` with `new_count` absent ones.
+    fn spliceLines(self: *WordLayoutStorage, first: u32, old_count: u32, new_count: u32) Allocator.Error!void {
+        var dropped: usize = 0;
+        for (self.lines.items[first..][0..old_count]) |entry| {
+            if (entry.len == LineLayouts.absent.len) continue;
+            for (self.layouts.items[entry.start..][0..entry.len]) |layout| dropped += layoutBytes(layout);
+        }
+        self.dead_bytes += dropped;
+        self.live_bytes -|= dropped;
+        if (new_count > old_count) {
+            _ = try self.lines.addManyAt(self.arena.allocator(), first, new_count - old_count);
+        } else {
+            self.lines.replaceRangeAssumeCapacity(first, old_count - new_count, &.{});
+        }
+        @memset(self.lines.items[first..][0..new_count], .absent);
+    }
+};
+
+/// Logical lines that changed between the rope a view laid out and the current rope.
+const LineChange = struct {
+    first: u32,
+    old_count: u32,
+    new_count: u32,
+    weight_delta: i64,
+};
+
+/// What a view laid out last; a layout that matches it re-lays out only changed lines.
+const LayoutBaseline = struct {
+    root: *const seg_mod.UnifiedRope.Node,
+    clears: u64,
+    tab_generation: u64,
+};
+
+const LineRange = struct {
+    first: u32 = 0,
+    start: seg_mod.UnifiedRope.Position = .{ .leaf_index = 0, .weight = 0 },
+    count: u32 = std.math.maxInt(u32),
+
+    fn isFull(self: LineRange) bool {
+        return self.first == 0 and self.count == std.math.maxInt(u32);
     }
 };
 
@@ -262,6 +326,14 @@ pub const UnifiedTextBufferView = struct {
     global_allocator: Allocator,
     virtual_lines_arena: *std.heap.ArenaAllocator,
     word_layout: WordLayoutStorage,
+    /// The rope and buffer state the current layout was built from.
+    baseline: ?LayoutBaseline = null,
+    /// Arena bytes that the layout uses, and that partial layouts left behind: replaced chunk
+    /// lists, staging lists, and outgrown arrays. A full layout frees the dead ones.
+    arena_live_bytes: usize = 0,
+    arena_dead_bytes: usize = 0,
+    /// Tests set this to compare partial layouts with full ones.
+    force_full_layout: bool = false,
 
     /// Persistent arena for measureForDimensions. Each call resets it with
     /// retain_capacity to avoid mmap/munmap churn during streaming.
@@ -501,14 +573,131 @@ pub const UnifiedTextBufferView = struct {
         const buffer_dirty = self.text_buffer.isViewDirty(self.view_id);
         if (!self.virtual_lines_dirty and !buffer_dirty) return;
 
+        const change = self.changedLines();
+        const word_storage = self.wrap_mode == .word and self.wrap_width != null;
+        // Partial layouts leave dead bytes in the arenas, and detached chunks in the chunk layout
+        // cache. Once the dead bytes outgrow the live ones, a full layout frees them all.
+        const garbage = self.arena_dead_bytes > self.arena_live_bytes +| garbage_slack_bytes;
+        const word_garbage = word_storage and self.word_layout.dead_bytes > self.word_layout.live_bytes +| garbage_slack_bytes;
+        const full = self.virtual_lines_dirty or change == null or garbage;
         // Relayouts reuse capacity bounded by the text, so a narrow layout does not pin its peak.
         const keep: std.heap.ArenaAllocator.ResetMode = .{ .retain_with_limit = 1024 *| @as(usize, self.text_buffer.getLineCount()) +| 16 *| @as(usize, self.text_buffer.getByteSize()) };
-        if (buffer_dirty or self.wrap_mode != .word or self.wrap_width == null) self.word_layout.reset(if (self.wrap_mode == .word) keep else .free_all);
-        self.resetVirtualLineStorage(keep);
-        const virtual_allocator = self.virtual_lines_arena.allocator();
+        if (!word_storage) {
+            self.word_layout.reset(.free_all);
+        } else if (word_garbage or change == null or self.word_layout.releases != self.text_buffer.layout_cache.releases or
+            self.word_layout.lines.items.len != self.cached_line_vline_counts.items.len)
+        {
+            self.word_layout.reset(keep);
+            self.word_layout.spliceLines(0, 0, self.text_buffer.getLineCount()) catch self.word_layout.reset(.free_all);
+        } else if (change.?.old_count != 0 or change.?.new_count != 0) {
+            self.word_layout.spliceLines(change.?.first, change.?.old_count, change.?.new_count) catch self.word_layout.reset(.free_all);
+        }
 
-        // Create output structure for the generic function
-        const output: VirtualLineOutput = .{
+        const laid_out = if (full) self.layOutAll(keep) else self.layOutChange(change.?);
+        if (!laid_out) {
+            // Builders append to parallel arrays; discard partial output as a unit
+            // and remain dirty so the next access can retry cleanly.
+            self.resetVirtualLineStorage(.free_all);
+            self.word_layout.reset(.free_all);
+            self.virtual_lines_dirty = true;
+            self.baseline = null;
+            return;
+        }
+
+        const cache = &self.text_buffer.layout_cache;
+        if (full) {
+            self.arena_live_bytes = chunkBytes(self.virtual_lines.items) + self.arrayBytes();
+            self.arena_dead_bytes = 0;
+        }
+        // A full word layout frees detached entries; storage built in it borrows only live ones.
+        self.word_layout.releases = cache.releases;
+        const rope = self.text_buffer.rope();
+        self.baseline = .{
+            .root = rope.root,
+            .clears = cache.clears,
+            .tab_generation = self.text_buffer.tab_metrics_generation,
+        };
+        self.virtual_lines_dirty = false;
+        self.text_buffer.clearViewDirty(self.view_id);
+    }
+
+    const garbage_slack_bytes = 16 * 1024;
+
+    fn chunkBytes(lines: []const VirtualLine) usize {
+        var bytes: usize = 0;
+        for (lines) |line| bytes += line.chunks.capacity * @sizeOf(VirtualChunk);
+        return bytes;
+    }
+
+    fn arrayBytes(self: *const Self) usize {
+        var bytes = self.virtual_lines.capacity * @sizeOf(VirtualLine);
+        inline for (.{ "cached_line_starts", "cached_line_widths", "cached_line_sources", "cached_line_wrap_indices", "cached_line_first_vline", "cached_line_vline_counts" }) |field| {
+            bytes += @field(self, field).capacity * @sizeOf(u32);
+        }
+        return bytes;
+    }
+
+    /// The lines that changed since the layout's baseline, or null when only a full layout is safe:
+    /// no baseline, a reset arena (its nodes may be reused), or new tab widths (leaves change in
+    /// place), or a change of every line. The word preflight follows the whole document's ASCII flag, but an ASCII line lays
+    /// out the same either way, so a flip needs no full layout.
+    fn changedLines(self: *const Self) ?LineChange {
+        if (self.force_full_layout) return null;
+        const baseline = self.baseline orelse return null;
+        const rope = self.text_buffer.rope();
+        // A buffer switch drops the baseline, so it is always this buffer's.
+        if (baseline.clears != self.text_buffer.layout_cache.clears or
+            baseline.tab_generation != self.text_buffer.tab_metrics_generation) return null;
+        if (baseline.root == rope.root) return .{ .first = 0, .old_count = 0, .new_count = 0, .weight_delta = 0 };
+
+        var old = rope.*;
+        old.root = baseline.root;
+        const line_count_old = old.root.metrics().custom.linestart_count;
+        const line_count_new = rope.root.metrics().custom.linestart_count;
+        const leaves_old = old.count();
+        const leaves_new = rope.count();
+        // Lines are counted by linestart leaves, so both ropes must start with one. Only raw rope
+        // edits make one that does not.
+        if (leaves_old == 0 or leaves_new == 0) return null;
+        if (!old.get(0).?.isLineStart() or !rope.get(0).?.isLineStart()) return null;
+        std.debug.assert(line_count_old == self.cached_line_vline_counts.items.len);
+
+        const limit = @min(leaves_old, leaves_new);
+        const prefix = rope.sharedLeaves(old.root, .start, limit) orelse return null;
+        const suffix_leaves = rope.sharedLeaves(old.root, .end, limit - prefix) orelse return null;
+        // The first changed leaf's line; a change at the end of a rope is in its last line. Both ropes
+        // give the same line: their leaves before it are the same, and no rope ends with a break,
+        // so the leaf after a shared break is a linestart in both.
+        const first = iter_mod.lineStartsThroughLeaf(rope, @min(prefix, leaves_new - 1)) - 1;
+        // Lines that start inside the shared suffix are unchanged. A suffix line starts at or after
+        // the first changed leaf, so it is never at or before `first`.
+        var suffix = @min(
+            suffixLines(&old, line_count_old, leaves_old - suffix_leaves),
+            suffixLines(rope, line_count_new, leaves_new - suffix_leaves),
+        );
+        // The first line's first row is narrower, so line 0 moves to or from a later row only by
+        // a new layout, in either rope.
+        if (first == 0 and self.first_line_offset > 0) suffix = @min(suffix, @min(line_count_old, line_count_new) - 1);
+        // A change of every line lays out fully: it rebuilds word metadata and reclaims detached
+        // chunk layouts.
+        if (first == 0 and suffix == 0) return null;
+        return .{
+            .first = first,
+            .old_count = line_count_old - first - suffix,
+            .new_count = line_count_new - first - suffix,
+            .weight_delta = @as(i64, rope.totalWeight()) - old.totalWeight(),
+        };
+    }
+
+    /// Lines of `rope` whose linestart leaf is at or after `leaf_index`.
+    fn suffixLines(rope: *const seg_mod.UnifiedRope, line_count: u32, leaf_index: u32) u32 {
+        if (leaf_index == 0) return line_count;
+        return line_count - iter_mod.lineStartsThroughLeaf(rope, leaf_index - 1);
+    }
+
+    fn layOutAll(self: *Self, keep: std.heap.ArenaAllocator.ResetMode) bool {
+        self.resetVirtualLineStorage(keep);
+        return self.layOutRange(.{}, .{
             .virtual_lines = &self.virtual_lines,
             .cached_line_starts = &self.cached_line_starts,
             .cached_line_widths = &self.cached_line_widths,
@@ -516,27 +705,110 @@ pub const UnifiedTextBufferView = struct {
             .cached_line_wrap_indices = &self.cached_line_wrap_indices,
             .cached_line_first_vline = &self.cached_line_first_vline,
             .cached_line_vline_counts = &self.cached_line_vline_counts,
-        };
+        });
+    }
 
+    fn layOutRange(self: *Self, range: LineRange, output: VirtualLineOutput) bool {
+        const allocator = self.virtual_lines_arena.allocator();
+        const word_layout: ?*WordLayoutStorage = if (self.word_layout.lines.items.len == self.text_buffer.getLineCount()) &self.word_layout else null;
         text_work.add(.layouts, 1);
-        const calculated = if (self.wrap_mode == .none or self.wrap_width == null)
-            calculateUnwrappedVirtualLines(virtual_allocator, self.text_buffer, output)
+        return if (self.wrap_mode == .none or self.wrap_width == null)
+            calculateUnwrappedVirtualLines(allocator, self.text_buffer, range, output)
         else switch (self.wrap_mode) {
             .none => unreachable,
-            .char => calculateVirtualLinesGeneric(.render, .char, virtual_allocator, self.text_buffer, self.wrap_width.?, self.first_line_offset, output, null),
-            .word => calculateVirtualLinesGeneric(.render, .word, virtual_allocator, self.text_buffer, self.wrap_width.?, self.first_line_offset, output, &self.word_layout),
+            .char => calculateVirtualLinesGeneric(.render, .char, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, output, null),
+            .word => calculateVirtualLinesGeneric(.render, .word, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, output, word_layout),
         };
-        if (!calculated) {
-            // Builders append to parallel arrays; discard partial output as a unit
-            // and remain dirty so the next access can retry cleanly.
-            self.resetVirtualLineStorage(.free_all);
-            self.word_layout.reset(.free_all);
-            self.virtual_lines_dirty = true;
-            return;
+    }
+
+    /// Lays out the changed lines into staging lists, then splices them in and moves the
+    /// stored offsets of the lines after them.
+    fn layOutChange(self: *Self, change: LineChange) bool {
+        if (change.old_count == 0 and change.new_count == 0) return true;
+        const rope = self.text_buffer.rope();
+        const range: LineRange = .{
+            .first = change.first,
+            .start = iter_mod.lineStart(rope, change.first).?,
+            .count = change.new_count,
+        };
+        var staged: [6]std.ArrayListUnmanaged(u32) = @splat(.empty);
+        var staged_lines: std.ArrayListUnmanaged(VirtualLine) = .empty;
+        const output: VirtualLineOutput = .{
+            .virtual_lines = &staged_lines,
+            .cached_line_starts = &staged[0],
+            .cached_line_widths = &staged[1],
+            .cached_line_sources = &staged[2],
+            .cached_line_wrap_indices = &staged[3],
+            .cached_line_first_vline = &staged[4],
+            .cached_line_vline_counts = &staged[5],
+        };
+        if (!self.layOutRange(range, output)) return false;
+        std.debug.assert(staged[5].items.len == change.new_count);
+        return self.splice(change, output);
+    }
+
+    fn splice(self: *Self, change: LineChange, staged: VirtualLineOutput) bool {
+        text_work.add(.splices, 1);
+        const allocator = self.virtual_lines_arena.allocator();
+        const line_count_old = self.cached_line_vline_counts.items.len;
+        const end = change.first + change.old_count;
+        // The first changed line exists in both ropes: it is at most the last line of either.
+        const vline_start = self.cached_line_first_vline.items[change.first];
+        const vline_end: u32 = if (end < line_count_old) self.cached_line_first_vline.items[end] else @intCast(self.virtual_lines.items.len);
+        const vline_old = vline_end - vline_start;
+        const vline_new: u32 = @intCast(staged.virtual_lines.items.len);
+        const old_bytes = chunkBytes(self.virtual_lines.items[vline_start..vline_end]);
+        const new_bytes = chunkBytes(staged.virtual_lines.items);
+        const array_bytes = self.arrayBytes();
+        // The staging lists are copied in, and an array that grows leaves its old buffer behind.
+        var staged_bytes = staged.virtual_lines.capacity * @sizeOf(VirtualLine);
+        inline for (.{ "cached_line_starts", "cached_line_widths", "cached_line_sources", "cached_line_wrap_indices", "cached_line_first_vline", "cached_line_vline_counts" }) |field| {
+            staged_bytes += @field(staged, field).capacity * @sizeOf(u32);
+        }
+        // A failed splice leaves the arrays mixed; the caller discards them all and lays out fully.
+        // The builder counts staged virtual lines from 0.
+        for (staged.cached_line_first_vline.items) |*first_vline| first_vline.* += vline_start;
+        self.virtual_lines.replaceRange(allocator, vline_start, vline_old, staged.virtual_lines.items) catch return false;
+        inline for (.{ "cached_line_starts", "cached_line_widths", "cached_line_sources", "cached_line_wrap_indices" }) |field| {
+            @field(self, field).replaceRange(allocator, vline_start, vline_old, @field(staged, field).items) catch return false;
+        }
+        inline for (.{ "cached_line_first_vline", "cached_line_vline_counts" }) |field| {
+            @field(self, field).replaceRange(allocator, change.first, change.old_count, @field(staged, field).items) catch return false;
         }
 
-        self.virtual_lines_dirty = false;
-        self.text_buffer.clearViewDirty(self.view_id);
+        const grown_bytes = self.arrayBytes() - array_bytes;
+        self.arena_dead_bytes += old_bytes + staged_bytes + if (grown_bytes > 0) array_bytes else 0;
+        self.arena_live_bytes = self.arena_live_bytes + new_bytes + grown_bytes -| old_bytes;
+
+        // Every line after the change moves by the change's weight, lines, and rows.
+        const line_delta = @as(i64, change.new_count) - change.old_count;
+        const vline_delta = @as(i64, vline_new) - vline_old;
+        const lines_after = self.cached_line_first_vline.items[change.first + change.new_count ..];
+        const vlines_after = vline_start + vline_new;
+        if (change.weight_delta != 0) for (self.virtual_lines.items[vlines_after..], self.cached_line_starts.items[vlines_after..]) |*vline, *start| {
+            vline.document_cell_offset = shifted(vline.document_cell_offset, change.weight_delta);
+            start.* = vline.document_cell_offset;
+        };
+        if (line_delta != 0) for (self.virtual_lines.items[vlines_after..], self.cached_line_sources.items[vlines_after..]) |*vline, *source| {
+            vline.source_line = shifted(@intCast(vline.source_line), line_delta);
+            source.* = @intCast(vline.source_line);
+        };
+        if (vline_delta != 0) for (lines_after) |*first_vline| {
+            first_vline.* = shifted(first_vline.*, vline_delta);
+        };
+        if (change.weight_delta != 0 or line_delta != 0 or vline_delta != 0) text_work.add(.lines_shifted, lines_after.len);
+
+        if (self.truncation_applied and self.truncate and self.viewport != null) {
+            // Lines outside the change keep their truncation; on failure every line retries.
+            // A truncated line leaves its untruncated chunk list behind.
+            if (!self.applyTruncation(vline_start, vline_start + vline_new)) self.truncation_applied = false;
+            self.arena_dead_bytes += new_bytes;
+        }
+        return true;
+    }
+
+    fn shifted(value: u32, delta: i64) u32 {
+        return @intCast(@as(i64, value) + delta);
     }
 
     pub fn getVirtualLineCount(self: *Self) u32 {
@@ -778,6 +1050,8 @@ pub const UnifiedTextBufferView = struct {
         self.word_layout.reset(.free_all);
         self.text_buffer = buffer;
         self.virtual_lines_dirty = true;
+        // The old buffer may free the rope that the baseline points at.
+        self.baseline = null;
     }
 
     pub fn switchToOriginalBuffer(self: *Self) void {
@@ -1317,14 +1591,18 @@ pub const UnifiedTextBufferView = struct {
 
         if (self.truncation_applied) return;
 
-        if (!self.applyTruncation()) {
+        if (!self.applyTruncation(0, self.virtual_lines.items.len)) {
             self.truncation_applied = false;
             return;
         }
         self.truncation_applied = true;
     }
 
-    fn applyTruncation(self: *Self) bool {
+    /// Truncates the virtual lines in `[first, end)` that overflow the viewport. A truncated line
+    /// fits, so applying it again changes nothing. Stages every replacement first, so on failure
+    /// no line changes.
+    fn applyTruncation(self: *Self, first: usize, end: usize) bool {
+        const vlines = self.virtual_lines.items[first..end];
         const vp = self.viewport orelse return true;
         if (vp.width == 0) return true;
 
@@ -1391,7 +1669,7 @@ pub const UnifiedTextBufferView = struct {
             truncation_suffix_col_start: u32 = 0,
         };
         var overflow_count: usize = 0;
-        for (self.virtual_lines.items) |vline| {
+        for (vlines) |vline| {
             if (vline.width_cols > vp.width) overflow_count += 1;
         }
         if (overflow_count == 0) return true;
@@ -1403,7 +1681,7 @@ pub const UnifiedTextBufferView = struct {
         const arena_allocator = self.virtual_lines_arena.allocator();
 
         var replacement_index: usize = 0;
-        for (self.virtual_lines.items) |vline| {
+        for (vlines) |vline| {
             if (vline.width_cols <= vp.width) continue;
             const replacement = &replacements[replacement_index];
             replacement_index += 1;
@@ -1481,7 +1759,7 @@ pub const UnifiedTextBufferView = struct {
         }
 
         replacement_index = 0;
-        for (self.virtual_lines.items) |*vline| {
+        for (vlines) |*vline| {
             if (vline.width_cols <= vp.width) continue;
             const replacement = replacements[replacement_index];
             replacement_index += 1;
@@ -1530,8 +1808,8 @@ pub const UnifiedTextBufferView = struct {
 
             const calculated = switch (self.wrap_mode) {
                 .none => unreachable,
-                .char => calculateVirtualLinesGeneric(.measure, .char, measure_allocator, self.text_buffer, width, self.first_line_offset, &result, null),
-                .word => calculateVirtualLinesGeneric(.measure, .word, measure_allocator, self.text_buffer, width, self.first_line_offset, &result, null),
+                .char => calculateVirtualLinesGeneric(.measure, .char, measure_allocator, self.text_buffer, .{}, width, self.first_line_offset, &result, null),
+                .word => calculateVirtualLinesGeneric(.measure, .word, measure_allocator, self.text_buffer, .{}, width, self.first_line_offset, &result, null),
             };
             if (!calculated) return TextBufferViewError.OutOfMemory;
         }
@@ -1558,6 +1836,7 @@ pub const UnifiedTextBufferView = struct {
     fn calculateUnwrappedVirtualLines(
         allocator: Allocator,
         text_buffer: *UnifiedTextBuffer,
+        range: LineRange,
         output: VirtualLineOutput,
     ) bool {
         // No wrapping - create 1:1 mapping to real lines
@@ -1639,7 +1918,7 @@ pub const UnifiedTextBufferView = struct {
             .current_vline = VirtualLine.init(),
         };
 
-        text_buffer.walkLinesAndSegments(&ctx, Context.segment_callback, Context.line_end_callback);
+        iter_mod.walkLineRange(text_buffer.rope(), range.first, range.start, range.count, &ctx, Context.segment_callback, Context.line_end_callback);
         return !ctx.failed;
     }
 
@@ -1649,6 +1928,7 @@ pub const UnifiedTextBufferView = struct {
         comptime wrap_mode: WrapMode,
         allocator: Allocator,
         text_buffer: *UnifiedTextBuffer,
+        range: LineRange,
         wrap_w: u32,
         first_line_offset: u32,
         result: if (calculation == .render) VirtualLineOutput else *MeasureResult,
@@ -1661,7 +1941,7 @@ pub const UnifiedTextBufferView = struct {
             allocator: Allocator,
             result: @TypeOf(result),
             word_layout: ?*WordLayoutStorage,
-            word_layout_index: usize = 0,
+            word_chunk_index: u32 = 0,
             wrap_w: u32,
             current_wrap_width: u32,
             document_cell_offset: u32 = 0,
@@ -2111,10 +2391,12 @@ pub const UnifiedTextBufferView = struct {
                     break :blk null;
                 };
                 if (wctx.word_layout) |storage| {
-                    const index = wctx.word_layout_index;
-                    wctx.word_layout_index += 1;
-                    if (index < storage.layouts.items.len) {
-                        layout = storage.layouts.items[index];
+                    const entry = storage.lines.items[wctx.line_idx];
+                    const index = wctx.word_chunk_index;
+                    wctx.word_chunk_index += 1;
+                    if (entry.len != WordLayoutStorage.LineLayouts.absent.len) {
+                        std.debug.assert(index < entry.len);
+                        layout = storage.layouts.items[entry.start + index];
                     } else {
                         const saved = save: {
                             const layout_allocator = storage.arena.allocator();
@@ -2124,6 +2406,7 @@ pub const UnifiedTextBufferView = struct {
                                 layout = .{ .wrap_breaks = breaks.toOwnedSlice(layout_allocator) catch break :save false, .word_classes = classes };
                             }
                             storage.layouts.append(layout_allocator, layout.?) catch break :save false;
+                            storage.live_bytes += WordLayoutStorage.layoutBytes(layout.?);
                             break :save true;
                         };
                         if (!saved) {
@@ -2453,6 +2736,17 @@ pub const UnifiedTextBufferView = struct {
                     };
                 }
 
+                if (comptime wrap_mode == .word) {
+                    if (wctx.word_layout) |storage| {
+                        const entry = &storage.lines.items[wctx.line_idx];
+                        // This line's new layouts are the last ones appended.
+                        if (entry.len == WordLayoutStorage.LineLayouts.absent.len) entry.* = .{
+                            .start = @intCast(storage.layouts.items.len - wctx.word_chunk_index),
+                            .len = wctx.word_chunk_index,
+                        };
+                    }
+                    wctx.word_chunk_index = 0;
+                }
                 wctx.document_cell_offset += 1;
 
                 wctx.line_idx += 1;
@@ -2487,19 +2781,24 @@ pub const UnifiedTextBufferView = struct {
             .word_layout = word_layout,
             .word_line_preflight = if (comptime wrap_mode == .word) !text_buffer.rope().root.metrics().custom.ascii_only else {},
             .wrap_w = wrap_w,
-            .current_wrap_width = if (first_line_offset > 0 and first_line_offset < wrap_w)
+            .current_wrap_width = if (range.first == 0 and first_line_offset > 0 and first_line_offset < wrap_w)
                 wrap_w - first_line_offset
             else
                 wrap_w,
+            .line_idx = range.first,
+            .document_cell_offset = range.start.weight,
         };
+        if (comptime calculation == .render) wrap_ctx.current_vline.document_cell_offset = range.start.weight;
 
         defer if (comptime wrap_mode == .word) wrap_ctx.word_line_chunks.deinit(allocator);
-        // Retain unchanged chunks and reclaim layouts detached by incremental edits.
-        if (comptime calculation == .render and wrap_mode == .word) text_buffer.layout_cache.beginLayout();
-        text_buffer.walkLinesAndSegments(&wrap_ctx, WrapContext.segment_callback, WrapContext.line_end_callback);
+        // A full traversal retains the live chunks' layouts and reclaims those that edits detached.
+        // A partial one leaves the clean lines' chunks unmarked, so it must not reclaim.
+        const reclaim = calculation == .render and wrap_mode == .word and range.isFull();
+        if (reclaim) text_buffer.layout_cache.beginLayout();
+        iter_mod.walkLineRange(text_buffer.rope(), range.first, range.start, range.count, &wrap_ctx, WrapContext.segment_callback, WrapContext.line_end_callback);
         // Failed traversal leaves live chunks unmarked; sibling views may still borrow them.
         if (wrap_ctx.failed) return false;
-        if (comptime calculation == .render and wrap_mode == .word) text_buffer.layout_cache.endLayout();
+        if (reclaim) text_buffer.layout_cache.endLayout();
         return true;
     }
 };
