@@ -18,7 +18,7 @@ const corpus = JSON.parse(
 const allMethods = ["wcwidth", "unicode", "no_zwj", "unicode_wide"]
 // no_zwj has no public TextBuffer method, and the control display is not public.
 const methods: Record<string, WidthMethod> = { wcwidth: "wcwidth", unicode: "unicode", unicode_wide: "unicode-wide" }
-const neverReversed = ["retain", "chunk_widths", "fit", "measure", "resize"]
+const neverReversed = ["retain", "chunk_widths", "fit", "measure", "resize", "widest"]
 const counts: Record<string, number> = {}
 const decoder = new TextDecoder()
 
@@ -79,6 +79,15 @@ function runRow(row: Row, method: string, failures: string[]): void {
     return rows.map((line) => line.trimEnd()).filter(Boolean)
   }
   const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+  // The widest-line metric equals the widest unwrapped line, measure included, however the chunks fall.
+  const widest = (buffer: TextBuffer): boolean => {
+    const target = view(buffer, null)
+    target.setWrapMode("none")
+    const max = Math.max(0, ...target.lineInfo.lineWidthCols)
+    return (
+      target.logicalLineInfo.lineWidthColsMax === max && target.measureForDimensions(80, 1 << 20)?.widthColsMax === max
+    )
+  }
 
   try {
     if (row.ops) {
@@ -92,6 +101,8 @@ function runRow(row: Row, method: string, failures: string[]): void {
       if (want("line_widths"))
         check("line_widths", same(editor.getLogicalLineInfo().lineWidthCols, want("line_widths")))
       if (want("max") !== undefined) check("max", editor.getLogicalLineInfo().lineWidthColsMax === want("max"))
+      const logical = editor.getLogicalLineInfo()
+      check("widest", logical.lineWidthColsMax === Math.max(0, ...logical.lineWidthCols))
       check("fresh", same(layout(editor.getLineInfo()), layout(view(load([text])).lineInfo)))
       if (want("stops")) {
         edit.setCursor(0, 0)
@@ -116,6 +127,7 @@ function runRow(row: Row, method: string, failures: string[]): void {
       check("width", unwrapped.lineInfo.lineWidthCols[0] === want("width"))
     if (want("line_widths")) check("line_widths", same(unwrapped.lineInfo.lineWidthCols, want("line_widths")))
     if (want("max") !== undefined) check("max", unwrapped.logicalLineInfo.lineWidthColsMax === want("max"))
+    check("widest", widest(buffer))
 
     const main = view(buffer)
     const key = layout(main.lineInfo)
@@ -163,14 +175,15 @@ function runRow(row: Row, method: string, failures: string[]): void {
       check("range", buffer.getTextRange(start, end) === expected)
     if (row.split) {
       let ok = true
+      let widestOk = true
       for (let cut = 1; cut < text.length; cut++) {
         if (text.charCodeAt(cut) >= 0xdc00 && text.charCodeAt(cut) <= 0xdfff) continue
-        ok &&= same(
-          layout(view(load([text.slice(0, cut), text.slice(cut)])).lineInfo),
-          layout(view(load([text])).lineInfo),
-        )
+        const pieces = load([text.slice(0, cut), text.slice(cut)])
+        ok &&= same(layout(view(pieces).lineInfo), layout(view(load([text])).lineInfo))
+        widestOk &&= widest(pieces)
       }
       check("split", ok)
+      check("widest", widestOk)
     }
   } finally {
     for (const value of owned.reverse()) value.destroy()

@@ -1520,14 +1520,10 @@ pub const UnifiedTextBufferView = struct {
 
         text_work.add(.measure_passes, 1);
         var result: MeasureResult = .{ .line_count = 0, .width_cols_max = 0 };
-        // No-wrap path avoids allocations by using marker-based line widths.
+        // Without wrapping, the rope metrics hold both answers.
         if (width == 0 or self.wrap_mode == .none) {
             result.line_count = self.text_buffer.lineCount();
-            text_work.add(.measure_lines, result.line_count);
-            var row: u32 = 0;
-            while (row < result.line_count) : (row += 1) {
-                result.width_cols_max = @max(result.width_cols_max, self.text_buffer.lineWidthAt(row));
-            }
+            result.width_cols_max = self.text_buffer.lineWidthColsMax();
         } else {
             // Reuse arena capacity to avoid allocation overhead during streaming.
             _ = self.measure_arena.reset(.retain_capacity);

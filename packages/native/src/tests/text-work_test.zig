@@ -55,8 +55,8 @@ test "text work: one edit in a 10,000-line editor lays out the whole document" {
             .mode = .none,
             .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 8 },
             .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .marker_rebuilds = 10, .marker_leaves = 300_000, .marker_lookups = 80 },
-            // Unwrapped measure reads every line width from the markers.
-            .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .marker_lookups = 19_999 },
+            // Unwrapped measure reads the widest line from the rope metrics.
+            .measure = .{ .measure_passes = 1 },
         },
         .{
             .mode = .word,

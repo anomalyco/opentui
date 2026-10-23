@@ -101,8 +101,7 @@ pub fn getLineCount(rope: *const UnifiedRope) u32 {
 }
 
 pub fn getMaxLineWidth(rope: *const UnifiedRope) u32 {
-    const metrics = rope.root.metrics();
-    return metrics.custom.max_line_width_cols;
+    return rope.root.metrics().custom.lineWidthMax();
 }
 
 pub fn getTotalWidth(rope: *const UnifiedRope) u32 {

@@ -236,3 +236,72 @@ test "Rope fuzz - positional operations" {
 
     try verifyInvariants(&rope);
 }
+
+const TestPools = @import("test-pools.zig").TestPools;
+const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
+const TextBuffer = @import("../text-buffer.zig").UnifiedTextBuffer;
+const utf8 = @import("../utf8.zig");
+
+/// Pieces that put breaks, zero-width, wide, and tab cells at chunk edges.
+const text_pieces = [_][]const u8{ "a", "bc", "\t", "世", "e", "\u{0301}", "\u{200d}", "\u{200b}", "👍", "\u{1F3FD}", "\r", "\n", "\r\n", "\x01", "🇺", "🇸", "x\ty", "ab\ncd", "\n\n" };
+
+fn randomText(random: std.Random, out: []u8) []const u8 {
+    var len: usize = 0;
+    for (0..random.uintAtMost(usize, 3)) |_| {
+        const piece = text_pieces[random.uintLessThan(usize, text_pieces.len)];
+        @memcpy(out[len..][0..piece.len], piece);
+        len += piece.len;
+    }
+    return out[0..len];
+}
+
+fn verifyLineMetrics(tb: *TextBuffer) !void {
+    const line_count = tb.getLineCount();
+    try std.testing.expectEqual(tb.rope().root.metrics().custom.newline_count + 1, line_count);
+    var widest: u32 = 0;
+    for (0..line_count) |row| widest = @max(widest, tb.lineWidthAt(@intCast(row)));
+    try std.testing.expectEqual(widest, tb.lineWidthColsMax());
+}
+
+test "Rope fuzz - text line metrics match the lines under random edits" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var bytes: [64]u8 = undefined;
+    for (std.enums.values(utf8.WidthMethod)) |method| for (0..40) |seed| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
+        defer eb.deinit();
+        const tb = eb.getTextBuffer();
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        for (0..60) |step| {
+            errdefer std.debug.print("method {s} seed {d} step {d}\n", .{ @tagName(method), seed, step });
+            const rows = tb.getLineCount();
+            const row = random.uintLessThan(u32, rows);
+            try eb.setCursor(row, random.uintAtMost(u32, tb.lineWidthAt(row)));
+            const total = tb.textEndOffset();
+            const a = random.uintAtMost(u32, total);
+            const b = random.uintAtMost(u32, total);
+            const ignore = struct {
+                fn handle(_: *anyopaque) void {}
+            };
+            switch (random.uintLessThan(u8, 10)) {
+                0 => try eb.setText(randomText(random, &bytes)),
+                1, 2 => try eb.insertText(randomText(random, &bytes)),
+                3 => try eb.backspace(),
+                4 => try eb.deleteForward(),
+                5 => {
+                    const other = random.uintLessThan(u32, rows);
+                    try eb.deleteRange(eb.getPrimaryCursor(), .{ .row = other, .col = random.uintAtMost(u32, tb.lineWidthAt(other)), .desired_col = 0, .offset = 0 });
+                },
+                6 => try tb.append(randomText(random, &bytes)),
+                7 => _ = eb.undo() catch |err| if (err != error.Stop) return err,
+                8 => if (random.boolean()) {
+                    _ = eb.redo() catch |err| if (err != error.Stop) return err;
+                } else eb.setTabWidth(if (random.boolean()) 2 else 8),
+                9 => try eb.replaceRange(@min(a, b), @max(a, b), randomText(random, &bytes), .{ .ctx = eb, .handle = ignore.handle }),
+                else => unreachable,
+            }
+            try verifyLineMetrics(tb);
+        }
+    };
+}
