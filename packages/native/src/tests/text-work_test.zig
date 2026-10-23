@@ -125,6 +125,43 @@ test "text work: an append measures and lays out a 5,000-line view once each" {
     try expectWork(.{ .layouts = 1, .lines_laid_out = 5_000, .measure_passes = 1, .measure_lines = 5_000, .ascii_bytes = 355_083 });
 }
 
+test "text work: line lookups after an edit in a 10,000-line buffer" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const text = try repeatLines(allocator, "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor in", 10_000);
+    defer allocator.free(text);
+
+    const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
+    defer eb.deinit();
+    try eb.setText(text);
+    try eb.setCursor(5_000, 3);
+    _ = text_work.take();
+    try eb.insertText("x");
+    try eb.backspace();
+    try expectWork(.{ .marker_rebuilds = 2, .marker_leaves = 60_000, .marker_lookups = 21, .prefix_seeks = 3 });
+    try eb.deleteForward();
+    try expectWork(.{ .marker_rebuilds = 1, .marker_leaves = 30_000, .marker_lookups = 20, .prefix_seeks = 3, .grapheme_width_reads = 1 });
+
+    const tb = eb.getTextBuffer();
+    try tb.append("\nappended");
+    _ = tb.lineWidthAt(10_000);
+    try expectWork(.{ .marker_rebuilds = 1, .marker_leaves = 30_003, .marker_lookups = 1 });
+    // One highlight over every line reads each line's start and width.
+    try tb.addHighlightByCharRange(0, tb.getLength(), 1, 1, 0);
+    try expectWork(.{ .marker_lookups = 30_044 });
+
+    // Zero-width appends join without weight, so each one deepens the rope.
+    const zero_width = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
+    defer zero_width.deinit();
+    try zero_width.setText(text);
+    for (0..200) |_| try zero_width.append("\u{200b}");
+    try std.testing.expectEqual(215, zero_width.rope().root.depth());
+    _ = text_work.take();
+    _ = zero_width.lineWidthAt(9_999);
+    try expectWork(.{ .marker_rebuilds = 1, .marker_leaves = 30_199, .marker_lookups = 1 });
+}
+
 test "text work: drawing rows of a wrapped CJK line rescans its clusters from the line start" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
