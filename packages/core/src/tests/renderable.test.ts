@@ -1629,6 +1629,32 @@ describe("Renderable - hook installation", () => {
     await renderOnce()
     expect(calls).toBe(0)
   })
+
+  test("construction publishes once and leaves no hook properties on instances", async () => {
+    const setHooks = spyOn(testRenderer.nativeScene, "setHooks")
+    class Row extends TextRenderable {
+      protected override renderSelf(buffer: OptimizedBuffer): void {
+        super.renderSelf(buffer)
+      }
+    }
+    const rows = Array.from({ length: 10 }, () => new Row(testRenderer, { content: "x" }))
+    for (const row of rows) testRenderer.root.add(row)
+    testRenderer.root.add(new BoxRenderable(testRenderer, { renderBefore() {}, renderAfter() {} }))
+    await renderOnce()
+    const names = [
+      "renderSelf",
+      "onUpdate",
+      "onResize",
+      "onLayoutResize",
+      "renderBefore",
+      "renderAfter",
+      "onLifecyclePass",
+    ]
+    const own = rows.flatMap((row) => names.filter((name) => Object.hasOwn(row, name)))
+    // Today: two publishes per row (construction and Text's onLifecyclePass) and two for the Box options.
+    expect({ publishes: setHooks.mock.calls.length, own: own.length }).toEqual({ publishes: 22, own: 30 })
+    setHooks.mockRestore()
+  })
 })
 
 describe("RootRenderable", () => {
