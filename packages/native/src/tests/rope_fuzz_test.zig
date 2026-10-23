@@ -327,6 +327,18 @@ fn verifyLineMetrics(tb: *TextBuffer) !void {
     try std.testing.expectEqual(null, iter_mod.offsetToCoords(rope, walk.weight + 1));
 }
 
+/// The shared leaf prefix and suffix of two roots equal a leaf-by-leaf pointer comparison.
+fn verifySharedLeaves(previous: *const UnifiedRope, current: *const UnifiedRope) !void {
+    const limit = @min(previous.count(), current.count());
+    var prefix: u32 = 0;
+    while (prefix < limit and previous.get(prefix).? == current.get(prefix).?) prefix += 1;
+    var suffix: u32 = 0;
+    while (suffix < limit - prefix and previous.get(previous.count() - 1 - suffix).? == current.get(current.count() - 1 - suffix).?) suffix += 1;
+    try std.testing.expectEqual(prefix, current.sharedLeaves(previous.root, .start, limit).?);
+    try std.testing.expectEqual(suffix, current.sharedLeaves(previous.root, .end, limit - prefix).?);
+    try std.testing.expectEqual(suffix, previous.sharedLeaves(current.root, .end, limit - prefix).?);
+}
+
 fn runRandomEdits(pools: *TestPools, pieces: []const []const u8, compare_fresh: bool) !void {
     var bytes: [64]u8 = undefined;
     for (std.enums.values(utf8.WidthMethod)) |method| for (0..40) |seed| {
@@ -346,7 +358,9 @@ fn runRandomEdits(pools: *TestPools, pieces: []const []const u8, compare_fresh: 
             const ignore = struct {
                 fn handle(_: *anyopaque) void {}
             };
-            switch (random.uintLessThan(u8, 10)) {
+            const previous = tb.rope().*;
+            const op = random.uintLessThan(u8, 10);
+            switch (op) {
                 0 => try eb.setText(randomText(random, pieces, &bytes)),
                 1, 2 => try eb.insertText(randomText(random, pieces, &bytes)),
                 3 => try eb.backspace(),
@@ -365,6 +379,8 @@ fn runRandomEdits(pools: *TestPools, pieces: []const []const u8, compare_fresh: 
                 else => unreachable,
             }
             try verifyLineMetrics(tb);
+            // `setText` retires the arena that held the previous root.
+            if (op != 0) try verifySharedLeaves(&previous, tb.rope());
             const cursor = eb.getPrimaryCursor();
             try std.testing.expectEqual(iter_mod.coordsToOffset(tb.rope(), cursor.row, cursor.col).?, cursor.offset);
             if (compare_fresh) try verifyEditedEqualsFresh(pools, tb, method);
