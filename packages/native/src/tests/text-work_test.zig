@@ -129,6 +129,61 @@ test "text work: a burst of K edits lays the editor out once, at the next frame"
     }
 }
 
+test "text work: the frame after one edit lays out every line of the document" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const line = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor in";
+    const paste = "pasted line of text that is shorter than the wrap width\n" ** 100;
+    const Op = enum { insert, delete, paste, undo, enter, join };
+    // Lines laid out = document lines × `per_line` + `extra`; offsets moved for `shifted` lines.
+    const rows = [_]struct { op: Op, per_line: u64, extra: i64, shifted: u64 }{
+        .{ .op = .insert, .per_line = 1, .extra = 0, .shifted = 0 },
+        .{ .op = .delete, .per_line = 1, .extra = 0, .shifted = 0 },
+        .{ .op = .paste, .per_line = 1, .extra = 100, .shifted = 0 },
+        .{ .op = .undo, .per_line = 1, .extra = 0, .shifted = 0 },
+        .{ .op = .enter, .per_line = 1, .extra = 1, .shifted = 0 },
+        .{ .op = .join, .per_line = 1, .extra = -1, .shifted = 0 },
+    };
+    for ([_]u64{ 1_000, 10_000 }) |lines| {
+        const text = try repeatLines(allocator, line, lines);
+        defer allocator.free(text);
+        for ([_]bool{ true, false }) |viewport| for ([_]WrapMode{ .none, .word, .char }) |mode| for (rows) |row| {
+            const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(allocator, eb, 120, 40);
+            defer ev.deinit();
+            // Without a viewport: a plain view that wraps at 120 and is read without drawing.
+            const plain = try TextBufferView.init(allocator, eb.getTextBuffer());
+            defer plain.deinit();
+            ev.setWrapMode(mode);
+            plain.setWrapMode(mode);
+            plain.setWrapWidth(120);
+            try eb.setText(text);
+            try eb.setCursor(10, if (row.op == .delete) 5 else 0);
+            if (row.op == .undo) try eb.insertText("x");
+            const screen = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+            defer screen.deinit();
+            screen.drawEditorView(ev, 0, 0);
+            _ = plain.getVirtualLineCount();
+
+            errdefer std.debug.print("lines {d} viewport {} mode {s} op {s}\n", .{ lines, viewport, @tagName(mode), @tagName(row.op) });
+            switch (row.op) {
+                .insert => try eb.insertText("x"),
+                .delete, .join => try eb.backspace(),
+                .paste => try eb.insertText(paste),
+                .undo => _ = try eb.undo(),
+                .enter => try eb.insertText("\n"),
+            }
+            _ = text_work.take();
+            if (viewport) screen.drawEditorView(ev, 0, 0) else _ = plain.getVirtualLineCount();
+            const frame = text_work.take();
+            const laid_out: u64 = @intCast(@as(i64, @intCast(lines * row.per_line)) + row.extra);
+            try std.testing.expectEqual([3]u64{ 1, laid_out, row.shifted }, [3]u64{ frame.layouts, frame.lines_laid_out, frame.lines_shifted });
+        };
+    }
+}
+
 test "text work: an append measures and lays out a 5,000-line view once each" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
