@@ -1,7 +1,12 @@
 import type { OptimizedBuffer } from "../buffer.js"
 import { parseColor, RGBA, type ColorInput } from "../lib/index.js"
 import type { KeyEvent } from "../lib/KeyHandler.js"
-import { Renderable, RenderableEvents, type RenderableOptions } from "../Renderable.js"
+import {
+  Renderable,
+  RenderableEvents,
+  type RenderableOptions,
+  type NativeRenderableIntegration,
+} from "../Renderable.js"
 import type { RenderContext, Timeout } from "../types.js"
 import type { NativeSceneArrowOptions } from "../zig.js"
 import { type BoxOptions } from "./Box.js"
@@ -18,11 +23,10 @@ export interface ScrollBarOptions extends RenderableOptions<ScrollBarRenderable>
 export type ScrollUnit = "absolute" | "viewport" | "content" | "step"
 
 export class ScrollBarRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...Renderable.nativeIntegration,
     kind: "box",
-    construction: "prototype",
-  })
+  }
 
   public readonly slider: SliderRenderable
   public readonly startArrow: ArrowRenderable
@@ -381,11 +385,10 @@ const defaultArrowForeground = RGBA.fromValues(1, 1, 1, 1)
 const defaultArrowBackground = RGBA.fromValues(0, 0, 0, 0)
 
 export class ArrowRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "arrow",
     body: { native: this.prototype.renderSelf },
-    construction: "prototype",
-  })
+  }
 
   private _direction: "up" | "down" | "left" | "right"
   private _foregroundColor: RGBA

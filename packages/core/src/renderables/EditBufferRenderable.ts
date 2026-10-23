@@ -1,4 +1,4 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } from "../lib/selection.js"
 import { EditBuffer, type LogicalCursor } from "../edit-buffer.js"
 import { EditorView, type VisualCursor } from "../editor-view.js"
@@ -83,7 +83,7 @@ export interface EditBufferOptions extends RenderableOptions<EditBufferRenderabl
 }
 
 export abstract class EditBufferRenderable extends Renderable implements LineInfoProvider {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "editor",
     body: { native: this.prototype.renderSelf },
     lifecycle: {
@@ -96,8 +96,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     beforeAfter: false,
     paintBuffer: "destination",
     bufferComposition: "native",
-    construction: "prototype",
-  });
+  };
 
   [BrandedEditBufferRenderable] = true
   protected static override readonly defaultFocusable = true

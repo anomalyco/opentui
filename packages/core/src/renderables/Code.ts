@@ -3,6 +3,7 @@ import { StyledText } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { getTreeSitterClient, TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { TextBufferRenderable, type TextBufferOptions } from "./TextBufferRenderable.js"
+import type { NativeRenderableIntegration } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import type { TextChunk } from "../text-buffer.js"
@@ -46,7 +47,7 @@ export interface CodeOptions extends TextBufferOptions {
 type ConcealLineRange = [start: number, end: number]
 
 export class CodeRenderable extends TextBufferRenderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...TextBufferRenderable.nativeIntegration,
     kind: "text_view",
     body: { native: this.prototype.renderSelf },
@@ -57,7 +58,7 @@ export class CodeRenderable extends TextBufferRenderable {
         active: (renderable) => (renderable as CodeRenderable)._highlightsDirty,
       },
     },
-  })
+  }
 
   private _content: string
   private _filetype?: string

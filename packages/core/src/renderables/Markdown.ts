@@ -1,4 +1,4 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import { type RenderContext, type TerminalCapabilities } from "../types.js"
 import { SyntaxStyle, type StyleDefinition } from "../syntax-style.js"
 import type { TextChunk } from "../text-buffer.js"
@@ -275,10 +275,9 @@ interface ListItemRenderInput {
 }
 
 export class MarkdownRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...Renderable.nativeIntegration,
-    construction: "prototype",
-  })
+  }
   private static _capabilitySubscriptions = new WeakMap<
     RenderContext,
     { renderables: Set<MarkdownRenderable>; listener: (capabilities: TerminalCapabilities) => void }

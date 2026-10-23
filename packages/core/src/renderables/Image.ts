@@ -1,4 +1,4 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import { NativeImage, type ImageSource } from "../image.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { ImageRenderProtocol, RenderContext, TerminalCapabilities } from "../types.js"
@@ -36,12 +36,11 @@ function pixelResolution(ctx: RenderContext): { width: number; height: number } 
 }
 
 export class ImageRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "image",
     body: { native: this.prototype.renderSelf, buffered: true },
     bufferComposition: "native",
-    construction: "prototype",
-  })
+  }
 
   private _source: ImageRenderableSource | undefined
   private _image: NativeImage | null = null

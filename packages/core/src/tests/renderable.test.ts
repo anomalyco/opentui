@@ -69,6 +69,7 @@ class CountingRenderable extends Renderable {
   protected renderSelf(): void {
     this.renderCount += 1
   }
+  protected onUpdate(): void {}
 
   public getScreenPosition(): { x: number; y: number } {
     return { x: this.screenX, y: this.screenY }
@@ -1582,15 +1583,14 @@ describe("Renderable - tree model", () => {
 })
 
 describe("Renderable - hook installation", () => {
-  // Each way to provide a hook, on a plain subclass and on built-ins with a native body, runs the hook in frames.
-  // Clearing an optional hook stops it. Construction publishes prototype hooks; a scan before the frame finds fields.
-  // Text skips the generic paint decorations (`beforeAfter: false`, documented), and its constructor assigns its own
-  // lifecycle pass over a subclass method, as on `main`.
+  // Every hook install on subclasses with and without own hooks and on built-ins. Construction publishes once and adds
+  // no hook property; reflection (a field, or defineProperty over a published hook) runs only after refreshHooks(),
+  // except an onLifecyclePass field, which attachment registers. Text skips its paint decorations and prototype pass.
   const skipped = (base: string, install: string, hook: string) =>
     base === "Text" &&
     (hook === "renderBefore" || hook === "renderAfter" || (install === "prototype" && hook === "onLifecyclePass"))
   const hooks = ["renderSelf", "onUpdate", "renderBefore", "renderAfter", "onLifecyclePass"] as const
-  const bases = { Renderable: TestRenderable, Box: BoxRenderable, Text: TextRenderable } as const
+  const bases = { Plain: TestRenderable, Own: CountingRenderable, Box: BoxRenderable, Text: TextRenderable } as const
   const installs = ["prototype", "field", "option", "assignment", "defineProperty"] as const
   const cases = (Object.keys(bases) as (keyof typeof bases)[]).flatMap((base) =>
     installs.flatMap((install) =>
@@ -1604,56 +1604,33 @@ describe("Renderable - hook installation", () => {
     let calls = 0
     const handler = () => void calls++
     const descriptor = { value: handler, writable: true, enumerable: true, configurable: true }
-    const Base = bases[base] as typeof TestRenderable
-    class Probe extends Base {
+    class Probe extends (bases[base] as typeof TestRenderable) {
       constructor(ctx: RenderContext, options: RenderableOptions) {
         super(ctx, options)
         if (install === "field") Object.defineProperty(this, hook, descriptor)
       }
     }
     if (install === "prototype") Object.defineProperty(Probe.prototype, hook, { ...descriptor, enumerable: false })
+    const setHooks = spyOn(testRenderer.nativeScene, "setHooks")
     const node = new Probe(testRenderer, { width: 4, height: 1, ...(install === "option" && { [hook]: handler }) })
+    expect(setHooks.mock.calls.length).toBeLessThanOrEqual(1)
     testRenderer.root.add(node)
     if (install === "assignment") Reflect.set(node, hook, handler)
-    if (install === "defineProperty") {
-      Object.defineProperty(node, hook, descriptor)
-      node.refreshHooks()
-    }
+    if (install === "defineProperty") Reflect.set(node, hook, () => {}) && Object.defineProperty(node, hook, descriptor)
 
     await renderOnce()
     if (skipped(base, install, hook)) return expect(calls).toBe(0)
+    expect(hooks.filter((name) => name !== hook && Object.hasOwn(node, name))).toEqual([])
+    if (hook !== "onLifecyclePass") expect(calls > 0).toBe(!Object.hasOwn(node, hook))
+    if (Object.hasOwn(node, hook)) node.refreshHooks()
+    await renderOnce()
     expect(calls).toBeGreaterThan(0)
     if (hook === "renderSelf" || hook === "onUpdate") return
     Reflect.set(node, hook, null)
+    if (install === "prototype") node.refreshHooks() // The prototype's data property shadows the public setter.
     calls = 0
     await renderOnce()
     expect(calls).toBe(0)
-  })
-
-  test("construction publishes once and leaves no hook properties on instances", async () => {
-    const setHooks = spyOn(testRenderer.nativeScene, "setHooks")
-    class Row extends TextRenderable {
-      protected override renderSelf(buffer: OptimizedBuffer): void {
-        super.renderSelf(buffer)
-      }
-    }
-    const rows = Array.from({ length: 10 }, () => new Row(testRenderer, { content: "x" }))
-    for (const row of rows) testRenderer.root.add(row)
-    testRenderer.root.add(new BoxRenderable(testRenderer, { renderBefore() {}, renderAfter() {} }))
-    await renderOnce()
-    const names = [
-      "renderSelf",
-      "onUpdate",
-      "onResize",
-      "onLayoutResize",
-      "renderBefore",
-      "renderAfter",
-      "onLifecyclePass",
-    ]
-    const own = rows.flatMap((row) => names.filter((name) => Object.hasOwn(row, name)))
-    // Today: two publishes per row (construction and Text's onLifecyclePass) and two for the Box options.
-    expect({ publishes: setHooks.mock.calls.length, own: own.length }).toEqual({ publishes: 22, own: 30 })
-    setHooks.mockRestore()
   })
 })
 

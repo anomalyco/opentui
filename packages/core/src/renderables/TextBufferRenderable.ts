@@ -1,4 +1,4 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } from "../lib/selection.js"
 import { TextBuffer, type TextChunk } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
@@ -23,14 +23,13 @@ export interface TextBufferOptions extends RenderableOptions<TextBufferRenderabl
 }
 
 export abstract class TextBufferRenderable extends Renderable implements LineInfoProvider {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "text",
     body: { native: this.prototype.renderSelf },
     lifecycle: { resize: { native: this.prototype.onResize } },
     beforeAfter: false,
     paintBuffer: "destination",
-    construction: "prototype",
-  })
+  }
 
   protected _defaultFg: RGBA
   protected _defaultBg: RGBA

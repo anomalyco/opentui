@@ -1,4 +1,4 @@
-import { type RenderableOptions, Renderable } from "../Renderable.js"
+import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
 import { type RenderContext } from "../types.js"
 import { type ColorInput, RGBA, parseColor } from "../lib/RGBA.js"
 import { OptimizedBuffer } from "../buffer.js"
@@ -21,11 +21,10 @@ export interface SliderOptions extends RenderableOptions<SliderRenderable> {
 }
 
 export class SliderRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "slider",
     body: { native: this.prototype.renderSelf },
-    construction: "prototype",
-  })
+  }
 
   private _orientation: "vertical" | "horizontal"
   private _value: number

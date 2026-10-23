@@ -8,7 +8,7 @@ import type { VNode } from "./composition/vnode.js"
 import { ScrollBarRenderable, type ScrollBarOptions, type ScrollUnit } from "./ScrollBar.js"
 
 export class ContentRenderable extends BoxRenderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration(BoxRenderable.nativeIntegration)
+  static override readonly nativeIntegration = BoxRenderable.nativeIntegration
   private viewport: BoxRenderable
   private _viewportCulling: boolean
 
@@ -91,7 +91,7 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
 }
 
 export class ScrollBoxRenderable extends BoxRenderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration(BoxRenderable.nativeIntegration)
+  static override readonly nativeIntegration = BoxRenderable.nativeIntegration
   static idCounter = 0
   private internalId = 0
   public readonly wrapper: BoxRenderable

@@ -1,5 +1,5 @@
 import { Gutter } from "../yoga.js"
-import { type RenderableOptions, Renderable } from "../Renderable.js"
+import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import {
   type BorderCharacters,
@@ -49,11 +49,10 @@ function borderMask(sides: BorderSidesConfig): number {
 }
 
 export class BoxRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "box",
     body: { native: this.prototype.renderSelf },
-    construction: "prototype",
-  })
+  }
   protected _backgroundColor: RGBA
   protected _border: boolean | BorderSides[]
   protected _borderStyle: BorderStyle
