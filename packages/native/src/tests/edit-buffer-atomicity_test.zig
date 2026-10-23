@@ -146,6 +146,7 @@ test "EditBuffer atomicity - invalid and empty edits preserve redo history" {
     try eb.deleteForward();
     try eb.insertText("");
     try eb.deleteRange(cursor, cursor);
+    try eb.deleteRange(.{ .row = 0, .col = 9 }, .{ .row = 0, .col = 9 });
     try std.testing.expectError(error.InvalidCursor, eb.deleteRange(cursor, .{ .row = 1, .col = 0 }));
     eb.cursor.row = 1;
     try std.testing.expectError(error.InvalidCursor, eb.insertText("!"));

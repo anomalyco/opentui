@@ -1038,6 +1038,11 @@ pub fn yogaNodeInvalidateMeasure(node: YGNodeRef) void {
     if (!getContext(node).?.poisoned) c.otYogaNodeInvalidateMeasure(node);
 }
 
+/// Drops cached sizes without marking the node or its ancestors dirty.
+pub fn yogaNodeForgetMeasurements(node: YGNodeRef) void {
+    if (!getContext(node).?.poisoned) c.otYogaNodeForgetMeasurements(node);
+}
+
 export fn yogaNodeUnsetMeasureFunc(node: YGNodeRef) void {
     _ = yogaNodeUnsetMeasureFuncChecked(node);
 }

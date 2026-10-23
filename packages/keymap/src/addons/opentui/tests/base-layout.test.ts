@@ -4,6 +4,11 @@ import { createTestRenderer, type TestRenderer } from "@opentui/core/testing"
 import { registerBaseLayoutFallback } from "@opentui/keymap/addons/opentui"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createDiagnosticHarness } from "../../../tests/diagnostic-harness.js"
+import {
+  baseLayoutBindings,
+  baseLayoutVectorName,
+  baseLayoutVectors,
+} from "../../../../../core/src/lib/keybinding.base-layout.fixture.js"
 
 let renderer: TestRenderer
 const diagnostics = createDiagnosticHarness()
@@ -23,60 +28,30 @@ describe("base layout fallback addon", () => {
     diagnostics.assertNoUnhandledDiagnostics()
   })
 
-  test("matches bindings through Kitty base-layout codepoints", () => {
-    const keymap = getKeymap(renderer)
-    const calls: string[] = []
+  for (const row of baseLayoutVectors) {
+    const [name, baseCode, modifiers, matches] = row
+    test(baseLayoutVectorName(row), () => {
+      const keymap = getKeymap(renderer)
+      const calls: string[] = []
 
-    registerBaseLayoutFallback(keymap)
-    keymap.registerLayer({
-      commands: [
-        {
-          name: "copy",
-          run() {
-            calls.push("copy")
-          },
-        },
-      ],
+      registerBaseLayoutFallback(keymap)
+      keymap.registerLayer({
+        commands: baseLayoutBindings.map((key) => ({ name: key, run: () => void calls.push(key) })),
+        bindings: baseLayoutBindings.map((key) => {
+          const parts = key.split("+")
+          return { key: { name: parts.at(-1)!, ctrl: parts.includes("ctrl"), meta: parts.includes("meta") }, cmd: key }
+        }),
+      })
+
+      const base = baseCode === undefined ? "" : `::${baseCode}`
+      renderer.stdin.emit(
+        "data",
+        Buffer.from(`\x1b[${name.codePointAt(0)}${base};${{ ctrl: 5, meta: 3, "": 1 }[modifiers]}u`),
+      )
+
+      expect(calls).toEqual(matches.slice(0, 1))
     })
-    keymap.registerLayer({ bindings: [{ key: "ctrl+c", cmd: "copy" }] })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[12618::99;5u"))
-
-    expect(calls).toEqual(["copy"])
-  })
-
-  test("keeps direct stroke matches ahead of base-layout fallbacks", () => {
-    const keymap = getKeymap(renderer)
-    const calls: string[] = []
-
-    registerBaseLayoutFallback(keymap)
-    keymap.registerLayer({
-      commands: [
-        {
-          name: "fallback-copy",
-          run() {
-            calls.push("fallback")
-          },
-        },
-        {
-          name: "direct-copy",
-          run() {
-            calls.push("direct")
-          },
-        },
-      ],
-    })
-    keymap.registerLayer({
-      bindings: [
-        { key: "ctrl+c", cmd: "fallback-copy" },
-        { key: { name: "\u314a", ctrl: true }, cmd: "direct-copy" },
-      ],
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[12618::99;5u"))
-
-    expect(calls).toEqual(["direct"])
-  })
+  }
 
   test("keeps lower-layer direct stroke matches ahead of higher-layer base-layout fallbacks", () => {
     const keymap = getKeymap(renderer)
@@ -92,7 +67,7 @@ describe("base layout fallback addon", () => {
           },
         },
       ],
-      bindings: [{ key: "ctrl+k", cmd: "delete-to-end" }],
+      bindings: [{ key: { name: "л", ctrl: true }, cmd: "delete-to-end" }],
     })
     keymap.registerLayer({
       commands: [
@@ -103,10 +78,10 @@ describe("base layout fallback addon", () => {
           },
         },
       ],
-      bindings: [{ key: "ctrl+v", cmd: "paste" }],
+      bindings: [{ key: "ctrl+k", cmd: "paste" }],
     })
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[107::118;5u"))
+    renderer.stdin.emit("data", Buffer.from("\x1b[1083::107;5u"))
 
     expect(calls).toEqual(["delete-to-end"])
   })
