@@ -244,17 +244,15 @@ pub const Editor = struct {
         while (next) |node| : (next = node.measure_next) yoga.yogaNodeInvalidateMeasure(node.yoga_node);
         if (self.node) |node| {
             yoga.yogaNodeInvalidateMeasure(node.yoga_node);
-            node.scene_node.?.owner.preparation_dirty = true;
-            node.scene_node.?.owner.work.clearRetainingCapacity();
+            node.scene_node.?.owner.invalidateObservation(node);
         }
     }
 
     pub fn invalidatePreparation(self: *Editor) void {
         if (self.node) |node| {
             // Idle frames reuse geometry but still prepare the view and follow its cursor.
-            if (node.scene_node.?.owner.attempt == null) return;
-            node.scene_node.?.owner.preparation_dirty = true;
-            node.scene_node.?.owner.work.clearRetainingCapacity();
+            if (node.scene_node.?.owner.attempt == null) return scene.Scene.markObservationStale(node);
+            node.scene_node.?.owner.invalidateObservation(node);
         }
     }
 
@@ -316,10 +314,7 @@ pub const TextView = struct {
     }
 
     pub fn invalidatePreparation(self: *TextView) void {
-        if (self.node) |node| {
-            node.scene_node.?.owner.preparation_dirty = true;
-            node.scene_node.?.owner.work.clearRetainingCapacity();
-        }
+        if (self.node) |node| node.scene_node.?.owner.invalidateObservation(node);
     }
 
     pub fn prepareView(self: *TextView) !void {
@@ -2102,8 +2097,7 @@ pub const Context = struct {
         if (node.editor) |previous| previous.node = null;
         node.editor = editor;
         if (editor) |view| view.node = value;
-        node.owner.preparation_dirty = true;
-        node.owner.work.clearRetainingCapacity();
+        node.owner.invalidateObservation(value);
     }
 
     pub fn sceneSetEditorOptions(self: *Context, handle: Handle, options: scene.EditorOptions) !void {
@@ -2132,8 +2126,7 @@ pub const Context = struct {
         if (node.control.text_view.view) |previous| previous.node = null;
         node.control.text_view.view = text_view;
         if (text_view) |view| view.node = value;
-        node.owner.preparation_dirty = true;
-        node.owner.work.clearRetainingCapacity();
+        node.owner.invalidateObservation(value);
     }
 
     pub fn sceneSetTextViewPaint(self: *Context, handle: Handle, enabled: bool) !void {
@@ -2217,6 +2210,7 @@ pub const Context = struct {
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(node.yoga_node, kind, unit, value, flags),
             else => unreachable,
         });
+        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) node.scene_node.?.owner.visibility_epoch +%= 1;
     }
 
     pub fn sceneGetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32) !scene.StyleValue {
@@ -2580,7 +2574,7 @@ pub const Context = struct {
             text.view.setWrapWidth(if (viewport.width > 0) viewport.width else null);
         }
         if (measure_changed) yoga.yogaNodeMarkDirty(node.yoga_node);
-        if (prepare_changed) node.scene_node.?.owner.preparation_dirty = true;
+        if (prepare_changed) node.scene_node.?.owner.invalidateObservation(node);
         node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
@@ -3750,7 +3744,9 @@ pub const Context = struct {
     fn textResourceChanged(text: *Text) void {
         var next = text.view.measure_dependents;
         while (next) |dependent| {
+            // A dependent without a Yoga measure function does not solve, so mark its refresh stale.
             yoga.yogaNodeMarkDirty(dependent.yoga_node);
+            scene.Scene.markObservationStale(dependent);
             next = dependent.measure_next;
         }
     }
@@ -3860,8 +3856,7 @@ pub const Context = struct {
                 if (value.node) |node| {
                     node.setMeasureTargetPreservingProvider(.none, node.scene_node.?.measure_overridden) catch unreachable;
                     node.scene_node.?.control.text_view.view = null;
-                    node.scene_node.?.owner.preparation_dirty = true;
-                    node.scene_node.?.owner.work.clearRetainingCapacity();
+                    node.scene_node.?.owner.invalidateObservation(node);
                 }
                 if (value.previous) |previous| previous.next = value.next else value.text.views = value.next;
                 if (value.next) |next| next.previous = value.previous;
@@ -3879,8 +3874,7 @@ pub const Context = struct {
                 if (value.node) |node| {
                     node.setMeasureTargetPreservingProvider(.none, node.scene_node.?.measure_overridden) catch unreachable;
                     node.scene_node.?.editor = null;
-                    node.scene_node.?.owner.preparation_dirty = true;
-                    node.scene_node.?.owner.work.clearRetainingCapacity();
+                    node.scene_node.?.owner.invalidateObservation(node);
                 }
                 if (value.previous) |previous| previous.next = value.next else value.edit.views = value.next;
                 if (value.next) |next| next.previous = value.previous;

@@ -751,7 +751,8 @@ ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot
     const uint8_t *title, uint32_t title_bytes, const uint8_t *bottom_title, uint32_t bottom_title_bytes);
 /* A box may filter its direct children against a root/box in the same Session.
  * The viewport handle is copied, not pinned. NULL disables filtering. A destroyed
- * viewport fails frame preparation until rebound or disabled. All direct children
+ * viewport fails frame preparation until rebound or disabled. After a layout
+ * change, or a change to a child's text, view, or hooks, all direct children
  * refresh before selection, including hidden/culled children; hidden nodes do not
  * update or resize. Fewer than 16 total children bypass overlap filtering.
  * Bounds use the full viewport, not its border-inset paint clip. Row/reverse-row

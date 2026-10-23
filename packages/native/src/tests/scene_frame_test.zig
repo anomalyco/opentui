@@ -470,53 +470,56 @@ const StaleReply = struct {
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame.
 test "Scene frame work counts viewport refresh and culling work" {
-    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, destroy_reply };
+    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, destroy_reply };
     const sizes = [_]u32{ 16, 256, 4096 };
     const expected = [sizes.len][std.meta.fields(Frame).len][5]u64{
         .{
-            .{ 16, 14, 24, 0, 1 }, // first
-            .{ 16, 14, 24, 0, 1 }, // unchanged
-            .{ 16, 14, 24, 0, 1 }, // scroll
-            .{ 16, 14, 24, 0, 1 }, // grow
-            .{ 16, 14, 24, 0, 1 }, // options_prepare
-            .{ 16, 14, 24, 0, 1 }, // options_color
-            .{ 16, 14, 24, 0, 1 }, // measure_text
-            .{ 16, 15, 23, 0, 1 }, // hidden
-            .{ 16, 15, 23, 0, 1 }, // hidden_unchanged
-            .{ 16, 15, 23, 0, 1 }, // cancelled
-            .{ 32, 33, 44, 1, 2 }, // stale_reply
-            .{ 32, 33, 44, 1, 2 }, // stale_requester
-            .{ 31, 129, 54, 1, 2 }, // destroy_reply
+            .{ 16, 0, 24, 0, 1 }, // first
+            .{ 0, 0, 10, 0, 1 }, // unchanged
+            .{ 0, 0, 10, 0, 1 }, // scroll
+            .{ 16, 0, 24, 0, 1 }, // grow
+            .{ 16, 0, 24, 0, 1 }, // options_prepare
+            .{ 0, 0, 10, 0, 1 }, // options_color
+            .{ 16, 0, 24, 0, 1 }, // measure_text
+            .{ 16, 0, 24, 0, 1 }, // editor_cursor
+            .{ 16, 0, 23, 0, 1 }, // hidden
+            .{ 0, 0, 10, 0, 1 }, // hidden_unchanged
+            .{ 16, 0, 23, 0, 1 }, // cancelled
+            .{ 32, 0, 44, 1, 2 }, // stale_reply
+            .{ 32, 0, 44, 1, 2 }, // stale_requester
+            .{ 31, 60, 54, 1, 2 }, // destroy_reply
         },
         .{
-            .{ 256, 14, 264, 0, 1 }, // first
-            .{ 256, 14, 264, 0, 1 }, // unchanged
-            .{ 256, 14, 264, 0, 1 }, // scroll
-            .{ 256, 14, 264, 0, 1 }, // grow
-            .{ 256, 14, 264, 0, 1 }, // options_prepare
-            .{ 256, 14, 264, 0, 1 }, // options_color
-            .{ 256, 14, 264, 0, 1 }, // measure_text
-            .{ 256, 15, 263, 0, 1 }, // hidden
-            .{ 256, 15, 263, 0, 1 }, // hidden_unchanged
-            .{ 256, 15, 263, 0, 1 }, // cancelled
-            .{ 512, 33, 524, 1, 2 }, // stale_reply
-            .{ 512, 33, 524, 1, 2 }, // stale_requester
-            .{ 511, 33, 522, 1, 2 }, // destroy_reply
+            .{ 256, 0, 264, 0, 1 }, // first
+            .{ 0, 0, 10, 0, 1 }, // unchanged
+            .{ 0, 0, 10, 0, 1 }, // scroll
+            .{ 256, 0, 264, 0, 1 }, // grow
+            .{ 256, 0, 264, 0, 1 }, // options_prepare
+            .{ 0, 0, 10, 0, 1 }, // options_color
+            .{ 256, 0, 264, 0, 1 }, // measure_text
+            .{ 256, 0, 264, 0, 1 }, // editor_cursor
+            .{ 256, 0, 263, 0, 1 }, // hidden
+            .{ 0, 0, 10, 0, 1 }, // hidden_unchanged
+            .{ 256, 0, 263, 0, 1 }, // cancelled
+            .{ 512, 0, 524, 1, 2 }, // stale_reply
+            .{ 512, 0, 524, 1, 2 }, // stale_requester
+            .{ 511, 12, 522, 1, 2 }, // destroy_reply
         },
         .{
-            .{ 4096, 14, 4104, 0, 1 }, // first
-            .{ 4096, 14, 4104, 0, 1 }, // unchanged
-            .{ 4096, 14, 4104, 0, 1 }, // scroll
-            .{ 4096, 14, 4104, 0, 1 }, // grow
-            .{ 4096, 14, 4104, 0, 1 }, // options_prepare
-            .{ 4096, 14, 4104, 0, 1 }, // options_color
-            .{ 4096, 14, 4104, 0, 1 }, // measure_text
-            .{ 4096, 15, 4103, 0, 1 }, // hidden
-            .{ 4096, 15, 4103, 0, 1 }, // hidden_unchanged
-            .{ 4096, 15, 4103, 0, 1 }, // cancelled
-            .{ 8192, 33, 8204, 1, 2 }, // stale_reply
-            .{ 8192, 33, 8204, 1, 2 }, // stale_requester
-            .{ 8191, 33, 8202, 1, 2 }, // destroy_reply
+            .{ 4096, 0, 4104, 0, 1 }, // first
+            .{ 0, 0, 10, 0, 1 }, // unchanged
+            .{ 0, 0, 10, 0, 1 }, // scroll
+            .{ 4096, 0, 4104, 0, 1 }, // grow
+            .{ 4096, 0, 4104, 0, 1 }, // options_prepare
+            .{ 0, 0, 10, 0, 1 }, // options_color
+            .{ 4096, 0, 4104, 0, 1 }, // measure_text
+            .{ 4096, 0, 4104, 0, 1 }, // editor_cursor
+            .{ 4096, 0, 4103, 0, 1 }, // hidden
+            .{ 0, 0, 10, 0, 1 }, // hidden_unchanged
+            .{ 4096, 0, 4103, 0, 1 }, // cancelled
+            .{ 8192, 0, 8204, 1, 2 }, // stale_reply
+            .{ 8192, 0, 8204, 1, 2 }, // stale_requester
+            .{ 8191, 12, 8202, 1, 2 }, // destroy_reply
         },
     };
     var all: [sizes.len][std.meta.fields(Frame).len][5]u64 = undefined;
@@ -534,10 +537,16 @@ test "Scene frame work counts viewport refresh and culling work" {
         try f.owner.sceneSetViewport(content, viewport);
         const rows = try testing.allocator.alloc(context.Handle, n);
         defer testing.allocator.free(rows);
+        // One culled row is an editor.
+        const edit = try f.owner.createEditBuffer(.unicode);
+        try f.owner.editSetText(edit, "ab", false);
         for (rows, 0..) |*row_handle, index| {
-            const row = try f.owner.sceneCreateNode(f.id, 2, @intCast(4 + index));
+            const editor = index == n / 2 + 2;
+            const row = try f.owner.sceneCreateNode(f.id, if (editor) c.OT_SCENE_EDITOR else c.OT_SCENE_TEXT, @intCast(4 + index));
             row_handle.* = row;
-            try f.owner.sceneSetText(row, &.{'a' + @as(u8, @intCast(index % 26))});
+            if (editor) {
+                try f.owner.sceneSetEditorView(row, try f.owner.createEditorView(edit, 1, 1));
+            } else try f.owner.sceneSetText(row, &.{'a' + @as(u8, @intCast(index % 26))});
             try f.owner.sceneSetStyle(row, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
             try f.owner.sceneSetStyle(row, 4, 0, 0, 1, 8, 1);
             try f.owner.sceneMoveNode(row, content, @intCast(index));
@@ -569,6 +578,11 @@ test "Scene frame work counts viewport refresh and culling work" {
                     try f.owner.sceneSetMeasure(rows[n / 2 + 1], null);
                     _ = try presentWork(f, .{});
                     try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
+                    break :blk try presentWork(f, .{});
+                },
+                // A cursor move in a culled editor between frames.
+                .editor_cursor => blk: {
+                    try f.owner.editSetCursor(edit, 0, 1);
                     break :blk try presentWork(f, .{});
                 },
                 // A hidden row at the top overlaps the viewport with its zeroed layout.
@@ -615,15 +629,15 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [20]u64 }{
         .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 0, 0, 0, 1 } },
         .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 1, 0, 0, 1 } },
-        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 87, 87, 174, 0, 0, 348, 299, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 0, 0, 1, 1 } },
+        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 87, 87, 174, 0, 0, 348, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 0, 0, 1, 1 } },
         .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 87, 87, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 0, 0, 1, 1 } },
         .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 12320, 100, 12320, 6160, 44, 0, 0, 0, 1 } },
         .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 12320, 100, 12320, 6160, 44, 1, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 104, 104, 158, 0, 0, 217, 208, 100, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 0, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 104, 1, 217, 208, 100, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 1, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 158, 0, 0, 217, 208, 100, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 50, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 208, 102, 204, 53, 10000, 20000, 29900, 20000, 10000, 50, 0, 0, 0, 1 } },
-        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 70, 70, 100, 0, 0, 281, 707, 20, 40, 69, 4030, 20000, 85620, 20000, 10000, 50, 0, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 0, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 104, 1, 217, 0, 100, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 1, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 50, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 0, 102, 204, 53, 10000, 20000, 29900, 20000, 10000, 50, 0, 0, 0, 1 } },
+        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 70, 70, 100, 0, 0, 281, 0, 0, 40, 69, 4030, 20000, 85620, 20000, 10000, 50, 0, 0, 0, 1 } },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);
