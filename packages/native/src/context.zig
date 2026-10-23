@@ -351,6 +351,7 @@ pub const EditorCommand = union(enum) {
     cursor_offset: u32,
     wrap_mode: text_buffer_view.WrapMode,
     tab_indicator: ?u32,
+    wrap_indent: text_buffer_view.WrapIndent,
 };
 
 pub const TextViewCommand = union(enum) {
@@ -360,6 +361,7 @@ pub const TextViewCommand = union(enum) {
     tab_indicator: ?u32,
     truncate: bool,
     text_align: text_buffer_view.TextAlign,
+    wrap_indent: text_buffer_view.WrapIndent,
 };
 
 pub const TextDefaults = struct {
@@ -2532,12 +2534,15 @@ pub const Context = struct {
         };
         const wrap_changed = text.view.wrap_mode != options.wrap_mode;
         const scroll_changed = text.scroll_x != options.scroll_x or text.scroll_y != options.scroll_y;
-        const measure_changed = wrap_changed or text.view.first_line_offset != options.first_line_offset;
+        const measure_changed = wrap_changed or
+            text.view.wrap_indent != options.wrap_indent or
+            text.view.first_line_offset != options.first_line_offset;
         const prepare_changed = measure_changed or scroll_changed or text.view.truncate != options.truncate;
         text.buffer.setDefaultFg(options.foreground);
         text.buffer.setDefaultBg(options.background);
         text.buffer.setDefaultAttributes(options.attributes);
         text.view.setWrapMode(options.wrap_mode);
+        text.view.setWrapIndent(options.wrap_indent);
         text.view.setTextAlign(options.text_align);
         text.view.setTruncate(options.truncate);
         text.view.setFirstLineOffset(options.first_line_offset);
@@ -3269,6 +3274,7 @@ pub const Context = struct {
             },
             .truncate => |enabled| view.view.setTruncate(enabled),
             .text_align => |alignment| view.view.setTextAlign(alignment),
+            .wrap_indent => |indent| view.view.setWrapIndent(indent),
         }
         view.invalidate();
     }
@@ -3538,9 +3544,10 @@ pub const Context = struct {
             .cursor_offset => |offset| try view.view.setCursorByOffset(offset),
             .wrap_mode => |mode| view.view.setWrapMode(mode),
             .tab_indicator => |indicator| view.view.setTabIndicator(indicator),
+            .wrap_indent => |indent| view.view.setWrapIndent(indent),
         }
         switch (command) {
-            .wrap_mode, .tab_indicator => view.invalidate(),
+            .wrap_mode, .tab_indicator, .wrap_indent => view.invalidate(),
             else => view.invalidatePreparation(),
         }
     }

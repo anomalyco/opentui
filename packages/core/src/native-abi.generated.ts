@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 2b36545357f7738df87404a9507ebeb54f38df5cd270fd98c80998f95972863c
+// ABI audit SHA-256: 1aeb7c82089639f440846de4e01f5c2954f13d1f25ff1e55f1c63826763b8904
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -349,6 +349,7 @@ export const nativeLayouts = {
       tab_color_set: { offset: 60, size: 4, alignment: 4, type: "u32" },
       tab_color: { offset: 64, size: 8, alignment: 2, type: "[4]u16" },
       text_align: { offset: 72, size: 4, alignment: 4, type: "u32" },
+      wrap_indent: { offset: 76, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_scene_text_selection_options: {
@@ -1442,6 +1443,8 @@ export const nativeConstants = {
   OT_SCENE_WRAP_NONE: 0,
   OT_SCENE_WRAP_CHAR: 1,
   OT_SCENE_WRAP_WORD: 2,
+  OT_SCENE_WRAP_INDENT_NONE: 0,
+  OT_SCENE_WRAP_INDENT_SAME: 1,
   OT_SCENE_ALIGN_LEFT: 0,
   OT_SCENE_ALIGN_CENTER: 1,
   OT_SCENE_ALIGN_RIGHT: 2,
@@ -1708,6 +1711,7 @@ export const nativeConstants = {
   OT_EDITOR_CURSOR_OFFSET: 4,
   OT_EDITOR_WRAP_MODE: 5,
   OT_EDITOR_TAB_INDICATOR: 6,
+  OT_EDITOR_WRAP_INDENT: 7,
   OT_EDITOR_SELECT_SET: 0,
   OT_EDITOR_SELECT_UPDATE: 1,
   OT_EDITOR_SELECT_RESET: 2,
@@ -1777,6 +1781,7 @@ export const nativeConstants = {
   OT_TEXT_VIEW_TAB_INDICATOR: 3,
   OT_TEXT_VIEW_TRUNCATE: 4,
   OT_TEXT_VIEW_TEXT_ALIGN: 5,
+  OT_TEXT_VIEW_WRAP_INDENT: 6,
   OT_TEXT_REPLACEMENT_COUNT_MAX: 256,
   OT_TEXT_REPLACEMENT_CHUNKS_MAX: 4096,
   OT_TEXT_REPLACEMENT_BYTES_MAX: 4194304,

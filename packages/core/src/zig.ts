@@ -189,6 +189,7 @@ export enum NativeTextViewCommand {
   TabIndicator = 3,
   Truncate = 4,
   TextAlign = 5,
+  WrapIndent = 6,
 }
 
 export enum NativeEditCommand {
@@ -253,6 +254,7 @@ export enum NativeEditorCommand {
   CursorOffset = 4,
   WrapMode = 5,
   TabIndicator = 6,
+  WrapIndent = 7,
 }
 
 export enum NativeEditorSelectionOperation {
@@ -475,6 +477,7 @@ export interface NativeSceneTextOptions {
   bg: RGBA
   attributes: number
   wrapMode: "none" | "char" | "word"
+  wrapIndent?: "none" | "same"
   textAlign: "left" | "center" | "right"
   truncate: boolean
   scrollX: number
@@ -981,6 +984,7 @@ const MOUSE_STYLE_TO_ID = {
 } as const
 const SCENE_BORDER_STYLES = ["single", "double", "rounded", "heavy"] as const
 const SCENE_TEXT_WRAP_MODES = ["none", "char", "word"] as const
+const SCENE_TEXT_WRAP_INDENTS = ["none", "same"] as const
 const SCENE_TEXT_ALIGNS = ["left", "center", "right"] as const
 const SCENE_NODE_KINDS = ["root", "box", "text", "slider", "arrow", "editor", "custom", "text_view", "image"] as const
 const IMAGE_PROTOCOL_TO_ID = { auto: 0, kitty: 1, sixel: 2, blocks: 3 } as const
@@ -7302,6 +7306,9 @@ export class FFIRenderLib {
     const wrapMode = SCENE_TEXT_WRAP_MODES.indexOf(options.wrapMode)
     if (wrapMode < 0) throw new TypeError("Unknown scene text wrap mode")
     record[layout.fields.wrap_mode.offset / 4] = wrapMode
+    const wrapIndent = SCENE_TEXT_WRAP_INDENTS.indexOf(options.wrapIndent ?? "none")
+    if (wrapIndent < 0) throw new TypeError("Unknown scene text wrap indent")
+    record[layout.fields.wrap_indent.offset / 4] = wrapIndent
     const textAlign = SCENE_TEXT_ALIGNS.indexOf(options.textAlign)
     if (textAlign < 0) throw new TypeError("Unknown scene text alignment")
     record[layout.fields.text_align.offset / 4] = textAlign

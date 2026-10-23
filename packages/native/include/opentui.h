@@ -85,6 +85,8 @@ typedef struct ot_handle {
 #define OT_SCENE_WRAP_NONE UINT32_C(0)
 #define OT_SCENE_WRAP_CHAR UINT32_C(1)
 #define OT_SCENE_WRAP_WORD UINT32_C(2)
+#define OT_SCENE_WRAP_INDENT_NONE UINT32_C(0)
+#define OT_SCENE_WRAP_INDENT_SAME UINT32_C(1)
 #define OT_SCENE_ALIGN_LEFT UINT32_C(0)
 #define OT_SCENE_ALIGN_CENTER UINT32_C(1)
 #define OT_SCENE_ALIGN_RIGHT UINT32_C(2)
@@ -293,6 +295,7 @@ typedef struct ot_scene_text_options {
     uint32_t tab_color_set; /* 0 or 1; absent tab color must be zero. */
     uint16_t tab_color[4];
     uint32_t text_align; /* OT_SCENE_ALIGN_*: left=0, center=1, right=2. */
+    uint32_t wrap_indent; /* OT_SCENE_WRAP_INDENT_*: none=0, same=1. */
 } ot_scene_text_options;
 
 #define OT_SCENE_TEXT_SELECTION_RESET UINT32_C(0)
@@ -1358,8 +1361,9 @@ ot_status ot_editor_view_set_scroll_margin(ot_context *, const ot_handle *, floa
 #define OT_EDITOR_CURSOR_OFFSET UINT32_C(4)
 #define OT_EDITOR_WRAP_MODE UINT32_C(5)
 #define OT_EDITOR_TAB_INDICATOR UINT32_C(6)
-/* argument is offset, OT_SCENE_WRAP_*, or Unicode scalar (0 disables) for the
- * last three commands, and zero otherwise. */
+#define OT_EDITOR_WRAP_INDENT UINT32_C(7)
+/* argument is offset, OT_SCENE_WRAP_*, Unicode scalar (0 disables), or
+ * OT_SCENE_WRAP_INDENT_* for the last four commands, and zero otherwise. */
 ot_status ot_editor_view_command(ot_context *, const ot_handle *, uint32_t command, uint32_t argument);
 /* Atomic selected delete-then-insert using native editor history and event order.
  * Without a selection inserts at the primary cursor. Input bytes are copied. */
@@ -1679,6 +1683,7 @@ typedef struct ot_text_buffer_info {
 #define OT_TEXT_VIEW_TAB_INDICATOR UINT32_C(3)
 #define OT_TEXT_VIEW_TRUNCATE UINT32_C(4)
 #define OT_TEXT_VIEW_TEXT_ALIGN UINT32_C(5)
+#define OT_TEXT_VIEW_WRAP_INDENT UINT32_C(6)
 
 ot_status ot_text_buffer_create(ot_context *, const ot_edit_buffer_options *, ot_handle *out_buffer);
 ot_status ot_text_buffer_destroy(ot_context *, const ot_handle *);

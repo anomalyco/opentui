@@ -216,8 +216,9 @@ pub fn ot_editor_view_set_scroll_margin(context: ?*Owner, id: ?*const c.ot_handl
 
 pub fn ot_editor_view_command(context: ?*Owner, id: ?*const c.ot_handle, command: u32, argument: u32) callconv(.c) c.ot_status {
     const owner = admit(context, false) catch |err| return fail(context, err);
-    if (id == null or command > c.OT_EDITOR_TAB_INDICATOR or (command < c.OT_EDITOR_CURSOR_OFFSET and argument != 0) or
-        (command == c.OT_EDITOR_WRAP_MODE and argument > c.OT_SCENE_WRAP_WORD)) return fail(owner, error.InvalidOptions);
+    if (id == null or command > c.OT_EDITOR_WRAP_INDENT or (command < c.OT_EDITOR_CURSOR_OFFSET and argument != 0) or
+        (command == c.OT_EDITOR_WRAP_MODE and argument > c.OT_SCENE_WRAP_WORD) or
+        (command == c.OT_EDITOR_WRAP_INDENT and argument > c.OT_SCENE_WRAP_INDENT_SAME)) return fail(owner, error.InvalidOptions);
     const operation: ctx.EditorCommand = switch (command) {
         c.OT_EDITOR_MOVE_UP => .move_up,
         c.OT_EDITOR_MOVE_DOWN => .move_down,
@@ -226,6 +227,7 @@ pub fn ot_editor_view_command(context: ?*Owner, id: ?*const c.ot_handle, command
         c.OT_EDITOR_CURSOR_OFFSET => .{ .cursor_offset = argument },
         c.OT_EDITOR_WRAP_MODE => .{ .wrap_mode = @enumFromInt(argument) },
         c.OT_EDITOR_TAB_INDICATOR => .{ .tab_indicator = if (argument == 0) null else argument },
+        c.OT_EDITOR_WRAP_INDENT => .{ .wrap_indent = @enumFromInt(argument) },
         else => unreachable,
     };
     owner.core.editorCommand(abi.handleFromC(id.?.*), operation) catch |err| return fail(owner, err);

@@ -1997,12 +1997,18 @@ pub fn ot_scene_set_text_options(context: ?*ContextHandle, node_ptr: ?*const c.o
         c.OT_SCENE_ALIGN_RIGHT => .right,
         else => return sessionError(owner, error.InvalidOptions),
     };
+    const wrap_indent: @import("text-buffer-view.zig").WrapIndent = switch (options.wrap_indent) {
+        c.OT_SCENE_WRAP_INDENT_NONE => .none,
+        c.OT_SCENE_WRAP_INDENT_SAME => .same,
+        else => return sessionError(owner, error.InvalidOptions),
+    };
     owner.core.sceneSetTextOptions(handleFromC(node.*), .{
         .foreground = options.foreground,
         .background = options.background,
         .attributes = options.attributes,
         .wrap_mode = wrap_mode,
         .text_align = text_align,
+        .wrap_indent = wrap_indent,
         .truncate = options.truncate == 1,
         .first_line_offset = options.first_line_offset,
         .scroll_x = options.scroll_x,

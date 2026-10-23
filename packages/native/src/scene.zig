@@ -62,6 +62,7 @@ pub const TextOptions = struct {
     background: ansi.RGBA = .{ 0, 0, 0, 0 },
     attributes: u32 = 0,
     wrap_mode: text_buffer_view.WrapMode = .word,
+    wrap_indent: text_buffer_view.WrapIndent = .none,
     text_align: text_buffer_view.TextAlign = .left,
     truncate: bool = false,
     first_line_offset: u32 = 0,

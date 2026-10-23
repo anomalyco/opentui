@@ -2,7 +2,7 @@ import { type LineInfo, type RenderContext } from "../types.js"
 import { StyledText } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { getTreeSitterClient, TreeSitterClient } from "../lib/tree-sitter/index.js"
-import { TextBufferRenderable, type TextBufferOptions } from "./TextBufferRenderable.js"
+import { TextBufferRenderable, type TextBufferOptions, type WrapIndent } from "./TextBufferRenderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import type { TextChunk } from "../text-buffer.js"
@@ -206,6 +206,17 @@ export class CodeRenderable extends TextBufferRenderable {
     if (super.wrapMode !== value) {
       this._mappedLineInfo = undefined
       super.wrapMode = value
+    }
+  }
+
+  public override get wrapIndent(): WrapIndent {
+    return super.wrapIndent
+  }
+
+  public override set wrapIndent(value: WrapIndent) {
+    if (super.wrapIndent !== value) {
+      this._mappedLineInfo = undefined
+      super.wrapIndent = value
     }
   }
 
