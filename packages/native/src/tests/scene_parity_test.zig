@@ -166,6 +166,8 @@ const Stats = struct {
     hidden_hooked: u32 = 0,
     /// Host replies that hid an ancestor of the requesting node mid-frame.
     reply_hides: u32 = 0,
+    /// Host replies that detached the requesting node mid-frame.
+    reply_detaches: u32 = 0,
     /// RESIZE requests from children of the viewport content.
     content_resizes: u32 = 0,
     /// Replies to those requests that changed text on a content child, mid-batch.
@@ -553,9 +555,15 @@ const Harness = struct {
                     }
                     // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
                     // ancestor of a node it already stamped (B2 invariant 7).
+                    // Detaching it instead makes the walk meet a node whose ancestry moved.
                     if (self.model.parent[requester]) |parent| if (parent != root_slot and self.random.uintLessThan(u32, 4) == 0) {
-                        try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
-                        self.stats.reply_hides += 1;
+                        if (requester >= scaffold_slots and self.random.boolean()) {
+                            try self.apply(.{ .move = .{ .slot = requester, .parent = null, .index = 0 } });
+                            self.stats.reply_detaches += 1;
+                        } else {
+                            try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
+                            self.stats.reply_hides += 1;
+                        }
                     };
                 },
             }
@@ -818,11 +826,12 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     }
     // Every frame kind B2 relies on is reached in quantity (about a quarter of today's counts;
     // decoded frames at about half), and each minimum fails if the draw that produces its kind
-    // is removed. Counts at 64 x 256: reused 581, filtered 797, filtered with a request 213,
-    // hooked under a hidden ancestor 8,431, reply hid the requester's parent 83, content-child
-    // RESIZE 63, a truncation change in its reply 62, unmeasured content text replaced 20,
-    // UPDATE 2,594, RESIZE 71, LAYOUT_CHANGED 1,850, recordings 717, decoded 15,536.
-    const minimums: Stats = .{ .reused = 145, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 20, .content_resizes = 30, .content_reply_texts = 15, .unmeasured_texts = 5, .updates = 650, .resizes = 18, .layout_changes = 460, .records = 130, .decoded = 9000 };
+    // is removed. Counts at 64 x 256: reused 583, filtered 1,242, filtered with a request 510,
+    // hooked under a hidden ancestor 6,038, reply hid the requester's parent 46, reply detached
+    // the requester 40, content-child RESIZE 54, a truncation change in its reply 53, unmeasured
+    // content text replaced 17, UPDATE 3,254, RESIZE 78, LAYOUT_CHANGED 2,015, recordings 667,
+    // decoded 15,256.
+    const minimums: Stats = .{ .reused = 145, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 10, .reply_detaches = 10, .content_resizes = 30, .content_reply_texts = 15, .unmeasured_texts = 5, .updates = 650, .resizes = 18, .layout_changes = 460, .records = 130, .decoded = 9000 };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
         errdefer std.debug.print("{s}: {d}\n", .{ field.name, @field(total, field.name) });

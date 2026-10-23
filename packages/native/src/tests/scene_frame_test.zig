@@ -438,6 +438,44 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     (try f.owner.raw().getSession(f.id)).cancel();
 }
 
+// A reply changes the visibility of a member whose feedback already started. The visibility
+// stamp must give way to the walk: no request may reach a node the reply hid.
+test "Scene feedback visibility follows replies that hide, detach, or move a started member" {
+    for (std.enums.values(enum { hide_parent, detach, into_hidden, hide_root })) |reply| {
+        const f = try Fixture.init(testing.allocator, 8, 4, .{});
+        defer f.deinit();
+        const hidden = try f.owner.sceneCreateNode(f.id, 1, 9);
+        try f.owner.sceneMoveNode(hidden, f.root, 0);
+        try f.owner.sceneSetStyle(hidden, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+        const holder = try f.owner.sceneCreateNode(f.id, 1, 4);
+        try f.owner.sceneMoveNode(holder, f.root, 1);
+        const parent = try f.owner.sceneCreateNode(f.id, 1, 2);
+        try f.owner.sceneMoveNode(parent, holder, 0);
+        const child = try f.owner.sceneCreateNode(f.id, 1, 3);
+        try f.owner.sceneMoveNode(child, parent, 0);
+        try f.owner.sceneSetHooks(parent, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
+        try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
+        var request: scene.FrameRequest = undefined;
+        if (reply == .hide_root) {
+            // Round 2 solves without the hidden root and stamps nothing for it.
+            try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_LAYOUT_CHANGED, 1, 0, 0);
+            request = try f.step(null, options, c.OT_SCENE_FRAME_LAYOUT_CHANGED, f.root);
+            request = try f.step(request, options, c.OT_SCENE_FRAME_UPDATE, parent);
+            try f.owner.sceneSetStyle(f.root, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+        } else {
+            request = try f.step(null, options, c.OT_SCENE_FRAME_UPDATE, parent);
+            switch (reply) {
+                .hide_parent => try f.owner.sceneSetStyle(holder, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0),
+                .detach => try f.owner.sceneMoveNode(parent, null, 0),
+                .into_hidden => try f.owner.sceneMoveNode(parent, hidden, 0),
+                .hide_root => unreachable,
+            }
+        }
+        const done = try f.step(request, options, c.OT_SCENE_FRAME_DONE, null);
+        try f.owner.sceneFrameCancel(f.id, done.frame_id);
+    }
+}
+
 /// Drives one frame through every host request, replying with `reply`, then presents it.
 fn presentStepped(f: Fixture, reply: anytype) !FrameWork {
     var request = try f.owner.sceneFrameStep(f.id, null, options);
