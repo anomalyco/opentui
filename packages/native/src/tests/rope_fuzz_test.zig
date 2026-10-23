@@ -249,15 +249,41 @@ const UnifiedRope = seg_mod.UnifiedRope;
 
 /// Pieces that put breaks, zero-width, wide, and tab cells at chunk edges.
 const text_pieces = [_][]const u8{ "a", "bc", "\t", "世", "e", "\u{0301}", "\u{200d}", "\u{200b}", "👍", "\u{1F3FD}", "\r", "\n", "\r\n", "\x01", "🇺", "🇸", "x\ty", "ab\ncd", "\n\n" };
+/// Pieces whose widths do not depend on where chunks split, so edited text measures like fresh text.
+const fresh_pieces = [_][]const u8{ "a", "bc", "\t", "世", "世界", "\u{200b}", "\n", "\r\n", "\n\r\n", "\n\n", "ab\ncd", "x\ty", "\x01", "", "\t\t" };
 
-fn randomText(random: std.Random, out: []u8) []const u8 {
+fn randomText(random: std.Random, pieces: []const []const u8, out: []u8) []const u8 {
     var len: usize = 0;
     for (0..random.uintAtMost(usize, 3)) |_| {
-        const piece = text_pieces[random.uintLessThan(usize, text_pieces.len)];
+        const piece = pieces[random.uintLessThan(usize, pieces.len)];
         @memcpy(out[len..][0..piece.len], piece);
         len += piece.len;
     }
     return out[0..len];
+}
+
+/// Every line query of the edited buffer equals the same query on the text loaded as one chunk.
+fn verifyEditedEqualsFresh(pools: *TestPools, tb: *TextBuffer, method: utf8.WidthMethod) !void {
+    const text = try std.testing.allocator.alloc(u8, tb.getByteSize());
+    defer std.testing.allocator.free(text);
+    const fresh = try TextBuffer.initWithOptions(std.testing.allocator, &pools.graphemes, &pools.links, method, .{ .control_display = tb.controlDisplay() });
+    defer fresh.deinit();
+    fresh.setTabWidth(tb.tabWidth());
+    try fresh.setText(text[0..tb.getPlainTextIntoBuffer(text)]);
+    const rope = tb.rope();
+    try std.testing.expectEqual(fresh.getLineCount(), tb.getLineCount());
+    try std.testing.expectEqual(fresh.lineWidthColsMax(), tb.lineWidthColsMax());
+    for (0..tb.getLineCount()) |row| {
+        try std.testing.expectEqual(iter_mod.lineStart(fresh.rope(), @intCast(row)).?.weight, iter_mod.lineStart(rope, @intCast(row)).?.weight);
+        try std.testing.expectEqual(fresh.lineWidthAt(@intCast(row)), tb.lineWidthAt(@intCast(row)));
+    }
+    try std.testing.expectEqual(fresh.textEndOffset(), tb.textEndOffset());
+    for (0..tb.textEndOffset() + 2) |offset| {
+        try std.testing.expectEqual(iter_mod.offsetToCoords(fresh.rope(), @intCast(offset)), iter_mod.offsetToCoords(rope, @intCast(offset)));
+    }
+    for (0..tb.getLength() + 2) |cell| {
+        try std.testing.expectEqual(iter_mod.firstLineEndingAfter(fresh.rope(), @intCast(cell)), iter_mod.firstLineEndingAfter(rope, @intCast(cell)));
+    }
 }
 
 /// Checks the line queries against positions found by walking every leaf.
@@ -301,9 +327,7 @@ fn verifyLineMetrics(tb: *TextBuffer) !void {
     try std.testing.expectEqual(null, iter_mod.offsetToCoords(rope, walk.weight + 1));
 }
 
-test "Rope fuzz - text line queries match a walk under random edits" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
+fn runRandomEdits(pools: *TestPools, pieces: []const []const u8, compare_fresh: bool) !void {
     var bytes: [64]u8 = undefined;
     for (std.enums.values(utf8.WidthMethod)) |method| for (0..40) |seed| {
         const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
@@ -323,25 +347,41 @@ test "Rope fuzz - text line queries match a walk under random edits" {
                 fn handle(_: *anyopaque) void {}
             };
             switch (random.uintLessThan(u8, 10)) {
-                0 => try eb.setText(randomText(random, &bytes)),
-                1, 2 => try eb.insertText(randomText(random, &bytes)),
+                0 => try eb.setText(randomText(random, pieces, &bytes)),
+                1, 2 => try eb.insertText(randomText(random, pieces, &bytes)),
                 3 => try eb.backspace(),
                 4 => try eb.deleteForward(),
                 5 => {
                     const other = random.uintLessThan(u32, rows);
                     try eb.deleteRange(eb.getPrimaryCursor(), .{ .row = other, .col = random.uintAtMost(u32, tb.lineWidthAt(other)), .desired_col = 0, .offset = 0 });
                 },
-                6 => try tb.append(randomText(random, &bytes)),
+                // The buffer keeps appended bytes, so each append owns a copy.
+                6 => try tb.appendWithOwnership(try std.testing.allocator.dupe(u8, randomText(random, pieces, &bytes)), true),
                 7 => _ = eb.undo() catch |err| if (err != error.Stop) return err,
                 8 => if (random.boolean()) {
                     _ = eb.redo() catch |err| if (err != error.Stop) return err;
                 } else eb.setTabWidth(if (random.boolean()) 2 else 8),
-                9 => try eb.replaceRange(@min(a, b), @max(a, b), randomText(random, &bytes), .{ .ctx = eb, .handle = ignore.handle }),
+                9 => try eb.replaceRange(@min(a, b), @max(a, b), randomText(random, pieces, &bytes), .{ .ctx = eb, .handle = ignore.handle }),
                 else => unreachable,
             }
             try verifyLineMetrics(tb);
+            const cursor = eb.getPrimaryCursor();
+            try std.testing.expectEqual(iter_mod.coordsToOffset(tb.rope(), cursor.row, cursor.col).?, cursor.offset);
+            if (compare_fresh) try verifyEditedEqualsFresh(pools, tb, method);
         }
     };
+}
+
+test "Rope fuzz - text line queries match a walk under random edits" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    try runRandomEdits(&pools, &text_pieces, false);
+}
+
+test "Rope fuzz - edited text answers line queries like fresh text" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    try runRandomEdits(&pools, &fresh_pieces, true);
 }
 
 test "Rope fuzz - an insert next to zero-width pieces lands where it lands in one piece" {
