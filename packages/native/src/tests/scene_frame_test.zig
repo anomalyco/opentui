@@ -507,3 +507,31 @@ test "Scene frame work counts viewport refresh and culling work" {
     try testing.expectEqual(@as(u64, 35), resized.feedback_operations);
     try testing.expectEqual(@as(u32, 1), resized.host_requests);
 }
+
+// The bench's scenes at small sizes. Columns: candidate visits, paint visits, view preparations,
+// viewport child refreshes, overlap tests, feedback operations, members painted, hit cells
+// written, rows diffed, Yoga solves, host requests. Track B steps change these rows.
+test "Scene frame bench scenes pin each frame kind's work at small sizes" {
+    const bench = @import("../bench/scene-frame_bench.zig");
+    const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [11]u64 }{
+        .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 87, 0, 0, 0, 86, 26209, 0, 0, 0 } },
+        .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 0, 0, 0, 86, 26209, 1, 1, 0 } },
+        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 87, 87, 174, 0, 0, 348, 86, 26209, 0, 0, 1 } },
+        .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 87, 87, 87, 0, 0, 0, 86, 26209, 0, 0, 1 } },
+        .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 101, 0, 0, 0, 100, 100, 0, 0, 0 } },
+        .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 101, 0, 0, 0, 100, 100, 1, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 104, 104, 158, 100, 200, 217, 53, 29900, 0, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 100, 200, 217, 53, 29900, 1, 1, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 158, 100, 200, 217, 53, 29900, 50, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 102, 204, 219, 53, 29900, 0, 1, 0 } },
+        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 70, 70, 100, 20, 40, 281, 69, 85620, 0, 0, 0 } },
+    };
+    for (rows) |row| {
+        var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);
+        defer target.deinit();
+        // The second changed frame: the first one also settles hooks registered by the change.
+        _ = try target.frame(row.change);
+        const w = try target.frame(row.change);
+        try testing.expectEqual(row.work, [11]u64{ w.candidate_visits, w.paint_visits, w.view_preparations, w.viewport_child_refreshes, w.overlap_tests, w.feedback_operations, w.members_painted, w.hit_cells_written, w.rows_diffed, w.yoga_solves, w.host_requests });
+    }
+}

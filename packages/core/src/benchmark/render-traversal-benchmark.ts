@@ -20,6 +20,7 @@ import {
   TextRenderable,
 } from "../index.js"
 import { CliRenderEvents, type CliRendererErrorEvent } from "../renderer.js"
+import type { NativeFrameWork } from "../zig.js"
 import { createTestRenderer, ManualClock, type TestRenderer } from "../testing.js"
 import { sceneGoldens } from "./render-traversal-goldens.js"
 
@@ -66,6 +67,8 @@ export type ScenarioResult = {
   approxUsPerRenderable: number
   scene?: TimingStats
   nativeRender?: TimingStats
+  /** Work counts of the last timed frame; deterministic, unlike the timings. */
+  frameWork?: NativeFrameWork
   sceneNodes?: SceneNodeCounts
 }
 
@@ -1445,6 +1448,7 @@ async function runScenario(
     const nativeRenderSamples = scenario.scene ? new Array<number>(iterations) : undefined
     let renderableCountTotal = 0
     let nativeFrameCount = sceneSamples ? ctx.renderer.getNativeStats().nativeFrameCount : 0
+    let frameWork: NativeFrameWork | undefined
     if (sceneSamples) {
       assert.ok(Number.isFinite(ctx.renderer.lastSceneTimeMs), "renderer.lastSceneTimeMs is required for scene timing")
     }
@@ -1476,6 +1480,7 @@ async function runScenario(
         // Native diff/encode timing is reported in microseconds, unlike scene timing.
         nativeRenderSamples![i] = stats.nativeRenderTime / 1000
         nativeFrameCount = stats.nativeFrameCount
+        frameWork = stats.frameWork
       }
     }
 
@@ -1502,6 +1507,7 @@ async function runScenario(
       approxUsPerRenderable: renderablesPerIteration > 0 ? round((stats.avgMs * 1000) / renderablesPerIteration, 3) : 0,
       ...(sceneSamples ? { scene: calculateStats(sceneSamples) } : {}),
       ...(nativeRenderSamples ? { nativeRender: calculateStats(nativeRenderSamples) } : {}),
+      ...(frameWork ? { frameWork } : {}),
       ...(sceneNodes ? { sceneNodes } : {}),
     }
   } finally {

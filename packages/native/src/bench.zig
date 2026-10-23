@@ -65,6 +65,7 @@ const renderer_overhead_bench = @import("bench/renderer-overhead_bench.zig");
 const buffer_image_overlap_bench = @import("bench/buffer-image-overlap_bench.zig");
 const image_operations_bench = @import("bench/image-operations_bench.zig");
 const renderer_output_bench = @import("bench/renderer-output_bench.zig");
+const scene_frame_bench = @import("bench/scene-frame_bench.zig");
 
 const BenchModule = struct {
     name: []const u8,
@@ -119,6 +120,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = buffer_image_overlap_bench.benchName, .run = buffer_image_overlap_bench.run },
         .{ .name = image_operations_bench.benchName, .run = image_operations_bench.run },
         .{ .name = renderer_output_bench.benchName, .run = renderer_output_bench.run },
+        .{ .name = scene_frame_bench.benchName, .run = scene_frame_bench.run },
     };
 
     var args_arena = std.heap.ArenaAllocator.init(allocator);

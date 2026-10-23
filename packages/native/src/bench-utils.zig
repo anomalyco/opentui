@@ -27,6 +27,12 @@ pub const MemStat = struct {
     bytes: usize,
 };
 
+/// A deterministic work count reported next to a timing.
+pub const Counter = struct {
+    name: []const u8,
+    value: u64,
+};
+
 pub const BenchResult = struct {
     name: []const u8,
     min_ns: u64,
@@ -37,6 +43,7 @@ pub const BenchResult = struct {
     stddev_ns: ?f64 = null,
     rme_95: ?f64 = null,
     mem_stats: ?[]const MemStat,
+    counters: ?[]const Counter = null,
 };
 
 /// Timing statistics collected during benchmark iterations
@@ -480,6 +487,13 @@ pub fn printResults(writer: anytype, results: []const BenchResult) !void {
             try writer.writeAll("\x1b[0m");
         }
         try writer.writeByte('\n');
+        if (result.counters) |counters| {
+            try writer.writeAll("\x1b[2m  ");
+            for (counters) |counter| {
+                if (counter.value != 0) try writer.print(" {s}={d}", .{ counter.name, counter.value });
+            }
+            try writer.writeAll("\x1b[0m\n");
+        }
     }
 
     try writer.writeAll("\x1b[2m");

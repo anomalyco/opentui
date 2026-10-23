@@ -693,7 +693,8 @@ pub fn build(b: *std.Build) void {
         .root_module = bench_mod,
     });
     bench_mod.link_libc = true;
-    addImageShim(b, bench_mod, native_target, macos_sdk_path);
+    // The scene bench drives a whole Context, which owns audio resources; this adds the image shim too.
+    addNativeAudioDependencies(b, bench_mod, native_target, macos_sdk_path);
     addYogaDependencies(b, bench_mod, false);
     if (native_target.result.os.tag == .macos) addMacOSSDKSearchPaths(b, bench_mod, macos_sdk_path.?);
     const run_bench = b.addRunArtifact(bench_exe);
