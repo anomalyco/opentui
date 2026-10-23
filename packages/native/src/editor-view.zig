@@ -48,6 +48,8 @@ pub const EditorView = struct {
     cursor_visual_affinity: ?CursorVisualAffinity,
     selection_updates_cursor: bool,
     selection_follow_cursor: bool, // Keep viewport synced during selection
+    /// A cursor change made a scroll to the cursor due; reads and frames apply it (`settle`).
+    follow_pending: bool = false,
     cursor_changed_listener: event_emitter.EventEmitter(eb.EditBufferEvent).Listener,
 
     placeholder_buffer: ?*UnifiedTextBuffer,
@@ -69,11 +71,26 @@ pub const EditorView = struct {
             if (affinity.offset != cursor.offset) self.cursor_visual_affinity = null;
         }
 
-        const has_selection = self.text_buffer_view.selection != null;
-        if (!has_selection or self.selection_follow_cursor) {
-            const vcursor = self.getPrimaryVisualCursorAbsolute();
-            self.ensureCursorVisible(vcursor.visual_row);
-        }
+        if (self.followsCursor()) self.follow_pending = true;
+    }
+
+    fn followsCursor(self: *const EditorView) bool {
+        return self.text_buffer_view.selection == null or self.selection_follow_cursor;
+    }
+
+    /// Scrolls to the cursor if a cursor change made that due. Layout runs here, once per
+    /// burst of edits.
+    pub fn settle(self: *EditorView) void {
+        if (self.follow_pending) _ = self.followCursor();
+    }
+
+    /// If layout fails, the viewport stays and the scroll stays due.
+    fn followCursor(self: *EditorView) VisualCursor {
+        const vcursor = self.getPrimaryVisualCursorAbsolute();
+        if (self.text_buffer_view.virtual_lines_dirty) return vcursor;
+        self.follow_pending = false;
+        self.ensureCursorVisible(vcursor.visual_row);
+        return vcursor;
     }
 
     pub fn init(global_allocator: Allocator, edit_buffer: *EditBuffer, viewport_width: u32, viewport_height: u32) EditorViewError!*EditorView {
@@ -140,6 +157,7 @@ pub const EditorView = struct {
     /// this will trigger a reflow by updating the TextBufferView's wrap width.
     /// moveCursor: if true, moves cursor to stay within viewport bounds (prevents viewport reset)
     pub fn setViewport(self: *EditorView, vp: ?tbv.Viewport, moveCursor: bool) void {
+        self.settle();
         const old_viewport = self.text_buffer_view.getViewport();
         self.text_buffer_view.setViewport(vp);
         if (old_viewport == null or vp == null or old_viewport.?.width != vp.?.width) {
@@ -151,7 +169,8 @@ pub const EditorView = struct {
         }
     }
 
-    pub fn getViewport(self: *const EditorView) ?tbv.Viewport {
+    pub fn getViewport(self: *EditorView) ?tbv.Viewport {
+        self.settle();
         return self.text_buffer_view.getViewport();
     }
 
@@ -202,6 +221,7 @@ pub const EditorView = struct {
     /// Set the scroll margin as a fraction of viewport height (0.0 to 0.5)
     /// The cursor will stay at least this many lines from the top/bottom edges when scrolling
     pub fn setScrollMargin(self: *EditorView, margin: f32) void {
+        self.settle();
         self.scroll_margin = @max(0.0, @min(0.5, margin));
     }
 
@@ -268,23 +288,15 @@ pub const EditorView = struct {
         }
     }
 
-    /// Always ensures cursor visibility since cursor movements don't mark buffer dirty
-    /// Note: With eager viewport updates in onCursorChanged, this is mainly for rendering methods
     pub fn updateBeforeRender(self: *EditorView) void {
         _ = self.updateCursorBeforeRender();
     }
 
     fn updateCursorBeforeRender(self: *EditorView) ?VisualCursor {
         self.updatePlaceholderVisibility();
-
-        const has_selection = self.text_buffer_view.selection != null;
-
-        if (!has_selection or self.selection_follow_cursor) {
-            const vcursor = self.getPrimaryVisualCursorAbsolute();
-            self.ensureCursorVisible(vcursor.visual_row);
-            return vcursor;
-        }
-        return null;
+        // A selection set after a cursor change does not cancel the scroll that the change made due.
+        if (self.followsCursor()) self.follow_pending = true;
+        return if (self.follow_pending) self.followCursor() else null;
     }
 
     /// Automatically ensures cursor is visible before rendering
@@ -361,6 +373,7 @@ pub const EditorView = struct {
     }
 
     pub fn setLocalSelectionBehavior(self: *EditorView, anchorX: i32, anchorY: i32, focusX: i32, focusY: i32, bgColor: ?tb.RGBA, fgColor: ?tb.RGBA, updateCursor: bool, behavior: tbv.SelectionBehavior) bool {
+        self.settle();
         const changed = self.text_buffer_view.setLocalSelectionBehavior(anchorX, anchorY, focusX, focusY, bgColor, fgColor, behavior);
         self.selection_updates_cursor = updateCursor;
 
@@ -377,6 +390,7 @@ pub const EditorView = struct {
     }
 
     pub fn updateLocalSelectionBehavior(self: *EditorView, anchorX: i32, anchorY: i32, focusX: i32, focusY: i32, bgColor: ?tb.RGBA, fgColor: ?tb.RGBA, updateCursor: bool, behavior: tbv.SelectionBehavior) bool {
+        self.settle();
         const had_endpoints = self.text_buffer_view.selection_endpoints != null;
         const changed = self.text_buffer_view.updateLocalSelectionBehavior(anchorX, anchorY, focusX, focusY, bgColor, fgColor, behavior);
         if (!had_endpoints) {
@@ -475,6 +489,7 @@ pub const EditorView = struct {
     /// This is a convenience method that preserves existing offset
     /// After resize, ensures cursor is visible and clamps viewport offset to valid range
     pub fn setViewportSize(self: *EditorView, width: u32, height: u32) void {
+        self.settle();
         const old_width = if (self.text_buffer_view.getViewport()) |viewport| viewport.width else 0;
         if (old_width != width) self.cursor_visual_affinity = null;
         self.text_buffer_view.setViewportSize(width, height);
@@ -506,6 +521,7 @@ pub const EditorView = struct {
     }
 
     pub fn setWrapMode(self: *EditorView, mode: tb.WrapMode) void {
+        self.settle();
         self.cursor_visual_affinity = null;
         self.text_buffer_view.setWrapMode(mode);
     }
@@ -700,12 +716,14 @@ pub const EditorView = struct {
     }
 
     pub fn moveUpVisual(self: *EditorView) void {
+        self.settle();
         const vcursor = self.getPrimaryVisualCursorAbsolute();
         if (vcursor.visual_row == 0) return;
         self.moveToVisualRow(vcursor, vcursor.visual_row - 1);
     }
 
     pub fn moveDownVisual(self: *EditorView) void {
+        self.settle();
         const vcursor = self.getPrimaryVisualCursorAbsolute();
         if (self.placeholder_active or vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
         self.moveToVisualRow(vcursor, vcursor.visual_row + 1);
@@ -763,7 +781,7 @@ pub const EditorView = struct {
 
         try self.edit_buffer.deleteRange(start_cursor, end_cursor);
         self.resetLocalSelection();
-        self.updateBeforeRender();
+        self.follow_pending = true;
     }
 
     pub fn replaceSelectedText(self: *EditorView, bytes: []const u8) !u32 {
@@ -785,12 +803,11 @@ pub const EditorView = struct {
     fn finishSelectedDeletion(ctx: *anyopaque) void {
         const self: *EditorView = @ptrCast(@alignCast(ctx));
         self.resetLocalSelection();
-        self.updateBeforeRender();
+        self.follow_pending = true;
     }
 
     pub fn setCursorByOffset(self: *EditorView, offset: u32) !void {
         try self.edit_buffer.setCursorByOffset(offset);
-        self.updateBeforeRender();
     }
 
     pub fn getNextWordBoundary(self: *EditorView) VisualCursor {

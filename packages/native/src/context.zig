@@ -261,6 +261,7 @@ pub const Editor = struct {
     pub fn prepareView(self: *Editor) !void {
         _ = self.view.text_buffer_view.getVirtualLines();
         if (self.view.text_buffer_view.virtual_lines_dirty) return error.OutOfMemory;
+        self.view.settle();
     }
 };
 
@@ -3540,6 +3541,7 @@ pub const Context = struct {
         if (!std.math.isFinite(margin)) return error.InvalidOptions;
         const view = try self.getEditorView(handle);
         try view.edit.checkMutable();
+        if (view.view.follow_pending) try view.prepareView();
         view.view.setScrollMargin(margin);
         view.invalidate();
     }
@@ -3680,6 +3682,7 @@ pub const Context = struct {
         const view = if (is_editor) value.view.text_buffer_view else value.view;
         const buffer = if (is_editor) value.edit.buffer.tb else value.text.buffer;
         const local = options.operation == .local or options.operation == .local_update;
+        if (is_editor and local and value.view.follow_pending) try value.prepareView();
         if (options.foreground) |color| try buf.validateColor(color);
         if (options.background) |color| try buf.validateColor(color);
         if (local) {

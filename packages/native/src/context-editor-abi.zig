@@ -197,6 +197,7 @@ pub fn ot_editor_view_get_viewport(context: ?*Owner, id: ?*const c.ot_handle, ou
     const owner = admit(context, true) catch |err| return fail(context, err);
     _ = record(c.ot_editor_viewport, out) catch |err| return fail(owner, err);
     const value = view(owner, id) catch |err| return fail(owner, err);
+    if (value.view.follow_pending) value.prepareView() catch |err| return fail(owner, err);
     const vp = value.view.getViewport() orelse return fail(owner, error.InvalidOptions);
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_viewport), .abi_version = c.OT_CONTEXT_ABI_VERSION, .x = vp.x, .y = vp.y, .width = vp.width, .height = vp.height };
     return c.OT_OK;
@@ -688,33 +689,67 @@ test "Context history-preserving set_text needs no registry slot per call" {
     }
 }
 
-test "Context editor accepted deletion does not return a later layout allocation failure" {
+test "Context editor edits defer layout to the first viewport read, which reports its failure" {
     var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
     owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
     defer owner.core.deinit() catch unreachable;
     const edit_id = try owner.core.createEditBuffer(.unicode);
-    try owner.core.editSetText(edit_id, "abcdef", false);
+    try owner.core.editSetText(edit_id, "abcdef\n1\n2\n3\n4\n5", false);
     const view_id = try owner.core.createEditorView(edit_id, 4, 2);
+    const other_id = try owner.core.createEditorView(edit_id, 4, 2);
     const editor = try owner.core.raw().getEditorView(view_id);
     editor.view.setWrapMode(.char);
+    (try owner.core.raw().getEditorView(other_id)).view.setWrapMode(.char);
     editor.view.setSelection(0, 3, null, null);
     try editor.prepareView();
-    const handle: c.ot_handle = .{ .context_id = view_id.context_id, .slot = view_id.slot, .generation = view_id.generation };
+    const handle = abi.handleToC(view_id);
     const arena = editor.view.text_buffer_view.virtual_lines_arena;
     const allocator = arena.child_allocator;
     var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
     arena.child_allocator = failing.allocator();
     defer arena.child_allocator = allocator;
-    const status = ot_editor_view_command(&owner, &handle, c.OT_EDITOR_DELETE_SELECTION, 0);
-    var text: [16]u8 = undefined;
-    const actual = text[0..editor.edit.buffer.getText(&text)];
-    if (status == c.OT_OK) {
-        try std.testing.expectEqualStrings("def", actual);
-    } else {
-        try std.testing.expectEqualStrings("abcdef", actual);
-    }
-    try std.testing.expect(failing.has_induced_failure);
+    // An accepted edit does no layout, so a later allocation failure cannot fail it.
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_command(&owner, &handle, c.OT_EDITOR_DELETE_SELECTION, 0));
+    try owner.core.editCommand(edit_id, .{ .goto_line = 5 });
+    var text: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("def\n1\n2\n3\n4\n5", text[0..editor.edit.buffer.getText(&text)]);
+    try std.testing.expect(!failing.has_induced_failure);
+
+    var viewport = std.mem.zeroes(c.ot_editor_viewport);
+    viewport.struct_size = @sizeOf(c.ot_editor_viewport);
+    viewport.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const unchanged = viewport;
+    try std.testing.expectEqual(c.OT_OUT_OF_MEMORY, ot_editor_view_get_viewport(&owner, &handle, &viewport));
+    try std.testing.expectEqualDeep(unchanged, viewport);
+    try std.testing.expectEqual(c.OT_OUT_OF_MEMORY, ot_editor_view_set_scroll_margin(&owner, &handle, 0.5));
+    try std.testing.expectEqual(@as(f32, 0.15), editor.view.scroll_margin);
+    // A direct read whose layout fails keeps the viewport, and the scroll stays due.
+    try std.testing.expectEqual(@as(u32, 0), editor.view.getViewport().?.y);
+    arena.child_allocator = allocator;
+
+    // The first read scrolls like any other read: compare with a view that a cursor query settled.
+    var position = std.mem.zeroes(c.ot_editor_position);
+    position.struct_size = @sizeOf(c.ot_editor_position);
+    position.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const other = abi.handleToC(other_id);
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_get_position(&owner, &other, c.OT_EDITOR_POSITION_CURSOR, &position));
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_get_viewport(&owner, &handle, &viewport));
+    try std.testing.expectEqual(@as(u32, 4), viewport.y);
+    const settled = (try owner.core.raw().getEditorView(other_id)).view.text_buffer_view.getViewport().?;
+    try std.testing.expectEqual(settled.y, viewport.y);
+
+    // Local selection coordinates are checked against the viewport after the due scroll (y 4).
+    try owner.core.editorSetViewport(view_id, .{ .x = 0, .y = 0, .width = 4, .height = 2 }, false, false);
+    try owner.core.editCommand(edit_id, .{ .goto_line = 5 });
+    var select = std.mem.zeroes(c.ot_editor_selection);
+    select.struct_size = @sizeOf(c.ot_editor_selection);
+    select.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    select.operation = c.OT_EDITOR_SELECT_LOCAL;
+    select.anchor_y = std.math.maxInt(i32) - 2;
+    select.focus_y = select.anchor_y;
+    var changed: u32 = 0;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_editor_view_select(&owner, &handle, &select, &changed));
 }
 
 test "Context editor placeholder ABI rejects malformed chunks and preserves styled input" {

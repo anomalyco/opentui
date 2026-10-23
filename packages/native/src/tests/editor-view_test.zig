@@ -44,6 +44,26 @@ fn marginCells(size: u32, margin: f32) u32 {
     return @min(raw, if (size > 1) (size - 1) / 2 else 0);
 }
 
+/// The viewport and visual cursor that one scroll to `eb`'s cursor from `vp` gives on a fresh
+/// layout of the same text.
+fn followFresh(pools: *TestPools, eb: *EditBuffer, ev: *EditorView, vp: Viewport) !struct { Viewport, editor_view.VisualCursor } {
+    var bytes: [4096]u8 = undefined;
+    const fresh_buffer = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+    defer fresh_buffer.deinit();
+    try fresh_buffer.setText(bytes[0..eb.getText(&bytes)]);
+    const fresh = try EditorView.init(std.testing.allocator, fresh_buffer, vp.width, vp.height);
+    defer fresh.deinit();
+    fresh.setWrapMode(ev.text_buffer_view.wrap_mode);
+    fresh.setScrollMargin(ev.scroll_margin);
+    fresh.setViewport(vp, false);
+    const cursor = eb.getPrimaryCursor();
+    try fresh_buffer.setCursor(cursor.row, cursor.col);
+    return .{ fresh.getViewport().?, fresh.getVisualCursor() };
+}
+
+// Edits only make a scroll due. The first read after a burst, whichever it is, scrolls once from
+// the viewport of the last read, as a fresh layout of the same text and cursor would (005: undo
+// and redo too).
 test "EditorView - random edits and moves keep the cursor inside the scroll margins" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -60,10 +80,11 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
         ev.setWrapMode(random.enumValue(text_buffer.WrapMode));
         const margin = margins[random.uintLessThan(usize, margins.len)];
         ev.setScrollMargin(margin);
+        var settled = ev.getViewport().?;
         for (0..60) |step| {
             errdefer std.debug.print("viewport property failed: seed 0x{x} run {d} step {d}\n", .{ seed, run, step });
-            const row_before = ev.getVisualCursor().visual_row + ev.getViewport().?.y;
-            const op = random.uintLessThan(u8, 12);
+            const op = random.uintLessThan(u8, 15);
+            const row_before = if (op == 7 or op == 8) ev.getVisualCursor().visual_row + ev.getViewport().?.y else 0;
             switch (op) {
                 0, 1 => try eb.insertText(pieces[random.uintLessThan(usize, pieces.len)]),
                 2 => try eb.backspace(),
@@ -76,11 +97,39 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
                 9 => try eb.setCursor(random.uintLessThan(u32, eb.tb.lineCount() + 1), random.uintLessThan(u32, 40)),
                 10 => ev.setViewportSize(random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10)),
                 11 => try eb.setText(pieces[random.uintLessThan(usize, pieces.len)]),
+                12 => if (eb.canUndo()) {
+                    _ = try eb.undo();
+                },
+                13 => if (eb.canRedo()) {
+                    _ = try eb.redo();
+                },
+                14 => {
+                    const end = random.uintAtMost(u32, eb.tb.rope().totalWeight());
+                    ev.setSelection(random.uintAtMost(u32, end), end, null, null);
+                    switch (random.uintLessThan(u8, 3)) {
+                        0 => try ev.deleteSelectedText(),
+                        1 => _ = try ev.replaceSelectedText(""),
+                        else => _ = try ev.replaceSelectedText(pieces[random.uintLessThan(usize, pieces.len)]),
+                    }
+                },
                 else => unreachable,
             }
-            // getVisualCursor scrolls first, as rendering does.
+            // These calls scroll to the cursor themselves.
+            if (op == 7 or op == 8 or op == 10) settled = ev.text_buffer_view.getViewport().?;
+            if (random.boolean()) continue;
+            const expected = try followFresh(&pools, eb, ev, settled);
+            switch (random.uintLessThan(u8, 3)) {
+                0 => _ = ev.getViewport(),
+                1 => _ = ev.getVisualCursor(),
+                2 => _ = ev.getCachedLineInfo(),
+                else => unreachable,
+            }
+            const vp = ev.text_buffer_view.getViewport().?;
             const vcursor = ev.getVisualCursor();
-            const vp = ev.getViewport().?;
+            settled = vp;
+            try std.testing.expectEqualDeep(expected[0], vp);
+            try std.testing.expectEqual(expected[1].visual_row, vcursor.visual_row);
+            try std.testing.expectEqual(expected[1].visual_col, vcursor.visual_col);
             const cursor = eb.getPrimaryCursor();
             try std.testing.expectEqual(cursor.row, vcursor.logical_row);
             try std.testing.expectEqual(cursor.col, vcursor.logical_col);
@@ -98,6 +147,63 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
                 try std.testing.expect(cursor.col + cols < vp.x + vp.width);
             } else try std.testing.expectEqual(@as(u32, 0), vp.x);
         }
+    }
+}
+
+test "EditorView - undo and redo scroll like setCursor on the restored text" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    for ([_]bool{ false, true }) |redo| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, 10, 3);
+        defer ev.deinit();
+        try eb.insertText("\n\n\n\n");
+        try eb.insertText("\n\n\n");
+        try eb.setCursor(0, 0);
+        const settled = ev.getViewport().?;
+        _ = try eb.undo();
+        if (redo) _ = try eb.redo();
+        const expected = try followFresh(&pools, eb, ev, settled);
+        try std.testing.expectEqualDeep(expected[0], ev.getViewport().?);
+        if (!redo) try std.testing.expectEqual(@as(u32, 2), expected[0].y);
+    }
+}
+
+test "EditorView - view calls apply a due scroll first, as if the viewport was read before them" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // The cursor moves below the viewport (row 8 from y 0) or above it (row 2 from y 6).
+    const rows = [_]struct { call: u8, row: u32 }{
+        .{ .call = 0, .row = 8 }, .{ .call = 1, .row = 2 }, .{ .call = 2, .row = 8 }, .{ .call = 3, .row = 8 },
+        .{ .call = 4, .row = 8 }, .{ .call = 5, .row = 2 }, .{ .call = 6, .row = 8 }, .{ .call = 7, .row = 8 },
+    };
+    for (rows) |row| {
+        var results: [2]struct { Viewport, Cursor } = undefined;
+        for (&results, [_]bool{ false, true }) |*result, read_first| {
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(std.testing.allocator, eb, 5, 4);
+            defer ev.deinit();
+            try eb.setText("0 line\n1 line\n2 line\n3 line\n4 line\n5 line\n6 line\n7 line\n8 line\n9 line");
+            ev.setViewport(.{ .x = 0, .y = if (row.row < 6) 6 else 0, .width = 5, .height = 4 }, false);
+            try eb.setCursor(row.row, 3);
+            if (read_first) _ = ev.getViewport();
+            switch (row.call) {
+                0 => ev.setViewport(.{ .x = 0, .y = 1, .width = 5, .height = 4 }, false),
+                1 => ev.setViewportSize(5, 2),
+                2 => ev.setScrollMargin(0.5),
+                3 => ev.setWrapMode(.char),
+                4 => ev.moveUpVisual(),
+                5 => ev.moveDownVisual(),
+                6 => _ = ev.setLocalSelection(1, 1, 3, 1, null, null, true),
+                7 => _ = ev.updateLocalSelection(1, 1, 3, 1, null, null, true),
+                else => unreachable,
+            }
+            result.* = .{ ev.getViewport().?, eb.getPrimaryCursor() };
+        }
+        errdefer std.debug.print("call {d}\n", .{row.call});
+        try std.testing.expectEqualDeep(results[1], results[0]);
     }
 }
 

@@ -1379,6 +1379,9 @@ typedef struct ot_editor_viewport {
  * Viewports and their coordinate sums must fit INT32_MAX. */
 ot_status ot_editor_view_set_viewport(ot_context *, const ot_handle *, const ot_editor_viewport *,
     uint32_t size_only, uint32_t move_cursor);
+/* Edits do not lay out text; they make a scroll to the cursor due. The viewport read and
+ * the other editor view calls apply a due scroll first, so the viewport read can lay out
+ * text and return OT_OUT_OF_MEMORY, but only while a scroll is due. */
 ot_status ot_editor_view_get_viewport(ot_context *, const ot_handle *, ot_editor_viewport *out_viewport);
 ot_status ot_editor_view_set_scroll_margin(ot_context *, const ot_handle *, float margin);
 #define OT_EDITOR_MOVE_UP UINT32_C(0)
@@ -1456,8 +1459,9 @@ typedef struct ot_editor_view_info {
     uint32_t selection_end;
     uint32_t selection_occupancy;
 } ot_editor_view_info;
-/* follow_cursor is 0/1. Zero preserves the viewport during observational queries;
- * one retains editor render-preparation behavior for visible line-count queries. */
+/* follow_cursor is 0/1. Zero preserves the viewport during observational queries, apart
+ * from a scroll that an earlier edit made due; one retains editor render-preparation
+ * behavior for visible line-count queries. */
 ot_status ot_editor_view_get_info(ot_context *, const ot_handle *, uint32_t follow_cursor, ot_editor_view_info *out_info);
 /* Reads selection without preparing lines or following the cursor. Reuses the
  * info record with both line counts zero; absent or zero-width selections report

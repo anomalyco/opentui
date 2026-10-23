@@ -854,7 +854,6 @@ pub const EditBuffer = struct {
             decoded.desired_col;
 
         self.tb.markViewsDirty();
-        self.events.emit(.cursorChanged);
         self.emitNativeEvent(.history_cursor_changed);
         return CursorMeta.publicBytes(meta);
     }

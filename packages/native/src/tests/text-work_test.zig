@@ -45,30 +45,27 @@ fn repeatText(allocator: std.mem.Allocator, unit: []const u8, bytes: usize) ![]u
     return text;
 }
 
-test "text work: one edit in a 10,000-line editor lays out the whole document" {
+test "text work: edits in a 10,000-line editor lay out the whole document at the next frame" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
     const text = try repeatLines(allocator, "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor in", 10_000);
     defer allocator.free(text);
-    const rows = [_]struct { mode: WrapMode, insert: Counts, burst: Counts, measure: Counts }{
+    const rows = [_]struct { mode: WrapMode, frame: Counts, measure: Counts }{
         .{
             .mode = .none,
-            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 6, .line_seek_nodes = 92 },
-            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .line_seeks = 60, .line_seek_nodes = 930 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 8, .line_seek_nodes = 124, .clusters_drawn = 3_171 },
             // Unwrapped measure reads the widest line from the rope metrics.
             .measure = .{ .measure_passes = 1 },
         },
         .{
             .mode = .word,
-            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 6, .line_seek_nodes = 92, .ascii_bytes = 790_001 },
-            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .line_seeks = 60, .line_seek_nodes = 930, .ascii_bytes = 7_900_065 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 8, .line_seek_nodes = 124, .clusters_drawn = 3_171, .ascii_bytes = 790_011 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .ascii_bytes = 790_011 },
         },
         .{
             .mode = .char,
-            .insert = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 6, .line_seek_nodes = 92, .prefix_seeks = 10_001 },
-            .burst = .{ .layouts = 10, .lines_laid_out = 100_000, .line_seeks = 60, .line_seek_nodes = 930, .prefix_seeks = 100_010 },
+            .frame = .{ .layouts = 1, .lines_laid_out = 10_000, .line_seeks = 8, .line_seek_nodes = 124, .clusters_drawn = 3_171, .prefix_seeks = 10_001 },
             .measure = .{ .measure_passes = 1, .measure_lines = 10_000, .prefix_seeks = 10_001 },
         },
     };
@@ -88,16 +85,47 @@ test "text work: one edit in a 10,000-line editor lays out the whole document" {
         errdefer std.debug.print("mode {s}\n", .{@tagName(row.mode)});
         _ = text_work.take();
         try eb.insertText("x");
-        try expectWork(row.insert);
+        try expectWork(.{ .line_seeks = 2, .line_seek_nodes = 30 });
         for (0..10) |_| try eb.insertText("x");
-        try expectWork(row.burst);
-        // The cursor listener laid the document out already, so the frame only draws.
+        try expectWork(.{ .line_seeks = 20, .line_seek_nodes = 310 });
         screen.drawEditorView(ev, 0, 0);
-        try expectWork(.{ .line_seeks = 8, .line_seek_nodes = 124, .clusters_drawn = 3_171 });
+        try expectWork(row.frame);
         eb.moveRight();
-        try expectWork(.{ .line_seeks = 11, .line_seek_nodes = 171, .prefix_seeks = 1, .grapheme_width_reads = 1 });
+        try expectWork(.{ .line_seeks = 7, .line_seek_nodes = 109, .prefix_seeks = 1, .grapheme_width_reads = 1 });
         _ = try ev.getTextBufferView().measureForDimensions(100, 40);
         try expectWork(row.measure);
+    }
+}
+
+test "text work: a burst of K edits lays the editor out once, at the next frame" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const line = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor in";
+    for ([_]u64{ 1_000, 10_000 }) |lines| {
+        const text = try repeatLines(allocator, line, lines);
+        defer allocator.free(text);
+        for ([_]WrapMode{ .none, .word, .char }) |mode| for ([_]u64{ 1, 10, 100 }) |k| {
+            const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(allocator, eb, 120, 40);
+            defer ev.deinit();
+            ev.setWrapMode(mode);
+            try eb.setText(text);
+            try eb.setCursor(10, 0);
+            const screen = try OptimizedBuffer.init(allocator, 120, 40, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+            defer screen.deinit();
+            screen.drawEditorView(ev, 0, 0);
+
+            errdefer std.debug.print("lines {d} mode {s} K {d}\n", .{ lines, @tagName(mode), k });
+            _ = text_work.take();
+            for (0..k) |_| try eb.insertText("x");
+            const burst = text_work.take();
+            try std.testing.expectEqual([2]u64{ 0, 0 }, [2]u64{ burst.layouts, burst.lines_laid_out });
+            screen.drawEditorView(ev, 0, 0);
+            const frame = text_work.take();
+            try std.testing.expectEqual([2]u64{ 1, lines }, [2]u64{ frame.layouts, frame.lines_laid_out });
+        };
     }
 }
 
