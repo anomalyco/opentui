@@ -1,19 +1,3 @@
-diff --git a/src/apprt/gtk/winproto/x11.zig b/src/apprt/gtk/winproto/x11.zig
---- a/src/apprt/gtk/winproto/x11.zig
-+++ b/src/apprt/gtk/winproto/x11.zig
-@@ -10,11 +10,7 @@ const gobject = @import("gobject");
- const gtk = @import("gtk");
- const xlib = @import("xlib");
- 
--pub const c = @cImport({
--    @cInclude("X11/Xlib.h");
--    @cInclude("X11/Xatom.h");
--    @cInclude("X11/XKBlib.h");
--});
-+pub const c = @import("x11_c");
- 
- const input = @import("../../../input.zig");
- const Config = @import("../../../config.zig").Config;
 diff --git a/src/build/Config.zig b/src/build/Config.zig
 --- a/src/build/Config.zig
 +++ b/src/build/Config.zig
@@ -26,19 +10,22 @@ diff --git a/src/build/Config.zig b/src/build/Config.zig
  target: std.Build.ResolvedTarget,
  xcframework_target: XCFrameworkTarget = .universal,
  wasm_target: WasmTarget,
-@@ -341,9 +341,9 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
-             "Patch interpreter and rpath in the built binary (default if IN_NIX_SHELL is set)",
-         ) orelse in_nix_shell) {
-             var patchelf: PatchElf = .{};
--            if (b.findProgram(&.{"ld.so"}, &.{})) |ld_so| {
-+            if (b.findProgram(.{ .names = &.{"ld.so"} })) |ld_so| {
-                 patchelf.interp = std.Io.Dir.realPathFileAbsoluteAlloc(b.graph.io, ld_so, b.allocator) catch null;
--            } else |_| {}
-+            }
-             if (env.get("LD_LIBRARY_PATH")) |ld_library_path| {
-                 patchelf.rpath = if (ld_library_path.len > 0) ld_library_path else null;
-             }
-@@ -364,9 +364,9 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+@@ -379,12 +379,12 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+         if (!(target.result.os.tag == .linux) or !target.query.isNativeCpu()) break :patch_interp;
+         if (env.get("IN_NIX_SHELL") == null) break :patch_interp;
+ 
+-        if (b.findProgram(&.{"ld.so"}, &.{})) |ld_so| {
++        if (b.findProgram(.{ .names = &.{"ld.so"} })) |ld_so| {
+             PatchElf.setInterp(
+                 &config,
+                 std.Io.Dir.realPathFileAbsoluteAlloc(b.graph.io, ld_so, b.allocator) catch break :patch_interp,
+             );
+-        } else |_| {}
++        } else {}
+     }
+ 
+     if (b.option(
+@@ -416,9 +416,9 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
          "strip",
          "Strip the final executable. Default true for fast and small releases",
      ) orelse switch (optimize) {
@@ -51,7 +38,19 @@ diff --git a/src/build/Config.zig b/src/build/Config.zig
      };
  
      //---------------------------------------------------------------
-@@ -432,8 +432,8 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+@@ -438,9 +438,9 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+         ) orelse break :features .{};
+         break :features TerminalBuildOptions.Features.parse(list) catch {
+             var valid: std.ArrayList(u8) = .empty;
+-            inline for (@typeInfo(TerminalBuildOptions.Features).@"struct".fields) |field| {
++            inline for (@typeInfo(TerminalBuildOptions.Features).@"struct".field_names) |name| {
+                 if (valid.items.len > 0) try valid.appendSlice(b.allocator, ", ");
+-                try valid.appendSlice(b.allocator, field.name);
++                try valid.appendSlice(b.allocator, name);
+             }
+             std.log.err(
+                 "-Dvt-features={s} contains an unknown feature. Valid features: all, {s}",
+@@ -508,8 +508,8 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
      ) orelse switch (target.result.os.tag) {
          .windows => true,
          else => switch (optimize) {
@@ -62,7 +61,7 @@ diff --git a/src/build/Config.zig b/src/build/Config.zig
          },
      };
  
-@@ -442,8 +442,8 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+@@ -518,8 +518,8 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
          "emit-termcap",
          "Install Ghostty termcap file",
      ) orelse switch (optimize) {
@@ -73,7 +72,7 @@ diff --git a/src/build/Config.zig b/src/build/Config.zig
      };
  
      config.emit_themes = b.option(
-@@ -584,17 +584,19 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
+@@ -678,17 +678,19 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
      // accommodate realistic large branch names for dev versions.
      var app_version_buf: [1024]u8 = undefined;
      step.addOption(std.SemanticVersion, "app_version", self.version);
@@ -95,7 +94,7 @@ diff --git a/src/build/Config.zig b/src/build/Config.zig
      ));
      step.addOption(
          ReleaseChannel,
-@@ -612,7 +614,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
+@@ -706,7 +708,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
  pub fn terminalOptions(
      self: *const Config,
      artifact: TerminalBuildOptions.Artifact,
@@ -104,7 +103,7 @@ diff --git a/src/build/Config.zig b/src/build/Config.zig
  ) TerminalBuildOptions {
      return .{
          .artifact = artifact,
-@@ -624,10 +626,10 @@ pub fn terminalOptions(
+@@ -724,10 +726,10 @@ pub fn terminalOptions(
              .lib => self.lib_version,
          },
          .slow_runtime_safety = switch (optimize) {
@@ -131,7 +130,7 @@ diff --git a/src/build/GitVersion.zig b/src/build/GitVersion.zig
              &code,
              .ignore,
          ) catch |err| switch (err) {
-@@ -42,7 +42,7 @@ pub fn detect(b: *std.Build) !Version {
+@@ -45,7 +45,7 @@ pub fn detect(b: *std.Build) !Version {
  
      const short_hash = short_hash: {
          const output = b.runAllowFail(
@@ -140,7 +139,7 @@ diff --git a/src/build/GitVersion.zig b/src/build/GitVersion.zig
              &code,
              .ignore,
          ) catch |err| switch (err) {
-@@ -54,7 +54,7 @@ pub fn detect(b: *std.Build) !Version {
+@@ -57,7 +57,7 @@ pub fn detect(b: *std.Build) !Version {
      };
  
      const tag = b.runAllowFail(
@@ -149,7 +148,7 @@ diff --git a/src/build/GitVersion.zig b/src/build/GitVersion.zig
          &code,
          .ignore,
      ) catch |err| switch (err) {
-@@ -66,7 +66,7 @@ pub fn detect(b: *std.Build) !Version {
+@@ -69,7 +69,7 @@ pub fn detect(b: *std.Build) !Version {
      _ = b.runAllowFail(&[_][]const u8{
          "git",
          "-C",
@@ -158,18 +157,6 @@ diff --git a/src/build/GitVersion.zig b/src/build/GitVersion.zig
          "diff",
          "--quiet",
          "--exit-code",
-diff --git a/src/build/SharedDeps.zig b/src/build/SharedDeps.zig
---- a/src/build/SharedDeps.zig
-+++ b/src/build/SharedDeps.zig
-@@ -1047,7 +1047,7 @@ pub fn gtkNgDistResources(
-                     \\#include <adwaita.h>
-                 ),
-                 .target = b.graph.host,
--                .optimize = .Debug,
-+                .optimize = .debug,
-                 .link_system_libs = &.{
-                     .{ .name = "libadwaita-1", .options = dynamic_link_opts },
-                 },
 diff --git a/src/cli/args.zig b/src/cli/args.zig
 --- a/src/cli/args.zig
 +++ b/src/cli/args.zig
@@ -185,7 +172,7 @@ diff --git a/src/cli/args.zig b/src/cli/args.zig
 diff --git a/src/cli/ssh-cache/DiskCache.zig b/src/cli/ssh-cache/DiskCache.zig
 --- a/src/cli/ssh-cache/DiskCache.zig
 +++ b/src/cli/ssh-cache/DiskCache.zig
-@@ -771,7 +771,7 @@ test isValidUser {
+@@ -832,7 +832,7 @@ test isValidUser {
      try testing.expect(!isValidUser("user@example"));
      try testing.expect(!isValidUser("user:group"));
      try testing.expect(!isValidUser("user\nname"));
@@ -193,21 +180,7 @@ diff --git a/src/cli/ssh-cache/DiskCache.zig b/src/cli/ssh-cache/DiskCache.zig
 +    try testing.expect(!isValidUser(&@as([65]u8, @splat('a')))); // too long
  }
  
- test isValidCacheKey {
-diff --git a/src/config/Config.zig b/src/config/Config.zig
---- a/src/config/Config.zig
-+++ b/src/config/Config.zig
-@@ -57,9 +57,7 @@ const terminal = struct {
- const log = std.log.scoped(.config);
- 
- /// Used on Unixes for some defaults.
--const c = @cImport({
--    @cInclude("unistd.h");
--});
-+const c = @import("posix_c");
- 
- pub const compatibility = std.StaticStringMap(
-     cli.CompatibilityHandler(Config),
+ test splitHostPort {
 diff --git a/src/datastruct/message_data.zig b/src/datastruct/message_data.zig
 --- a/src/datastruct/message_data.zig
 +++ b/src/datastruct/message_data.zig
@@ -277,7 +250,7 @@ diff --git a/src/font/shaper/feature.zig b/src/font/shaper/feature.zig
 diff --git a/src/input/Binding.zig b/src/input/Binding.zig
 --- a/src/input/Binding.zig
 +++ b/src/input/Binding.zig
-@@ -1971,7 +1971,7 @@ pub const Trigger = struct {
+@@ -2003,7 +2003,7 @@ pub const Trigger = struct {
          // then I don't want to handle this.
          var buffer: [1]u21 = undefined;
          const slice = uucode.get(.case_folding_full, cp).with(&buffer, cp);
@@ -310,6 +283,18 @@ diff --git a/src/lib/enum.zig b/src/lib/enum.zig
  
      const enum_fields = info.@"enum".fields;
  
+diff --git a/src/lib/parse_int.zig b/src/lib/parse_int.zig
+--- a/src/lib/parse_int.zig
++++ b/src/lib/parse_int.zig
+@@ -41,7 +41,7 @@ fn parseWithSign(
+     };
+ 
+     const info = @typeInfo(T).int;
+-    const Accumulate = std.meta.Int(info.signedness, @max(8, info.bits));
++    const Accumulate = @Int(info.signedness, @max(8, info.bits));
+     var accumulate: Accumulate = 0;
+     for (value) |c| {
+         const digit = try std.fmt.charToDigit(c, base);
 diff --git a/src/lib/struct.zig b/src/lib/struct.zig
 --- a/src/lib/struct.zig
 +++ b/src/lib/struct.zig
@@ -339,10 +324,55 @@ diff --git a/src/lib/struct.zig b/src/lib/struct.zig
              }
  
              break :c @Struct(.@"extern", null, &names, &types, &attrs);
+diff --git a/src/lib/tinyio/test.zig b/src/lib/tinyio/test.zig
+--- a/src/lib/tinyio/test.zig
++++ b/src/lib/tinyio/test.zig
+@@ -53,10 +53,13 @@ test "read a file through File.Reader" {
+     var tmp_dir = testing.tmpDir(.{});
+     defer tmp_dir.cleanup();
+ 
+-    const contents = "hello minimal test_io\n" ** 100;
++    const txt = "hello minimal test_io\n";
++    var contents: [txt.len * 100]u8 = undefined;
++    for (0..100) |i| @memcpy(contents[i * txt.len ..][0..txt.len], txt);
++
+     try tmp_dir.dir.writeFile(testing.io, .{
+         .sub_path = "test.txt",
+-        .data = contents,
++        .data = &contents,
+     });
+ 
+     // Open through our Io. The Dir handle is a plain fd, so it is usable
+@@ -260,10 +263,10 @@ test "openFile edge cases" {
+     ));
+ 
+     // Paths that can't fit in PATH_MAX must not be silently truncated.
+-    const long_name = "a" ** (std.Io.Dir.max_path_bytes + 1);
++    const long_name: [std.Io.Dir.max_path_bytes + 1]u8 = @splat('a');
+     try testing.expectError(error.NameTooLong, dir.openFile(
+         test_io,
+-        long_name,
++        &long_name,
+         .{},
+     ));
+ 
+diff --git a/src/lib/tinyio/windows.zig b/src/lib/tinyio/windows.zig
+--- a/src/lib/tinyio/windows.zig
++++ b/src/lib/tinyio/windows.zig
+@@ -702,7 +702,8 @@ test "windows: path conversion" {
+ 
+     // Encoding errors are path errors.
+     try testing.expectError(error.BadPathName, pathToNt(cwd, "bad\xff", &p));
+-    try testing.expectError(error.NameTooLong, pathToNt(cwd, "a" ** (windows.PATH_MAX_WIDE + 1), &p));
++    const long: [windows.PATH_MAX_WIDE + 1]u8 = @splat('a');
++    try testing.expectError(error.NameTooLong, pathToNt(cwd, &long, &p));
+ }
+ 
+ test "windows: realPath resolves through symlinks" {
 diff --git a/src/lib/union.zig b/src/lib/union.zig
 --- a/src/lib/union.zig
 +++ b/src/lib/union.zig
-@@ -59,15 +59,15 @@ pub fn TaggedUnion(
+@@ -77,15 +77,15 @@ pub fn TaggedUnion(
                  .c => {},
              }
  
@@ -362,7 +392,7 @@ diff --git a/src/lib/union.zig b/src/lib/union.zig
                      // Types can provide custom types for their CValue.
                      switch (@typeInfo(Type)) {
                          .@"enum", .@"struct", .@"union" => if (@hasDecl(Type, "C")) break :t Type.C,
-@@ -77,7 +77,7 @@ pub fn TaggedUnion(
+@@ -95,7 +95,7 @@ pub fn TaggedUnion(
                      break :t Type;
                  };
  
@@ -371,50 +401,27 @@ diff --git a/src/lib/union.zig b/src/lib/union.zig
                  types[i] = Type;
                  attrs[i] = .{ .@"align" = @alignOf(Type) };
              }
-@@ -115,9 +115,10 @@ pub fn TaggedUnion(
-         /// Returns the value type for the given tag.
-         pub fn Value(comptime tag: Tag) type {
-             @setEvalBranchQuota(10000);
--            inline for (@typeInfo(Union).@"union".fields) |field| {
--                const field_tag = @field(Tag, field.name);
--                if (field_tag == tag) return field.type;
-+            const info = @typeInfo(Union).@"union";
-+            inline for (info.field_names, info.field_types) |name, field_type| {
-+                const field_tag = @field(Tag, name);
-+                if (field_tag == tag) return field_type;
-             }
+@@ -140,16 +140,16 @@ pub fn TaggedUnion(
+ /// Options for generating the C representation of a tagged union.
+ pub fn TaggedUnionOptions(comptime Union: type) type {
+     const Tag = @typeInfo(Union).@"union".tag_type.?;
+-    const tag_fields = @typeInfo(Tag).@"enum".fields;
++    const tag_fields = @typeInfo(Tag).@"enum".field_names;
+     const FieldRenames: type = field_renames: {
+         const default_rename: ?[]const u8 = null;
  
-             unreachable;
-diff --git a/src/os/desktop.zig b/src/os/desktop.zig
---- a/src/os/desktop.zig
-+++ b/src/os/desktop.zig
-@@ -3,9 +3,7 @@ const builtin = @import("builtin");
- const build_config = @import("../build_config.zig");
- const global = @import("../global.zig");
+         var names: [tag_fields.len][]const u8 = undefined;
+         var types: [tag_fields.len]type = undefined;
+-        var attrs: [tag_fields.len]std.builtin.Type.StructField.Attributes = undefined;
++        var attrs: [tag_fields.len]std.lang.Type.Struct.FieldAttributes = undefined;
  
--const c = @cImport({
--    @cInclude("unistd.h");
--});
-+const c = @import("posix_c");
- 
- /// Returns true if the program was launched from a desktop environment.
- ///
-diff --git a/src/os/passwd.zig b/src/os/passwd.zig
---- a/src/os/passwd.zig
-+++ b/src/os/passwd.zig
-@@ -17,11 +17,7 @@ comptime {
- }
- 
- /// Used to determine the default shell and directory on Unixes.
--const c = if (builtin.os.tag != .windows) @cImport({
--    @cInclude("sys/types.h");
--    @cInclude("unistd.h");
--    @cInclude("pwd.h");
--}) else {};
-+const c = if (builtin.os.tag != .windows) @import("posix_c") else {};
- 
- // Entry that is retrieved from the passwd API. This only contains the fields
- // we care about.
+-        for (tag_fields, 0..) |field, i| {
+-            names[i] = field.name;
++        inline for (tag_fields, 0..) |field, i| {
++            names[i] = field;
+             types[i] = ?[]const u8;
+             attrs[i] = .{ .default_value_ptr = &default_rename };
+         }
 diff --git a/src/renderer/metal/shaders.zig b/src/renderer/metal/shaders.zig
 --- a/src/renderer/metal/shaders.zig
 +++ b/src/renderer/metal/shaders.zig
@@ -446,7 +453,7 @@ diff --git a/src/renderer/opengl/shaders.zig b/src/renderer/opengl/shaders.zig
 diff --git a/src/simd/base64_scalar.zig b/src/simd/base64_scalar.zig
 --- a/src/simd/base64_scalar.zig
 +++ b/src/simd/base64_scalar.zig
-@@ -27,12 +27,12 @@ const Base64Decoder = struct {
+@@ -33,12 +33,12 @@ const Base64Decoder = struct {
  
      pub fn init(alphabet_chars: [64]u8, pad_char: ?u8) Base64Decoder {
          var result = Base64Decoder{
@@ -465,7 +472,7 @@ diff --git a/src/simd/base64_scalar.zig b/src/simd/base64_scalar.zig
 diff --git a/src/simd/vt.zig b/src/simd/vt.zig
 --- a/src/simd/vt.zig
 +++ b/src/simd/vt.zig
-@@ -212,7 +212,7 @@ test "decode no escape" {
+@@ -209,7 +209,7 @@ test "decode no escape" {
  
      // TODO: many more test cases
      {
@@ -474,7 +481,7 @@ diff --git a/src/simd/vt.zig b/src/simd/vt.zig
          try testing.expectEqual(DecodeResult{
              .consumed = str.len,
              .decoded = str.len,
-@@ -227,8 +227,8 @@ test "decode ASCII to escape" {
+@@ -224,8 +224,8 @@ test "decode ASCII to escape" {
  
      // TODO: many more test cases
      {
@@ -485,40 +492,10 @@ diff --git a/src/simd/vt.zig b/src/simd/vt.zig
          try testing.expectEqual(DecodeResult{
              .consumed = prefix.len,
              .decoded = prefix.len,
-diff --git a/src/stb/main.zig b/src/stb/main.zig
---- a/src/stb/main.zig
-+++ b/src/stb/main.zig
-@@ -1,7 +1,4 @@
--const c = @cImport({
--    @cInclude("stb_image.h");
--    @cInclude("stb_image_resize.h");
--});
-+const c = @import("stb_c");
- 
- // We'll just add the exports of the functions or types we actually use
- // here, no need to export everything from the C lib if we don't use it.
 diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
 --- a/src/terminal/PageList.zig
 +++ b/src/terminal/PageList.zig
-@@ -296,7 +296,7 @@ const Node = struct {
- };
- 
- /// The memory pool we get page nodes from.
--const NodePool = std.heap.memory_pool.Managed(List.Node);
-+const NodePool = ManagedPool(List.Node, null);
- 
- /// The standard page capacity that we use as a starting point for
- /// all pages. This is chosen as a sane default that fits most terminal
-@@ -309,7 +309,7 @@ const std_size = Page.layout(std_capacity).total_size;
- /// The memory pool we use for page memory buffers. We use a separate pool
- /// so we can allocate these with a page allocator. We have to use a page
- /// allocator because we need memory that is zero-initialized and page-aligned.
--const PagePool = std.heap.memory_pool.AlignedManaged(
-+const PagePool = ManagedPool(
-     [std_size]u8,
-     .fromByteUnits(std.heap.page_size_min),
- );
-@@ -317,7 +317,42 @@ const PagePool = std.heap.memory_pool.AlignedManaged(
+@@ -354,7 +354,42 @@ else untouched: {
  /// List of pins, known as "tracked" pins. These are pins that are kept
  /// up to date automatically through page-modifying operations.
  const PinSet = std.AutoArrayHashMapUnmanaged(*Pin, void);
@@ -562,7 +539,7 @@ diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
  
  /// The pool of memory used for a pagelist. This can be shared between
  /// multiple pagelists but it is not threadsafe.
-@@ -16459,7 +16494,7 @@ test "PageList resize reflow exceeds hyperlink memory forcing capacity increase"
+@@ -16962,7 +16997,7 @@ test "PageList resize reflow exceeds hyperlink memory forcing capacity increase"
          const page = s.pages.first.?.page();
          const id = try page.insertHyperlink(.{
              .id = .{ .implicit = 0 },
@@ -571,7 +548,7 @@ diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
          });
          const rac = page.getRowAndCell(page.size.cols - 1, page.size.rows - 1);
          rac.row.wrap = true;
-@@ -16483,7 +16518,7 @@ test "PageList resize reflow exceeds hyperlink memory forcing capacity increase"
+@@ -16986,7 +17021,7 @@ test "PageList resize reflow exceeds hyperlink memory forcing capacity increase"
          const page = s.pages.last.?.page();
          const id = try page.insertHyperlink(.{
              .id = .{ .implicit = 1 },
@@ -580,7 +557,7 @@ diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
          });
          const rac = page.getRowAndCell(0, 0);
          rac.row.wrap_continuation = true;
-@@ -16555,9 +16590,9 @@ test "PageList resize reflow hyperlink dupe string alloc chunk rounding" {
+@@ -17058,9 +17093,9 @@ test "PageList resize reflow hyperlink dupe string alloc chunk rounding" {
      //  …B | <- B is hyperlinked with a 33-byte URI and 31-byte ID.
      //  +--+
  
@@ -610,16 +587,16 @@ diff --git a/src/terminal/Parser.zig b/src/terminal/Parser.zig
                      switch (@TypeOf(value)) {
                          // Unicode
                          u21 => try writer.print("'{u}' (U+{X})", .{ value, value }),
-@@ -170,7 +170,7 @@ pub const Action = union(enum) {
+@@ -176,7 +176,7 @@ pub const Action = union(enum) {
                          else => try writer.printValue(
                              "any",
                              .{},
 -                            @field(self, u_field.name),
 +                            @field(self, u_field_name),
-                             3,
+                             1,
                          ),
                      }
-@@ -223,7 +223,7 @@ pub fn init() Parser {
+@@ -229,7 +229,7 @@ pub fn init() Parser {
      var result: Parser = .{
          .state = .ground,
          .intermediates_idx = 0,
@@ -628,7 +605,7 @@ diff --git a/src/terminal/Parser.zig b/src/terminal/Parser.zig
          .params_idx = 0,
          .param_acc = 0,
          .param_acc_idx = 0,
-@@ -409,7 +409,7 @@ inline fn doAction(self: *Parser, action: TransitionAction, c: u8) ?Action {
+@@ -426,7 +426,7 @@ noinline fn warnCsiSepMismatch(csi: Action.CSI) void {
  pub inline fn clear(self: *Parser) void {
      self.intermediates_idx = 0;
      self.params_idx = 0;
@@ -640,16 +617,7 @@ diff --git a/src/terminal/Parser.zig b/src/terminal/Parser.zig
 diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
 --- a/src/terminal/Screen.zig
 +++ b/src/terminal/Screen.zig
-@@ -2926,7 +2926,7 @@ pub fn selectionString(
-     const text = try aw.toOwnedSliceSentinel(0);
-     errdefer alloc.free(text);
-     if (opts.map) |map| {
--        const map_string = try alloc.dupeZ(u8, text);
-+        const map_string = try alloc.dupeSentinel(u8, text, 0);
-         errdefer alloc.free(map_string);
-         try selectionString_tw.check(.copy_map);
-         map.* = .{
-@@ -10976,7 +10976,7 @@ test "Screen: cursorSetHyperlink OOM + URI too large for string alloc" {
+@@ -11518,7 +11518,7 @@ test "Screen: cursorSetHyperlink OOM + URI too large for string alloc" {
      // Start a hyperlink with a URI that just barely fits in the string alloc.
      // This will ensure that additional string alloc space is needed for the
      // redundant copy of the URI when the page is re-alloced.
@@ -661,7 +629,7 @@ diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
 diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
-@@ -809,7 +809,7 @@ fn printSliceFill(
+@@ -924,7 +924,7 @@ fn printSliceFill(
                      const v: V = cps[idx..][0..lanes].*;
                      const in_range = (v >= lo) & (v <= hi);
                      if (!@reduce(.And, in_range)) {
@@ -673,10 +641,10 @@ diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
 diff --git a/src/terminal/apc.zig b/src/terminal/apc.zig
 --- a/src/terminal/apc.zig
 +++ b/src/terminal/apc.zig
-@@ -25,7 +25,7 @@ pub const Handler = struct {
+@@ -28,7 +28,7 @@ pub const Handler = struct {
+ 
      /// Protocols recognized by this APC handler. When a protocol is absent,
-     /// matching APC sequences are ignored so callers see the same behavior as
-     /// an unsupported protocol: no command execution and no response.
+     /// matching APC sequences are ignored and are not reported as unknown.
 -    enabled: std.EnumSet(Protocol) = .initFull(),
 +    enabled: std.EnumSet(Protocol) = .full,
  
@@ -685,7 +653,7 @@ diff --git a/src/terminal/apc.zig b/src/terminal/apc.zig
 diff --git a/src/terminal/apc/glyph/request.zig b/src/terminal/apc/glyph/request.zig
 --- a/src/terminal/apc/glyph/request.zig
 +++ b/src/terminal/apc/glyph/request.zig
-@@ -283,11 +283,9 @@ pub const Request = union(enum) {
+@@ -289,11 +289,9 @@ pub const Request = union(enum) {
              // we'll have stack space. We don't use much stack space in
              // the future function calls either, so try a stack allocator
              // here and fallback to heap as necessary.
@@ -700,6 +668,52 @@ diff --git a/src/terminal/apc/glyph/request.zig b/src/terminal/apc/glyph/request
              const data = try data_alloc.alloc(u8, size);
              defer data_alloc.free(data);
  
+diff --git a/src/terminal/build_options.zig b/src/terminal/build_options.zig
+--- a/src/terminal/build_options.zig
++++ b/src/terminal/build_options.zig
+@@ -188,16 +188,16 @@ pub const Options = struct {
+ 
+                 // The special name "all" refers to every feature.
+                 if (std.mem.eql(u8, name, "all")) {
+-                    inline for (@typeInfo(Features).@"struct".fields) |field| {
+-                        @field(result, field.name) = enable;
++                    inline for (@typeInfo(Features).@"struct".field_names) |field| {
++                        @field(result, field) = enable;
+                     }
+                     continue;
+                 }
+ 
+                 var found = false;
+-                inline for (@typeInfo(Features).@"struct".fields) |field| {
+-                    if (eqlName(name, field.name)) {
+-                        @field(result, field.name) = enable;
++                inline for (@typeInfo(Features).@"struct".field_names) |field| {
++                    if (eqlName(name, field)) {
++                        @field(result, field) = enable;
+                         found = true;
+                     }
+                 }
+@@ -297,16 +297,16 @@ pub const Options = struct {
+ 
+         // Feature gates, emitted as flat bools (e.g. `options.snapshot`).
+         const target = m.resolved_target.?.result;
+-        inline for (@typeInfo(Features).@"struct".fields) |field| {
+-            var value = @field(self.features, field.name);
++        inline for (@typeInfo(Features).@"struct".field_names) |field| {
++            var value = @field(self.features, field);
+ 
+             // Kitty graphics is force-disabled on some targets; see
+             // kittyGraphics for details.
+-            if (comptime std.mem.eql(u8, field.name, "kitty_graphics")) {
++            if (comptime std.mem.eql(u8, field, "kitty_graphics")) {
+                 value = self.kittyGraphics(target);
+             }
+ 
+-            opts.addOption(bool, field.name, value);
++            opts.addOption(bool, field, value);
+         }
+ 
+         // Version information.
 diff --git a/src/terminal/c/color.zig b/src/terminal/c/color.zig
 --- a/src/terminal/c/color.zig
 +++ b/src/terminal/c/color.zig
@@ -721,10 +735,38 @@ diff --git a/src/terminal/c/color.zig b/src/terminal/c/color.zig
      const result = color.generate256Color(
          base,
          skip,
+diff --git a/src/terminal/c/io.zig b/src/terminal/c/io.zig
+--- a/src/terminal/c/io.zig
++++ b/src/terminal/c/io.zig
+@@ -629,9 +629,10 @@ test "WriterAdapter buffered batches small writes" {
+     // Flush delivers everything in a single call.
+     try adapter.interface.flush();
+     try std.testing.expectEqual(@as(usize, 1), context.calls);
+-    try std.testing.expectEqualStrings(
+-        "ab" ** 16,
+-        context.data[0..context.len],
++
++    for (0..16) |i| try std.testing.expectEqualStrings(
++        "ab",
++        context.data[i * 2 ..][0..2],
+     );
+     try std.testing.expectEqual(@as(usize, 32), adapter.offset);
+ }
+@@ -670,8 +671,9 @@ test "WriterAdapter buffered splats and large writes" {
+     try adapter.interface.writeAll("xy");
+     try adapter.interface.flush();
+ 
++    const blank: [40]u8 = @splat(' ');
+     try std.testing.expectEqualStrings(
+-        " " ** 40 ++ "0123456789abcdef0" ++ "xy",
++        blank ++ "0123456789abcdef0" ++ "xy",
+         context.data[0..context.len],
+     );
+     try std.testing.expectEqual(
 diff --git a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
 --- a/src/terminal/c/kitty_graphics.zig
 +++ b/src/terminal/c/kitty_graphics.zig
-@@ -1033,7 +1033,7 @@ test "image_get exposes pending metadata without a data pointer" {
+@@ -1065,7 +1065,7 @@ test "image_get exposes pending metadata without a data pointer" {
      var data_ptr: [*]const u8 = undefined;
      try testing.expectEqual(Result.no_value, image_get(img, .data_ptr, @ptrCast(&data_ptr)));
  
@@ -736,7 +778,7 @@ diff --git a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.z
 diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
 --- a/src/terminal/c/render.zig
 +++ b/src/terminal/c/render.zig
-@@ -1403,12 +1403,12 @@ test "render: row cells get graphemes utf8" {
+@@ -1883,12 +1883,12 @@ test "render: row cells get graphemes utf8" {
          try testing.expectEqual(Result.out_of_space, row_cells_get(cells, .graphemes_utf8, @ptrCast(&text)));
          try testing.expectEqual(case.expected.len, text.len);
  
@@ -766,7 +808,7 @@ diff --git a/src/terminal/c/sgr.zig b/src/terminal/c/sgr.zig
 diff --git a/src/terminal/c/sys.zig b/src/terminal/c/sys.zig
 --- a/src/terminal/c/sys.zig
 +++ b/src/terminal/c/sys.zig
-@@ -351,7 +351,7 @@ test "logFn message exceeding chunk size is split" {
+@@ -428,7 +428,7 @@ test "logFn message exceeding chunk size is split" {
  
      // Format a message larger than the 2048-byte buffer.
      // 'A' repeated 3000 times via a fill format.
@@ -775,7 +817,7 @@ diff --git a/src/terminal/c/sys.zig b/src/terminal/c/sys.zig
      logFn(.info, .default, "{s}", .{@as([]const u8, &fill)});
  
      try std.testing.expect(S.call_count >= 2);
-@@ -379,7 +379,7 @@ test "logFn message exactly at chunk boundary" {
+@@ -456,7 +456,7 @@ test "logFn message exactly at chunk boundary" {
      }
  
      // Exactly 2048 bytes — should emit one full chunk, no remainder.
@@ -784,7 +826,7 @@ diff --git a/src/terminal/c/sys.zig b/src/terminal/c/sys.zig
      logFn(.info, .default, "{s}", .{@as([]const u8, &fill)});
  
      try std.testing.expectEqual(@as(usize, 1), S.call_count);
-@@ -407,7 +407,7 @@ test "logFn message exactly double chunk size" {
+@@ -484,7 +484,7 @@ test "logFn message exactly double chunk size" {
      }
  
      // Exactly 4096 bytes — should emit exactly two full chunks.
@@ -796,7 +838,7 @@ diff --git a/src/terminal/c/sys.zig b/src/terminal/c/sys.zig
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -4063,7 +4063,7 @@ test "set device_attributes callback primary" {
+@@ -6461,7 +6461,7 @@ test "set device_attributes callback primary" {
              out.* = .{
                  .primary = .{
                      .conformance_level = 64,
@@ -805,7 +847,7 @@ diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
                      .num_features = 2,
                  },
                  .secondary = .{
-@@ -4114,7 +4114,7 @@ test "set device_attributes callback secondary" {
+@@ -6512,7 +6512,7 @@ test "set device_attributes callback secondary" {
              out.* = .{
                  .primary = .{
                      .conformance_level = 62,
@@ -814,7 +856,7 @@ diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
                      .num_features = 1,
                  },
                  .secondary = .{
-@@ -4165,7 +4165,7 @@ test "set device_attributes callback tertiary" {
+@@ -6563,7 +6563,7 @@ test "set device_attributes callback tertiary" {
              out.* = .{
                  .primary = .{
                      .conformance_level = 62,
@@ -826,16 +868,25 @@ diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 diff --git a/src/terminal/color.zig b/src/terminal/color.zig
 --- a/src/terminal/color.zig
 +++ b/src/terminal/color.zig
-@@ -285,7 +285,7 @@ pub const DynamicPalette = struct {
-         return .{
-             .current = def,
-             .original = def,
--            .mask = .initEmpty(),
-+            .mask = .empty,
-         };
+@@ -340,7 +340,7 @@ pub const DynamicPalette = struct {
+     pub const default: DynamicPalette = .{
+         .current = colorpkg.default,
+         .original = &colorpkg.default,
+-        .mask = .initEmpty(),
++        .mask = .empty,
+     };
+ 
+     /// Initialize a dynamic palette with a default palette. The result
+@@ -372,7 +372,7 @@ pub const DynamicPalette = struct {
+     /// Reset all colors to their original values.
+     pub fn resetAll(self: *DynamicPalette) void {
+         self.current = self.original.*;
+-        self.mask = .initEmpty();
++        self.mask = .empty;
      }
  
-@@ -1096,7 +1096,7 @@ test "generate256Color: base16 preserved" {
+     /// Change the default palette, but preserve the changed values.
+@@ -1261,7 +1261,7 @@ test "generate256Color: base16 preserved" {
  
      const bg = RGB{ .r = 0, .g = 0, .b = 0 };
      const fg = RGB{ .r = 255, .g = 255, .b = 255 };
@@ -844,7 +895,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
  
      // The first 16 colors (base16) must remain unchanged.
      for (0..16) |i| {
-@@ -1109,7 +1109,7 @@ test "generate256Color: cube corners match base colors" {
+@@ -1274,7 +1274,7 @@ test "generate256Color: cube corners match base colors" {
  
      const bg = RGB{ .r = 0, .g = 0, .b = 0 };
      const fg = RGB{ .r = 255, .g = 255, .b = 255 };
@@ -853,7 +904,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
  
      // Index 16 is cube (0,0,0) which should equal bg.
      try testing.expectEqual(bg, palette[16]);
-@@ -1125,13 +1125,13 @@ test "generate256Color: cube corners black/white with harmonious=false" {
+@@ -1290,13 +1290,13 @@ test "generate256Color: cube corners black/white with harmonious=false" {
      const white = RGB{ .r = 255, .g = 255, .b = 255 };
  
      // Dark theme: bg=black, fg=white.
@@ -869,7 +920,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
      try testing.expectEqual(black, light[16]);
      try testing.expectEqual(white, light[231]);
  }
-@@ -1144,7 +1144,7 @@ test "generate256Color: light theme cube corners with harmonious=true" {
+@@ -1309,7 +1309,7 @@ test "generate256Color: light theme cube corners with harmonious=true" {
  
      // harmonious=true skips the bg/fg swap, so the cube preserves the
      // original orientation: (0,0,0)=bg=white, (5,5,5)=fg=black.
@@ -878,7 +929,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
      try testing.expectEqual(white, palette[16]);
      try testing.expectEqual(black, palette[231]);
  }
-@@ -1154,7 +1154,7 @@ test "generate256Color: grayscale ramp monotonic luminance" {
+@@ -1319,7 +1319,7 @@ test "generate256Color: grayscale ramp monotonic luminance" {
  
      const bg = RGB{ .r = 0, .g = 0, .b = 0 };
      const fg = RGB{ .r = 255, .g = 255, .b = 255 };
@@ -887,7 +938,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
  
      // The grayscale ramp (232–255) should have monotonically increasing
      // luminance from near-black to near-white.
-@@ -1173,7 +1173,7 @@ test "generate256Color: skip mask preserves original colors" {
+@@ -1338,7 +1338,7 @@ test "generate256Color: skip mask preserves original colors" {
      const fg = RGB{ .r = 255, .g = 255, .b = 255 };
  
      // Mark a few indices as skipped; they should keep their base value.
@@ -896,7 +947,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
      skip.set(20);
      skip.set(100);
      skip.set(240);
-@@ -1194,8 +1194,8 @@ test "generate256Color: dark theme harmonious has no effect" {
+@@ -1359,8 +1359,8 @@ test "generate256Color: dark theme harmonious has no effect" {
      // the output because the inversion is only relevant for light themes.
      const bg = RGB{ .r = 0, .g = 0, .b = 0 };
      const fg = RGB{ .r = 255, .g = 255, .b = 255 };
@@ -907,7 +958,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
  
      for (16..256) |i| {
          try testing.expectEqual(normal[i], harmonious[i]);
-@@ -1209,8 +1209,8 @@ test "generate256Color: light theme harmonious skips inversion" {
+@@ -1374,8 +1374,8 @@ test "generate256Color: light theme harmonious skips inversion" {
      // bg/red swap, producing different cube colors than harmonious=false.
      const bg = RGB{ .r = 255, .g = 255, .b = 255 };
      const fg = RGB{ .r = 0, .g = 0, .b = 0 };
@@ -918,7 +969,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
  
      // Cube origin (0,0,0) at index 16: without harmonious, bg and red are
      // swapped so it becomes the red base; with harmonious it stays as bg.
-@@ -1233,7 +1233,7 @@ test "generate256Color: light theme harmonious grayscale ramp" {
+@@ -1398,7 +1398,7 @@ test "generate256Color: light theme harmonious grayscale ramp" {
  
      // harmonious=false swaps bg/fg, so the ramp runs black→white (increasing).
      {
@@ -927,7 +978,7 @@ diff --git a/src/terminal/color.zig b/src/terminal/color.zig
          var prev_lum: f64 = 0.0;
          for (232..256) |i| {
              const lum = palette[i].luminance();
-@@ -1244,7 +1244,7 @@ test "generate256Color: light theme harmonious grayscale ramp" {
+@@ -1409,7 +1409,7 @@ test "generate256Color: light theme harmonious grayscale ramp" {
  
      // harmonious=true keeps original order, so the ramp runs white→black (decreasing).
      {
@@ -971,10 +1022,79 @@ diff --git a/src/terminal/formatter.zig b/src/terminal/formatter.zig
  
                  if (current != default_val) {
                      const tag: modespkg.ModeTag = @bitCast(@intFromEnum(mode));
+diff --git a/src/terminal/fraction.zig b/src/terminal/fraction.zig
+--- a/src/terminal/fraction.zig
++++ b/src/terminal/fraction.zig
+@@ -112,16 +112,19 @@ test parse {
+ 
+     // Digits past the 15th are ignored: long fractions stay finite and
+     // equal their 15-digit truncation.
++    var overlong_fraction: [400]u8 = @splat('3');
++    @memcpy(overlong_fraction[0..2], "0.");
+     try testing.expectEqual(
+         parse("0.333333333333333").?,
+-        parse("0." ++ "3" ** 400).?,
++        parse(&overlong_fraction).?,
+     );
+ 
+     // Out of range
+     try testing.expectEqual(null, parse("1.0000001"));
+     try testing.expectEqual(null, parse("2"));
+     try testing.expectEqual(null, parse("255"));
+-    try testing.expectEqual(null, parse("1" ** 400));
++    const overlong_int: [400]u8 = @splat('1');
++    try testing.expectEqual(null, parse(&overlong_int));
+ 
+     // Invalid syntax
+     try testing.expectEqual(null, parse(""));
+diff --git a/src/terminal/kitty/clipboard_command.zig b/src/terminal/kitty/clipboard_command.zig
+--- a/src/terminal/kitty/clipboard_command.zig
++++ b/src/terminal/kitty/clipboard_command.zig
+@@ -355,7 +355,8 @@ test "metadata: id truncated to max" {
+     const testing = std.testing;
+     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+     defer arena.deinit();
+-    const raw = "type=read:id=" ++ "a" ** (max_id_len + 100);
++    const long_id: [max_id_len + 100]u8 = @splat('a');
++    const raw = "type=read:id=" ++ long_id;
+     const meta = (try Metadata.parse(arena.allocator(), raw)).?;
+     try testing.expectEqual(@as(usize, max_id_len), meta.id.len);
+ }
+@@ -430,11 +431,11 @@ test "metadata: over-long name reported" {
+     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+     defer arena.deinit();
+     const Encoder = std.base64.standard.Encoder;
+-    const long = "n" ** (max_name_len + 1);
++    const long: [max_name_len + 1]u8 = @splat('n');
+     var buf: [Encoder.calcSize(long.len)]u8 = undefined;
+     const raw = try std.mem.concat(arena.allocator(), u8, &.{
+         "type=read:name=",
+-        Encoder.encode(&buf, long),
++        Encoder.encode(&buf, &long),
+     });
+     try testing.expectError(
+         error.InvalidValue,
+diff --git a/src/terminal/kitty/clipboard_response.zig b/src/terminal/kitty/clipboard_response.zig
+--- a/src/terminal/kitty/clipboard_response.zig
++++ b/src/terminal/kitty/clipboard_response.zig
+@@ -365,11 +365,11 @@ test "read success: chunking at read_chunk_size" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+ 
+-    const data = "z" ** (read_chunk_size + 1);
++    const data: [read_chunk_size + 1]u8 = @splat('z');
+     var aw: std.Io.Writer.Allocating = .init(alloc);
+     defer aw.deinit();
+     try (ReadSuccess{
+-        .contents = &.{.{ .mime = "text/plain", .data = data }},
++        .contents = &.{.{ .mime = "text/plain", .data = &data }},
+     }).encode(&aw.writer);
+ 
+     // OK + 2 DATA packets + DONE = 4 packets.
 diff --git a/src/terminal/kitty/color.zig b/src/terminal/kitty/color.zig
 --- a/src/terminal/kitty/color.zig
 +++ b/src/terminal/kitty/color.zig
-@@ -41,7 +41,7 @@ pub const Special = enum {
+@@ -42,7 +42,7 @@ pub const Special = enum {
  };
  
  pub const Kind = union(enum) {
@@ -983,19 +1103,43 @@ diff --git a/src/terminal/kitty/color.zig b/src/terminal/kitty/color.zig
  
      palette: u8,
      special: Special,
+diff --git a/src/terminal/kitty/dnd_response.zig b/src/terminal/kitty/dnd_response.zig
+--- a/src/terminal/kitty/dnd_response.zig
++++ b/src/terminal/kitty/dnd_response.zig
+@@ -176,7 +176,7 @@ test "encode: base64 payload chunking" {
+     defer aw.deinit();
+ 
+     // Exactly one byte more than a chunk to force two chunks.
+-    const data = [_]u8{'A'} ** (max_chunk_raw + 1);
++    const data: [max_chunk_raw + 1]u8 = @splat('A');
+     try encode(&aw.writer, "t=r:x=1", 3, &data, .base64, .st);
+ 
+     const out = aw.written();
+diff --git a/src/terminal/kitty/dnd_test.zig b/src/terminal/kitty/dnd_test.zig
+--- a/src/terminal/kitty/dnd_test.zig
++++ b/src/terminal/kitty/dnd_test.zig
+@@ -586,7 +586,7 @@ test "dnd: large data served in chunks" {
+     _ = try h.command("t=a", "");
+ 
+     // 3073 bytes: one full chunk plus one byte.
+-    const data = [_]u8{'Z'} ** 3073;
++    const data: [3073]u8 = @splat('Z');
+     try h.registered().dragDrop(testing.allocator, &h.output.writer, .{
+         .cell_x = 0,
+         .cell_y = 0,
 diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
 --- a/src/terminal/kitty/graphics_image.zig
 +++ b/src/terminal/kitty/graphics_image.zig
-@@ -196,7 +196,7 @@ pub const LoadingImage = struct {
+@@ -224,7 +224,7 @@ pub const LoadingImage = struct {
          // Since we're only supporting posix then max_path_bytes should
          // be enough to stack allocate the path.
-         var buf: [std.fs.max_path_bytes]u8 = undefined;
+         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 -        const pathz = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.InvalidData;
 +        const pathz = std.mem.printSentinel(&buf, "{s}", .{path}, 0) catch return error.InvalidData;
  
          const fd = std.c.shm_open(pathz, @as(c_int, @bitCast(std.c.O{ .ACCMODE = .RDONLY })), @as(u16, 0));
          switch (std.posix.errno(fd)) {
-@@ -351,7 +351,7 @@ pub const LoadingImage = struct {
+@@ -466,7 +466,7 @@ pub const LoadingImage = struct {
  
          // Set our data
          assert(self.data.items.len == 0);
@@ -1003,41 +1147,106 @@ diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics
 +        self.data = .{ .items = managed.items, .capacity = managed.capacity, .pointer_stability = .{} };
      }
  
-     /// Returns true if path appears to be in a temporary directory.
-@@ -488,7 +488,7 @@ pub const LoadingImage = struct {
+     /// Returns the canonical path of an open file after applying the file
+@@ -662,7 +662,7 @@ pub const LoadingImage = struct {
+         };
  
-         // Empty our current data list, take ownership over managed array list
          self.data.deinit(alloc);
--        self.data = .{ .items = list.items, .capacity = list.capacity };
-+        self.data = .{ .items = list.items, .capacity = list.capacity, .pointer_stability = .{} };
+-        self.data = .{ .items = decompressed, .capacity = decompressed.len };
++        self.data = .{ .items = decompressed, .capacity = decompressed.len, .pointer_stability = .{} };
  
          // Make sure we note that our image is no longer compressed
          self.image.compression = .none;
+diff --git a/src/terminal/kitty/graphics_pixel.zig b/src/terminal/kitty/graphics_pixel.zig
+--- a/src/terminal/kitty/graphics_pixel.zig
++++ b/src/terminal/kitty/graphics_pixel.zig
+@@ -161,17 +161,17 @@ test "fill background" {
+     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 1, 2, 3, 4 }, &buf);
+ 
+     fillBackground(&buf, .{});
+-    try std.testing.expectEqualSlices(u8, &(.{0} ** 8), &buf);
++    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(0)), &buf);
+ }
+ 
+ test "compose rect overwrite with clipping" {
+     // 2x2 canvas, compose a 2x1 rect at (1, 1): only the first pixel
+     // of the rect fits, the rest clips off the right edge.
+-    var dst = [_]u8{0} ** 16;
++    var dst: [16]u8 = @splat(0);
+     const src = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
+     composeRect(&dst, 2, 2, &src, 2, 1, 1, 1, .overwrite);
+ 
+-    var expect = [_]u8{0} ** 16;
++    var expect: [16]u8 = @splat(0);
+     expect[12] = 1;
+     expect[13] = 2;
+     expect[14] = 3;
+@@ -180,11 +180,11 @@ test "compose rect overwrite with clipping" {
+ }
+ 
+ test "compose rect entirely out of bounds" {
+-    var dst = [_]u8{9} ** 16;
+-    const src = [_]u8{1} ** 4;
++    var dst: [16]u8 = @splat(9);
++    const src: [4]u8 = @splat(1);
+     composeRect(&dst, 2, 2, &src, 1, 1, 2, 0, .overwrite);
+     composeRect(&dst, 2, 2, &src, 1, 1, 0, 2, .overwrite);
+-    try std.testing.expectEqualSlices(u8, &(.{9} ** 16), &dst);
++    try std.testing.expectEqualSlices(u8, &@as([16]u8, @splat(9)), &dst);
+ }
+ 
+ test "alpha blend source-over semantics" {
 diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
 --- a/src/terminal/kitty/graphics_storage.zig
 +++ b/src/terminal/kitty/graphics_storage.zig
-@@ -1738,17 +1738,17 @@ test "storage: evict unused transient image" {
+@@ -3492,17 +3492,17 @@ test "storage: evicts images in priority order" {
  
-     try s.addImage(io, alloc, .{
+     try s.addImage(io, alloc, t.screens.active, .{
          .id = 1,
 -        .data = .{ .complete = try alloc.dupe(u8, "*" ** 64) },
 +        .data = .{ .complete = try alloc.dupe(u8, &@as([64]u8, @splat('*'))) },
-         .usage = .{ .transient = false },
+         .metadata = .{ .transient = false },
      });
-     try s.addImage(io, alloc, .{
+     try s.addImage(io, alloc, t.screens.active, .{
          .id = 2,
 -        .data = .{ .complete = try alloc.dupe(u8, "*" ** 64) },
 +        .data = .{ .complete = try alloc.dupe(u8, &@as([64]u8, @splat('*'))) },
-         .usage = .{ .transient = true },
+         .metadata = .{ .transient = true },
      });
-     try s.addImage(io, alloc, .{
+     try s.addImage(io, alloc, t.screens.active, .{
          .id = 3,
 -        .data = .{ .complete = try alloc.dupe(u8, "*" ** 64) },
 +        .data = .{ .complete = try alloc.dupe(u8, &@as([64]u8, @splat('*'))) },
-         .usage = .{ .transient = true },
+         .metadata = .{ .transient = true },
      });
      try s.addPlacement(
-@@ -1804,7 +1804,7 @@ test "storage: pending image completes once and preserves age" {
+@@ -3538,14 +3538,14 @@ test "storage: eviction releases placement pins" {
+     const tracked = t.screens.active.pages.countTrackedPins();
+     try s.addImage(io, alloc, t.screens.active, .{
+         .id = 1,
+-        .data = .{ .complete = try alloc.dupe(u8, "*" ** 64) },
++        .data = .{ .complete = try alloc.dupe(u8, &@as([64]u8, @splat('*'))) },
+     });
+     try s.addPlacement(io, alloc, t.screens.active, 1, 1, .{
+         .location = .{ .pin = try trackPin(&t, .{ .x = 0, .y = 0 }) },
+     });
+     try s.addImage(io, alloc, t.screens.active, .{
+         .id = 2,
+-        .data = .{ .complete = try alloc.dupe(u8, "*" ** 64) },
++        .data = .{ .complete = try alloc.dupe(u8, &@as([64]u8, @splat('*'))) },
+     });
+     try s.addPlacement(io, alloc, t.screens.active, 2, 1, .{
+         .location = .{ .pin = try trackPin(&t, .{ .x = 1, .y = 1 }) },
+@@ -3556,7 +3556,7 @@ test "storage: eviction releases placement pins" {
+     // placement. The newer image's placement and tracked pin remain intact.
+     try s.addImage(io, alloc, t.screens.active, .{
+         .id = 3,
+-        .data = .{ .complete = try alloc.dupe(u8, "*" ** 64) },
++        .data = .{ .complete = try alloc.dupe(u8, &@as([64]u8, @splat('*'))) },
+     });
+     try testing.expect(!s.images.contains(1));
+     try testing.expect(s.images.contains(2));
+@@ -3603,7 +3603,7 @@ test "storage: pending image completes once and preserves age" {
  
      const storage_generation = s.generation;
      s.dirty = false;
@@ -1046,7 +1255,7 @@ diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphi
      try testing.expect(pending.complete(&s, io, pixels));
      try testing.expect(s.dirty);
      try testing.expect(s.generation > storage_generation);
-@@ -1812,7 +1812,7 @@ test "storage: pending image completes once and preserves age" {
+@@ -3611,7 +3611,7 @@ test "storage: pending image completes once and preserves age" {
      try testing.expectEqual(@as(usize, 16), s.total_bytes);
      try testing.expectEqualSlices(u8, pixels, s.imageById(1).?.data.bytes().?);
  
@@ -1055,19 +1264,19 @@ diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphi
      const duplicate_completed = pending.complete(&s, io, duplicate);
      try testing.expect(!duplicate_completed);
      defer alloc.free(duplicate);
-@@ -1943,7 +1943,7 @@ test "storage: pending images share exact eviction ordering" {
+@@ -3752,7 +3752,7 @@ test "storage: pending images share exact eviction ordering" {
      });
-     try s.addImage(io, alloc, .{
+     try s.addImage(io, alloc, t.screens.active, .{
          .id = 3,
 -        .data = .{ .complete = try alloc.dupe(u8, "*" ** 64) },
 +        .data = .{ .complete = try alloc.dupe(u8, &@as([64]u8, @splat('*'))) },
-         .usage = .{ .transient = true },
+         .metadata = .{ .transient = true },
      });
-     try s.addPlacement(io, alloc, 2, 1, .{
+     try s.addPlacement(io, alloc, t.screens.active, 2, 1, .{
 diff --git a/src/terminal/modes.zig b/src/terminal/modes.zig
 --- a/src/terminal/modes.zig
 +++ b/src/terminal/modes.zig
-@@ -100,10 +100,9 @@ pub const ModeState = struct {
+@@ -135,10 +135,9 @@ fn getPacked(values: *const ModePacked, mode: Mode) bool {
  /// A packed struct of all the settable modes. This shouldn't
  /// be used directly but rather through the ModeState struct.
  pub const ModePacked = packed_struct: {
@@ -1113,7 +1322,7 @@ diff --git a/src/terminal/osc/parsers/change_window_title.zig b/src/terminal/osc
 diff --git a/src/terminal/osc/parsers/color.zig b/src/terminal/osc/parsers/color.zig
 --- a/src/terminal/osc/parsers/color.zig
 +++ b/src/terminal/osc/parsers/color.zig
-@@ -450,7 +450,7 @@ test "OSC 4:" {
+@@ -471,7 +471,7 @@ test "OSC 4:" {
      }
  
      // Test every special color
@@ -1122,7 +1331,7 @@ diff --git a/src/terminal/osc/parsers/color.zig b/src/terminal/osc/parsers/color
          const special = std.enums.fromInt(SpecialColor, i) orelse return error.InvalidEnumValue;
  
          // Simple color set
-@@ -482,7 +482,7 @@ test "OSC 5:" {
+@@ -503,7 +503,7 @@ test "OSC 5:" {
      const alloc = testing.allocator;
  
      // Test every special color
@@ -1131,7 +1340,7 @@ diff --git a/src/terminal/osc/parsers/color.zig b/src/terminal/osc/parsers/color
          const special = std.enums.fromInt(SpecialColor, i) orelse return error.InvalidEnumValue;
  
          // Simple color set
-@@ -592,7 +592,7 @@ test "OSC 104:" {
+@@ -613,7 +613,7 @@ test "OSC 104:" {
      }
  
      // Test every special color
@@ -1140,7 +1349,7 @@ diff --git a/src/terminal/osc/parsers/color.zig b/src/terminal/osc/parsers/color
          const special = std.enums.fromInt(SpecialColor, i) orelse return error.InvalidEnumValue;
  
          // Simple color set
-@@ -677,11 +677,12 @@ test "OSC 10: OSC 11: OSC 12: OSC: 13: OSC 14: OSC 15: OSC: 16: OSC 17: OSC 18:
+@@ -698,11 +698,12 @@ test "OSC 10: OSC 11: OSC 12: OSC: 13: OSC 14: OSC 15: OSC: 16: OSC 17: OSC 18:
      const testing = std.testing;
      const alloc = testing.allocator;
  
@@ -1156,7 +1365,7 @@ diff --git a/src/terminal/osc/parsers/color.zig b/src/terminal/osc/parsers/color
          ));
  
          // Example script:
-@@ -737,11 +738,12 @@ test "OSC 110: OSC 111: OSC 112: OSC: 113: OSC 114: OSC 115: OSC: 116: OSC 117:
+@@ -758,11 +759,12 @@ test "OSC 110: OSC 111: OSC 112: OSC: 113: OSC 114: OSC 115: OSC: 116: OSC 117:
      const testing = std.testing;
      const alloc = testing.allocator;
  
@@ -1175,7 +1384,7 @@ diff --git a/src/terminal/osc/parsers/color.zig b/src/terminal/osc/parsers/color
 diff --git a/src/terminal/osc/parsers/context_signal.zig b/src/terminal/osc/parsers/context_signal.zig
 --- a/src/terminal/osc/parsers/context_signal.zig
 +++ b/src/terminal/osc/parsers/context_signal.zig
-@@ -423,7 +423,7 @@ test "OSC 3008: max length context ID" {
+@@ -433,7 +433,7 @@ test "OSC 3008: max length context ID" {
      const testing = std.testing;
  
      var p: Parser = .init(null);
@@ -1184,7 +1393,7 @@ diff --git a/src/terminal/osc/parsers/context_signal.zig b/src/terminal/osc/pars
      const input = "3008;start=" ++ id;
      for (input) |ch| p.next(ch);
  
-@@ -436,7 +436,7 @@ test "OSC 3008: over-length context ID" {
+@@ -446,7 +446,7 @@ test "OSC 3008: over-length context ID" {
      const testing = std.testing;
  
      var p: Parser = .init(null);
@@ -1214,7 +1423,7 @@ diff --git a/src/terminal/osc/parsers/iterm2.zig b/src/terminal/osc/parsers/iter
 diff --git a/src/terminal/osc/parsers/kitty_text_sizing.zig b/src/terminal/osc/parsers/kitty_text_sizing.zig
 --- a/src/terminal/osc/parsers/kitty_text_sizing.zig
 +++ b/src/terminal/osc/parsers/kitty_text_sizing.zig
-@@ -248,7 +248,7 @@ test "OSC 66: overlong UTF-8" {
+@@ -258,7 +258,7 @@ test "OSC 66: overlong UTF-8" {
  
      var p: Parser = .init(null);
  
@@ -1223,10 +1432,105 @@ diff --git a/src/terminal/osc/parsers/kitty_text_sizing.zig b/src/terminal/osc/p
      for (input) |ch| p.next(ch);
  
      try testing.expect(p.end('\x1b') == null);
+diff --git a/src/terminal/osc/parsers/program_status.zig b/src/terminal/osc/parsers/program_status.zig
+--- a/src/terminal/osc/parsers/program_status.zig
++++ b/src/terminal/osc/parsers/program_status.zig
+@@ -110,11 +110,11 @@ pub const query_reply = "?:states=" ++
+ fn names(comptime E: type, comptime skip: []const E) []const u8 {
+     comptime {
+         var result: []const u8 = "";
+-        for (@typeInfo(E).@"enum".fields) |field| {
+-            const value = @field(E, field.name);
++        for (@typeInfo(E).@"enum".field_names) |field| {
++            const value = @field(E, field);
+             if (std.mem.indexOfScalar(E, skip, value) != null) continue;
+             if (result.len > 0) result = result ++ ",";
+-            result = result ++ field.name;
++            result = result ++ field;
+         }
+         return result;
+     }
+@@ -639,12 +639,12 @@ test "OSC 7501: ids" {
+     var p: Parser = .init(testing.allocator);
+     defer p.deinit();
+ 
+-    const max_segment = "a" ** max_id_segment_bytes;
++    const max_segment: [max_id_segment_bytes]u8 = @splat('a');
+     const valid = [_][]const u8{
+         "a",
+         "build/test",
+         "A-Z_0.9+",
+-        max_segment,
++        &max_segment,
+         "a/b/c/d/e/f/g/h",
+     };
+     for (valid) |id| {
+@@ -655,6 +655,9 @@ test "OSC 7501: ids" {
+         try testing.expectEqualStrings(id, report.readOption(.id).?);
+     }
+ 
++    const long: [31]u8 = @splat('a');
++    const longs: [128]u8 = std.simd.repeat(128, long ++ "/".*);
++
+     // An invalid id discards the report so that it can never fall back
+     // to the root record.
+     const invalid = [_][]const u8{
+@@ -667,7 +670,7 @@ test "OSC 7501: ids" {
+         "a=b",
+         max_segment ++ "a",
+         "a/b/c/d/e/f/g/h/i",
+-        ("a" ** 31 ++ "/") ** 4 ++ "a",
++        longs ++ "a",
+     };
+     for (invalid) |id| {
+         p.reset();
+@@ -731,8 +734,10 @@ test "OSC 7501: discarded reports" {
+ 
+     // 192 bytes of title and 2048 bytes of message are the most allowed.
+     // "QUFB" decodes to "AAA" and "QUE" to "AA".
+-    const title = "QUFB" ** (max_title_encoded_bytes / 4);
+-    const msg = "QUFB" ** (max_msg_bytes / 3) ++ "QUE";
++    @setEvalBranchQuota(4096);
++    const title: [max_title_encoded_bytes]u8 = std.simd.repeat(max_title_encoded_bytes, "QUFB".*);
++    const main: [max_msg_bytes / 3 * 4]u8 = std.simd.repeat(max_msg_bytes / 3 * 4, "QUFB".*);
++    const msg = main ++ "QUE";
+     const fill = max_sequence_bytes - "\x1b]7501;state=idle:".len - "\x1b\\".len;
+ 
+     const cases = [_]struct { []const u8, bool }{
+@@ -744,22 +749,22 @@ test "OSC 7501: discarded reports" {
+         .{ "7501;state=IDLE", false },
+ 
+         // A key that is too long, even one we don't know.
+-        .{ "7501;state=idle:" ++ "a" ** max_key_bytes ++ "=1", true },
+-        .{ "7501;state=idle:" ++ "a" ** (max_key_bytes + 1) ++ "=1", false },
++        .{ "7501;state=idle:" ++ @as([max_key_bytes]u8, @splat('a')) ++ "=1", true },
++        .{ "7501;state=idle:" ++ @as([max_key_bytes + 1]u8, @splat('a')) ++ "=1", false },
+ 
+         // An app that is too long, even if a later pair replaces it.
+-        .{ "7501;state=idle:app=" ++ "a" ** (max_app_bytes + 1), false },
+-        .{ "7501;state=idle:app=" ++ "a" ** (max_app_bytes + 1) ++ ":app=ok", false },
++        .{ "7501;state=idle:app=" ++ @as([max_app_bytes + 1]u8, @splat('a')), false },
++        .{ "7501;state=idle:app=" ++ @as([max_app_bytes + 1]u8, @splat('a')) ++ ":app=ok", false },
+ 
+         // Text at its limits and one step over.
+         .{ "7501;state=idle:title=" ++ title, true },
+         .{ "7501;state=idle:title=" ++ title ++ "QUFB", false },
+         .{ "7501;state=idle:msg=" ++ msg, true },
+-        .{ "7501;state=idle:msg=" ++ "QUFB" ** (max_msg_bytes / 3 + 1), false },
++        .{ "7501;state=idle:msg=" ++ main ++ "QUFB", false },
+ 
+         // The whole sequence, including the terminator.
+-        .{ "7501;state=idle:" ++ "x" ** fill, true },
+-        .{ "7501;state=idle:" ++ "x" ** (fill + 1), false },
++        .{ "7501;state=idle:" ++ @as([fill]u8, @splat('x')), true },
++        .{ "7501;state=idle:" ++ @as([fill + 1]u8, @splat('x')), false },
+ 
+         // Numbers that only start like 7501.
+         .{ "75;state=idle", false },
 diff --git a/src/terminal/page.zig b/src/terminal/page.zig
 --- a/src/terminal/page.zig
 +++ b/src/terminal/page.zig
-@@ -722,7 +722,7 @@ pub const Page = struct {
+@@ -729,7 +729,7 @@ pub const Page = struct {
          comptime assert(size.HyperlinkCountInt == size.CellCountInt);
  
          // Accumulators
@@ -1235,7 +1539,7 @@ diff --git a/src/terminal/page.zig b/src/terminal/page.zig
          var grapheme_bytes: usize = 0;
          var string_bytes: usize = 0;
  
-@@ -747,7 +747,7 @@ pub const Page = struct {
+@@ -754,7 +754,7 @@ pub const Page = struct {
          // Second pass: count hyperlinks and string bytes
          // We count both unique hyperlinks (for hyperlink_set) and total
          // hyperlink cells (for hyperlink_map capacity).
@@ -1244,7 +1548,7 @@ diff --git a/src/terminal/page.zig b/src/terminal/page.zig
          var hyperlink_cells: usize = 0;
          for (rows) |*row| {
              const cells = row.cells.ptr(self.memory)[0..self.size.cols];
-@@ -2283,7 +2283,7 @@ fn fieldMask(
+@@ -2416,7 +2416,7 @@ fn fieldMask(
          }
  
          // The type that fits all the bits we need to set.
@@ -1253,7 +1557,7 @@ diff --git a/src/terminal/page.zig b/src/terminal/page.zig
  
          // Mask out the ones
          mask |= @as(Int, std.math.maxInt(Ones)) << offset;
-@@ -2448,7 +2448,7 @@ pub fn Mask(
+@@ -2581,7 +2581,7 @@ pub fn Mask(
                  return group_len;
              }
  
@@ -1262,7 +1566,7 @@ diff --git a/src/terminal/page.zig b/src/terminal/page.zig
                  .unsigned,
                  group_len,
              ) = @bitCast(ok);
-@@ -2632,8 +2632,9 @@ test "Page.layout can take a maxed capacity" {
+@@ -2765,8 +2765,9 @@ test "Page.layout can take a maxed capacity" {
      // overflow. This simplifies some of our handling downstream of the
      // call (relevant to: https://github.com/ghostty-org/ghostty/issues/10258)
      var cap: Capacity = undefined;
@@ -1300,7 +1604,7 @@ diff --git a/src/terminal/parse_table.zig b/src/terminal/parse_table.zig
 diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
 --- a/src/terminal/sgr.zig
 +++ b/src/terminal/sgr.zig
-@@ -172,7 +172,7 @@ pub const Attribute = union(Tag) {
+@@ -183,7 +183,7 @@ pub const Attribute = union(Tag) {
  /// Parser parses the attributes from a list of SGR parameters.
  pub const Parser = struct {
      params: []const u16 = &.{},
@@ -1309,7 +1613,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
      idx: usize = 0,
  
      /// Empty state parser.
-@@ -575,7 +575,7 @@ test "sgr: unsupported with colon" {
+@@ -586,7 +586,7 @@ test "sgr: unsupported with colon" {
      var p: Parser = .{
          .params = &[_]u16{ 0, 4, 1 },
          .params_sep = sep: {
@@ -1318,7 +1622,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              list.set(0);
              break :sep list;
          },
-@@ -589,7 +589,7 @@ test "sgr: unsupported with multiple colon" {
+@@ -600,7 +600,7 @@ test "sgr: unsupported with multiple colon" {
      var p: Parser = .{
          .params = &[_]u16{ 0, 4, 2, 1 },
          .params_sep = sep: {
@@ -1327,7 +1631,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              list.set(0);
              list.set(1);
              break :sep list;
-@@ -679,7 +679,7 @@ test "sgr: underline style with more" {
+@@ -690,7 +690,7 @@ test "sgr: underline style with more" {
      var p: Parser = .{
          .params = &[_]u16{ 4, 2, 1 },
          .params_sep = sep: {
@@ -1336,7 +1640,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              list.set(0);
              break :sep list;
          },
-@@ -694,7 +694,7 @@ test "sgr: underline style with too many colons" {
+@@ -705,7 +705,7 @@ test "sgr: underline style with too many colons" {
      var p: Parser = .{
          .params = &[_]u16{ 4, 2, 3, 1 },
          .params_sep = sep: {
@@ -1345,7 +1649,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              list.set(0);
              list.set(1);
              break :sep list;
-@@ -929,7 +929,7 @@ test "sgr: direct fg colon with too many colons" {
+@@ -940,7 +940,7 @@ test "sgr: direct fg colon with too many colons" {
      var p: Parser = .{
          .params = &[_]u16{ 38, 2, 0, 1, 2, 3, 4, 1 },
          .params_sep = sep: {
@@ -1354,7 +1658,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              for (0..6) |idx| list.set(idx);
              break :sep list;
          },
-@@ -944,7 +944,7 @@ test "sgr: direct fg colon with colorspace and extra param" {
+@@ -955,7 +955,7 @@ test "sgr: direct fg colon with colorspace and extra param" {
      var p: Parser = .{
          .params = &[_]u16{ 38, 2, 0, 1, 2, 3, 1 },
          .params_sep = sep: {
@@ -1363,7 +1667,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              for (0..5) |idx| list.set(idx);
              break :sep list;
          },
-@@ -966,7 +966,7 @@ test "sgr: direct fg colon no colorspace and extra param" {
+@@ -977,7 +977,7 @@ test "sgr: direct fg colon no colorspace and extra param" {
      var p: Parser = .{
          .params = &[_]u16{ 38, 2, 1, 2, 3, 1 },
          .params_sep = sep: {
@@ -1372,7 +1676,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              for (0..4) |idx| list.set(idx);
              break :sep list;
          },
-@@ -990,7 +990,7 @@ test "sgr: kakoune input" {
+@@ -1001,7 +1001,7 @@ test "sgr: kakoune input" {
      var p: Parser = .{
          .params = &[_]u16{ 0, 4, 3, 38, 2, 175, 175, 215, 58, 2, 0, 190, 80, 70 },
          .params_sep = sep: {
@@ -1381,7 +1685,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              list.set(1);
              list.set(8);
              list.set(9);
-@@ -1036,7 +1036,7 @@ test "sgr: kakoune input issue underline, fg, and bg" {
+@@ -1047,7 +1047,7 @@ test "sgr: kakoune input issue underline, fg, and bg" {
      var p: Parser = .{
          .params = &[_]u16{ 4, 3, 38, 2, 51, 51, 51, 48, 2, 170, 170, 170, 58, 2, 255, 97, 136 },
          .params_sep = sep: {
@@ -1390,7 +1694,7 @@ diff --git a/src/terminal/sgr.zig b/src/terminal/sgr.zig
              list.set(0);
              break :sep list;
          },
-@@ -1084,7 +1084,7 @@ test "sgr: underline colon with trailing separator and short slice" {
+@@ -1095,7 +1095,7 @@ test "sgr: underline colon with trailing separator and short slice" {
      var p: Parser = .{
          .params = &[_]u16{ 58, 4 },
          .params_sep = sep: {
@@ -1414,7 +1718,7 @@ diff --git a/src/terminal/snapshot/fixture.zig b/src/terminal/snapshot/fixture.z
 diff --git a/src/terminal/snapshot/record.zig b/src/terminal/snapshot/record.zig
 --- a/src/terminal/snapshot/record.zig
 +++ b/src/terminal/snapshot/record.zig
-@@ -414,7 +414,7 @@ test "golden PAGE record header and checksum" {
+@@ -411,7 +411,7 @@ test "golden PAGE record header and checksum" {
  
  test "reject invalid tags" {
      for ([_]u16{ 0, 8, std.math.maxInt(u16) }) |tag| {
@@ -1465,7 +1769,7 @@ diff --git a/src/terminal/snapshot/screen.zig b/src/terminal/snapshot/screen.zig
 diff --git a/src/terminal/snapshot/snapshot.zig b/src/terminal/snapshot/snapshot.zig
 --- a/src/terminal/snapshot/snapshot.zig
 +++ b/src/terminal/snapshot/snapshot.zig
-@@ -329,7 +329,7 @@ pub const Decoder = struct {
+@@ -346,7 +346,7 @@ pub const Decoder = struct {
              };
          };
  
@@ -1474,7 +1778,7 @@ diff --git a/src/terminal/snapshot/snapshot.zig b/src/terminal/snapshot/snapshot
          var history_rows: std.EnumMap(TerminalScreenKey, u64) = .init(.{});
          for (0..screen_count) |_| {
              var decoded = try screen.decode(
-@@ -381,7 +381,7 @@ pub const Decoder = struct {
+@@ -396,7 +396,7 @@ pub const Decoder = struct {
  
          self.state = .{ .history = .{
              .generations = generations,
@@ -1498,15 +1802,37 @@ diff --git a/src/terminal/snapshot/style.zig b/src/terminal/snapshot/style.zig
 diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
 --- a/src/terminal/stream.zig
 +++ b/src/terminal/stream.zig
-@@ -673,7 +673,7 @@ pub fn Stream(comptime H: type) type {
+@@ -808,7 +808,7 @@ pub fn Stream(comptime H: type) type {
                                  const v: V = cps[end..][0..lanes].*;
-                                 const gt = v > threshold;
-                                 if (!@reduce(.And, gt)) {
--                                    const bits: std.meta.Int(.unsigned, lanes) = @bitCast(gt);
-+                                    const bits: @Int(.unsigned, lanes) = @bitCast(gt);
-                                     end += @ctz(~bits);
+                                 const stop = (v & mask) == zero;
+                                 if (@reduce(.Or, stop)) {
+-                                    const bits: std.meta.Int(.unsigned, lanes) = @bitCast(stop);
++                                    const bits: @Int(.unsigned, lanes) = @bitCast(stop);
+                                     end += @ctz(bits);
                                      break :scan;
                                  }
+@@ -4232,6 +4232,9 @@ test "stream: osc bulk path matches per-byte path" {
+         }
+     };
+ 
++    const ys: [3000]u8 = @splat('y');
++    const xs: [3000]u8 = @splat('x');
++
+     const cases = [_][]const u8{
+         "\x1b]52;c;aGVsbG8=\x1b\\",
+         "\x1b]52;c;aGVsbG8=\x07",
+@@ -4251,9 +4254,9 @@ test "stream: osc bulk path matches per-byte path" {
+         // Invalid OSC number.
+         "\x1b]999;junk\x07",
+         // Exceeds the fixed buffer: allocating capture.
+-        "\x1b]52;c;" ++ "y" ** 3000 ++ "\x1b\\",
++        "\x1b]52;c;" ++ ys ++ "\x1b\\",
+         // Exceeds the fixed buffer: overflow, no dispatch.
+-        "\x1b]0;" ++ "x" ** 3000 ++ "\x07",
++        "\x1b]0;" ++ xs ++ "\x07",
+     };
+ 
+     for (cases) |case| {
 diff --git a/src/terminal/stream_continuation.zig b/src/terminal/stream_continuation.zig
 --- a/src/terminal/stream_continuation.zig
 +++ b/src/terminal/stream_continuation.zig
@@ -1522,7 +1848,68 @@ diff --git a/src/terminal/stream_continuation.zig b/src/terminal/stream_continua
 diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
 --- a/src/terminal/stream_terminal.zig
 +++ b/src/terminal/stream_terminal.zig
-@@ -463,8 +463,9 @@ pub const Handler = struct {
+@@ -887,10 +887,11 @@ pub const Handler = struct {
+         // Values are hex-encoded uppercase, matching the static map. The
+         // buffer fits any name allowed above, so the print cannot fail.
+         var buf: [max_tn_response_bytes]u8 = undefined;
+-        self.writePty(std.fmt.bufPrintZ(
++        self.writePty(std.mem.printSentinel(
+             &buf,
+             "\x1bP1+r" ++ encoded_tn_key ++ "={X}\x1b\\",
+             .{name},
++            0,
+         ) catch unreachable);
+     }
+ 
+@@ -1137,8 +1138,9 @@ pub const Handler = struct {
+             data: []const u8,
+         ) error{ OutOfMemory, WriteFailed }!void {
+             const handler = self.handler;
+-            var stack = std.heap.stackFallback(256, handler.terminal.gpa());
+-            const alloc = stack.get();
++            var stack_buffer: [256]u8 = undefined;
++            var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, handler.terminal.gpa());
++            const alloc = stack.allocator();
+ 
+             var aw: std.Io.Writer.Allocating = .init(alloc);
+             defer aw.deinit();
+@@ -1368,8 +1370,9 @@ pub const Handler = struct {
+ 
+             // Status packets fit on the stack; DATA packets carry the
+             // clipboard contents and fall back to the heap.
+-            var stack = std.heap.stackFallback(1024, handler.terminal.gpa());
+-            const alloc = stack.get();
++            var stack_buffer: [1024]u8 = undefined;
++            var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, handler.terminal.gpa());
++            const alloc = stack.allocator();
+             var aw: std.Io.Writer.Allocating = .init(alloc);
+             defer aw.deinit();
+             try (kitty_clipboard.ReadSuccess{
+@@ -1646,8 +1649,9 @@ pub const Handler = struct {
+ 
+         // Our responses carry at most a status and the echoed id so
+         // they virtually always fit on the stack.
+-        var stack = std.heap.stackFallback(1024, self.terminal.gpa());
+-        const alloc = stack.get();
++        var stack_buffer: [1024]u8 = undefined;
++        var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, self.terminal.gpa());
++        const alloc = stack.allocator();
+         var aw: std.Io.Writer.Allocating = .init(alloc);
+         defer aw.deinit();
+         response.encode(&aw.writer) catch return;
+@@ -1663,8 +1667,9 @@ pub const Handler = struct {
+     ) (Allocator.Error || std.Io.Writer.Error)!void {
+         // Responses are usually small (queries, errors) but data
+         // serving can produce many chunks, so fall back to the heap.
+-        var stack = std.heap.stackFallback(512, self.terminal.gpa());
+-        const response_alloc = stack.get();
++        var stack_buffer: [512]u8 = undefined;
++        var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, self.terminal.gpa());
++        const response_alloc = stack.allocator();
+         var aw: std.Io.Writer.Allocating = .init(response_alloc);
+         defer aw.deinit();
+ 
+@@ -1694,8 +1699,9 @@ pub const Handler = struct {
          const func = self.effects.device_attributes orelse return;
          const attrs = func(self);
  
@@ -1534,7 +1921,7 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
  
          var aw: std.Io.Writer.Allocating = .init(alloc);
          defer aw.deinit();
-@@ -493,10 +494,10 @@ pub const Handler = struct {
+@@ -1724,10 +1730,10 @@ pub const Handler = struct {
                  };
  
                  var buf: [64]u8 = undefined;
@@ -1547,7 +1934,7 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
                  self.writePty(resp);
              },
  
-@@ -541,10 +542,11 @@ pub const Handler = struct {
+@@ -1772,10 +1778,11 @@ pub const Handler = struct {
      fn reportXtversion(self: *Handler) void {
          const version = if (self.effects.xtversion) |func| func(self) else "";
          var buf: [288]u8 = undefined;
@@ -1560,7 +1947,7 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
          ) catch return;
          self.writePty(resp);
      }
-@@ -552,11 +554,9 @@ pub const Handler = struct {
+@@ -1797,11 +1804,9 @@ pub const Handler = struct {
      fn reportSize(self: *Handler, style: csi.SizeReportStyle) void {
          // Almost all size reports will fit in 256 bytes so try that
          // on the stack before falling back to a heap allocation.
@@ -1575,7 +1962,7 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
  
          // Allocating writing to accumulate the response.
          var aw: std.Io.Writer.Allocating = .init(alloc);
-@@ -659,9 +659,9 @@ pub const Handler = struct {
+@@ -1926,9 +1931,9 @@ pub const Handler = struct {
      fn queryKittyKeyboard(self: *Handler) void {
          // Max response is "\x1b[?31u\x00" (7 bytes): the flags are a u5 (max 31).
          var buf: [32]u8 = undefined;
@@ -1587,7 +1974,7 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
          self.writePty(resp);
      }
  
-@@ -768,8 +768,9 @@ pub const Handler = struct {
+@@ -2058,8 +2063,9 @@ pub const Handler = struct {
      ) !void {
          if (requests.count() == 0) return;
  
@@ -1599,7 +1986,7 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
          var response: std.Io.Writer.Allocating = .init(alloc);
          defer response.deinit();
          const writer = &response.writer;
-@@ -828,7 +829,7 @@ pub const Handler = struct {
+@@ -2118,7 +2124,7 @@ pub const Handler = struct {
                          self.terminal.flags.dirty.palette = true;
                          self.terminal.colors.palette.reset(@intCast(i));
                      }
@@ -1608,7 +1995,7 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
                  },
  
                  .query => |target| {
-@@ -886,8 +887,9 @@ pub const Handler = struct {
+@@ -2176,8 +2182,9 @@ pub const Handler = struct {
          self: *Handler,
          request: kitty_color.OSC,
      ) !void {
@@ -1620,46 +2007,83 @@ diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
          var response: std.Io.Writer.Allocating = .init(alloc);
          defer response.deinit();
          const writer = &response.writer;
-@@ -1542,7 +1544,7 @@ test "glyph protocol APC with write_pty callback" {
+@@ -3164,11 +3171,11 @@ test "XTGETTCAP TN responses" {
+         std.fmt.bytesToHex("xterm-256color", .upper) ++ "\x1B\\");
+ 
+     // A maximum-length name is still reported in full.
+-    const max_name = "a" ** Handler.max_terminfo_name_bytes;
+-    s.handler.terminfo_name = max_name;
++    const max_name: [Handler.max_terminfo_name_bytes]u8 = @splat('a');
++    s.handler.terminfo_name = &max_name;
+     s.nextSlice(tn_query);
+     try S.expectResponse("\x1BP1+r" ++ std.fmt.bytesToHex("TN", .upper) ++ "=" ++
+-        std.fmt.bytesToHex(max_name.*, .upper) ++ "\x1B\\");
++        std.fmt.bytesToHex(max_name, .upper) ++ "\x1B\\");
+ 
+     // An empty name is silent; "Co" is still answered.
+     s.handler.terminfo_name = "";
+@@ -3178,7 +3185,8 @@ test "XTGETTCAP TN responses" {
+         std.fmt.bytesToHex("256", .upper) ++ "\x1B\\");
+ 
+     // As are names beyond the maximum length.
+-    s.handler.terminfo_name = "a" ** (Handler.max_terminfo_name_bytes + 1);
++    const long_name: [Handler.max_terminfo_name_bytes + 1]u8 = @splat('a');
++    s.handler.terminfo_name = &long_name;
+     s.nextSlice(tn_query);
+     try testing.expectEqual(@as(usize, 0), S.calls);
+     try testing.expect(!s.handler.semantic_failure);
+@@ -3261,7 +3269,7 @@ test "glyph protocol APC with write_pty callback" {
          var last_response: ?[:0]const u8 = null;
-         fn writePty(_: *Handler, data: [:0]const u8) void {
+         fn writePty(_: *Handler, data: []const u8) void {
              if (last_response) |old| testing.allocator.free(old);
 -            last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
 +            last_response = testing.allocator.dupeSentinel(u8, data, 0) catch @panic("OOM");
          }
      };
      S.last_response = null;
-@@ -1712,7 +1714,7 @@ test "OSC color query responses" {
+@@ -3440,7 +3448,7 @@ test "OSC color query responses" {
  
-         fn writePty(_: *Handler, data: [:0]const u8) void {
+         fn writePty(_: *Handler, data: []const u8) void {
              reset();
 -            last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
 +            last_response = testing.allocator.dupeSentinel(u8, data, 0) catch @panic("OOM");
          }
      };
      S.last_response = null;
-@@ -1863,7 +1865,7 @@ test "kitty color protocol query responses" {
+@@ -3591,7 +3599,7 @@ test "kitty color protocol query responses" {
  
-         fn writePty(_: *Handler, data: [:0]const u8) void {
+         fn writePty(_: *Handler, data: []const u8) void {
              reset();
 -            last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
 +            last_response = testing.allocator.dupeSentinel(u8, data, 0) catch @panic("OOM");
          }
      };
      S.last_response = null;
-@@ -2361,7 +2363,7 @@ test "request mode DECRQM with write_pty callback" {
+@@ -5469,7 +5477,7 @@ test "request mode DECRQM with write_pty callback" {
              var last_response: ?[:0]const u8 = null;
-             fn writePty(_: *Handler, data: [:0]const u8) void {
+             fn writePty(_: *Handler, data: []const u8) void {
                  if (last_response) |old| testing.allocator.free(old);
 -                last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
 +                last_response = testing.allocator.dupeSentinel(u8, data, 0) catch @panic("OOM");
              }
          };
          S.last_response = null;
+@@ -7208,9 +7216,9 @@ test "paste: large text streams to the pty in chunks" {
+ 
+     // Two full chunks and a partial one with the frame, never the
+     // whole thing at once.
+-    const data = "x" ** 10_000;
++    const data: [10_000]u8 = @splat('x');
+     try testing.expect(try handler.paste(.{
+-        .contents = .{ .memory = &.{.{ .mime = "text/plain", .data = data }} },
++        .contents = .{ .memory = &.{.{ .mime = "text/plain", .data = &data }} },
+     }));
+     const total = data.len + "\x1b[200~\x1b[201~".len;
+     try testing.expectEqual(
 diff --git a/src/terminal/style.zig b/src/terminal/style.zig
 --- a/src/terminal/style.zig
 +++ b/src/terminal/style.zig
-@@ -243,8 +243,9 @@ pub const Style = struct {
+@@ -262,8 +262,9 @@ pub const Style = struct {
  
          var started = false;
  
@@ -1671,7 +2095,7 @@ diff --git a/src/terminal/style.zig b/src/terminal/style.zig
                  if (started) {
                      _ = try writer.write(", ");
                  }
-@@ -253,15 +254,16 @@ pub const Style = struct {
+@@ -272,15 +273,16 @@ pub const Style = struct {
  
                  started = false;
  
@@ -1693,7 +2117,7 @@ diff --git a/src/terminal/style.zig b/src/terminal/style.zig
                              started = true;
                          }
                      } else if (!std.meta.eql(v, d)) {
-@@ -270,7 +272,7 @@ pub const Style = struct {
+@@ -289,7 +291,7 @@ pub const Style = struct {
                          }
                          _ = try writer.print(
                              "{s}={any}",
@@ -1702,7 +2126,7 @@ diff --git a/src/terminal/style.zig b/src/terminal/style.zig
                          );
                          started = true;
                      }
-@@ -280,15 +282,15 @@ pub const Style = struct {
+@@ -299,15 +301,15 @@ pub const Style = struct {
                  started = true;
                  comptime continue;
              }
@@ -1721,7 +2145,7 @@ diff --git a/src/terminal/style.zig b/src/terminal/style.zig
                  );
                  started = true;
              }
-@@ -653,8 +655,8 @@ pub const Style = struct {
+@@ -672,8 +674,8 @@ pub const Style = struct {
      comptime {
          assert(@sizeOf(PackedStyle) == 16);
          assert(std.meta.hasUniqueRepresentation(PackedStyle));
@@ -1762,45 +2186,18 @@ diff --git a/src/terminal/tmux/output.zig b/src/terminal/tmux/output.zig
  
      for (vars, &names, &types, &attrs) |variable, *name, *ty, *attr| {
          name.* = @tagName(variable);
-diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
---- a/src/termio/Exec.zig
-+++ b/src/termio/Exec.zig
-@@ -574,11 +574,7 @@ pub const Config = struct {
- };
- 
- const Subprocess = struct {
--    const c = @cImport({
--        @cInclude("errno.h");
--        @cInclude("signal.h");
--        @cInclude("unistd.h");
--    });
-+    const c = @import("posix_c");
- 
-     arena: std.heap.ArenaAllocator,
-     cwd: ?[:0]const u8,
 diff --git a/src/unicode/grapheme.zig b/src/unicode/grapheme.zig
 --- a/src/unicode/grapheme.zig
 +++ b/src/unicode/grapheme.zig
-@@ -170,8 +170,8 @@ const Precompute = struct {
- 
-         const max_state_int = blk: {
-             var max: usize = 0;
--            for (@typeInfo(uucode.grapheme.BreakState).@"enum".fields) |field| {
--                if (field.value > max) max = field.value;
-+            for (@typeInfo(uucode.grapheme.BreakState).@"enum".field_values) |value| {
-+                if (value > max) max = value;
-             }
-             break :blk max;
-         };
-@@ -179,13 +179,13 @@ const Precompute = struct {
-         @setEvalBranchQuota(10_000);
+@@ -171,13 +171,13 @@ const Precompute = struct {
+         @setEvalBranchQuota(20_000);
          const info = @typeInfo(uucode.types.GraphemeBreakNoControl).@"enum";
-         for (0..max_state_int + 1) |state_int| {
+         for (0..uucode.grapheme.BreakState.table_len) |state_int| {
 -            for (info.fields) |field1| {
 -                for (info.fields) |field2| {
 +            for (info.field_names) |field1| {
 +                for (info.field_names) |field2| {
-                     var state: uucode.grapheme.BreakState = @enumFromInt(state_int);
+                     var state: uucode.grapheme.BreakState = .fromTableIndex(state_int);
  
                      const key: Key = .{
 -                        .gb1 = @field(uucode.types.GraphemeBreakNoControl, field1.name),

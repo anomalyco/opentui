@@ -87,6 +87,24 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       expect(highlights[0].end).toBe(25)
     })
 
+    // A tab or control takes cells that a string width does not count. A highlight that ends at the end of the first
+    // line must stay on that line. An end past the text covers the rest of it.
+    it.each<[string, number, number, number[][][]]>([
+      ["a\tb\ncd", 0, 4, [[[0, 4]], []]],
+      ["a\fb\ncd", 0, 4, [[[0, 4]], []]],
+      ["a\u0085b\ncd", 0, 6, [[[0, 6]], []]],
+      ["a\fb\ncd", 3, 100, [[[3, 4]], [[0, 2]]]],
+    ])("highlights %j from %d to %d", async (text, start, end, expected) => {
+      await setup(text)
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
+      textarea.syntaxStyle = style
+      extmarks.create({ start, end, styleId: style.registerStyle("test", { fg: RGBA.fromValues(1, 0, 0, 1) }) })
+      const lines = [0, 1].map((line) =>
+        textarea.getLineHighlights(line).map((highlight) => [highlight.start, highlight.end]),
+      )
+      expect(lines).toEqual(expected)
+    })
+
     it("should correctly highlight text BEFORE multi-width characters", async () => {
       await setup("hello 前后端分离")
 
@@ -268,6 +286,19 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
 
       // Cursor should be at display-width offset 5 (after "前后 ")
       expect(cursorPos).toBe(5)
+    })
+
+    // Wide text takes more cells than string units, so the end of the buffer is past the string length.
+    it.each(["\u0085\u0085\u0085", "日日日日"])("skips a virtual extmark at the end after %j", async (prefix) => {
+      await setup(`${prefix}@ab`)
+      textarea.focus()
+      const end = textarea.editBuffer.getEOL().offset
+      extmarks.create({ start: end - 3, end, virtual: true })
+      textarea.cursorOffset = end - 3
+      currentMockInput.pressArrow("right")
+      expect(textarea.cursorOffset).toBe(end)
+      currentMockInput.pressArrow("right")
+      expect(textarea.cursorOffset).toBe(end)
     })
   })
 

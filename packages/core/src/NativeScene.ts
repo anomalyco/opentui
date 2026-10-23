@@ -39,13 +39,6 @@ import {
 const maxLayoutRounds = 8
 const maxHostRequests = 65_536
 
-type PaintContinuation = {
-  request: NativeSceneFrameRequest
-  wait: Promise<void>
-  // Cancel ends the frame and wins over restart, which begins a new attempt (for example after a resize).
-  interrupted?: "cancel" | "restart"
-}
-
 type PaintOptions = () => Pick<
   NativeSceneFrameOptions,
   "background" | "useMouse" | "excludedHitNum" | "preserveUnwritten"
@@ -129,7 +122,6 @@ export class NativeScene {
   private readonly nodes = new Map<number, Renderable>()
   private paintedFrame: NativeSceneFrameRequest | null = null
   private paintRecording?: { recorder: NativePaintRecorder; buffer: OptimizedBuffer }
-  private cancelPaintYield: ((restart?: boolean) => void) | null = null
   private destroyed = false
   private destroying = false
   private geometryRevision = 0
@@ -145,7 +137,6 @@ export class NativeScene {
   constructor(
     readonly driver: NativeSession,
     private readonly renderer: Pick<CliRenderer, "root" | "isDestroyed" | "controlState" | "unregisterLifecyclePass">,
-    private readonly workBudget?: number,
   ) {
     this.yogaHost = driver.renderLib.getYogaHost()
   }
@@ -645,17 +636,15 @@ export class NativeScene {
     }
   }
 
-  paint(deltaTime: number, getPaintOptions: PaintOptions): void | Promise<void> {
+  paint(deltaTime: number, getPaintOptions: PaintOptions): void {
     this.yogaHost.assertMutable()
     this.assertAlive()
     // Native code admits one attempt per Session; a second one would fail with FrameBusy.
-    if (this.cancelPaintYield || this.paintedFrame) throw new Error("Native scene is already painting a frame")
+    if (this.paintedFrame) throw new Error("Native scene is already painting a frame")
     this.renderer.root._setCurrentRenderable(undefined)
     this.drainHookScans()
     this.runLifecyclePasses()
-
-    const continuation = this.advancePaint(deltaTime, getPaintOptions)
-    if (continuation) return this.resumePaint(deltaTime, getPaintOptions, continuation)
+    this.advancePaint(deltaTime, getPaintOptions)
   }
 
   private runLifecyclePasses(): void {
@@ -672,34 +661,11 @@ export class NativeScene {
     }
   }
 
-  private async resumePaint(
-    deltaTime: number,
-    getPaintOptions: PaintOptions,
-    continuation: PaintContinuation | undefined,
-  ): Promise<void> {
-    while (continuation) {
-      await continuation.wait
-      this.cancelPaintYield = null
-      if (continuation.interrupted === "restart") {
-        this.cancelAttempt(continuation.request)
-        this.drainHookScans()
-        this.runLifecyclePasses()
-        continuation = undefined
-      }
-      continuation = this.advancePaint(deltaTime, getPaintOptions, continuation)
-    }
-  }
-
-  private advancePaint(
-    deltaTime: number,
-    getPaintOptions: PaintOptions,
-    continuation?: PaintContinuation,
-  ): PaintContinuation | undefined {
-    let request: NativeSceneFrameRequest | null = continuation?.request ?? null
+  private advancePaint(deltaTime: number, getPaintOptions: PaintOptions): void {
+    let request: NativeSceneFrameRequest | null = null
     let recording: Uint8Array | null = null
-    let yielded = false
     try {
-      while (continuation?.interrupted !== "cancel" && !this.stopped) {
+      while (!this.stopped) {
         this.drainHookScans()
         const options = { ...getPaintOptions(), maxLayoutRounds, maxHostRequests }
         if (this.stopped || this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
@@ -712,7 +678,6 @@ export class NativeScene {
             this.driver.session,
             request,
             options,
-            this.workBudget,
             recording,
           )
         } finally {
@@ -725,25 +690,6 @@ export class NativeScene {
         if (request.kind === NativeSceneFrame.Done) {
           this.paintedFrame = request
           return
-        }
-        if (request.kind === NativeSceneFrame.Yield) {
-          const wait = Promise.withResolvers<void>()
-          const state: PaintContinuation = continuation ?? { request, wait: wait.promise }
-          state.request = request
-          state.wait = wait.promise
-          const cancel = this.driver.scheduler.schedule(wait.resolve)
-          this.cancelPaintYield = (restart = false) => {
-            const first = state.interrupted === undefined
-            state.interrupted = restart && state.interrupted !== "cancel" ? "restart" : "cancel"
-            if (!first) return
-            try {
-              cancel()
-            } finally {
-              wait.resolve()
-            }
-          }
-          yielded = true
-          return state
         }
         if (
           !sameHandle(request.session, this.driver.session) ||
@@ -764,11 +710,11 @@ export class NativeScene {
       }
     } finally {
       this.paintRecording?.recorder.settle()
-      if (!yielded && request && request !== this.paintedFrame) this.cancelAttempt(request)
+      if (request && request !== this.paintedFrame) this.cancelAttempt(request)
     }
   }
 
-  /** Destruction, Session shutdown, or a resize may have cancelled the attempt already; keep the caller's failure. */
+  /** Destruction or Session shutdown may have cancelled the attempt already; keep the caller's failure. */
   private cancelAttempt(request: NativeSceneFrameRequest): void {
     if (this.driver.disposed) return
     this.changeLayout()
@@ -841,20 +787,9 @@ export class NativeScene {
 
   /** @internal Called after active effects and captures unwind, never during synchronous node destruction. */
   cancelFrame(): void {
-    this.cancelPaintYield?.()
     const frame = this.paintedFrame
     this.paintedFrame = null
     if (frame) this.cancelAttempt(frame)
-  }
-
-  /** @internal Wake a parked turn without revoking active synchronous framebuffer scopes. */
-  interruptPaint(): void {
-    this.cancelPaintYield?.()
-  }
-
-  /** @internal An accepted native resize cancels only a parked attempt, not a synchronous hook scope. */
-  restartPaint(): void {
-    this.cancelPaintYield?.(true)
   }
 
   hitTest(x: number, y: number): number {
@@ -874,11 +809,6 @@ export class NativeScene {
     this.hookScans.clear()
     let failure: { error: unknown } | undefined
     try {
-      try {
-        this.cancelPaintYield?.()
-      } catch (error) {
-        failure = { error }
-      }
       // Include detached nodes: the scene, not membership in root, owns their handles.
       for (const renderable of this.nodes.values()) {
         try {

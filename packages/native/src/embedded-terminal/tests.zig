@@ -203,7 +203,7 @@ test "embedded terminal composes dirty rows into an OptimizedBuffer" {
     try std.testing.expectEqual(@as(u32, 'A'), target.get(1, 0).?.char);
 }
 
-test "embedded terminal redraws changed rows and clips composition" {
+test "embedded terminal redraws changed rows and default colors and clips composition" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -229,6 +229,40 @@ test "embedded terminal redraws changed rows and clips composition" {
     try terminal.compose(target, 0, 0);
     try std.testing.expectEqual(@as(u32, 'a'), target.get(0, 0).?.char);
     try std.testing.expectEqual(buffer.DEFAULT_SPACE_CHAR, target.get(0, 1).?.char);
+
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    const blue = ansi.rgbColor(0, 0, 255, 255);
+    const green = ansi.rgbColor(0, 255, 0, 255);
+    const palette_red = ansi.rgbColor(0xcc, 0x66, 0x66, 255);
+    // No step invalidates or writes row 1, so the row 1 sentinel survives unless every row is redrawn.
+    const steps = [_]struct { write: []const u8, fg: buffer.RGBA, bg: buffer.RGBA, full: bool }{
+        .{ .write = "\x1b[1;1Hb", .fg = white, .bg = black, .full = false },
+        .{ .write = "\x1b]11;rgb:ff/00/00\x1b\\", .fg = white, .bg = red, .full = true },
+        .{ .write = "\x1b]10;rgb:00/00/ff\x07", .fg = blue, .bg = red, .full = true },
+        .{ .write = "\x1b[?5h", .fg = red, .bg = blue, .full = true },
+        .{ .write = "\x1b[?5h\x1b]10;rgb:00/00/ff\x07\x1b[1;1Hc", .fg = red, .bg = blue, .full = false },
+        .{ .write = "\x1b[?5l", .fg = blue, .bg = red, .full = true },
+        .{ .write = "\x1b]110\x07", .fg = white, .bg = red, .full = true },
+        .{ .write = "\x1b]111\x07", .fg = white, .bg = black, .full = true },
+        .{ .write = "\x1b]4;0;rgb:00/ff/00\x07", .fg = white, .bg = black, .full = true },
+        .{ .write = "\x1b[?5h\x1bc", .fg = white, .bg = black, .full = true },
+        // DECSTR and RIS restore palette color 1 on screen, not only in the OSC 4 reply.
+        .{ .write = "\x1b]4;1;rgb:00/ff/00\x07\x1b[1;1H\x1b[31mb", .fg = green, .bg = black, .full = true },
+        .{ .write = "\x1b[!p", .fg = palette_red, .bg = black, .full = true },
+        .{ .write = "\x1b]4;1;rgb:00/ff/00\x07\x1b[1;1H\x1b[31mb", .fg = green, .bg = black, .full = true },
+        .{ .write = "\x1bc\x1b[31mb", .fg = palette_red, .bg = black, .full = true },
+    };
+    for (steps, 0..) |step, index| {
+        errdefer std.debug.print("step {d}\n", .{index});
+        try terminal.write(step.write);
+        target.set(0, 1, sentinel);
+        try terminal.compose(target, 0, 0);
+        try std.testing.expectEqual(step.fg, target.get(0, 0).?.fg);
+        try std.testing.expectEqual(step.bg, target.get(0, 0).?.bg);
+        try std.testing.expectEqual(if (step.full) buffer.DEFAULT_SPACE_CHAR else 'Q', target.get(0, 1).?.char);
+    }
 }
 
 test "embedded terminal exposes cursor state" {
@@ -240,15 +274,12 @@ test "embedded terminal exposes cursor state" {
 
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 20, .rows = 4 });
     defer terminal.deinit();
-    try terminal.write("\x1b[2;3H\x1b[5 q");
+    // Without its own color the cursor follows a foreground set by OSC 10 alone.
+    try terminal.write("\x1b]10;rgb:12/34/56\x07\x1b[2;3H\x1b[5 q");
     try terminal.compose(target, 0, 0);
 
-    const cursor = terminal.cursor();
-    try std.testing.expect(cursor.has_value);
-    try std.testing.expect(cursor.visible);
-    try std.testing.expectEqual(@as(u16, 2), cursor.x);
-    try std.testing.expectEqual(@as(u16, 1), cursor.y);
-    try std.testing.expectEqual(@as(u8, 0), cursor.style);
+    const expected: @import("main.zig").Cursor = .{ .x = 2, .y = 1, .has_value = true, .visible = true, .blinking = true, .style = 0, .color = .{ .r = 0x12, .g = 0x34, .b = 0x56 } };
+    try std.testing.expectEqual(expected, terminal.cursor());
 }
 
 test "embedded terminal supports lifecycle, resize, and viewport scroll" {
@@ -356,6 +387,13 @@ test "embedded terminal selection highlights text without unused cells" {
             .highlight = .{ "##......", "........", "........" },
         },
         .{
+            // Unicode 17 widths, as in OpenTUI text: U+1F6D9 is unassigned (1 cell), and a consonant after
+            // U+1CF5 starts its own cell.
+            .output = "a\u{1F6D9}b\u{1CF5}\u{0915}",
+            .text = "a\u{1F6D9}b\u{1CF5}\u{0915}",
+            .highlight = .{ "#####...", "........", "........" },
+        },
+        .{
             .output = "e\xcc\x81 \xf0\x9f\x98\x80",
             .text = "e\xcc\x81 \xf0\x9f\x98\x80",
             .highlight = .{ "####....", "........", "........" },
@@ -364,6 +402,12 @@ test "embedded terminal selection highlights text without unused cells" {
             .output = "abcdefg\xe7\x95\x8c",
             .text = "abcdefg\xe7\x95\x8c",
             .highlight = .{ "#######.", "##......", "........" },
+        },
+        .{
+            // DECSTR turns off ISO protection (SPA/EPA), so the erase clears the cells.
+            .output = "\x1bVpr\x1bW\x1b[!p\x1b[1;1H\x1b[K",
+            .text = "",
+            .highlight = .{ "........", "........", "........" },
         },
     };
 
@@ -466,16 +510,35 @@ test "embedded terminal drains generated PTY responses incrementally" {
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 20, .rows = 4 });
     defer terminal.deinit();
 
-    try terminal.write("\x1b[5n");
-    var first: [2]u8 = undefined;
-    var rest: [16]u8 = undefined;
-    const first_len = try terminal.drainResponses(&first);
-    const rest_len = try terminal.drainResponses(&rest);
-
-    var combined: [18]u8 = undefined;
-    @memcpy(combined[0..first_len], first[0..first_len]);
-    @memcpy(combined[first_len .. first_len + rest_len], rest[0..rest_len]);
-    try std.testing.expectEqualStrings("\x1b[0n", combined[0 .. first_len + rest_len]);
+    const set_colors = "\x1b]4;1;rgb:00/ff/00\x1b\\\x1b]10;rgb:11/22/33\x1b\\\x1b]11;rgb:44/55/66\x1b\\\x1b]12;rgb:77/88/99\x1b\\";
+    const ask_colors = "\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\";
+    // RIS and DECSTR restore the palette but keep the dynamic colors, as xterm does.
+    const reset_colors = "\x1b]4;1;rgb:cccc/6666/6666\x1b\\\x1b]10;rgb:1111/2222/3333\x1b\\\x1b]11;rgb:4444/5555/6666\x1b\\\x1b]12;rgb:7777/8888/9999\x1b\\";
+    const cases = [_]struct { query: []const u8, reply: []const u8 }{
+        .{ .query = "\x1b[5n", .reply = "\x1b[0n" },
+        .{ .query = "\x1b[c", .reply = "\x1b[?62;22c" },
+        .{ .query = "\x1b[>c", .reply = "\x1b[>1;0;0c" },
+        .{ .query = "\x1b[=c", .reply = "\x1bP!|00000000\x1b\\" },
+        .{ .query = "\x1b]10;?\x07", .reply = "\x1b]10;rgb:ffff/ffff/ffff\x07" },
+        .{ .query = "\x1b]11;?\x1b\\", .reply = "\x1b]11;rgb:0000/0000/0000\x1b\\" },
+        // No Kitty graphics: the support probe gets no reply, so programs use text.
+        .{ .query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\", .reply = "" },
+        // No glyph protocol: the compositor never draws registered glyphs.
+        .{ .query = "\x1b_25a1;s\x1b\\\x1b_25a1;q;cp=41\x1b\\", .reply = "" },
+        // No Kitty drag and drop: queries get no reply and registrations keep no state.
+        .{ .query = "\x1b]72;t=q\x1b\\\x1b]72;t=p\x1b\\\x1b]72;t=a;text/plain\x1b\\", .reply = "" },
+        .{ .query = set_colors ++ "\x1bc" ++ ask_colors, .reply = reset_colors },
+        .{ .query = set_colors ++ "\x1b[!p" ++ ask_colors, .reply = reset_colors },
+    };
+    for (cases) |case| {
+        try terminal.write(case.query);
+        var output: [128]u8 = undefined;
+        const first_len = try terminal.drainResponses(output[0..2]);
+        const rest_len = try terminal.drainResponses(output[first_len..]);
+        try std.testing.expectEqualStrings(case.reply, output[0 .. first_len + rest_len]);
+    }
+    try std.testing.expectEqual(0, @sizeOf(@TypeOf(terminal.terminal.screens.active.kitty_images)));
+    try std.testing.expectEqual(null, terminal.terminal.kitty_dnd);
 }
 
 test "embedded terminal preserves queued responses when the bound is reached" {
@@ -534,16 +597,17 @@ test "embedded terminal composes a transparent default background as the termina
 
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 1 });
     defer terminal.deinit();
-    try terminal.write("a\x1b[41mX");
+    // OSC 11 without OSC 10 still sets the default background.
+    try terminal.write("\x1b]11;rgb:ff/00/00\x1b\\a\x1b[41mX");
 
     try terminal.compose(target, 0, 0);
-    try std.testing.expectEqual(ansi.ColorIntent.rgb, ansi.intent(target.get(0, 0).?.bg));
+    try std.testing.expectEqual(ansi.rgbColor(255, 0, 0, 255), target.get(0, 0).?.bg);
 
     terminal.setTransparentBackground(true);
     try terminal.compose(target, 0, 0);
     // Text without an explicit background and the row tail cleared by clearRow both keep the intent.
-    try std.testing.expectEqual(ansi.ColorIntent.default, ansi.intent(target.get(0, 0).?.bg));
-    try std.testing.expectEqual(ansi.ColorIntent.default, ansi.intent(target.get(3, 0).?.bg));
+    try std.testing.expectEqual(ansi.defaultColor(255, 0, 0, 255), target.get(0, 0).?.bg);
+    try std.testing.expectEqual(ansi.defaultColor(255, 0, 0, 255), target.get(3, 0).?.bg);
     // An explicit background stays opaque.
     try std.testing.expectEqual(@as(u32, 'X'), target.get(1, 0).?.char);
     try std.testing.expect(ansi.intent(target.get(1, 0).?.bg) != ansi.ColorIntent.default);

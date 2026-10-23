@@ -3,6 +3,7 @@ import {
   NativeEditPositionQuery,
   NativeEditorStyleMask,
   NativeEditHighlightOperation,
+  resolveRenderLib,
   type LogicalCursor,
   type RenderLib,
   type ContextEditBufferHandle,
@@ -46,7 +47,10 @@ export class EditBuffer extends EventEmitter {
 
   static create(widthMethod: WidthMethod, source: NativeResourceOwner): EditBuffer {
     const owner = source?.resourceContext
-    if (!owner) throw new Error("EditBuffer requires an explicit resource owner")
+    if (!owner)
+      throw new Error(
+        "EditBuffer requires an explicit resource owner: pass renderer.nativeScene, or a ResourceContext when there is no renderer",
+      )
     owner.assertAlive()
     const lib = owner.renderLib
     const handle = lib.createContextEditBuffer(owner.context, { widthMethod })
@@ -265,6 +269,20 @@ export class EditBuffer extends EventEmitter {
     return this.position(NativeEditPositionQuery.LineStart, row)?.offset ?? 0
   }
 
+  /**
+   * Returns the global display offset at the end of `text` as this buffer would lay it out, without storing it: its
+   * cells under this buffer's width method, tab width, and control notation, plus one per line break. Use
+   * `measureEditText()` to measure without a buffer.
+   */
+  public measureText(text: string): number {
+    this.guard()
+    return this.lib.contextEditBufferMeasureText(
+      this.native.handle.context,
+      this.native.handle,
+      this.lib.encoder.encode(text),
+    )
+  }
+
   public getTextRange(startOffset: number, endOffset: number): string {
     this.guard()
     if (startOffset >= endOffset) return ""
@@ -396,4 +414,15 @@ export class EditBuffer extends EventEmitter {
       this._syntaxStyle = undefined
     })
   }
+}
+
+/**
+ * Returns the editor offset at the end of `text` as an edit buffer with these settings lays it out, without an edit
+ * buffer: its cells under `widthMethod`, `tabWidth`, and control notation, plus one per line break. `tabWidth` defaults
+ * to the tab width of a new edit buffer and rounds as in `EditBuffer.setTabWidth()`.
+ */
+export function measureEditText(text: string, options: { widthMethod: WidthMethod; tabWidth?: number }): number {
+  const lib = resolveRenderLib()
+  // Tab width 0 rounds to the tab width of a new edit buffer.
+  return lib.editMeasureText(lib.encoder.encode(text), options.widthMethod, options.tabWidth ?? 0)
 }

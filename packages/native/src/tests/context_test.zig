@@ -355,6 +355,8 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
     try std.testing.expectEqual(old.slot, foreign.slot);
     try std.testing.expectError(error.WrongContext, first.raw().getSession(foreign));
     try std.testing.expectError(error.WrongKind, first.raw().getTextBuffer(old));
+    // An object_capacity above slot_count_max keeps the table at that size.
+    first.objects.slot_count_max = 0;
     try std.testing.expectError(error.ObjectLimit, first.createSession(.{}));
     try first.destroy(old);
     const replacement = try first.createSession(.{});
@@ -368,7 +370,7 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(handles.Kind));
 }
 
-test "Context scene measure maps unrepresentable host sizes to Yoga's invalid size" {
+test "Context scene measure maps invalid host sizes to zero without a Yoga warning" {
     const Host = struct {
         var width: f32 = 0;
 
@@ -385,14 +387,13 @@ test "Context scene measure maps unrepresentable host sizes to Yoga's invalid si
     const node = try owner.sceneCreateNode(session, 1, 2);
     try owner.sceneMoveNode(node, root, 0);
     try owner.sceneSetMeasure(node, &Host.measure);
-    // Like NaN, a size outside the i32 cell range warns and measures as zero instead of failing the frame.
-    for ([_]f32{ std.math.inf(f32), 4e9, std.math.nan(f32), 3 }) |width| {
+    // Like NaN, a size outside the i32 cell range measures zero instead of failing the frame.
+    for ([_]f32{ std.math.inf(f32), 4e9, std.math.nan(f32), -1, 3 }) |width| {
         Host.width = width;
         try owner.sceneMarkDirty(node);
         const measured = try layout(owner, node);
         try std.testing.expectEqual(@as(f32, if (width == 3) 3 else 0), measured.width);
         try std.testing.expectEqual(@as(f32, 1), measured.height);
-        try std.testing.expectEqual(width != 3, owner.diagnostics.pop() != null);
         try std.testing.expect(owner.diagnostics.pop() == null);
     }
 }

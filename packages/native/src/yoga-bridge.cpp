@@ -72,6 +72,10 @@ uint32_t otYogaConfigCreate(YGConfigRef* out) noexcept {
   return checked([&] { *out = YGConfigNew(); });
 }
 
+void otYogaConfigSetRoundsPositionsFromAbsoluteEdges(YGConfigRef config, uint32_t enabled) noexcept {
+  facebook::yoga::resolveRef(config)->setRoundsPositionsFromAbsoluteEdges(enabled != 0);
+}
+
 int otYogaFormatLog(uint8_t* out, uint32_t capacity, const char* format, va_list args) noexcept {
   try {
     return std::vsnprintf(reinterpret_cast<char*>(out), capacity, format, args);
@@ -191,6 +195,13 @@ void otYogaNodeInvalidateMeasure(YGNodeRef node) noexcept {
   // No allocation or fallible Yoga operation remains after provider acceptance.
   // Managed dirtied callbacks contain host errors before returning here.
   facebook::yoga::resolveRef(node)->markDirtyAndPropagate();
+}
+
+void otYogaNodeForgetMeasurements(YGNodeRef node) noexcept {
+  // The reset Yoga applies when it visits a dirty node.
+  auto& layout = facebook::yoga::resolveRef(node)->getLayout();
+  layout.nextCachedMeasurementsIndex = 0;
+  layout.cachedLayout = {};
 }
 
 uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) noexcept {
@@ -442,10 +453,13 @@ uint32_t otYogaNodeStyleGetValue(YGNodeConstRef node, uint32_t kind, uint32_t ed
       case OT_STYLE_VALUE_MARGIN: value = YGNodeStyleGetMargin(node, e); break;
       case OT_STYLE_VALUE_PADDING: value = YGNodeStyleGetPadding(node, e); break;
       case OT_STYLE_VALUE_POSITION: value = YGNodeStyleGetPosition(node, e); break;
-      case OT_STYLE_VALUE_GAP:
-        value.value = YGNodeStyleGetGap(node, static_cast<YGGutter>(edge));
-        value.unit = std::isnan(value.value) ? YGUnitUndefined : YGUnitPoint;
+      case OT_STYLE_VALUE_GAP: {
+        // YGNodeStyleGetGap returns a float without its unit, so read the style itself.
+        using namespace facebook::yoga;
+        const auto gutter = scopedEnum(static_cast<YGGutter>(edge));
+        value = static_cast<YGValue>(resolveRef(node)->style().gap(gutter));
         break;
+      }
     }
     *out = (static_cast<uint64_t>(std::bit_cast<uint32_t>(value.value)) << 32) | value.unit;
   });

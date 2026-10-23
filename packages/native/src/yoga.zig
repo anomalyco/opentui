@@ -1027,6 +1027,7 @@ pub fn yogaNodeSetNativeMeasureFunc(node: YGNodeRef, target: ?*anyopaque, callba
     const ctx = getContext(node).?;
     const result: Status = @fromBackingInt(@intCast(c.otYogaNodeSetMeasureFunc(node, if (enabled) &internalNativeMeasureFunc else null)));
     if (result != .ok) return result;
+    c.YGNodeSetNodeType(node, c.YGNodeTypeDefault);
     ctx.native_measure_target = target;
     ctx.native_measure_callback = callback;
     return .ok;
@@ -1036,6 +1037,11 @@ pub fn yogaNodeInvalidateMeasure(node: YGNodeRef) void {
     // Called after accepted provider/link changes, including removal after a
     // public unset/reset. No public manual-mark-dirty precondition applies.
     if (!getContext(node).?.poisoned) c.otYogaNodeInvalidateMeasure(node);
+}
+
+/// Drops cached sizes without marking the node or its ancestors dirty.
+pub fn yogaNodeForgetMeasurements(node: YGNodeRef) void {
+    if (!getContext(node).?.poisoned) c.otYogaNodeForgetMeasurements(node);
 }
 
 export fn yogaNodeUnsetMeasureFunc(node: YGNodeRef) void {
@@ -1083,6 +1089,7 @@ pub fn yogaNodeHasContext(node: YGNodeConstRef) bool {
     return getContext(node) != null;
 }
 
+pub const configSetRoundsPositionsFromAbsoluteEdges = c.otYogaConfigSetRoundsPositionsFromAbsoluteEdges;
 pub const testFailAfter = c.otYogaTestFailAfter;
 pub const testAllocationCount = c.otYogaTestAllocationCount;
 pub const testContentsChildCount = c.otYogaTestContentsChildCount;

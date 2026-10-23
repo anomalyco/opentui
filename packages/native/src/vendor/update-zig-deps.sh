@@ -8,10 +8,10 @@ MANIFEST="$VENDOR_DIR/zig-deps.sha256"
 LC_ALL=C
 export LC_ALL
 
-GHOSTTY_COMMIT=727b8a02f8734840de664c060678dd66f01931f6
-GHOSTTY_SHA256=1cdde6bd3c1071de0f4ba489ee526361045e967170e8b50ca6f1d3fe0c624adf
-UUCODE_GHOSTTY_COMMIT=d500967026220f5e283088dc69e95aa79cdaa5a0
-UUCODE_GHOSTTY_SHA256=94e85a3754410df19d08344e3ed562a6a4cd7b6e0c5fbce7de55b54b6e9eca66
+GHOSTTY_COMMIT=aeda37b305ee3d897ff1bfeddfe39d7fa9366a74
+GHOSTTY_SHA256=5ee98bf64d6cd93deded555b83d335ca20aca799536d1c7cae1a5d6b7799038e
+UUCODE_GHOSTTY_COMMIT=ea62149739404a73c202b48a33bf6dd2af4bd9b0
+UUCODE_GHOSTTY_SHA256=f37c4071a217853450d084cb9c12b6d4b68f887eb9cb42fe77a84f86056eacbf
 UUCODE_OPENTUI_COMMIT=d500967026220f5e283088dc69e95aa79cdaa5a0
 UUCODE_OPENTUI_SHA256=94e85a3754410df19d08344e3ed562a6a4cd7b6e0c5fbce7de55b54b6e9eca66
 YOGA_VERSION=3.2.1
@@ -106,6 +106,12 @@ for name in uucode-ghostty uucode-opentui; do
   cp -R "$SOURCE_DIR/$name/LICENSE.md" "$SOURCE_DIR/$name/build.zig" "$SOURCE_DIR/$name/build.zig.zon" \
     "$SOURCE_DIR/$name/src" "$SOURCE_DIR/$name/ucd" "$DEPS_DIR/$name/"
 done
+# Ghostty needs the newer uucode code, but its Unicode 18 data would give the embedded terminal other
+# widths than OpenTUI text (Unicode 17) and most hosts. Keep OpenTUI's Unicode 17 data files in both
+# copies; revisit this on the next Ghostty update.
+(cd "$DEPS_DIR/uucode-opentui/ucd" && find . -name '*.txt') | while read -r path; do
+  cp "$DEPS_DIR/uucode-opentui/ucd/$path" "$DEPS_DIR/uucode-ghostty/ucd/$path"
+done
 
 extract "$TMP_DIR/yoga.tar.gz" "$SOURCE_DIR/yoga"
 mkdir -p "$DEPS_DIR/yoga"
@@ -114,6 +120,7 @@ cp -R "$SOURCE_DIR/yoga/yoga" "$DEPS_DIR/yoga/yoga"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-error-boundary.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-rounding.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-node-reuse.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-absolute-edge-rounding.patch"
 
 find "$DEPS_DIR" -type d -exec chmod 0755 {} +
 find "$DEPS_DIR" -type f -exec chmod 0644 {} +

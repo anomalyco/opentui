@@ -376,18 +376,25 @@ test "OptimizedBuffer text ignores foreground alpha over an image marker" {
     defer pool.deinit();
     var link_pool = link.LinkPool.init(std.testing.allocator);
     defer link_pool.deinit();
-    const target = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .pool = &pool, .link_pool = &link_pool });
-    defer target.deinit();
     const source = try image.createFromRgba(std.testing.allocator, &[_]u8{ 7, 8, 9, 255 }, 1, 1, 4);
     defer source.deinit();
-    try std.testing.expect(try target.drawImage(source, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
+    // Checked text draws over images that the target's owner context holds.
+    source.owner_context_id = 1;
+    for ([_]bool{ false, true }) |checked| {
+        const target = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .pool = &pool, .link_pool = &link_pool });
+        defer target.deinit();
+        target.owner_context_id = 1;
+        try std.testing.expect(try target.drawImage(source, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
 
-    try target.drawText("X", 0, 0, ansi.rgbColor(40, 50, 60, 64), ansi.rgbColor(10, 20, 30, 255), 0);
+        const fg = ansi.rgbColor(40, 50, 60, 64);
+        const bg = ansi.rgbColor(10, 20, 30, 255);
+        if (checked) try target.drawTextChecked("X", 0, 0, fg, bg, 0) else try target.drawText("X", 0, 0, fg, bg, 0);
 
-    const cell = target.get(0, 0).?;
-    try std.testing.expectEqual(@as(u32, 'X'), cell.char);
-    try std.testing.expectEqual(ansi.rgbColor(10, 20, 30, 255), cell.bg);
-    try std.testing.expectEqual(ansi.rgbColor(40, 50, 60, 255), cell.fg);
+        const cell = target.get(0, 0).?;
+        try std.testing.expectEqual(@as(u32, 'X'), cell.char);
+        try std.testing.expectEqual(ansi.rgbColor(10, 20, 30, 255), cell.bg);
+        try std.testing.expectEqual(ansi.rgbColor(40, 50, 60, 255), cell.fg);
+    }
 }
 
 test "OptimizedBuffer transparent tab covers only clipped image markers" {
@@ -945,15 +952,46 @@ test "OptimizedBuffer drawTextChecked skips complete zero width UTF-8 codepoints
     try std.testing.expectEqual(@as(u32, 'Z'), target.buffer.char[5]);
 }
 
+test "OptimizedBuffer drawText, encodeUnicode, and text layout give a cluster that starts with a base its cells" {
+    const utf8 = @import("../utf8.zig");
+    const EncodedUnicode = @import("../encoded-unicode.zig").EncodedUnicode;
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // A tag character joins the base before it; a jamo filler starts a syllable with the one after it.
+    // wcwidth layout sums the filler and the syllable, while drawing measures a cluster by its first code point.
+    const rows = [_]struct { text: []const u8, cells: u32, wcwidth_layout: ?u32 }{
+        .{ .text = "a\u{e0041}b", .cells = 2, .wcwidth_layout = 2 },
+        .{ .text = "a\u{115f}\u{ac00}b", .cells = 4, .wcwidth_layout = null },
+        .{ .text = "a\u{1160}\u{11a8}b", .cells = 3, .wcwidth_layout = null },
+    };
+    for (rows) |row| for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        errdefer std.debug.print("width_method={t} text={x}\n", .{ width_method, row.text });
+        const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method);
+        defer content.deinit();
+        try content.setText(row.text);
+        if (if (width_method == .wcwidth) row.wcwidth_layout else row.cells) |layout| try std.testing.expectEqual(layout, content.lineWidthAt(0));
+        const encoded = try EncodedUnicode.init(std.testing.allocator, &pools.graphemes, row.text, width_method);
+        defer encoded.deinit(std.testing.allocator, &pools.graphemes);
+        var encoded_cells: u32 = 0;
+        for (encoded.chars) |char| encoded_cells += char.width;
+        try std.testing.expectEqual(row.cells, encoded_cells);
+        const target = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = width_method });
+        defer target.deinit();
+        try target.drawText(row.text, 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+        try std.testing.expectEqual(@as(u32, 'b'), target.buffer.char[row.cells - 1]);
+    };
+}
+
 /// A cluster that a cell cannot hold and the text that every checked draw must render in its place.
-const UnprintableText = struct { bytes: []const u8, blank: []const u8, line_break: bool = false };
+/// An editor shows a control as notation instead.
+const UnprintableText = struct { bytes: []const u8, blank: []const u8, notation: ?[]const u8 = null, line_break: bool = false };
 const unprintable_texts = [_]UnprintableText{
-    .{ .bytes = "\x00", .blank = "" },
-    .{ .bytes = "\x07", .blank = "" },
-    .{ .bytes = "\x1b", .blank = "" },
-    .{ .bytes = "\x7f", .blank = "" },
-    .{ .bytes = "\u{85}", .blank = "" },
-    .{ .bytes = "\u{9b}", .blank = "" },
+    .{ .bytes = "\x00", .blank = "", .notation = "^@" },
+    .{ .bytes = "\x07", .blank = "", .notation = "^G" },
+    .{ .bytes = "\x1b", .blank = "", .notation = "^[" },
+    .{ .bytes = "\x7f", .blank = "", .notation = "^?" },
+    .{ .bytes = "\u{85}", .blank = "", .notation = "<85>" },
+    .{ .bytes = "\u{9b}", .blank = "", .notation = "<9b>" },
     .{ .bytes = "\n", .blank = "", .line_break = true },
     .{ .bytes = "\r", .blank = "", .line_break = true },
     .{ .bytes = "\r\n", .blank = "", .line_break = true },
@@ -1014,7 +1052,7 @@ fn expectNoControlCells(target: *OptimizedBuffer) !void {
     }
 }
 
-test "OptimizedBuffer checked text draws skip controls and blank clusters a cell cannot hold" {
+test "OptimizedBuffer checked text draws skip controls, editors show their notation, and blank clusters a cell cannot hold" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     // The blank rule starts where the pool stops storing a cluster.
@@ -1042,7 +1080,8 @@ test "OptimizedBuffer checked text draws skip controls and blank clusters a cell
                     .end => .{ "abcd", "" },
                 };
                 const with = try std.fmt.bufPrint(&with_buffer, "{s}{s}{s}", .{ prefix, unprintable.bytes, suffix });
-                const blank = try std.fmt.bufPrint(&blank_buffer, "{s}{s}{s}", .{ prefix, unprintable.blank, suffix });
+                const shown = if (path == .editor_view) unprintable.notation orelse unprintable.blank else unprintable.blank;
+                const blank = try std.fmt.bufPrint(&blank_buffer, "{s}{s}{s}", .{ prefix, shown, suffix });
                 for (clips) |clip| {
                     errdefer std.debug.print("path={t} text={any} position={t} clip={any}\n", .{ path, unprintable.bytes, position, clip });
                     for ([_]*OptimizedBuffer{ actual, expected }) |target| {
@@ -1128,50 +1167,101 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
     defer pools.deinit();
     const fg = ansi.rgbColor(200, 100, 50, 255);
     const bg = ansi.rgbColor(10, 20, 30, 255);
-    // A mark in its own chunk combines with the glyph before it, like the same cluster in one chunk.
-    for ([_]f32{ 1.0, 0.5 }) |opacity| {
-        const one_chunk = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    const selected = ansi.rgbColor(0, 90, 0, 255);
+    // A mark in another chunk than its base glyph draws like the same text in one chunk. Text views
+    // append chunks and hide controls; editors insert them at the end and show controls as notation.
+    const Source = enum { append, insert };
+    const Row = struct {
+        chunks: []const []const u8,
+        x: i32 = 0,
+        viewport: text_buffer_view.Viewport = .{ .x = 0, .y = 0, .width = 4, .height = 2 },
+        wrap: bool = false,
+        scissor_width: u32 = 4,
+        truncate: bool = false,
+        /// The one-chunk text that draws the same cells, when it is not the joined chunks.
+        reference: ?[]const u8 = null,
+        /// Per source, the cell that holds the mark, or null when no drawn glyph comes before it.
+        mark: [2]?u32,
+    };
+    const rows = [_]Row{
+        .{ .chunks = &.{ "a", "\u{301}b" }, .mark = .{ 0, 0 } },
+        .{ .chunks = &.{ "abc", "\u{301}" }, .mark = .{ 2, 2 } },
+        .{ .chunks = &.{ "abc", "\u{301}d" }, .x = 1, .mark = .{ 3, 3 } },
+        .{ .chunks = &.{ "abc", "\u{301}d" }, .viewport = .{ .x = 1, .y = 0, .width = 2, .height = 2 }, .mark = .{ 1, 1 } },
+        .{ .chunks = &.{ "abc", "\u{301}d" }, .scissor_width = 3, .mark = .{ 2, 2 } },
+        .{ .chunks = &.{ "abc", "\u{301}d" }, .scissor_width = 2, .mark = .{ null, null } },
+        .{ .chunks = &.{ "abc\u{4e2d}", "\u{301}" }, .truncate = true, .mark = .{ null, null } },
+        .{ .chunks = &.{ "abcde", "\u{301}" }, .truncate = true, .mark = .{ 3, 3 } },
+        .{ .chunks = &.{ "abcd", "\u{301}e" }, .truncate = true, .mark = .{ null, null } },
+        .{ .chunks = &.{ "a", "\u{301}", "bcdef" }, .viewport = .{ .x = 0, .y = 0, .width = 5, .height = 2 }, .truncate = true, .mark = .{ 0, 0 } },
+        .{ .chunks = &.{ "\u{2714}", "\u{fe0f}" }, .reference = "\u{2714}", .mark = .{ null, null } },
+        .{ .chunks = &.{ "a\t", "\u{301}" }, .mark = .{ null, null } },
+        .{ .chunks = &.{ "abc", "\u{301}d" }, .viewport = .{ .x = 0, .y = 0, .width = 3, .height = 2 }, .wrap = true, .mark = .{ 2, 2 } },
+        .{ .chunks = &.{ "\u{4e2d}", "\u{301}", "\u{301}" }, .mark = .{ 0, 0 } },
+        .{ .chunks = &.{ "a\x01", "\u{301}" }, .mark = .{ 0, null } },
+        .{ .chunks = &.{ "ab\n", "\u{301}c" }, .mark = .{ null, null } },
+        .{ .chunks = &.{"\u{301}ab"}, .x = 1, .mark = .{ null, null } },
+        .{ .chunks = &.{ "x", "\u{301}ab" }, .x = 1, .viewport = .{ .x = 1, .y = 0, .width = 4, .height = 2 }, .mark = .{ null, null } },
+        .{ .chunks = &.{ "\u{4e2d}", "\u{301}ab" }, .x = 1, .viewport = .{ .x = 2, .y = 0, .width = 4, .height = 2 }, .mark = .{ null, null } },
+    };
+    for ([_]f32{ 1.0, 0.5 }) |opacity| for (std.enums.values(Source)) |source| for (rows) |row| {
+        // The editor scrolls to its cursor, so it cannot keep a viewport that starts right of column 0.
+        if (source == .insert and (row.viewport.x != 0 or row.truncate)) continue;
+        errdefer std.debug.print("opacity={d} source={t} chunks={any}\n", .{ opacity, source, row.chunks });
+        const text = try std.mem.concat(std.testing.allocator, u8, if (row.reference) |reference| &.{reference} else row.chunks);
+        defer std.testing.allocator.free(text);
+        const one_chunk = try OptimizedBuffer.init(std.testing.allocator, 4, 2, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
         defer one_chunk.deinit();
-        const two_chunks = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
-        defer two_chunks.deinit();
-        for ([_]*OptimizedBuffer{ one_chunk, two_chunks }, [_][]const []const u8{ &.{"a\u{301}b"}, &.{ "a", "\u{301}b" } }) |target, chunks| {
+        const chunks = try OptimizedBuffer.init(std.testing.allocator, 4, 2, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+        defer chunks.deinit();
+        for ([_]*OptimizedBuffer{ one_chunk, chunks }, [_][]const []const u8{ &.{text}, row.chunks }) |target, parts| {
             target.clear(ansi.rgbColor(0, 0, 0, 255), null);
-            const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-            defer content.deinit();
-            const view = try TextBufferView.init(std.testing.allocator, content);
-            defer view.deinit();
-            try content.setText(chunks[0]);
-            for (chunks[1..]) |chunk| try content.append(chunk);
-            content.setDefaultFg(fg);
-            content.setDefaultBg(bg);
+            try target.pushScissorRect(0, 0, row.scissor_width, 2);
             try target.pushOpacity(opacity);
-            try target.drawTextBufferChecked(view, 0, 0);
+            switch (source) {
+                .append => {
+                    const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+                    defer content.deinit();
+                    const view = try TextBufferView.init(std.testing.allocator, content);
+                    defer view.deinit();
+                    try content.setText(parts[0]);
+                    for (parts[1..]) |part| try content.append(part);
+                    content.setDefaultFg(fg);
+                    content.setDefaultBg(bg);
+                    view.setViewport(row.viewport);
+                    view.setTruncate(row.truncate);
+                    view.setSelection(1, 3, selected, null);
+                    if (row.wrap) view.setWrapMode(.char);
+                    if (row.wrap) view.setWrapWidth(row.viewport.width);
+                    try target.drawTextBufferChecked(view, row.x, 0);
+                },
+                .insert => {
+                    const content = try edit_buffer.EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+                    defer content.deinit();
+                    const view = try editor_view.EditorView.init(std.testing.allocator, content, row.viewport.width, 2);
+                    defer view.deinit();
+                    try content.setText(parts[0]);
+                    for (parts[1..]) |part| {
+                        try content.setCursor(std.math.maxInt(u32), std.math.maxInt(u32));
+                        try content.insertText(part);
+                    }
+                    try content.setCursor(0, 0);
+                    content.getTextBuffer().setDefaultFg(fg);
+                    content.getTextBuffer().setDefaultBg(bg);
+                    if (row.wrap) view.setWrapMode(.char);
+                    view.setSelection(1, 3, selected, null);
+                    try target.drawEditorViewChecked(view, row.x, 0);
+                },
+            }
         }
-        try std.testing.expectEqualStrings("a\u{301}", try pools.graphemes.get(gp.graphemeIdFromChar(two_chunks.buffer.char[0])));
-        try expectSameCells(one_chunk, two_chunks);
-    }
-
-    // A mark whose base glyph this draw did not write leaves the cell left of the view unchanged.
-    const target = try OptimizedBuffer.init(std.testing.allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
-    defer target.deinit();
-    const Case = struct { chunks: []const []const u8, scroll_x: u32 };
-    for ([_]Case{
-        .{ .chunks = &.{"\u{301}ab"}, .scroll_x = 0 },
-        .{ .chunks = &.{ "x", "\u{301}ab" }, .scroll_x = 1 },
-        .{ .chunks = &.{ "\u{4e2d}", "\u{301}ab" }, .scroll_x = 2 },
-    }) |case| {
-        target.clear(ansi.rgbColor(0, 0, 0, 255), null);
-        target.set(1, 0, .{ .char = 'Z', .fg = fg, .bg = bg, .attributes = 0 });
-        const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-        defer content.deinit();
-        const view = try TextBufferView.init(std.testing.allocator, content);
-        defer view.deinit();
-        try content.setText(case.chunks[0]);
-        for (case.chunks[1..]) |chunk| try content.append(chunk);
-        view.setViewport(.{ .x = case.scroll_x, .y = 0, .width = 4, .height = 1 });
-        try target.drawTextBufferChecked(view, 2, 0);
-        try std.testing.expectEqualSlices(u32, &.{ ' ', 'Z', 'a', 'b', ' ', ' ' }, target.buffer.char);
-    }
+        for (chunks.buffer.char, 0..) |char, index| {
+            const bytes = if (gp.isGraphemeChar(char)) try pools.graphemes.get(gp.graphemeIdFromChar(char)) else "";
+            const holds_mark = bytes.len > 0 and try std.unicode.utf8ByteSequenceLength(bytes[0]) < bytes.len;
+            try std.testing.expectEqual(if (row.mark[@backingInt(source)]) |cell| cell == index else false, holds_mark);
+        }
+        try expectSameCells(one_chunk, chunks);
+        try expectNoControlCells(chunks);
+    };
     try std.testing.expectEqual(0, pools.graphemes.interned_live_ids.count());
 }
 
@@ -1415,6 +1505,7 @@ test "OptimizedBuffer - checked text at signed positions clips like drawTextClip
     const black = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
     const white = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
     const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
+    const translucent = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.5);
     const min = std.math.minInt(i32);
     const Draw = struct { text: []const u8, x: i32, y: i32, bg: ?RGBA, scissor: bool = false };
     const draws = [_]Draw{
@@ -1423,6 +1514,7 @@ test "OptimizedBuffer - checked text at signed positions clips like drawTextClip
         .{ .text = "\tX", .x = -1, .y = 2, .bg = red },
         .{ .text = "\tY", .x = -2, .y = 2, .bg = red },
         .{ .text = "e\u{301}XY", .x = -1, .y = 3, .bg = null },
+        .{ .text = "QRS", .x = 2, .y = 3, .bg = translucent },
         .{ .text = "WXYZ", .x = -1, .y = 4, .bg = null, .scissor = true },
         .{ .text = "AB\u{4e16}", .x = -1, .y = 5, .bg = null },
         .{ .text = "ZZZZ", .x = 0, .y = -1, .bg = black },
@@ -2914,12 +3006,13 @@ test "OptimizedBuffer drawTextChecked warm draws avoid heap allocation" {
 }
 
 test "OptimizedBuffer drawTextChecked preserves cells and references at every allocation failure" {
-    // Exercise pool/tracker growth and each independent heap fallback.
+    // Exercise pool/tracker growth and each independent heap fallback. A tab keeps the long
+    // texts off the printable ASCII path, which allocates nothing.
     for ([_]struct { text: []const u8, visible_columns: u32, width: u32 = 512 }{
         .{ .text = "\u{e9}\u{4e2d}e\u{301}\tZ\u{3b1}\u{3b2}\u{3b3}\u{3b4}\u{3f5}", .visible_columns = 12, .width = 12 },
-        .{ .text = utils.repeat(u8, "x", 4097), .visible_columns = 4 },
+        .{ .text = utils.repeat(u8, "x", 4096) ++ "\t", .visible_columns = 4 },
         .{ .text = utils.repeat(u8, "\u{e9}", 512), .visible_columns = 4 },
-        .{ .text = utils.repeat(u8, "x", 512), .visible_columns = 512 },
+        .{ .text = utils.repeat(u8, "x", 511) ++ "\t", .visible_columns = 512 },
     }) |case| {
         const text = case.text;
         var failures: usize = 0;

@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process"
-import { appendFileSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import process from "node:process"
+import { createInterface } from "node:readline"
 import { setTimeout as sleep } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 
@@ -12,12 +13,16 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 // pushed directly or merged from a pull request. Run it on the branch to release. A maintenance branch
 // must start at a release tag that has this script; the workflows of older tags do not release it.
 //
-//   bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]
+//   bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch] [--no-notes]
 //
 // 1. Checks that the branch has no uncommitted changes and matches its origin branch.
-// 2. Runs prepare-release, commits "Release vX.Y.Z", tags it vX.Y.Z, and pushes the commit to the
-//    branch together with the tag. That needs the right to bypass the branch and tag rules. A
-//    maintenance branch takes only versions of its line.
+// 2. Runs prepare-release, records the version's API in api/X.Y.Z.txt, drafts its release notes in
+//    packages/web/src/content/docs/releases/X.Y.Z.md with opencode (see packages/web/scripts/release-notes.ts),
+//    commits "Release vX.Y.Z", tags it vX.Y.Z, and pushes the commit to the branch together with the tag.
+//    That needs the right to bypass the branch and tag rules. A maintenance branch takes only versions of its
+//    line. The draft keeps notes already in place, such as from `bun run release-notes`, and dates them the
+//    release day. --no-notes skips the draft; a dry run commits no notes. A push run in a terminal shows the notes and
+//    asks before it commits. `bun run fmt` formats the notes before the commit. Prereleases record neither file.
 // 3. Follows the release.yml run of the tag push, and reports when every package is published and
 //    when npm serves them all.
 //
@@ -34,6 +39,7 @@ interface Options {
   target: string
   mode: Mode
   watch: boolean
+  notes: boolean
 }
 
 interface Release {
@@ -73,7 +79,9 @@ const POLL_MS = 10_000
 const MAX_API_FAILURES = 5
 const RUN_START_TIMEOUT_MS = 3 * 60_000
 const RUN_TIMEOUT_MS = 60 * 60_000
-const USAGE = "Usage: bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]"
+const USAGE = "Usage: bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch] [--no-notes]"
+const RELEASE_NOTES = "packages/web/src/content/docs/releases"
+const STABLE_VERSION = /^\d+\.\d+\.\d+$/
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -83,7 +91,7 @@ class ReleaseError extends Error {}
 function parseOptions(args: readonly string[]): Options {
   const flags = args.filter((arg) => arg.startsWith("--"))
   const positional = args.filter((arg) => !arg.startsWith("--"))
-  const unknown = flags.filter((flag) => !["--pr", "--dry-run", "--no-watch"].includes(flag))
+  const unknown = flags.filter((flag) => !["--pr", "--dry-run", "--no-watch", "--no-notes"].includes(flag))
   if (unknown.length > 0) throw new ReleaseError(`Unknown option ${unknown.join(", ")}\n${USAGE}`)
   if (flags.includes("--pr") && flags.includes("--dry-run")) throw new ReleaseError(`Use --pr or --dry-run\n${USAGE}`)
   if (positional.length !== 1) throw new ReleaseError(USAGE)
@@ -96,7 +104,12 @@ function parseOptions(args: readonly string[]): Options {
     throw new ReleaseError(`A release version cannot contain "snapshot" or "-dry.": ${target}`)
   }
   const mode = flags.includes("--pr") ? "pr" : flags.includes("--dry-run") ? "dry-run" : "push"
-  return { target, mode, watch: !flags.includes("--no-watch") }
+  return {
+    target,
+    mode,
+    watch: !flags.includes("--no-watch"),
+    notes: mode !== "dry-run" && !flags.includes("--no-notes"),
+  }
 }
 
 function run(command: string, args: readonly string[], options: { inherit?: boolean } = {}): string {
@@ -248,6 +261,9 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
   const previous = coreVersion()
   let tag: string | undefined
   let prBranch: string | undefined
+  // Release files that a failure removes or keeps for the next run.
+  let newApiFile: string | undefined
+  let notesFile: string | undefined
   let interrupted = false
   const onInterrupt = () => {
     interrupted = true
@@ -275,6 +291,31 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
     if (remoteSha(`refs/tags/v${version}`)) throw new ReleaseError(`Tag v${version} already exists on origin`)
     if ((await registryIntegrity("@opentui/core", version)) !== undefined) {
       throw new ReleaseError(`@opentui/core@${version} is already on npm`)
+    }
+    stopIfInterrupted()
+
+    // The docs site reads both files: the API history and the release notes (packages/web/AGENTS.md). Only
+    // x.y.z releases have them.
+    if (STABLE_VERSION.test(version)) {
+      const apiFile = `api/${version}.txt`
+      if (!existsSync(join(repoRoot, apiFile))) newApiFile = apiFile
+      console.log(`Recording the API of ${version}...`)
+      run("bun", ["packages/web/scripts/api.ts", "release", version, "--base", previous], { inherit: true })
+      const notes = `${RELEASE_NOTES}/${version}.md`
+      if (options.notes) {
+        console.log(`Drafting the release notes of ${version}...`)
+        run("bun", ["packages/web/scripts/release-notes.ts", "draft", version], { inherit: true })
+        notesFile = notes
+        run("bun", ["run", "fmt"])
+        // A push publishes the notes with the release, so a person reads them first when one is present.
+        if (options.mode === "push" && process.stdin.isTTY) await confirmNotes(notes)
+      }
+      // A dry run switches back to the branch, which would delete notes that it committed.
+      if (options.mode !== "dry-run" && existsSync(join(repoRoot, notes))) notesFile = notes
+      // The draft and any edits made at the prompt must pass `bun run fmt:check`.
+      if (notesFile) run("bun", ["run", "fmt"])
+      git("add", "--", apiFile, ...(notesFile ? [notes] : []))
+      stopIfInterrupted()
     }
     // The branch and the tag are recorded only once created, so that a failure never deletes one that
     // existed before.
@@ -311,7 +352,20 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
     return release
   } catch (error) {
     try {
-      restore(branch, base, tag, prBranch)
+      // The restore deletes the notes once they are staged or committed. The next run keeps notes in place, so
+      // they are written back.
+      const notesPath = notesFile && join(repoRoot, notesFile)
+      const notes = notesPath && existsSync(notesPath) ? readFileSync(notesPath) : undefined
+      try {
+        restore(branch, base, tag, prBranch)
+      } finally {
+        if (notesPath && notes) {
+          writeFileSync(notesPath, notes)
+          console.error(`Kept ${notesFile} for the next run. Delete it to draft the notes again.`)
+        }
+      }
+      // The next run computes the API again, from the source it releases.
+      if (newApiFile) rmSync(join(repoRoot, newApiFile), { force: true })
     } catch (restoreError) {
       console.error(restoreError instanceof Error ? restoreError.message : restoreError)
     }
@@ -319,6 +373,29 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
   } finally {
     process.off("SIGINT", onInterrupt)
   }
+}
+
+// Shows the drafted notes and asks whether to release with them. The file can be edited before the answer.
+async function confirmNotes(notes: string): Promise<void> {
+  console.log(`\n${readFileSync(join(repoRoot, notes), "utf8")}`)
+  const answer = await new Promise<string>((resolve, reject) => {
+    const prompt = createInterface({ input: process.stdin, output: process.stdout })
+    let replied = false
+    prompt.on("SIGINT", () => {
+      prompt.close()
+      reject(new ReleaseError("Interrupted"))
+    })
+    // End of input, such as Ctrl-D, answers no.
+    prompt.on("close", () => {
+      if (!replied) resolve("")
+    })
+    prompt.question(`Release with ${notes}? Edit the file first if needed. [y/N] `, (reply) => {
+      replied = true
+      prompt.close()
+      resolve(reply)
+    })
+  })
+  if (!/^y(es)?$/i.test(answer.trim())) throw new ReleaseError(`Stopped. Edit ${notes} and run the release again.`)
 }
 
 async function findReleaseRun(repo: string, release: Release): Promise<WorkflowRun> {

@@ -602,6 +602,22 @@ describe("InputRenderable", () => {
       expect(input.cursorOffset).toBe("world".length) // Cursor should move to end
     })
 
+    // Controls take notation cells, so the cursor offset is a cell count, not the string length. maxLength counts the
+    // string length of the value, controls included.
+    it.each([
+      ["constructor", "a\fb\u0085c", "a\fb\u0085c!"],
+      ["value", "a\fb\u0085c", "a\fb\u0085c!"],
+      ["constructor", "日本", "日本!"],
+      ["value", "\u0000日本", "\u0000日本!"],
+      ["value", "a\fb\u0085c\u007f", "a\fb\u0085c\u007f"],
+    ] as const)("%s keeps %j and puts the cursor after it", (path, text, expected) => {
+      const { input } = createInputRenderable({ width: 20, maxLength: 6, value: path === "constructor" ? text : "" })
+      if (path === "value") input.value = text
+      input.insertText("!")
+      expect(input.value).toBe(expected)
+      input.destroy()
+    })
+
     it("should handle empty value setting", () => {
       const { input } = createInputRenderable({
         value: "not empty",

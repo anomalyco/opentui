@@ -38,6 +38,31 @@ export const AllocatorStatsStruct = defineStruct([
   ["requestedBytesValid", "bool_u8"],
 ])
 
+/** Work counts of the last presented scene frame (`ot_scene_stats`). Deterministic; not times. */
+export type NativeFrameWork = {
+  workFrameId: number
+  candidateVisits: number
+  paintVisits: number
+  viewPreparations: number
+  geometryReads: number
+  yogaSolves: number
+  feedbackOperations: number
+  visibilitySteps: number
+  viewportChildRefreshes: number
+  overlapTests: number
+  membersPainted: number
+  memberCells: number
+  cellsCleared: number
+  hitCellsWritten: number
+  hitCellsCleared: number
+  hitCellsCompared: number
+  rowsCompared: number
+  rowsDiffed: number
+  fullPathReasons: number
+  hostRequests: number
+  layoutRounds: number
+}
+
 export type NativeRenderStats = {
   nativeLastFrameTime: number
   nativeAverageFrameTime: number
@@ -46,6 +71,7 @@ export type NativeRenderStats = {
   averageCellsUpdated: number
   nativeRenderTime?: number
   nativeStdoutWriteTime?: number
+  frameWork: NativeFrameWork
 }
 
 export type GrowthPolicy = "grow" | "block"

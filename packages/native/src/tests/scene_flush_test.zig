@@ -26,6 +26,7 @@ const Fixture = struct {
     fn init(self: *Fixture, allocator: std.mem.Allocator) !void {
         self.owner.owner_thread = std.Thread.getCurrentId();
         self.owner.core = try context.Context.init(allocator, self.owner.io_threaded.io(), .{ .object_capacity = 3 });
+        self.owner.core.objects.slot_count_max = 3;
         self.session = try self.owner.core.createSession(.{ .chunk_size = 4096 });
         try self.owner.core.attachSessionRenderer(self.session, 16, 4, .{ .remote_mode = .remote });
         const root = try self.owner.core.sceneCreateNode(self.session, 0, 1);

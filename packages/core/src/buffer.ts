@@ -343,7 +343,10 @@ export class OptimizedBuffer {
     options: { respectAlpha?: boolean; id?: string; owner: NativeResourceOwner },
   ): OptimizedBuffer {
     const owner = options?.owner?.resourceContext
-    if (!owner) throw new Error("OptimizedBuffer requires an explicit resource owner")
+    if (!owner)
+      throw new Error(
+        "OptimizedBuffer requires an explicit resource owner: pass { owner: renderer.nativeScene }, or a ResourceContext when there is no renderer",
+      )
     owner.assertAlive()
     const { renderLib: lib, context } = owner
     const buffer = lib.createContextBuffer(context, {

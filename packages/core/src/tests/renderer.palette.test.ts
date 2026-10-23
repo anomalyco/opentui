@@ -24,7 +24,7 @@ afterEach(async () => {
   renderers.clear()
 })
 
-type PaletteRendererOptions = TestRendererOptions & { setup?: boolean; environment?: Record<string, string> }
+type PaletteRendererOptions = TestRendererOptions & { setup?: boolean }
 
 async function createTestRenderer(options: PaletteRendererOptions) {
   const stdout = new Writable({
@@ -34,24 +34,14 @@ async function createTestRenderer(options: PaletteRendererOptions) {
     },
   }) as NodeJS.WriteStream
   stdout.isTTY = options.stdout?.isTTY ?? true
-  const environment = options.environment ?? { COLORTERM: "truecolor" }
-  const previous = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]))
-  let result: Awaited<ReturnType<typeof createRenderer>>
-  try {
-    Object.assign(process.env, environment)
-    result = await createRenderer({
-      ...options,
-      stdout,
-      bufferedOutput: "stdout",
-      remote: options.remote ?? true,
-      forwardEnvKeys: Object.keys(environment),
-    })
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-  }
+  const result = await createRenderer({
+    ...options,
+    stdout,
+    bufferedOutput: "stdout",
+    remote: options.remote ?? true,
+    forwardEnvKeys: [],
+    environment: options.environment ?? { COLORTERM: "truecolor" },
+  })
   renderers.add(result.renderer)
   if (options.setup !== false) {
     await result.renderer.setupTerminal()

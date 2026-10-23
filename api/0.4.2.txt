@@ -1,0 +1,15 @@
+base 0.4.1
++ @opentui/core: class Clipboard
++ @opentui/core: constructor Clipboard(lib: RenderLib, rendererPtr: RendererHandle)
++ @opentui/core: enum ClipboardTarget
++ @opentui/core: enum-member ClipboardTarget.Clipboard = 0
++ @opentui/core: enum-member ClipboardTarget.Primary = 1
++ @opentui/core: enum-member ClipboardTarget.Secondary = 3
++ @opentui/core: enum-member ClipboardTarget.Select = 2
++ @opentui/core: method Clipboard.clearClipboardOSC52(target?: ClipboardTarget): boolean
++ @opentui/core: method Clipboard.copyToClipboardOSC52(text: string, target?: ClipboardTarget): boolean
++ @opentui/core: method Clipboard.isOsc52Supported(): boolean
+- @opentui/core: property RenderLib.copyToClipboardOSC52: (renderer: RendererHandle, target: number, payload: Uint8Array) => boolean
++ @opentui/core: property RenderLib.copyToClipboardOSC52: (renderer: RendererHandle, target: number, textUtf8: Uint8Array) => boolean
++ @opentui/core: property TerminalCapabilities.osc52_support: TerminalCapabilityState
++ @opentui/core: type TerminalCapabilityState = "unknown" | "supported" | "unsupported"

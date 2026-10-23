@@ -83,23 +83,11 @@ fn moveToSplitOutputCursor(writer: anytype, render_offset: u32, output_column: u
     ansi.ANSI.moveToOutput(writer, column, row) catch {};
 }
 
+/// Trims only empty cells: a continuation cell belongs to the wide character before it.
 fn snapshotRowEnd(snapshot: *const OptimizedBuffer, row: u32, limit: u32) u32 {
     var x = limit;
-    while (x > 0) {
-        const cell = snapshot.get(x - 1, row) orelse {
-            x -= 1;
-            continue;
-        };
-
-        if (cell.char == 0 or gp.isContinuationChar(cell.char)) {
-            x -= 1;
-            continue;
-        }
-
-        return x;
-    }
-
-    return 0;
+    while (x > 0 and snapshot.get(x - 1, row).?.char == 0) x -= 1;
+    return x;
 }
 
 pub const SplitFooterTransitionMode = enum(u8) {
@@ -116,6 +104,50 @@ pub const RenderStatsSnapshot = struct {
     averageCellsUpdated: u32,
     renderTime: ?f64,
     outputWriteTime: ?f64,
+    frameWork: FrameWork,
+};
+
+/// Work counts of one scene frame: scene paint, encoding, and hit-grid commit.
+/// Counts are deterministic; none reads a clock.
+pub const FrameWork = struct {
+    work_frame_id: u64 = 0,
+    candidate_visits: u64 = 0,
+    paint_visits: u64 = 0,
+    view_preparations: u64 = 0,
+    geometry_reads: u64 = 0,
+    yoga_solves: u64 = 0,
+    feedback_operations: u64 = 0,
+    visibility_steps: u64 = 0,
+    viewport_child_refreshes: u64 = 0,
+    overlap_tests: u64 = 0,
+    members_painted: u64 = 0,
+    member_cells: u64 = 0,
+    cells_cleared: u64 = 0,
+    hit_cells_written: u64 = 0,
+    hit_cells_cleared: u64 = 0,
+    hit_cells_compared: u64 = 0,
+    rows_compared: u64 = 0,
+    rows_diffed: u64 = 0,
+    full_path_reasons: u32 = 0,
+    host_requests: u32 = 0,
+    layout_rounds: u32 = 0,
+
+    pub const full_path_forced: u32 = 1;
+    pub const full_path_screen: u32 = 2;
+    pub const full_path_images: u32 = 4;
+
+    /// Adds the encoder's counts to a scene frame's counts.
+    fn merge(self: FrameWork, encode: FrameWork) FrameWork {
+        var result = self;
+        inline for (@typeInfo(FrameWork).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "full_path_reasons")) {
+                result.full_path_reasons |= encode.full_path_reasons;
+            } else {
+                @field(result, name) += @field(encode, name);
+            }
+        }
+        return result;
+    }
 };
 
 pub const SplitFooterTransition = struct {
@@ -161,12 +193,13 @@ const CommittedImage = struct {
     // A partial overlay must rebuild placements; an unchanged overlay must not.
     reservation_intact: bool = true,
     reservation_hash: u64 = 0,
+    // Kitty runs placed for a partial reservation, ids KITTY_RUN_ID_MIN up.
+    kitty_runs: u32 = 0,
 };
 
 // Run placement ids start above every buffer placement id. Kitty scopes
 // placement ids to an image id and each owner has its own image id, so runs
-// of different owners never collide and no run needs tracking: a placement
-// delete by image id drops the owner rectangle or its runs alike.
+// of different owners never collide.
 const KITTY_RUN_ID_MIN: u32 = 0x8000_0000;
 
 comptime {
@@ -290,8 +323,15 @@ pub const CliRenderer = struct {
         render_time: ?f64,
         split_state: ?SplitFrameState = null,
         snapshot_only: bool = false,
+        work: ?FrameWork = null,
     } = null,
     presentationFailed: bool = false,
+    /// Set by a Session only while it commits a scene draft.
+    scene_work: ?FrameWork = null,
+    /// Written by each encode.
+    encode_work: FrameWork = .{},
+    /// The last presented scene frame.
+    last_frame_work: FrameWork = .{},
 
     renderStats: struct {
         lastFrameTime: f64,
@@ -822,6 +862,7 @@ pub const CliRenderer = struct {
             .averageCellsUpdated = getStatAverage(u32, &self.statSamples.cellsUpdated),
             .renderTime = self.renderStats.renderTime,
             .outputWriteTime = self.renderStats.outputWriteTime,
+            .frameWork = self.last_frame_work,
         };
     }
 
@@ -1152,6 +1193,11 @@ pub const CliRenderer = struct {
         self.renderStats.renderTime = pending.render_time;
         if (pending.split_state) |state| self.restoreSplitFrameState(state);
         if (!pending.snapshot_only) {
+            if (pending.work) |work| {
+                self.last_frame_work = work;
+                if (!self.hitGridResizeInvalidated) self.last_frame_work.hit_cells_compared += self.nextHitGrid.len;
+                self.last_frame_work.hit_cells_cleared += self.nextHitGrid.len;
+            }
             self.commitPendingHitGrid();
             self.commitPendingImageState();
         } else {
@@ -1239,6 +1285,8 @@ pub const CliRenderer = struct {
             self.rollbackSplitFrame(start_split_state);
             return self.finishUnpublishedFrame(status);
         }
+        // A Session hands over scene work only for frames that paint the footer.
+        std.debug.assert(self.scene_work == null or paint_footer);
         if (deferred) {
             self.pendingPresentation = .{
                 .timestamp_us = now,
@@ -1246,6 +1294,7 @@ pub const CliRenderer = struct {
                 .render_time = if (paint_footer) self.renderStats.renderTime else null,
                 .split_state = if (split != null) self.splitFrameState() else null,
                 .snapshot_only = !paint_footer,
+                .work = if (self.scene_work) |work| work.merge(self.encode_work) else null,
             };
             if (split != null) self.restoreSplitFrameState(start_split_state);
             self.renderStats = previous_stats;
@@ -1867,6 +1916,9 @@ pub const CliRenderer = struct {
         const hyperlinksEnabled = self.terminal.getCapabilities().hyperlinks;
         const render_columns = @min(row_columns, snapshot.width);
 
+        // Erase before each row, not after it: a row that fills the width leaves the cursor on
+        // the last column with a wrap pending, and an erase there removes that cell.
+        writer.writeAll(ansi.ANSI.reset ++ ansi.ANSI.eraseToEndOfLine) catch {};
         for (0..snapshot.height) |uy| {
             const y = @as(u32, @intCast(uy));
             const row_end = snapshotRowEnd(snapshot, y, render_columns);
@@ -1960,8 +2012,6 @@ pub const CliRenderer = struct {
             }
 
             writer.writeAll(ansi.ANSI.reset) catch {};
-            // Guarantee short rows do not leave stale content from prior frame data.
-            writer.writeAll(ansi.ANSI.eraseToEndOfLine) catch {};
             if (image_state.protocol == .sixel or image_state.protocol == .kitty) {
                 try self.writeSnapshotNativeImagesForRow(writer, snapshot, y, image_state);
             }
@@ -1971,14 +2021,9 @@ pub const CliRenderer = struct {
 
             const is_last_row = @as(u32, @intCast(uy + 1)) >= snapshot.height;
             if (!is_last_row or trailing_newline) {
-                writer.writeAll("\r\n") catch {};
-            }
-
-            if (is_last_row and trailing_newline) {
-                // After a trailing newline, clear the destination row that becomes
-                // current so old footer text cannot flash through.
-                writer.writeAll(ansi.ANSI.reset) catch {};
-                writer.writeAll(ansi.ANSI.eraseToEndOfLine) catch {};
+                // The erase also clears the row that a trailing newline makes current, so old
+                // footer text cannot flash through.
+                writer.writeAll("\r\n" ++ ansi.ANSI.eraseToEndOfLine) catch {};
             }
         }
     }
@@ -2013,6 +2058,7 @@ pub const CliRenderer = struct {
         const starts_mid_line = previousOutputColumn > 0 and start_on_new_line;
         const starts_wrapped_line = previousOutputColumn >= self.width;
         const previousFooterTopLine: u32 = @max(previousSurfaceOffset + 1, @as(u32, 1));
+        var ends_last_row = trailing_newline;
 
         if (snapshot_has_content) {
             // First update logical split scrollback state, then emit terminal I/O.
@@ -2031,6 +2077,10 @@ pub const CliRenderer = struct {
             }
 
             self.splitScrollback.published_rows = @min(self.splitScrollback.published_rows, pinned_render_offset);
+            // With no output row, the footer covers the last row: a full row ends there, and the
+            // next commit starts a new line at column 1 (no CRLF, which would scroll a footer row).
+            ends_last_row = trailing_newline or (pinned_render_offset == 0 and self.splitScrollback.tail_column >= self.width);
+            if (pinned_render_offset == 0) self.splitScrollback.tail_column = 0;
         }
 
         const next_output_offset = self.splitScrollback.renderOffset(pinned_render_offset);
@@ -2040,14 +2090,13 @@ pub const CliRenderer = struct {
         // appended output must scroll only the upper pane. Without a temporary DECSTBM
         // region, terminals advance into the footer rows and overwrite them in place.
         const use_bounded_scroll_region = snapshot_has_content and
-            pinned_render_offset > 0 and
             next_render_offset == pinned_render_offset and
             next_output_offset == next_render_offset;
-        // DECSTBM protects footer cells, but terminals can still scroll native
-        // graphics placements. Repaint those placements after every pinned append.
-        const repaint_native_images = use_bounded_scroll_region and
-            (self.hasCommittedProtocol(.kitty) or self.hasCommittedProtocol(.sixel));
-        const redraw_footer = force or previousSurfaceOffset != next_render_offset or repaint_native_images;
+        // DECSTBM protects footer cells, but terminals can still scroll native graphics placements, and
+        // a pane of one row or none borrows footer rows. Repaint the footer after those pinned appends.
+        const repaint_footer = use_bounded_scroll_region and (pinned_render_offset < 2 or
+            self.hasCommittedProtocol(.kitty) or self.hasCommittedProtocol(.sixel));
+        const redraw_footer = force or previousSurfaceOffset != next_render_offset or repaint_footer;
 
         if (snapshot_has_content or force) {
             if (snapshot_has_content) {
@@ -2065,8 +2114,8 @@ pub const CliRenderer = struct {
                 if (use_bounded_scroll_region) {
                     // Temporarily bound scrolling to the upper pane so newline/wrap
                     // from appended payload pushes history upward instead of stepping
-                    // through footer rows.
-                    writer.print("\x1b[1;{d}r", .{pinned_render_offset}) catch {};
+                    // through footer rows. Terminals ignore a region of fewer than two rows.
+                    writer.print("\x1b[1;{d}r", .{@max(pinned_render_offset, 2)}) catch {};
                 }
 
                 moveToSplitOutputCursor(writer, previousOutputOffset, previousOutputColumn, self.width);
@@ -2078,15 +2127,20 @@ pub const CliRenderer = struct {
                     // Emit CRLF before payload to preserve logical row boundaries
                     // across commit chunks.
                     writer.writeAll("\r\n") catch {};
+                } else if (previousOutputColumn + snapshotRowEnd(snapshot, 0, normalized_row_columns) > self.width) {
+                    // A first row that wraps would scroll its next line in with the wrapping cell's background
+                    // (BCE). Scroll that line in first with default attributes, or clear a borrowed footer row.
+                    writer.writeAll(ansi.ANSI.reset ++ "\x1bD\x1b[2K\x1b[A") catch {};
                 }
 
                 // Serialize payload rows at current output cursor.
-                try self.writeSnapshotCommit(writer, snapshot, normalized_row_columns, trailing_newline, kitty_history_state);
+                try self.writeSnapshotCommit(writer, snapshot, normalized_row_columns, ends_last_row, kitty_history_state);
 
                 if (use_bounded_scroll_region) {
-                    // Restore default full-height scroll region for regular repaint
-                    // and cursor operations after append is complete.
-                    writer.writeAll("\x1b[r") catch {};
+                    // Restore the full-height region. A pane of one row or none first scrolls its last line
+                    // back to row 1, unless the terminal has one row, where each CRLF already scrolled.
+                    const scroll_back = pinned_render_offset < 2 and pinned_render_offset + self.height > 1;
+                    writer.writeAll(if (scroll_back) "\x1bD\x1b[r" else "\x1b[r") catch {};
                 }
             }
 
@@ -2372,6 +2426,10 @@ pub const CliRenderer = struct {
                 .lower_occupancy_hash = if (index < self.imageDirty.items.len) self.imageDirty.items[index].lower_occupancy_hash else 0,
                 .reservation_intact = reservation.intact,
                 .reservation_hash = reservation.hash,
+                .kitty_runs = if (protocol == .kitty and !reservation.intact)
+                    self.writeKittyReservationRuns({}, placement, 0, kittyDownscaleApplies(placement), false) catch unreachable
+                else
+                    0,
             });
         }
     }
@@ -2496,7 +2554,8 @@ pub const CliRenderer = struct {
     // with the same coverage share a placement, so an uncovered band keeps the
     // owner's exact source mapping and the escape count follows the overlay
     // shape rather than the image height. z stays on the owner id so ordering
-    // does not follow the run id.
+    // does not follow the run id. Returns the run count; a void writer only
+    // counts, so committed state can name each run for its later delete.
     fn writeKittyReservationRuns(
         self: *CliRenderer,
         writer: anytype,
@@ -2504,7 +2563,7 @@ pub const CliRenderer = struct {
         image_id: u32,
         downscaled: bool,
         tmux: bool,
-    ) !void {
+    ) !u32 {
         const src_x0: u32 = if (downscaled) 0 else placement.source_x;
         const src_y0: u32 = if (downscaled) 0 else placement.source_y;
         const src_w: u32 = if (downscaled) placement.pixel_width else placement.source_width;
@@ -2528,7 +2587,7 @@ pub const CliRenderer = struct {
                 const src_x = kittySourceSpan(src_x0, src_w, start, ox - start, placement.width) orelse continue;
                 // Runs never outnumber cells, so the id space above KITTY_RUN_ID_MIN suffices.
                 std.debug.assert(run_index < std.math.maxInt(u32) - KITTY_RUN_ID_MIN);
-                try terminal_image.writeKittyPlacement(
+                if (@TypeOf(writer) != void) try terminal_image.writeKittyPlacement(
                     writer,
                     image_id,
                     KITTY_RUN_ID_MIN + run_index,
@@ -2546,11 +2605,14 @@ pub const CliRenderer = struct {
                 run_index += 1;
             }
         }
+        return run_index;
     }
 
     // Re-emit one Kitty placement when its transmit, geometry, or coverage
-    // changed, or when a full repaint is forced. Deletes address the image id,
-    // not individual placements, so a dropped frame leaves nothing to reconcile.
+    // changed, or when a full repaint is forced. Placement deletes name each
+    // committed placement: iTerm2 also frees the image on an image-wide `d=i`,
+    // so a following put would find no image. Committed state only advances
+    // with a presented frame, so a dropped frame still names what is shown.
     fn writeKittyPlacementUpdate(
         self: *CliRenderer,
         writer: anytype,
@@ -2593,10 +2655,17 @@ pub const CliRenderer = struct {
         if (retransmit) {
             // Frees the image and every placement of it, runs included.
             try terminal_image.writeKittyDelete(writer, image_id, null, true, tmux);
-        } else if (previous != null) {
+        } else if (previous) |committed| {
             // Drops the owner rectangle or its runs, whichever is on the
             // terminal, and keeps the image data for the new placements.
-            try terminal_image.writeKittyDelete(writer, image_id, null, false, tmux);
+            if (committed.reservation_intact) {
+                try terminal_image.writeKittyDelete(writer, image_id, placement.placement_id, false, tmux);
+            } else {
+                var run: u32 = 0;
+                while (run < committed.kitty_runs) : (run += 1) {
+                    try terminal_image.writeKittyDelete(writer, image_id, KITTY_RUN_ID_MIN + run, false, tmux);
+                }
+            }
         }
         if (previous == null or retransmit) {
             const transmit = try self.kittyPlacementTransmit(placement, .escape);
@@ -2607,7 +2676,7 @@ pub const CliRenderer = struct {
         }
         if (placement.x < 0 or placement.y < 0) return;
         if (!reservation.intact) {
-            try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
+            _ = try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
             return;
         }
         // A downscaled transmit already contains exactly the placement's
@@ -2853,6 +2922,9 @@ pub const CliRenderer = struct {
         const palette_force = self.last_rendered_palette_epoch == null or self.last_rendered_palette_epoch.? != self.palette_epoch;
         const should_force = force or self.force_full_repaint or palette_force;
         const has_image_state = self.nextRenderBuffer.image_placements.items.len != 0 or self.currentImages.items.len != 0;
+        self.encode_work = .{
+            .full_path_reasons = (if (should_force) FrameWork.full_path_screen else 0) | (if (has_image_state) FrameWork.full_path_images else 0),
+        };
         if (self.nextRenderBuffer.image_placements.items.len != 0) {
             self.materializeFallbackImages() catch {
                 self.imageRenderFailed = true;
@@ -2930,6 +3002,7 @@ pub const CliRenderer = struct {
             const y = @as(u32, @intCast(uy));
 
             if (use_row_equality) {
+                self.encode_work.rows_compared += 1;
                 const row_start = @as(usize, y) * self.width;
                 const row_end = row_start + self.width;
                 if (utils.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
@@ -2938,7 +3011,7 @@ pub const CliRenderer = struct {
                     utils.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
             }
 
-            var runStart: i64 = -1;
+            self.encode_work.rows_diffed += 1;
             var runLength: u32 = 0;
             const cells_updated_before_row = cellsUpdated;
 
@@ -2960,7 +3033,6 @@ pub const CliRenderer = struct {
                     if (cellsEqual and !(clears_pending and cell_type == gp.CHAR_FLAG_IMAGE and dirtyImageChar(image_dirty_items, cell.char))) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
-                            runStart = -1;
                             runLength = 0;
                         }
                         continue;
@@ -2980,7 +3052,6 @@ pub const CliRenderer = struct {
                     if (!should_force and !state.clear and gp.isImageChar(currentCell.?.char)) {
                         if (runLength > 0) {
                             writer.writeAll(ansi.ANSI.reset) catch {};
-                            runStart = -1;
                             runLength = 0;
                         }
                         if (currentCell.?.char != cell.char) self.currentRenderBuffer.syncCell(x, y, cell);
@@ -3000,7 +3071,6 @@ pub const CliRenderer = struct {
                     currentFg = null;
                     currentBg = null;
                     currentAttributes = null;
-                    runStart = -1;
                     runLength = 0;
                     self.currentRenderBuffer.syncCell(x, y, cell);
                     cellsUpdated += 1;
@@ -3042,12 +3112,11 @@ pub const CliRenderer = struct {
                     }
                 }
 
-                if (!sameAttributes or runStart == -1) {
+                if (!sameAttributes or runLength == 0) {
                     if (runLength > 0) {
                         writer.writeAll(ansi.ANSI.reset) catch {};
                     }
 
-                    runStart = @intCast(x);
                     runLength = 0;
 
                     currentFg = cell.fg;
@@ -3111,6 +3180,8 @@ pub const CliRenderer = struct {
 
                 cellsUpdated += 1;
             }
+            // A new run sets colors but only turns attributes on, so close an attributed run here.
+            if (runLength > 0 and ansi.TextAttributes.getBaseAttributes(currentAttributes.?) != 0) writer.writeAll(ansi.ANSI.reset) catch {};
             if (cellsUpdated - cells_updated_before_row == self.width) use_row_equality = false;
         }
 
@@ -3328,6 +3399,7 @@ pub const CliRenderer = struct {
         }
 
         self.nextRenderBuffer.clear(self.backgroundColor, null);
+        self.encode_work.cells_cleared += @as(u64, self.width) * self.height;
     }
 
     pub fn setDebugOverlay(self: *CliRenderer, enabled: bool, corner: DebugOverlayCorner) void {

@@ -1,6 +1,6 @@
 import type { ClientInfo, Connection } from "ssh2"
 import type { Authenticator } from "./auth.js"
-import { createSessionBridge, DEFAULT_PTY, type PtyInfo, type SessionBridge } from "./bridge.js"
+import { createSessionBridge, DEFAULT_PTY, isClientEnvValue, type PtyInfo, type SessionBridge } from "./bridge.js"
 import { type RuntimeMiddleware, runSession } from "./run-session.js"
 import { ignoreErrors, type SafeInvoke } from "./safe.js"
 import type { Identity, RemoteAddress, SessionHandler } from "./types.js"
@@ -16,6 +16,9 @@ export interface ConnectionDependencies {
   maxTimeoutMs: number | undefined
   sessionLimits: ResolvedSessionLimits
 }
+
+// Client `env` requests that describe its terminal.
+const CLIENT_ENV_KEYS = new Set(["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"])
 
 const normalizeAddress = (address: string | undefined): string => {
   if (!address) return "unknown"
@@ -67,7 +70,15 @@ export function createConnectionHandler(dependencies: ConnectionDependencies): {
       client.on("session", (acceptSession) => {
         const sshSession = acceptSession()
         let pty: PtyInfo = DEFAULT_PTY
+        const env: Record<string, string> = {}
         let activeBridge: SessionBridge | undefined
+
+        // A request after the shell would miss the renderer environment, which the bridge copies at creation.
+        sshSession.on("env", (accept, reject, info) => {
+          if (activeBridge || !CLIENT_ENV_KEYS.has(info.key) || !isClientEnvValue(info.val)) return reject?.()
+          env[info.key] = info.val
+          accept?.()
+        })
 
         sshSession.on("pty", (accept, _reject, info) => {
           // `term` typed via ssh2-augment.d.ts (@types/ssh2 omits it at this version).
@@ -114,6 +125,7 @@ export function createConnectionHandler(dependencies: ConnectionDependencies): {
             // be replaced if the client opens another shell on the same SSH session.
             const shellBridge = createSessionBridge(channel, {
               pty,
+              env,
               identity,
               idleTimeoutMs,
               maxTimeoutMs,

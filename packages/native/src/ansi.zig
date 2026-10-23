@@ -350,6 +350,7 @@ pub const ANSI = struct {
     pub const xtgettcapMs = "\x1bP+q4d73\x1b\\";
     pub const kittyGraphicsQuery = "\x1b_Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
     pub const notificationQueries = "\x1b]99;i=opentui-notifications:p=?;\x1b\\\x1b]1337;Capabilities\x1b\\";
+    pub const programStatusQuery = "\x1b]7501;?\x1b\\";
 
     pub const capabilityQueriesBase = xtgettcapMs ++
         decrqmSgrPixels ++
@@ -359,7 +360,7 @@ pub const ANSI = struct {
         decrqmBracketedPaste ++
         decrqmSync;
 
-    pub const capabilityQueries = capabilityQueriesBase ++ csiUQuery ++ notificationQueries;
+    pub const capabilityQueries = capabilityQueriesBase ++ csiUQuery ++ notificationQueries ++ programStatusQuery;
     pub const capabilityQueriesFootIsBroken = capabilityQueriesBase ++ csiUQuery;
 
     // tmux DCS passthrough wrapper (ESC chars doubled)

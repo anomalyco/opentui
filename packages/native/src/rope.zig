@@ -1,5 +1,5 @@
 const std = @import("std");
-const builtin = @import("builtin");
+const text_work = @import("text-work.zig");
 const Allocator = std.mem.Allocator;
 
 /// This is a persistent/immutable rope - operations create new nodes without
@@ -23,9 +23,6 @@ pub fn Rope(comptime T: type) type {
             max_undo_depth: ?usize = null, // null = unlimited
         };
 
-        const marker_enabled = @typeInfo(T) == .@"union" and @hasDecl(T, "MarkerTypes");
-        const MarkerTagCount = if (marker_enabled) T.MarkerTypes.len else 0;
-
         const boundary_enabled = @hasDecl(T, "BoundaryAction");
         pub const BoundaryAction = if (boundary_enabled) T.BoundaryAction else struct {
             delete_left: bool = false,
@@ -33,52 +30,10 @@ pub fn Rope(comptime T: type) type {
             insert_between: []const T = &[_]T{},
         };
 
-        pub const MarkerPosition = struct {
-            leaf_index: u32,
-            global_weight: u32,
-        };
-        pub const MarkerCache = if (marker_enabled) struct {
-            // Flat arrays of positions for each marker type
-            positions: std.AutoHashMap(std.meta.Tag(T), std.ArrayListUnmanaged(MarkerPosition)),
-            version: u64, // Rope version when cache was built
-            allocator: Allocator,
-
-            pub fn init(allocator: Allocator) MarkerCache {
-                return .{
-                    .positions = std.AutoHashMap(std.meta.Tag(T), std.ArrayListUnmanaged(MarkerPosition)).init(allocator),
-                    .version = std.math.maxInt(u64), // Sentinel: cache is invalid until first rebuild
-                    .allocator = allocator,
-                };
-            }
-
-            pub fn deinit(self: *MarkerCache) void {
-                var iter = self.positions.valueIterator();
-                while (iter.next()) |list| {
-                    list.deinit(self.allocator);
-                }
-                self.positions.deinit();
-            }
-
-            fn clear(self: *MarkerCache) void {
-                var iter = self.positions.valueIterator();
-                while (iter.next()) |list| {
-                    list.clearRetainingCapacity();
-                }
-            }
-        } else struct {
-            pub fn init(_: Allocator) @This() {
-                return .{};
-            }
-            pub fn deinit(_: *@This()) void {}
-            fn clear(_: *@This()) void {}
-        };
-
         pub const Metrics = struct {
             count: u32 = 0,
             depth: u32 = 1,
             custom: if (@hasDecl(T, "Metrics")) T.Metrics else void = if (@hasDecl(T, "Metrics")) .{} else {},
-
-            marker_counts: if (marker_enabled) [MarkerTagCount]u32 else void = if (marker_enabled) @splat(0) else {},
 
             pub fn add(self: *Metrics, other: Metrics) void {
                 self.count += other.count;
@@ -87,12 +42,6 @@ pub fn Rope(comptime T: type) type {
                 if (@hasDecl(T, "Metrics")) {
                     if (@hasDecl(T.Metrics, "add")) {
                         self.custom.add(other.custom);
-                    }
-                }
-
-                if (marker_enabled) {
-                    inline for (&self.marker_counts, 0..) |*dst, i| {
-                        dst.* += other.marker_counts[i];
                     }
                 }
             }
@@ -105,23 +54,23 @@ pub fn Rope(comptime T: type) type {
                 }
                 return self.count;
             }
+
+            /// Balancing size: the weight plus the leaf count, so leaves without weight still count.
+            fn size(self: *const Metrics) u64 {
+                return @as(u64, self.weight()) + self.count;
+            }
         };
 
         pub const Branch = struct {
             left: *const Node,
             right: *const Node,
-            left_metrics: Metrics,
             total_metrics: Metrics,
 
             fn is_balanced(self: *const Branch) bool {
-                const left_weight = self.left.metrics().weight();
-                const right_weight = self.right.metrics().weight();
-                const total_weight = left_weight + right_weight;
-
-                if (total_weight == 0) return true;
-
-                const max_side = (total_weight * 3) / 4;
-                return left_weight <= max_side and right_weight <= max_side;
+                const left_size = self.left.metrics().size();
+                const right_size = self.right.metrics().size();
+                const max_side = ((left_size + right_size) * 3) / 4;
+                return left_size <= max_side and right_size <= max_side;
             }
         };
 
@@ -138,16 +87,6 @@ pub fn Rope(comptime T: type) type {
                 if (@hasDecl(T, "Metrics")) {
                     if (@hasDecl(T, "measure")) {
                         m.custom = self.data.measure();
-                    }
-                }
-
-                if (!self.is_sentinel and marker_enabled) {
-                    const tag = std.meta.activeTag(self.data);
-                    inline for (T.MarkerTypes, 0..) |mt, i| {
-                        if (tag == mt) {
-                            m.marker_counts[i] = 1;
-                            break;
-                        }
                     }
                 }
 
@@ -197,23 +136,22 @@ pub fn Rope(comptime T: type) type {
                 return self == empty_leaf;
             }
 
-            pub fn new_branch(allocator: Allocator, left: *const Node, right: *const Node) !*const Node {
-                const node = try allocator.create(Node);
-                errdefer allocator.destroy(node);
-
-                const left_metrics = left.metrics();
+            pub fn init_branch(left: *const Node, right: *const Node) Node {
                 var total_metrics = Metrics{};
-                total_metrics.add(left_metrics);
+                total_metrics.add(left.metrics());
                 total_metrics.add(right.metrics());
                 total_metrics.depth += 1;
 
-                node.* = .{ .branch = .{
+                return .{ .branch = .{
                     .left = left,
                     .right = right,
-                    .left_metrics = left_metrics,
                     .total_metrics = total_metrics,
                 } };
+            }
 
+            pub fn new_branch(allocator: Allocator, left: *const Node, right: *const Node) !*const Node {
+                const node = try allocator.create(Node);
+                node.* = init_branch(left, right);
                 return node;
             }
 
@@ -228,7 +166,7 @@ pub fn Rope(comptime T: type) type {
             pub fn get(self: *const Node, index: u32) ?*const T {
                 return switch (self.*) {
                     .branch => |*b| {
-                        const left_count = b.left_metrics.count;
+                        const left_count = b.left.metrics().count;
                         if (index < left_count) {
                             return b.left.get(index);
                         }
@@ -270,7 +208,7 @@ pub fn Rope(comptime T: type) type {
             fn walk_from_internal(self: *const Node, start_index: u32, ctx: *anyopaque, f: WalkerFn, current_index: *u32) WalkerResult {
                 return switch (self.*) {
                     .branch => |*b| {
-                        const left_count = b.left_metrics.count;
+                        const left_count = b.left.metrics().count;
                         if (start_index >= left_count) {
                             return b.right.walk_from_internal(start_index - left_count, ctx, f, current_index);
                         }
@@ -330,16 +268,12 @@ pub fn Rope(comptime T: type) type {
 
             /// Structural split at index - returns (left, right) without flattening
             pub fn split_at(node: *const Node, index: u32, allocator: Allocator, empty_leaf: *const Node) error{OutOfMemory}!struct { left: *const Node, right: *const Node } {
+                if (index == 0) return .{ .left = empty_leaf, .right = node };
+                if (index >= node.count()) return .{ .left = node, .right = empty_leaf };
                 return switch (node.*) {
-                    .leaf => {
-                        if (index == 0) {
-                            return .{ .left = empty_leaf, .right = node };
-                        } else {
-                            return .{ .left = node, .right = empty_leaf };
-                        }
-                    },
+                    .leaf => unreachable,
                     .branch => |*b| {
-                        const left_count = b.left_metrics.count;
+                        const left_count = b.left.metrics().count;
                         if (index < left_count) {
                             const result = try split_at(b.left, index, allocator, empty_leaf);
                             const new_right = try join_balanced(result.right, b.right, allocator);
@@ -362,22 +296,27 @@ pub fn Rope(comptime T: type) type {
                 if (left_count == 0) return right;
                 if (right_count == 0) return left;
 
-                const left_weight = left.metrics().weight();
-                const right_weight = right.metrics().weight();
-                const total_weight = left_weight + right_weight;
-
-                if (total_weight > 0) {
-                    const max_side = (total_weight * 3) / 4;
-                    if (left_weight <= max_side and right_weight <= max_side) {
-                        return try new_branch(allocator, left, right);
-                    }
+                const left_size = left.metrics().size();
+                const right_size = right.metrics().size();
+                const max_side = ((left_size + right_size) * 3) / 4;
+                if (left_size <= max_side and right_size <= max_side) {
+                    return try new_branch(allocator, left, right);
                 }
 
-                if (left_weight > right_weight * 3) {
+                if (left_size > right_size * 3) {
                     return switch (left.*) {
                         .leaf => try new_branch(allocator, left, right),
                         .branch => |*b| {
                             const new_right = try join_balanced(b.right, right, allocator);
+                            if (new_right.metrics().size() > b.left.metrics().size() * 3) {
+                                switch (new_right.*) {
+                                    .branch => |*nr| {
+                                        const new_left = try join_balanced(b.left, nr.left, allocator);
+                                        return try new_branch(allocator, new_left, nr.right);
+                                    },
+                                    .leaf => {},
+                                }
+                            }
                             return try new_branch(allocator, b.left, new_right);
                         },
                     };
@@ -387,6 +326,15 @@ pub fn Rope(comptime T: type) type {
                     .leaf => try new_branch(allocator, left, right),
                     .branch => |*b| {
                         const new_left = try join_balanced(left, b.left, allocator);
+                        if (new_left.metrics().size() > b.right.metrics().size() * 3) {
+                            switch (new_left.*) {
+                                .branch => |*nl| {
+                                    const new_right = try join_balanced(nl.right, b.right, allocator);
+                                    return try new_branch(allocator, nl.left, new_right);
+                                },
+                                .leaf => {},
+                            }
+                        }
                         return try new_branch(allocator, new_left, b.right);
                     },
                 };
@@ -397,15 +345,21 @@ pub fn Rope(comptime T: type) type {
             pub const LeafSplitFn = struct {
                 ctx: ?*anyopaque = null,
                 splitFn: *const fn (allocator: Allocator, ctx: ?*anyopaque, leaf: *const T, weight_in_leaf: u32) error{ OutOfBounds, OutOfMemory }!LeafSplitResult,
+                /// Joins two leaves that `T.canMerge` accepts. Without it, they stay apart.
+                mergeFn: ?*const fn (ctx: ?*anyopaque, left: *const T, right: *const T) T = null,
 
                 pub fn call(self: *const @This(), allocator: Allocator, leaf: *const T, weight: u32) error{ OutOfBounds, OutOfMemory }!LeafSplitResult {
                     return self.splitFn(allocator, self.ctx, leaf, weight);
                 }
             };
 
+            /// The side that takes the zero-weight leaves at the split weight; null leaves it to the tree shape.
+            pub const Bias = enum { left, right };
+
             pub fn split_at_weight(
                 node: *const Node,
                 target_weight: u32,
+                bias: ?Bias,
                 allocator: Allocator,
                 empty_leaf: *const Node,
                 split_leaf_fn: *const LeafSplitFn,
@@ -414,7 +368,7 @@ pub fn Rope(comptime T: type) type {
                     .leaf => |*l| {
                         const leaf_weight = node.metrics().weight();
 
-                        if (target_weight == 0) {
+                        if (target_weight == 0 and (leaf_weight > 0 or bias != .left)) {
                             return .{ .left = empty_leaf, .right = node };
                         } else if (target_weight >= leaf_weight) {
                             return .{ .left = node, .right = empty_leaf };
@@ -426,14 +380,14 @@ pub fn Rope(comptime T: type) type {
                         return .{ .left = left_node, .right = right_node };
                     },
                     .branch => |*b| {
-                        const left_weight = b.left_metrics.weight();
+                        const left_weight = b.left.metrics().weight();
 
-                        if (target_weight < left_weight) {
-                            const result = try split_at_weight(b.left, target_weight, allocator, empty_leaf, split_leaf_fn);
+                        if (target_weight < left_weight or (target_weight == left_weight and bias == .right)) {
+                            const result = try split_at_weight(b.left, target_weight, bias, allocator, empty_leaf, split_leaf_fn);
                             const new_right = try join_balanced(result.right, b.right, allocator);
                             return .{ .left = result.left, .right = new_right };
-                        } else if (target_weight > left_weight) {
-                            const result = try split_at_weight(b.right, target_weight - left_weight, allocator, empty_leaf, split_leaf_fn);
+                        } else if (target_weight > left_weight or bias == .left) {
+                            const result = try split_at_weight(b.right, target_weight - left_weight, bias, allocator, empty_leaf, split_leaf_fn);
                             const new_left = try join_balanced(b.left, result.left, allocator);
                             return .{ .left = new_left, .right = result.right };
                         } else {
@@ -466,10 +420,6 @@ pub fn Rope(comptime T: type) type {
         curr_history: ?*UndoNode = null,
         config: Config = .{},
         undo_depth: usize = 0,
-        version: u64 = 0,
-        marker_cache: MarkerCache,
-        /// Tests bound line seeks by counting marker lookups instead of timing them.
-        marker_lookups: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
         pub fn init(allocator: Allocator) error{OutOfMemory}!Self {
             return initWithConfig(allocator, .{});
@@ -489,7 +439,6 @@ pub fn Rope(comptime T: type) type {
                 .allocator = allocator,
                 .empty_leaf = node,
                 .config = config,
-                .marker_cache = MarkerCache.init(allocator),
             };
 
             try self.applyEndsInvariant();
@@ -516,7 +465,6 @@ pub fn Rope(comptime T: type) type {
                 .allocator = allocator,
                 .empty_leaf = empty_node,
                 .config = config,
-                .marker_cache = MarkerCache.init(allocator),
             };
         }
 
@@ -543,20 +491,30 @@ pub fn Rope(comptime T: type) type {
                 .allocator = allocator,
                 .empty_leaf = empty_node,
                 .config = config,
-                .marker_cache = MarkerCache.init(allocator),
             };
         }
 
         fn rootFromSlice(allocator: Allocator, items: []const T) error{OutOfMemory}!*const Node {
             std.debug.assert(items.len > 0);
-            if (items.len == 1) return Node.new_leaf(allocator, items[0]);
+            const node_count = std.math.mul(usize, items.len, 2) catch return error.OutOfMemory;
+            const nodes = try allocator.alloc(Node, node_count - 1);
+            return rootFromSliceInto(nodes, items);
+        }
+
+        fn rootFromSliceInto(nodes: []Node, items: []const T) *const Node {
+            std.debug.assert(items.len > 0);
+            std.debug.assert(nodes.len == 2 * items.len - 1);
+            if (items.len == 1) {
+                nodes[0] = .{ .leaf = .{ .data = items[0] } };
+                return &nodes[0];
+            }
 
             const mid = items.len / 2;
-            return Node.new_branch(
-                allocator,
-                try rootFromSlice(allocator, items[0..mid]),
-                try rootFromSlice(allocator, items[mid..]),
-            );
+            const left_nodes = 2 * mid - 1;
+            const left = rootFromSliceInto(nodes[1 .. 1 + left_nodes], items[0..mid]);
+            const right = rootFromSliceInto(nodes[1 + left_nodes ..], items[mid..]);
+            nodes[0] = Node.init_branch(left, right);
+            return &nodes[0];
         }
 
         pub fn count(self: *const Self) u32 {
@@ -590,10 +548,10 @@ pub fn Rope(comptime T: type) type {
         /// The persistent structure is unchanged; only aggregate caches are mutated.
         pub fn remeasure(self: *Self) void {
             _ = remeasureNode(self.root);
-            self.version +%= 1;
         }
 
         fn remeasureNode(node: *const Node) Metrics {
+            text_work.add(.remeasure_nodes, 1);
             return switch (node.*) {
                 .leaf => |*leaf| leaf.metrics(),
                 .branch => |*branch| blk: {
@@ -605,7 +563,6 @@ pub fn Rope(comptime T: type) type {
                     total_metrics.depth += 1;
 
                     const mutable = @constCast(branch);
-                    mutable.left_metrics = left_metrics;
                     mutable.total_metrics = total_metrics;
                     break :blk total_metrics;
                 },
@@ -641,7 +598,7 @@ pub fn Rope(comptime T: type) type {
         fn walkFromNode(self: *const Self, node: *const Node, start_index: u32, ctx: *anyopaque, f: Node.WalkerFn, current_index: *u32) Node.WalkerResult {
             return switch (node.*) {
                 .branch => |*b| {
-                    const left_count = b.left_metrics.count;
+                    const left_count = b.left.metrics().count;
                     if (start_index >= left_count) {
                         return self.walkFromNode(b.right, start_index - left_count, ctx, f, current_index);
                     }
@@ -694,14 +651,12 @@ pub fn Rope(comptime T: type) type {
         }
 
         pub fn concat(self: *Self, other: *const Self) !void {
-            self.root = try self.joinWithBoundary(self.root, other.root);
-            self.version += 1;
+            self.root = try self.joinWithBoundary(self.root, other.root, null);
         }
 
         pub fn split(self: *Self, index: u32) !Self {
             const result = try Node.split_at(self.root, index, self.allocator, self.empty_leaf);
             self.root = result.left;
-            self.version += 1;
             return Self{
                 .root = result.right,
                 .metrics_generation = self.metrics_generation,
@@ -710,7 +665,6 @@ pub fn Rope(comptime T: type) type {
                 .undo_history = null,
                 .redo_history = null,
                 .curr_history = null,
-                .marker_cache = MarkerCache.init(self.allocator),
             };
         }
 
@@ -756,9 +710,7 @@ pub fn Rope(comptime T: type) type {
             const first_split = try Node.split_at(self.root, start, self.allocator, self.empty_leaf);
             const second_split = try Node.split_at(first_split.right, end - start, self.allocator, self.empty_leaf);
 
-            self.root = try self.joinWithBoundary(first_split.left, second_split.right);
-
-            self.version += 1;
+            self.root = try self.joinWithBoundary(first_split.left, second_split.right, null);
             try self.applyEndsInvariant();
         }
 
@@ -769,10 +721,8 @@ pub fn Rope(comptime T: type) type {
 
             const split_result = try Node.split_at(self.root, index, self.allocator, self.empty_leaf);
 
-            const left_joined = try self.joinWithBoundary(split_result.left, insert_root);
-            self.root = try self.joinWithBoundary(left_joined, split_result.right);
-
-            self.version += 1;
+            const left_joined = try self.joinWithBoundary(split_result.left, insert_root, null);
+            self.root = try self.joinWithBoundary(left_joined, split_result.right, null);
             try self.applyEndsInvariant();
         }
 
@@ -863,9 +813,8 @@ pub fn Rope(comptime T: type) type {
         }
 
         pub fn splitByWeight(self: *Self, weight: u32, split_leaf_fn: *const Node.LeafSplitFn) !Self {
-            const result = try Node.split_at_weight(self.root, weight, self.allocator, self.empty_leaf, split_leaf_fn);
+            const result = try Node.split_at_weight(self.root, weight, null, self.allocator, self.empty_leaf, split_leaf_fn);
             self.root = result.left;
-            self.version += 1;
             return Self{
                 .root = result.right,
                 .metrics_generation = self.metrics_generation,
@@ -874,7 +823,6 @@ pub fn Rope(comptime T: type) type {
                 .undo_history = null,
                 .redo_history = null,
                 .curr_history = null,
-                .marker_cache = MarkerCache.init(self.allocator),
             };
         }
 
@@ -915,30 +863,12 @@ pub fn Rope(comptime T: type) type {
             return split_result.left;
         }
 
-        fn joinWithBoundary(self: *Self, left: *const Node, right: *const Node) error{OutOfMemory}!*const Node {
+        fn joinWithBoundary(self: *Self, left: *const Node, right: *const Node, leaf_fn: ?*const Node.LeafSplitFn) error{OutOfMemory}!*const Node {
             if (!boundary_enabled or !@hasDecl(T, "rewriteBoundary")) {
                 return try Node.join_balanced(left, right, self.allocator);
             }
 
-            const l_last = getLastLeafIn(left);
-            const r_first = getFirstLeafIn(right);
-
-            if (@hasDecl(T, "canMerge") and @hasDecl(T, "merge")) {
-                if (l_last != null and r_first != null) {
-                    if (T.canMerge(l_last.?, r_first.?)) {
-                        const merged = T.merge(self.allocator, l_last.?, r_first.?);
-                        const merged_leaf = try Node.new_leaf(self.allocator, merged);
-
-                        const L = try dropLast(left, self.allocator, self.empty_leaf);
-                        const R = try dropFirst(right, self.allocator, self.empty_leaf);
-
-                        const left_with_merged = try Node.join_balanced(L, merged_leaf, self.allocator);
-                        return try Node.join_balanced(left_with_merged, R, self.allocator);
-                    }
-                }
-            }
-
-            const action = try T.rewriteBoundary(self.allocator, l_last, r_first);
+            const action = try T.rewriteBoundary(self.allocator, getLastLeafIn(left), getFirstLeafIn(right));
 
             var L = left;
             var R = right;
@@ -954,6 +884,19 @@ pub fn Rope(comptime T: type) type {
                 const insert_root = try rootFromSlice(self.allocator, action.insert_between);
                 const left_with_insert = try Node.join_balanced(L, insert_root, self.allocator);
                 return try Node.join_balanced(left_with_insert, R, self.allocator);
+            }
+
+            // Merge after the rewrite: dropping an orphaned linestart can bring two text leaves together.
+            const l_last = getLastLeafIn(L);
+            const r_first = getFirstLeafIn(R);
+            if (@hasDecl(T, "canMerge") and leaf_fn != null and leaf_fn.?.mergeFn != null and
+                l_last != null and r_first != null and T.canMerge(l_last.?, r_first.?))
+            {
+                const merged = leaf_fn.?.mergeFn.?(leaf_fn.?.ctx, l_last.?, r_first.?);
+                const merged_leaf = try Node.new_leaf(self.allocator, merged);
+                L = try dropLast(L, self.allocator, self.empty_leaf);
+                R = try dropFirst(R, self.allocator, self.empty_leaf);
+                L = try Node.join_balanced(L, merged_leaf, self.allocator);
             }
 
             return try Node.join_balanced(L, R, self.allocator);
@@ -984,29 +927,27 @@ pub fn Rope(comptime T: type) type {
             }
         }
 
-        pub fn deleteRangeByWeight(self: *Self, start: u32, end: u32, split_leaf_fn: *const Node.LeafSplitFn) !void {
-            if (start >= end) return;
+        /// Puts `items` in place of the range right of the start split and left of the end split.
+        pub fn replaceRangeByWeight(self: *Self, start: u32, end: u32, start_bias: Node.Bias, end_bias: Node.Bias, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !void {
+            std.debug.assert(start <= end);
+            const first_split = try Node.split_at_weight(self.root, start, start_bias, self.allocator, self.empty_leaf, split_leaf_fn);
+            const second_split = try Node.split_at_weight(first_split.right, end - start, end_bias, self.allocator, self.empty_leaf, split_leaf_fn);
 
-            const first_split = try Node.split_at_weight(self.root, start, self.allocator, self.empty_leaf, split_leaf_fn);
-            const second_split = try Node.split_at_weight(first_split.right, end - start, self.allocator, self.empty_leaf, split_leaf_fn);
-
-            self.root = try self.joinWithBoundary(first_split.left, second_split.right);
-
-            self.version += 1;
+            const left = if (items.len == 0) first_split.left else try self.joinWithBoundary(first_split.left, try rootFromSlice(self.allocator, items), split_leaf_fn);
+            self.root = try self.joinWithBoundary(left, second_split.right, split_leaf_fn);
             try self.applyEndsInvariant();
         }
 
-        pub fn insertSliceByWeight(self: *Self, weight: u32, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !void {
+        /// `bias` picks the side of the zero-weight leaves at `weight`, so the tree shape cannot.
+        pub fn insertSliceByWeight(self: *Self, weight: u32, bias: Node.Bias, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !void {
             if (items.len == 0) return;
 
             const insert_root = try rootFromSlice(self.allocator, items);
 
-            const split_result = try Node.split_at_weight(self.root, weight, self.allocator, self.empty_leaf, split_leaf_fn);
+            const split_result = try Node.split_at_weight(self.root, weight, bias, self.allocator, self.empty_leaf, split_leaf_fn);
 
-            const left_joined = try self.joinWithBoundary(split_result.left, insert_root);
-            self.root = try self.joinWithBoundary(left_joined, split_result.right);
-
-            self.version += 1;
+            const left_joined = try self.joinWithBoundary(split_result.left, insert_root, split_leaf_fn);
+            self.root = try self.joinWithBoundary(left_joined, split_result.right, split_leaf_fn);
             try self.applyEndsInvariant();
         }
 
@@ -1019,17 +960,63 @@ pub fn Rope(comptime T: type) type {
             var leaf_index: u32 = 0;
             while (true) switch (node.*) {
                 .branch => |*b| {
-                    const left_weight = b.left_metrics.weight();
+                    const left_weight = b.left.metrics().weight();
                     if (weight < start_weight + left_weight) {
                         node = b.left;
                     } else {
                         node = b.right;
                         start_weight += left_weight;
-                        leaf_index += b.left_metrics.count;
+                        leaf_index += b.left.metrics().count;
                     }
                 },
                 .leaf => |*l| return .{ .leaf = &l.data, .start_weight = start_weight, .leaf_index = leaf_index },
             };
+        }
+
+        pub const Position = struct { leaf_index: u32, weight: u32 };
+
+        /// Position of the leaf that holds occurrence `n` of the leaves that `counted` counts,
+        /// found by one descent; null when there are not that many.
+        pub fn seekCount(self: *const Self, comptime counted: fn (*const Metrics) u32, n: u32) ?Position {
+            if (n >= counted(&self.root.metrics())) return null;
+            text_work.add(.line_seeks, 1);
+            var node = self.root;
+            var rest = n;
+            var position: Position = .{ .leaf_index = 0, .weight = 0 };
+            while (node.* == .branch) {
+                text_work.add(.line_seek_nodes, 1);
+                const left = node.branch.left.metrics();
+                if (rest < counted(&left)) {
+                    node = node.branch.left;
+                } else {
+                    rest -= counted(&left);
+                    position.leaf_index += left.count;
+                    position.weight += left.weight();
+                    node = node.branch.right;
+                }
+            }
+            return position;
+        }
+
+        /// Number of leaves that `counted` counts and that start at or before `target`, measured
+        /// along `key`, found by one descent. Leaves without key at `target` count.
+        pub fn countThrough(self: *const Self, comptime key: fn (*const Metrics) u32, comptime counted: fn (*const Metrics) u32, target: u32) u32 {
+            text_work.add(.line_seeks, 1);
+            var node = self.root;
+            var rest = target;
+            var total: u32 = 0;
+            while (node.* == .branch) {
+                text_work.add(.line_seek_nodes, 1);
+                const left = node.branch.left.metrics();
+                if (rest < key(&left)) {
+                    node = node.branch.left;
+                } else {
+                    rest -= key(&left);
+                    total += counted(&left);
+                    node = node.branch.right;
+                }
+            }
+            return total + counted(&node.metrics());
         }
 
         /// Undo/Redo operations
@@ -1108,7 +1095,6 @@ pub fn Rope(comptime T: type) type {
             self.curr_history = h;
             self.root = h.root;
             self.metrics_generation = h.metrics_generation;
-            self.version += 1;
             self.push_redo(r);
             if (self.undo_depth > 0) self.undo_depth -= 1;
             return h.meta;
@@ -1122,7 +1108,6 @@ pub fn Rope(comptime T: type) type {
             self.curr_history = h;
             self.root = h.root;
             self.metrics_generation = h.metrics_generation;
-            self.version += 1;
             self.push_undo(u);
             return h.meta;
         }
@@ -1158,7 +1143,6 @@ pub fn Rope(comptime T: type) type {
             try empty.applyEndsInvariant();
             if (meta) |value| try self.store_undo(value);
             self.root = empty.root;
-            self.version += 1;
         }
 
         /// Replace the rope content with new items, using same structure as from_slice
@@ -1170,91 +1154,6 @@ pub fn Rope(comptime T: type) type {
             }
 
             self.root = try rootFromSlice(self.allocator, items);
-            self.version += 1;
-        }
-
-        fn rebuildMarkerCache(self: *Self) !void {
-            if (!marker_enabled) return;
-
-            self.marker_cache.clear();
-
-            const RebuildContext = struct {
-                cache: *MarkerCache,
-                current_leaf: u32 = 0,
-                current_weight: u32 = 0,
-
-                fn walker(ctx: *anyopaque, data: *const T, idx: u32) Node.WalkerResult {
-                    _ = idx;
-                    const context = @as(*@This(), @ptrCast(@alignCast(ctx)));
-
-                    const tag = std.meta.activeTag(data.*);
-
-                    var is_marker = false;
-                    inline for (T.MarkerTypes) |mt| {
-                        if (tag == mt) {
-                            is_marker = true;
-                            break;
-                        }
-                    }
-
-                    const leaf_weight = if (@hasDecl(T, "Metrics")) blk: {
-                        if (@hasDecl(T, "measure")) {
-                            const metrics = data.measure();
-                            break :blk if (@hasDecl(T.Metrics, "weight")) metrics.weight() else 1;
-                        }
-                        break :blk 1;
-                    } else 1;
-
-                    if (is_marker) {
-                        const gop = context.cache.positions.getOrPut(tag) catch |e| {
-                            return .{ .keep_walking = false, .err = e };
-                        };
-                        if (!gop.found_existing) {
-                            gop.value_ptr.* = .empty;
-                        }
-
-                        gop.value_ptr.append(context.cache.allocator, .{
-                            .leaf_index = context.current_leaf,
-                            .global_weight = context.current_weight,
-                        }) catch |e| {
-                            return .{ .keep_walking = false, .err = e };
-                        };
-                    }
-
-                    context.current_leaf += 1;
-                    context.current_weight += leaf_weight;
-                    return .{};
-                }
-            };
-
-            var ctx = RebuildContext{ .cache = &self.marker_cache };
-            try self.walk(&ctx, RebuildContext.walker);
-
-            self.marker_cache.version = self.version;
-        }
-
-        pub fn markerCount(self: *Self, tag: std.meta.Tag(T)) u32 {
-            if (!marker_enabled) return 0;
-
-            if (self.marker_cache.version != self.version) {
-                self.rebuildMarkerCache() catch return 0;
-            }
-
-            const list = self.marker_cache.positions.get(tag) orelse return 0;
-            return @intCast(list.items.len);
-        }
-
-        pub fn getMarker(self: *Self, tag: std.meta.Tag(T), occurrence: u32) ?MarkerPosition {
-            if (!marker_enabled) return null;
-            if (builtin.is_test) self.marker_lookups += 1;
-
-            if (self.marker_cache.version != self.version) {
-                self.rebuildMarkerCache() catch return null;
-            }
-
-            const list = self.marker_cache.positions.get(tag) orelse return null;
-            if (occurrence >= list.items.len) return null;
-            return list.items[occurrence];
         }
     };
 }

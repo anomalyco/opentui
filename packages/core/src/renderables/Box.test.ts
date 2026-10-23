@@ -175,7 +175,7 @@ describe("BoxRenderable - borderStyle validation", () => {
 })
 
 describe("BoxRenderable - border titles (top and bottom)", () => {
-  test("renders top and bottom titles on their respective borders", async () => {
+  test("renders top and bottom titles on their respective borders and rejects titles over the byte limit", async () => {
     const box = new BoxRenderable(testRenderer, {
       id: "border-title-box",
       border: true,
@@ -186,6 +186,24 @@ describe("BoxRenderable - border titles (top and bottom)", () => {
       bottomTitle: "Bot",
       bottomTitleAlignment: "right",
     })
+    const assign = (title: "title" | "bottomTitle", text: string) => {
+      try {
+        box[title] = text
+      } catch (error) {
+        return String(error)
+      }
+    }
+    const limit = "RangeError: Buffer text exceeds the native byte limit"
+    // A 3-byte character straddles the 65,536-byte limit.
+    expect([assign("title", "a".repeat(65_537)), assign("bottomTitle", "世".repeat(21_846))]).toEqual([limit, limit])
+    expect([box.title, box.bottomTitle]).toEqual(["Top", "Bot"])
+    for (const [title, text] of [
+      ["title", "a".repeat(65_536)],
+      ["bottomTitle", "世".repeat(21_845) + "a"],
+      ["title", "Top"],
+      ["bottomTitle", "Bot"],
+    ] as const)
+      expect(assign(title, text)).toBeUndefined()
 
     testRenderer.root.add(box)
     await renderOnce()

@@ -8,6 +8,12 @@ import { createTestRenderer, type TestRenderer, type TestRendererOptions } from 
 import { RecordingWriteStream } from "../testing/test-streams.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { RenderContext } from "../types.js"
+import { env } from "../lib/env.js"
+
+// OTUI_NATIVE_INPUT_PARSER runs this suite through the native parser; a few expectations
+// follow its intentional behavior changes (packages/native/docs/input-parser.md §14.3).
+const nativeInput = env.OTUI_NATIVE_INPUT_PARSER
+const legacyInputTest = nativeInput ? test.skip : test
 
 let currentRenderer: TestRenderer
 let kittyRenderer: TestRenderer
@@ -669,29 +675,27 @@ test("Kitty keyboard ctrl+a via keyInput events", async () => {
   })
 })
 
-test("Kitty keyboard Ctrl+C with alternate base layout still exits the renderer", async () => {
+// Kitty adds the base-layout key `c`: Korean Ctrl+ㅊ is Ctrl+C, Dvorak Ctrl+J (QWERTY C key) is not.
+test.each([
+  ["ㅊ", "\x1b[12618::99;5u", true],
+  ["j", "\x1b[106::99;5u", false],
+])("Kitty keyboard Ctrl+%s with base layout c exits the renderer: %j", async (name, sequence, exits) => {
   const clock = new ManualClock()
   const { renderer } = await createTestRenderer({ kittyKeyboard: true, clock })
 
   try {
-    // Simulate Ctrl+C from a non-Latin IME. Kitty reports the produced
-    // character (`ㅊ`) plus the base-layout key (`c`).
     const keypress = new Promise<KeyEvent>((resolve) => {
       renderer.keyInput.once("keypress", resolve)
     })
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[12618::99;5u"))
+    renderer.stdin.emit("data", Buffer.from(sequence))
     clock.advance(20)
 
     const event = await keypress
-    expect(event).toMatchObject({
-      name: "ㅊ",
-      ctrl: true,
-      baseCode: 99,
-    })
+    expect(event).toMatchObject({ name, ctrl: true, baseCode: 99 })
 
     await new Promise<void>((resolve) => process.nextTick(resolve))
-    expect(renderer.isDestroyed).toBe(true)
+    expect(renderer.isDestroyed).toBe(exits)
   } finally {
     if (!renderer.isDestroyed) {
       renderer.destroy()
@@ -1275,7 +1279,8 @@ test("high byte UTF-8 lead byte does not stall indefinitely", async () => {
   })
 })
 
-test("empty input via keyInput events", async () => {
+// The native parser reports nothing for zero bytes.
+legacyInputTest("empty input via keyInput events", async () => {
   const result = await triggerInput("")
   expect(result).toMatchObject({
     eventType: "press",
@@ -2385,8 +2390,9 @@ describe("stdin routing", () => {
       renderer.stdin.emit("data", Buffer.from("\x1b[<32;2;2M"))
       advanceClock(clock)
 
-      expect(moveCount).toBe(1)
-      expect(dragCount).toBe(0)
+      // Native decoding is stateless: the wire's held-button bits make this a drag.
+      expect(moveCount).toBe(nativeInput ? 0 : 1)
+      expect(dragCount).toBe(nativeInput ? 1 : 0)
     } finally {
       renderer.destroy()
     }
@@ -2424,35 +2430,41 @@ describe("stdin routing", () => {
       renderer.stdin.emit("data", Buffer.from("\x1b[<32;2;2M"))
       advanceClock(clock)
 
-      expect(moveCount).toBe(1)
-      expect(dragCount).toBe(0)
+      expect(moveCount).toBe(nativeInput ? 0 : 1)
+      expect(dragCount).toBe(nativeInput ? 1 : 0)
     } finally {
       renderer.destroy()
     }
   })
 
-  test("suspend resets parser state before resume", async () => {
-    const { renderer, clock } = await createRoutingRenderer()
-
-    try {
-      await renderer.setupTerminal()
-      const events: Array<{ name: string; meta: boolean }> = []
-      renderer.keyInput.on("keypress", (event) => {
-        events.push({ name: event.name, meta: event.meta })
-      })
-
-      renderer.stdin.emit("data", Buffer.from("\x1b["))
-      advanceClock(clock, 5)
-
-      await renderer.suspend()
-      await renderer.resume()
-
-      renderer.stdin.emit("data", Buffer.from("x"))
-      advanceClock(clock)
-
-      expect(events).toEqual([{ name: "x", meta: false }])
-    } finally {
-      renderer.destroy()
+  test("input pending at suspension does not swallow typing after resume", async () => {
+    // While suspended, a child process can read the rest of a paste or mouse report. The
+    // reply prefix defers during the capability probe, and suspension's protocol update ends it.
+    for (const experimental_nativeInput of [false, true]) {
+      for (const pending of ["\x1b[", "\x1b[200~first half", "\x1b[<35;10", "\x1b\x1b[?62;"]) {
+        const { renderer, clock } = await createRoutingRenderer({ experimental_nativeInput })
+        try {
+          await renderer.setupTerminal()
+          const names: string[] = []
+          renderer.keyInput.on("keypress", (event) => names.push(event.name))
+          // The pixel query is answered, so no reply is awaited across suspension.
+          renderer.stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+          renderer.stdin.emit("data", Buffer.from(pending))
+          advanceClock(clock, 25)
+          await renderer.suspend()
+          await renderer.resume()
+          names.length = 0
+          renderer.stdin.emit("data", Buffer.from("42x"))
+          advanceClock(clock)
+          expect({ experimental_nativeInput, pending, names }).toEqual({
+            experimental_nativeInput,
+            pending,
+            names: ["4", "2", "x"],
+          })
+        } finally {
+          renderer.destroy()
+        }
+      }
     }
   })
 

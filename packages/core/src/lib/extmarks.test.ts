@@ -1465,58 +1465,25 @@ Press ESC to return to main menu.`
   })
 
   describe("deleteLine() Operations", () => {
-    it("should adjust extmark positions after deleteLine before extmark", async () => {
-      await setup("Line1\nLine2\nLine3")
-
-      const id = extmarks.create({
-        start: 12,
-        end: 17,
-      })
-
+    // Offsets count display cells. Wide text and controls take more cells than string units, and the last line goes
+    // with the line break before it.
+    it.each<[string, number, number, number, [number, number] | null, string]>([
+      ["Line1\nLine2\nLine3", 3, 12, 17, [6, 11], "Line2\nLine3"],
+      ["Line1\nLine2\nLine3", 8, 6, 11, null, "Line1\nLine3"],
+      ["Line1\nLine2\nLine3", 8, 0, 5, [0, 5], "Line1\nLine3"],
+      ["日日日\nxyz", 0, 7, 10, [0, 3], "xyz"],
+      ["\f\f\f\nxyz", 0, 7, 10, [0, 3], "xyz"],
+      ["ab\ncd", 4, 0, 3, [0, 2], "ab"],
+      ["\f\f", 2, 0, 6, [0, 2], ""],
+    ])("deletes the line of %j at %d and moves [%d, %d) to %j", async (text, cursor, start, end, expected, rest) => {
+      await setup(text)
+      const id = extmarks.create({ start, end })
       textarea.focus()
-      textarea.cursorOffset = 3
-
+      textarea.cursorOffset = cursor
       textarea.deleteLine()
-
       const extmark = extmarks.get(id)
-      expect(extmark?.start).toBe(6)
-      expect(extmark?.end).toBe(11)
-      expect(textarea.plainText).toBe("Line2\nLine3")
-    })
-
-    it("should remove extmark when deleteLine on line containing it", async () => {
-      await setup("Line1\nLine2\nLine3")
-
-      const id = extmarks.create({
-        start: 6,
-        end: 11,
-      })
-
-      textarea.focus()
-      textarea.cursorOffset = 8
-
-      textarea.deleteLine()
-
-      expect(extmarks.get(id)).toBeNull()
-      expect(textarea.plainText).toBe("Line1\nLine3")
-    })
-
-    it("should not adjust extmark when deleteLine after", async () => {
-      await setup("Line1\nLine2\nLine3")
-
-      const id = extmarks.create({
-        start: 0,
-        end: 5,
-      })
-
-      textarea.focus()
-      textarea.cursorOffset = 8
-
-      textarea.deleteLine()
-
-      const extmark = extmarks.get(id)
-      expect(extmark?.start).toBe(0)
-      expect(extmark?.end).toBe(5)
+      expect(extmark && [extmark.start, extmark.end]).toEqual(expected)
+      expect(textarea.plainText).toBe(rest)
     })
   })
 

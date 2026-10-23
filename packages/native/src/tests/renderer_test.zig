@@ -754,46 +754,107 @@ test "renderer preserves wide grapheme when continuation and next cell colors ma
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    var test_renderer = try TestRenderer.create(std.testing.allocator, 6, 1, &pools.graphemes, &pools.links);
-    defer test_renderer.deinit();
-    try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM", "ghostty"));
-    try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM_VERSION", "1.3.1"));
+    // OpenTUI text and the host (Ghostty) agree on Unicode 17 widths: U+1F6D9 is unassigned there, and
+    // a consonant after U+1CF5 starts its own cell.
+    for ([_][]const u8{ "✅ X", "\u{1F6D9} X", "\u{1CF5}\u{0915} X" }) |text| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 6, 1, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM", "ghostty"));
+        try std.testing.expect(test_renderer.renderer.setTerminalEnvVar("TERM_PROGRAM_VERSION", "1.3.1"));
 
-    const text = "✅ X";
-    const foreground = ansi.rgbColor(255, 255, 255, 255);
-    const background = ansi.rgbColor(0, 0, 0, 255);
-    var next = test_renderer.renderer.getNextBuffer();
-    try next.drawText(text, 0, 0, foreground, background, 0);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+        const foreground = ansi.rgbColor(255, 255, 255, 255);
+        const background = ansi.rgbColor(0, 0, 0, 255);
+        var next = test_renderer.renderer.getNextBuffer();
+        try next.drawText(text, 0, 0, foreground, background, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
 
-    next = test_renderer.renderer.getNextBuffer();
-    try next.drawText(text, 0, 0, foreground, background, 0);
-    const colors = [_]buffer.RGBA{
-        ansi.rgbColor(200, 0, 0, 255),
-        ansi.rgbColor(0, 200, 0, 255),
-        ansi.rgbColor(0, 200, 0, 255),
-        ansi.rgbColor(0, 0, 200, 255),
-    };
-    for (colors, 0..) |color, x| {
-        var cell = next.get(@intCast(x), 0).?;
-        cell.fg = color;
-        next.setRaw(@intCast(x), 0, cell);
+        next = test_renderer.renderer.getNextBuffer();
+        try next.drawText(text, 0, 0, foreground, background, 0);
+        const colors = [_]buffer.RGBA{
+            ansi.rgbColor(200, 0, 0, 255),
+            ansi.rgbColor(0, 200, 0, 255),
+            ansi.rgbColor(0, 200, 0, 255),
+            ansi.rgbColor(0, 0, 200, 255),
+        };
+        for (colors, 0..) |color, x| {
+            var cell = next.get(@intCast(x), 0).?;
+            cell.fg = color;
+            next.setRaw(@intCast(x), 0, cell);
+        }
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+
+        var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{
+            .cols = 6,
+            .rows = 1,
+        });
+        defer terminal.deinit(std.testing.allocator);
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice("\x1b[?2027h");
+        stream.nextSlice(test_renderer.memory.bytes.items);
+
+        const screen = try terminal.plainString(std.testing.allocator);
+        defer std.testing.allocator.free(screen);
+        try std.testing.expectEqualStrings(text, std.mem.trimEnd(u8, screen, " "));
     }
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+}
 
-    var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{
-        .cols = 6,
-        .rows = 1,
-    });
-    defer terminal.deinit(std.testing.allocator);
-    var stream = terminal.vtStream();
-    defer stream.deinit();
-    stream.nextSlice("\x1b[?2027h");
-    stream.nextSlice(test_renderer.memory.bytes.items);
+test "renderer updates text after a default-ignorable code point where Ghostty shows it" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    // A left-to-right mark after a base, and a tag character at the line start: each takes no cell.
+    const rows = [_]struct { []const u8, []const u8 }{ .{ "a\u{200e}", "abcdeZ" }, .{ "\u{e0041}", "bcdeZ" } };
+    for (rows) |row| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 1, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        for ([_][]const u8{ "bcdef", "bcdeZ" }, [_]bool{ true, false }) |tail, force| {
+            var line: [16]u8 = undefined;
+            try test_renderer.renderer.getNextBuffer().drawText(try std.fmt.bufPrint(&line, "{s}{s}", .{ row[0], tail }), 0, 0, white, black, 0);
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(force));
+        }
+        var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 8, .rows = 1 });
+        defer terminal.deinit(std.testing.allocator);
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice(test_renderer.memory.bytes.items);
+        const screen = try terminal.plainString(std.testing.allocator);
+        defer std.testing.allocator.free(screen);
+        try std.testing.expectEqualStrings(row[1], std.mem.trimEnd(u8, screen, " "));
+    }
+}
 
-    const screen = try terminal.plainString(std.testing.allocator);
-    defer std.testing.allocator.free(screen);
-    try std.testing.expectEqualStrings(text, std.mem.trimEnd(u8, screen, " "));
+test "renderer closes each attributed run before the next run starts" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    const runs = [_]struct { []const u8, u32 }{ .{ "A", 2 }, .{ "A", 3 }, .{ "界", 2 } };
+
+    // Each base attribute; a run that ends before the last column, in it, or with a wide cell
+    // that fills it; followed by a run on the next row or after a row that row equality skips;
+    // in a diff frame or a forced frame.
+    for (0..8) |bit| for (runs) |run| for ([_]u32{ 1, 2 }) |follower_y| for ([_]bool{ false, true }) |force| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+        const next = test_renderer.renderer.getNextBuffer();
+        try next.drawText(run[0], run[1], 0, white, black, @as(u32, 1) << @intCast(bit));
+        try next.drawText("b", 0, follower_y, white, black, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(force));
+
+        var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 3 });
+        defer terminal.deinit(std.testing.allocator);
+        var stream = terminal.vtStream();
+        defer stream.deinit();
+        stream.nextSlice(test_renderer.memory.bytes.items);
+        const pages = &terminal.screens.active.pages;
+        try std.testing.expect(@as(u16, @bitCast(pages.getCell(.{ .active = .{ .x = @intCast(run[1]) } }).?.style().flags)) != 0);
+        const cell = pages.getCell(.{ .active = .{ .y = follower_y } }).?;
+        try std.testing.expectEqual(@as(u21, 'b'), cell.cell.codepoint());
+        try std.testing.expectEqual(@as(u16, 0), @as(u16, @bitCast(cell.style().flags)));
+    };
 }
 
 fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
@@ -842,14 +903,18 @@ fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
     }
 }
 
-// The escape that drops every placement of a live Kitty image and keeps its
+const kitty_run_id_min: u32 = 0x8000_0000;
+
+// The escape that drops one placement of a live Kitty image and keeps its
 // data. Live image ids are the renderer's salt plus the buffer placement id.
-fn expectKittyPlacementsDeleted(test_renderer: *const TestRenderer, output: []const u8, placement_id: u32) !void {
-    var expected: [64]u8 = undefined;
-    const escape = try std.fmt.bufPrint(&expected, "\x1b_Ga=d,d=i,i={d},q=2\x1b\\", .{
-        test_renderer.renderer.imageIdSalt + placement_id,
-    });
+// An image-wide `d=i` must not appear: iTerm2 also frees the image for it.
+fn expectKittyPlacementDeleted(test_renderer: *const TestRenderer, output: []const u8, placement_id: u32, kitty_placement: u32) !void {
+    const image_id = test_renderer.renderer.imageIdSalt + placement_id;
+    var expected: [80]u8 = undefined;
+    const escape = try std.fmt.bufPrint(&expected, "\x1b_Ga=d,d=i,i={d},p={d},q=2\x1b\\", .{ image_id, kitty_placement });
     try std.testing.expect(std.mem.find(u8, output, escape) != null);
+    const image_wide = try std.fmt.bufPrint(&expected, "\x1b_Ga=d,d=i,i={d},q=2\x1b\\", .{image_id});
+    try std.testing.expect(std.mem.find(u8, output, image_wide) == null);
 }
 
 test "renderer covers Kitty cells without hiding the rest of the image" {
@@ -874,7 +939,7 @@ test "renderer covers Kitty cells without hiding the rest of the image" {
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, covered, "\x1b_Ga=t") == null);
-    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
+    try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
     try std.testing.expect(std.mem.find(u8, covered, "\x1b[1;2H") != null);
     try std.testing.expect(std.mem.find(u8, covered, "c=1,r=1,x=1,y=0,w=1,h=1,C=1,z=-1073741823") != null);
     try std.testing.expect(std.mem.find(u8, covered, "c=2,r=1") == null);
@@ -890,7 +955,7 @@ test "renderer covers Kitty cells without hiding the rest of the image" {
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     const restored = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, restored, "\x1b_Ga=t") == null);
-    try expectKittyPlacementsDeleted(&test_renderer, restored, 1);
+    try expectKittyPlacementDeleted(&test_renderer, restored, 1, kitty_run_id_min);
     try std.testing.expect(std.mem.find(u8, restored, "c=2,r=1,x=0,y=0,w=2,h=1,C=1,z=-1073741823") != null);
 }
 
@@ -912,9 +977,34 @@ test "renderer deletes a fully covered Kitty placement" {
     next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
-    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
+    try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
     try std.testing.expect(std.mem.find(u8, covered, "a=p") == null);
     try std.testing.expect(std.mem.find(u8, covered, "\x1b_Ga=t") == null);
+}
+
+test "renderer moves a Kitty placement without an image-wide delete" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 3, 2, &pools.graphemes, &pools.links);
+    defer test_renderer.deinit();
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer value.deinit();
+    const image_handle: u32 = 1;
+
+    var next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+
+    // Scrolling moves the placement. The image data stays on the terminal, so
+    // only the old placement is deleted before the put at the new position.
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const moved = test_renderer.memory.lastWrite();
+    try expectKittyPlacementDeleted(&test_renderer, moved, 1, 1);
+    try std.testing.expect(std.mem.find(u8, moved, "\x1b_Ga=t") == null);
+    try std.testing.expect(std.mem.find(u8, moved, "\x1b[2;2H") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, moved, "a=p"));
 }
 
 test "renderer keeps a Kitty image whole under an overlapping Kitty image" {
@@ -950,8 +1040,8 @@ test "renderer keeps a Kitty image whole under an overlapping Kitty image" {
     try next.drawText("X", 1, 0, .{ 255, 255, 255, 255 }, null, 0);
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
-    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
-    try expectKittyPlacementsDeleted(&test_renderer, covered, 2);
+    try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
+    try expectKittyPlacementDeleted(&test_renderer, covered, 2, 2);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, covered, "a=p"));
     try std.testing.expect(std.mem.find(u8, covered, ",p=2147483648,c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1073741823") != null);
 }
@@ -979,7 +1069,7 @@ test "renderer merges uncovered Kitty rows into one placement" {
     next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
-    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
+    try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, covered, "a=p"));
     try std.testing.expect(std.mem.find(u8, covered, ",p=2147483648,c=1,r=1,x=1,y=0,w=1,h=1,C=1,z=-1073741823") != null);
     try std.testing.expect(std.mem.find(u8, covered, ",p=2147483649,c=2,r=2,x=0,y=1,w=2,h=2,C=1,z=-1073741823") != null);
@@ -988,7 +1078,8 @@ test "renderer merges uncovered Kitty rows into one placement" {
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 3, 0, 0, 0, 0, 2, 3, .kitty));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     const restored = test_renderer.memory.lastWrite();
-    try expectKittyPlacementsDeleted(&test_renderer, restored, 1);
+    try expectKittyPlacementDeleted(&test_renderer, restored, 1, kitty_run_id_min);
+    try expectKittyPlacementDeleted(&test_renderer, restored, 1, kitty_run_id_min + 1);
     try std.testing.expect(std.mem.find(u8, restored, ",p=1,c=2,r=3,x=0,y=0,w=2,h=3,C=1,z=-1073741823") != null);
 }
 
@@ -1040,7 +1131,7 @@ test "renderer deletes committed Kitty runs after a failed frame" {
     next.fillRect(1, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     const recovered = test_renderer.memory.lastWrite();
-    try expectKittyPlacementsDeleted(&test_renderer, recovered, 1);
+    try expectKittyPlacementDeleted(&test_renderer, recovered, 1, kitty_run_id_min);
     try std.testing.expect(std.mem.find(u8, recovered, "\x1b_Ga=t") == null);
     try std.testing.expect(std.mem.find(u8, recovered, ",p=2147483648,c=1,r=1,x=0,y=0,w=1,h=1") != null);
 }
@@ -2431,7 +2522,7 @@ test "renderer - indexed snapshots fall back to rgb and explicit bg default rese
     try std.testing.expect(std.mem.find(u8, output, "\x1b[49m") != null);
 }
 
-test "renderer - rgb colors fall back to ANSI256 mapping when rgb is unavailable" {
+test "renderer - rgb colors fall back to ANSI256 mapping from auto remote forwarded TERM" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -2445,8 +2536,9 @@ test "renderer - rgb colors fall back to ANSI256 mapping when rgb is unavailable
     defer test_cli_renderer.deinit();
     const cli_renderer = test_cli_renderer.renderer;
 
-    cli_renderer.terminal.caps.rgb = false;
-    cli_renderer.terminal.caps.ansi256 = true;
+    cli_renderer.terminal.opts.remote_mode = .auto;
+    try cli_renderer.terminal.setHostEnvVar(std.testing.allocator, "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
+    try cli_renderer.terminal.setHostEnvVar(std.testing.allocator, "TERM", "screen-256color");
 
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, ansi.rgbaFromFloats(0.95, 0.1, 0.1, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 0);
@@ -2736,71 +2828,51 @@ test "renderer - explicit_cursor_positioning with CJK characters" {
 }
 
 test "renderer - commitSplitFooterSnapshot writes append before footer repaint in one output" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
+    // Terminals ignore a scroll region of fewer than two rows, so a pane of one row or none sets 1;2r too.
+    for ([_]u32{ 2, 1, 0 }) |pinned| {
+        var pools = TestPools.init(std.testing.allocator);
+        defer pools.deinit();
 
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        3,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
+        var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 12, 3, &pools.graphemes, &pools.links);
+        defer test_cli_renderer.deinit();
+        const cli_renderer = test_cli_renderer.renderer;
 
-    _ = cli_renderer.resetSplitScrollback(2, 2);
+        _ = cli_renderer.resetSplitScrollback(pinned, pinned);
 
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
+        const next_buffer = cli_renderer.getNextBuffer();
+        const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+        const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+        try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
 
-    var snapshot = try OptimizedBuffer.init(
-        std.testing.allocator,
-        11,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode, .respectAlpha = false },
-    );
-    defer snapshot.deinit();
+        var snapshot = try OptimizedBuffer.init(
+            std.testing.allocator,
+            11,
+            1,
+            .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode, .respectAlpha = false },
+        );
+        defer snapshot.deinit();
 
-    snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 32);
-    try snapshot.drawText("append-line", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
+        snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 32);
+        try snapshot.drawText("append-line", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    const appended = "append-line";
-    // This test documents the critical ordering contract:
-    // 1) append payload is emitted in the same sync frame as repaint
-    // 2) DECSTBM is active only during append when pinned
-    // 3) footer repaint cursor move happens after append payload
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 11, false, true, 2, false, true, true);
+        // This test documents the critical ordering contract:
+        // 1) append payload is emitted in the same sync frame as repaint
+        // 2) DECSTBM is active only during append when pinned
+        // 3) footer repaint cursor move happens after append payload
+        _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 11, false, true, pinned, false, true, true);
 
-    const output = test_cli_renderer.lastOutput();
-    const append_index = std.mem.find(u8, output, appended);
-    const scroll_region_set_index = std.mem.find(u8, output, "\x1b[1;2r");
-    const scroll_region_reset_index = std.mem.find(u8, output, "\x1b[r");
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-    const footer_move_after_sync = if (sync_index) |sync_start|
-        std.mem.find(u8, output[sync_start + ansi.ANSI.syncSet.len ..], "\x1b[3;1H")
-    else
-        null;
+        const output = test_cli_renderer.lastOutput();
+        const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet) orelse return error.TestUnexpectedResult;
+        const region_index = std.mem.find(u8, output, "\x1b[1;2r") orelse return error.TestUnexpectedResult;
+        const append_index = std.mem.find(u8, output, "append-line") orelse return error.TestUnexpectedResult;
+        const reset_index = std.mem.find(u8, output, "\x1b[r") orelse return error.TestUnexpectedResult;
+        var footer_move: [16]u8 = undefined;
+        const footer_move_text = try std.fmt.bufPrint(&footer_move, "\x1b[{d};1H", .{pinned + 1});
 
-    try std.testing.expect(append_index != null);
-    try std.testing.expect(scroll_region_set_index != null);
-    try std.testing.expect(scroll_region_reset_index != null);
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(footer_move_after_sync != null);
-    try std.testing.expect(sync_index.? < append_index.?);
-    try std.testing.expect(scroll_region_set_index.? < append_index.?);
-    try std.testing.expect(append_index.? < scroll_region_reset_index.?);
-
-    var sync_count: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.find(u8, output[pos..], ansi.ANSI.syncSet)) |found| {
-        sync_count += 1;
-        pos += found + ansi.ANSI.syncSet.len;
+        try std.testing.expect(sync_index < region_index and region_index < append_index and append_index < reset_index);
+        try std.testing.expect(std.mem.find(u8, output[reset_index..], footer_move_text) != null);
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
     }
-
-    try std.testing.expectEqual(@as(usize, 1), sync_count);
 }
 
 test "renderer - pinned split scrollback repaints live native images after append" {
@@ -3592,8 +3664,7 @@ test "renderer - commitSplitFooterSnapshot does not emit NUL padding for short r
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.findScalar(u8, output, 0) == null);
-    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.eraseToEndOfLine) != null);
-    try std.testing.expect(std.mem.find(u8, output, "\r\n\x1b[0m\x1b[K") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[0m\r\n\x1b[K") != null);
 }
 
 test "renderer - batched split commits share single sync frame" {

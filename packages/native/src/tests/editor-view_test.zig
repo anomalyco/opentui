@@ -1,4 +1,5 @@
 const std = @import("std");
+const iter_mod = @import("../text-buffer-iterators.zig");
 const TestPools = @import("test-pools.zig").TestPools;
 const editor_view = @import("../editor-view.zig");
 const edit_buffer = @import("../edit-buffer.zig");
@@ -9,6 +10,8 @@ const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const owned_styled = @import("owned-styled-text.zig");
+const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
 
 const EditorView = editor_view.EditorView;
 const EditBuffer = edit_buffer.EditBuffer;
@@ -135,7 +138,6 @@ test "EditorView - rejected text replacement preserves selection and viewport" {
         try std.testing.expectError(error.OutOfMemory, result);
         try std.testing.expect(failing.has_induced_failure);
         try std.testing.expectEqual(before.root, eb.tb.rope().root);
-        try std.testing.expectEqual(before.version, eb.tb.rope().version);
         try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
         try std.testing.expectEqual(before.redo_history, eb.tb.rope().redo_history);
         try std.testing.expectEqual(before.curr_history, eb.tb.rope().curr_history);
@@ -239,60 +241,67 @@ test "EditorView - VisualCursor with word wrapping" {
     _ = ev.getVisualCursor();
 }
 
-test "EditorView - moveUpVisual with wrapping" {
+test "EditorView - vertical moves keep the desired column and land on cursor-unit starts" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("This is a very long line that will definitely wrap multiple times at twenty characters");
-
-    try eb.setCursor(0, 50);
-
-    const vcursor_before = ev.getVisualCursor();
-    const visual_row_before = vcursor_before.visual_row;
-
-    ev.moveUpVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-
-    try std.testing.expectEqual(visual_row_before - 1, vcursor_after.visual_row);
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_after.logical_row);
-}
-
-test "EditorView - moveDownVisual with wrapping" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("This is a very long line that will definitely wrap multiple times at twenty characters");
-
-    try eb.setCursor(0, 0);
-
-    const vcursor_before = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 0), vcursor_before.visual_row);
-
-    ev.moveDownVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 1), vcursor_after.visual_row);
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_after.logical_row);
+    const long = "This is a very long line that will definitely wrap multiple times at twenty characters";
+    const empty_line = "Line with some text\n\nAnother line with text";
+    // From (0, 1) into the width-2 unit at the start of line 1, and back to column 1 on ASCII lines.
+    const wide = [_][2]u32{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 } };
+    const Case = struct { text: []const u8, wrap: text_buffer.WrapMode = .none, width: u32 = 20, placeholder: []const owned_styled.Part = &.{}, start: [2]u32, moves: []const u8, ends: []const [2]u32 };
+    // u/d move the EditBuffer, U/D move the EditorView, a digit scrolls a one-row viewport to that
+    // line with moveCursor, x types "x". Each end is the logical (row, col) after the move.
+    const cases = [_]Case{
+        .{ .text = long, .wrap = .char, .start = .{ 0, 50 }, .moves = "UD", .ends = &.{ .{ 0, 30 }, .{ 0, 50 } } },
+        .{ .text = long, .wrap = .char, .start = .{ 0, 0 }, .moves = "D", .ends = &.{.{ 0, 20 }} },
+        .{ .text = "Short line", .wrap = .char, .start = .{ 0, 0 }, .moves = "Uu", .ends = &.{ .{ 0, 0 }, .{ 0, 0 } } },
+        .{ .text = "Short line\nSecond line", .wrap = .char, .start = .{ 1, 0 }, .moves = "Dd", .ends = &.{ .{ 1, 0 }, .{ 1, 0 } } },
+        .{ .text = utils.repeat(u8, "1234567890", 5), .wrap = .char, .start = .{ 0, 15 }, .moves = "DDU", .ends = &.{ .{ 0, 35 }, .{ 0, 50 }, .{ 0, 35 } } },
+        .{ .text = empty_line, .placeholder = &.{.{ .text = "hint\nhint" }}, .start = .{ 0, 10 }, .moves = "DDUU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
+        .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "dduudU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 }, .{ 1, 0 }, .{ 0, 0 } } },
+        // 001: a move into a width-2 unit lands on its start; the desired column stays.
+        .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
+        .{ .text = "abc\n\tx\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
+        .{ .text = "abcd\n👍🏽👍🏽\nabcd", .start = .{ 0, 3 }, .moves = "ddUU", .ends = &.{ .{ 1, 2 }, .{ 2, 3 }, .{ 1, 2 }, .{ 0, 3 } } },
+        .{ .text = "abc\n👨‍👩‍👧x\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
+        .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "1u1U1D12", .ends = &.{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 2, 1 } } },
+        // #1289: cell boundaries 0, 2, 3, 5, ... above 0, 2, 4, ...
+        .{ .text = "的[代码签名政策](\n因此签名批准者角色", .width = 40, .start = .{ 0, 5 }, .moves = "DUdu", .ends = &.{ .{ 1, 4 }, .{ 0, 5 }, .{ 1, 4 }, .{ 0, 5 } } },
+        .{ .text = "的[代码因此签名政策", .wrap = .char, .width = 8, .start = .{ 0, 5 }, .moves = "DU", .ends = &.{ .{ 0, 11 }, .{ 0, 5 } } },
+        // Down from the end of a line onto a soft-wrapped line steps back before the wrap.
+        .{ .text = "0123456789\nquick brown fox", .wrap = .word, .width = 10, .start = .{ 0, 10 }, .moves = "D", .ends = &.{.{ 1, 5 }} },
+        // 172: the placeholder's visual rows are not rows of the empty buffer.
+        .{ .text = "", .placeholder = &.{.{ .text = "type here\nsecond line" }}, .start = .{ 0, 0 }, .moves = "UDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
+        .{ .text = "", .wrap = .char, .width = 10, .placeholder = &.{.{ .text = "a placeholder wider than the box" }}, .start = .{ 0, 0 }, .moves = "DDUx", .ends = &.{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 }, .{ 0, 1 } } },
+    };
+    for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
+        defer ev.deinit();
+        for (cases) |case| {
+            ev.setViewport(.{ .x = 0, .y = 0, .width = case.width, .height = 10 }, false);
+            ev.setWrapMode(case.wrap);
+            try eb.setText(case.text);
+            try eb.setCursor(case.start[0], case.start[1]);
+            try owned_styled.setPlaceholder(ev, case.placeholder);
+            for (case.moves, case.ends) |move, end| {
+                errdefer std.debug.print("{t} {s}: {s}, move {c}\n", .{ method, case.text, case.moves, move });
+                switch (move) {
+                    'u' => eb.moveUp(),
+                    'd' => eb.moveDown(),
+                    'U' => ev.moveUpVisual(),
+                    'D' => ev.moveDownVisual(),
+                    'x' => try eb.insertText("x"),
+                    '0'...'9' => ev.setViewport(.{ .x = 0, .y = move - '0', .width = case.width, .height = 1 }, true),
+                    else => unreachable,
+                }
+                const cursor = ev.getPrimaryCursor();
+                try std.testing.expectEqual(end, [2]u32{ cursor.row, cursor.col });
+                try std.testing.expectEqual(ev.logicalToVisualCursor(cursor.row, cursor.col).offset, cursor.offset);
+            }
+        }
+    }
 }
 
 test "EditorView - visualToLogicalCursor conversion" {
@@ -353,34 +362,6 @@ test "EditorView - moveUpVisual resolves wrapped boundary with canonical convers
     try std.testing.expectEqual(@as(u32, 5), cursor.visual_col);
 }
 
-test "EditorView - moveDownVisual resolves wrapped boundary with canonical conversion" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 10, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.word);
-
-    try eb.setText("0123456789\nquick brown fox");
-
-    const line_info = ev.getCachedLineInfo();
-    try std.testing.expectEqualSlices(u32, &[_]u32{ 10, 6, 9 }, line_info.line_width_cols);
-
-    try eb.setCursor(0, 10);
-    var cursor = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 10), cursor.visual_col);
-
-    ev.moveDownVisual();
-    cursor = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 1), cursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 5), cursor.visual_col);
-}
-
 test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -428,76 +409,6 @@ test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
     defer opt_buffer.deinit();
     opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
     opt_buffer.drawEditorView(ev, 0, 0);
-}
-
-test "EditorView - moveUpVisual at top boundary" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-    try eb.setText("Short line");
-
-    try eb.setCursor(0, 0);
-
-    const before = ev.getPrimaryCursor();
-    ev.moveUpVisual();
-    const after = ev.getPrimaryCursor();
-
-    try std.testing.expectEqual(before.row, after.row);
-    try std.testing.expectEqual(before.col, after.col);
-}
-
-test "EditorView - moveDownVisual at bottom boundary" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-    try eb.setText("Short line\nSecond line");
-
-    try eb.setCursor(1, 0);
-
-    const before = ev.getPrimaryCursor();
-    ev.moveDownVisual();
-    const after = ev.getPrimaryCursor();
-
-    try std.testing.expectEqual(before.row, after.row);
-}
-
-test "EditorView - VisualCursor preserves desired column across wrapped lines" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("12345678901234567890123456789012345678901234567890");
-
-    try eb.setCursor(0, 15);
-
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    ev.moveUpVisual();
-
-    const vcursor = ev.getVisualCursor();
-
-    try std.testing.expect(vcursor.visual_col <= 20);
 }
 
 test "EditorView - VisualCursor with multiple logical lines and wrapping" {
@@ -670,66 +581,6 @@ test "EditorView - small viewport accepts empty buffers and zero dimensions" {
     }
 }
 
-test "EditorView - moveDownVisual across empty line preserves desired column" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.setText("Line with some text\n\nAnother line with text");
-
-    try eb.setCursor(0, 10);
-
-    const vcursor_before = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 10), vcursor_before.visual_col);
-
-    ev.moveDownVisual();
-
-    const vcursor_empty = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 1), vcursor_empty.logical_row);
-    try std.testing.expectEqual(@as(u32, 0), vcursor_empty.visual_col);
-
-    ev.moveDownVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 2), vcursor_after.logical_row);
-    try std.testing.expectEqual(@as(u32, 10), vcursor_after.visual_col);
-}
-
-test "EditorView - moveUpVisual across empty line preserves desired column" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.setText("Line with some text\n\nAnother line with text");
-
-    try eb.setCursor(2, 10);
-
-    const vcursor_before = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 10), vcursor_before.visual_col);
-
-    ev.moveUpVisual();
-
-    const vcursor_empty = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 1), vcursor_empty.logical_row);
-    try std.testing.expectEqual(@as(u32, 0), vcursor_empty.visual_col);
-
-    ev.moveUpVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 0), vcursor_after.logical_row);
-    try std.testing.expectEqual(@as(u32, 10), vcursor_after.visual_col);
-}
-
 test "EditorView - horizontal movement resets desired visual column" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -785,22 +636,14 @@ test "EditorView - inserting newlines maintains rope integrity" {
     const line_count_1 = eb.getTextBuffer().lineCount();
     try std.testing.expectEqual(@as(u32, 4), line_count_1);
 
-    if (rope_init.getMarker(.linestart, 2)) |m2| {
-        if (rope_init.getMarker(.linestart, 3)) |m3| {
-            try std.testing.expect(m2.global_weight != m3.global_weight);
-        }
-    }
+    try std.testing.expect(iter_mod.lineStart(rope_init, 2).?.weight != iter_mod.lineStart(rope_init, 3).?.weight);
 
     try eb.insertText("\n");
 
     const line_count_2 = eb.getTextBuffer().lineCount();
     try std.testing.expectEqual(@as(u32, 5), line_count_2);
 
-    if (rope_init.getMarker(.linestart, 3)) |m3| {
-        if (rope_init.getMarker(.linestart, 4)) |m4| {
-            try std.testing.expect(m3.global_weight != m4.global_weight);
-        }
-    }
+    try std.testing.expect(iter_mod.lineStart(rope_init, 3).?.weight != iter_mod.lineStart(rope_init, 4).?.weight);
 }
 
 test "EditorView - cursor positioning after wide grapheme" {
@@ -925,7 +768,6 @@ test "EditorView - cursor should be able to land after closing paren on line wit
         // Should not jump to next line until we've reached the end of the current line
         if (prev_row == 0 and cursor.row == 1) {
             // We jumped to the next line - check that we were at the end
-            const iter_mod = @import("../text-buffer-iterators.zig");
             const line_width = iter_mod.lineWidthAt(eb.getTextBuffer().rope(), 0);
             try std.testing.expectEqual(line_width, prev_col);
             break;
@@ -1635,7 +1477,7 @@ test "EditorView - placeholder with styled text" {
     try std.testing.expectEqual(@as(u32, 11), placeholder.getLength());
 }
 
-test "EditorView - placeholder renders to buffer when empty" {
+test "EditorView - placeholder renders to buffer when empty, with control notation" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -1645,10 +1487,10 @@ test "EditorView - placeholder renders to buffer when empty" {
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
     defer ev.deinit();
 
-    try owned_styled.setPlaceholder(ev, &.{.{
-        .text = "Type something...",
-        .fg = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1.0),
-    }});
+    try owned_styled.setPlaceholder(ev, &.{
+        .{ .text = "Type\x1b\u{85}", .fg = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1.0) },
+        .{ .text = " something...", .fg = ansi.rgbaFromFloats(0.9, 0.9, 0.9, 1.0) },
+    });
 
     try std.testing.expect(ev.placeholder_buffer != null);
     try std.testing.expect(ev.placeholder_active);
@@ -1668,7 +1510,9 @@ test "EditorView - placeholder renders to buffer when empty" {
     const written = try opt_buffer.writeResolvedChars(&out_buffer, false);
     const result = out_buffer[0..written];
 
-    try std.testing.expect(std.mem.startsWith(u8, result, "Type something..."));
+    try std.testing.expect(std.mem.startsWith(u8, result, "Type^[<85> something..."));
+    // Style chunks measure the notation too, so the second style starts after it.
+    try std.testing.expect(!opt_buffer_mod.rgbaEqual(opt_buffer.buffer.fg[9], opt_buffer.buffer.fg[10]));
 
     try eb.insertText("Hello");
 
@@ -1680,7 +1524,7 @@ test "EditorView - placeholder renders to buffer when empty" {
     const result2 = out_buffer[0..written2];
 
     try std.testing.expect(std.mem.startsWith(u8, result2, "Hello"));
-    try std.testing.expect(!std.mem.startsWith(u8, result2, "Type something..."));
+    try std.testing.expect(!std.mem.startsWith(u8, result2, "Type^[<85> something..."));
 }
 
 test "EditorView - placeholder shrink clears tail and preserves background" {
@@ -2330,4 +2174,240 @@ test "EditorView - convert word selection to cell keeps the range and moves focu
     const converted_cursor = ev.getPrimaryCursor();
     try std.testing.expectEqual(@as(u32, 0), converted_cursor.row);
     try std.testing.expectEqual(@as(u32, 9), converted_cursor.col);
+}
+
+test "EditorView - controls show Vim notation that the cursor stops on and deletes as one unit" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        var codepoint: u21 = 0;
+        while (codepoint <= 0xa0) : (codepoint += 1) {
+            // Line feed and carriage return break lines; they are not cells.
+            if (codepoint == '\n' or codepoint == '\r') continue;
+            errdefer std.debug.print("width_method={t} codepoint=U+{X:0>4}\n", .{ width_method, codepoint });
+            var input: [4]u8 = undefined;
+            input[0] = 'a';
+            const length = try std.unicode.utf8Encode(codepoint, input[1..]);
+            input[1 + length] = 'b';
+            const text = input[0 .. length + 2];
+            const character = text[1 .. length + 1];
+            var shown_buffer: [4]u8 = undefined;
+            const shown = switch (codepoint) {
+                '\t' => "  ",
+                0...0x08, 0x0b...0x1f => try std.fmt.bufPrint(&shown_buffer, "^{c}", .{@as(u8, @intCast(codepoint + 0x40))}),
+                0x7f => "^?",
+                0x80...0x9f => try std.fmt.bufPrint(&shown_buffer, "<{x:0>2}>", .{codepoint}),
+                else => character,
+            };
+            const width: u32 = if (codepoint == 0xa0) 1 else @intCast(shown.len);
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(std.testing.allocator, eb, 8, 1);
+            defer ev.deinit();
+            try eb.setText(text);
+            var frame = try opt_buffer_mod.OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = width_method });
+            defer frame.deinit();
+            frame.clear(ansi.rgbColor(0, 0, 0, 255), null);
+            try frame.drawEditorViewChecked(ev, 0, 0);
+            var frame_bytes: [32]u8 = undefined;
+            var expected_frame: [32]u8 = undefined;
+            const expected = try std.fmt.bufPrint(&expected_frame, "a{s}b{s}", .{ shown, "      "[width..] });
+            try std.testing.expectEqualStrings(expected, frame_bytes[0..try frame.writeResolvedChars(&frame_bytes, false)]);
+
+            // The cursor stops before and after the unit, and copying its cells returns its bytes.
+            const stops = [_]u32{ 0, 1, 1 + width, 2 + width };
+            for (stops[1..]) |stop| {
+                eb.moveRight();
+                try std.testing.expectEqual(stop, eb.getPrimaryCursor().col);
+            }
+            var index: usize = stops.len - 1;
+            while (index > 0) : (index -= 1) {
+                eb.moveLeft();
+                try std.testing.expectEqual(stops[index - 1], eb.getPrimaryCursor().col);
+            }
+            var copied: [8]u8 = undefined;
+            ev.setSelection(1, 1 + width, null, null);
+            try std.testing.expectEqualStrings(character, copied[0..ev.getSelectedTextIntoBuffer(&copied)]);
+
+            // Each delete removes exactly the unit, and history restores the original bytes.
+            try eb.setCursor(0, 1);
+            try eb.deleteForward();
+            try std.testing.expectEqualStrings("ab", copied[0..eb.getText(&copied)]);
+            _ = try eb.undo();
+            try std.testing.expectEqualStrings(text, copied[0..eb.getText(&copied)]);
+            try eb.setCursor(0, 1 + width);
+            try eb.backspace();
+            try std.testing.expectEqualStrings("ab", copied[0..eb.getText(&copied)]);
+            _ = try eb.undo();
+            _ = try eb.redo();
+            try std.testing.expectEqualStrings("ab", copied[0..eb.getText(&copied)]);
+            _ = try eb.undo();
+            try std.testing.expectEqualStrings(text, copied[0..eb.getText(&copied)]);
+            if (codepoint == '\t' or width == 1) continue;
+
+            // Word and inclusive selections take the whole unit, and a move up from inside it snaps to its start.
+            for (0..2 + width) |x| {
+                _ = ev.setLocalSelectionBehavior(@intCast(x), 0, @intCast(x), 0, null, null, false, .word);
+                try std.testing.expectEqualStrings(text, copied[0..ev.getSelectedTextIntoBuffer(&copied)]);
+            }
+            ev.setSelectionInclusive(width, width, null, null);
+            try std.testing.expectEqualStrings(character, copied[0..ev.getSelectedTextIntoBuffer(&copied)]);
+            try eb.setCursor(0, 2 + width);
+            try eb.insertText("\nabcdef");
+            try eb.setCursor(1, width);
+            eb.moveUp();
+            try std.testing.expectEqual(@as(u32, 1), eb.getPrimaryCursor().col);
+        }
+    }
+}
+
+test "EditorView - wrapping never splits control notation" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // The first 16 bytes are ASCII, so layout takes its vector path.
+    const text = "ab\x0c-defgh\x07ij-kl\x00m\u{85}c\x00d-e\x7f";
+    const shown = "ab^L-defgh^Gij-kl^@m<85>c^@d-e^?";
+    // Cell offsets in `shown` where a unit ends; a row may end only there.
+    const unit_ends = [_]usize{ 1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 20, 24, 25, 27, 28, 29, 30, 32 };
+    for ([_]text_buffer.WrapMode{ .char, .word }) |wrap_mode| {
+        // The widest unit, `<85>`, needs four cells.
+        for (4..shown.len + 1) |width| {
+            errdefer std.debug.print("wrap_mode={t} width={d}\n", .{ wrap_mode, width });
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(std.testing.allocator, eb, @intCast(width), shown.len);
+            defer ev.deinit();
+            ev.setWrapMode(wrap_mode);
+            try eb.setText(text);
+            var frame = try opt_buffer_mod.OptimizedBuffer.init(std.testing.allocator, @intCast(width), shown.len, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+            defer frame.deinit();
+            frame.clear(ansi.rgbColor(0, 0, 0, 255), null);
+            try frame.drawEditorViewChecked(ev, 0, 0);
+            var frame_bytes: [shown.len * (shown.len + 2)]u8 = undefined;
+            var rows = std.mem.splitScalar(u8, frame_bytes[0..try frame.writeResolvedChars(&frame_bytes, true)], '\n');
+            var joined: [shown.len]u8 = undefined;
+            var joined_len: usize = 0;
+            while (rows.next()) |row| {
+                const content = std.mem.trimEnd(u8, row, " ");
+                if (content.len == 0) continue;
+                @memcpy(joined[joined_len..][0..content.len], content);
+                joined_len += content.len;
+                try std.testing.expect(std.mem.indexOfScalar(usize, &unit_ends, joined_len) != null);
+            }
+            try std.testing.expectEqualStrings(shown, joined[0..joined_len]);
+        }
+    }
+}
+
+test "EditorView - cursor moves, backspace, and delete step over zero-width clusters" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // UAX #29 keeps a zero-width format character, or a mark after a control, in a cluster of its own.
+    // U+FFFD ends an Indic conjunct or emoji ZWJ sequence, so the characters after it do not join across it.
+    // The last text starts with 16 ASCII bytes, so layout takes its vector path.
+    // Each "|" starts a new insert, and so a new chunk: a zero-width cluster can start a line or a chunk.
+    const texts = [_][]const u8{ "a\u{200b}b", "a\u{feff}\u{2060}b", "a\u{e0041}\u{200e}b", "a\x07\u{301}b", "\x1b\u{200d}\x1b", "日\u{fffd}", "क्\u{fffd}\u{301}ष", "👩\u{200d}\u{fffd}\u{200d}👩", "ab\x0c-defgh\x07ij-kl\x00m-n\x1b", "\u{200b}ab", "\u{200d}\u{301}日b", "\u{feff}ab", "ab|\u{301}cd", "ab|\u{200b}\u{2060}cd" };
+    for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        for (texts) |text| {
+            for ([_]bool{ false, true }) |forward| {
+                errdefer std.debug.print("width_method={t} text={any} forward={}\n", .{ width_method, text, forward });
+                const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
+                defer eb.deinit();
+                var parts = std.mem.splitScalar(u8, text, '|');
+                while (parts.next()) |part| try eb.insertText(part);
+                const end = eb.getTextBuffer().lineWidthAt(0);
+                var col = eb.getPrimaryCursor().col;
+                while (col > 0) : (col = eb.getPrimaryCursor().col) {
+                    eb.moveLeft();
+                    try std.testing.expect(eb.getPrimaryCursor().col < col);
+                }
+                while (col < end) : (col = eb.getPrimaryCursor().col) {
+                    eb.moveRight();
+                    try std.testing.expect(eb.getPrimaryCursor().col > col);
+                    try std.testing.expectEqual(eb.getPrimaryCursor().col, eb.snapColumn(0, eb.getPrimaryCursor().col));
+                }
+                if (forward) try eb.setCursor(0, 0);
+                var out: [32]u8 = undefined;
+                var bytes = eb.getText(&out);
+                while (bytes > 0) : (bytes = eb.getText(&out)) {
+                    if (forward) try eb.deleteForward() else try eb.backspace();
+                    try std.testing.expect(eb.getText(&out) < bytes);
+                }
+            }
+        }
+    }
+    // A line without cells still holds bytes: Delete, Backspace, and deleting the whole text remove them.
+    const zero_width_lines = [_][]const u8{ "\u{200b}", "\u{200b}\nb", "a\n\u{200b}", "a\n\u{2060}\u{301}\nb", "\u{200d}\u{2060}" };
+    for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        for (zero_width_lines) |text| {
+            for ([_]enum { delete, backspace, all }{ .delete, .backspace, .all }) |key| {
+                errdefer std.debug.print("width_method={t} text={any} key={t}\n", .{ width_method, text, key });
+                const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
+                defer eb.deinit();
+                try eb.setText(text);
+                const last = eb.getTextBuffer().lineCount() - 1;
+                const text_end: Cursor = .{ .row = last, .col = eb.getTextBuffer().lineWidthAt(last) };
+                if (key == .backspace) try eb.setCursor(text_end.row, text_end.col);
+                var out: [32]u8 = undefined;
+                var bytes = text.len;
+                var steps: u32 = 0;
+                while (bytes > 0) : (bytes = eb.getText(&out)) {
+                    switch (key) {
+                        .delete => try eb.deleteForward(),
+                        .backspace => try eb.backspace(),
+                        .all => try eb.deleteRange(.{ .row = 0, .col = 0 }, text_end),
+                    }
+                    try std.testing.expect(eb.getText(&out) < if (key == .all) 1 else bytes);
+                    steps += 1;
+                }
+                while (steps > 0) : (steps -= 1) _ = try eb.undo();
+                try std.testing.expectEqualStrings(text, out[0..eb.getText(&out)]);
+            }
+        }
+    }
+    // One edit, after `zw` was typed at `at` so that it is a leaf of its own: what remains.
+    // Zero-width text goes with the cell before it, or with the cell after it at a line start.
+    const Edit = union(enum) { delete: [2]u32, backspace: [2]u32, line: u32, replace: [2]u32 };
+    const edits = [_]struct { text: []const u8, zw: []const u8 = "", at: [2]u32 = .{ 0, 0 }, edit: Edit, want: []const u8 }{
+        .{ .text = "a\n\u{200b}\nb", .edit = .{ .delete = .{ 1, 0 } }, .want = "a\nb" },
+        .{ .text = "a\n\u{200b}", .edit = .{ .delete = .{ 1, 0 } }, .want = "a\n" },
+        .{ .text = "a\n\u{2060}\u{301}\nb", .edit = .{ .backspace = .{ 2, 0 } }, .want = "a\nb" },
+        .{ .text = "ab", .zw = "\u{301}", .at = .{ 0, 1 }, .edit = .{ .backspace = .{ 0, 1 } }, .want = "b" },
+        .{ .text = "a\nb", .zw = "\u{200b}", .at = .{ 1, 0 }, .edit = .{ .line = 0 }, .want = "\u{200b}b" },
+        .{ .text = "\u{200b}", .edit = .{ .line = 0 }, .want = "" },
+        .{ .text = "\u{200b}\nab", .edit = .{ .line = 1 }, .want = "" },
+        .{ .text = "ab", .zw = "\u{200b}", .edit = .{ .replace = .{ 0, 1 } }, .want = "xb" },
+        .{ .text = "ab", .zw = "\u{200b}", .at = .{ 0, 1 }, .edit = .{ .replace = .{ 1, 2 } }, .want = "a\u{200b}x" },
+        .{ .text = "a\nb", .zw = "\u{200b}", .at = .{ 1, 0 }, .edit = .{ .replace = .{ 0, 2 } }, .want = "x\u{200b}b" },
+        .{ .text = "a\n\u{200b}", .edit = .{ .replace = .{ 0, 2 } }, .want = "x" },
+    };
+    const ignore = struct {
+        fn handle(_: *anyopaque) void {}
+    };
+    for (std.enums.values(utf8.WidthMethod)) |width_method| {
+        for (edits) |case| {
+            errdefer std.debug.print("width_method={t} case={any}\n", .{ width_method, case });
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, width_method, null);
+            defer eb.deinit();
+            try eb.setText(case.text);
+            try eb.setCursor(case.at[0], case.at[1]);
+            try eb.insertText(case.zw);
+            switch (case.edit) {
+                .delete => |at| try eb.setCursor(at[0], at[1]),
+                .backspace => |at| try eb.setCursor(at[0], at[1]),
+                .line => |row| try eb.setCursor(row, 0),
+                .replace => {},
+            }
+            switch (case.edit) {
+                .delete => try eb.deleteForward(),
+                .backspace => try eb.backspace(),
+                .line => try eb.deleteLine(),
+                .replace => |range| try eb.replaceRange(range[0], range[1], "x", .{ .ctx = eb, .handle = ignore.handle }),
+            }
+            var out: [16]u8 = undefined;
+            try std.testing.expectEqualStrings(case.want, out[0..eb.getText(&out)]);
+            while (eb.canUndo()) _ = try eb.undo();
+            try std.testing.expectEqualStrings(case.text, out[0..eb.getText(&out)]);
+        }
+    }
 }

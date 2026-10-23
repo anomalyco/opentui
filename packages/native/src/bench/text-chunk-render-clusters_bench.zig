@@ -125,6 +125,7 @@ fn benchGetRenderClusters(
             arena_alloc,
             &registry,
             4, // tab width
+            .hidden,
             .unicode,
         );
         stats.record(timer.read());
@@ -196,6 +197,7 @@ fn computeBenchName(allocator: std.mem.Allocator, size: usize, text_type: TextTy
         temp_alloc,
         &registry,
         4, // tab width
+        .hidden,
         .unicode,
     );
 

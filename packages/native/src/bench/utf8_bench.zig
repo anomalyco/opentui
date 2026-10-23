@@ -313,7 +313,7 @@ fn benchFindChunkLayoutInfo(
         var stats: BenchStats = .{};
         for (0..iterations) |_| {
             const timer = bench_utils.BenchTimer.start(io);
-            const word_classes = try utf8.findChunkLayoutInfo(alloc, text, 4, true, .unicode, &wrap_breaks);
+            const word_classes = try utf8.findChunkLayoutInfo(alloc, text, 4, .hidden, true, .unicode, &wrap_breaks);
             stats.record(timer.read());
 
             if (wrap_breaks.items.len != 12_800 or word_classes.first != .ascii_word or word_classes.last != .other) {
@@ -356,7 +356,7 @@ fn benchFindWrapPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 40, 4, true, .unicode);
+                _ = utf8.findWrapPosByWidth(text, 40, 4, .hidden, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -383,7 +383,7 @@ fn benchFindWrapPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 120, 4, true, .unicode);
+                _ = utf8.findWrapPosByWidth(text, 120, 4, .hidden, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -410,7 +410,7 @@ fn benchFindWrapPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 80, 4, false, .unicode);
+                _ = utf8.findWrapPosByWidth(text, 80, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -437,7 +437,7 @@ fn benchFindWrapPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 80, 4, false, .unicode);
+                _ = utf8.findWrapPosByWidth(text, 80, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -477,7 +477,7 @@ fn benchFindPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findPosByWidth(text, 500, 4, true, true, .unicode);
+                _ = utf8.findPosByWidth(text, 500, 4, .hidden, true, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -504,7 +504,7 @@ fn benchFindPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findPosByWidth(text, 90000, 4, true, true, .unicode);
+                _ = utf8.findPosByWidth(text, 90000, 4, .hidden, true, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -531,7 +531,7 @@ fn benchFindPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findPosByWidth(text, 5000, 4, false, true, .unicode);
+                _ = utf8.findPosByWidth(text, 5000, 4, .hidden, false, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -571,7 +571,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, true, .unicode);
+                _ = utf8.calculateTextWidth(text, 4, .hidden, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -598,7 +598,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, true, .unicode);
+                _ = utf8.calculateTextWidth(text, 4, .hidden, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -625,7 +625,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, true, .unicode);
+                _ = utf8.calculateTextWidth(text, 4, .hidden, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -661,7 +661,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text.items, 4, false, .unicode);
+                _ = utf8.calculateTextWidth(text.items, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -688,7 +688,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, false, .unicode);
+                _ = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -715,7 +715,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, false, .unicode);
+                _ = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 

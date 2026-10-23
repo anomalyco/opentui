@@ -6,6 +6,7 @@ const link = @import("link.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
+const input_parser = @import("input-parser.zig");
 const scene = @import("scene.zig");
 const native_span_feed = @import("native-span-feed.zig");
 const buf = @import("buffer.zig");
@@ -16,6 +17,7 @@ const text_buffer_view = @import("text-buffer-view.zig");
 const logger = @import("logger.zig");
 const utf8 = @import("utf8.zig");
 const syntax_style = @import("syntax-style.zig");
+const text_work = @import("text-work.zig");
 const edit_buffer = @import("edit-buffer.zig");
 const editor_view = @import("editor-view.zig");
 const ansi = @import("ansi.zig");
@@ -258,9 +260,6 @@ pub const Editor = struct {
     }
 
     pub fn prepareView(self: *Editor) !void {
-        try Context.prepareTextBuffer(self.edit.buffer.tb);
-        if (self.view.text_buffer_view.text_buffer != self.edit.buffer.tb)
-            try Context.prepareTextBuffer(self.view.text_buffer_view.text_buffer);
         _ = self.view.text_buffer_view.getVirtualLines();
         if (self.view.text_buffer_view.virtual_lines_dirty) return error.OutOfMemory;
     }
@@ -427,7 +426,7 @@ pub const SceneTextSelectionOptions = struct {
 };
 
 pub const Options = struct {
-    /// All checked handles, including leases, share this capacity.
+    /// Initial slots for all checked handles, including leases. See handles.Table.init.
     object_capacity: u32 = 4096,
     render_cells_max: u32 = 1_000_000,
     lease_count_max: u32 = buf.BufferLease.count_max_default,
@@ -467,8 +466,8 @@ const SceneMeasure = struct {
 
     fn measure(data: ?*anyopaque, width: f32, width_mode: u32, height: f32, height_mode: u32) callconv(.c) yoga.ExternalYogaSize {
         const self: *SceneMeasure = @ptrCast(@alignCast(data.?));
-        const node = self.owner.sceneNode(self.handle) catch unreachable;
-        std.debug.assert(node.scene_node.?.handle.generation == self.handle.generation);
+        const node = (self.owner.sceneNode(self.handle) catch unreachable).scene_node.?;
+        std.debug.assert(node.handle.generation == self.handle.generation);
         std.debug.assert(self.owner.mutating and !self.owner.scene_measuring);
         self.owner.scene_measuring = true;
         defer self.owner.scene_measuring = false;
@@ -476,13 +475,19 @@ const SceneMeasure = struct {
         // call. Unlike native measurement failures, they do not poison the tree.
         var result: yoga.ExternalYogaSize = .{ .width = std.math.nan(f32), .height = std.math.nan(f32) };
         self.callback(self.handle.context_id, self.handle.slot, self.handle.generation, width, width_mode, height, height_mode, &result);
-        // Yoga warns about NaN and measures zero. A size beyond the i32 cell range
-        // would instead fail the whole frame in layout validation.
-        return .{ .width = cellRangeOrNan(result.width), .height = cellRangeOrNan(result.height) };
+        // Yoga would warn and measure zero for NaN or negative sizes. A size beyond the
+        // i32 cell range would fail the whole frame in layout validation. Yoga caches
+        // the zero, so Scene.retryFailedMeasures handles the node before the next solve.
+        const size: yoga.ExternalYogaSize = .{ .width = cellRangeOrZero(result.width), .height = cellRangeOrZero(result.height) };
+        if (size.width != result.width or size.height != result.height) {
+            node.measure_failed = true;
+            node.owner.measure_failed = true;
+        }
+        return size;
     }
 
-    fn cellRangeOrNan(value: f32) f32 {
-        return if (@as(f64, value) <= std.math.maxInt(i32)) value else std.math.nan(f32);
+    fn cellRangeOrZero(value: f32) f32 {
+        return if (value >= 0 and @as(f64, value) <= std.math.maxInt(i32)) value else 0;
     }
 };
 
@@ -625,6 +630,8 @@ pub const Context = struct {
             .yoga_config = undefined,
         };
         try self.yoga_config.init(allocator, options.yoga_callbacks);
+        // Scene children must round inside their parents; public configs keep upstream rounding.
+        yoga.configSetRoundsPositionsFromAbsoluteEdges(self.yoga_config.ref, 1);
         self.yoga_config.setLogger(&self.logger);
         return self;
     }
@@ -984,6 +991,24 @@ pub const Context = struct {
         return (try self.getSession(handle)).pump(now_ns, work_budget);
     }
 
+    pub fn sessionInputFeed(self: *Context, handle: Handle, bytes: []const u8, now_ns: u64, sink: *input_parser.Sink) Error!session.InputFeed {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return (try self.getSession(handle)).feedInput(bytes, now_ns, sink);
+    }
+
+    pub fn sessionInputExpect(self: *Context, handle: Handle, expect: input_parser.Expectations) Error!void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        try (try self.getSession(handle)).setInputExpectations(expect);
+    }
+
+    pub fn sessionInputReset(self: *Context, handle: Handle, keep_reply: bool) Error!void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        try (try self.getSession(handle)).resetInput(keep_reply);
+    }
+
     pub fn getSessionTerminalState(self: *Context, handle: Handle) Error!session.TerminalState {
         return (try self.getSession(handle)).getTerminalState();
     }
@@ -1005,18 +1030,14 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getSession(handle);
         try value.checkResizing();
-        const yielded = if (value.scene) |owned| owned.isYielded() else false;
-        if (!yielded) try value.checkLayoutIdle();
+        try value.checkLayoutIdle();
         const attached = value.renderer orelse return error.RendererNotAttached;
         const cells = std.math.mul(u32, width, height) catch return error.InvalidDimensions;
         if (width == 0 or height == 0 or cells > self.render_cells_max) return error.InvalidDimensions;
         // Only a pending frame depends on geometry; the renderer rejects it.
         std.debug.assert((value.frame_end_offset != null) == (attached.pendingPresentation != null));
-        const changed = attached.width != width or attached.height != height;
         try attached.resize(width, height);
-        if (yielded and changed) {
-            value.cancelSceneFrame();
-        } else if (value.scene) |owned| owned.requalifyPainted(attached);
+        if (value.scene) |owned| owned.requalifyPainted(attached);
     }
 
     pub fn writeSession(self: *Context, handle: Handle, bytes: []const u8) Error!void {
@@ -2353,7 +2374,7 @@ pub const Context = struct {
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
-        try validateTextBytes(text.buffer, bytes, 0);
+        try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         try self.replaceTextContent(text, bytes);
         textResourceChanged(text);
         if (text.owned_style) |style| {
@@ -2364,22 +2385,12 @@ pub const Context = struct {
         node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
-    pub fn validateTextBytes(text: *const text_buffer.UnifiedTextBuffer, bytes: []const u8, retained_bytes: u32) !void {
-        // Rope columns and line counts are u32. Tabs are the largest cell/byte
-        // expansion; reserve one count for the trailing logical line.
-        const bytes_max = (std.math.maxInt(u32) - 1) / @as(u32, @max(text.tabWidth(), 1));
+    pub fn validateTextBytes(tab_width: u8, bytes: []const u8, retained_bytes: u32) !void {
+        // Rope columns and line counts are u32. Tabs and control notation (two cells per byte)
+        // are the largest cell/byte expansion; reserve one count for the trailing logical line.
+        const bytes_max = (std.math.maxInt(u32) - 1) / @as(u32, @max(tab_width, 2));
         if (retained_bytes > bytes_max or bytes.len > bytes_max - retained_bytes) return error.TextLimit;
         if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
-    }
-
-    fn validateEditTextBytes(text: *const text_buffer.UnifiedTextBuffer, bytes: []const u8, retained_bytes: u32) !void {
-        try validateTextBytes(text, bytes, retained_bytes);
-        // Cell-based editing cannot navigate standalone zero-width controls yet.
-        var codepoints = std.unicode.Utf8View.initUnchecked(bytes).iterator();
-        while (codepoints.nextCodepoint()) |codepoint| {
-            if ((codepoint < 0x20 and codepoint != '\t' and codepoint != '\r' and codepoint != '\n') or
-                (codepoint >= 0x7f and codepoint <= 0x9f)) return error.InvalidUnicode;
-        }
     }
 
     pub fn sceneSetStyledText(self: *Context, handle: Handle, bytes: []const u8, chunks: []const StyledTextChunk) !void {
@@ -2417,7 +2428,7 @@ pub const Context = struct {
     };
 
     fn prepareStyledTextResource(self: *Context, prepared: *PreparedStyledTextResource, text: anytype, bytes: []const u8, chunks: []const StyledTextChunk) !void {
-        try validateTextBytes(text.buffer, bytes, 0);
+        try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         var offset: usize = 0;
         for (chunks) |chunk| {
             if ((chunk.byte_count == 0 and @TypeOf(text) != *SharedText) or chunk.byte_count > bytes.len - offset or
@@ -2475,6 +2486,8 @@ pub const Context = struct {
         }
         const copy = try self.allocator.dupe(u8, bytes);
         prepared.bytes = copy;
+        text_work.add(.styled_text_sets, 1);
+        text_work.add(.styled_text_bytes, copy.len);
         if (retained_style != null) try style.retainLinks(&self.links);
         try text.buffer.prepareOwnedStyledText(&prepared.buffer, copy, text.input_mem_id, style, ranges[0..range_count], &prepared.links, retained_style);
         prepared.buffer_ready = true;
@@ -2599,8 +2612,6 @@ pub const Context = struct {
             if (text.buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
             // The legacy view methods cannot report allocation failures. Prepare
             // their caches first so no failing work follows selection publication.
-            // markerCount swallows rebuild OOM; the rope metrics do not allocate.
-            if (text.buffer.rope().markerCount(.linestart) != text.buffer.lineCount()) return error.OutOfMemory;
             try text.prepareView();
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
             const behavior: text_buffer_view.SelectionBehavior = @fromBackingInt(@intCast(options.behavior));
@@ -2652,7 +2663,6 @@ pub const Context = struct {
         const offsets: @FieldType(TextRange, "offsets") = switch (range) {
             .offsets => |offsets| offsets,
             .coords => |coords| result: {
-                try prepareTextBuffer(buffer);
                 const iter = @import("text-buffer-iterators.zig");
                 break :result .{
                     .start = iter.coordsToOffset(buffer.rope(), coords.start_row, coords.start_col) orelse return 0,
@@ -2661,6 +2671,32 @@ pub const Context = struct {
             },
         };
         return buffer.copyTextRange(offsets.start, offsets.end, out);
+    }
+
+    /// Lays `bytes` out as setText would, without storing them, and returns the cursor offset at their end.
+    pub fn editMeasureText(self: *Context, handle: Handle, bytes: []const u8) !u32 {
+        try self.checkSceneRead();
+        const buffer = (try self.getEditBuffer(handle)).buffer.tb;
+        return measureEditText(bytes, buffer.tabWidth(), buffer.controlDisplay(), buffer.widthMethod());
+    }
+
+    /// Returns the cursor offset at the end of `bytes` after setText on an edit buffer with these
+    /// settings: the cells of each line plus one per line break.
+    pub fn measureEditText(bytes: []const u8, tab_width: u8, control_display: utf8.ControlDisplay, width_method: utf8.WidthMethod) !u32 {
+        // The byte limit keeps the widths and line breaks within u32.
+        try validateTextBytes(tab_width, bytes, 0);
+        var offset: u32 = 0;
+        var rest = bytes;
+        while (true) {
+            const end = std.mem.indexOfAny(u8, rest, "\r\n") orelse rest.len;
+            const line = rest[0..end];
+            offset += utf8.calculateTextWidth(line, tab_width, control_display, utf8.isAsciiOnly(line), width_method);
+            if (end == rest.len) return offset;
+            // Lines end at LF, CR, or CRLF, as textToSegments splits them.
+            const crlf = std.mem.startsWith(u8, rest[end..], "\r\n");
+            offset += 1;
+            rest = rest[end + 1 + @intFromBool(crlf) ..];
+        }
     }
 
     pub fn textViewGetSelectedText(self: *Context, handle: Handle, out: []u8) !u32 {
@@ -2788,20 +2824,16 @@ pub const Context = struct {
             .excluded_hit_num = excluded_hit_num,
             .max_layout_rounds = 8,
             .max_host_requests = 65536,
-        }, false);
+        }, false, null);
         std.debug.assert(result.kind == api.OT_SCENE_FRAME_DONE);
         return result;
     }
 
     pub fn sceneFrameStep(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions) !scene.FrameRequest {
-        return self.sceneFrameStepWithRecording(session_handle, previous, options, std.math.maxInt(u32), null);
+        return self.sceneFrameStepWithRecording(session_handle, previous, options, null);
     }
 
-    pub fn sceneFrameStepWorkBudgeted(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32) !scene.FrameRequest {
-        return self.sceneFrameStepWithRecording(session_handle, previous, options, max_work_items, null);
-    }
-
-    pub fn sceneFrameStepWithRecording(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32, recording: ?[]const u8) !scene.FrameRequest {
+    pub fn sceneFrameStepWithRecording(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, recording: ?[]const u8) !scene.FrameRequest {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.getSession(session_handle);
@@ -2811,7 +2843,7 @@ pub const Context = struct {
         const owned = value.scene orelse return error.SceneNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         if (attached.width > std.math.maxInt(i32) or attached.height > std.math.maxInt(i32)) return error.InvalidDimensions;
-        return owned.frameStepWorkBudgeted(self, attached, previous, options, true, max_work_items, recording);
+        return owned.frameStep(self, attached, previous, options, true, recording);
     }
 
     pub fn sceneFramePaintSlots(self: *Context, session_handle: Handle, frame: scene.FrameRequest) ![]const scene.PaintSlot {
@@ -2903,6 +2935,17 @@ pub const Context = struct {
         const state = node.scene_node orelse return 0;
         if (state.owner != owned or state.token != token) return 0;
         return state.num;
+    }
+
+    pub fn sceneSetDebugFlags(self: *Context, session_handle: Handle, flags: u32) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.getSession(session_handle);
+        try value.checkOpen();
+        const owned = value.scene orelse return error.SceneNotAttached;
+        if (flags & ~api.OT_SCENE_DEBUG_FULL_FRAME != 0) return error.InvalidOptions;
+        try value.checkFrameIdle();
+        owned.debug_flags = flags;
     }
 
     pub fn sceneGetStats(self: *Context, session_handle: Handle) !renderer.RenderStatsSnapshot {
@@ -3047,7 +3090,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
-        try validateTextBytes(text.buffer, bytes, 0);
+        try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         try self.replaceTextContent(text, bytes);
         text.reclaimAppendBuffers();
         if (text.owned_style) |style| {
@@ -3129,7 +3172,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
-        try validateTextBytes(text.buffer, bytes, text.buffer.getByteSize());
+        try validateTextBytes(text.buffer.tabWidth(), bytes, text.buffer.getByteSize());
         if (bytes.len == 0) return;
         // Each append takes a registry slot. When none is left, one owned copy of the whole
         // document replaces them all, so a long append stream copies O(n^2) bytes in total.
@@ -3353,6 +3396,7 @@ pub const Context = struct {
         // Buffers subscribe before borrowing a style; construction has no dependents to scan.
         const listeners = style.emitter.listeners.get(.Destroy) orelse return;
         if (listeners.items.len == 0) return;
+        text_work.add(.style_dependent_slots, self.objects.slots.len);
         for (self.objects.slots) |slot| {
             if (slot.kind == .edit_buffer and slot.ptr != null) {
                 const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));
@@ -3367,6 +3411,7 @@ pub const Context = struct {
     fn invalidateStyleDependents(self: *Context, style: *const syntax_style.SyntaxStyle) void {
         const listeners = style.emitter.listeners.get(.Destroy) orelse return;
         if (listeners.items.len == 0) return;
+        text_work.add(.style_dependent_slots, self.objects.slots.len);
         for (self.objects.slots) |slot| {
             if (slot.kind == .edit_buffer and slot.ptr != null) {
                 const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));
@@ -3394,7 +3439,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        try validateEditTextBytes(edit.buffer.tb, bytes, 0);
+        try validateTextBytes(edit.buffer.tb.tabWidth(), bytes, 0);
         if (preserve_history) {
             try edit.buffer.replaceText(bytes);
         } else {
@@ -3407,7 +3452,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        try validateEditTextBytes(edit.buffer.tb, bytes, edit.buffer.tb.getByteSize());
+        try validateTextBytes(edit.buffer.tb.tabWidth(), bytes, edit.buffer.tb.getByteSize());
         try edit.buffer.insertText(bytes);
     }
 
@@ -3441,12 +3486,11 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        try prepareTextBuffer(edit.buffer.tb);
         switch (command) {
             .delete_forward => try edit.buffer.deleteForward(),
             .backspace => try edit.buffer.backspace(),
             .new_line => {
-                try validateEditTextBytes(edit.buffer.tb, "\n", edit.buffer.tb.getByteSize());
+                try validateTextBytes(edit.buffer.tb.tabWidth(), "\n", edit.buffer.tb.getByteSize());
                 try edit.buffer.insertText("\n");
             },
             .delete_line => try edit.buffer.deleteLine(),
@@ -3555,7 +3599,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const view = try self.getEditorView(handle);
         try view.edit.checkMutable();
-        try validateEditTextBytes(view.edit.buffer.tb, bytes, view.edit.buffer.tb.getByteSize());
+        try validateTextBytes(view.edit.buffer.tb.tabWidth(), bytes, view.edit.buffer.tb.getByteSize());
         const steps = try view.view.replaceSelectedText(bytes);
         view.invalidate();
         return steps;
@@ -3566,7 +3610,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const view = try self.getEditorView(handle);
         try view.edit.checkMutable();
-        try validateEditTextBytes(view.edit.buffer.tb, bytes, 0);
+        try validateTextBytes(view.edit.buffer.tb.tabWidth(), bytes, 0);
         var offset: usize = 0;
         for (chunks) |chunk| {
             if (chunk.byte_count == 0 or chunk.byte_count > bytes.len - offset or
@@ -3597,10 +3641,6 @@ pub const Context = struct {
         view.invalidate();
     }
 
-    pub fn prepareTextBuffer(buffer: *text_buffer.UnifiedTextBuffer) !void {
-        if (buffer.rope().markerCount(.linestart) != buffer.lineCount()) return error.OutOfMemory;
-    }
-
     fn setBufferDefaults(buffer: *text_buffer.UnifiedTextBuffer, options: TextDefaults) !void {
         if (@as(u3, @bitCast(options.fields)) == 0) return error.InvalidOptions;
         if (options.foreground) |color| try buf.validateColor(color);
@@ -3612,7 +3652,6 @@ pub const Context = struct {
     }
 
     fn highlightBuffer(buffer: *text_buffer.UnifiedTextBuffer, operation: TextHighlight) !void {
-        try prepareTextBuffer(buffer);
         switch (operation) {
             .add_line => |line| {
                 const h = line.range;
@@ -3656,7 +3695,6 @@ pub const Context = struct {
             if (buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
         }
         if (options.operation != .reset and options.operation != .local_reset) {
-            if (!is_editor) try prepareTextBuffer(buffer);
             try value.prepareView();
         }
         const fg = options.foreground;

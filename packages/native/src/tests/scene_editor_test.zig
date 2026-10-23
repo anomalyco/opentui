@@ -58,7 +58,7 @@ test "Scene editor custom self destruction never retains cursor resources" {
         if (destroy_node) try owner.sceneDestroyNode(fixture.node);
         try owner.destroy(fixture.view);
         try owner.destroy(fixture.edit);
-        request = try owner.sceneFrameStepWithRecording(fixture.session, request, frame_options, std.math.maxInt(u32), &.{});
+        request = try owner.sceneFrameStepWithRecording(fixture.session, request, frame_options, &.{});
         try testing.expectEqual(@as(u32, 0), request.kind);
         try testing.expect(!(try owner.sceneGetCursorState(fixture.session)).visible);
         try owner.sceneFrameCancel(fixture.session, request.frame_id);

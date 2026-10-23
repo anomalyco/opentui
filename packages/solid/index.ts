@@ -7,7 +7,8 @@ import { _render as renderInternal, createComponent } from "./src/reconciler.js"
 type DisposeFn = () => void
 
 const mountSolidRoot = (renderer: CliRenderer, node: () => JSX.Element) => {
-  if (!renderer.isDestroyed) engine.attach(renderer)
+  if (renderer.isDestroyed) return
+  engine.attach(renderer)
   let dispose: DisposeFn | undefined
   let disposeRequested = false
   let disposed = false

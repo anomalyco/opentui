@@ -1,0 +1,82 @@
+---
+// A release's API changes, by module and kind of change, like the "Changes in this version" list of pkg.go.dev.
+// Each module is an h3 under the page's "API changes" h2.
+import { featureText, groupChanges } from "../lib/api-docs"
+import type { ApiChange } from "../lib/api-history"
+import { slugifyHeading } from "../lib/docs-headings"
+import ProseH3 from "./ProseH3.astro"
+
+interface Props {
+  changes: ApiChange[]
+}
+
+const labels = { added: "Added", changed: "Changed", deprecated: "Deprecated", removed: "Removed" }
+const groups = groupChanges(Astro.props.changes)
+const modules = [...new Set(groups.map((group) => group.module))]
+---
+
+{
+  modules.map((module) => (
+    <>
+      <ProseH3 id={slugifyHeading(module)}>
+        <code>{module}</code>
+      </ProseH3>
+      {groups
+        .filter((group) => group.module === module)
+        .map((group) => (
+          <>
+            <p class="api-change-type">{labels[group.type]}</p>
+            <ul class="api-changes">
+              {group.changes.map((change) =>
+                group.type === "changed" ? (
+                  <li>
+                    {change.before.map((feature) => (
+                      <code class="api-before">{featureText(feature)}</code>
+                    ))}
+                    {change.after.map((feature) => (
+                      <code>{featureText(feature)}</code>
+                    ))}
+                  </li>
+                ) : (
+                  <li>
+                    {(group.type === "removed" ? change.before : change.after).map((feature) => (
+                      <code>{featureText(feature)}</code>
+                    ))}
+                  </li>
+                ),
+              )}
+            </ul>
+          </>
+        ))}
+    </>
+  ))
+}
+
+<style>
+  .api-change-type {
+    font-weight: 700;
+    margin-block-end: 0.75rem;
+  }
+
+  /* One feature per line; a changed feature shows its old lines struck through above the new ones. */
+  .api-changes {
+    list-style: none;
+    padding-inline-start: 0;
+    font-size: var(--text-small);
+  }
+
+  .api-changes li + li {
+    margin-block-start: 0.375rem;
+  }
+
+  .api-changes code {
+    display: block;
+    width: fit-content;
+    overflow-wrap: anywhere;
+  }
+
+  .api-changes .api-before {
+    color: var(--muted-color);
+    text-decoration: line-through;
+  }
+</style>

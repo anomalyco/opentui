@@ -8,9 +8,10 @@ interface Props {
   description: string
   wide?: boolean
   robots?: string
+  canonical?: boolean
 }
 
-const { title, description, wide = false, robots } = Astro.props
+const { title, description, wide = false, robots, canonical } = Astro.props
 ---
 
 <!doctype html>
@@ -22,7 +23,7 @@ const { title, description, wide = false, robots } = Astro.props
     {robots && <meta name="robots" content={robots} />}
     <meta name="google-site-verification" content="W0svAZmnPHtyNgZWhzY7v8j2IJBnMD6TX7XB7QV0itE" />
     <title>{title}</title>
-    <SocialMeta {title} {description} />
+    <SocialMeta {title} {description} {canonical} />
     <!-- Paint the first frame with the right canvas color, before CSS loads. -->
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />

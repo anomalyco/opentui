@@ -1,0 +1,5 @@
+base 0.5.3
+- @opentui/core: function createTextAttributes({ bold, italic, underline, dim, blink, inverse, hidden, strikethrough, }?: { bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; blink?: boolean; inverse?: boolean; hidden?: boolean; strikethrough?: boolean; }): number
++ @opentui/core: function createTextAttributes({ bold, italic, underline, dim, blink, inverse, reverse, hidden, strikethrough, }?: { bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; blink?: boolean; inverse?: boolean; reverse?: boolean; hidden?: boolean; strikethrough?: boolean; }): number
+- @opentui/core: property RenderLib.destroyRenderer: (renderer: RendererHandle) => void
++ @opentui/core: property RenderLib.destroyRenderer: (renderer: RendererHandle, flushInput?: boolean) => void

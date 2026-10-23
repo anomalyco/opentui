@@ -11,6 +11,8 @@ const TextChunk = seg_mod.TextChunk;
 
 test "TextChunk keeps cold cache state out of rope leaves" {
     try testing.expect(@sizeOf(TextChunk) <= 24);
+    // Branches store only their total metrics; children give theirs on demand.
+    try testing.expectEqual(64, @sizeOf(UnifiedRope.Node));
 }
 
 test "TextChunk layout cache retries and releases partial allocations" {
@@ -30,10 +32,10 @@ test "TextChunk layout cache retries and releases partial allocations" {
         defer cache.clear();
         var chunk: TextChunk = .{ .mem_id = mem_id, .byte_start = 0, .byte_end = text.len, .width_cols = 2560 };
 
-        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode));
+        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode));
         try testing.expect(chunk.getCachedLayoutInfo(2, .unicode) == null);
         failing.fail_index = std.math.maxInt(usize);
-        const retried = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+        const retried = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
         try testing.expectEqual(@as(usize, 512), retried.wrap_breaks.len);
         try testing.expectEqual(@as(usize, 512), retried.cjk_breaks.len);
         try testing.expectEqual(retried.cjk_breaks.ptr, chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr);
@@ -42,7 +44,7 @@ test "TextChunk layout cache retries and releases partial allocations" {
         try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
 
         failing.fail_index = failing.alloc_index + fail_index;
-        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode));
+        try testing.expectError(error.OutOfMemory, chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode));
         cache.clear();
         try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
     }
@@ -93,17 +95,17 @@ test "TextChunk.getLayoutInfo returns direct byte and column metadata" {
         .mem_id = mem_id,
         .byte_start = 0,
         .byte_end = @intCast(text.len),
-        .width_cols = @intCast(utf8.calculateTextWidth(text, 2, false, .unicode)),
+        .width_cols = @intCast(utf8.calculateTextWidth(text, 2, .hidden, false, .unicode)),
     };
 
-    const layout = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const layout = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(usize, 1), layout.wrap_breaks.len);
     try testing.expectEqual(@as(u32, 6), layout.wrap_breaks[0].byte_start);
     try testing.expectEqual(@as(u32, 4), layout.wrap_breaks[0].col_start);
     try testing.expectEqual(@as(u32, 7), layout.wrap_breaks[0].byteEnd());
     try testing.expectEqual(@as(u32, 5), layout.wrap_breaks[0].colEnd());
 
-    const cached = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const cached = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@intFromPtr(layout.wrap_breaks.ptr), @intFromPtr(cached.wrap_breaks.ptr));
 
     const zero_width_text = "a\u{200B}b";
@@ -112,9 +114,9 @@ test "TextChunk.getLayoutInfo returns direct byte and column metadata" {
         .mem_id = zero_width_mem_id,
         .byte_start = 0,
         .byte_end = @intCast(zero_width_text.len),
-        .width_cols = @intCast(utf8.calculateTextWidth(zero_width_text, 2, false, .unicode)),
+        .width_cols = @intCast(utf8.calculateTextWidth(zero_width_text, 2, .hidden, false, .unicode)),
     };
-    const zero_width_layout = try zero_width_chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const zero_width_layout = try zero_width_chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(usize, 1), zero_width_layout.wrap_breaks.len);
     try testing.expectEqual(@as(u32, 1), zero_width_layout.wrap_breaks[0].byte_start);
     try testing.expectEqual(@as(u32, 3), zero_width_layout.wrap_breaks[0].byte_len);
@@ -132,24 +134,24 @@ test "TextChunk keeps CJK line opportunities out of the word cache" {
     const text = "\u{65e5}\u{672c}\t\u{8a9e}\u{6587}";
     const mem_id = try registry.register(text, false);
     var chunk: TextChunk = .{ .mem_id = mem_id, .byte_start = 0, .byte_end = text.len, .width_cols = 10 };
-    const initial_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const initial_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expect(@sizeOf(@TypeOf(initial_words)) < @sizeOf(utf8.ChunkLayoutInfo));
     try testing.expectEqual(utf8.WordClass.cjk_word, initial_words.word_classes.first);
     try testing.expectEqual(utf8.WordClass.cjk_word, initial_words.word_classes.last);
     try testing.expectEqual(@as(usize, 1), initial_words.wrap_breaks.len);
     try testing.expectEqual(@as(usize, 0), chunk.cold.?.cjk_breaks.capacity);
-    _ = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    _ = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expect(chunk.cold.?.wrap_breaks != null);
     for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
         for ([_]u8{ 2, 8 }) |tab_width| {
-            const words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, method);
+            const words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, .hidden, method);
             try testing.expectEqual(@as(usize, 1), words.wrap_breaks.len);
             try testing.expectEqual(utf8.LayoutWrapBreakKind.whitespace, words.wrap_breaks[0].kind);
             try testing.expectEqual(@as(u32, tab_width), words.wrap_breaks[0].width_cols);
-            const lines = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, tab_width, method);
+            const lines = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, tab_width, .hidden, method);
             try testing.expectEqual(@as(usize, 1), lines.wrap_breaks.len);
             try testing.expectEqual(@as(usize, 2), lines.cjk_breaks.len);
-            const cached_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, method);
+            const cached_words = try chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, tab_width, .hidden, method);
             try testing.expectEqual(utf8.WordClass.cjk_word, cached_words.word_classes.first);
             try testing.expectEqual(utf8.WordClass.cjk_word, cached_words.word_classes.last);
             try testing.expectEqual(@intFromPtr(words.wrap_breaks.ptr), @intFromPtr(cached_words.wrap_breaks.ptr));
@@ -160,7 +162,7 @@ test "TextChunk keeps CJK line opportunities out of the word cache" {
     const greek = "\u{3bb}-\u{3bb}";
     const greek_id = try registry.register(greek, false);
     var greek_chunk: TextChunk = .{ .mem_id = greek_id, .byte_start = 0, .byte_end = greek.len, .width_cols = 3 };
-    _ = try greek_chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    _ = try greek_chunk.getWordLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expect(greek_chunk.getCachedLayoutInfo(2, .unicode) != null);
 }
 
@@ -198,7 +200,7 @@ test "findChunkLayoutInfo classifies direct byte and column break metadata" {
     defer breaks.deinit(testing.allocator);
 
     for (cases) |case| {
-        _ = try utf8.findChunkLayoutInfo(testing.allocator, case.text, case.tab_width, false, .unicode, &breaks);
+        _ = try utf8.findChunkLayoutInfo(testing.allocator, case.text, case.tab_width, .hidden, false, .unicode, &breaks);
         try testing.expectEqualDeep(case.expected, breaks.items);
     }
 }
@@ -208,7 +210,7 @@ test "walkChunkLayoutInfo keeps Prepend joined to an ASCII vector" {
     var breaks: std.ArrayListUnmanaged(utf8.LayoutWrapBreak) = .empty;
     defer breaks.deinit(testing.allocator);
 
-    _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, false, .unicode, &breaks);
+    _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, .hidden, false, .unicode, &breaks);
     try testing.expectEqual(@as(usize, 1), breaks.items.len);
     try testing.expectEqual(@as(u32, 0), breaks.items[0].byte_start);
     try testing.expectEqual(@as(u32, 3), breaks.items[0].byte_len);
@@ -223,7 +225,7 @@ test "walkChunkLayoutInfo ASCII prefixes keep their final grapheme intact" {
     for (0..32) |prefix_len| {
         const text = try std.fmt.allocPrint(testing.allocator, "{s} \u{301} \u{754c}abc", .{utils.repeat(u8, "a", 32)[0..prefix_len]});
         defer testing.allocator.free(text);
-        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, false, .unicode, &breaks);
+        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, .hidden, false, .unicode, &breaks);
         try testing.expectEqual(@as(usize, 3), breaks.items.len);
         try testing.expectEqual(@as(u32, @intCast(prefix_len)), breaks.items[0].byte_start);
         try testing.expectEqual(@as(u32, 3), breaks.items[0].byte_len);
@@ -245,7 +247,7 @@ test "walkChunkLayoutInfo preserves mixed-content whitespace graphemes" {
     defer breaks.deinit(testing.allocator);
 
     for (cases) |text| {
-        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, false, .unicode, &breaks);
+        _ = try utf8.findChunkLayoutInfo(testing.allocator, text, 2, .hidden, false, .unicode, &breaks);
         try testing.expectEqual(@as(usize, 1), breaks.items.len);
         try testing.expectEqual(@as(u32, 0), breaks.items[0].byte_start);
         try testing.expectEqual(@as(u32, @intCast(text.len)), breaks.items[0].byte_len);
@@ -279,7 +281,7 @@ test "walkChunkLayoutInfo stops streaming after visitor allocation failure" {
     };
     var ctx: Context = .{ .allocator = failing.allocator() };
     defer ctx.breaks.deinit(ctx.allocator);
-    _ = try utf8.walkChunkLayoutInfoComptime(text, 2, true, .unicode, &ctx, Context.visit);
+    _ = try utf8.walkChunkLayoutInfoComptime(text, 2, .hidden, true, .unicode, &ctx, Context.visit);
     try testing.expect(failing.has_induced_failure);
     try testing.expect(ctx.failed);
     try testing.expectEqual(@as(usize, 1), ctx.callback_count);
@@ -302,11 +304,11 @@ test "TextChunk.getLayoutInfo refreshes tab-dependent metadata" {
         .width_cols = 4,
     };
 
-    const first = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .unicode);
+    const first = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 2), first.wrap_breaks[0].width_cols);
     const capacity_after_first = arena.queryCapacity();
 
-    const second = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 8, .unicode);
+    const second = try chunk.getLayoutInfo(arena.allocator(), &cache, &registry, 8, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 8), second.wrap_breaks[0].width_cols);
     try testing.expectEqual(@intFromPtr(first.wrap_breaks.ptr), @intFromPtr(second.wrap_breaks.ptr));
     try testing.expectEqual(capacity_after_first, arena.queryCapacity());
@@ -327,15 +329,15 @@ test "TextChunk.getRenderClusters reuses tab-dependent cache storage" {
         .width_cols = 4,
     };
 
-    const first = try chunk.getRenderClusters(arena.allocator(), &registry, 2, .unicode);
+    const first = try chunk.getRenderClusters(arena.allocator(), &registry, 2, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 2), first[0].width_cols);
     const capacity_after_first = arena.queryCapacity();
 
-    const wider = try chunk.getRenderClusters(arena.allocator(), &registry, 8, .unicode);
+    const wider = try chunk.getRenderClusters(arena.allocator(), &registry, 8, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 8), wider[0].width_cols);
     try testing.expectEqual(@intFromPtr(first.ptr), @intFromPtr(wider.ptr));
 
-    const narrower = try chunk.getRenderClusters(arena.allocator(), &registry, 4, .unicode);
+    const narrower = try chunk.getRenderClusters(arena.allocator(), &registry, 4, .hidden, .unicode);
     try testing.expectEqual(@as(u32, 4), narrower[0].width_cols);
     try testing.expectEqual(@intFromPtr(first.ptr), @intFromPtr(narrower.ptr));
     try testing.expectEqual(capacity_after_first, arena.queryCapacity());
@@ -353,7 +355,7 @@ test "Segment.measure - text chunk" {
     const metrics = seg.measure();
 
     try testing.expectEqual(@as(u32, 10), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), metrics.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 10), metrics.lineWidthMax());
     try testing.expect(metrics.ascii_only);
 }
 
@@ -384,7 +386,7 @@ test "Segment.measure - break" {
     const metrics = seg.measure();
 
     try testing.expectEqual(@as(u32, 0), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 0), metrics.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 0), metrics.lineWidthMax());
     try testing.expect(metrics.ascii_only);
 }
 
@@ -428,109 +430,54 @@ test "Segment.asText" {
     try testing.expect(brk_seg.asText() == null);
 }
 
-test "Metrics.add - two text segments" {
-    var left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    };
-
-    left.add(right);
-
-    try testing.expectEqual(@as(u32, 15), left.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), left.max_line_width_cols);
-    try testing.expect(left.ascii_only);
+/// Leaf metrics for a token: `|` is a break; `5` is 5 ASCII cells; `5n` is 5 non-ASCII cells.
+fn leafMetrics(token: []const u8) !Segment.Metrics {
+    if (std.mem.eql(u8, token, "|")) return (Segment{ .brk = {} }).measure();
+    const ascii = token[token.len - 1] != 'n';
+    const width = try std.fmt.parseInt(u32, token[0 .. token.len - @intFromBool(!ascii)], 10);
+    return (Segment{ .text = .{ .mem_id = 0, .byte_start = 0, .byte_end = width, .width_cols = width, .flags = if (ascii) TextChunk.Flags.ASCII_ONLY else 0 } }).measure();
 }
 
-test "Metrics.add - text, break, text" {
-    var left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const middle: Segment.Metrics = .{
-        .total_width_cols = 0,
-        .max_line_width_cols = 0,
-        .ascii_only = true,
-    };
-
-    left.add(middle);
-
-    try testing.expectEqual(@as(u32, 10), left.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), left.max_line_width_cols);
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    };
-
-    left.add(right);
-
-    try testing.expectEqual(@as(u32, 15), left.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), left.max_line_width_cols);
+fn foldMetrics(leaves: []const Segment.Metrics) Segment.Metrics {
+    var result: Segment.Metrics = .{};
+    for (leaves) |leaf| result.add(leaf);
+    return result;
 }
 
-test "Metrics.add - multiple breaks" {
-    var metrics: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
+test "Metrics.add - line widths combine across leaves in any grouping" {
+    // Each `add` case: no break on either side, a break on the right only, on the left only, and on both.
+    const cases = [_]struct { leaves: []const u8, first: u32, last: u32, inner_max: u32, ascii: bool = true }{
+        .{ .leaves = "", .first = 0, .last = 0, .inner_max = 0 },
+        .{ .leaves = "10 5", .first = 15, .last = 15, .inner_max = 0 },
+        .{ .leaves = "10 | 5", .first = 10, .last = 5, .inner_max = 0 },
+        .{ .leaves = "2 3 | 4", .first = 5, .last = 4, .inner_max = 0 },
+        .{ .leaves = "2 | 3 4", .first = 2, .last = 7, .inner_max = 0 },
+        .{ .leaves = "|", .first = 0, .last = 0, .inner_max = 0 },
+        .{ .leaves = "| |", .first = 0, .last = 0, .inner_max = 0 },
+        .{ .leaves = "2 | | 7", .first = 2, .last = 7, .inner_max = 0 },
+        .{ .leaves = "3 | 4 4 | 2", .first = 3, .last = 2, .inner_max = 8 },
+        .{ .leaves = "1 | 9 | 1 1 | 3", .first = 1, .last = 3, .inner_max = 9 },
+        .{ .leaves = "| 6 0 2n |", .first = 0, .last = 0, .inner_max = 8, .ascii = false },
     };
-
-    metrics.add(.{
-        .total_width_cols = 0,
-        .max_line_width_cols = 0,
-        .ascii_only = true,
-    });
-
-    metrics.add(.{
-        .total_width_cols = 20,
-        .max_line_width_cols = 20,
-        .ascii_only = true,
-    });
-
-    try testing.expectEqual(@as(u32, 30), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 20), metrics.max_line_width_cols);
-
-    metrics.add(.{
-        .total_width_cols = 0,
-        .max_line_width_cols = 0,
-        .ascii_only = true,
-    });
-
-    metrics.add(.{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    });
-
-    try testing.expectEqual(@as(u32, 35), metrics.total_width_cols);
-    try testing.expectEqual(@as(u32, 20), metrics.max_line_width_cols);
-}
-
-test "Metrics.add - non-ASCII propagation" {
-    var left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = false,
-    };
-
-    left.add(right);
-    try testing.expect(!left.ascii_only);
+    for (cases) |case| {
+        errdefer std.debug.print("leaves \"{s}\"\n", .{case.leaves});
+        var leaves: std.ArrayList(Segment.Metrics) = .empty;
+        defer leaves.deinit(testing.allocator);
+        var tokens = std.mem.tokenizeScalar(u8, case.leaves, ' ');
+        while (tokens.next()) |token| try leaves.append(testing.allocator, try leafMetrics(token));
+        const whole = foldMetrics(leaves.items);
+        try testing.expectEqual(case.first, whole.line_width_first);
+        try testing.expectEqual(case.last, whole.line_width_last);
+        try testing.expectEqual(case.inner_max, whole.line_width_inner_max);
+        try testing.expectEqual(case.ascii, whole.ascii_only);
+        // Rope branches group leaves in any shape: every 2- and 3-way grouping gives the same metrics.
+        for (0..leaves.items.len + 1) |a| for (a..leaves.items.len + 1) |b| {
+            var grouped = foldMetrics(leaves.items[0..a]);
+            grouped.add(foldMetrics(leaves.items[a..b]));
+            grouped.add(foldMetrics(leaves.items[b..]));
+            try testing.expectEqual(whole, grouped);
+        };
+    }
 }
 
 test "UnifiedRope - basic operations" {
@@ -568,7 +515,7 @@ test "UnifiedRope - basic operations" {
     const metrics = rope.root.metrics();
     try testing.expectEqual(@as(u32, 5), rope.count());
     try testing.expectEqual(@as(u32, 15), metrics.custom.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), metrics.custom.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 10), metrics.custom.lineWidthMax());
 }
 
 test "UnifiedRope - empty rope metrics" {
@@ -602,7 +549,7 @@ test "UnifiedRope - single text segment" {
     const metrics = rope.root.metrics();
     try testing.expectEqual(@as(u32, 2), rope.count());
     try testing.expectEqual(@as(u32, 20), metrics.custom.total_width_cols);
-    try testing.expectEqual(@as(u32, 20), metrics.custom.max_line_width_cols);
+    try testing.expectEqual(@as(u32, 20), metrics.custom.lineWidthMax());
 }
 
 test "UnifiedRope - multiple lines with varying widths" {
@@ -647,31 +594,5 @@ test "UnifiedRope - multiple lines with varying widths" {
     const metrics = rope.root.metrics();
     try testing.expectEqual(@as(u32, 8), rope.count());
     try testing.expectEqual(@as(u32, 55), metrics.custom.total_width_cols);
-    try testing.expectEqual(@as(u32, 30), metrics.custom.max_line_width_cols);
-}
-
-fn combineMetrics(left: Segment.Metrics, right: Segment.Metrics) Segment.Metrics {
-    var result = left;
-    result.add(right);
-    return result;
-}
-
-test "combineMetrics helper function" {
-    const left: Segment.Metrics = .{
-        .total_width_cols = 10,
-        .max_line_width_cols = 10,
-        .ascii_only = true,
-    };
-
-    const right: Segment.Metrics = .{
-        .total_width_cols = 5,
-        .max_line_width_cols = 5,
-        .ascii_only = true,
-    };
-
-    const combined = combineMetrics(left, right);
-
-    try testing.expectEqual(@as(u32, 15), combined.total_width_cols);
-    try testing.expectEqual(@as(u32, 10), combined.max_line_width_cols);
-    try testing.expect(combined.ascii_only);
+    try testing.expectEqual(@as(u32, 30), metrics.custom.lineWidthMax());
 }

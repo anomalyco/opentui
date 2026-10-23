@@ -1,4 +1,5 @@
 const std = @import("std");
+const iter_mod = @import("../text-buffer-iterators.zig");
 const TestPools = @import("test-pools.zig").TestPools;
 const text_buffer = @import("../text-buffer.zig");
 const ansi = @import("../ansi.zig");
@@ -6,10 +7,12 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ss = @import("../syntax-style.zig");
 const utf8 = @import("../utf8.zig");
+const text_work = @import("../text-work.zig");
 const owned_styled = @import("owned-styled-text.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 const Highlight = text_buffer.Highlight;
+const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
 
 test "TextBuffer styled seek - JSON tokens retain every line span" {
     var pools = TestPools.init(std.testing.allocator);
@@ -36,7 +39,8 @@ test "TextBuffer styled seek - JSON tokens retain every line span" {
             const highlights = tb.getLineHighlights(row);
             const spans = tb.line_spans.items[row].items;
             try std.testing.expectEqual(5, highlights.len);
-            try std.testing.expectEqual(5, spans.len);
+            try std.testing.expectEqual(6, spans.len);
+            try std.testing.expectEqual(text_buffer.StyleSpan{ .col = 15, .style_id = 0, .next_col = std.math.maxInt(u32) }, spans[5]);
             for ([_]u32{ 0, 2, 9, 11, 14 }, [_]u32{ 2, 9, 11, 14, 15 }, 0..) |start, end, token| {
                 try std.testing.expectEqual(start, highlights[token].col_start);
                 try std.testing.expectEqual(end, highlights[token].col_end);
@@ -101,7 +105,7 @@ test "TextBuffer styled seek - display widths multiline chunks and links" {
                 .{ .text = first ++ "\n\n" ++ emoji, .fg = fg, .bg = bg, .attributes = 3, .url = url },
                 .{ .text = "", .fg = fg, .bg = bg, .attributes = 3, .url = url },
                 .{ .text = "\n" ++ combining ++ "\n\tX", .fg = fg, .bg = bg, .attributes = 3, .url = url },
-                .{ .text = "\n\n", .fg = fg, .bg = bg, .attributes = 3, .url = url },
+                .{ .text = "\n\u{301}\n", .fg = fg, .bg = bg, .attributes = 3, .url = url },
             });
             const style = current.?.style;
             try std.testing.expectEqual(9, tb.getLineCount());
@@ -120,9 +124,10 @@ test "TextBuffer styled seek - display widths multiline chunks and links" {
                 try std.testing.expectEqualStrings(url, try pools.links.get(link_id));
                 try std.testing.expectEqual(1, try pools.links.getRefcount(link_id));
             }
-            const text = "\n\n" ++ first ++ "\n\n" ++ emoji ++ "\n" ++ combining ++ "\n\tX\n\n";
+            const text = "\n\n" ++ first ++ "\n\n" ++ emoji ++ "\n" ++ combining ++ "\n\tX\n\u{301}\n";
             var output: [text.len]u8 = undefined;
             try std.testing.expectEqualStrings(text, output[0..tb.getPlainTextIntoBuffer(&output)]);
+            try std.testing.expectEqual(0, tb.getLineSpans(7).len);
             const offset = tb.measureText(first ++ emoji ++ combining);
             try tb.addHighlightByCharRange(offset, offset + tb.measureText("\tX"), 99, 9, 42);
             try std.testing.expectEqual(2, tb.getLineHighlights(6).len);
@@ -190,12 +195,15 @@ test "TextBuffer styled seek - range highlights visit only overlapping lines" {
     };
     for (cases) |case| {
         tb.clearAllHighlights();
-        const lookups_before = tb.rope().marker_lookups;
+        _ = text_work.take();
         try tb.addHighlightByCharRange(case.start, case.end, 1, 1, 0);
-        const lookups = tb.rope().marker_lookups - lookups_before;
+        const work = text_work.take();
         const lines_spanned = case.last - case.first + 1;
-        // Each binary search probe reads three markers and each spanned line at most five.
-        try std.testing.expect(lookups <= 3 * (std.math.log2_int_ceil(u32, line_count) + 1) + 5 * lines_spanned);
+        // Two descents find the first line; the walk then reads each spanned line's three leaves.
+        try std.testing.expectEqual(case.first, iter_mod.firstLineEndingAfter(tb.rope(), case.start));
+        try std.testing.expectEqual(2, work.line_seeks);
+        try std.testing.expect(work.line_seek_nodes <= 2 * tb.rope().root.depth());
+        try std.testing.expect(work.highlight_leaves <= 3 * lines_spanned);
         try std.testing.expectEqual(lines_spanned, tb.getHighlightCount());
         try std.testing.expectEqual(0, tb.getLineHighlights(case.first - 1).len);
         try std.testing.expectEqual(case.start - case.first * 2, tb.getLineHighlights(case.first)[0].col_start);
@@ -510,9 +518,9 @@ test "TextBuffer removal rejection - mixed refs preserve accepted highlights and
                 }
                 for (0..2) |line_idx| {
                     const actual = tb.getLineSpans(line_idx);
-                    try std.testing.expectEqual(@as(usize, if (hl_ref == 0) 2 else 1), actual.len);
-                    try std.testing.expectEqual(retained.style_id, actual[actual.len - 1].style_id);
-                    try std.testing.expectEqual(@as(u32, 6), actual[actual.len - 1].next_col);
+                    try std.testing.expectEqual(@as(usize, if (hl_ref == 0) 3 else 2), actual.len);
+                    try std.testing.expectEqual(retained.style_id, actual[actual.len - 2].style_id);
+                    try std.testing.expectEqual(text_buffer.StyleSpan{ .col = 6, .style_id = 0, .next_col = std.math.maxInt(u32) }, actual[actual.len - 1]);
                 }
                 if (succeeded) break;
             }
@@ -729,55 +737,55 @@ test "TextBuffer highlights - integration with SyntaxStyle" {
     try std.testing.expect(style.resolveById(comment_id) != null);
 }
 
-test "TextBuffer highlights - style spans computed correctly" {
+// Each row highlights `line` of `text` with [start, end, style, priority] ranges, applies `edit` with `arg`,
+// and expects [col, style, next_col] spans on `line`: the spans the final text gets from a fresh highlight.
+test "TextBuffer highlights - spans after the line grows match a fresh build" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("0123456789");
-
-    try tb.addHighlight(0, 0, 3, 1, 1, 0);
-    try tb.addHighlight(0, 5, 8, 2, 1, 0);
-
-    const spans = tb.getLineSpans(0);
-    try std.testing.expect(spans.len > 0);
-
-    // Should have spans for: [0-3 style:1], [3-5 style:0/default], [5-8 style:2], ...
-    var found_style1 = false;
-    var found_style2 = false;
-    for (spans) |span| {
-        if (span.style_id == 1) found_style1 = true;
-        if (span.style_id == 2) found_style2 = true;
-    }
-    try std.testing.expect(found_style1);
-    try std.testing.expect(found_style2);
-}
-
-test "TextBuffer highlights - priority handling in spans" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("0123456789");
-
-    try tb.addHighlight(0, 0, 8, 1, 1, 0);
-    try tb.addHighlight(0, 3, 6, 2, 5, 0);
-
-    const spans = tb.getLineSpans(0);
-    try std.testing.expect(spans.len > 0);
-
-    // In range 3-6, style 2 should win due to higher priority
-    var found_high_priority = false;
-    for (spans) |span| {
-        if (span.col >= 3 and span.col < 6 and span.style_id == 2) {
-            found_high_priority = true;
+    const max = std.math.maxInt(u32);
+    const red: []const [4]u32 = &.{.{ 0, 3, 1, 1 }};
+    const red_spans: []const [3]u32 = &.{ .{ 0, 1, 3 }, .{ 3, 0, max } };
+    const Edit = enum { none, append, insert, clear_append, replace_undo };
+    for ([_]struct { []const u8, usize, []const [4]u32, Edit, []const u8, []const [3]u32 }{
+        .{ "0123456789", 0, &.{ .{ 0, 3, 1, 1 }, .{ 5, 8, 2, 1 } }, .none, "", &.{ .{ 0, 1, 3 }, .{ 3, 0, 5 }, .{ 5, 2, 8 }, .{ 8, 0, max } } },
+        .{ "0123456789", 0, &.{ .{ 0, 8, 1, 1 }, .{ 3, 6, 2, 5 } }, .none, "", &.{ .{ 0, 1, 3 }, .{ 3, 2, 6 }, .{ 6, 1, 8 }, .{ 8, 0, max } } },
+        .{ "xyz", 0, red, .append, "abc", red_spans },
+        .{ "xyzw", 0, red, .append, "ab", red_spans },
+        .{ "x", 0, red, .append, "yzabc", red_spans },
+        .{ "xyz\n", 1, red, .append, "abcdef", red_spans },
+        .{ "xyz", 0, red, .insert, "abc", red_spans },
+        .{ "first\nsecond", 0, red, .clear_append, "abcdef", red_spans },
+        .{ "first\nsecond", 0, red, .replace_undo, "", red_spans },
+    }) |row| {
+        const text, const line, const highlights, const edit, const arg, const expected = row;
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+        defer eb.deinit();
+        const fresh = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer fresh.deinit();
+        try eb.setText(text);
+        for (highlights) |hl| try eb.tb.addHighlight(line, hl[0], hl[1], hl[2], @intCast(hl[3]), 0);
+        switch (edit) {
+            .none => {},
+            .append => try eb.tb.append(arg),
+            .insert => try eb.insertText(arg),
+            .clear_append => {
+                try eb.tb.setText("");
+                try eb.tb.append(arg);
+            },
+            .replace_undo => {
+                try eb.replaceText(arg);
+                _ = try eb.undo();
+            },
+        }
+        var output: [32]u8 = undefined;
+        try fresh.setText(output[0..eb.tb.getPlainTextIntoBuffer(&output)]);
+        for (highlights) |hl| try fresh.addHighlight(line, hl[0], hl[1], hl[2], @intCast(hl[3]), 0);
+        for ([_]*TextBuffer{ eb.tb, fresh }) |tb| {
+            const spans = tb.getLineSpans(line);
+            try std.testing.expectEqual(expected.len, spans.len);
+            for (expected, spans) |want, span| try std.testing.expectEqual(want, [3]u32{ span.col, span.style_id, span.next_col });
         }
     }
-    try std.testing.expect(found_high_priority);
 }
 
 // ===== Character Range Highlight Tests =====

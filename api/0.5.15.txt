@@ -1,0 +1,18 @@
+base 0.5.14
++ @opentui/core/runtime-plugin-support/configure: property CreateRuntimePluginOptions.preserve?: RuntimeSpecifierPreserve
++ @opentui/core/runtime-plugin-support/configure: type RuntimeSpecifierPreserve = readonly string[] | ReadonlySet<string> | ((specifier: string) => boolean)
++ @opentui/core/runtime-plugin-support: property CreateRuntimePluginOptions.preserve?: RuntimeSpecifierPreserve
++ @opentui/core/runtime-plugin-support: type RuntimeSpecifierPreserve = readonly string[] | ReadonlySet<string> | ((specifier: string) => boolean)
++ @opentui/core/runtime-plugin: property CreateRuntimePluginOptions.preserve?: RuntimeSpecifierPreserve
++ @opentui/core/runtime-plugin: type RuntimeSpecifierPreserve = readonly string[] | ReadonlySet<string> | ((specifier: string) => boolean)
+- @opentui/core: method DiffRenderable.destroyRecursively(): void
++ @opentui/core: protected method DiffRenderable.destroySelf(): void
++ @opentui/core: method LineNumberRenderable.destroy(): void
++ @opentui/react/runtime-plugin-support/configure: property ReactRuntimePluginSupportOptions.preserve?: RuntimeSpecifierPreserve
++ @opentui/react/runtime-plugin-support: property ReactRuntimePluginSupportOptions.preserve?: RuntimeSpecifierPreserve
++ @opentui/solid/runtime-plugin-support/configure: property SolidRuntimePluginSupportOptions.preserve?: RuntimeSpecifierPreserve
++ @opentui/solid/runtime-plugin-support: property SolidRuntimePluginSupportOptions.preserve?: RuntimeSpecifierPreserve
++ @opentui/solid: method LayoutSlotRenderable.destroyRecursively(): void
++ @opentui/solid: method SlotRenderable.didDestroySlotChild(child: LayoutSlotRenderable | TextSlotRenderable): void
+- @opentui/solid: method SlotRenderable.getSlotChild(parent: BaseRenderable): TextSlotRenderable | LayoutSlotRenderable
++ @opentui/solid: method SlotRenderable.getSlotChild(parent: BaseRenderable): LayoutSlotRenderable | TextSlotRenderable

@@ -42,6 +42,7 @@ import * as splitFooterStreamingDemo from "./split-footer-streaming-demo.js"
 import * as splitFooterImageDemo from "./split-footer-image-demo.js"
 import * as consoleExample from "./console-demo.js"
 import * as notificationDemo from "./notification-demo.js"
+import * as programStatusDemo from "./program-status-demo.js"
 import * as vnodeCompositionDemo from "./vnode-composition-demo.js"
 import * as hastSyntaxHighlightingExample from "./hast-syntax-highlighting-demo.js"
 import * as codeDemo from "./code-demo.js"
@@ -639,6 +640,12 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
       description: "Standalone OSC terminal notification demo with capability detection and interactive triggers",
       run: notificationDemo.run,
       destroy: notificationDemo.destroy,
+    },
+    {
+      name: "Program Status Demo",
+      description: "Report idle, working, blocked, done, and error states with OSC 7501 program status",
+      run: programStatusDemo.run,
+      destroy: programStatusDemo.destroy,
     },
     {
       name: "Terminal Palette Demo",

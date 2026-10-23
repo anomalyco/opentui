@@ -23,6 +23,7 @@ import {
   type LineInfo,
   type MousePointerStyle,
   type ImageRenderProtocol,
+  type ProgramStatus,
 } from "./types.js"
 export type {
   LineInfo,
@@ -31,6 +32,7 @@ export type {
   BuildOptions,
   NativeAudioCaptureStats,
   NativeAudioStreamStats,
+  NativeFrameWork,
   NativeRenderStats,
 }
 
@@ -73,6 +75,7 @@ import type {
   AudioStats,
   BuildOptions,
   AllocatorStats,
+  NativeFrameWork,
   NativeRenderStats,
   NativeImageInfo,
 } from "./zig-structs.js"
@@ -407,7 +410,6 @@ export enum NativeSceneFrame {
   Resize = nativeConstants.OT_SCENE_FRAME_RESIZE,
   LayoutChanged = nativeConstants.OT_SCENE_FRAME_LAYOUT_CHANGED,
   Record = nativeConstants.OT_SCENE_FRAME_RECORD,
-  Yield = nativeConstants.OT_SCENE_FRAME_YIELD,
 }
 
 export enum NativeScenePaintPhase {
@@ -705,12 +707,20 @@ export interface NativeSessionPumpResult {
   deadlineNs: bigint | null
 }
 
+/** One `ot_session_input_feed` call: input consumed, records written, and when to call again. */
+export interface NativeInputDrain {
+  consumed: number
+  count: number
+  deadlineNs: bigint | null
+}
+
 export type NativeSessionControl =
   | { kind: "capability-response"; bytes: Uint8Array }
   | { kind: "palette-query"; bytes: Uint8Array }
   | { kind: "title"; title: string }
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
+  | { kind: "program-status"; status: ProgramStatus }
   | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
@@ -757,8 +767,9 @@ export class NativeError extends Error {
   constructor(
     public readonly operation: string,
     public readonly status: NativeStatus,
+    reason = NativeStatus[status] ?? `status ${status}`,
   ) {
-    super(`${operation} failed: ${NativeStatus[status] ?? `status ${status}`}`)
+    super(`${operation} failed: ${reason}`)
     this.name = "NativeError"
   }
 }
@@ -925,6 +936,19 @@ registerEnvVar({
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
 const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
 const CURSOR_ID_TO_STYLE = ["block", "line", "underline", "default"] as const
+const PROGRAM_STATE_TO_ID: Record<string, number | undefined> = {
+  idle: nativeConstants.OT_PROGRAM_STATE_IDLE,
+  working: nativeConstants.OT_PROGRAM_STATE_WORKING,
+  done: nativeConstants.OT_PROGRAM_STATE_DONE,
+  blocked: nativeConstants.OT_PROGRAM_STATE_BLOCKED,
+  error: nativeConstants.OT_PROGRAM_STATE_ERROR,
+  clear: nativeConstants.OT_PROGRAM_STATE_CLEAR,
+}
+const PROGRAM_KIND_TO_ID: Record<string, number | undefined> = {
+  permission: nativeConstants.OT_PROGRAM_KIND_PERMISSION,
+  question: nativeConstants.OT_PROGRAM_KIND_QUESTION,
+  auth: nativeConstants.OT_PROGRAM_KIND_AUTH,
+}
 const MOUSE_STYLE_TO_ID = {
   auto: nativeConstants.OT_MOUSE_POINTER_AUTO,
   default: nativeConstants.OT_MOUSE_POINTER_DEFAULT,
@@ -999,6 +1023,24 @@ let globalTraceSymbols: Record<string, number[]> | null = null
 let globalFFILogPath: string | null = null
 let exitHandlerRegistered = false
 
+/** Reads the `ot_scene_stats` fields from `work_frame_id` up to `reserved`, camel-casing their names. */
+function readFrameWork(
+  layout: (typeof nativeLayouts)["ot_scene_stats"],
+  output: BigUint64Array,
+  words: Uint32Array,
+): NativeFrameWork {
+  const result: Record<string, number> = {}
+  let counting = false
+  for (const [field, { offset, type }] of Object.entries(layout.fields)) {
+    if (field === "reserved") break
+    counting ||= field === "work_frame_id"
+    if (!counting) continue
+    const name = field.replace(/_(.)/g, (_, letter: string) => letter.toUpperCase())
+    result[name] = type === "u64" ? toNumber(output[offset / 8]) : words[offset / 4]
+  }
+  return result as NativeFrameWork
+}
+
 function toNumber(value: number | bigint): number {
   return typeof value === "bigint" ? Number(value) : value
 }
@@ -1016,10 +1058,8 @@ function toSafeByteCount(value: number | bigint, label: string): number {
 }
 
 function toSafeFFIU32Length(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_FFI_U32) {
-    throw new RangeError(`${label} exceeds native u32 length limit`)
-  }
-
+  if (!Number.isInteger(value) || value < 0) throw new RangeError(`${label} must be a non-negative integer`)
+  if (value > MAX_FFI_U32) throw new RangeError(`${label} exceeds native u32 length limit`)
   return value
 }
 
@@ -1081,6 +1121,47 @@ function sessionBytes(bytes: Uint8Array, label: string): Uint8Array {
     typedArrayAccessors.byteOffset.get!.call(bytes),
     length,
   )
+}
+
+/** Packs one ot_session_program_status record and its text. Native code validates every value. */
+function programStatusPayload(status: ProgramStatus, encoder: TextEncoder): Uint8Array {
+  const layout = nativeLayouts.ot_session_program_status
+  const { state, kind, progress, id, app, title, message } = status as Partial<Record<string, unknown>>
+  const stateId = typeof state === "string" ? PROGRAM_STATE_TO_ID[state] : undefined
+  if (typeof stateId !== "number") throw new TypeError("Unknown program status state")
+  const header = new Uint32Array(layout.size / 4)
+  header[layout.fields.state.offset / 4] = stateId
+  if (kind != null) {
+    const kindId = typeof kind === "string" ? PROGRAM_KIND_TO_ID[kind] : undefined
+    if (typeof kindId !== "number") throw new TypeError("Unknown program status kind")
+    header[layout.fields.kind.offset / 4] = kindId
+  }
+  if (progress != null) {
+    if (typeof progress !== "number") throw new TypeError("Program status progress must be a number")
+    if (!isFFIU32(progress)) throw new RangeError("Program status progress must be an integer percentage")
+    header[layout.fields.fields.offset / 4] = nativeConstants.OT_PROGRAM_STATUS_PROGRESS
+    header[layout.fields.progress.offset / 4] = progress
+  }
+  // The record encodes an absent id as zero bytes. An empty id is not the root record.
+  if (id === "") throw new RangeError("Program status id must not be empty; omit it for the root record")
+  const text = { id, app, title, message }
+  const parts = (["id", "app", "title", "message"] as const).map((name) => {
+    const value = text[name]
+    if (value == null) return new Uint8Array(0)
+    if (typeof value !== "string") throw new TypeError(`Program status ${name} must be a string`)
+    // One extra UTF-16 unit preserves native over-limit rejection without an unbounded encoding allocation.
+    const bytes = encoder.encode(value.slice(0, NATIVE_SESSION_CONTROL_PACKET_BYTES + 1))
+    header[layout.fields[`${name}_len`].offset / 4] = bytes.byteLength
+    return bytes
+  })
+  const payload = new Uint8Array(layout.size + parts.reduce((total, part) => total + part.byteLength, 0))
+  payload.set(new Uint8Array(header.buffer))
+  let offset = layout.size
+  for (const part of parts) {
+    payload.set(part, offset)
+    offset += part.byteLength
+  }
+  return payload
 }
 
 function pixelInput(data: Uint8Array | PointerInput, length: number): Uint8Array | Pointer {
@@ -1252,7 +1333,7 @@ function encodeDrawColors(
   return background !== undefined
 }
 
-const DIAGNOSTIC_QUEUE_MAX = 64 // Version 1 C Contexts hold at most 64 diagnostic records.
+const DIAGNOSTIC_QUEUE_MAX = 64 // Version 2 C Contexts hold at most 64 diagnostic records.
 const DIAGNOSTIC_BATCH = 8 // Eight 4 KiB records keep the cached drain storage near 33 KB.
 
 function createDiagnosticDrainRecord() {
@@ -3355,8 +3436,8 @@ export class FFIRenderLib {
   private readonly hitTestOutput = new Uint32Array(1)
   private readonly bufferStackInput = new Float32Array(1)
   private readonly bufferStackOutput = new Float32Array(1)
-  private drawTextBytes: Uint8Array | undefined
-  private drawBottomBytes: Uint8Array | undefined
+  private readonly drawTextBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
+  private readonly drawBottomBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
   private opentui: ReturnType<typeof getOpenTUILib>
   private iccCacheClient = false
   // Layout reads are synchronous and non-reentrant. Retain one backing buffer so
@@ -3409,6 +3490,8 @@ export class FFIRenderLib {
     { service: ClipboardServiceHandle; handle: BigUint64Array }
   >()
   private audioEngines = new Map<AudioEngineHandle, NativeContextHandle>()
+  // Measures without an edit buffer share this Context. The library owns it, so dispose releases it.
+  private editMeasureContext?: NativeContextHandle
   private readonly invalidStandaloneHandle = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
   public readonly encoder: TextEncoder = new TextEncoder()
   private readonly emptyBytes = new Uint8Array(0)
@@ -4686,9 +4769,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    // Node FFI rejects negative zero for integer arguments.
-    const column = toFFII32(x, "Text view x") || 0
-    const row = toFFII32(y, "Text view y") || 0
+    const column = toFFII32(x, "Text view x")
+    const row = toFFII32(y, "Text view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_text_view")
     nativeResult(
       "ot_buffer_draw_text_view",
@@ -4706,8 +4788,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    const column = toFFII32(x, "Editor view x") || 0
-    const row = toFFII32(y, "Editor view y") || 0
+    const column = toFFII32(x, "Editor view x")
+    const row = toFFII32(y, "Editor view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_editor_view")
     nativeResult(
       "ot_buffer_draw_editor_view",
@@ -4725,8 +4807,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = toFFII32(x, "Scene text x") || 0
-    const row = toFFII32(y, "Scene text y") || 0
+    const column = toFFII32(x, "Scene text x")
+    const row = toFFII32(y, "Scene text y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
     nativeResult(
       "ot_buffer_draw_scene_text",
@@ -5032,6 +5114,36 @@ export class FFIRenderLib {
         count,
       ),
     )
+  }
+
+  public contextEditBufferMeasureText(
+    context: NativeContextHandle,
+    editBuffer: ContextEditBufferHandle,
+    bytes: Uint8Array,
+  ): number {
+    const handle = encodeContextHandle(context, editBuffer)
+    const input = sessionBytes(bytes, "Edit buffer measure length")
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_edit_buffer_measure_text")
+    nativeResult(
+      "ot_edit_buffer_measure_text",
+      this.opentui.symbols.ot_edit_buffer_measure_text(pointer, handle, viewOrNull(input), input.length, output),
+    )
+    return output[0]
+  }
+
+  public editMeasureText(bytes: Uint8Array, widthMethod: WidthMethod, tabWidth: number): number {
+    const method = widthMethodId(widthMethod, "editor")
+    const width = toSafeFFIU32Length(tabWidth, "Edit buffer tab width")
+    const input = sessionBytes(bytes, "Edit buffer measure length")
+    const output = new Uint32Array(1)
+    this.editMeasureContext ??= this.createContext({ objectCapacity: 1, renderCellsMax: 1 })
+    const pointer = this.nativeContextPointer(this.editMeasureContext, "ot_edit_measure_text")
+    nativeResult(
+      "ot_edit_measure_text",
+      this.opentui.symbols.ot_edit_measure_text(pointer, viewOrNull(input), input.length, method, width, output),
+    )
+    return output[0]
   }
 
   public contextEditBufferSetDefaults(
@@ -5751,8 +5863,8 @@ export class FFIRenderLib {
       const record = scratch.records[encoded.operation]
       const source = encoded.source
       // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
-      const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const textBytes = this.drawTextBytes
+      const bottomBytes = this.drawBottomBytes
       const textLength = encodeDrawText(text, textBytes)
       const bottomLength = encodeDrawText(bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
@@ -6388,6 +6500,70 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /**
+   * Parses terminal input into `ot_input_event` records (`records` must be 4-byte aligned) and
+   * their payload bytes. Stops when either buffer runs low; call again with the unconsumed rest.
+   */
+  public sessionInputFeed(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    bytes: Uint8Array,
+    nowNs: bigint,
+    records: Uint8Array,
+    payload: Uint8Array,
+  ): NativeInputDrain {
+    const layout = nativeLayouts.ot_input_drain
+    const handle = encodeContextHandle(context, session)
+    const input = sessionBytes(bytes, "Session input length")
+    const now = toFFIU64(nowNs, "Session input nowNs")
+    const recordView = sessionBytes(records, "Session input records length")
+    const payloadView = sessionBytes(payload, "Session input payload length")
+    if (recordView.byteOffset % nativeLayouts.ot_input_event.alignment !== 0) {
+      throw new RangeError("Session input records must be aligned to ot_input_event")
+    }
+    const capacity = Math.floor(recordView.byteLength / nativeLayouts.ot_input_event.size)
+    const output = new BigUint64Array(layout.size / 8)
+    const words = new Uint32Array(output.buffer)
+    words[layout.fields.struct_size.offset / 4] = layout.size
+    words[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+    const pointer = this.nativeContextPointer(context, "ot_session_input_feed")
+    nativeResult(
+      "ot_session_input_feed",
+      this.opentui.symbols.ot_session_input_feed(
+        pointer,
+        handle,
+        input.byteLength === 0 ? null : input,
+        input.byteLength,
+        now,
+        recordView,
+        capacity,
+        payloadView,
+        payloadView.byteLength,
+        output,
+      ),
+    )
+    const deadline = output[layout.fields.deadline_ns.offset / 8]!
+    return {
+      consumed: words[layout.fields.consumed.offset / 4]!,
+      count: words[layout.fields.count.offset / 4]!,
+      deadlineNs: deadline === 0n ? null : deadline,
+    }
+  }
+
+  /** `flags` combines `OT_INPUT_EXPECT_*` bits. Emits nothing; the next feed re-evaluates. */
+  public sessionInputExpect(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const value = toSafeFFIU32Length(flags, "Session input expectations")
+    const pointer = this.nativeContextPointer(context, "ot_session_input_expect")
+    nativeResult("ot_session_input_expect", this.opentui.symbols.ot_session_input_expect(pointer, handle, value))
+  }
+
+  public sessionInputReset(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const pointer = this.nativeContextPointer(context, "ot_session_input_reset")
+    nativeResult("ot_session_input_reset", this.opentui.symbols.ot_session_input_reset(pointer, handle, flags))
+  }
+
   /** Discards terminal input queued on process stdin. Best effort; see `ot_terminal_flush_input`. */
   public terminalFlushInput(): void {
     nativeResult("ot_terminal_flush_input", this.opentui.symbols.ot_terminal_flush_input())
@@ -6431,6 +6607,10 @@ export class FFIRenderLib {
       case "kitty-keyboard-flags":
         record[kind] = nativeConstants.OT_CONTROL_KITTY_KEYBOARD_FLAGS
         record[layout.fields.argument.offset / 4] = toSafeFFIU32Length(command.flags, "Session Kitty keyboard flags")
+        break
+      case "program-status":
+        record[kind] = nativeConstants.OT_CONTROL_PROGRAM_STATUS
+        bytes = programStatusPayload(command.status, this.encoder)
         break
       case "restore-modes":
         record[kind] = nativeConstants.OT_CONTROL_RESTORE_MODES
@@ -6615,6 +6795,7 @@ export class FFIRenderLib {
       notifications: flag(nativeConstants.OT_CAP_NOTIFICATIONS),
       explicit_cursor_positioning: flag(nativeConstants.OT_CAP_EXPLICIT_CURSOR_POSITIONING),
       remote: flag(nativeConstants.OT_CAP_REMOTE),
+      program_status: flag(nativeConstants.OT_CAP_PROGRAM_STATUS),
       unicode: widthMethodFromCode(output[layout.fields.width_method.offset / 4]),
       multiplexer: (["none", "tmux", "zellij", "screen", "unknown"] as const)[
         output[layout.fields.multiplexer.offset / 4]
@@ -6887,10 +7068,11 @@ export class FFIRenderLib {
         parent === null ? null : encodeContextHandle(context, parent, scratch.target.record, scratch.target.words)
       const childIndex = toSafeFFIU32Length(index, "Scene child index")
       const pointer = this.nativeContextPointer(context, "ot_scene_move_node")
-      nativeResult(
-        "ot_scene_move_node",
-        this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex),
-      )
+      const status = this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex)
+      // A move returns ObjectLimit for the Yoga depth limit; its other cause, 2^64 placements, cannot occur.
+      if (status === NativeStatus.ObjectLimit)
+        throw new NativeError("ot_scene_move_node", status, "Scene nesting depth exceeds the native limit")
+      nativeResult("ot_scene_move_node", status)
     } finally {
       this.sceneMoveRecord ??= scratch
     }
@@ -6960,8 +7142,9 @@ export class FFIRenderLib {
     const title = details.title ?? ""
     const bottomTitle = details.bottomTitle ?? ""
     if (typeof title !== "string" || typeof bottomTitle !== "string") throw new TypeError("Box titles must be strings")
-    const topBytes = sessionBytes(this.encoder.encode(title), "Box title length")
-    const bottomBytes = sessionBytes(this.encoder.encode(bottomTitle), "Box bottom title length")
+    // No JavaScript runs between these encodes and the call, so the drawText buffers can be shared.
+    const topLength = encodeDrawText(title, this.drawTextBytes)
+    const bottomLength = encodeDrawText(bottomTitle, this.drawBottomBytes)
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_scene_set_box_details")
       nativeResult(
@@ -6970,10 +7153,10 @@ export class FFIRenderLib {
           pointer,
           handle,
           record,
-          viewOrNull(topBytes),
-          topBytes.length,
-          viewOrNull(bottomBytes),
-          bottomBytes.length,
+          topLength === 0 ? null : this.drawTextBytes,
+          topLength,
+          bottomLength === 0 ? null : this.drawBottomBytes,
+          bottomLength,
         ),
       )
     })
@@ -7442,7 +7625,6 @@ export class FFIRenderLib {
     session: SessionHandle,
     previous: NativeSceneFrameRequest | null,
     options: NativeSceneFrameOptions,
-    maxWorkItems?: number,
     recording: Uint8Array | null = null,
   ): NativeSceneFrameRequest {
     const layout = nativeLayouts.ot_scene_frame_options
@@ -7471,8 +7653,6 @@ export class FFIRenderLib {
         options.preserveUnwritten ?? false,
         "Scene preserve unwritten cells",
       )
-      const workBudget = maxWorkItems === undefined ? 0xffffffff : toSafeFFIU32Length(maxWorkItems, "Scene work budget")
-      if (workBudget === 0) throw new RangeError("Scene work budget must be positive")
       const recordingLength = recording === null ? 0 : toSafeFFIU32Length(recording.byteLength, "Scene recording")
       const recordingView = recordingLength === 0 ? null : recording
       const output = encodeSceneFrameRequest(context, previous, scratch)
@@ -7488,7 +7668,6 @@ export class FFIRenderLib {
           previous === null ? null : output,
           config,
           output,
-          workBudget,
           recordingView,
           recordingLength,
           geometry,
@@ -7501,7 +7680,6 @@ export class FFIRenderLib {
             handle,
             previous === null ? null : output,
             config,
-            workBudget,
             recordingView,
             recordingLength,
             output,
@@ -7557,7 +7735,6 @@ export class FFIRenderLib {
     previous: BigUint64Array | null,
     config: Uint32Array,
     output: BigUint64Array,
-    workBudget: number,
     recording: Uint8Array | null,
     recordingLength: number,
     geometry: Uint32Array,
@@ -7572,7 +7749,6 @@ export class FFIRenderLib {
             handle,
             previous,
             config,
-            workBudget,
             recording,
             recordingLength,
             output,
@@ -7703,6 +7879,14 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /** @internal Tests set this through `createTestRenderer({ nativeSceneFullFrame })`. */
+  public sceneSetDebugFlags(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const value = toSafeFFIU32Length(flags, "Scene debug flags")
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_debug_flags")
+    nativeResult("ot_scene_set_debug_flags", this.opentui.symbols.ot_scene_set_debug_flags(pointer, handle, value))
+  }
+
   public sceneGetStats(context: NativeContextHandle, session: SessionHandle): NativeRenderStats {
     const layout = nativeLayouts.ot_scene_stats
     const handle = encodeContextHandle(context, session)
@@ -7727,6 +7911,7 @@ export class FFIRenderLib {
         words[layout.fields.stdout_write_time_valid.offset / 4] !== 0
           ? times[layout.fields.stdout_write_time.offset / 8]
           : undefined,
+      frameWork: readFrameWork(layout, output, words),
     }
   }
 
@@ -7856,10 +8041,12 @@ export class FFIRenderLib {
     if (this.clipboardServices.size > 0) {
       throw new Error("Cannot dispose OpenTUI native library while clipboard services are active")
     }
-    if (this.nativeContexts.size !== this.audioEngines.size) {
+    if (this.nativeContexts.size !== this.audioEngines.size + Number(this.editMeasureContext !== undefined)) {
       throw new NativeError("dispose", NativeStatus.ContextBusy)
     }
     this.yogaHost?.dispose()
+    if (this.editMeasureContext) this.releaseContext(this.editMeasureContext)
+    this.editMeasureContext = undefined
     for (const [engine, context] of this.audioEngines) {
       this.releaseContext(context)
       this.audioEngines.delete(engine)

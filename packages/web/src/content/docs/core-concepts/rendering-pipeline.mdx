@@ -58,7 +58,7 @@ JavaScript does not walk the tree to collect computed layout.
 
 Built-in text and editor measurement runs natively. A custom measurement provider (`setMeasureProvider()`) is a synchronous callback. Native code calls it on the same thread while Yoga runs.
 
-Preparation can yield to the event loop only when you set the renderer option `nativeSceneWorkBudget`. See [cooperative frames](/docs/core-concepts/renderer#cooperative-frames).
+Preparation never yields to the event loop. It runs until the frame paints or fails.
 
 See [Layout](/docs/core-concepts/layout) and [custom measurement](/docs/extend/custom-renderables#measure-intrinsic-size) for sizing and completed-layout reads.
 

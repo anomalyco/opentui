@@ -141,75 +141,75 @@ exports[`TextTableRenderable wraps CJK and emoji without grapheme duplication: u
 `;
 
 exports[`TextTableRenderable keeps full wrapped table layouts after a wide-to-narrow demo-style resize: demo resize expected primary table 1`] = `
-"┌────────────────────────┬─────────────────┬─────────────────────────┐
-│Task                    │Owner            │ETA                      │
-├────────────────────────┼─────────────────┼─────────────────────────┤
-│Wrap regression in      │core platform and│done after validating    │
-│operational status      │runtime          │none, word, and char wrap│
-│dashboard with dynamic  │reliability squad│modes across narrow,     │
-│row heights and         │                 │medium, wide, and ultra- │
-│constrained layout      │                 │wide terminal widths     │
-│validation              │                 │                         │
-├────────────────────────┼─────────────────┼─────────────────────────┤
-│Unicode layout          │render pipeline  │in review with follow-up │
-│stabilization for mixed │maintainers with │checks for border style  │
-│Latin, punctuation,     │fallback shaping │transitions, cell padding│
-│symbols, and long       │support          │variants, and selection  │
-│identifiers in adjacent │                 │range consistency        │
-│columns                 │                 │                         │
-├────────────────────────┼─────────────────┼─────────────────────────┤
-│Snapshot pass for table │qa automation and│today pending final      │
-│rendering in content    │visual diff      │baseline updates for     │
-│mode and full mode with │triage group     │oversized fixtures that  │
-│heavy and double border │                 │intentionally stress     │
-│combinations            │                 │wrapping behavior on     │
-│                        │                 │high-resolution terminals│
-├────────────────────────┼─────────────────┼─────────────────────────┤
-│Document edge cases     │developer        │planned for this sprint  │
-│where long tokens       │experience and   │once final reproducible  │
-│without spaces force    │docs tooling     │examples are captured and│
-│char wrapping and reveal│                 │linked to regression     │
-│per-cell clipping       │                 │tracking tickets         │
-│regressions             │                 │                         │
-├────────────────────────┼─────────────────┼─────────────────────────┤
-│Performance sweep of    │runtime          │scheduled after review,  │
-│wrapping algorithm under│performance task │with benchmark runs on   │
-│large datasets to       │force            │laptop and desktop       │
-│confirm stable frame    │                 │terminals at 200-plus    │
-│times during rapid key  │                 │column widths            │
-│toggling                │                 │                         │
-└────────────────────────┴─────────────────┴─────────────────────────┘
+"┌───────────────────────┬─────────────────┬─────────────────────────┐
+│Task                   │Owner            │ETA                      │
+├───────────────────────┼─────────────────┼─────────────────────────┤
+│Wrap regression in     │core platform and│done after validating    │
+│operational status     │runtime          │none, word, and char wrap│
+│dashboard with dynamic │reliability squad│modes across narrow,     │
+│row heights and        │                 │medium, wide, and ultra- │
+│constrained layout     │                 │wide terminal widths     │
+│validation             │                 │                         │
+├───────────────────────┼─────────────────┼─────────────────────────┤
+│Unicode layout         │render pipeline  │in review with follow-up │
+│stabilization for mixed│maintainers with │checks for border style  │
+│Latin, punctuation,    │fallback shaping │transitions, cell padding│
+│symbols, and long      │support          │variants, and selection  │
+│identifiers in adjacent│                 │range consistency        │
+│columns                │                 │                         │
+├───────────────────────┼─────────────────┼─────────────────────────┤
+│Snapshot pass for table│qa automation and│today pending final      │
+│rendering in content   │visual diff      │baseline updates for     │
+│mode and full mode with│triage group     │oversized fixtures that  │
+│heavy and double border│                 │intentionally stress     │
+│combinations           │                 │wrapping behavior on     │
+│                       │                 │high-resolution terminals│
+├───────────────────────┼─────────────────┼─────────────────────────┤
+│Document edge cases    │developer        │planned for this sprint  │
+│where long tokens      │experience and   │once final reproducible  │
+│without spaces force   │docs tooling     │examples are captured and│
+│char wrapping and      │                 │linked to regression     │
+│reveal per-cell        │                 │tracking tickets         │
+│clipping regressions   │                 │                         │
+├───────────────────────┼─────────────────┼─────────────────────────┤
+│Performance sweep of   │runtime          │scheduled after review,  │
+│wrapping algorithm     │performance task │with benchmark runs on   │
+│under large datasets to│force            │laptop and desktop       │
+│confirm stable frame   │                 │terminals at 200-plus    │
+│times during rapid key │                 │column widths            │
+│toggling               │                 │                         │
+└───────────────────────┴─────────────────┴─────────────────────────┘
 "
 `;
 
 exports[`TextTableRenderable keeps full wrapped table layouts after a wide-to-narrow demo-style resize: demo resize expected unicode table 1`] = `
-"┌─────────────┬──────────────────────────────────────────────────────┐
-│Column       │Wrapped Text                                          │
-├─────────────┼──────────────────────────────────────────────────────┤
-│mixed-       │CJK and emoji wrapping stress case: こんにちは世界 and│
-│languages    │안녕하세요 세계 and 你好，世界 followed by long       │
-│             │English prose that keeps flowing to test whether each │
-│             │cell wraps naturally even when the terminal is        │
-│             │extremely wide and the row still needs multiple visual│
-│             │lines for readability 🌍🚀                            │
-├─────────────┼──────────────────────────────────────────────────────┤
-│emoji-and-   │Faces 😀😃😄😁😆 plus symbols 🧪📦🛰️🔧📊 mixed with   │
-│symbols      │version tags like release-candidate-build-2026-02-    │
-│             │very-long-token-without-breaks to ensure char wrapping│
-│             │remains stable and no glyph alignment issues appear at│
-│             │column boundaries                                     │
-├─────────────┼──────────────────────────────────────────────────────┤
-│long-cjk-    │長文の日本語テキストと中文段落和한국어문장을連続して配│
-│phrase       │置し、その後に additional English context describing  │
-│             │renderer behavior, border intersection handling, and  │
-│             │selection extraction so that this single cell remains │
-│             │a reliable wrapping torture test.                     │
-├─────────────┼──────────────────────────────────────────────────────┤
-│mixed-       │Wrap behavior with punctuation-heavy content: [alpha]{│
-│punctuation  │beta}(gamma)<delta>|epsilon| then repeated fragments, │
-│             │commas, semicolons, and slashes to verify token       │
-│             │boundaries do not break border drawing logic or       │
-│             │spacing consistency in neighboring columns.           │
-└─────────────┴──────────────────────────────────────────────────────┘
+"┌─────────────┬─────────────────────────────────────────────────────┐
+│Column       │Wrapped Text                                         │
+├─────────────┼─────────────────────────────────────────────────────┤
+│mixed-       │CJK and emoji wrapping stress case: こんにちは世界   │
+│languages    │and 안녕하세요 세계 and 你好，世界 followed by long  │
+│             │English prose that keeps flowing to test whether each│
+│             │cell wraps naturally even when the terminal is       │
+│             │extremely wide and the row still needs multiple      │
+│             │visual lines for readability 🌍🚀                    │
+├─────────────┼─────────────────────────────────────────────────────┤
+│emoji-and-   │Faces 😀😃😄😁😆 plus symbols 🧪📦🛰️🔧📊 mixed with  │
+│symbols      │version tags like release-candidate-build-2026-02-   │
+│             │very-long-token-without-breaks to ensure char        │
+│             │wrapping remains stable and no glyph alignment issues│
+│             │appear at column boundaries                          │
+├─────────────┼─────────────────────────────────────────────────────┤
+│long-cjk-    │長文の日本語テキストと中文段落和한국어문장을連続して │
+│phrase       │配置し、その後に additional English context          │
+│             │describing renderer behavior, border intersection    │
+│             │handling, and selection extraction so that this      │
+│             │single cell remains a reliable wrapping torture test.│
+├─────────────┼─────────────────────────────────────────────────────┤
+│mixed-       │Wrap behavior with punctuation-heavy content: [alpha]│
+│punctuation  │{beta}(gamma)<delta>|epsilon| then repeated          │
+│             │fragments, commas, semicolons, and slashes to verify │
+│             │token boundaries do not break border drawing logic or│
+│             │spacing consistency in neighboring columns.          │
+└─────────────┴─────────────────────────────────────────────────────┘
 "
 `;

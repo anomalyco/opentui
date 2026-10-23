@@ -46,13 +46,9 @@ fn view(owner: *Owner, id: ?*const c.ot_handle) !*ctx.Editor {
     return owner.core.raw().getEditorView(abi.handleFromC((id orelse return error.InvalidOptions).*));
 }
 
-pub const prepareBuffer = ctx.Context.prepareTextBuffer;
-
 fn prepareWordLine(value: *ctx.Edit) !void {
-    try prepareBuffer(value.buffer.tb);
     const rope = value.buffer.tb.rope();
-    const marker = rope.getMarker(.linestart, value.buffer.getPrimaryCursor().row) orelse return;
-    var index = marker.leaf_index + 1;
+    var index = (iter.lineStart(rope, value.buffer.getPrimaryCursor().row) orelse return).leaf_index + 1;
     while (index < rope.count()) : (index += 1) {
         const segment = rope.get(index).?;
         if (segment.isBreak() or segment.isLineStart()) break;
@@ -124,7 +120,6 @@ pub fn ot_edit_buffer_get_position(context: ?*Owner, id: ?*const c.ot_handle, qu
     if (query > c.OT_EDIT_POSITION_LINE_START or (query < c.OT_EDIT_POSITION_OFFSET and a != 0) or
         (query != c.OT_EDIT_POSITION_COORDS and b != 0)) return fail(owner, error.InvalidOptions);
     const value = edit(owner, id) catch |err| return fail(owner, err);
-    prepareBuffer(value.buffer.tb) catch |err| return fail(owner, err);
     const rope = value.buffer.tb.rope();
     if (query == c.OT_EDIT_POSITION_NEXT_WORD or query == c.OT_EDIT_POSITION_PREV_WORD)
         prepareWordLine(value) catch |err| return fail(owner, err);
@@ -150,6 +145,22 @@ pub fn ot_edit_buffer_get_range(context: ?*Owner, id: ?*const c.ot_handle, by_co
     else
         .{ .offsets = .{ .start = start_col, .end = end_col } };
     out.?.* = owner.core.editBufferGetRange(abi.handleFromC(id.?.*), range, if (bytes) |p| p[0..capacity] else &.{}) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_edit_buffer_measure_text(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]const u8, byte_count: u32, out: ?*u32) callconv(.c) c.ot_status {
+    const owner = admit(context, true) catch |err| return fail(context, err);
+    if (id == null or out == null or (byte_count != 0 and bytes == null)) return fail(owner, error.InvalidOptions);
+    out.?.* = owner.core.editMeasureText(abi.handleFromC(id.?.*), if (bytes) |p| p[0..byte_count] else &.{}) catch |err| return fail(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_edit_measure_text(context: ?*Owner, bytes: ?[*]const u8, byte_count: u32, width_method: u32, tab_width: u32, out: ?*u32) callconv(.c) c.ot_status {
+    const owner = admit(context, true) catch |err| return fail(context, err);
+    if (out == null or (byte_count != 0 and bytes == null) or tab_width > 255) return fail(owner, error.InvalidOptions);
+    const method = abi.widthMethodFromC(width_method) catch |err| return fail(owner, err);
+    const width = @import("text-buffer.zig").UnifiedTextBuffer.effectiveTabWidth(@intCast(tab_width));
+    out.?.* = ctx.Context.measureEditText(if (bytes) |p| p[0..byte_count] else &.{}, width, .notation, method) catch |err| return fail(owner, err);
     return c.OT_OK;
 }
 
@@ -414,7 +425,6 @@ pub fn ot_editor_view_measure(context: ?*Owner, id: ?*const c.ot_handle, width: 
     _ = record(c.ot_editor_measure, out) catch |err| return fail(owner, err);
     if (width > std.math.maxInt(i32) or height > std.math.maxInt(i32)) return fail(owner, error.InvalidOptions);
     const value = view(owner, id) catch |err| return fail(owner, err);
-    prepareBuffer(value.view.text_buffer_view.text_buffer) catch |err| return fail(owner, err);
     const measured = value.view.text_buffer_view.measureForDimensions(width, height) catch |err| return fail(owner, err);
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_measure), .abi_version = c.OT_CONTEXT_ABI_VERSION, .line_count = measured.line_count, .width_cols_max = measured.width_cols_max };
     return c.OT_OK;
@@ -613,7 +623,11 @@ test "Context editor ABI rejects malformed arguments without side effects" {
     style.struct_size = @sizeOf(c.ot_editor_style);
     style.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const chunks = std.mem.zeroes([2]c.ot_styled_text_chunk);
-    for (0..18) |row| {
+    // One byte over the limit for the widest tab; tab width 255 rounds to 254.
+    const tabs = try std.testing.allocator.alloc(u8, (std.math.maxInt(u32) - 1) / 254 + 1);
+    defer std.testing.allocator.free(tabs);
+    @memset(tabs, '\t');
+    for (0..27) |row| {
         const status = switch (row) {
             0 => ot_edit_buffer_set_tab_width(&owner, &edit_id, 256),
             1 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_DEBUG_ROPE + 1, 0),
@@ -622,10 +636,10 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             4 => ot_edit_buffer_history(&owner, &edit_id, 0, &bytes, bytes.len - 1, &count),
             5 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "x", 1, 2),
             6 => abi.ot_edit_buffer_set_text(&owner, &edit_id, null, 1, 0),
-            // C0, C1 and DEL bytes other than tab, CR and LF are rejected whole.
-            7 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "a\x0cb", 3, 1),
-            8 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "a\x00", 2),
-            9 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "\xc2\x85", 2),
+            // Controls are text, but invalid UTF-8 beside them rejects the whole edit.
+            7 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "a\x0c\xff", 3, 1),
+            8 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "\x00\xc2", 2),
+            9 => ot_editor_view_set_placeholder(&owner, &view_id, "\xc2\x85\x80", 3, &chunks, 0),
             10 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_LINE_START + 1, 0, 0, &position),
             11 => ot_edit_buffer_get_range(&owner, &edit_id, 2, 0, 0, 0, 1, &bytes, bytes.len, &count),
             12 => ot_edit_buffer_set_defaults(&owner, &edit_id, 0, &style),
@@ -634,6 +648,15 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             15 => ot_editor_view_command(&owner, &view_id, c.OT_EDITOR_WRAP_MODE, c.OT_SCENE_WRAP_WORD + 1),
             16 => ot_editor_view_replace_selection(&owner, &view_id, "x", 1, null),
             17 => ot_editor_view_set_placeholder(&owner, &view_id, "a", 1, &chunks, chunks.len),
+            18 => ot_editor_view_replace_selection(&owner, &view_id, "\x1b\xff", 2, &count),
+            19 => ot_edit_buffer_measure_text(&owner, &edit_id, null, 1, &count),
+            20 => ot_edit_buffer_measure_text(&owner, &edit_id, "\x85", 1, &count),
+            21 => ot_edit_measure_text(&owner, null, 1, c.OT_WIDTH_METHOD_UNICODE, 0, &count),
+            22 => ot_edit_measure_text(&owner, "\x85", 1, c.OT_WIDTH_METHOD_UNICODE, 0, &count),
+            23 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE_WIDE + 1, 0, &count),
+            24 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 256, &count),
+            25 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 0, null),
+            26 => ot_edit_measure_text(&owner, tabs.ptr, @intCast(tabs.len), c.OT_WIDTH_METHOD_UNICODE, 255, &count),
             else => unreachable,
         };
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);
@@ -643,6 +666,9 @@ test "Context editor ABI rejects malformed arguments without side effects" {
         try std.testing.expectEqual(@as(u32, 99), count);
         try std.testing.expect(!owner.core.mutating);
     }
+    // At the limit, the cells of the widest tabs still fit in u32.
+    try std.testing.expectEqual(c.OT_OK, ot_edit_measure_text(&owner, tabs.ptr, @intCast(tabs.len - 1), c.OT_WIDTH_METHOD_UNICODE, 255, &count));
+    try std.testing.expectEqual(254 * (tabs.len - 1), count);
 }
 
 test "Context history-preserving set_text needs no registry slot per call" {

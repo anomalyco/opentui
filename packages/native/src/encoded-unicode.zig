@@ -21,7 +21,7 @@ pub const EncodedUnicode = struct {
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(allocator);
         const tab_width = 2;
-        try utf8.findRenderClusterInfo(allocator, input, tab_width, utf8.isAsciiOnly(input), width_method, &clusters);
+        try utf8.findRenderClusterInfo(allocator, input, tab_width, .hidden, utf8.isAsciiOnly(input), width_method, &clusters);
         var result: std.ArrayListUnmanaged(EncodedChar) = .empty;
         errdefer {
             release(pool, result.items);
@@ -41,7 +41,7 @@ pub const EncodedUnicode = struct {
                 byte_offset += std.unicode.utf8ByteSequenceLength(input[start]) catch unreachable;
             }
             const bytes = input[start..byte_offset];
-            const width = utf8.getWidthAt(bytes, 0, tab_width, width_method);
+            const width = utf8.getWidthAt(bytes, 0, tab_width, .hidden, width_method);
             if (width == 0) continue;
             if (!buffer.isPrintableGlyph(bytes)) {
                 result.appendNTimesAssumeCapacity(.{ .width = 1, .char = buffer.DEFAULT_SPACE_CHAR }, width);

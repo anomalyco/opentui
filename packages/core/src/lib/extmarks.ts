@@ -1,6 +1,5 @@
 import type { EditBuffer } from "../edit-buffer.js"
 import type { EditorView } from "../editor-view.js"
-import { stringWidth } from "../platform/runtime.js"
 import { ExtmarksHistory, type ExtmarksSnapshot } from "./extmarks-history.js"
 
 export interface Extmark {
@@ -143,9 +142,8 @@ export class ExtmarksController {
       }
 
       const targetOffset = currentOffset + 1
-      const textLength = this.editBuffer.getText().length
-
-      if (targetOffset > textLength) {
+      // A target past the end of the buffer has no position.
+      if (this.editBuffer.offsetToPosition(targetOffset) === null) {
         this.originalMoveCursorRight()
         return
       }
@@ -366,30 +364,17 @@ export class ExtmarksController {
           return
         }
 
-        const text = this.editBuffer.getText()
-        const currentOffset = this.editorView.getVisualCursor().offset
-
-        let lineStart = 0
-        for (let i = currentOffset - 1; i >= 0; i--) {
-          if (text[i] === "\n") {
-            lineStart = i + 1
-            break
-          }
-        }
-
-        let lineEnd = text.length
-        for (let i = currentOffset; i < text.length; i++) {
-          if (text[i] === "\n") {
-            lineEnd = i + 1
-            break
-          }
-        }
-
-        const deleteLength = lineEnd - lineStart
+        // Native deletes the line with the line break after it, or with the one before it on the last line.
+        const row = this.editBuffer.getCursorPosition().row
+        const lineStart = this.editBuffer.getLineStartOffset(row)
+        const [start, end] =
+          row + 1 < this.editBuffer.getLineCount()
+            ? [lineStart, this.editBuffer.getLineStartOffset(row + 1)]
+            : [Math.max(0, lineStart - 1), this.editBuffer.getEOL().offset]
 
         this.originalDeleteLine()
         this.saveSnapshot()
-        this.adjustExtmarksAfterDeletion(lineStart, deleteLength)
+        this.adjustExtmarksAfterDeletion(start, end - start)
       })
   }
 
@@ -610,20 +595,14 @@ export class ExtmarksController {
 
   private updateHighlights(): void {
     this.editBuffer.clearAllHighlights()
-    let text: string | undefined
 
     for (const extmark of this.extmarks.values()) {
       if (extmark.styleId !== undefined) {
-        text ??= this.editBuffer.getText()
         // extmark.start/end are display-width offsets including newlines (from cursor operations)
         // addHighlightByCharRange expects display-width offsets excluding newlines
-        // So we need to subtract the number of newlines before each position
-        const startWithoutNewlines = this.offsetExcludingNewlines(extmark.start, text)
-        const endWithoutNewlines = this.offsetExcludingNewlines(extmark.end, text)
-
         this.editBuffer.addHighlightByCharRange({
-          start: startWithoutNewlines,
-          end: endWithoutNewlines,
+          start: this.offsetExcludingNewlines(extmark.start),
+          end: this.offsetExcludingNewlines(extmark.end),
           styleId: extmark.styleId,
           priority: extmark.priority ?? 0,
           hlRef: extmark.id & 0xffff,
@@ -632,46 +611,10 @@ export class ExtmarksController {
     }
   }
 
-  private offsetExcludingNewlines(offset: number, text: string): number {
-    // offset is a display-width offset from the start of the buffer (includes newlines)
-    // We need to convert to display-width excluding newlines
-    // This means: subtract 1 for each newline encountered before this offset
-    let displayWidthSoFar = 0
-    let newlineCount = 0
-
-    // Walk through the text and calculate display widths
-    let i = 0
-    while (i < text.length && displayWidthSoFar < offset) {
-      if (text[i] === "\n") {
-        displayWidthSoFar++ // newline counts as width 1 in cursor offset
-        newlineCount++
-        i++
-      } else {
-        // Find the next newline or end of string
-        let j = i
-        while (j < text.length && text[j] !== "\n") {
-          j++
-        }
-        const chunk = text.substring(i, j)
-        const chunkWidth = stringWidth(chunk)
-
-        if (displayWidthSoFar + chunkWidth < offset) {
-          // Entire chunk fits before offset
-          displayWidthSoFar += chunkWidth
-          i = j
-        } else {
-          // Offset is within this chunk - need to find exact position
-          // Walk character by character
-          for (let k = i; k < j && displayWidthSoFar < offset; k++) {
-            const charWidth = stringWidth(text[k])
-            displayWidthSoFar += charWidth
-          }
-          break
-        }
-      }
-    }
-
-    return offset - newlineCount
+  // Each newline before the offset adds one, and native layout owns the cell widths of the text between them. An
+  // offset past the end stays past the end, where native highlights clamp it.
+  private offsetExcludingNewlines(offset: number): number {
+    return offset - (this.editBuffer.offsetToPosition(offset)?.row ?? 0)
   }
 
   public create(options: ExtmarkOptions): number {

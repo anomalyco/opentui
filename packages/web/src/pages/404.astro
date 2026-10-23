@@ -4,7 +4,13 @@ import SiteNav from "../components/SiteNav.astro"
 import Minimal from "../layouts/Minimal.astro"
 ---
 
-<Minimal title="Page not found | OpenTUI" description="This page does not exist." robots="noindex" wide>
+<Minimal
+  title="Page not found | OpenTUI"
+  description="This page does not exist."
+  robots="noindex"
+  canonical={false}
+  wide
+>
   <SiteNav slot="nav" />
 
   <main>

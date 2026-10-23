@@ -33,7 +33,7 @@ It models keybindings as priority-ordered, focus-scoped layers attached to targe
 - `registerNeovimDisambiguation`, `registerEscapeClearsPendingSequence`, `registerBackspacePopsPendingSequence`.
 - `registerDeadBindingWarnings`, `registerUnresolvedCommandWarnings`.
 
-`@opentui/keymap/addons/opentui` adds OpenTUI-specific pieces: layout-independent matching via `event.baseCode`, and pre-wired textarea / edit-buffer commands. Direct event matches win before fallback matches, even across layers.
+`@opentui/keymap/addons/opentui` adds OpenTUI-specific pieces: base-layout matching via `event.baseCode` for non-Latin keys and the digit row (the same rule as Core), and pre-wired textarea / edit-buffer commands. Direct event matches win before fallback matches, even across layers.
 
 ## Entry Points
 

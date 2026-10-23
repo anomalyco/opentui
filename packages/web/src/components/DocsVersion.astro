@@ -1,0 +1,54 @@
+---
+// Names the documentation's version in the site header and switches to the same page in the other channel. The
+// links carry data-docs-channel so the site validator accepts them as the only links between channels.
+import { channelCounterpart, pageChannel } from "../lib/docs-channel"
+
+const channel = pageChannel(Astro.url.pathname)
+const path = Astro.url.pathname.replace(/\/+$/, "") || "/"
+const choices = (["stable", "next"] as const).map((id) => {
+  const target = channelCounterpart(path, channel, id)
+  const title =
+    id === "stable"
+      ? `Documentation for the ${channel.release} release`
+      : "Documentation for the main branch, including unreleased changes"
+  return {
+    id,
+    label: id === "stable" ? channel.release : "next",
+    href: target.href,
+    title: target.present ? title : `${title}. It does not have this page.`,
+  }
+})
+---
+
+<nav class="docs-version" aria-label="Documentation version">
+  {
+    choices.map(({ id, label, title, href }) => (
+      <a {href} {title} data-docs-channel={id} aria-current={id === channel.id ? "true" : undefined}>
+        {label}
+      </a>
+    ))
+  }
+</nav>
+
+<style>
+  .docs-version {
+    display: flex;
+    gap: 2ch;
+  }
+
+  /* The current version is plain text, like the current page in the docs
+   * navigation; the other channel stays a link. */
+  a[aria-current] {
+    color: inherit;
+  }
+
+  /* Below 23rem the header cannot hold the wordmark, Menu, and both
+   * labels on one row, with a desktop scrollbar gutter and a two-digit
+   * minor version. Keep the current version; the main-branch notice still
+   * links back to the release. */
+  @media (max-width: 23rem) {
+    a:not([aria-current]) {
+      display: none;
+    }
+  }
+</style>

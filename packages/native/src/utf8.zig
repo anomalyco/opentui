@@ -1,5 +1,6 @@
 const std = @import("std");
 const uucode = @import("uucode");
+const text_work = @import("text-work.zig");
 
 /// The method to use when calculating the width of a grapheme
 pub const WidthMethod = enum(u8) {
@@ -433,15 +434,9 @@ inline fn eawToWidth(cp: u21, eaw: uucode.types.EastAsianWidth) i16 {
         else => {},
     }
 
-    if (cp == 0x200B) return 0;
-    if (cp == 0x200C) return 0;
-    if (cp == 0x200D) return 0;
-    if (cp == 0x2060) return 0;
-    if (cp == 0x034F) return 0;
-    if (cp == 0xFEFF) return 0;
-    if (cp >= 0x180B and cp <= 0x180D) return 0;
-    if (cp >= 0xFE00 and cp <= 0xFE0F) return 0;
-    if (cp >= 0xE0100 and cp <= 0xE01EF) return 0;
+    // Terminals draw a default-ignorable code point in no cell, but the soft hyphen in one. The
+    // conjoining jamo fillers U+115F and U+1160 keep their widths: they start a Hangul syllable cluster.
+    if (cp != 0x00AD and cp != 0x115F and cp != 0x1160 and uucode.get(.is_default_ignorable, cp)) return 0;
 
     if (eaw == .fullwidth or eaw == .wide) return 2;
 
@@ -527,30 +522,66 @@ inline fn eawToWidth(cp: u21, eaw: uucode.types.EastAsianWidth) i16 {
     return 1;
 }
 
+/// How layout measures a control character: a C0 control other than tab, line feed, and
+/// carriage return, DEL, or a C1 control. Line feed and carriage return break lines.
+/// Grapheme segmentation always puts a control in a cluster of its own (UAX #29 GB4 and GB5).
+pub const ControlDisplay = enum(u8) {
+    /// Zero width. Read-only text hides controls.
+    hidden,
+    /// Vim notation: C0 controls and DEL show as `^@`..`^_` and `^?` in two cells, and C1
+    /// controls as lowercase hex `<80>`..`<9f>` in four. An editor places its cursor by cell,
+    /// so it shows every control as notation that the cursor can stop on and delete.
+    notation,
+};
+
+/// Cell count of the notation for `cp`, or 0 when `cp` has none, as tab, line feed, and carriage return.
+pub fn controlNotationWidth(cp: u21) u32 {
+    if (cp == '\t' or cp == '\n' or cp == '\r') return 0;
+    if (cp < 0x20 or cp == 0x7f) return 2;
+    if (cp >= 0x80 and cp < 0xa0) return 4;
+    return 0;
+}
+
+/// Printable ASCII byte of notation cell `index` for control `cp`.
+pub fn controlNotationGlyph(cp: u21, index: u32) u8 {
+    std.debug.assert(index < controlNotationWidth(cp));
+    const digits = "0123456789abcdef";
+    return switch (index) {
+        0 => if (cp < 0x80) '^' else '<',
+        // DEL is 0x7f and shows as `^?` (0x3f).
+        1 => if (cp < 0x80) @intCast(cp ^ 0x40) else digits[cp >> 4],
+        2 => digits[cp & 0xf],
+        else => '>',
+    };
+}
+
+inline fn controlWidth(cp: u21, control_display: ControlDisplay) u32 {
+    return switch (control_display) {
+        .hidden => 0,
+        .notation => controlNotationWidth(cp),
+    };
+}
+
 /// Calculate the display width of a byte in columns
 /// Used for ASCII-only fast paths
-inline fn asciiCharWidth(byte: u8, tab_width: u8) u32 {
+inline fn asciiCharWidth(byte: u8, tab_width: u8, control_display: ControlDisplay) u32 {
     if (byte == '\t') {
         return tab_width;
     } else if (byte >= 32 and byte <= 126) {
         return 1;
     }
-    return 0;
+    return controlWidth(byte, control_display);
 }
 
 /// Calculate the display width of a character (byte or codepoint) in columns
-inline fn charWidth(byte: u8, codepoint: u21, tab_width: u8) u32 {
-    if (byte == '\t') {
-        return tab_width;
-    } else if (byte < 0x80 and byte >= 32 and byte <= 126) {
-        return 1;
-    } else if (byte >= 0x80) {
-        if (codepoint > 0x10FFFF) return 0;
-        const eaw = uucode.get(.east_asian_width, codepoint);
-        const w = eawToWidth(codepoint, eaw);
-        return if (w > 0) @intCast(w) else 0;
-    }
-    return 0;
+inline fn charWidth(byte: u8, codepoint: u21, tab_width: u8, control_display: ControlDisplay) u32 {
+    if (byte < 0x80) return asciiCharWidth(byte, tab_width, control_display);
+    if (codepoint > 0x10FFFF) return 0;
+    const eaw = uucode.get(.east_asian_width, codepoint);
+    const w = eawToWidth(codepoint, eaw);
+    // eawToWidth marks a C1 control with -1.
+    if (w < 0) return controlWidth(codepoint, control_display);
+    return if (w > 0) @intCast(w) else 0;
 }
 
 /// Check if a codepoint is valid for grapheme break detection
@@ -564,42 +595,14 @@ inline fn isValidCodepoint(cp: u21) bool {
 /// - no_zwj mode: use grapheme breaks but treat ZWJ as a break (ignore joining)
 /// - unicode mode: use standard grapheme cluster segmentation
 pub inline fn isGraphemeBreak(prev_cp: ?u21, curr_cp: u21, break_state: *uucode.grapheme.BreakState, width_method: WidthMethod) bool {
-    // wcwidth mode uses Unicode grapheme clustering for proper rendering
-    // (ZWJ sequences, skin tone modifiers stay together), but width is
-    // calculated using wcwidth semantics (sum of codepoint widths)
-    if (width_method == .wcwidth) {
-        if (prev_cp == null) return true;
-
-        if (!isValidCodepoint(curr_cp)) return true;
-        if (!isValidCodepoint(prev_cp.?)) return true;
-        return uucode.grapheme.isBreak(prev_cp.?, curr_cp, break_state);
-    }
-
-    if (!isValidCodepoint(curr_cp)) return true;
-
-    // In no_zwj mode, treat ZWJ (U+200D) as NOT joining characters
-    // When we see ZWJ after a character, it's part of that character's grapheme
-    // But when we see a character after ZWJ, it starts a new grapheme
-    if (width_method == .no_zwj) {
-        const ZWJ: u21 = 0x200D;
-        if (prev_cp) |p| {
-            // If previous was ZWJ, current starts a new grapheme
-            // Don't call uucode.grapheme.isBreak because it will say no break
-            if (p == ZWJ) {
-                // Reset break state since we're forcing a break
-                break_state.* = .default;
-                return true;
-            }
-        }
-        // If current is ZWJ, don't break yet - it's part of previous grapheme
-        // (will have width 0 anyway)
-    }
-
-    if (prev_cp) |p| {
-        if (!isValidCodepoint(p)) return true;
-        return uucode.grapheme.isBreak(p, curr_cp, break_state);
-    }
-    return true;
+    const p = prev_cp orelse return true;
+    // U+FFFD stands alone, and in no_zwj mode a character after ZWJ starts a new grapheme. A forced
+    // break ends any joining sequence, as UAX #29 does, so the graphemes after it segment the same
+    // as when a scan starts there.
+    const forced = !isValidCodepoint(curr_cp) or !isValidCodepoint(p) or
+        (width_method == .no_zwj and p == 0x200D);
+    if (forced) break_state.* = .default;
+    return forced or uucode.grapheme.isBreak(p, curr_cp, break_state);
 }
 
 /// State for accumulating grapheme cluster width
@@ -777,13 +780,21 @@ pub fn findWrapPosByWidth(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
 ) WrapByWidthResult {
-    switch (width_method) {
-        .unicode, .unicode_wide, .no_zwj => return findWrapPosByWidthUnicode(text, max_columns, tab_width, isASCIIOnly, width_method),
-        .wcwidth => return findWrapPosByWidthWCWidth(text, max_columns, tab_width, isASCIIOnly),
-    }
+    const result = switch (width_method) {
+        .unicode, .unicode_wide, .no_zwj => findWrapPosByWidthUnicode(text, max_columns, tab_width, control_display, isASCIIOnly, width_method),
+        .wcwidth => findWrapPosByWidthWCWidth(text, max_columns, tab_width, control_display, isASCIIOnly),
+    };
+    countPrefixSeek(isASCIIOnly, result.byte_offset);
+    return result;
+}
+
+inline fn countPrefixSeek(isASCIIOnly: bool, byte_offset: usize) void {
+    text_work.add(.prefix_seeks, 1);
+    if (!isASCIIOnly) text_work.add(.bytes_scanned, byte_offset);
 }
 
 /// Find a materialized byte window boundary without splitting a grapheme.
@@ -792,13 +803,16 @@ pub fn findWrapPosByWidthGraphemeSafe(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
 ) WrapByWidthResult {
     if (width_method == .wcwidth) {
-        return findWrapPosByWidthUnicode(text, max_columns, tab_width, isASCIIOnly, .wcwidth);
+        const result = findWrapPosByWidthUnicode(text, max_columns, tab_width, control_display, isASCIIOnly, .wcwidth);
+        countPrefixSeek(isASCIIOnly, result.byte_offset);
+        return result;
     }
-    return findWrapPosByWidth(text, max_columns, tab_width, isASCIIOnly, width_method);
+    return findWrapPosByWidth(text, max_columns, tab_width, control_display, isASCIIOnly, width_method);
 }
 
 /// Find wrap position by width using Unicode grapheme cluster segmentation
@@ -806,6 +820,7 @@ fn findWrapPosByWidthUnicode(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
 ) WrapByWidthResult {
@@ -843,7 +858,7 @@ fn findWrapPosByWidthUnicode(
                     return .{ .byte_offset = @intCast(state.cluster_start), .grapheme_count = state.grapheme_count, .columns_used = state.columns_used };
                 }
 
-                const cp_width = asciiCharWidth(b, tab_width);
+                const cp_width = asciiCharWidth(b, tab_width, control_display);
                 if (!state.cluster_started) {
                     state.width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
                     state.cluster_width = cp_width;
@@ -873,7 +888,7 @@ fn findWrapPosByWidthUnicode(
                 return .{ .byte_offset = @intCast(state.cluster_start), .grapheme_count = state.grapheme_count, .columns_used = state.columns_used };
             }
 
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             if (!state.cluster_started) {
                 state.width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
                 state.cluster_width = cp_width;
@@ -900,7 +915,7 @@ fn findWrapPosByWidthUnicode(
             return .{ .byte_offset = @intCast(state.cluster_start), .grapheme_count = state.grapheme_count, .columns_used = state.columns_used };
         }
 
-        const cp_width = charWidth(b0, curr_cp, tab_width);
+        const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
         if (!state.cluster_started) {
             state.width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
             state.cluster_width = cp_width;
@@ -930,6 +945,7 @@ fn findWrapPosByWidthWCWidth(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
 ) WrapByWidthResult {
     if (text.len == 0 or max_columns == 0) {
@@ -961,7 +977,7 @@ fn findWrapPosByWidthWCWidth(
 
         if (pos + cp_len > text.len) break;
 
-        const cp_width = charWidth(b0, curr_cp, tab_width);
+        const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
 
         // In wcwidth mode, stop if we've already used max_columns
         // (don't continue adding zero-width chars after reaching limit)
@@ -991,14 +1007,17 @@ pub fn findPosByWidth(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     include_start_before: bool,
     width_method: WidthMethod,
 ) PosByWidthResult {
-    switch (width_method) {
-        .unicode, .unicode_wide, .no_zwj => return findPosByWidthUnicode(text, max_columns, tab_width, isASCIIOnly, include_start_before, width_method),
-        .wcwidth => return findPosByWidthWCWidth(text, max_columns, tab_width, isASCIIOnly, include_start_before),
-    }
+    const result = switch (width_method) {
+        .unicode, .unicode_wide, .no_zwj => findPosByWidthUnicode(text, max_columns, tab_width, control_display, isASCIIOnly, include_start_before, width_method),
+        .wcwidth => findPosByWidthWCWidth(text, max_columns, tab_width, control_display, isASCIIOnly, include_start_before),
+    };
+    countPrefixSeek(isASCIIOnly, result.byte_offset);
+    return result;
 }
 
 /// Find a display position without splitting Unicode grapheme clusters.
@@ -1007,11 +1026,14 @@ pub fn findGraphemePosByWidth(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     include_start_before: bool,
     width_method: WidthMethod,
 ) PosByWidthResult {
-    return findPosByWidthUnicode(text, max_columns, tab_width, isASCIIOnly, include_start_before, width_method);
+    const result = findPosByWidthUnicode(text, max_columns, tab_width, control_display, isASCIIOnly, include_start_before, width_method);
+    countPrefixSeek(isASCIIOnly, result.byte_offset);
+    return result;
 }
 
 /// Find position by column width using Unicode grapheme cluster segmentation
@@ -1019,14 +1041,11 @@ fn findPosByWidthUnicode(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     include_start_before: bool,
     width_method: WidthMethod,
 ) PosByWidthResult {
-    if (text.len == 0 or max_columns == 0) {
-        return .{ .byte_offset = 0, .grapheme_count = 0, .columns_used = 0 };
-    }
-
     // ASCII-only fast path
     if (isASCIIOnly) {
         if (max_columns >= text.len) {
@@ -1057,7 +1076,7 @@ fn findPosByWidthUnicode(
                     return .{ .byte_offset = @intCast(state.cluster_start), .grapheme_count = state.grapheme_count, .columns_used = state.columns_used };
                 }
 
-                const cp_width = asciiCharWidth(b, tab_width);
+                const cp_width = asciiCharWidth(b, tab_width, control_display);
                 if (!state.cluster_started) {
                     state.width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
                     state.cluster_width = cp_width;
@@ -1087,7 +1106,7 @@ fn findPosByWidthUnicode(
                 return .{ .byte_offset = @intCast(state.cluster_start), .grapheme_count = state.grapheme_count, .columns_used = state.columns_used };
             }
 
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             if (!state.cluster_started) {
                 state.width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
                 state.cluster_width = cp_width;
@@ -1114,7 +1133,7 @@ fn findPosByWidthUnicode(
             return .{ .byte_offset = @intCast(state.cluster_start), .grapheme_count = state.grapheme_count, .columns_used = state.columns_used };
         }
 
-        const cp_width = charWidth(b0, curr_cp, tab_width);
+        const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
         if (!state.cluster_started) {
             state.width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
             state.cluster_width = cp_width;
@@ -1149,13 +1168,10 @@ fn findPosByWidthWCWidth(
     text: []const u8,
     max_columns: u32,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     include_start_before: bool,
 ) PosByWidthResult {
-    if (text.len == 0 or max_columns == 0) {
-        return .{ .byte_offset = 0, .grapheme_count = 0, .columns_used = 0 };
-    }
-
     // ASCII-only fast path
     if (isASCIIOnly) {
         if (max_columns >= text.len) {
@@ -1181,7 +1197,7 @@ fn findPosByWidthWCWidth(
 
         if (pos + cp_len > text.len) break;
 
-        const cp_width = charWidth(b0, curr_cp, tab_width);
+        const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
         const cp_start_col = columns_used;
         const cp_end_col = columns_used + cp_width;
 
@@ -1207,44 +1223,22 @@ fn findPosByWidthWCWidth(
     return .{ .byte_offset = @intCast(text.len), .grapheme_count = codepoint_count, .columns_used = columns_used };
 }
 
-/// Byte length of the zero-width grapheme clusters that start `text`, such as a combining
-/// mark that an edit placed in a chunk of its own.
-pub fn zeroWidthPrefixLen(text: []const u8, tab_width: u8, width_method: WidthMethod) usize {
-    var pos: usize = 0;
-    var cluster_start: usize = 0;
-    var prev_cp: ?u21 = null;
-    var break_state: uucode.grapheme.BreakState = .default;
-    var width_state = GraphemeWidthState.init(0, 0, width_method);
-    while (pos < text.len) {
-        const decoded = decodeUtf8Unchecked(text, pos);
-        const cp_width = charWidth(text[pos], decoded.cp, tab_width);
-        if (prev_cp == null or isGraphemeBreak(prev_cp, decoded.cp, &break_state, width_method)) {
-            if (width_state.width > 0) return cluster_start;
-            cluster_start = pos;
-            width_state = GraphemeWidthState.init(decoded.cp, cp_width, width_method);
-        } else {
-            width_state.addCodepoint(decoded.cp, cp_width);
-        }
-        prev_cp = decoded.cp;
-        pos += decoded.len;
-    }
-    return if (width_state.width > 0) cluster_start else text.len;
-}
-
 /// Get width at byte offset - proxy function that dispatches based on width_method
-pub fn getWidthAt(text: []const u8, byte_offset: usize, tab_width: u8, width_method: WidthMethod) u32 {
+pub fn getWidthAt(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) u32 {
+    text_work.add(.grapheme_width_reads, 1);
     switch (width_method) {
-        .unicode, .unicode_wide, .no_zwj => return getWidthAtUnicode(text, byte_offset, tab_width, width_method),
-        .wcwidth => return getWidthAtWCWidth(text, byte_offset, tab_width),
+        .unicode, .unicode_wide, .no_zwj => return getWidthAtUnicode(text, byte_offset, tab_width, control_display, width_method),
+        .wcwidth => return getWidthAtWCWidth(text, byte_offset, tab_width, control_display),
     }
 }
 
-pub fn getGraphemeWidthAt(text: []const u8, byte_offset: usize, tab_width: u8, width_method: WidthMethod) u32 {
-    return getWidthAtUnicode(text, byte_offset, tab_width, width_method);
+pub fn getGraphemeWidthAt(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) u32 {
+    text_work.add(.grapheme_width_reads, 1);
+    return getWidthAtUnicode(text, byte_offset, tab_width, control_display, width_method);
 }
 
 /// Get width at byte offset using Unicode grapheme cluster segmentation
-fn getWidthAtUnicode(text: []const u8, byte_offset: usize, tab_width: u8, width_method: WidthMethod) u32 {
+fn getWidthAtUnicode(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) u32 {
     if (byte_offset >= text.len) return 0;
 
     const b0 = text[byte_offset];
@@ -1259,7 +1253,7 @@ fn getWidthAtUnicode(text: []const u8, byte_offset: usize, tab_width: u8, width_
 
     var break_state: uucode.grapheme.BreakState = .default;
     var prev_cp: ?u21 = first_cp;
-    const first_width = charWidth(b0, first_cp, tab_width);
+    const first_width = charWidth(b0, first_cp, tab_width, control_display);
     var state = GraphemeWidthState.init(first_cp, first_width, width_method);
 
     var pos = byte_offset + first_len;
@@ -1274,7 +1268,7 @@ fn getWidthAtUnicode(text: []const u8, byte_offset: usize, tab_width: u8, width_
         const is_break = isGraphemeBreak(prev_cp, curr_cp, &break_state, width_method);
         if (is_break) break;
 
-        const cp_width = charWidth(b, curr_cp, tab_width);
+        const cp_width = charWidth(b, curr_cp, tab_width, control_display);
         state.addCodepoint(curr_cp, cp_width);
 
         prev_cp = curr_cp;
@@ -1286,7 +1280,7 @@ fn getWidthAtUnicode(text: []const u8, byte_offset: usize, tab_width: u8, width_
 
 /// Get width at byte offset using wcwidth-style codepoint-by-codepoint processing
 /// In wcwidth mode, each codepoint is treated independently - return its width directly
-fn getWidthAtWCWidth(text: []const u8, byte_offset: usize, tab_width: u8) u32 {
+fn getWidthAtWCWidth(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay) u32 {
     if (byte_offset >= text.len) return 0;
 
     const b0 = text[byte_offset];
@@ -1297,7 +1291,7 @@ fn getWidthAtWCWidth(text: []const u8, byte_offset: usize, tab_width: u8) u32 {
         break :blk dec.cp;
     };
 
-    const first_width = charWidth(b0, first_cp, tab_width);
+    const first_width = charWidth(b0, first_cp, tab_width, control_display);
     return first_width;
 }
 
@@ -1306,20 +1300,23 @@ pub const PrevGraphemeResult = struct {
     width: u32,
 };
 
-/// Get previous grapheme start - proxy function that dispatches based on width_method
-pub fn getPrevGraphemeStart(text: []const u8, byte_offset: usize, tab_width: u8, width_method: WidthMethod) ?PrevGraphemeResult {
+/// Get the start of the last grapheme before byte_offset that takes cells - proxy function that
+/// dispatches based on width_method
+pub fn getPrevGraphemeStart(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) ?PrevGraphemeResult {
+    text_work.add(.prefix_seeks, 1);
     switch (width_method) {
-        .unicode, .unicode_wide, .no_zwj => return getPrevGraphemeStartUnicode(text, byte_offset, tab_width, width_method),
-        .wcwidth => return getPrevGraphemeStartWCWidth(text, byte_offset, tab_width),
+        .unicode, .unicode_wide, .no_zwj => return getPrevGraphemeStartUnicode(text, byte_offset, tab_width, control_display, width_method),
+        .wcwidth => return getPrevGraphemeStartWCWidth(text, byte_offset, tab_width, control_display),
     }
 }
 
 /// Get previous grapheme start using wcwidth-style codepoint-by-codepoint processing
-fn getPrevGraphemeStartWCWidth(text: []const u8, byte_offset: usize, tab_width: u8) ?PrevGraphemeResult {
+fn getPrevGraphemeStartWCWidth(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay) ?PrevGraphemeResult {
     if (byte_offset == 0 or text.len == 0) return null;
     if (byte_offset > text.len) return null;
 
     var pos: usize = 0;
+    defer text_work.add(.bytes_scanned, pos);
     var last_result: ?PrevGraphemeResult = null;
 
     while (pos < byte_offset) {
@@ -1330,7 +1327,7 @@ fn getPrevGraphemeStartWCWidth(text: []const u8, byte_offset: usize, tab_width: 
             break :blk dec.cp;
         };
         const cp_len: usize = if (b < 0x80) 1 else decodeUtf8Unchecked(text, pos).len;
-        const cp_width = charWidth(b, curr_cp, tab_width);
+        const cp_width = charWidth(b, curr_cp, tab_width, control_display);
 
         if (cp_width > 0) {
             last_result = .{
@@ -1344,17 +1341,34 @@ fn getPrevGraphemeStartWCWidth(text: []const u8, byte_offset: usize, tab_width: 
     return last_result;
 }
 
-/// Get previous grapheme start using Unicode grapheme cluster segmentation
-fn getPrevGraphemeStartUnicode(text: []const u8, byte_offset: usize, tab_width: u8, width_method: WidthMethod) ?PrevGraphemeResult {
+/// Get previous grapheme start using the grapheme segmentation that layout measures with.
+/// Like the wcwidth variant, skip zero-width clusters: a cursor has no cell to stop on in them.
+fn getPrevGraphemeStartUnicode(text: []const u8, byte_offset: usize, tab_width: u8, control_display: ControlDisplay, width_method: WidthMethod) ?PrevGraphemeResult {
     if (byte_offset == 0 or text.len == 0) return null;
     if (byte_offset > text.len) return null;
 
-    // For unicode/no_zwj modes, use grapheme cluster detection
+    // UAX #29 joins two ASCII characters only as CR LF, and LF takes no cells, so an ASCII character
+    // after ASCII that takes cells is the previous grapheme, and ASCII text needs no scan.
+    const last = text[byte_offset - 1];
+    const before: u8 = if (byte_offset > 1) text[byte_offset - 2] else 0;
+    if (last < 0x80 and before < 0x80) {
+        const width = asciiCharWidth(last, tab_width, control_display);
+        if (width > 0) return .{ .start_offset = byte_offset - 1, .width = width };
+    }
+
+    // The last grapheme usually takes cells, so find it without measuring the graphemes before it.
+    const last_start = lastGraphemeStart(text, byte_offset, width_method);
+    const last_width = getWidthAt(text, last_start, tab_width, control_display, width_method);
+    if (last_width > 0) return .{ .start_offset = last_start, .width = last_width };
+
+    // Otherwise measure each grapheme during one more scan to find the last one that takes cells.
     var break_state: uucode.grapheme.BreakState = .default;
     var pos: usize = 0;
     var prev_cp: ?u21 = null;
-    var prev_grapheme_start: usize = 0;
-    var second_to_last_grapheme_start: usize = 0;
+    var grapheme_start: usize = 0;
+    var width_state = GraphemeWidthState.init(0, 0, width_method);
+    var result: ?PrevGraphemeResult = null;
+    defer text_work.add(.bytes_scanned, pos);
 
     while (pos < byte_offset) {
         const b = text[pos];
@@ -1365,42 +1379,46 @@ fn getPrevGraphemeStartUnicode(text: []const u8, byte_offset: usize, tab_width: 
         };
 
         const cp_len: usize = if (b < 0x80) 1 else decodeUtf8Unchecked(text, pos).len;
-
-        if (isValidCodepoint(curr_cp)) {
-            const is_break = if (prev_cp) |p| blk: {
-                if (!isValidCodepoint(p)) break :blk true;
-                break :blk uucode.grapheme.isBreak(p, curr_cp, &break_state);
-            } else true;
-
-            if (is_break) {
-                second_to_last_grapheme_start = prev_grapheme_start;
-                prev_grapheme_start = pos;
-            }
-
-            prev_cp = curr_cp;
+        const cp_width = charWidth(b, curr_cp, tab_width, control_display);
+        if (isGraphemeBreak(prev_cp, curr_cp, &break_state, width_method)) {
+            if (width_state.width > 0) result = .{ .start_offset = grapheme_start, .width = width_state.width };
+            grapheme_start = pos;
+            width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
+        } else {
+            width_state.addCodepoint(curr_cp, cp_width);
         }
 
+        prev_cp = curr_cp;
         pos += cp_len;
     }
 
-    if (prev_grapheme_start == 0 and byte_offset == 0) {
-        return null;
+    // Adding a code point never narrows a grapheme, so the part before byte_offset takes no cells either.
+    std.debug.assert(grapheme_start == last_start);
+    std.debug.assert(width_state.width == 0);
+    return result;
+}
+
+fn lastGraphemeStart(text: []const u8, byte_offset: usize, width_method: WidthMethod) usize {
+    var break_state: uucode.grapheme.BreakState = .default;
+    var pos: usize = 0;
+    var prev_cp: ?u21 = null;
+    var grapheme_start: usize = 0;
+    defer text_work.add(.bytes_scanned, pos);
+    while (pos < byte_offset) {
+        const decoded = decodeUtf8Unchecked(text, pos);
+        if (isGraphemeBreak(prev_cp, decoded.cp, &break_state, width_method)) grapheme_start = pos;
+        prev_cp = decoded.cp;
+        pos += decoded.len;
     }
-
-    const start_offset = if (prev_grapheme_start < byte_offset) prev_grapheme_start else second_to_last_grapheme_start;
-    const width = getWidthAt(text, start_offset, tab_width, width_method);
-
-    return .{
-        .start_offset = start_offset,
-        .width = width,
-    };
+    return grapheme_start;
 }
 
 /// Calculate the display width of text - proxy function that dispatches based on width_method
-pub fn calculateTextWidth(text: []const u8, tab_width: u8, isASCIIOnly: bool, width_method: WidthMethod) u32 {
+pub fn calculateTextWidth(text: []const u8, tab_width: u8, control_display: ControlDisplay, isASCIIOnly: bool, width_method: WidthMethod) u32 {
+    if (!isASCIIOnly) text_work.add(.bytes_scanned, text.len);
     switch (width_method) {
-        .unicode, .unicode_wide, .no_zwj => return calculateTextWidthUnicode(text, tab_width, isASCIIOnly, width_method),
-        .wcwidth => return calculateTextWidthWCWidth(text, tab_width, isASCIIOnly),
+        .unicode, .unicode_wide, .no_zwj => return calculateTextWidthUnicode(text, tab_width, control_display, isASCIIOnly, width_method),
+        .wcwidth => return calculateTextWidthWCWidth(text, tab_width, control_display, isASCIIOnly),
     }
 }
 
@@ -1410,6 +1428,7 @@ pub fn calculateTextWidth(text: []const u8, tab_width: u8, isASCIIOnly: bool, wi
 pub const TextWidthCursor = struct {
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     width_method: WidthMethod,
     byte_offset: usize = 0,
     columns: u32 = 0,
@@ -1430,7 +1449,7 @@ pub const TextWidthCursor = struct {
         while (self.byte_offset < end) {
             const b0 = self.text[self.byte_offset];
             if (b0 < 0x80 and (self.byte_offset + 1 == self.text.len or self.text[self.byte_offset + 1] < 0x80)) {
-                self.columns += asciiCharWidth(b0, self.tab_width);
+                self.columns += asciiCharWidth(b0, self.tab_width, self.control_display);
                 self.byte_offset += 1;
                 self.break_state = .default;
                 continue;
@@ -1438,14 +1457,14 @@ pub const TextWidthCursor = struct {
 
             const first = decodeUtf8Unchecked(self.text, self.byte_offset);
             var previous: u21 = if (self.byte_offset + first.len <= self.text.len) first.cp else 0xFFFD;
-            var state = GraphemeWidthState.init(previous, charWidth(b0, previous, self.tab_width), self.width_method);
+            var state = GraphemeWidthState.init(previous, charWidth(b0, previous, self.tab_width, self.control_display), self.width_method);
             self.byte_offset += @min(first.len, self.text.len - self.byte_offset);
             while (self.byte_offset < self.text.len) {
                 const byte = self.text[self.byte_offset];
                 const decoded = decodeUtf8Unchecked(self.text, self.byte_offset);
                 const cp: u21 = if (self.byte_offset + decoded.len <= self.text.len) decoded.cp else 0xFFFD;
                 if (isGraphemeBreak(previous, cp, &self.break_state, self.width_method)) break;
-                state.addCodepoint(cp, charWidth(byte, cp, self.tab_width));
+                state.addCodepoint(cp, charWidth(byte, cp, self.tab_width, self.control_display));
                 self.byte_offset += @min(decoded.len, self.text.len - self.byte_offset);
                 previous = cp;
             }
@@ -1456,7 +1475,7 @@ pub const TextWidthCursor = struct {
 };
 
 /// Calculate text width using Unicode grapheme cluster segmentation
-fn calculateTextWidthUnicode(text: []const u8, tab_width: u8, isASCIIOnly: bool, width_method: WidthMethod) u32 {
+fn calculateTextWidthUnicode(text: []const u8, tab_width: u8, control_display: ControlDisplay, isASCIIOnly: bool, width_method: WidthMethod) u32 {
     if (text.len == 0) return 0;
 
     // ASCII-only fast path
@@ -1486,10 +1505,10 @@ fn calculateTextWidthUnicode(text: []const u8, tab_width: u8, isASCIIOnly: bool,
                 total_width_cols += state.width;
             }
 
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
         } else {
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             state.addCodepoint(curr_cp, cp_width);
         }
 
@@ -1505,7 +1524,7 @@ fn calculateTextWidthUnicode(text: []const u8, tab_width: u8, isASCIIOnly: bool,
 }
 
 /// Calculate text width using wcwidth-style codepoint-by-codepoint processing
-fn calculateTextWidthWCWidth(text: []const u8, tab_width: u8, isASCIIOnly: bool) u32 {
+fn calculateTextWidthWCWidth(text: []const u8, tab_width: u8, control_display: ControlDisplay, isASCIIOnly: bool) u32 {
     if (text.len == 0) return 0;
 
     // ASCII-only fast path
@@ -1526,7 +1545,7 @@ fn calculateTextWidthWCWidth(text: []const u8, tab_width: u8, isASCIIOnly: bool)
         };
         const cp_len: usize = if (b0 < 0x80) 1 else decodeUtf8Unchecked(text, pos).len;
 
-        const cp_width = charWidth(b0, curr_cp, tab_width);
+        const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
         total_width_cols += cp_width;
 
         pos += cp_len;
@@ -1671,6 +1690,7 @@ pub fn findChunkLayoutInfo(
     allocator: std.mem.Allocator,
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
     wrap_breaks: *std.ArrayListUnmanaged(LayoutWrapBreak),
@@ -1687,7 +1707,7 @@ pub fn findChunkLayoutInfo(
         }
     };
     var ctx: Context = .{ .allocator = allocator, .wrap_breaks = wrap_breaks };
-    return walkChunkLayoutInfoComptime(text, tab_width, isASCIIOnly, width_method, &ctx, Context.append);
+    return walkChunkLayoutInfoComptime(text, tab_width, control_display, isASCIIOnly, width_method, &ctx, Context.append);
 }
 
 /// Editor queries do not need to materialize line-only CJK opportunities.
@@ -1695,6 +1715,7 @@ pub fn findWordChunkLayoutInfo(
     allocator: std.mem.Allocator,
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
     wrap_breaks: *std.ArrayListUnmanaged(LayoutWrapBreak),
@@ -1710,7 +1731,7 @@ pub fn findWordChunkLayoutInfo(
             return true;
         }
     };
-    return walkChunkLayoutInfoGeneric(text, tab_width, isASCIIOnly, width_method, Visitor{ .allocator = allocator, .breaks = wrap_breaks });
+    return walkChunkLayoutInfoGeneric(text, tab_width, control_display, isASCIIOnly, width_method, Visitor{ .allocator = allocator, .breaks = wrap_breaks });
 }
 
 /// Retained layout stores word and line-only breaks once, in disjoint lists.
@@ -1718,6 +1739,7 @@ pub fn findLineAndWordChunkLayoutInfo(
     allocator: std.mem.Allocator,
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
     line_breaks: *std.ArrayListUnmanaged(LayoutWrapBreak),
@@ -1740,12 +1762,13 @@ pub fn findLineAndWordChunkLayoutInfo(
             return true;
         }
     };
-    return walkChunkLayoutInfoGeneric(text, tab_width, isASCIIOnly, width_method, Visitor{ .allocator = allocator, .lines = line_breaks, .words = word_breaks });
+    return walkChunkLayoutInfoGeneric(text, tab_width, control_display, isASCIIOnly, width_method, Visitor{ .allocator = allocator, .lines = line_breaks, .words = word_breaks });
 }
 
 pub inline fn walkChunkLayoutInfoComptime(
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
     context: anytype,
@@ -1759,16 +1782,18 @@ pub inline fn walkChunkLayoutInfoComptime(
             return callback(self.context, wrap_break);
         }
     };
-    return walkChunkLayoutInfoGeneric(text, tab_width, isASCIIOnly, width_method, Visitor{ .context = context });
+    return walkChunkLayoutInfoGeneric(text, tab_width, control_display, isASCIIOnly, width_method, Visitor{ .context = context });
 }
 
 fn walkChunkLayoutInfoGeneric(
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
     visitor: anytype,
 ) !WordClassEdges {
+    if (isASCIIOnly) text_work.add(.ascii_bytes, text.len) else text_work.add(.bytes_scanned, text.len);
     if (text.len == 0) return .{ .first = .other, .last = .other };
 
     if (isASCIIOnly) {
@@ -1832,7 +1857,7 @@ fn walkChunkLayoutInfoGeneric(
                     var i: usize = 0;
                     while (i + 1 < ascii_len) : (i += 1) {
                         const b = text[pos + i];
-                        const width = asciiCharWidth(b, tab_width);
+                        const width = asciiCharWidth(b, tab_width, control_display);
                         if (isAsciiWrapBreak(b)) {
                             if (!try emitLayoutWrapBreak(visitor, pos + i, 1, col, width, asciiLayoutWrapBreakKind(b))) return chunkWordClassEdges(text);
                         }
@@ -1844,7 +1869,7 @@ fn walkChunkLayoutInfoGeneric(
                     cluster_started = true;
                     cluster_start = pos + ascii_len - 1;
                     cluster_col_offset = col;
-                    cluster_width_state = GraphemeWidthState.init(last_cp, asciiCharWidth(last_b, tab_width), width_method);
+                    cluster_width_state = GraphemeWidthState.init(last_cp, asciiCharWidth(last_b, tab_width, control_display), width_method);
                     cluster_break_kind = asciiLayoutWrapBreakKind(last_b);
                     cluster_class = classifyWordClass(last_cp);
                     prev_cp = last_cp;
@@ -1860,7 +1885,7 @@ fn walkChunkLayoutInfoGeneric(
         std.debug.assert(decoded.len > 0 and decoded.len <= text.len - pos);
         const curr_class = classifyWordClass(decoded.cp);
         const is_break = isGraphemeBreak(prev_cp, decoded.cp, &break_state, width_method);
-        const cp_width = charWidth(b0, decoded.cp, tab_width);
+        const cp_width = charWidth(b0, decoded.cp, tab_width, control_display);
 
         if (is_break) {
             if (cluster_started) {
@@ -1925,13 +1950,15 @@ pub fn findRenderClusterInfo(
     allocator: std.mem.Allocator,
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
     result: *std.ArrayListUnmanaged(RenderClusterInfo),
 ) !void {
+    if (!isASCIIOnly) text_work.add(.bytes_scanned, text.len);
     switch (width_method) {
-        .unicode, .unicode_wide, .no_zwj => try findRenderClusterInfoUnicode(allocator, text, tab_width, isASCIIOnly, width_method, result),
-        .wcwidth => try findRenderClusterInfoWCWidth(allocator, text, tab_width, isASCIIOnly, result),
+        .unicode, .unicode_wide, .no_zwj => try findRenderClusterInfoUnicode(allocator, text, tab_width, control_display, isASCIIOnly, width_method, result),
+        .wcwidth => try findRenderClusterInfoWCWidth(allocator, text, tab_width, control_display, isASCIIOnly, result),
     }
 }
 
@@ -1940,6 +1967,7 @@ fn findRenderClusterInfoUnicode(
     allocator: std.mem.Allocator,
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     width_method: WidthMethod,
     result: *std.ArrayListUnmanaged(RenderClusterInfo),
@@ -2000,11 +2028,11 @@ fn findRenderClusterInfoUnicode(
                     cluster_is_tab = (b == '\t');
                     cluster_is_multibyte = false;
 
-                    const cp_width = asciiCharWidth(b, tab_width);
+                    const cp_width = asciiCharWidth(b, tab_width, control_display);
                     cluster_width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
                 } else {
                     // Continuing cluster (shouldn't happen for ASCII, but handle it)
-                    const cp_width = asciiCharWidth(b, tab_width);
+                    const cp_width = asciiCharWidth(b, tab_width, control_display);
                     cluster_width_state.addCodepoint(curr_cp, cp_width);
                 }
 
@@ -2046,11 +2074,11 @@ fn findRenderClusterInfoUnicode(
                 cluster_is_tab = (b0 == '\t');
                 cluster_is_multibyte = (cp_len != 1);
 
-                const cp_width = charWidth(b0, curr_cp, tab_width);
+                const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
                 cluster_width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
             } else {
                 cluster_is_multibyte = cluster_is_multibyte or (cp_len != 1);
-                const cp_width = charWidth(b0, curr_cp, tab_width);
+                const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
                 cluster_width_state.addCodepoint(curr_cp, cp_width);
             }
 
@@ -2091,11 +2119,11 @@ fn findRenderClusterInfoUnicode(
             cluster_is_tab = (b0 == '\t');
             cluster_is_multibyte = (cp_len != 1);
 
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             cluster_width_state = GraphemeWidthState.init(curr_cp, cp_width, width_method);
         } else {
             cluster_is_multibyte = cluster_is_multibyte or (cp_len != 1);
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             cluster_width_state.addCodepoint(curr_cp, cp_width);
         }
 
@@ -2121,6 +2149,7 @@ fn findRenderClusterInfoWCWidth(
     allocator: std.mem.Allocator,
     text: []const u8,
     tab_width: u8,
+    control_display: ControlDisplay,
     isASCIIOnly: bool,
     result: *std.ArrayListUnmanaged(RenderClusterInfo),
 ) !void {
@@ -2182,13 +2211,13 @@ fn findRenderClusterInfoWCWidth(
             cluster_start_col = col;
             cluster_is_tab = (b0 == '\t');
             cluster_is_multibyte = (cp_len != 1);
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             cluster_width_state = GraphemeWidthState.init(curr_cp, cp_width, .wcwidth);
             cluster_started = true;
         } else {
             // Continuing cluster
             cluster_is_multibyte = cluster_is_multibyte or (cp_len != 1);
-            const cp_width = charWidth(b0, curr_cp, tab_width);
+            const cp_width = charWidth(b0, curr_cp, tab_width, control_display);
             cluster_width_state.addCodepoint(curr_cp, cp_width);
         }
 

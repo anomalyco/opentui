@@ -428,6 +428,36 @@ test "notifications - OSC99 query response enables OSC99 protocol" {
     try testing.expectEqual(Terminal.NotificationProtocol.osc99, term.notification_protocol);
 }
 
+test "program status - only an OSC 7501 query reply enables the capability" {
+    for ([_]struct { []const u8, bool }{
+        .{ "\x1b]7501;?\x1b\\", true },
+        .{ "\x1b]7501;?\x07", true },
+        .{ "\x1b]7501; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;state=idle\x1b\\", false },
+        .{ "\x1b]7501;??\x1b\\", false },
+        .{ "\x1b]7501;\x1b\\", false },
+        .{ "\x1b]75010;?\x1b\\", false },
+        .{ "\x1b]99;?\x1b\\", false },
+    }) |case| {
+        var term = Terminal.init(.{});
+        term.processCapabilityResponse(case[0]);
+        try testing.expectEqual(case[1], term.caps.program_status);
+    }
+}
+
+test "queryTerminalSend - foot skips OSC capability queries" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "foot");
+    var term = Terminal.init(.{ .env_map = &env });
+    var writer = TestWriter.init(testing.allocator);
+    defer writer.deinit();
+    try term.queryTerminalSend(&writer);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.notificationQueries) == null);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.programStatusQuery) == null);
+}
+
 test "notifications - OSC99 query response ignores mismatched identifier" {
     var term = Terminal.init(.{ .remote_mode = .remote });
 
@@ -583,7 +613,7 @@ test "remote detection - auto mode detects mosh environment" {
     try testing.expect(term.caps.remote);
 }
 
-test "remote detection - auto mode ignores local capabilities after forwarded SSH marker" {
+test "remote detection - auto mode ignores forwarded terminal identity after SSH marker" {
     var term = Terminal.init(.{ .remote_mode = .auto });
     defer term.deinit();
 
@@ -594,9 +624,40 @@ test "remote detection - auto mode ignores local capabilities after forwarded SS
 
     try testing.expect(term.caps.remote);
     try testing.expectEqual(utf8.WidthMethod.unicode, term.caps.unicode);
-    try testing.expect(!term.caps.ansi256);
     try testing.expect(!term.caps.notifications);
     try testing.expectEqualStrings("", term.getTerminalName());
+}
+
+test "remote detection - TERM and COLORTERM set color depth in every remote mode" {
+    const cases = [_]struct { term: []const u8, colorterm: ?[]const u8 = null, ansi256: bool, rgb: bool }{
+        .{ .term = "screen-256color", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .colorterm = "truecolor", .ansi256 = true, .rgb = true },
+        .{ .term = "screen", .colorterm = "24bit", .ansi256 = true, .rgb = true },
+        .{ .term = "xterm-256color-italic", .colorterm = "yes", .ansi256 = true, .rgb = false },
+        .{ .term = "dumb", .colorterm = "256", .ansi256 = false, .rgb = false },
+        .{ .term = "", .colorterm = "", .ansi256 = false, .rgb = false },
+    };
+    // The authoritative env_map takes the full path in every mode; setHostEnvVar forwards one key at a time.
+    for ([_]Terminal.RemoteMode{ .local, .auto, .remote }) |mode| for ([_]bool{ false, true }) |forwarded| {
+        for (cases) |case| {
+            var env = std.process.Environ.Map.init(testing.allocator);
+            defer env.deinit();
+            try env.put("SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
+            try env.put("TERM", case.term);
+            if (case.colorterm) |colorterm| try env.put("COLORTERM", colorterm);
+
+            var term = Terminal.init(.{ .remote_mode = mode, .env_map = if (forwarded) null else &env });
+            defer term.deinit();
+            if (forwarded) {
+                var entries = env.iterator();
+                while (entries.next()) |entry| try term.setHostEnvVar(testing.allocator, entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            try testing.expectEqual(mode != .local, term.caps.remote);
+            try testing.expectEqual(case.ansi256, term.caps.ansi256);
+            try testing.expectEqual(case.rgb, term.caps.rgb);
+        }
+    };
 }
 
 test "remote detection - explicit local mode ignores SSH environment" {
@@ -934,22 +995,6 @@ test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
     try testing.expect(!term.caps.hyperlinks);
 }
 
-test "setHostEnvVar detects ansi256 separately from rgb" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TERM", "screen-256color");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    defer term.deinit();
-
-    try testing.expect(term.caps.ansi256);
-    try testing.expect(!term.caps.rgb);
-
-    try term.setHostEnvVar(testing.allocator, "COLORTERM", "truecolor");
-    try testing.expect(term.caps.rgb);
-    try testing.expect(term.caps.ansi256);
-}
-
 test "environment overrides - WT_SESSION enables rgb and ansi256" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
@@ -1045,6 +1090,7 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) != null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.programStatusQuery) != null);
 
     // Should NOT contain tmux DCS wrapper
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);

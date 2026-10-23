@@ -6,6 +6,7 @@ import { TextareaRenderable } from "./Textarea.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { StyledText } from "../lib/styled-text.js"
 import { RGBA } from "../lib/RGBA.js"
+import { RecordingWriteStream } from "../testing/test-streams.js"
 
 describe("EditBufferRenderable", () => {
   let renderer: TestRenderer
@@ -30,6 +31,42 @@ describe("EditBufferRenderable", () => {
     editor.placeholderColor = color
     await renderOnce()
     expect(renderer.currentRenderBuffer.getSpanLines()[0].spans[0]).toMatchObject({ text: "kept", fg: color })
+  })
+
+  test("Textarea keeps controls and writes them to the terminal as notation", async () => {
+    renderer.destroy()
+    const stdout = new RecordingWriteStream(40, 2)
+    const setup = await createTestRenderer({
+      width: 40,
+      height: 2,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      bufferedOutput: "stdout",
+    })
+    ;({ renderer, renderOnce } = setup)
+    await renderer.setupTerminal()
+    // The 0.5 editor wrote BEL and ESC to the terminal and lost the characters after them.
+    const text = "A\x07B\x1bC\fD\u0085E"
+    const editor = new TextareaRenderable(renderer, { initialValue: text, placeholder: "p\x00q", width: 40, height: 2 })
+    renderer.root.add(editor)
+    // Remove only the complete CSI and OSC sequences that the renderer writes, so a raw ESC from a cell remains.
+    const terminalSequences = /\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\x1b\][\x20-\x7e]*(?:\x07|\x1b\\)/g
+    const frame = async () => {
+      stdout.clear()
+      await renderOnce()
+      const output = stdout.text().replace(terminalSequences, "")
+      expect(output).not.toMatch(/[\x00-\x1f\x7f-\x9f]/)
+      return output
+    }
+    expect(await frame()).toContain("A^GB^[C^LD<85>E")
+    editor.focus()
+    editor.gotoBufferEnd()
+    setup.mockInput.pressBackspace()
+    setup.mockInput.pressBackspace()
+    expect(editor.plainText).toBe("A\x07B\x1bC\fD")
+    editor.replaceText("")
+    expect(await frame()).toContain("p^@q")
+    editor.undo()
+    expect(editor.plainText).toBe("A\x07B\x1bC\fD")
   })
 
   test("brands textarea and input instances", async () => {

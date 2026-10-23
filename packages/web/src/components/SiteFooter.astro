@@ -5,10 +5,12 @@ import ThemeToggle from "./ThemeToggle.astro"
 
 interface Props {
   links?: boolean
+  /** The documentation's version, at the end of the line. */
+  version?: string
   animation?: ComponentProps<typeof BlockDivider>["animation"]
 }
 
-const { links = false, animation } = Astro.props
+const { links = false, animation, version } = Astro.props
 ---
 
 {
@@ -44,7 +46,7 @@ const { links = false, animation } = Astro.props
         ></path>
       </svg>
     </a>
-    MIT license. &copy; 2026 <a href="https://anoma.ly/">Anomaly</a>.
+    MIT license. &copy; 2026 <a href="https://anoma.ly/">Anomaly</a>.{version && <span class="version">{version}</span>}
   </p>
 </footer>
 
@@ -74,6 +76,19 @@ const { links = false, animation } = Astro.props
     margin-inline: 1ch;
     vertical-align: text-bottom;
     color: inherit;
+  }
+
+  /* Page state, not part of the notice: set apart and muted. The line has no room for it below 26rem, where the
+   * site header still names the version, so it stays one line. */
+  .version {
+    margin-inline-start: 2ch;
+    color: var(--muted-color);
+  }
+
+  @media (max-width: 26rem) {
+    .version {
+      display: none;
+    }
   }
 
   .github svg {

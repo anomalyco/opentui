@@ -27,6 +27,7 @@
     "publish:ssh": "cd packages/ssh && bun run publish",
     "prepare-release": "bun scripts/prepare-release.ts",
     "release": "bun scripts/release.ts",
+    "release-notes": "bun packages/web/scripts/release-notes.ts",
     "test": "bun run --filter '@opentui/native' --filter '@opentui/core' --filter '@opentui/qrcode' --filter '@opentui/three' --filter '@opentui/solid' --filter '@opentui/react' --filter '@opentui/keymap' --filter '@opentui/ssh' --if-present test"
   },
   "devDependencies": {

@@ -11,6 +11,7 @@ import {
   DebugOverlayCorner,
   type CursorStyleOptions,
   type MousePointerStyle,
+  type ProgramStatus,
   type RenderContext,
   type TerminalCapabilities,
   type ThemeMode,
@@ -60,6 +61,7 @@ import {
 } from "./lib/terminal-capability-detection.js"
 import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
 import { StdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser.js"
+import { NativeStdinParser, StdinShadowComparator } from "./lib/stdin-parser-native.js"
 import { matchesKeyBinding } from "./lib/keybinding.internal.js"
 import { RendererThemeMode } from "./renderer-theme-mode.js"
 
@@ -105,6 +107,22 @@ registerEnvVar({
   default: false,
 })
 
+registerEnvVar({
+  name: "OTUI_NATIVE_INPUT_PARSER",
+  description: "Parse stdin with the experimental native input parser unless experimental_nativeInput is set.",
+  type: "boolean",
+  default: false,
+})
+
+registerEnvVar({
+  name: "OTUI_NATIVE_INPUT_SHADOW",
+  description: "Also run the other stdin parser and log one line for each event that differs.",
+  type: "boolean",
+  default: false,
+})
+
+type RendererStdinParser = StdinParser | NativeStdinParser
+
 export type KittyImageTransport = "raw" | "zlib" | "file"
 const KITTY_IMAGE_TRANSPORTS: KittyImageTransport[] = ["raw", "zlib", "file"]
 
@@ -120,8 +138,6 @@ export interface KittyImageTransportStatus {
 export interface CliRendererConfig {
   /** Transfer this driver's ownership after attachment succeeds. Requires the same stdout. */
   nativeSession?: NativeSession
-  /** Opt-in native preparation/feedback items per turn. Yoga, painting, and encoding remain synchronous. */
-  nativeSceneWorkBudget?: number
   // Read input from this stream. Defaults to process.stdin. Any `Readable`
   // works; capabilities like `setRawMode` are duck-typed and used when present.
   stdin?: NodeJS.ReadStream
@@ -162,6 +178,10 @@ export interface CliRendererConfig {
 
   // Forward these env var names to native terminal detection.
   forwardEnvKeys?: string[]
+
+  // Send these values to native terminal detection, for example a remote
+  // client's TERM. They replace forwarded values with the same name.
+  environment?: Readonly<Record<string, string>>
 
   // Wait this long before handling resize events. Defaults to 100 ms.
   debounceDelay?: number
@@ -220,8 +240,11 @@ export interface CliRendererConfig {
   // Run these input handlers before the built-in handlers.
   prependInputHandlers?: ((sequence: string) => boolean)[]
 
-  // Cap the stdin parser buffer size in bytes. Defaults to 64 MB.
+  // Cap the stdin parser buffer size in bytes. Defaults to 64 MB. The native parser is bounded and ignores it.
   stdinParserMaxBufferBytes?: number
+
+  // Parse stdin with the experimental native input parser. Defaults to OTUI_NATIVE_INPUT_PARSER.
+  experimental_nativeInput?: boolean
 
   // Use a custom clock for timers and tests.
   clock?: Clock
@@ -459,7 +482,7 @@ class ExternalOutputQueue {
     return this.commits.length
   }
 
-  writeSnapshots(commits: readonly ExternalOutputCommit[]): void {
+  writeSnapshots(commits: readonly ExternalOutputCommit[]): readonly QueuedCommit[] {
     // Every frame renders the queue head, so one invalid entry would fail every later frame and the close flush.
     for (const { rowColumns, snapshot } of commits) {
       if (!Number.isInteger(rowColumns) || rowColumns < 0 || rowColumns > snapshot.width) {
@@ -476,6 +499,7 @@ class ExternalOutputQueue {
       rowWidths: snapshotRowWidths(commit.snapshot, commit.rowColumns),
     }))
     for (const entry of entries) this.commits.push(entry)
+    return entries
   }
 
   /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
@@ -1000,7 +1024,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _console: TerminalConsole
   private _resolution: PixelResolution | null = null
   private _keyHandler: InternalKeyHandler
-  private stdinParser: StdinParser | null = null
+  private stdinParser: RendererStdinParser | null = null
+  // OTUI_NATIVE_INPUT_SHADOW: the other parser sees the same input; its events are only compared.
+  private stdinShadow: { parser: RendererStdinParser; comparator: StdinShadowComparator } | null = null
   private readonly oscSubscribers = new Set<(sequence: string) => void>()
   private hasLoggedStdinParserError = false
 
@@ -1027,6 +1053,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _suspendedMouseEnabled: boolean = false
   private _previousControlState: RendererControlState = RendererControlState.IDLE
   private capturedRenderable?: Renderable
+  private pressedRenderable?: Renderable
   private lastOverRenderableNum: number = 0
   private lastOverRenderable?: Renderable
 
@@ -1037,6 +1064,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _splitHeight: number = 0
   private renderOffset: number = 0
   private splitTailColumn: number = 0
+  // The tail after the last queued commit, so each captured write reads it in O(1); a reset or a resize voids it.
+  private queuedSplitTail: { column: number; width: number } | null = null
   private pendingSplitFooterTransition: PendingSplitFooterTransition | null = null
   // One-shot latch used to request a full split repaint after transitions
   // (resize/mode/output-path changes). Cleared after completed presentation.
@@ -1149,14 +1178,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }).bind(this)
 
   private nativeProcessExitHandler = (): void => {
-    if (!this.nativeSession || this.nativeSession.disposed) return
-    const restored = this.nativeSession.restoreOnExit()
+    // A disposed Session cannot restore, but raw mode must still go off.
+    const disposed = this.nativeSession.disposed
+    const restored = !disposed && this.nativeSession.restoreOnExit()
     try {
+      this.leaveRawMode()
       this.destroy()
       if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
     } finally {
       this.nativeSession.dispose()
-      if (!restored && this._terminalIsSetup) {
+      if (!disposed && !restored && this._terminalIsSetup) {
         console.error("Native scene output cancelled at process exit; terminal restoration did not complete")
       }
     }
@@ -1214,9 +1245,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._usesProcessStdout = stdout === process.stdout
     this.realStdoutWrite = stdout.write
 
-    const workBudget = config.nativeSceneWorkBudget
-    if (workBudget !== undefined && (!Number.isInteger(workBudget) || workBudget <= 0 || workBudget > 0xffff_ffff)) {
-      throw new Error("nativeSceneWorkBudget must be a positive u32")
+    if ((config as { nativeSceneWorkBudget?: unknown }).nativeSceneWorkBudget !== undefined) {
+      throw new Error("nativeSceneWorkBudget was removed: frames always paint synchronously")
     }
     this.kittyTransportMode = config.kittyImageTransport ?? "raw"
     const transportCode = KITTY_IMAGE_TRANSPORTS.indexOf(this.kittyTransportMode)
@@ -1253,12 +1283,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           width: initialGeometry.renderWidth,
           height: initialGeometry.renderHeight,
           remote: remoteMode,
-          environment: Object.fromEntries(
-            forwardEnvKeys.flatMap((key) => {
-              const value = process.env[key]
-              return value === undefined ? [] : [[key, value]]
-            }),
-          ),
+          environment: {
+            ...Object.fromEntries(
+              forwardEnvKeys.flatMap((key) => {
+                const value = process.env[key]
+                return value === undefined ? [] : [[key, value]]
+              }),
+            ),
+            ...config.environment,
+          },
         },
         () => {
           try {
@@ -1275,11 +1308,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         .finally(() => this.nativeDestroyWait!.promise)
         .finally(() => {
           if (this.nativeSession.error && !this.nativeSession.disposed) this.nativeSession.dispose()
+          this.leaveRawMode()
+          this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler)
           if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
           this.releaseStreamLease()
         })
       void this.nativeClosed.catch(() => {})
-      this.nativeScene = new NativeScene(this.nativeSession, this, config.nativeSceneWorkBudget)
+      this.nativeScene = new NativeScene(this.nativeSession, this)
       this.nativeSession.setKittyImageTransport(transportCode)
     } catch (error) {
       // A supplied Session transfers only after attachRenderer succeeds.
@@ -1397,23 +1432,41 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.addExitListeners()
 
       const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES
-      this.stdinParser = new StdinParser({
-        timeoutMs: 20,
-        maxPendingBytes: stdinParserMaxBufferBytes,
-        armTimeouts: true,
-        onTimeoutFlush: () => {
-          this.drainStdinParser()
-        },
-        useKittyKeyboard: useKittyForParsing,
-        protocolContext: {
+      const createStdinParser = (native: boolean, onTimeoutFlush: () => void): RendererStdinParser => {
+        const protocolContext = {
           kittyKeyboardEnabled: useKittyForParsing,
           privateCapabilityRepliesActive: false,
           pixelResolutionQueryActive: false,
           explicitWidthCprActive: false,
           startupCursorCprActive: false,
-        },
-        clock: this.clock,
-      })
+        }
+        if (native) {
+          return new NativeStdinParser({
+            armTimeouts: true,
+            onTimeoutFlush,
+            protocolContext,
+            clock: this.clock,
+            session: { lib: this.lib, context: this.nativeSession.context, session: this.nativeSession.session },
+          })
+        }
+        return new StdinParser({
+          timeoutMs: 20,
+          maxPendingBytes: stdinParserMaxBufferBytes,
+          armTimeouts: true,
+          onTimeoutFlush,
+          useKittyKeyboard: useKittyForParsing,
+          protocolContext,
+          clock: this.clock,
+        })
+      }
+      const nativeInput = config.experimental_nativeInput ?? env.OTUI_NATIVE_INPUT_PARSER
+      this.stdinParser = createStdinParser(nativeInput, () => this.drainStdinParser())
+      if (env.OTUI_NATIVE_INPUT_SHADOW) {
+        this.stdinShadow = {
+          parser: createStdinParser(!nativeInput, () => this.drainStdinShadow()),
+          comparator: new StdinShadowComparator(nativeInput ? "native" : "legacy", (line) => console.warn(line)),
+        }
+      }
 
       this._console = new TerminalConsole(this, {
         ...(config.consoleOptions ?? {}),
@@ -1429,12 +1482,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._openConsoleOnError = config.openConsoleOnError ?? process.env.NODE_ENV !== "production"
       this._onDestroy = config.onDestroy
 
-      this.setupInput()
       process.on("exit", this.nativeProcessExitHandler)
-      void this.nativeSession.closed.then(
-        () => this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler),
-        () => this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler),
-      )
+      this.setupInput()
       void this.nativeSession.closed.catch((error) => {
         if (this._isDestroyed) return
         try {
@@ -1583,13 +1632,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       run(() => this.emit(CliRenderEvents.FOCUSED_RENDERABLE, renderable, previous))
     }
     if (failure) throw failure.error
-  }
-
-  private setCapturedRenderable(renderable: Renderable | undefined): void {
-    if (this.capturedRenderable === renderable) {
-      return
-    }
-    this.capturedRenderable = renderable
   }
 
   public get widthMethod(): WidthMethod {
@@ -2015,6 +2057,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public triggerNotification(message: string, title?: string): boolean {
     if (this._isDestroyed) return false
     return this.nativeSession.triggerNotification(message, title)
+  }
+
+  /**
+   * Report program status with OSC 7501. Terminals that do not implement the
+   * protocol ignore it, so this does not wait for `capabilities.program_status`.
+   * Returns false when the report is not queued: the renderer is destroyed, the
+   * terminal is not active, or output is full. Invalid reports throw.
+   */
+  public setProgramStatus(status: ProgramStatus): boolean {
+    if (this._isDestroyed) return false
+    return this.nativeSession.setProgramStatus(status)
   }
 
   public get themeMode(): ThemeMode | null {
@@ -2566,9 +2619,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private getPendingSplitTailColumn(): number {
     const width = Math.max(this.width, 1)
+    const skipped = this.pendingNativeReplay?.remaining ?? 0
+    const cached = this.queuedSplitTail
+    if (this.externalOutputQueue.size > skipped && cached?.width === width) return cached.column
     let tailColumn = this.pendingNativeReplay ? 0 : this.splitTailColumn
 
-    for (const commit of this.externalOutputQueue.peek().slice(this.pendingNativeReplay?.remaining ?? 0)) {
+    for (const commit of this.externalOutputQueue.peek().slice(skipped)) {
       tailColumn = this.getSplitTailColumnAfterCommit(commit, tailColumn, width)
     }
 
@@ -2602,7 +2658,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private enqueueSplitCommits(commits: readonly ExternalOutputCommit[]): void {
     for (const commit of commits) commit.nativeSnapshot = commit.snapshot._getSceneHandle(this.nativeScene)
-    this.externalOutputQueue.writeSnapshots(commits)
+    const width = Math.max(this.width, 1)
+    let column = this.getPendingSplitTailColumn()
+    for (const entry of this.externalOutputQueue.writeSnapshots(commits)) {
+      column = this.getSplitTailColumnAfterCommit(entry, column, width)
+    }
+    this.queuedSplitTail = { column, width }
     this.requestRender()
     if (this.listenerCount(CliRenderEvents.EXTERNAL_OUTPUT) > 0) {
       for (const commit of commits) this.emit(CliRenderEvents.EXTERNAL_OUTPUT, commit)
@@ -2622,6 +2683,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Chunk rows at the renderer width in display cells, never inside a grapheme, so
     // each commit maps to one terminal row append and keeps every cell.
     const width = Math.max(1, this.width)
+    const tailColumn = this.getPendingSplitTailColumn()
     const rows: StdoutRow[] = []
     // Wrapped chunks of the current logical row start at this index; '\r' drops them.
     let rowStart = 0
@@ -2645,13 +2707,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         continue
       }
 
-      // A tab advances to the next stop, as in a terminal, and never wraps.
-      const tabCells = Math.min(STDOUT_TAB_WIDTH - (cells % STDOUT_TAB_WIDTH), Math.max(0, width - cells))
+      // The first row of a write continues the terminal row at the tail column; native appends it there.
+      const column = (rows.length === 0 && tailColumn < width ? tailColumn : 0) + cells
+      // A tab advances to the next stop, as in a terminal, and stops at the last column.
+      const tabCells = Math.min(STDOUT_TAB_WIDTH - (column % STDOUT_TAB_WIDTH), Math.max(0, width - 1 - column))
       const grapheme = segment === "\t" ? " ".repeat(tabCells) : segment
       const graphemeCells = stringWidth(grapheme)
-      if (cells > 0 && cells + graphemeCells > width) {
-        // A wide grapheme that does not fit starts a terminal row; pad to the full width so native counts that row.
-        const padding = Math.max(0, width - cells)
+      if (column > 0 && column + graphemeCells > width) {
+        // A grapheme that does not fit starts a terminal row; pad a wide one's skipped cell so native counts the row.
+        const padding = Math.max(0, width - column)
         rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false })
         line = ""
         cells = 0
@@ -2777,7 +2841,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private abortSplitStartupCursorSeed(): void {
     this.clearSplitStartupCursorSeed()
-    this.stdinParser?.abortPendingStartupCursorCpr()
+    // A native parser reports a stale CPR as a reply that processCapabilitySequence ignores.
+    for (const parser of this.legacyStdinParsers()) parser.abortPendingStartupCursorCpr()
     this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
   }
 
@@ -2788,6 +2853,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       pinnedRenderOffset: this.getSplitPinnedRenderOffset(),
     })
     this.splitTailColumn = 0
+    this.queuedSplitTail = null
   }
 
   private syncSplitScrollback(): void {
@@ -3113,8 +3179,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.nativeSession.control({ kind: "mouse", mode: "disabled" })
     }
     this._useMouse = false
-    this.setCapturedRenderable(undefined)
-    this.stdinParser?.resetMouseState()
+    this.capturedRenderable = undefined
+    for (const parser of this.legacyStdinParsers()) parser.resetMouseState()
   }
 
   public enableKittyKeyboard(flags: number = 0b00011): void {
@@ -3265,6 +3331,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } catch (error) {
       this.handleStdinParserFailure(error)
     }
+    try {
+      this.stdinShadow?.parser.push(data)
+      this.drainStdinShadow()
+    } catch (error) {
+      console.warn("[stdin-shadow] parser failure", error)
+    }
   }).bind(this)
 
   public addInputHandler(handler: (sequence: string) => boolean): void {
@@ -3282,7 +3354,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private updateStdinParserProtocolContext(patch: Partial<StdinParserProtocolContext>, drain = false): void {
     if (!this.stdinParser) return
     this.stdinParser.updateProtocolContext(patch)
+    this.stdinShadow?.parser.updateProtocolContext(patch)
     if (drain) this.drainStdinParser()
+    this.drainStdinShadow()
+  }
+
+  private legacyStdinParsers(): StdinParser[] {
+    return [this.stdinParser, this.stdinShadow?.parser].filter((parser) => parser instanceof StdinParser)
   }
 
   public subscribeOsc(handler: (sequence: string) => void): () => void {
@@ -3393,8 +3471,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!this.stdinParser) return
 
     this.stdinParser.drain((event) => {
+      this.stdinShadow?.comparator.primary(event)
       this.handleStdinEvent(event)
     })
+  }
+
+  private drainStdinShadow(): void {
+    const shadow = this.stdinShadow
+    shadow?.parser.drain((event) => shadow.comparator.shadow(event))
   }
 
   private handleStdinEvent(event: StdinEvent): void {
@@ -3467,6 +3551,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     try {
       this.stdinParser?.reset()
+      this.stdinShadow?.parser.reset()
     } catch (resetError) {
       console.error("stdin parser reset failed after parser error", resetError)
     }
@@ -3556,6 +3641,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private processSingleMouseEvent(mouseEvent: RawMouseEvent): boolean {
+    // A left drag belongs to the node that got the left press: the first motion report can already be past it.
+    // Every left down or up ends the record, also one that returns early; other events keep it.
+    const pressed = this.pressedRenderable
+    const left = mouseEvent.button === MouseButton.LEFT
+    if (left && (mouseEvent.type === "down" || mouseEvent.type === "up")) this.pressedRenderable = undefined
     if (this._splitHeight > 0) {
       if (mouseEvent.y < this.renderOffset) {
         return false
@@ -3695,38 +3785,30 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (this.capturedRenderable && mouseEvent.type === "up") {
-      const event = new MouseEvent(this.capturedRenderable, {
-        ...mouseEvent,
-        type: "drag-end",
-      })
-      this.sendMouseEvent(this.capturedRenderable, event)
-      this.sendMouseEvent(this.capturedRenderable, new MouseEvent(this.capturedRenderable, mouseEvent))
-      if (maybeRenderable) {
-        const event = new MouseEvent(maybeRenderable, {
-          ...mouseEvent,
-          type: "drop",
-          source: this.capturedRenderable,
-        })
-        this.sendMouseEvent(maybeRenderable, event)
-      }
-      this.lastOverRenderable = this.capturedRenderable
-      this.lastOverRenderableNum = this.capturedRenderable.num
-      this.setCapturedRenderable(undefined)
+      const source = this.capturedRenderable
+      this.sendMouseEvent(source, new MouseEvent(source, { ...mouseEvent, type: "drag-end" }))
+      this.sendMouseEvent(source, new MouseEvent(source, mouseEvent))
+      this.lastOverRenderable = source
+      this.lastOverRenderableNum = source.num
+      this.capturedRenderable = undefined
       // Dropping the renderable needs to push another frame when the renderer is not live
       // to update the hit grid, otherwise capturedRenderable won't be in the hit grid and will not receive mouse events
       this.requestRender()
+      // A source does not drop onto itself or its subtree; until that frame the hit grid still holds the source.
+      if (maybeRenderable && this.isWithinContainer(maybeRenderable, source)) return true
+      if (maybeRenderable) {
+        this.sendMouseEvent(maybeRenderable, new MouseEvent(maybeRenderable, { ...mouseEvent, type: "drop", source }))
+      }
     }
 
+    const isLeftDrag = left && mouseEvent.type === "drag"
+    const target = isLeftDrag && pressed && !pressed.isDestroyed ? pressed : maybeRenderable
     let event: MouseEvent | undefined
-    if (maybeRenderable) {
-      if (mouseEvent.type === "drag" && mouseEvent.button === MouseButton.LEFT) {
-        this.setCapturedRenderable(maybeRenderable)
-      } else {
-        this.setCapturedRenderable(undefined)
-      }
-      event = this.dispatchMouseEvent(maybeRenderable, mouseEvent)
+    if (target) {
+      if (isLeftDrag) this.capturedRenderable = target
+      else if (left && mouseEvent.type === "down") this.pressedRenderable = target
+      event = this.dispatchMouseEvent(target, mouseEvent)
     } else {
-      this.setCapturedRenderable(undefined)
       this.lastOverRenderable = undefined
     }
 
@@ -4026,10 +4108,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       )
     }
 
-    if (nextGeometry.renderWidth !== this.width || nextGeometry.renderHeight !== this.height) {
-      this.nativeScene.restartPaint()
-    }
-
     this._terminalWidth = width
     this._terminalHeight = height
     this._splitHeight = nextGeometry.effectiveFooterHeight
@@ -4039,8 +4117,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._resolution = null
     this.lib.sessionSetImageResolution(this.nativeSession.context, this.nativeSession.session, 0, 0, 0, 0)
 
-    this.setCapturedRenderable(undefined)
-    this.stdinParser?.resetMouseState()
+    this.capturedRenderable = undefined
+    for (const parser of this.legacyStdinParsers()) parser.resetMouseState()
 
     if (splitFooterActive) {
       this.forceFullRepaintRequested = true
@@ -4387,21 +4465,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._controlState = RendererControlState.EXPLICIT_SUSPENDED
     this._cancelPaletteDetection?.(new Error("Cannot detect palette while renderer is suspended"))
     this.resolveXtVersionWaiters()
-    this.nativeScene.interruptPaint()
     this.halt(false)
 
     this.clearSplitStartupCursorSeed()
 
     this.disableMouse()
     this.removeExitListeners()
-    this.updateStdinParserProtocolContext({
-      privateCapabilityRepliesActive: false,
-      pixelResolutionQueryActive: this.waitingForPixelResolution,
-      explicitWidthCprActive: false,
-      startupCursorCprActive: false,
-    })
-    if (this.stdinParser?.hasPendingPixelResolutionResponse()) this.stdinParser.pausePendingTimeout()
-    else this.stdinParser?.reset()
+    // Drained while suspended: what this update resolves is stale and must not wait for resume.
+    this.updateStdinParserProtocolContext(
+      {
+        privateCapabilityRepliesActive: false,
+        pixelResolutionQueryActive: this.waitingForPixelResolution,
+        explicitWidthCprActive: false,
+        startupCursorCprActive: false,
+      },
+      true,
+    )
+    this.pauseStdinParsers(false)
     this.stdin.removeListener("data", this.stdinListener)
     this.stopTerminalKeepAlive()
 
@@ -4418,6 +4498,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public resume(): Promise<void> {
     if (
       !this._terminalIsSetup ||
+      this._isDestroyed ||
       this.nativeTerminalTransition ||
       this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
     ) {
@@ -4429,6 +4510,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         kind: "clear-transition",
       })
     }
+    // Raw mode is on before the Session writes the bytes that turn mouse reports back on.
+    try {
+      this.stdin.setRawMode?.(true)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    this.addExitListeners()
     const resumed = this.trackNativeTerminalTransition(this.nativeSession.resume(), () => {
       if (this._isDestroyed) return
       if (this.pendingSplitFooterTransition) this.setPendingSplitFooterTransition(this.pendingSplitFooterTransition)
@@ -4446,19 +4534,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return resumed
   }
 
-  private finishResume(): void {
-    if (this.stdin.setRawMode) {
-      this.stdin.setRawMode(true)
+  // Legacy parsers drop pending input unless it may be a pixel reply. Native parsers stop
+  // input time instead, so stale bytes drained on resume can complete a unit (docs §11.5).
+  private pauseStdinParsers(resuming: boolean): void {
+    for (const parser of [this.stdinParser, this.stdinShadow?.parser]) {
+      if (parser instanceof NativeStdinParser) resuming ? parser.resume() : parser.suspend()
+      else if (parser?.hasPendingPixelResolutionResponse()) parser.pausePendingTimeout()
+      else parser?.reset()
     }
+  }
 
+  private finishResume(): void {
     let drained: Buffer | string | null
     while ((drained = this.stdin.read()) !== null) this.stdinListener(drained)
-    if (this.stdinParser?.hasPendingPixelResolutionResponse()) this.stdinParser.pausePendingTimeout()
-    else this.stdinParser?.reset()
+    this.pauseStdinParsers(true)
     this.stdin.on("data", this.stdinListener)
     this.stdin.resume()
     this.startTerminalKeepAlive()
-    this.addExitListeners()
 
     this._useMouse = this._suspendedMouseEnabled
 
@@ -4471,7 +4563,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.nativeSession.startKittyFileProbe()
     this._controlState = this._previousControlState
     if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
-    this.stdinParser?.resumePendingTimeout()
+    for (const parser of this.legacyStdinParsers()) parser.resumePendingTimeout()
     this.applyPendingNativeResize()
 
     if (
@@ -4597,17 +4689,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.handleStdinParserFailure(error)
     }
     this._useMouse = false
-    this.setCapturedRenderable(undefined)
+    this.capturedRenderable = undefined
 
     this.removeCleanupListener(this.stdin, "data", this.stdinListener)
     this.stopTerminalKeepAlive()
-    if (this.stdin.setRawMode) {
-      try {
-        this.stdin.setRawMode(false)
-      } catch (e) {
-        console.error("Error disabling raw mode during destroy:", e)
-      }
-    }
     try {
       this.stdin.pause()
     } catch (e) {
@@ -4672,6 +4757,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.stdinParser?.destroy()
     this.stdinParser = null
+    this.stdinShadow?.parser.destroy()
+    this.stdinShadow?.comparator.flush()
+    this.stdinShadow = null
     this.oscSubscribers.clear()
     try {
       this._console?.destroy()
@@ -4714,6 +4802,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Resolve any pending idle() calls
     this.nativeDestroyWait?.resolve()
     this.resolveIdleIfNeeded()
+  }
+
+  // Leave raw mode only after restoration stops mouse reports, so a cooked tty cannot echo them.
+  private leaveRawMode(): void {
+    try {
+      this.stdin.setRawMode?.(false)
+    } catch (e) {
+      console.error("Error disabling raw mode:", e)
+    }
   }
 
   private releaseStreamLease(): void {
@@ -4813,12 +4910,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const sceneStart = performance.now()
       const requestedBeforeScene = this.immediateRerenderRequested
       try {
-        const painting = this.nativeScene.paint(deltaTime, () => ({
+        this.nativeScene.paint(deltaTime, () => ({
           background: this.backgroundColor,
           useMouse: this._useMouse,
           excludedHitNum: this.capturedRenderable?.num ?? 0,
         }))
-        if (painting) await painting
       } catch (error) {
         // Failed feedback must not schedule its own retry. The error handler can request one explicitly.
         this.immediateRerenderRequested = requestedBeforeScene

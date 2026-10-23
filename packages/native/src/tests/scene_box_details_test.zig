@@ -101,10 +101,10 @@ test "Scene box details and paint replaced during a record batch paint live and 
         if (exit == 1) continue;
         if (exit == 2) {
             try owner.sceneDestroyNode(fixture.root);
-            try testing.expectError(error.StaleFrame, owner.sceneFrameStepWithRecording(fixture.session, request, options, std.math.maxInt(u32), &.{}));
+            try testing.expectError(error.StaleFrame, owner.sceneFrameStepWithRecording(fixture.session, request, options, &.{}));
             continue;
         }
-        const done = try owner.sceneFrameStepWithRecording(fixture.session, request, options, std.math.maxInt(u32), &.{});
+        const done = try owner.sceneFrameStepWithRecording(fixture.session, request, options, &.{});
         try testing.expectEqual(@as(u32, 0), done.kind);
         const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
         try expectRow(target, 0, "A-new------B");
@@ -132,8 +132,13 @@ test "Scene box details checked title draw reports allocation failure and defaul
     try repaint(owner, fixture.session, options.background, true, 0);
     try testing.expect(!failing.has_induced_failure);
     state.allocator = scene_allocator;
+    // A printable ASCII title draws without the prepared copy and runs.
+    const ascii_title: [4097]u8 = @splat('x');
+    try owner.sceneSetBoxDetails(fixture.box, .{ .title = &ascii_title });
+    try repaint(owner, fixture.session, options.background, true, 0);
+    try testing.expect(!failing.has_induced_failure);
     // Keep a visible title large enough to exercise heap fallback, not the stack path.
-    const title: [4097]u8 = @splat('x');
+    const title = @as([4096]u8, @splat('x')) ++ "\u{e9}".*;
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = &title });
     try testing.expectError(error.OutOfMemory, repaint(owner, fixture.session, options.background, true, 0));
     try testing.expect(failing.has_induced_failure);

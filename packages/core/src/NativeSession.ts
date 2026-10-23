@@ -22,6 +22,7 @@ import {
   type SessionHandle,
   type NativeSplitSnapshot,
 } from "./zig.js"
+import type { ProgramStatus } from "./types.js"
 
 export interface NativeSessionScheduler {
   /** Monotonic nanoseconds. */
@@ -446,6 +447,24 @@ export class NativeSession {
     const accepted = this.lib.sessionNotification(this.context, this.session, message, title)
     if (accepted) this.schedule()
     return accepted
+  }
+
+  /** Returns false while the terminal is inactive or output is full. Invalid reports throw. */
+  setProgramStatus(status: ProgramStatus): boolean {
+    this.checkOpen()
+    try {
+      this.lib.sessionControl(this.context, this.session, { kind: "program-status", status })
+    } catch (error) {
+      if (
+        error instanceof NativeError &&
+        (error.status === NativeStatus.InvalidPhase || error.status === NativeStatus.OutputBackpressure)
+      ) {
+        return false
+      }
+      throw error
+    }
+    this.schedule()
+    return true
   }
 
   setKittyImageTransport(mode: number): void {

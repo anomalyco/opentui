@@ -116,7 +116,7 @@ interface ImageCreateOptions {
 `ImageLoadOptions`, `PixelImportOptions`, and `NativeImagePoolOptions` also include `owner`.
 Pass `renderer.nativeScene.resourceContext` to create an image in the renderer's Context.
 
-Without `owner`, these methods share one automatic Context with 4,096 object slots.
+Without `owner`, these methods share one automatic Context that starts with 4,096 object slots.
 Derived images, retained handles, and raw-pixel leases keep that Context alive.
 The last release destroys it. You control the lifetime of an explicit `ResourceContext`.
 

@@ -4,6 +4,8 @@ pub const Terminal = vt.Terminal;
 pub const TerminalStream = vt.TerminalStream;
 pub const Stream = vt.Stream;
 pub const StreamAction = vt.StreamAction;
+// lib-vt does not export the device attributes type; take it from the effect's signature.
+pub const DeviceAttributes = @typeInfo(@typeInfo(@typeInfo(@FieldType(TerminalStream.Handler.Effects, "device_attributes")).optional.child).pointer.child).@"fn".return_type.?;
 pub const Coordinate = vt.Coordinate;
 pub const RenderState = vt.RenderState;
 pub const Selection = vt.Selection;
@@ -48,6 +50,7 @@ pub const Mouse = struct {
     }
 };
 
+pub const KeyEncodeOptions = vt.input.KeyEncodeOptions;
 pub const MouseEncodeOptions = vt.input.MouseEncodeOptions;
 pub const encodeKey = vt.input.encodeKey;
 pub const encodeMouse = vt.input.encodeMouse;

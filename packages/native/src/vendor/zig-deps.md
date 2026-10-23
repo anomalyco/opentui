@@ -16,15 +16,17 @@ Its manifest omits unrelated application dependencies.
 Its build file exports only the Zig VT modules.
 The change to `src/build/SharedDeps.zig` removes unused GUI frame data.
 The Ghostty pin supports Zig 0.16. `ghostty-zig-0.17.patch` makes it compile on Zig 0.17, applied after
-`ghostty-shared-deps.patch`. It changes only what Zig 0.17 rejects: array multiplication, `@cImport`, removed
-standard library names, and the new reflection fields. Ghostty's own Zig 0.17 port (ghostty-org/ghostty#14519)
-makes the same kind of changes on a newer commit. Remove the patch when the pin moves to a Ghostty release that
-supports Zig 0.17.
-Both uucode copies use commit `d500967` on uucode's `zig-0.17` branch. It ports Ghostty's former uucode pin,
-`2826a37`, to Zig 0.17 and keeps its Unicode 17 data, so the generated tables do not change.
+`ghostty-shared-deps.patch`. It changes only what Zig 0.17 rejects: array multiplication, removed standard
+library names, and the new reflection fields. Ghostty's own Zig 0.17 port (ghostty-org/ghostty#14519) landed
+in commit `3d07ef9`, after the pin, and makes the same kind of changes. Remove the patch when the pin moves
+to that commit or later.
+The OpenTUI uucode copy uses commit `d500967`, a Zig 0.17 port of commit `2826a37`, which contains the former
+pin `8ad04b7`. The Ghostty copy uses commit `ea62149`, a Zig 0.17 port of Ghostty's uucode pin, `9d55524`.
+Both ports change only Zig code, and the update script gives both copies the same Unicode data, so the
+generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga 3.2.1 with three changes, applied in this order:
+The Yoga source is upstream Yoga 3.2.1 with four changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation through `yoga/OTAllocator.h`, so a test build can
   inject allocation failures. It also makes style updates, child insertion, and child moves leave the node
@@ -33,6 +35,12 @@ The Yoga source is upstream Yoga 3.2.1 with three changes, applied in this order
   cache decision stays the same.
 - `yoga-node-reuse.patch` keeps a reset node's child storage for reuse, and resets the count of
   `display: contents` children when all children are removed.
+- `yoga-absolute-edge-rounding.patch` adds a config option that rounds each node's position from the same
+  absolute edges that Yoga already uses for its size. Upstream rounds the relative position on its own,
+  so a child nested under fractional offsets can end one cell outside its parent. With the option, the
+  layout cache also compares available sizes exactly, because a subtree laid out for one fractional size
+  rounds differently at another size that rounds to the same cell. Only the scene's config in
+  `src/context.zig` sets the option; other configs keep upstream rounding and caching.
 
 `src/tests/yoga_test.zig` tests each change.
 

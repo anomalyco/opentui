@@ -83,10 +83,10 @@ describe("Textarea - Undo/Redo Tests", () => {
   // Every step drives the editor through keys or the API and compares it with a reference document; Shift+Backspace
   // and Shift+Delete act like Backspace and Delete. The history mirrors the native rope: undo restores the state before
   // an edit, and redo restores the state that the first undo left. clear replaces the text without an undo point, so
-  // redo stays unavailable until the next undo.
+  // redo stays unavailable until the next undo. The placeholder wraps and has two lines; an empty buffer has one.
   it("should match a reference document across random edits", async () => {
     const tokens = ["a", "Z", " ", "日", "\n"]
-    const ops = ["type", "type", "paste", "backspace", "delete", "left", "right", "home", "end", "undo", "redo"]
+    const ops = "type type paste backspace delete left right up down home end undo redo".split(" ")
     type State = { text: string[]; cursor: number }
     const errors = spyOn(console, "error")
     for (let seed = 1; seed <= 200; seed++) {
@@ -96,7 +96,11 @@ describe("Textarea - Undo/Redo Tests", () => {
         return Math.floor((random / 0x100000000) * count)
       }
       const pick = () => tokens[next(tokens.length)]
-      const editor = new TextareaRenderable(currentRenderer, { width: 20, height: 5 })
+      const editor = new TextareaRenderable(currentRenderer, {
+        width: 20,
+        height: 5,
+        placeholder: "a hint wider than the box\n2",
+      })
       currentRenderer.root.add(editor)
       editor.focus()
       let state: State = { text: [], cursor: 0 }
@@ -135,6 +139,10 @@ describe("Textarea - Undo/Redo Tests", () => {
           currentMockInput.pressArrow(op)
           const cursor = state.cursor + (op === "left" ? -1 : 1)
           state = { ...state, cursor: Math.max(0, Math.min(state.text.length, cursor)) }
+        } else if (op === "up" || op === "down") {
+          // The model does not track display columns: the cursor only has to land between two graphemes.
+          currentMockInput.pressArrow(op)
+          state = { ...state, cursor: [...state.text, ""].findIndex((_, i) => offset(i) === editor.cursorOffset) }
         } else if (op === "home" || op === "end") {
           currentMockInput.pressKey(op === "home" ? "HOME" : "END")
           state = { ...state, cursor: op === "home" ? 0 : state.text.length }

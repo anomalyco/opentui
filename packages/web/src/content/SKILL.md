@@ -24,6 +24,13 @@ Design for a terminal app, not a browser. Use the available columns and rows eff
 - `/docs/components` maps to `docs/components/overview.mdx`.
 - Every other `/docs/<slug>` URL maps to `docs/<slug>.mdx` relative to this skill root.
 - From the repository root, prepend `packages/web/src/content/` to each source path.
+- `/docs/releases/<version>` maps to `docs/releases/<version>.md`, the release notes of that version.
+
+## Versions
+
+The docs describe the release or branch that this skill came from. Each release notes file lists what changed in that
+release and links the pages it affects. When a project uses an older `@opentui/core` than the docs describe, read the
+notes of the newer releases before you use an API, and prefer what the project's version provides.
 
 ## Choose packages
 

@@ -363,7 +363,7 @@ const manifest = nodeAssets.getNodeAssets({
   arch: process.arch,
   ...(process.platform === "linux" ? { libc: "glibc" } : {}),
 })
-assert.equal(manifest.length, 14)
+assert.equal(manifest.length, 16)
 assert.deepEqual(
   manifest.map((asset) => asset.key),
   manifest.map((asset) => asset.key).toSorted(),

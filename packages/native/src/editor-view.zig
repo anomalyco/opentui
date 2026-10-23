@@ -161,7 +161,6 @@ pub const EditorView = struct {
     pub fn makeCursorVisible(self: *EditorView) void {
         const vp = self.text_buffer_view.getViewport() orelse return;
         if (vp.height == 0 or vp.width == 0) return;
-        const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.getPrimaryVisualCursorAbsolute();
 
         const viewport_height = vp.height;
@@ -186,13 +185,14 @@ pub const EditorView = struct {
                 const target_logical_row = @as(u32, @intCast(target_vline.source_line));
 
                 const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), target_logical_row);
-                const target_col = @min(cursor.col, line_width);
+                const desired_col = @min(self.edit_buffer.unsnappedColumn(), line_width);
+                const target_col = self.edit_buffer.snapColumn(target_logical_row, desired_col);
 
                 const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
                 self.edit_buffer.cursor = .{
                     .row = target_logical_row,
                     .col = target_col,
-                    .desired_col = target_col,
+                    .desired_col = desired_col,
                     .offset = offset,
                 };
             }
@@ -707,13 +707,15 @@ pub const EditorView = struct {
 
     pub fn moveDownVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
-        if (vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
+        if (self.placeholder_active or vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
         self.moveToVisualRow(vcursor, vcursor.visual_row + 1);
     }
 
     fn moveToVisualRow(self: *EditorView, vcursor: VisualCursor, target_visual_row: u32) void {
         // This persists across empty/narrow lines to restore column when possible
-        const desired_visual_col = self.desired_visual_col orelse vcursor.visual_col;
+        // The unsnapped column is on the cursor's virtual line: a unit never spans two of them.
+        const desired_visual_col = self.desired_visual_col orelse
+            vcursor.visual_col + (self.edit_buffer.unsnappedColumn() - vcursor.logical_col);
         self.desired_visual_col = desired_visual_col;
         const vlines = self.text_buffer_view.virtual_lines.items;
         const boundary = self.text_buffer_view.getSelectionOccupancy() == .boundary;
@@ -723,11 +725,13 @@ pub const EditorView = struct {
             clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
 
         const new_vcursor = self.visualToLogicalCursor(target_visual_row, target_visual_col) orelse return;
+        // A unit never spans two virtual lines, so its start stays on the target row.
+        const col = self.edit_buffer.snapColumn(new_vcursor.logical_row, new_vcursor.logical_col);
         self.edit_buffer.cursor = .{
             .row = new_vcursor.logical_row,
-            .col = new_vcursor.logical_col,
+            .col = col,
             .desired_col = new_vcursor.logical_col,
-            .offset = new_vcursor.offset,
+            .offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), new_vcursor.logical_row, col) orelse 0,
         };
         self.cursor_visual_affinity = null;
         if (boundary) self.setCursorAffinityForAbsoluteRow(target_visual_row);
@@ -927,7 +931,7 @@ pub const EditorView = struct {
             self.edit_buffer.tb.pool,
             self.edit_buffer.tb.link_pool,
             self.edit_buffer.tb.width_method,
-            .{ .io = self.edit_buffer.tb.io, .logger = self.edit_buffer.tb.logger },
+            .{ .io = self.edit_buffer.tb.io, .logger = self.edit_buffer.tb.logger, .control_display = self.edit_buffer.tb.control_display },
         );
         errdefer if (self.placeholder_buffer == null) placeholder.deinit();
         const mem_id = try placeholder.replaceOwnedStyledText(

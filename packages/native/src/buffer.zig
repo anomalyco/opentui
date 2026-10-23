@@ -16,6 +16,7 @@ const native_image = @import("image.zig");
 
 const logger = @import("logger.zig");
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 const api = @import("context_abi_c");
 
 pub const RGBA = ansi.RGBA;
@@ -531,7 +532,7 @@ const TextRow = struct {
             const width = if (cluster != null and target.width_method != .wcwidth)
                 cluster.?.width_cols
             else
-                utf8.getWidthAt(bytes, 0, tab_width, target.width_method);
+                utf8.getWidthAt(bytes, 0, tab_width, .hidden, target.width_method);
             if (width == 0) continue;
             const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
             self.advance_cells += width;
@@ -1094,67 +1095,65 @@ pub const OptimizedBuffer = struct {
     fn setInternal(self: *OptimizedBuffer, comptime span_cleanup: bool, x: u32, y: u32, cell: Cell) void {
         const index = self.validateAndIndex(x, y) orelse return;
         const prev_char = self.buffer.char[index];
+        if (!gp.isClusterChar(prev_char) and !gp.isGraphemeChar(cell.char)) {
+            self.writeCellAndLinks(index, cell);
+            return;
+        }
+        self.setClusterInternal(span_cleanup, x, y, index, prev_char, cell);
+    }
+
+    noinline fn setClusterInternal(
+        self: *OptimizedBuffer,
+        comptime span_cleanup: bool,
+        x: u32,
+        y: u32,
+        index: u32,
+        prev_char: u32,
+        cell: Cell,
+    ) void {
+        @branchHint(.cold);
         const new_link_id = ansi.TextAttributes.getLinkId(cell.attributes);
         // Cleanup can remove the last old cell using the replacement's link.
         if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
         defer if (new_link_id != 0) self.link_tracker.removeCellRef(new_link_id);
         var tracker_replaced = false;
 
+        const new_start_id: ?u32 = if (gp.isGraphemeChar(cell.char) and
+            x + gp.charRightExtent(cell.char) + 1 <= self.width)
+            gp.graphemeIdFromChar(cell.char)
+        else
+            null;
+
         if (!span_cleanup) {
             const old_start_id: ?u32 = if (gp.isGraphemeChar(prev_char)) gp.graphemeIdFromChar(prev_char) else null;
-            const new_start_id: ?u32 = blk: {
-                if (!gp.isGraphemeChar(cell.char)) break :blk null;
-                const new_width = gp.charRightExtent(cell.char) + 1;
-                if (x + new_width > self.width) break :blk null;
-                break :blk gp.graphemeIdFromChar(cell.char);
-            };
-
             if (old_start_id != null or new_start_id != null) {
                 self.grapheme_tracker.replace(old_start_id, new_start_id);
                 tracker_replaced = true;
             }
-        }
+        } else if (gp.isClusterChar(prev_char) and prev_char != cell.char) {
+            // If overwriting a grapheme span (start or continuation) with a different char, clear that span first
+            const row_start: u32 = y * self.width;
+            const row_end: u32 = row_start + self.width - 1;
+            const left = gp.charLeftExtent(prev_char);
+            const right = gp.charRightExtent(prev_char);
+            const id = gp.graphemeIdFromChar(prev_char);
 
-        // If overwriting a grapheme span (start or continuation) with a different char, clear that span first
-        if (span_cleanup) {
-            if ((gp.isGraphemeChar(prev_char) or gp.isContinuationChar(prev_char)) and prev_char != cell.char) {
-                const row_start: u32 = y * self.width;
-                const row_end: u32 = row_start + self.width - 1;
-                const left = gp.charLeftExtent(prev_char);
-                const right = gp.charRightExtent(prev_char);
-                const id = gp.graphemeIdFromChar(prev_char);
+            if (new_start_id) |new_id| self.grapheme_tracker.add(new_id);
+            tracker_replaced = true;
 
-                const new_grapheme_id: ?u32 = blk: {
-                    if (!gp.isGraphemeChar(cell.char)) break :blk null;
-                    const new_width = gp.charRightExtent(cell.char) + 1;
-                    if (x + new_width > self.width) break :blk null;
-                    break :blk gp.graphemeIdFromChar(cell.char);
-                };
-                if (new_grapheme_id) |new_id| self.grapheme_tracker.add(new_id);
-                tracker_replaced = true;
+            const span_start = index - @min(left, index - row_start);
+            const span_end = index + @min(right, row_end - index);
 
-                const span_start = index - @min(left, index - row_start);
-                const span_end = index + @min(right, row_end - index);
-
-                var span_i: u32 = span_start;
-                while (span_i <= span_end) : (span_i += 1) {
-                    const span_char = self.buffer.char[span_i];
-                    if (!(gp.isGraphemeChar(span_char) or gp.isContinuationChar(span_char))) continue;
-                    if (gp.graphemeIdFromChar(span_char) != id) continue;
-
-                    // Overlaps can leave continuations after their start was replaced.
-                    if (gp.isGraphemeChar(span_char)) {
-                        self.grapheme_tracker.remove(id);
-                    }
-
-                    const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
-                    if (span_link_id != 0) {
-                        self.link_tracker.removeCellRef(span_link_id);
-                    }
-
-                    self.buffer.char[span_i] = @intCast(DEFAULT_SPACE_CHAR);
-                    self.buffer.attributes[span_i] = 0;
-                }
+            var span_i: u32 = span_start;
+            while (span_i <= span_end) : (span_i += 1) {
+                const span_char = self.buffer.char[span_i];
+                if (!gp.isClusterChar(span_char) or gp.graphemeIdFromChar(span_char) != id) continue;
+                // Overlaps can leave continuations after their start was replaced.
+                if (gp.isGraphemeChar(span_char)) self.grapheme_tracker.remove(id);
+                const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
+                if (span_link_id != 0) self.link_tracker.removeCellRef(span_link_id);
+                self.buffer.char[span_i] = @intCast(DEFAULT_SPACE_CHAR);
+                self.buffer.attributes[span_i] = 0;
             }
         }
 
@@ -1172,20 +1171,14 @@ pub const OptimizedBuffer = struct {
                         self.grapheme_tracker.remove(gp.graphemeIdFromChar(eol_char));
                     }
                     const eol_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[eol_i]);
-                    if (eol_link_id != 0) {
-                        self.link_tracker.removeCellRef(eol_link_id);
-                    }
+                    if (eol_link_id != 0) self.link_tracker.removeCellRef(eol_link_id);
                 }
                 @memset(self.buffer.char[index..end_of_line], @intCast(DEFAULT_SPACE_CHAR));
                 @memset(self.buffer.attributes[index..end_of_line], cell.attributes);
                 @memset(self.buffer.fg[index..end_of_line], cell.fg);
                 @memset(self.buffer.bg[index..end_of_line], cell.bg);
                 if (new_link_id != 0) {
-                    const cells_written = end_of_line - index;
-                    var link_i: u32 = 0;
-                    while (link_i < cells_written) : (link_i += 1) {
-                        self.link_tracker.addCellRef(new_link_id);
-                    }
+                    for (index..end_of_line) |_| self.link_tracker.addCellRef(new_link_id);
                 }
                 return;
             }
@@ -1198,52 +1191,44 @@ pub const OptimizedBuffer = struct {
                 self.grapheme_tracker.add(id);
             }
 
-            if (width > 1) {
+            if (right > 0) {
                 const row_end_index: u32 = (y * self.width) + self.width - 1;
-                const max_right = @min(right, row_end_index - index);
-                if (max_right > 0) {
-                    var cont_i: u32 = 1;
-                    while (cont_i <= max_right) : (cont_i += 1) {
-                        const cont_index = index + cont_i;
-                        const cont_char = self.buffer.char[cont_index];
-                        if (gp.isGraphemeChar(cont_char)) {
-                            const old_id = gp.graphemeIdFromChar(cont_char);
-                            self.grapheme_tracker.remove(old_id);
-                            if (span_cleanup) {
-                                // Ordinary writes must not leave a tail outside the new span.
-                                const tail_end = cont_index + @min(
-                                    gp.charRightExtent(cont_char),
-                                    row_end_index - cont_index,
-                                );
-                                var tail_i = index + width;
-                                while (tail_i <= tail_end) : (tail_i += 1) {
-                                    const tail_char = self.buffer.char[tail_i];
-                                    if (!gp.isContinuationChar(tail_char)) continue;
-                                    if (gp.graphemeIdFromChar(tail_char) != old_id) continue;
-                                    const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
-                                    if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
-                                    self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
-                                    self.buffer.attributes[tail_i] = 0;
-                                }
+                assert(right <= row_end_index - index);
+                var cont_i: u32 = 1;
+                while (cont_i <= right) : (cont_i += 1) {
+                    const cont_index = index + cont_i;
+                    const cont_char = self.buffer.char[cont_index];
+                    if (gp.isGraphemeChar(cont_char)) {
+                        const old_id = gp.graphemeIdFromChar(cont_char);
+                        self.grapheme_tracker.remove(old_id);
+                        if (span_cleanup) {
+                            // Ordinary writes must not leave a tail outside the new span.
+                            const tail_end = cont_index + @min(
+                                gp.charRightExtent(cont_char),
+                                row_end_index - cont_index,
+                            );
+                            var tail_i = index + width;
+                            while (tail_i <= tail_end) : (tail_i += 1) {
+                                const tail_char = self.buffer.char[tail_i];
+                                if (!gp.isContinuationChar(tail_char) or gp.graphemeIdFromChar(tail_char) != old_id) continue;
+                                const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
+                                if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
+                                self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
+                                self.buffer.attributes[tail_i] = 0;
                             }
                         }
-                        const cont_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[cont_index]);
-                        if (cont_link_id != 0) {
-                            self.link_tracker.removeCellRef(cont_link_id);
-                        }
                     }
+                    const cont_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[cont_index]);
+                    if (cont_link_id != 0) self.link_tracker.removeCellRef(cont_link_id);
+                }
 
-                    @memset(self.buffer.fg[index + 1 .. index + 1 + max_right], cell.fg);
-                    @memset(self.buffer.bg[index + 1 .. index + 1 + max_right], cell.bg);
-                    @memset(self.buffer.attributes[index + 1 .. index + 1 + max_right], cell.attributes);
-                    var k: u32 = 1;
-                    while (k <= max_right) : (k += 1) {
-                        const cont = gp.packContinuation(k, max_right - k, id);
-                        self.buffer.char[index + k] = cont;
-                        if (new_link_id != 0) {
-                            self.link_tracker.addCellRef(new_link_id);
-                        }
-                    }
+                @memset(self.buffer.fg[index + 1 .. index + 1 + right], cell.fg);
+                @memset(self.buffer.bg[index + 1 .. index + 1 + right], cell.bg);
+                @memset(self.buffer.attributes[index + 1 .. index + 1 + right], cell.attributes);
+                var k: u32 = 1;
+                while (k <= right) : (k += 1) {
+                    self.buffer.char[index + k] = gp.packContinuation(k, right - k, id);
+                    if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
                 }
             }
         } else {
@@ -1826,6 +1811,18 @@ pub const OptimizedBuffer = struct {
         try self.checkDrawState();
         const opacity = self.getCurrentOpacity();
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
+        if (utf8.isAsciiOnly(text)) {
+            // Printable ASCII is one cell per byte and takes no pool or tracker capacity, so it
+            // skips the copy and the prepared runs. The bytes left of column 0 are clipped.
+            const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
+            var column: u32 = @intCast(nonNegative(x));
+            for (text[clipped_byte_count..]) |byte| {
+                if (column >= self.width) break;
+                self.setTextCell(column, row, makeCell(byte, fg, bg orelse self.get(column, row).?.bg, attributes));
+                column += 1;
+            }
+            return;
+        }
 
         var scratch_buffer: [4096]u8 = undefined;
         var scratch: std.heap.BufferFirstAllocator = .init(&scratch_buffer, self.allocator);
@@ -1835,7 +1832,7 @@ pub const OptimizedBuffer = struct {
         defer scratch_allocator.free(input);
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(scratch_allocator);
-        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, utf8.isAsciiOnly(input), self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, .hidden, utf8.isAsciiOnly(input), self.width_method, &clusters);
 
         const PreparedRun = struct { x: u32, char: u32, count: u32 };
         var runs: std.ArrayListUnmanaged(PreparedRun) = .empty;
@@ -1981,7 +1978,7 @@ pub const OptimizedBuffer = struct {
 
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(self.allocator);
-        try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, is_ascii_only, self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, .hidden, is_ascii_only, self.width_method, &clusters);
 
         var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y) };
         while (layout.next()) |glyph| {
@@ -2292,7 +2289,7 @@ pub const OptimizedBuffer = struct {
         else
             0;
         const indicator_width = if (indicator_length != 0)
-            utf8.getGraphemeWidthAt(indicator_bytes[0..indicator_length], 0, text_buffer.tabWidth(), text_buffer.widthMethod())
+            utf8.getGraphemeWidthAt(indicator_bytes[0..indicator_length], 0, text_buffer.tabWidth(), text_buffer.controlDisplay(), text_buffer.widthMethod())
         else
             0;
         const text_defaults = text_buffer.defaults();
@@ -2393,13 +2390,14 @@ pub const OptimizedBuffer = struct {
             for (vline.chunks.items) |vchunk| {
                 const chunk = vchunk.chunk;
                 const chunk_bytes = chunk.getBytes(text_buffer.memRegistry());
-                const render_clusters = chunk.getRenderClusters(text_buffer.getAllocator(), text_buffer.memRegistry(), text_buffer.tabWidth(), text_buffer.widthMethod()) catch |err| {
+                const render_clusters = chunk.getRenderClusters(text_buffer.getAllocator(), text_buffer.memRegistry(), text_buffer.tabWidth(), text_buffer.controlDisplay(), text_buffer.widthMethod()) catch |err| {
                     if (checked) return err;
                     continue;
                 };
                 const line_col_offset = vline.document_cell_offset;
 
-                if (currentX >= @as(i32, @intCast(self.width))) {
+                // A glyph in the last column can still take marks that start this chunk.
+                if (currentX >= @as(i32, @intCast(self.width)) and mark_base == null) {
                     document_cell_offset += vchunk.width_cols;
                     currentX += @intCast(vchunk.width_cols);
                     continue;
@@ -2412,9 +2410,10 @@ pub const OptimizedBuffer = struct {
 
                 while (special_idx < render_clusters.len and render_clusters[special_idx].byte_start + render_clusters[special_idx].byte_len <= byte_offset) {
                     special_idx += 1;
+                    text_work.add(.cluster_scan_steps, 1);
                 }
 
-                text_buffer_loop: while (byte_offset < byte_end and col < col_end) {
+                text_buffer_loop: while (byte_offset < byte_end) {
                     const at_special = special_idx < render_clusters.len and render_clusters[special_idx].byte_start == byte_offset;
 
                     var grapheme_bytes: []const u8 = undefined;
@@ -2436,14 +2435,21 @@ pub const OptimizedBuffer = struct {
                         // Sparse metadata omits printable ASCII and zero-width control characters.
                         // Printable ASCII is one cell under every width method.
                         ascii = isPrintableAscii(grapheme_bytes);
-                        cluster_width_cols = if (ascii) 1 else utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
+                        cluster_width_cols = if (ascii) 1 else utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.controlDisplay(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
-                    // Only a glyph that this iteration draws, or a zero-width cluster, sets it again.
-                    const previous_glyph = mark_base;
+                    // A combining mark joins the glyph before it, which passed the checks below; other
+                    // zero-width clusters keep that glyph. Only a glyph that this iteration draws sets it again.
+                    if (cluster_width_cols == 0) {
+                        if (mark_base != null and utf8.isCombiningMark(grapheme_bytes)) {
+                            mark_base = try self.attachCombiningMark(checked, grapheme_bytes, mark_base.?, @intCast(currentY), text_buffer.widthMethod());
+                        }
+                        continue;
+                    }
                     mark_base = null;
 
                     if (rendered_col_in_vline < horizontal_offset) {
+                        text_work.add(.left_skip_steps, 1);
                         document_cell_offset += cluster_width_cols;
                         rendered_col_in_vline += cluster_width_cols;
                         col += cluster_width_cols;
@@ -2623,17 +2629,6 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    if (cluster_width_cols == 0) {
-                        // A combining mark joins the glyph before it; other zero-width clusters keep it.
-                        if (previous_glyph) |glyph| {
-                            mark_base = if (utf8.isCombiningMark(grapheme_bytes))
-                                try self.attachCombiningMark(checked, grapheme_bytes, glyph, @intCast(currentY))
-                            else
-                                glyph;
-                        }
-                        continue;
-                    }
-
                     var drawFg = finalFg;
                     var drawBg = finalBg;
                     const drawAttributes = finalAttributes;
@@ -2670,6 +2665,9 @@ pub const OptimizedBuffer = struct {
 
                     if (is_blank) {
                         const useTransparentTextFastPath = opacity == 1.0 and ansi.alpha(drawBg) == 0;
+                        // A control is a cluster of its own. Its notation is one printable glyph per cell.
+                        const first_cp = utf8.decodeUtf8Unchecked(grapheme_bytes, 0).cp;
+                        const is_notation = utf8.controlNotationWidth(first_cp) == cluster_width_cols;
                         var tab_col: u32 = 0;
                         while (tab_col < cluster_width_cols) : (tab_col += 1) {
                             if (rendered_col_in_vline + tab_col >= horizontal_offset + viewport_width) break;
@@ -2678,7 +2676,7 @@ pub const OptimizedBuffer = struct {
                             if (tab_x >= @as(i32, @intCast(self.width))) break;
                             if (!self.isPointInScissor(tab_x, currentY)) continue;
 
-                            var char = DEFAULT_SPACE_CHAR;
+                            var char: u32 = if (is_notation) utf8.controlNotationGlyph(first_cp, tab_col) else DEFAULT_SPACE_CHAR;
                             var fg = drawFg;
                             if (is_tab and tab_col == 0 and indicator_width > 0 and indicator_width <= cluster_width_cols and
                                 @as(u64, rendered_col_in_vline) + indicator_width <= @as(u64, horizontal_offset) + viewport_width)
@@ -2726,11 +2724,14 @@ pub const OptimizedBuffer = struct {
                         mark_base = .{ .x = @intCast(currentX), .char = char };
                     }
 
+                    text_work.add(.clusters_drawn, 1);
                     document_cell_offset += cluster_width_cols;
                     currentX += @as(i32, @intCast(cluster_width_cols));
                     rendered_col_in_vline += cluster_width_cols;
                     col += cluster_width_cols;
                 }
+                // The ellipsis stands for dropped text, so the marks after it have no base glyph.
+                if (chunk == &layout_view.ellipsis_chunk) mark_base = null;
             }
 
             const is_last_vline_of_logical_line = (slice_idx + 1 >= virtual_lines[firstVisibleLine..lastPossibleLine].len) or
@@ -2750,8 +2751,8 @@ pub const OptimizedBuffer = struct {
     /// Combines a zero-width mark with the glyph that this draw wrote just before it, as if both
     /// were one cluster. The cell keeps its colors, which already have opacity applied.
     /// Returns the combined glyph, or null when the cell does not hold that glyph or cannot
-    /// hold the combination.
-    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32) !?MarkBase {
+    /// hold the combination in the same cells (U+FE0F can widen a cluster beyond its layout).
+    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32, width_method: utf8.WidthMethod) !?MarkBase {
         const index = self.coordsToIndex(base.x, y);
         // A blended space keeps the glyph under it, which this draw did not write.
         if (self.buffer.char[index] != base.char) return null;
@@ -2769,6 +2770,7 @@ pub const OptimizedBuffer = struct {
         if (base_bytes.len + mark.len > combined.len) return null;
         @memcpy(combined[0..base_bytes.len], base_bytes);
         @memcpy(combined[base_bytes.len..][0..mark.len], mark);
+        if (utf8.getGraphemeWidthAt(combined[0 .. base_bytes.len + mark.len], 0, 1, .hidden, width_method) != gp.encodedCharWidth(base.char)) return null;
         const id = self.acquireGlyph(combined[0 .. base_bytes.len + mark.len]) catch |err| {
             if (checked) return err;
             self.logger.warn("Failed to allocate grapheme: {}", .{err});
@@ -3352,7 +3354,7 @@ pub const OptimizedBuffer = struct {
         }
 
         const is_ascii = utf8.isAsciiOnly(text);
-        const titleLength = @as(i32, @intCast(utf8.calculateTextWidth(text, 2, is_ascii, self.width_method)));
+        const titleLength = @as(i32, @intCast(utf8.calculateTextWidth(text, 2, .hidden, is_ascii, self.width_method)));
         const minTitleSpace = 4;
 
         if (@as(i32, @intCast(width)) < titleLength + minTitleSpace) {

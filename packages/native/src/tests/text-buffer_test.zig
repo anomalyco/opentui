@@ -4,6 +4,7 @@ const text_buffer = @import("../text-buffer.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const iter_mod = @import("../text-buffer-iterators.zig");
+const text_work = @import("../text-work.zig");
 const TextAttributes = @import("../ansi.zig").TextAttributes;
 const owned_styled = @import("owned-styled-text.zig");
 const utils = @import("../utils.zig");
@@ -187,12 +188,12 @@ test "TextBuffer tab width changes preserve large tab-free Unicode and update on
     try tb.setText(tab_free);
     try std.testing.expect(!tb.rope().root.metrics().custom.has_tabs);
     const tab_free_width = tb.lineWidthAt(0);
-    const tab_free_version = tb.rope().version;
+    _ = text_work.take();
     for (0..40) |i| {
         tb.setTabWidth(if (i % 2 == 0) 4 else 2);
         try std.testing.expectEqual(tab_free_width, tb.lineWidthAt(0));
-        // A tab-free root keeps its widths: no chunk walk, no remeasure, no marker cache rebuild.
-        try std.testing.expectEqual(tab_free_version, tb.rope().version);
+        // A tab-free root keeps its widths: no chunk walk and no remeasure.
+        try std.testing.expectEqual(0, text_work.take().remeasure_nodes);
         try std.testing.expectEqual(tb.tab_metrics_generation, tb.rope().metricsGeneration());
     }
 
@@ -202,10 +203,9 @@ test "TextBuffer tab width changes preserve large tab-free Unicode and update on
     try tb.setText(one_tab);
     try std.testing.expect(tb.rope().root.metrics().custom.has_tabs);
     for (0..40) |i| {
-        const version = tb.rope().version;
         tb.setTabWidth(if (i % 2 == 0) 4 else 2);
         try std.testing.expectEqual(tb.measureText(one_tab), tb.lineWidthAt(0));
-        try std.testing.expect(tb.rope().version != version);
+        try std.testing.expect(text_work.take().remeasure_nodes > 0);
     }
 }
 
@@ -1460,11 +1460,8 @@ test "TextBuffer setText - validate rope structure is correct" {
     const line_count = tb.lineCount();
     try std.testing.expectEqual(@as(u32, 3), line_count);
 
-    const break_count = tb.rope().markerCount(.brk);
-    try std.testing.expectEqual(@as(u32, 2), break_count);
-
-    const linestart_count = tb.rope().markerCount(.linestart);
-    try std.testing.expectEqual(@as(u32, 3), linestart_count);
+    try std.testing.expectEqual(@as(u32, 2), tb.rope().root.metrics().custom.newline_count);
+    try std.testing.expectEqual(@as(u32, 3), tb.rope().root.metrics().custom.linestart_count);
 
     try std.testing.expectEqual(@as(u32, 6), iter_mod.lineWidthAt(tb.rope(), 0));
     try std.testing.expectEqual(@as(u32, 6), iter_mod.lineWidthAt(tb.rope(), 1));
@@ -1489,8 +1486,8 @@ test "TextBuffer setText - then deleteRange via EditBuffer - validate markers" {
     var output: [32]u8 = undefined;
     try std.testing.expectEqualStrings("Line 1\nLine 2\n", output[0..eb.getText(&output)]);
     try std.testing.expectEqual(@as(u32, 3), eb.getTextBuffer().lineCount());
-    try std.testing.expectEqual(@as(u32, 2), eb.getTextBuffer().rope().markerCount(.brk));
-    try std.testing.expectEqual(@as(u32, 3), eb.getTextBuffer().rope().markerCount(.linestart));
+    try std.testing.expectEqual(@as(u32, 2), eb.getTextBuffer().rope().root.metrics().custom.newline_count);
+    try std.testing.expectEqual(@as(u32, 3), eb.getTextBuffer().rope().root.metrics().custom.linestart_count);
     try std.testing.expectEqual(@as(u32, 0), eb.getTextBuffer().lineWidthAt(2));
 }
 
@@ -1597,7 +1594,6 @@ test "TextBuffer plain replacement registration limit preserves the live documen
     const old_links = tb.link_tracker.?.used_ids.count();
     try std.testing.expectError(error.OutOfMemory, tb.setText("rejected"));
     try std.testing.expectEqual(old_rope.root, tb.rope().root);
-    try std.testing.expectEqual(old_rope.version, tb.rope().version);
     try std.testing.expectEqual(old_rope.undo_history, tb.rope().undo_history);
     try std.testing.expectEqual(old_rope.redo_history, tb.rope().redo_history);
     try std.testing.expectEqual(old_epoch, tb.getContentEpoch());
@@ -1690,6 +1686,7 @@ fn checkPlainTextAllocationFailures() !void {
                 try std.testing.expectEqual(before.epoch + 1, tb.getContentEpoch());
                 try std.testing.expect(tb.isViewDirty(view));
                 try std.testing.expectEqual(@as(u32, 0), tb.link_tracker.?.getLinkCount());
+                try std.testing.expectEqual(@as(u32, if (input.len == 0) 1 else 2), tb.getHighlightCount());
                 break;
             }
             try std.testing.expect(succeeded);
@@ -1935,7 +1932,7 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
             for (0..tb.rope().count()) |segment| {
                 if (tb.rope().get(@intCast(segment)).?.asText()) |chunk| {
                     _ = try tb.getLayoutInfoFor(chunk);
-                    _ = try chunk.getRenderClusters(tb.getAllocator(), tb.memRegistry(), tb.tabWidth(), tb.widthMethod());
+                    _ = try chunk.getRenderClusters(tb.getAllocator(), tb.memRegistry(), tb.tabWidth(), tb.controlDisplay(), tb.widthMethod());
                 }
             }
             const live = tracked.allocated_bytes - tracked.freed_bytes;
@@ -2042,7 +2039,6 @@ test "TextBuffer clear failure preserves text, highlights, links, and view state
     const view = try tb.registerView();
     tb.clearViewDirty(view);
     const old_root = tb.rope().root;
-    const old_version = tb.rope().version;
     const old_epoch = tb.getContentEpoch();
     const old_highlights = tb.getHighlightCount();
     const old_links = tb.link_tracker.?.used_ids.count();
@@ -2057,7 +2053,6 @@ test "TextBuffer clear failure preserves text, highlights, links, and view state
     try std.testing.expectError(error.OutOfMemory, tb.setText("replacement"));
     try std.testing.expectError(error.OutOfMemory, tb.setTextFromMemId(replacement));
     try std.testing.expectEqual(old_root, tb.rope().root);
-    try std.testing.expectEqual(old_version, tb.rope().version);
     try std.testing.expectEqual(old_epoch, tb.getContentEpoch());
     try std.testing.expectEqual(old_highlights, tb.getHighlightCount());
     try std.testing.expectEqual(old_links, tb.link_tracker.?.used_ids.count());
@@ -2400,8 +2395,7 @@ test "TextBuffer append - documents match their concatenated text" {
         try std.testing.expectEqualStrings(case.expected, out_buffer[0..tb.getPlainTextIntoBuffer(&out_buffer)]);
         try std.testing.expectEqual(case.lines, tb.getLineCount());
         try std.testing.expectEqual(tb.measureText(case.expected), tb.getLength());
-        try std.testing.expectEqual(case.lines, tb.rope().markerCount(.linestart));
-        try std.testing.expectEqual(case.lines - 1, tb.rope().markerCount(.brk));
+        try std.testing.expectEqual(case.lines - 1, tb.rope().root.metrics().custom.newline_count);
         try std.testing.expectEqual(appended_bytes, tb.isViewDirty(view));
         try std.testing.expectEqualStrings("Preserved", tb.getMemBuffer(preserved_id).?);
     }

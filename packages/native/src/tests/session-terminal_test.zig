@@ -139,7 +139,7 @@ test "Scene feedback gates setup and suspension without stranding terminal resto
     try testing.expectEqual(@as(u64, 0), f.cli.renderStats.frameCount);
 }
 
-test "Session suspension rejection preserves yielded and synchronous preparation" {
+test "Session suspension rejection preserves synchronous preparation" {
     const SuspendProbe = struct {
         var target: *session.Session = undefined;
         var rejection: ?anyerror = null;
@@ -157,12 +157,6 @@ test "Session suspension rejection preserves yielded and synchronous preparation
     defer f.deinit();
     const root = try f.owner.sceneCreateNode(f.id, 0, 1);
     try f.owner.sceneSetHooks(root, 1, 1, 8, 2);
-    const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, scene_options, 1);
-    try testing.expectEqual(@as(u32, @import("context_abi_c").OT_SCENE_FRAME_YIELD), request.kind);
-    try testing.expectError(error.InvalidTerminalState, f.owner.suspendSession(f.id));
-    try testing.expectEqual(.uninitialized, f.value.getTerminalState().phase);
-    try testing.expectEqualDeep(request, f.value.scene.?.attempt.?.pending.?);
-    try f.owner.sceneFrameCancel(f.id, request.frame_id);
     try f.owner.setupSessionTerminal(f.id, .{});
     var now_ns: u64 = 0;
     try f.drive(&now_ns, .active);

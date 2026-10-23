@@ -298,29 +298,30 @@ test "TextBufferView rewrap reuses virtual line allocation without retaining cle
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-    const tb = try TextBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    const view = try TextBufferView.init(tracking.allocator(), tb);
-    defer view.deinit();
-    try tb.setText(utils.repeat(u8, "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop ", 100));
-    view.setWrapMode(.word);
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(79);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    const allocated = tracking.allocated_bytes;
-    const capacity = view.virtual_lines_arena.queryCapacity();
-    for (0..20) |i| {
-        view.setWrapWidth(@intCast(79 + i % 2));
-        _ = view.getVirtualLines();
+    for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
+        var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const tb = try TextBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        const view = try TextBufferView.init(tracking.allocator(), tb);
+        defer view.deinit();
+        try tb.setText(utils.repeat(u8, "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop ", 100));
+        view.setWrapMode(mode);
+        for ([_]u32{ 80, 79, 80 }) |width| {
+            view.setWrapWidth(width);
+            _ = view.getVirtualLines();
+        }
+        const allocated = tracking.allocated_bytes;
+        const capacity = view.virtual_lines_arena.queryCapacity();
+        for (0..22) |i| {
+            view.setWrapWidth(if (i == 20) 1 else @intCast(79 + i % 2));
+            _ = view.getVirtualLines();
+            if (i == 19) try std.testing.expectEqual(allocated, tracking.allocated_bytes);
+        }
+        try std.testing.expect(view.virtual_lines_arena.queryCapacity() <= 1024 * tb.getLineCount() + 16 * tb.getByteSize());
+        try tb.clear();
+        try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
+        try std.testing.expect(view.virtual_lines_arena.queryCapacity() < capacity);
     }
-    try std.testing.expectEqual(allocated, tracking.allocated_bytes);
-    try tb.clear();
-    try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
-    try std.testing.expect(view.virtual_lines_arena.queryCapacity() < capacity);
 }
 
 test "TextBufferView rewrap matches fresh layout after text and tab changes" {
@@ -638,35 +639,6 @@ test "TextBufferView wrapping - large single line retains its full width" {
     const measured = try view.measureForDimensions(80, 24);
     try std.testing.expectEqual(@as(u32, 875), measured.line_count);
     try std.testing.expectEqual(@as(u32, 80), measured.width_cols_max);
-}
-
-test "TextBufferView word wrapping - fragmented overflowing separator matches contiguous text" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    const text = "hello world";
-    const mem_id = try tb.registerMemBuffer(text, false);
-    var segments: std.ArrayListUnmanaged(seg_mod.Segment) = .empty;
-    defer segments.deinit(std.testing.allocator);
-    try segments.append(std.testing.allocator, .{ .linestart = {} });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 0, 5) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 5, 6) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 6, 11) });
-    try tb.rope().setSegments(segments.items);
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(5);
-    try std.testing.expectEqualSlices(u32, &.{ 5, 5 }, view.getCachedLineInfo().line_width_cols);
-    try std.testing.expectEqualSlices(u32, &.{ 0, 6 }, view.getCachedLineInfo().line_start_cols);
-
-    const measured = try view.measureForDimensions(5, 24);
-    try std.testing.expectEqual(@as(u32, 2), measured.line_count);
-    try std.testing.expectEqual(@as(u32, 5), measured.width_cols_max);
 }
 
 test "TextBufferView word wrapping - wide separator boundaries do not create whitespace continuations" {
@@ -1275,85 +1247,6 @@ test "TextBufferView word wrapping - single character at boundary" {
     try std.testing.expect(wrapped_count >= 3);
 }
 
-test "TextBufferView word wrapping - fragmented rope with word boundary" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    const text = "hello my good friend";
-    const mem_id = try tb.registerMemBuffer(text, false);
-
-    const Segment = seg_mod.Segment;
-
-    const chunk1 = tb.createChunk(mem_id, 0, 14); // "hello my good "
-    const chunk2 = tb.createChunk(mem_id, 14, 15); // "f"
-    const chunk3 = tb.createChunk(mem_id, 15, 20); // "riend"
-
-    var segments: std.ArrayListUnmanaged(Segment) = .empty;
-    defer segments.deinit(std.testing.allocator);
-
-    try segments.append(std.testing.allocator, .{ .linestart = {} });
-    try segments.append(std.testing.allocator, .{ .text = chunk1 });
-    try segments.append(std.testing.allocator, .{ .text = chunk2 });
-    try segments.append(std.testing.allocator, .{ .text = chunk3 });
-
-    try tb.rope().setSegments(segments.items);
-
-    view.virtual_lines_dirty = true;
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(18);
-
-    const vlines = view.getVirtualLines();
-
-    try std.testing.expectEqual(@as(usize, 2), vlines.len);
-
-    try std.testing.expectEqual(@as(u32, 14), vlines[0].width_cols);
-
-    try std.testing.expectEqual(@as(u32, 6), vlines[1].width_cols);
-
-    var line_buf: [32]u8 = undefined;
-    const line0_len = tb.getTextRange(vlines[0].document_cell_offset, vlines[0].document_cell_offset + vlines[0].width_cols, &line_buf);
-    try std.testing.expectEqualStrings("hello my good ", line_buf[0..line0_len]);
-
-    const line1_len = tb.getTextRange(vlines[1].document_cell_offset, vlines[1].document_cell_offset + vlines[1].width_cols, &line_buf);
-    try std.testing.expectEqualStrings("friend", line_buf[0..line1_len]);
-}
-
-test "TextBufferView word wrapping - fragmented long word force-breaks by wrap width" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    const text = "abcdefghijklmnopqrst";
-    const mem_id = try tb.registerMemBuffer(text, false);
-
-    var segments: std.ArrayListUnmanaged(seg_mod.Segment) = .empty;
-    defer segments.deinit(std.testing.allocator);
-    try segments.append(std.testing.allocator, .{ .linestart = {} });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 0, 5) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 5, 13) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 13, 20) });
-    try tb.rope().setSegments(segments.items);
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(8);
-
-    const vlines = view.getVirtualLines();
-    try std.testing.expectEqual(@as(usize, 3), vlines.len);
-    try std.testing.expectEqualSlices(u32, &.{ 8, 8, 4 }, view.getCachedLineInfo().line_width_cols);
-}
-
 test "TextBufferView word wrapping - zero width still makes progress" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -1369,231 +1262,6 @@ test "TextBufferView word wrapping - zero width still makes progress" {
 
     try std.testing.expectEqual(@as(u32, 4), view.getVirtualLineCount());
     try std.testing.expectEqualSlices(u32, &.{ 1, 1, 1, 1 }, view.getCachedLineInfo().line_width_cols);
-}
-
-test "TextBufferView word wrapping - fragmented zero width delimiter ends pending word" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    const text = "hello\u{200B}world";
-    const mem_id = try tb.registerMemBuffer(text, false);
-    var segments: std.ArrayListUnmanaged(seg_mod.Segment) = .empty;
-    defer segments.deinit(std.testing.allocator);
-    try segments.append(std.testing.allocator, .{ .linestart = {} });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 0, 5) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 5, @intCast(text.len)) });
-    try tb.rope().setSegments(segments.items);
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(6);
-
-    try std.testing.expectEqualSlices(u32, &.{ 5, 5 }, view.getCachedLineInfo().line_width_cols);
-}
-
-test "TextBufferView word wrapping - fragmented ASCII CJK transition is a boundary" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    const text = "abc日本";
-    const mem_id = try tb.registerMemBuffer(text, false);
-    var segments: std.ArrayListUnmanaged(seg_mod.Segment) = .empty;
-    defer segments.deinit(std.testing.allocator);
-    try segments.append(std.testing.allocator, .{ .linestart = {} });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 0, 3) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 3, @intCast(text.len)) });
-    try tb.rope().setSegments(segments.items);
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(5);
-
-    // "abc日" fills the first line; the CJK run may break between characters.
-    try std.testing.expectEqualSlices(u32, &.{ 5, 2 }, view.getCachedLineInfo().line_width_cols);
-}
-
-test "TextBufferView word wrapping - combining mark keeps base class across chunks" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    const text = "a\u{0301}日本";
-    const mem_id = try tb.registerMemBuffer(text, false);
-    var segments: std.ArrayListUnmanaged(seg_mod.Segment) = .empty;
-    defer segments.deinit(std.testing.allocator);
-    try segments.append(std.testing.allocator, .{ .linestart = {} });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 0, 3) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 3, @intCast(text.len)) });
-    try tb.rope().setSegments(segments.items);
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(4);
-    // "a\u{0301}日" fills the first line; the CJK run may break between characters.
-    try std.testing.expectEqualSlices(u32, &.{ 3, 2 }, view.getCachedLineInfo().line_width_cols);
-}
-
-test "TextBufferView word wrapping - appended kana combining mark keeps trailing bytes" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("か");
-    try tb.append("\u{3099}く");
-    view.setWrapMode(.word);
-    view.setWrapWidth(8);
-
-    const expected = "か\u{3099}く";
-    var bytes: usize = 0;
-    for (view.getVirtualLines()) |vline| {
-        for (vline.chunks.items) |chunk| bytes += chunk.byte_len;
-    }
-    try std.testing.expectEqual(expected.len, bytes);
-}
-
-test "TextBufferView word wrapping - CJK run wraps between characters" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    // "AB" = 2 cols, space = 1 col, each CJK char = 2 cols.
-    try tb.setText("AB 测试文字");
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(6);
-
-    // "AB 测" (5) then "试文字" (6); without intercharacter breaks the CJK run
-    // would drop to its own line and force-break after overflowing.
-    try std.testing.expectEqualSlices(u32, &.{ 5, 6 }, view.getCachedLineInfo().line_width_cols);
-}
-
-test "TextBufferView word wrapping - ideographic punctuation never starts a line" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("测试。文字");
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(4);
-
-    // "试。" stays together: no break opportunity exists before 。.
-    try std.testing.expectEqualSlices(u32, &.{ 2, 4, 4 }, view.getCachedLineInfo().line_width_cols);
-}
-
-test "TextBufferView word wrapping - CJK break spans chunk boundary" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    const text = "你好世界";
-    const mem_id = try tb.registerMemBuffer(text, false);
-    var segments: std.ArrayListUnmanaged(seg_mod.Segment) = .empty;
-    defer segments.deinit(std.testing.allocator);
-    try segments.append(std.testing.allocator, .{ .linestart = {} });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 0, 6) });
-    try segments.append(std.testing.allocator, .{ .text = tb.createChunk(mem_id, 6, @intCast(text.len)) });
-    try tb.rope().setSegments(segments.items);
-
-    view.setWrapMode(.word);
-    view.setWrapWidth(4);
-
-    // The 好|世 chunk edge is a break opportunity, so the run fills both lines
-    // instead of carrying "好" into the second chunk as one word.
-    try std.testing.expectEqualSlices(u32, &.{ 4, 4 }, view.getCachedLineInfo().line_width_cols);
-}
-
-test "TextBufferView word wrapping - non-CJK appends keep chunk-local boundaries" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .unicode_wide, .wcwidth, .no_zwj }) |method| {
-        var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
-        defer tb.deinit();
-        var view = try TextBufferView.init(std.testing.allocator, tb);
-        defer view.deinit();
-        try tb.append("\u{1f1e6}");
-        try tb.append("\u{1f1e7}\u{1f1e8}");
-        try tb.append("\u{1f1e9}\u{1f1ea}\u{1f1eb}");
-        view.setWrapMode(.word);
-        view.setWrapWidth(3);
-        const measured = try view.measureForDimensions(3, 8);
-        try std.testing.expectEqual(@as(u32, 2), measured.line_count);
-        try std.testing.expectEqualSlices(u32, &.{ 3, 3 }, view.getCachedLineInfo().line_width_cols);
-    }
-}
-
-test "TextBufferView word wrapping - CJK policy retains bytes and uses legacy fitting for split chunks" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    const cases = [_]struct { parts: []const []const u8, width: u32, widths: []const u32 }{
-        .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f1fa}", "\u{1f1f8}\u{1f1fa}\u{1f1f8}\u{8a9e}\u{6587}" }, .width = 4, .widths = &.{ 4, 4, 4 } },
-        .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f44b}", "\u{1f3fb}\u{8a9e}\u{6587}" }, .width = 4, .widths = &.{ 4, 4, 4 } },
-        .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f44b}", "\u{1f3fb}" ++ utils.repeat(u8, "\u{8a9e}\u{6587}", 256) ++ "\u{65e5}", "abc" }, .width = 4, .widths = &(@as([258]u32, @splat(4)) ++ [_]u32{ 2, 3 }) },
-        .{ .parts = &.{ "\u{304b}", "\u{3099}\u{304f}" }, .width = 8, .widths = &.{4} },
-        .{ .parts = &.{ "\u{306f}", "\u{309a}\u{3072}" }, .width = 8, .widths = &.{4} },
-        .{ .parts = &.{"\u{304b}\u{200d}\u{3099}"}, .width = 8, .widths = &.{2} },
-        .{ .parts = &.{"\u{306f}\u{200d}\u{309a}"}, .width = 8, .widths = &.{2} },
-        .{ .parts = &.{"AB \u{30ab}\u{30fb}\u{30ca}"}, .width = 6, .widths = &.{ 3, 6 } },
-        .{ .parts = &.{ "AB \u{30ab}", "\u{30fb}\u{30ca}" }, .width = 6, .widths = &.{ 3, 6 } },
-    };
-    for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .unicode_wide, .wcwidth, .no_zwj }) |method| {
-        for (cases) |case| {
-            var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
-            defer tb.deinit();
-            var view = try TextBufferView.init(std.testing.allocator, tb);
-            defer view.deinit();
-            for (case.parts) |part| try tb.append(part);
-            view.setWrapMode(.word);
-            const expected = try std.mem.concat(std.testing.allocator, u8, case.parts);
-            defer std.testing.allocator.free(expected);
-            var actual: std.ArrayListUnmanaged(u8) = .empty;
-            defer actual.deinit(std.testing.allocator);
-            for ([_]u32{ case.width, case.width + 2, case.width }) |width| {
-                view.setWrapWidth(width);
-                const measured = try view.measureForDimensions(width, 8);
-                const lines = view.getCachedLineInfo();
-                try std.testing.expectEqual(lines.line_width_cols.len, measured.line_count);
-                if (width == case.width) try std.testing.expectEqualSlices(u32, case.widths, lines.line_width_cols);
-                actual.clearRetainingCapacity();
-                for (view.getVirtualLines()) |line| {
-                    for (line.chunks.items) |chunk| {
-                        const bytes = chunk.chunk.getBytes(tb.memRegistry());
-                        try actual.appendSlice(std.testing.allocator, bytes[chunk.byte_start_in_chunk..][0..chunk.byte_len]);
-                    }
-                }
-                try std.testing.expectEqualStrings(expected, actual.items);
-            }
-        }
-    }
 }
 
 test "TextBufferView wrapping - very narrow width (1 char)" {
@@ -2671,61 +2339,6 @@ test "TextBufferView highlights - overlapping highlights" {
 
     const highlights = tb.getLineHighlights(0);
     try std.testing.expectEqual(@as(usize, 2), highlights.len);
-}
-
-test "TextBufferView highlights - style spans computed correctly" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789");
-
-    try tb.addHighlight(0, 0, 3, 1, 1, 0);
-    try tb.addHighlight(0, 5, 8, 2, 1, 0);
-
-    const spans = tb.getLineSpans(0);
-    try std.testing.expect(spans.len > 0);
-
-    var found_style1 = false;
-    var found_style2 = false;
-    for (spans) |span| {
-        if (span.style_id == 1) found_style1 = true;
-        if (span.style_id == 2) found_style2 = true;
-    }
-    try std.testing.expect(found_style1);
-    try std.testing.expect(found_style2);
-}
-
-test "TextBufferView highlights - priority handling in spans" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789");
-
-    try tb.addHighlight(0, 0, 8, 1, 1, 0);
-    try tb.addHighlight(0, 3, 6, 2, 5, 0);
-
-    const spans = tb.getLineSpans(0);
-    try std.testing.expect(spans.len > 0);
-
-    var found_high_priority = false;
-    for (spans) |span| {
-        if (span.col >= 3 and span.col < 6 and span.style_id == 2) {
-            found_high_priority = true;
-        }
-    }
-    try std.testing.expect(found_high_priority);
 }
 
 test "TextBufferView char range highlights - single line highlight" {
@@ -4678,17 +4291,17 @@ fn splitsGrapheme(tb: *TextBuffer, mode: text_buffer_view.WrapMode) bool {
         };
         const bytes = chunk.getBytes(tb.memRegistry());
         if (previous) |left| if (left.len > 0 and bytes.len > 0) {
-            // Replay the left chunk's last grapheme so the break state knows its context.
+            // Replay the left chunk from its last grapheme with cells so the break state knows its context.
             var state: @import("uucode").grapheme.BreakState = .default;
             var last: ?u21 = null;
-            var pos = utf8.getPrevGraphemeStart(left, left.len, tb.tabWidth(), .unicode).?.start_offset;
+            var pos = if (utf8.getPrevGraphemeStart(left, left.len, tb.tabWidth(), .hidden, .unicode)) |grapheme| grapheme.start_offset else 0;
             while (pos < left.len) : (pos += utf8.decodeUtf8Unchecked(left, pos).len) {
                 const cp = utf8.decodeUtf8Unchecked(left, pos).cp;
                 _ = utf8.isGraphemeBreak(last, cp, &state, .unicode);
                 last = cp;
             }
             const first = utf8.decodeUtf8Unchecked(bytes, 0).cp;
-            const combining = first != 0x200D and utf8.zeroWidthPrefixLen(bytes, tb.tabWidth(), .unicode) > 0;
+            const combining = first != 0x200D and utf8.findGraphemePosByWidth(bytes, 0, tb.tabWidth(), .hidden, false, false, .unicode).byte_offset > 0;
             const allow_combining = mode == .char or (!has_cjk_words and last.? <= 0x7F and utf8.isWordCodepoint(last.?));
             if (!(allow_combining and combining) and !utf8.isGraphemeBreak(last, first, &state, .unicode)) return true;
         };
@@ -4775,38 +4388,4 @@ test "TextBufferView edited text wraps like freshly loaded text" {
             }
         }
     }
-}
-
-test "TextBufferView word wrap keeps zero-width pieces with the text before them" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-    // Each piece is appended as its own chunk, as edits and streams leave it, and the
-    // result must wrap like the same text loaded as one chunk.
-    const rows = [_]struct { pieces: []const []const u8, width: u32 }{
-        // A word after a lone zero-width piece is queued behind it, not placed before it.
-        .{ .pieces = &.{ "\u{2060}", "-" }, .width = 1 },
-        // Zero-width text after a forced wide grapheme stays on its line.
-        .{ .pieces = &.{ "\u{1f44d}", "\u{2060}", "x" }, .width = 1 },
-        // A combining mark at the start of the next word piece joins the full line.
-        .{ .pieces = &.{ "x", "\u{301}cd" }, .width = 1 },
-        // A zero-width piece after a full line joins it.
-        .{ .pieces = &.{ "abc", "\u{301}", "-" }, .width = 1 },
-    };
-    for (rows) |row| {
-        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-        defer tb.deinit();
-        for (row.pieces) |piece| try tb.append(piece);
-        try expectSameWrap(tb, row.width, .word);
-    }
-
-    // A line of only zero-width text keeps its bytes, as it does without wrapping.
-    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    try tb.setText("a\n\u{301}");
-    const view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-    view.setWrapMode(.word);
-    view.setWrapWidth(5);
-    var bytes: [8]u8 = undefined;
-    try std.testing.expectEqualStrings("\u{301}", lineBytes(view.getVirtualLines()[1], tb, &bytes));
 }
