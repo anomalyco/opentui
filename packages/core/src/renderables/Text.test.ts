@@ -2180,31 +2180,34 @@ describe("TextRenderable Selection", () => {
       expect(text.scrollY).toBe(2)
     })
 
-    // Text paints through the native scene and Code through its own view. A truncated line fits its box, so
-    // sideways steps have nothing to reveal; vertical steps still scroll.
+    // Text paints through the native scene and Code through its own view. Truncated or wrapped text has nothing to
+    // the side: wheel steps leave it, and turning truncate on or leaving wrapMode "none" scrolls back to column 0.
     it.each([
-      ["Text", false, 3, "DEFGHIJKLM"],
-      ["Text", true, 0, "ABC...WXYZ"],
-      ["Code", false, 3, "DEFGHIJKLM"],
-      ["Code", true, 0, "ABC...WXYZ"],
-    ])("sideways wheel steps over unwrapped %s with truncate %j", async (kind, truncate, scrollX, row) => {
+      ["Text", false],
+      ["Text", true],
+      ["Code", false],
+      ["Code", true],
+    ] as const)("sideways wheel steps over unwrapped %s with truncate %j", async (kind, truncate) => {
       const content = "abcdefghijklmnopqrstuvwxyz\nABCDEFGHIJKLMNOPQRSTUVWXYZ"
-      const options = { content, wrapMode: "none" as const, width: 10, height: 1, truncate }
-      const text =
-        kind === "Text"
-          ? new TextRenderable(currentRenderer, options)
-          : new CodeRenderable(currentRenderer, {
-              ...options,
-              syntaxStyle: SyntaxStyle.create(currentRenderer.nativeScene),
-              treeSitterClient: new MockTreeSitterClient(),
-            })
+      const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
+      const options = { content, wrapMode: "none" as const, width: 10, height: 1, syntaxStyle }
+      const code = () =>
+        new CodeRenderable(currentRenderer, { ...options, treeSitterClient: new MockTreeSitterClient() })
+      const text = kind === "Text" ? new TextRenderable(currentRenderer, options) : code()
+      const state = async () => (await renderOnce(), [text.scrollY, text.scrollX, captureFrame().slice(0, 10)])
       currentRenderer.root.add(text)
       await renderOnce()
-      for (const direction of ["down", "right", "right", "right", "right", "left"] as const) {
-        await currentMouse.scroll(1, 0, direction)
-      }
-      await renderOnce()
-      expect([text.scrollY, text.scrollX, captureFrame().split("\n")[0].slice(0, 10)]).toEqual([1, scrollX, row])
+      await currentMouse.scroll(1, 0, "right")
+      text.truncate = truncate
+      expect(await state()).toEqual(truncate ? [0, 0, "abc...wxyz"] : [0, 1, "bcdefghijk"])
+      for (const step of ["down", "right", "right", "right", "right", "left"] as const)
+        await currentMouse.scroll(1, 0, step)
+      expect(await state()).toEqual(truncate ? [1, 0, "ABC...WXYZ"] : [1, 4, "EFGHIJKLMN"])
+      text.scrollX = 2
+      await currentMouse.scroll(1, 0, "left")
+      expect(text.scrollX).toBe(truncate ? 2 : 1)
+      text.wrapMode = "word"
+      expect(await state()).toEqual([1, 0, "klmnopqrst"])
     })
 
     it("should not allow horizontal scrolling when text is wrapped", async () => {
