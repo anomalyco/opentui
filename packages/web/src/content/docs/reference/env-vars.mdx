@@ -62,6 +62,15 @@ When set, `OTUI_USE_ALTERNATE_SCREEN` overrides `screenMode`. A true value force
 explicit value forces `"main-screen"`. When set, `OTUI_OVERRIDE_STDOUT` overrides `externalOutputMode`. A true value
 captures stdout only in `"split-footer"`. Any other explicit value forces passthrough.
 
+## Experimental
+
+| Variable                             | Type     | Default | Read time  | Purpose                                                           |
+| ------------------------------------ | -------- | ------- | ---------- | ----------------------------------------------------------------- |
+| `OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL` | `string` | unset   | Video open | Decode [video](/docs/components/video) with VideoToolbox on macOS |
+
+Only exactly `1` or `true` enables hardware decoding. Other platforms, other values, and hardware failures decode in
+software. The variable can change or disappear in any release.
+
 ## Diagnostics
 
 | Variable             | Type      | Default | Read time             | Purpose                                                   |

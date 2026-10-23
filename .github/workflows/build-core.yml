@@ -53,8 +53,31 @@ jobs:
         if: steps.bottle.outputs.cache-hit != 'true'
         uses: ./.github/actions/setup-native-symbol-tools
 
+      # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+      - name: Restore FFmpeg build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+
       - name: Build or package native libraries
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --all
+
+      # FFmpeg's configure and make need a POSIX host, so Windows native tests link this cross-built prefix.
+      # A bottle hit skips the FFmpeg build, so build the prefix here if the cache lacks it.
+      - name: Build Windows FFmpeg prefix
+        working-directory: packages/native
+        run: bun scripts/build-ffmpeg.ts --target=x86_64-windows
+
+      - name: Upload Windows FFmpeg prefix
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-x86_64-windows
+          path: packages/native/.cache/ffmpeg/prefix/x86_64-windows/
+          if-no-files-found: error
+          retention-days: 1
 
       # A saved bottle already passed this compile check for the same inputs.
       - name: Build custom target without Ghostty VT
@@ -143,13 +166,37 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/enable-linux-coredumps
 
+      # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+      - name: Restore FFmpeg build cache
+        id: ffmpeg
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+
+      # FFmpeg cannot build on Windows, so a cache miss waits for the build job's cross-built prefix.
+      - name: Wait for Windows FFmpeg prefix
+        if: runner.os == 'Windows' && steps.native-tested.outputs.cache-hit != 'true' && steps.ffmpeg.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun scripts/wait-for-job.ts --name "Build Native Libraries"
+
+      - name: Download Windows FFmpeg prefix
+        if: runner.os == 'Windows' && steps.native-tested.outputs.cache-hit != 'true' && steps.ffmpeg.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: ffmpeg-x86_64-windows
+          path: packages/native/.cache/ffmpeg/prefix/x86_64-windows/
+
       # Native tests build from source, so they run before this job gets the cross-compiled library.
       - name: Run native tests
         if: steps.native-tested.outputs.cache-hit != 'true'
         working-directory: packages/core
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
-          bun run test:native
+          bun run test:native -Drequire-video
           bun run test:native:lifetime
           echo "${{ github.sha }}" > ../../.native-tests-passed
 

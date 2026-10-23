@@ -76,6 +76,7 @@ import * as audioCaptureDemo from "./audio-capture-demo.js"
 import * as audioStreamingDemo from "./audio-streaming-demo.js"
 import * as clipboardPasteDemo from "./clipboard-paste-demo.js"
 import * as nativeImageDemo from "./native-image-demo.js"
+import * as videoDemo from "./video-demo.js"
 import * as embeddedTerminalDemo from "./embedded-terminal-demo.js"
 
 type ExampleCategory =
@@ -551,6 +552,12 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
       description: "PNG, JPEG, WebP, and GIF loading from paths, URLs, bytes, and HTTP",
       run: nativeImageDemo.run,
       destroy: nativeImageDemo.destroy,
+    },
+    {
+      name: "Native Video",
+      description: "MP4 playback with audio, seeking, looping, and fit modes in a native scene node",
+      run: videoDemo.run,
+      destroy: videoDemo.destroy,
     },
     {
       name: "Opacity Demo",

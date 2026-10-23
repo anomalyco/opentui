@@ -12,6 +12,7 @@ const TextView = @import("context.zig").TextView;
 const text_buffer_view = @import("text-buffer-view.zig");
 const utf8 = @import("utf8.zig");
 const image = @import("image.zig");
+const video = @import("video.zig");
 const Context = @import("context.zig").Context;
 const scene_record = @import("scene-record.zig");
 const api = @import("context_abi_c");
@@ -211,6 +212,22 @@ pub const ImageState = struct {
     }
 };
 
+/// A video node draws its player's current frame through the image paint path.
+pub const VideoState = struct {
+    image: ImageState = .{},
+    player: ?*video.Player = null,
+    // The player's publish count whose frame carries the current render identity.
+    painted: u64 = 0,
+    // Detail of the last failed open, owned by the node allocator.
+    open_error: []u8 = &.{},
+
+    pub fn deinit(self: VideoState, allocator: std.mem.Allocator) void {
+        self.image.deinit();
+        if (self.player) |player| player.deinit();
+        allocator.free(self.open_error);
+    }
+};
+
 const Control = union {
     box: ?*BoxDetails,
     slider: SliderOptions,
@@ -218,12 +235,14 @@ const Control = union {
     editor: EditorOptions,
     text_view: struct { view: ?*TextView = null, paint: bool = true },
     image: ImageState,
+    video: VideoState,
 
     fn deinit(self: Control, kind: u32, allocator: std.mem.Allocator) void {
         switch (kind) {
             api.OT_SCENE_BOX => if (self.box) |details| details.destroy(allocator),
             api.OT_SCENE_ARROW => self.arrow.deinit(allocator),
             api.OT_SCENE_IMAGE => self.image.deinit(),
+            api.OT_SCENE_VIDEO => self.video.deinit(allocator),
             else => {},
         }
     }
@@ -418,7 +437,7 @@ pub const Scene = struct {
     }
 
     pub fn prepareInsert(self: *Scene, kind: u32, num: u32) !void {
-        std.debug.assert(kind <= api.OT_SCENE_IMAGE and num != 0);
+        std.debug.assert(kind <= api.OT_SCENE_VIDEO and num != 0);
         if (kind == api.OT_SCENE_ROOT and self.root != null) return error.SceneAlreadyAttached;
         if (self.last_token == std.math.maxInt(u32)) return error.ObjectLimit;
         try self.tokens.ensureUnusedCapacity(self.allocator, 1);
@@ -444,6 +463,7 @@ pub const Scene = struct {
         if (kind == api.OT_SCENE_EDITOR) value.scene_node.?.control = .{ .editor = .{} };
         if (kind == api.OT_SCENE_TEXT_VIEW) value.scene_node.?.control = .{ .text_view = .{} };
         if (kind == api.OT_SCENE_IMAGE) value.scene_node.?.control = .{ .image = .{} };
+        if (kind == api.OT_SCENE_VIDEO) value.scene_node.?.control = .{ .video = .{} };
         if (self.head) |head| head.scene_node.?.previous = value;
         self.head = value;
         self.count += 1;
@@ -1342,16 +1362,17 @@ pub const Scene = struct {
             if (builtin.is_test) self.test_paint_setups += 1;
             const target = cli.getNextBuffer();
             // A natively composed image buffer receives its node's hook drawing, like its body.
-            const surface = if (node.kind == api.OT_SCENE_IMAGE) node.control.image.buffer else null;
+            const image_state = imageState(node);
+            const surface = if (image_state) |state| state.buffer else null;
             try enterMember(target, entry);
-            if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, entry.layout);
+            if (image_state) |state| try beginImagePaint(state, entry.layout);
             try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_BEFORE);
             if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
                 try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_SELF);
-            } else try self.paintNode(cli, entry);
+            } else try self.paintNode(owner, cli, entry);
             if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, entry.layout);
             try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_AFTER);
-            if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, entry.layout);
+            if (image_state) |state| try finishImagePaint(target, state, entry.layout);
         }
         addHit(cli, entry.layout, entry.clip, node.num, node.token, options);
     }
@@ -1379,7 +1400,15 @@ pub const Scene = struct {
         try scene_record.play(owner, local, 0, phases.recording, segment);
     }
 
-    fn paintNode(self: *Scene, cli: *renderer.CliRenderer, entry: Work) !void {
+    fn imageState(node: *const Node) ?ImageState {
+        return switch (node.kind) {
+            api.OT_SCENE_IMAGE => node.control.image,
+            api.OT_SCENE_VIDEO => node.control.video.image,
+            else => null,
+        };
+    }
+
+    fn paintNode(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work) !void {
         const target = cli.getNextBuffer();
         const node = entry.node.scene_node.?;
         const x: i32 = @intFromFloat(entry.layout.screenX);
@@ -1403,6 +1432,8 @@ pub const Scene = struct {
             if (hit.width != 0 and hit.height != 0) try target.drawEditorViewChecked(editor.view, x, y);
         } else if (node.kind == api.OT_SCENE_IMAGE) {
             try paintImage(cli, node.control.image, entry.layout);
+        } else if (node.kind == api.OT_SCENE_VIDEO) {
+            try paintVideo(owner, cli, &node.control.video, entry.layout);
         } else if (entry.node.surface) |source| {
             try Context.drawContextBuffer(target, source, x, y, .{});
         } else {
@@ -1419,6 +1450,54 @@ pub const Scene = struct {
     fn finishImagePaint(target: *buffer.OptimizedBuffer, state: ImageState, layout: Layout) !void {
         const source = state.buffer orelse return;
         try Context.drawContextBuffer(target, source, @intFromFloat(layout.screenX), @intFromFloat(layout.screenY), .{});
+    }
+
+    /// Advances the player for this paint and draws its current frame as the node's image.
+    fn paintVideo(owner: *Context, cli: *renderer.CliRenderer, state: *VideoState, layout: Layout) !void {
+        const player = state.player orelse return;
+        if (layout.width < 1 or layout.height < 1) return;
+        const info = player.video.info;
+        if (info.width == 0 or info.height == 0) return;
+        const resolution = cli.image_resolution;
+        const has_resolution = resolution.pixel_width != 0 and resolution.pixel_height != 0 and
+            resolution.terminal_width != 0 and resolution.terminal_height != 0;
+        const cell_width: f64 = if (has_resolution) @as(f64, @floatFromInt(resolution.pixel_width)) / @as(f64, @floatFromInt(resolution.terminal_width)) else 2;
+        const cell_height: f64 = if (has_resolution) @as(f64, @floatFromInt(resolution.pixel_height)) / @as(f64, @floatFromInt(resolution.terminal_height)) else 4;
+        var width: f64 = layout.width;
+        var height: f64 = layout.height;
+        const source_width: f64 = @floatFromInt(info.width);
+        const source_height: f64 = @floatFromInt(info.height);
+        if (state.image.fit == .fit) {
+            const aspect = source_width / source_height * (cell_height / cell_width);
+            const scale = @min(width / aspect, height);
+            width = @max(1, @round(aspect * scale));
+            height = @max(1, @round(scale));
+        }
+        player.video.observeOutput(cli.renderStats.frameCount, cli.lastFrameCostUs);
+        // Kitty sends decoded pixels as is and the terminal scales them, so only
+        // Kitty output adapts its decode size to the measured frame cost.
+        if (cli.resolveImageProtocol(state.image.protocol) == .kitty) {
+            player.observeFrameCost(cli.renderStats.frameCount, cli.lastFrameCostUs);
+        } else player.quality = .{};
+        // Decode at the drawn pixel size scaled by the quality tier, never above the source size.
+        const pixel_width = @max(1, @round(width * cell_width));
+        const pixel_height = @max(1, @round(height * cell_height));
+        const scale = @min(1, @min(source_width / pixel_width, source_height / pixel_height)) * player.quality.scale();
+        const decode_width: u32 = @intFromFloat(@min(16_384, @max(1, @round(pixel_width * scale))));
+        const decode_height: u32 = @intFromFloat(@min(16_384, @max(1, @round(pixel_height * scale))));
+        const frame = player.frame(decode_width, decode_height, state.image.fit == .cover) orelse return;
+        if (state.painted != player.video.published) {
+            // New pixels need a new render identity: renderers cache content by it.
+            if (owner.last_image_id == std.math.maxInt(u32)) return error.ObjectLimit;
+            owner.last_image_id += 1;
+            frame.render_id = owner.last_image_id;
+            frame.owner_context_id = owner.objects.context_id;
+            state.painted = player.video.published;
+            player.cost_frame = cli.renderStats.frameCount;
+        }
+        var drawn = state.image;
+        drawn.source = frame;
+        try paintImage(cli, drawn, layout);
     }
 
     fn paintImage(cli: *renderer.CliRenderer, state: ImageState, layout: Layout) !void {

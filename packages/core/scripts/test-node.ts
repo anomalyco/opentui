@@ -42,6 +42,7 @@ const treeSitterTestDataPaths = [
 const treeSitterAssetsDir = "src/lib/tree-sitter/assets"
 const audioFixturesDir = "src/tests/fixtures/audio"
 const imageFixturesDir = "src/tests/fixtures/images"
+const videoFixturesDir = "src/tests/fixtures/video"
 const iccFixturesDir = "../native/src/tests/fixtures"
 const stagedNativeFixturesRoot = resolve(outDir, iccFixturesDir)
 const stagedNativeRoot = resolve(packageRoot, "native")
@@ -89,6 +90,7 @@ try {
     cpSync(resolve(packageRoot, treeSitterAssetsDir), resolve(outDir, treeSitterAssetsDir), { recursive: true })
     cpSync(resolve(packageRoot, audioFixturesDir), resolve(outDir, audioFixturesDir), { recursive: true })
     cpSync(resolve(packageRoot, imageFixturesDir), resolve(outDir, imageFixturesDir), { recursive: true })
+    cpSync(resolve(packageRoot, videoFixturesDir), resolve(outDir, videoFixturesDir), { recursive: true })
     stagedNativeRootOwned = true
     cpSync(resolve(packageRoot, iccFixturesDir), stagedNativeFixturesRoot, { recursive: true })
     for (const dataPath of treeSitterTestDataPaths) {

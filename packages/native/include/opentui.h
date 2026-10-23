@@ -51,6 +51,7 @@ typedef int32_t ot_status;
 #define OT_IMAGE_OUTPUT_TOO_SMALL (-INT32_C(45))
 #define OT_IMAGE_UNSUPPORTED_FEATURE (-INT32_C(46))
 #define OT_IMAGE_BUSY (-INT32_C(47))
+#define OT_VIDEO_FAILED (-INT32_C(60))
 
 /* A context owns its native resources and I/O storage. Only its creating OS
  * thread may call its functions, including error queries and destruction.
@@ -82,6 +83,7 @@ typedef struct ot_handle {
 #define OT_SCENE_CUSTOM UINT32_C(6)
 #define OT_SCENE_TEXT_VIEW UINT32_C(7)
 #define OT_SCENE_IMAGE UINT32_C(8)
+#define OT_SCENE_VIDEO UINT32_C(9)
 #define OT_SCENE_WRAP_NONE UINT32_C(0)
 #define OT_SCENE_WRAP_CHAR UINT32_C(1)
 #define OT_SCENE_WRAP_WORD UINT32_C(2)
@@ -557,7 +559,7 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * it plays RENDER_BEFORE, then RENDER_SELF in place of the node's native body,
  * then native editor cursor maintenance, then RENDER_AFTER, before the node's
  * children. A slot without a recorded phase draws nothing for that phase. An
- * IMAGE node with a backing buffer from ot_scene_set_image plays its phases into
+ * IMAGE or VIDEO node with a backing buffer from ot_scene_set_image or ot_scene_set_video plays its phases into
  * that buffer, in buffer coordinates, after native code clears it and before
  * composing it.
  * recording must be NULL with zero length for every other acknowledgement.
@@ -1580,6 +1582,62 @@ ot_status ot_image_pixels_release(ot_context *, const ot_handle *lease);
  * fit and protocol use OT_IMAGE_*; mutations reject measurement-callback reentry. */
 ot_status ot_scene_set_image(ot_context *, const ot_handle *node, const ot_handle *image,
     uint32_t fit, uint32_t protocol, const ot_handle *buffer);
+
+/* A VIDEO node owns one decoder and player. Decoded frames stay native: each paint
+ * of the node draws the current frame as the IMAGE node does, from a small set of
+ * images that the decoder refreshes in place while no buffer retains them. Audio
+ * plays from a native thread; paints and ot_video_get_state advance the clock and
+ * end or loop playback, so an unpainted node keeps time. Hosts keep frames painting
+ * while playback runs, for example with a live renderable. ot_scene_set_video sets fit and buffer as ot_scene_set_image does;
+ * frames draw with OT_IMAGE_PROTOCOL_AUTO.
+ * ot_video_open replaces the player; a zero path_length closes it, and path may then
+ * be NULL. Audio plays through a private audio engine and is the media clock while it
+ * plays. A decode worker thread starts when the node first needs a frame; an audio
+ * thread starts on the first play of a source with audio and makes every audio engine
+ * call. Failed opens, seeks, and decodes return OT_VIDEO_FAILED; ot_video_get_error
+ * copies the detail. After a failure, ot_video_play and ot_video_seek retry; other
+ * controls still apply and succeed. A paused seek decodes its frame once the node has
+ * painted, so decode failures return from the seek. Audio failures leave playback running silently on the wall clock. Control and
+ * state calls on a node without an open player return OT_INVALID_PHASE.
+ * In ot_video_info, zero duration_us or fps_num means unknown. */
+typedef struct ot_video_info {
+    int64_t duration_us;
+    uint32_t width, height, fps_num, fps_den, has_audio, reserved;
+} ot_video_info;
+/* BUFFERING: playing, and the audio clock waits for queued audio. AUDIO: playing, and
+ * audio output drives the media clock. Without either, playback follows the wall clock. */
+#define OT_VIDEO_PLAYING UINT32_C(1)
+#define OT_VIDEO_ENDED UINT32_C(2)
+#define OT_VIDEO_BUFFERING UINT32_C(4)
+#define OT_VIDEO_AUDIO UINT32_C(8)
+#define OT_VIDEO_HAS_FRAME UINT32_C(16)
+#define OT_VIDEO_ERROR UINT32_C(32)
+typedef struct ot_video_state {
+    int64_t current_time_us;
+    int64_t frame_pts_us;
+    /* quality_tier: 0 is full decode size; each higher tier decodes Kitty output smaller to keep up. */
+    uint32_t flags, quality_tier;
+} ot_video_state;
+ot_status ot_scene_set_video(ot_context *, const ot_handle *node, uint32_t fit, const ot_handle *buffer);
+ot_status ot_video_open(ot_context *, const ot_handle *node, const uint8_t *path, uint32_t path_length,
+    ot_video_info *out_info);
+ot_status ot_video_play(ot_context *, const ot_handle *node);
+ot_status ot_video_pause(ot_context *, const ot_handle *node);
+ot_status ot_video_seek(ot_context *, const ot_handle *node, int64_t time_us);
+ot_status ot_video_set_loop(ot_context *, const ot_handle *node, uint32_t loop);
+ot_status ot_video_set_muted(ot_context *, const ot_handle *node, uint32_t muted);
+ot_status ot_video_set_volume(ot_context *, const ot_handle *node, float volume);
+/* Positive offsets show frames earlier relative to the media clock. Offsets beyond
+ * +-60 s return OT_INVALID_ARGUMENT. */
+ot_status ot_video_set_av_sync_offset(ot_context *, const ot_handle *node, int64_t offset_us);
+/* Frames present at the lower of fps and the source frame rate. fps is 1 to 120; default 30. */
+ot_status ot_video_set_max_fps(ot_context *, const ot_handle *node, uint32_t fps);
+ot_status ot_video_get_state(ot_context *, const ot_handle *node, ot_video_state *out_state);
+/* Copies the detail of the last failure, empty without one. Zero capacity reports the
+ * exact byte count; otherwise insufficient capacity rejects without writing bytes or
+ * out_count. bytes may be NULL only for zero capacity. No terminating NUL is added. */
+ot_status ot_video_get_error(ot_context *, const ot_handle *node, uint8_t *bytes, uint32_t capacity,
+    uint32_t *out_count);
 
 /* x/y and width/height count terminal cells. pixel_* and source_* count image
  * pixels. Absent source extents and reserved fields must be zero. Exact size and

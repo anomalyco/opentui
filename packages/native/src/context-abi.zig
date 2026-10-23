@@ -15,6 +15,7 @@ const unicode_transport = @import("context-unicode-abi.zig");
 const terminal_transport = @import("context-terminal-abi.zig");
 const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
+const video_transport = @import("context-video-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
 
 /// Each C Context owns a private allocator. Test builds back it with
@@ -4868,6 +4869,7 @@ const abi_modules = .{
     terminal_transport,
     output_transport,
     image_transport,
+    video_transport,
     clipboard_transport,
 };
 

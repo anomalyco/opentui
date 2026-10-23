@@ -50,6 +50,15 @@ jobs:
       - name: Setup cross-platform symbol tools
         uses: ./.github/actions/setup-native-symbol-tools
 
+      # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+      - name: Restore FFmpeg build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+
       - name: Build packages (cross-compile for all platforms)
         run: |
           cd packages/core

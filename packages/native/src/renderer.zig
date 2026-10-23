@@ -306,6 +306,9 @@ pub const CliRenderer = struct {
         frameCallbackTime: std.ArrayListUnmanaged(f64),
     },
     lastRenderTime: i64,
+    // Microseconds from the start of the last completed frame until its output
+    // was written, so slow terminals and transports show up as frame cost.
+    lastFrameCostUs: u32 = 0,
     allocator: Allocator,
     io: std.Io,
     logger: *const logger.Logger,
@@ -756,6 +759,8 @@ pub const CliRenderer = struct {
     }
 
     fn collectFrameStats(self: *CliRenderer, deltaTime: f64) void {
+        // Every published frame path sets lastRenderTime to its frame start first.
+        self.recordFrameCost(self.lastRenderTime);
         if (self.backend.getLastWriteTimeUs()) |wt| {
             self.renderStats.outputWriteTime = wt;
         }
@@ -1244,6 +1249,11 @@ pub const CliRenderer = struct {
 
         self.collectFrameStats(deltaTime);
         return status;
+    }
+
+    fn recordFrameCost(self: *CliRenderer, started_us: i64) void {
+        const elapsed = std.Io.Clock.now(.awake, self.io).toMicroseconds() - started_us;
+        self.lastFrameCostUs = @intCast(std.math.clamp(elapsed, 0, std.math.maxInt(u32)));
     }
 
     fn splitOutputOffset(self: *const CliRenderer, surface_offset: u32) u32 {
@@ -2163,7 +2173,7 @@ pub const CliRenderer = struct {
         return false;
     }
 
-    fn resolveImageProtocol(self: *CliRenderer, requested: native_image.RenderProtocol) ImageProtocol {
+    pub fn resolveImageProtocol(self: *CliRenderer, requested: native_image.RenderProtocol) ImageProtocol {
         const configured = if (requested == .auto) self.terminal.image_protocol else switch (requested) {
             .auto => unreachable,
             .kitty => Terminal.ImageProtocol.kitty,
