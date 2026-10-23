@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { rgbToHex } from "../lib/RGBA.js"
+import { CodeRenderable } from "../renderables/Code.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { TextNodeRenderable } from "../renderables/TextNode.js"
+import { SyntaxStyle } from "../syntax-style.js"
+import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import type { NativeFrameWork, NativeRenderStats } from "../zig.js"
 
@@ -109,6 +114,61 @@ describe("native renderer stats", () => {
       await renderer.closed
       renderer = null
     }
+  })
+
+  test("frameWork solves Yoga only for text writes that can change the measured size", async () => {
+    const result = await createTestRenderer({ width: 40, height: 6 })
+    renderer = result.renderer
+    // Solid builds `<text fg={...}>` content from child nodes.
+    const label = new TextRenderable(renderer, { fg: "#808080" })
+    const span = new TextNodeRenderable({})
+    span.add("Model")
+    label.add("Simulated ")
+    label.add(span)
+    const plain = new TextRenderable(renderer, { content: "plain" })
+    const highlights = new MockTreeSitterClient()
+    highlights.setMockResult({ highlights: [[0, 6, "keyword", { conceal: "" }]] })
+    const code = new CodeRenderable(renderer, {
+      content: "const pending = true",
+      filetype: "typescript",
+      syntaxStyle: SyntaxStyle.fromStyles({}, renderer.nativeScene),
+      treeSitterClient: highlights,
+      conceal: false,
+    })
+    for (const child of [label, plain, code]) renderer.root.add(child)
+    const highlight = async () => {
+      await result.renderOnce()
+      highlights.resolveHighlightOnce()
+      await code.highlightingDone
+    }
+    await highlight()
+    await result.renderOnce()
+    const fgOf = (text: string) =>
+      rgbToHex(
+        result
+          .captureSpans()
+          .lines.flatMap((line) => line.spans)
+          .find((span) => span.text.startsWith(text))!.fg,
+      )
+    const rows: [string, () => unknown, number, [string, string]?][] = [
+      ["nothing", () => {}, 0],
+      ["same fg on node text", () => (label.fg = "#808080"), 0, ["Simulated", "#808080"]],
+      ["new fg on node text", () => (label.fg = "#ff0000"), 0, ["Simulated", "#ff0000"]],
+      ["new fg on a child span", () => (span.fg = "#0000ff"), 0, ["Model", "#0000ff"]],
+      ["same string content", () => (plain.content = "plain"), 0],
+      ["new fg on code", () => (code.fg = "#00ff00"), 0, ["const", "#00ff00"]],
+      ["new string content", () => (plain.content = "plain!"), 1],
+      ["code wrap mode", () => (code.wrapMode = "char"), 1],
+      ["code tab width", () => code["textBuffer"].setTabWidth(8), 1],
+      ["concealing highlight", () => ((code.conceal = true), highlight()), 1, ["pending", "#00ff00"]],
+    ]
+    const actual = []
+    for (const [name, change, , probe] of rows) {
+      await change()
+      await result.renderOnce()
+      actual.push([name, renderer.getNativeStats().frameWork.yogaSolves, probe && fgOf(probe[0])])
+    }
+    expect(actual).toEqual(rows.map(([name, , solves, probe]) => [name, solves, probe?.[1]]))
   })
 })
 
