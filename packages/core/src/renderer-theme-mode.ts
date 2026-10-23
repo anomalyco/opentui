@@ -42,12 +42,16 @@ type ThemeWaiter = {
 
 export class RendererThemeMode {
   private static readonly QUERY_TIMEOUT_MS = 250
+  private static readonly FOLLOW_UP_COOLDOWN_MS = 5000
+  private static readonly PROVOKED_WINDOW_MS = 1000
 
   private _themeMode: ThemeMode | null = null
-  private themeQueryPending = true
   private themeOscForeground: string | null = null
   private themeOscBackground: string | null = null
   private themeRefreshTimeoutId: TimerHandle | null = null
+  private requeryPending = false
+  private lastFollowUpQueryAt = Number.NEGATIVE_INFINITY
+  private lastQueryActivityAt = Number.NEGATIVE_INFINITY
   private waiters = new Set<ThemeWaiter>()
 
   constructor(
@@ -89,7 +93,7 @@ export class RendererThemeMode {
 
     this.clock.clearTimeout(this.themeRefreshTimeoutId)
     this.themeRefreshTimeoutId = null
-    this.themeQueryPending = false
+    this.requeryPending = false
   }
 
   public dispose(): void {
@@ -130,10 +134,19 @@ export class RendererThemeMode {
       return { handled: false, changedMode: null }
     }
 
-    if (!this.themeQueryPending) {
-      return { handled: true, changedMode: null }
-    }
-
+    // Apply the inferred mode once both foreground and background replies have
+    // arrived, even if the 250ms query timeout already fired. A terminal that
+    // answers OSC 10/11 slower than QUERY_TIMEOUT_MS — common under WezTerm,
+    // where a color-scheme change can take ~1s to settle in the OSC 11 reply —
+    // would otherwise have its late answer silently dropped, leaving the mode
+    // stuck on the old value. requestThemeOscColors resets fg/bg to null at
+    // the start of each query, so stale values from a prior query cannot leak
+    // in here.
+    //
+    // Note this means unsolicited OSC 10/11 replies can mutate the theme mode
+    // at any time (fg/bg persist after a completed query). After suspend(),
+    // inertness relies on the stdin data listener being detached — not on an
+    // internal pending flag.
     if (!this.themeOscForeground || !this.themeOscBackground) {
       return { handled: true, changedMode: null }
     }
@@ -156,25 +169,70 @@ export class RendererThemeMode {
 
   private completeThemeQuery(): void {
     this.clearThemeRefreshTimeout()
-    this.themeQueryPending = false
+    this.lastQueryActivityAt = this.clock.now()
+    this.consumePendingRequery()
   }
 
   private requestThemeOscColors(): void {
-    // Ignore repeated ?997 notifications while the current OSC refresh is
-    // still in flight.
+    // A ?997 while a query is in flight must not start another query
+    // immediately — under tmux on macOS the OSC 10/11 round-trip itself
+    // provokes the next ?997, and querying per notification recreates the
+    // feedback loop from #975. Remember it instead (single slot) so the
+    // current query can be followed by at most one cooldown-gated re-query.
     if (this.themeRefreshTimeoutId !== null) {
+      this.requeryPending = true
       return
     }
 
-    this.themeQueryPending = true
+    // A ?997 arriving shortly after the previous query's activity while idle
+    // is likely provoked by that query's own round-trip (fast-reply variant
+    // of #975: the reply completes the query before the provoked ?997
+    // lands). Route it through the same cooldown gate instead of treating it
+    // as fresh.
+    if (this.clock.now() - this.lastQueryActivityAt < RendererThemeMode.PROVOKED_WINDOW_MS) {
+      this.requeryPending = true
+      this.consumePendingRequery()
+      return
+    }
+
+    this.beginThemeQuery(false)
+  }
+
+  private consumePendingRequery(): void {
+    if (!this.requeryPending) {
+      return
+    }
+
+    this.requeryPending = false
+
+    // At most one follow-up query per cooldown regardless of how many
+    // notifications arrived: this is what breaks the self-sustaining
+    // query→provoked-?997→re-query cycle of #975 while still honoring one
+    // genuine notification that landed mid-flight.
+    if (this.clock.now() - this.lastFollowUpQueryAt < RendererThemeMode.FOLLOW_UP_COOLDOWN_MS) {
+      return
+    }
+
+    this.beginThemeQuery(true)
+  }
+
+  private beginThemeQuery(isFollowUp: boolean): void {
+    const now = this.clock.now()
+    this.lastQueryActivityAt = now
+    if (isFollowUp) {
+      this.lastFollowUpQueryAt = now
+    }
+
     this.themeOscForeground = null
     this.themeOscBackground = null
+    this.requeryPending = false
 
     this.host.queryThemeColors()
 
-    this.clearThemeRefreshTimeout()
     this.themeRefreshTimeoutId = this.clock.setTimeout(() => {
-      this.completeThemeQuery()
+      this.clearThemeRefreshTimeout()
+      this.lastQueryActivityAt = this.clock.now()
+      this.consumePendingRequery()
     }, RendererThemeMode.QUERY_TIMEOUT_MS)
   }
 
