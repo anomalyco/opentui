@@ -47,6 +47,7 @@ const session_tests = @import("tests/session_test.zig");
 const scene_tests = @import("tests/scene_test.zig");
 const scene_box_details_tests = @import("tests/scene_box_details_test.zig");
 const scene_order_tests = @import("tests/scene_order_test.zig");
+const scene_parity_tests = @import("tests/scene_parity_test.zig");
 const scene_frame_tests = @import("tests/scene_frame_test.zig");
 const scene_record_tests = @import("tests/scene_record_test.zig");
 const session_renderer_tests = @import("tests/session-renderer_test.zig");
@@ -137,6 +138,7 @@ comptime {
     _ = scene_tests;
     _ = scene_box_details_tests;
     _ = scene_order_tests;
+    _ = scene_parity_tests;
     _ = scene_frame_tests;
     _ = scene_record_tests;
     _ = session_renderer_tests;
