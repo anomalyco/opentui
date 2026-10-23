@@ -1954,6 +1954,21 @@ test "Ghostty width profile enables mode 2027 and remains stable after setup sta
     try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.unicodeSet) != null);
 }
 
+test "enableDetectedFeatures - enables focus tracking without a DECRPM response" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+
+    var term = Terminal.init(.{ .env_map = &env });
+    var writer = TestWriter.init(testing.allocator);
+    defer writer.deinit();
+
+    try testing.expect(!term.caps.focus_tracking);
+    try term.enableDetectedFeatures(&writer, false);
+
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.focusSet) != null);
+    try testing.expect(term.state.focus_tracking);
+}
+
 test "setMouseMode - enable without movement keeps click/drag only" {
     var term = Terminal.init(.{});
     var writer = TestWriter.init(testing.allocator);
