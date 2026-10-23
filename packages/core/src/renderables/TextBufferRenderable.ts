@@ -155,7 +155,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       this.scrollY += delta
     }
 
-    if (this._wrapMode === "none") {
+    if (this._wrapMode === "none" && !this._truncate) {
       if (direction === "left") {
         this.scrollX -= delta
       } else if (direction === "right") {
@@ -367,6 +367,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
           const width = this.width
           if (width > 0) this.textBufferView.setWrapWidth(Math.trunc(width))
         }
+        if (value !== "none") this.scrollX = 0
         this.requestRender()
       })
     }
@@ -430,6 +431,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
         this.setNativeSceneTextOptions({ truncate: value })
         if (!this.nativeTextScene) this.textBufferView.setTruncate(value)
         this._truncate = value
+        if (value) this.scrollX = 0
         this.requestRender()
       })
     }
