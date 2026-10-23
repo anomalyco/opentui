@@ -159,7 +159,6 @@ test "EditBuffer - owned replacement registration rejection frees the copy" {
             try std.testing.expectEqual(limit, registry.buffers.items.len);
             try std.testing.expectEqual(@as(usize, 0), registry.free_slots.items.len);
             try std.testing.expectEqual(before.root, eb.tb.rope().root);
-            try std.testing.expectEqual(before.version, eb.tb.rope().version);
             try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
             try std.testing.expectEqual(before.undo_depth, eb.tb.rope().undo_depth);
             try std.testing.expectEqualDeep(cursor, eb.getPrimaryCursor());

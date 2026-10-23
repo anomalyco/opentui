@@ -196,10 +196,12 @@ test "TextBuffer styled seek - range highlights visit only overlapping lines" {
         tb.clearAllHighlights();
         _ = text_work.take();
         try tb.addHighlightByCharRange(case.start, case.end, 1, 1, 0);
-        const lookups = text_work.take().marker_lookups;
+        const work = text_work.take();
         const lines_spanned = case.last - case.first + 1;
-        // Each binary search probe reads three markers and each spanned line at most five.
-        try std.testing.expect(lookups <= 3 * (std.math.log2_int_ceil(u32, line_count) + 1) + 5 * lines_spanned);
+        // One descent finds the first line, and each spanned line costs one more.
+        const depth = tb.rope().root.depth();
+        try std.testing.expect(work.line_seeks <= lines_spanned + 2);
+        try std.testing.expect(work.line_seek_nodes <= (lines_spanned + 2) * depth);
         try std.testing.expectEqual(lines_spanned, tb.getHighlightCount());
         try std.testing.expectEqual(0, tb.getLineHighlights(case.first - 1).len);
         try std.testing.expectEqual(case.start - case.first * 2, tb.getLineHighlights(case.first)[0].col_start);

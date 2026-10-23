@@ -49,7 +49,6 @@ pub const io = io_threaded.io();
 const text_buffer_view_bench = @import("bench/text-buffer-view_bench.zig");
 const edit_buffer_bench = @import("bench/edit-buffer_bench.zig");
 const rope_bench = @import("bench/rope_bench.zig");
-const rope_markers_bench = @import("bench/rope-markers_bench.zig");
 const text_buffer_coords_bench = @import("bench/text-buffer-coords_bench.zig");
 const text_buffer_tab_width_bench = @import("bench/text-buffer-tab-width_bench.zig");
 const styled_text_bench = @import("bench/styled-text_bench.zig");
@@ -104,7 +103,6 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = text_buffer_view_bench.benchName, .run = text_buffer_view_bench.run },
         .{ .name = edit_buffer_bench.benchName, .run = edit_buffer_bench.run },
         .{ .name = rope_bench.benchName, .run = rope_bench.run },
-        .{ .name = rope_markers_bench.benchName, .run = rope_markers_bench.run },
         .{ .name = text_buffer_coords_bench.benchName, .run = text_buffer_coords_bench.run },
         .{ .name = text_buffer_tab_width_bench.benchName, .run = text_buffer_tab_width_bench.run },
         .{ .name = styled_text_bench.benchName, .run = styled_text_bench.run },

@@ -241,6 +241,11 @@ const TestPools = @import("test-pools.zig").TestPools;
 const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
 const TextBuffer = @import("../text-buffer.zig").UnifiedTextBuffer;
 const utf8 = @import("../utf8.zig");
+const iter_mod = @import("../text-buffer-iterators.zig");
+const text_work = @import("../text-work.zig");
+const seg_mod = @import("../text-buffer-segment.zig");
+const Segment = seg_mod.Segment;
+const UnifiedRope = seg_mod.UnifiedRope;
 
 /// Pieces that put breaks, zero-width, wide, and tab cells at chunk edges.
 const text_pieces = [_][]const u8{ "a", "bc", "\t", "世", "e", "\u{0301}", "\u{200d}", "\u{200b}", "👍", "\u{1F3FD}", "\r", "\n", "\r\n", "\x01", "🇺", "🇸", "x\ty", "ab\ncd", "\n\n" };
@@ -255,15 +260,48 @@ fn randomText(random: std.Random, out: []u8) []const u8 {
     return out[0..len];
 }
 
+/// Checks the line queries against positions found by walking every leaf.
 fn verifyLineMetrics(tb: *TextBuffer) !void {
+    const rope = tb.rope();
+    const Walk = struct {
+        starts: std.ArrayList(UnifiedRope.Position) = .empty,
+        weight: u32 = 0,
+
+        fn visit(ctx: *anyopaque, segment: *const Segment, index: u32) UnifiedRope.Node.WalkerResult {
+            const walk: *@This() = @ptrCast(@alignCast(ctx));
+            if (segment.isLineStart()) walk.starts.append(std.testing.allocator, .{ .leaf_index = index, .weight = walk.weight }) catch |err| return .{ .err = err };
+            walk.weight += segment.measure().weight();
+            return .{};
+        }
+    };
+    var walk: Walk = .{};
+    defer walk.starts.deinit(std.testing.allocator);
+    try rope.walk(&walk, Walk.visit);
     const line_count = tb.getLineCount();
-    try std.testing.expectEqual(tb.rope().root.metrics().custom.newline_count + 1, line_count);
+    try std.testing.expectEqual(walk.starts.items.len, line_count);
+    try std.testing.expectEqual(rope.root.metrics().custom.newline_count + 1, line_count);
+    try std.testing.expectEqual(null, iter_mod.lineStart(rope, line_count));
     var widest: u32 = 0;
-    for (0..line_count) |row| widest = @max(widest, tb.lineWidthAt(@intCast(row)));
+    for (walk.starts.items, 0..) |start, row| {
+        _ = text_work.take();
+        try std.testing.expectEqual(start, iter_mod.lineStart(rope, @intCast(row)).?);
+        try std.testing.expect(text_work.take().line_seek_nodes < rope.root.depth());
+        widest = @max(widest, tb.lineWidthAt(@intCast(row)));
+    }
     try std.testing.expectEqual(widest, tb.lineWidthColsMax());
+    // An offset belongs to the last line that starts at or before it; a break ends its line.
+    var row: u32 = 0;
+    for (0..walk.weight + 1) |offset_index| {
+        const offset: u32 = @intCast(offset_index);
+        while (row + 1 < line_count and walk.starts.items[row + 1].weight <= offset) row += 1;
+        const coords = iter_mod.offsetToCoords(rope, offset).?;
+        try std.testing.expectEqual(iter_mod.Coords{ .row = row, .col = offset - walk.starts.items[row].weight }, coords);
+        try std.testing.expectEqual(offset, iter_mod.coordsToOffset(rope, coords.row, coords.col).?);
+    }
+    try std.testing.expectEqual(null, iter_mod.offsetToCoords(rope, walk.weight + 1));
 }
 
-test "Rope fuzz - text line metrics match the lines under random edits" {
+test "Rope fuzz - text line queries match a walk under random edits" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     var bytes: [64]u8 = undefined;

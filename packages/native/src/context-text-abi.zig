@@ -290,7 +290,6 @@ pub fn ot_text_buffer_view_measure(context: ?*Owner, id: ?*const c.ot_handle, wi
     _ = record(c.ot_editor_measure, out) catch |err| return fail(owner, err);
     if (width > std.math.maxInt(i32) or height > std.math.maxInt(i32)) return fail(owner, error.InvalidOptions);
     const value = view(owner, id) catch |err| return fail(owner, err);
-    editor.prepareBuffer(value.text.buffer) catch |err| return fail(owner, err);
     const measured = value.view.measureForDimensions(width, height) catch |err| return fail(owner, err);
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_measure), .abi_version = c.OT_CONTEXT_ABI_VERSION, .line_count = measured.line_count, .width_cols_max = measured.width_cols_max };
     return c.OT_OK;
@@ -777,7 +776,7 @@ test "Context shared text ABI rejects tab expansion before changing accepted met
     try std.testing.expectEqual(@as(u32, 68_000_000), buffer.getLength());
 }
 
-test "Context shared text ABI rejects cold selection marker allocation before publication" {
+test "Context shared text ABI rejects a failed selection layout before publication" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
@@ -798,20 +797,8 @@ test "Context shared text ABI rejects cold selection marker allocation before pu
     const accepted = resource.view.selection;
     const input = (line ++ "\n") ** 2;
     try std.testing.expectEqual(c.OT_OK, ot_text_buffer_set_text(&owner, &text_id, input, input.len));
-    var info = std.mem.zeroes(c.ot_editor_view_info);
-    info.struct_size = @sizeOf(c.ot_editor_view_info);
-    info.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    try std.testing.expectEqual(c.OT_OK, ot_text_buffer_view_get_info(&owner, &view_id, &info));
-    try std.testing.expectEqual(@as(u32, 3), info.virtual_line_count);
-    const rope = resource.text.buffer.rope();
-    try std.testing.expect(rope.marker_cache.version != rope.version);
-    // Fail the cache allocation itself, independent of spare rope-arena capacity.
-    const previous_cache = rope.marker_cache;
-    rope.marker_cache = @TypeOf(rope.marker_cache).init(failing.allocator());
-    defer {
-        rope.marker_cache.deinit();
-        rope.marker_cache = previous_cache;
-    }
+    // The new text leaves the view's layout stale; selecting lays it out before publication.
+    try std.testing.expect(resource.text.buffer.isViewDirty(resource.view.view_id));
     selection.start = 2;
     selection.end = 3;
     changed = 99;
@@ -827,6 +814,7 @@ test "Context shared text ABI rejects cold selection marker allocation before pu
     try std.testing.expect(!owner.core.mutating);
     try std.testing.expectEqual(c.OT_OK, ot_text_buffer_view_select(&owner, &view_id, &selection, &changed));
     try std.testing.expectEqual((@as(u64, 1) << 32) | 3, resource.view.packSelectionInfo());
+    try std.testing.expectEqual(3, resource.view.virtual_lines.items.len);
 }
 
 test "Context shared text ABI preserves empty chunk ordinals" {

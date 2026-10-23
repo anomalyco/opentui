@@ -257,9 +257,6 @@ pub const Editor = struct {
     }
 
     pub fn prepareView(self: *Editor) !void {
-        try Context.prepareTextBuffer(self.edit.buffer.tb);
-        if (self.view.text_buffer_view.text_buffer != self.edit.buffer.tb)
-            try Context.prepareTextBuffer(self.view.text_buffer_view.text_buffer);
         _ = self.view.text_buffer_view.getVirtualLines();
         if (self.view.text_buffer_view.virtual_lines_dirty) return error.OutOfMemory;
     }
@@ -2594,8 +2591,6 @@ pub const Context = struct {
             if (text.buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
             // The legacy view methods cannot report allocation failures. Prepare
             // their caches first so no failing work follows selection publication.
-            // markerCount swallows rebuild OOM; the rope metrics do not allocate.
-            if (text.buffer.rope().markerCount(.linestart) != text.buffer.lineCount()) return error.OutOfMemory;
             try text.prepareView();
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
             const behavior: text_buffer_view.SelectionBehavior = @enumFromInt(options.behavior);
@@ -2647,7 +2642,6 @@ pub const Context = struct {
         const offsets: @FieldType(TextRange, "offsets") = switch (range) {
             .offsets => |offsets| offsets,
             .coords => |coords| result: {
-                try prepareTextBuffer(buffer);
                 const iter = @import("text-buffer-iterators.zig");
                 break :result .{
                     .start = iter.coordsToOffset(buffer.rope(), coords.start_row, coords.start_col) orelse return 0,
@@ -3462,7 +3456,6 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        try prepareTextBuffer(edit.buffer.tb);
         switch (command) {
             .delete_forward => try edit.buffer.deleteForward(),
             .backspace => try edit.buffer.backspace(),
@@ -3618,10 +3611,6 @@ pub const Context = struct {
         view.invalidate();
     }
 
-    pub fn prepareTextBuffer(buffer: *text_buffer.UnifiedTextBuffer) !void {
-        if (buffer.rope().markerCount(.linestart) != buffer.lineCount()) return error.OutOfMemory;
-    }
-
     fn setBufferDefaults(buffer: *text_buffer.UnifiedTextBuffer, options: TextDefaults) !void {
         if (@as(u3, @bitCast(options.fields)) == 0) return error.InvalidOptions;
         if (options.foreground) |color| try buf.validateColor(color);
@@ -3633,7 +3622,6 @@ pub const Context = struct {
     }
 
     fn highlightBuffer(buffer: *text_buffer.UnifiedTextBuffer, operation: TextHighlight) !void {
-        try prepareTextBuffer(buffer);
         switch (operation) {
             .add_line => |line| {
                 const h = line.range;
@@ -3677,7 +3665,6 @@ pub const Context = struct {
             if (buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
         }
         if (options.operation != .reset and options.operation != .local_reset) {
-            if (!is_editor) try prepareTextBuffer(buffer);
             try value.prepareView();
         }
         const fg = options.foreground;

@@ -538,7 +538,7 @@ describe("TextBufferView", () => {
 
   describe("undo/redo with line info", () => {
     it("should update lineInfo correctly after undo", () => {
-      // This test verifies that marker cache is invalidated after undo
+      // Line info follows the restored text after undo.
       const styledText = stringToStyledText("Line 1 content\nLine 2")
       buffer.setStyledText(styledText)
 

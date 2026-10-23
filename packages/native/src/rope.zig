@@ -23,57 +23,12 @@ pub fn Rope(comptime T: type) type {
             max_undo_depth: ?usize = null, // null = unlimited
         };
 
-        const marker_enabled = @typeInfo(T) == .@"union" and @hasDecl(T, "MarkerTypes");
-        const MarkerTagCount = if (marker_enabled) T.MarkerTypes.len else 0;
-
         const boundary_enabled = @hasDecl(T, "BoundaryAction");
         pub const BoundaryAction = if (boundary_enabled) T.BoundaryAction else struct {
             delete_left: bool = false,
             delete_right: bool = false,
             insert_between: []const T = &[_]T{},
         };
-
-        pub const MarkerPosition = struct {
-            leaf_index: u32,
-            global_weight: u32,
-        };
-        pub const MarkerCache = if (marker_enabled) struct {
-            // Flat arrays of positions for each marker type
-            positions: [MarkerTagCount]std.ArrayListUnmanaged(MarkerPosition) = [_]std.ArrayListUnmanaged(MarkerPosition){.empty} ** MarkerTagCount,
-            version: u64 = std.math.maxInt(u64), // Rope version when cache was built
-            allocator: Allocator,
-
-            pub fn init(allocator: Allocator) MarkerCache {
-                return .{
-                    .allocator = allocator,
-                };
-            }
-
-            pub fn deinit(self: *MarkerCache) void {
-                for (&self.positions) |*list| {
-                    list.deinit(self.allocator);
-                }
-            }
-
-            fn clear(self: *MarkerCache) void {
-                for (&self.positions) |*list| {
-                    list.clearRetainingCapacity();
-                }
-            }
-        } else struct {
-            pub fn init(_: Allocator) @This() {
-                return .{};
-            }
-            pub fn deinit(_: *@This()) void {}
-            fn clear(_: *@This()) void {}
-        };
-
-        fn markerTypeIndex(tag: std.meta.Tag(T)) ?usize {
-            inline for (T.MarkerTypes, 0..) |mt, i| {
-                if (tag == mt) return i;
-            }
-            return null;
-        }
 
         pub const Metrics = struct {
             count: u32 = 0,
@@ -468,8 +423,6 @@ pub fn Rope(comptime T: type) type {
         curr_history: ?*UndoNode = null,
         config: Config = .{},
         undo_depth: usize = 0,
-        version: u64 = 0,
-        marker_cache: MarkerCache,
 
         pub fn init(allocator: Allocator) error{OutOfMemory}!Self {
             return initWithConfig(allocator, .{});
@@ -489,7 +442,6 @@ pub fn Rope(comptime T: type) type {
                 .allocator = allocator,
                 .empty_leaf = node,
                 .config = config,
-                .marker_cache = MarkerCache.init(allocator),
             };
 
             try self.applyEndsInvariant();
@@ -516,7 +468,6 @@ pub fn Rope(comptime T: type) type {
                 .allocator = allocator,
                 .empty_leaf = empty_node,
                 .config = config,
-                .marker_cache = MarkerCache.init(allocator),
             };
         }
 
@@ -543,7 +494,6 @@ pub fn Rope(comptime T: type) type {
                 .allocator = allocator,
                 .empty_leaf = empty_node,
                 .config = config,
-                .marker_cache = MarkerCache.init(allocator),
             };
         }
 
@@ -601,10 +551,10 @@ pub fn Rope(comptime T: type) type {
         /// The persistent structure is unchanged; only aggregate caches are mutated.
         pub fn remeasure(self: *Self) void {
             _ = remeasureNode(self.root);
-            self.version +%= 1;
         }
 
         fn remeasureNode(node: *const Node) Metrics {
+            text_work.add(.remeasure_nodes, 1);
             return switch (node.*) {
                 .leaf => |*leaf| leaf.metrics(),
                 .branch => |*branch| blk: {
@@ -706,13 +656,11 @@ pub fn Rope(comptime T: type) type {
 
         pub fn concat(self: *Self, other: *const Self) !void {
             self.root = try self.joinWithBoundary(self.root, other.root, null);
-            self.version += 1;
         }
 
         pub fn split(self: *Self, index: u32) !Self {
             const result = try Node.split_at(self.root, index, self.allocator, self.empty_leaf);
             self.root = result.left;
-            self.version += 1;
             return Self{
                 .root = result.right,
                 .metrics_generation = self.metrics_generation,
@@ -721,7 +669,6 @@ pub fn Rope(comptime T: type) type {
                 .undo_history = null,
                 .redo_history = null,
                 .curr_history = null,
-                .marker_cache = MarkerCache.init(self.allocator),
             };
         }
 
@@ -768,8 +715,6 @@ pub fn Rope(comptime T: type) type {
             const second_split = try Node.split_at(first_split.right, end - start, self.allocator, self.empty_leaf);
 
             self.root = try self.joinWithBoundary(first_split.left, second_split.right, null);
-
-            self.version += 1;
             try self.applyEndsInvariant();
         }
 
@@ -782,8 +727,6 @@ pub fn Rope(comptime T: type) type {
 
             const left_joined = try self.joinWithBoundary(split_result.left, insert_root, null);
             self.root = try self.joinWithBoundary(left_joined, split_result.right, null);
-
-            self.version += 1;
             try self.applyEndsInvariant();
         }
 
@@ -876,7 +819,6 @@ pub fn Rope(comptime T: type) type {
         pub fn splitByWeight(self: *Self, weight: u32, split_leaf_fn: *const Node.LeafSplitFn) !Self {
             const result = try Node.split_at_weight(self.root, weight, null, self.allocator, self.empty_leaf, split_leaf_fn);
             self.root = result.left;
-            self.version += 1;
             return Self{
                 .root = result.right,
                 .metrics_generation = self.metrics_generation,
@@ -885,7 +827,6 @@ pub fn Rope(comptime T: type) type {
                 .undo_history = null,
                 .redo_history = null,
                 .curr_history = null,
-                .marker_cache = MarkerCache.init(self.allocator),
             };
         }
 
@@ -998,8 +939,6 @@ pub fn Rope(comptime T: type) type {
 
             const left = if (items.len == 0) first_split.left else try self.joinWithBoundary(first_split.left, try rootFromSlice(self.allocator, items), split_leaf_fn);
             self.root = try self.joinWithBoundary(left, second_split.right, split_leaf_fn);
-
-            self.version += 1;
             try self.applyEndsInvariant();
         }
 
@@ -1013,8 +952,6 @@ pub fn Rope(comptime T: type) type {
 
             const left_joined = try self.joinWithBoundary(split_result.left, insert_root, split_leaf_fn);
             self.root = try self.joinWithBoundary(left_joined, split_result.right, split_leaf_fn);
-
-            self.version += 1;
             try self.applyEndsInvariant();
         }
 
@@ -1038,6 +975,52 @@ pub fn Rope(comptime T: type) type {
                 },
                 .leaf => |*l| return .{ .leaf = &l.data, .start_weight = start_weight, .leaf_index = leaf_index },
             };
+        }
+
+        pub const Position = struct { leaf_index: u32, weight: u32 };
+
+        /// Position of the leaf that holds occurrence `n` of the leaves that `counted` counts,
+        /// found by one descent; null when there are not that many.
+        pub fn seekCount(self: *const Self, comptime counted: fn (*const Metrics) u32, n: u32) ?Position {
+            if (n >= counted(&self.root.metrics())) return null;
+            text_work.add(.line_seeks, 1);
+            var node = self.root;
+            var rest = n;
+            var position: Position = .{ .leaf_index = 0, .weight = 0 };
+            while (node.* == .branch) {
+                text_work.add(.line_seek_nodes, 1);
+                const left = node.branch.left_metrics;
+                if (rest < counted(&left)) {
+                    node = node.branch.left;
+                } else {
+                    rest -= counted(&left);
+                    position.leaf_index += left.count;
+                    position.weight += left.weight();
+                    node = node.branch.right;
+                }
+            }
+            return position;
+        }
+
+        /// Number of leaves that `counted` counts and that start at or before `target`, measured
+        /// along `key`, found by one descent. Leaves without key at `target` count.
+        pub fn countThrough(self: *const Self, comptime key: fn (*const Metrics) u32, comptime counted: fn (*const Metrics) u32, target: u32) u32 {
+            text_work.add(.line_seeks, 1);
+            var node = self.root;
+            var rest = target;
+            var total: u32 = 0;
+            while (node.* == .branch) {
+                text_work.add(.line_seek_nodes, 1);
+                const left = node.branch.left_metrics;
+                if (rest < key(&left)) {
+                    node = node.branch.left;
+                } else {
+                    rest -= key(&left);
+                    total += counted(&left);
+                    node = node.branch.right;
+                }
+            }
+            return total + counted(&node.metrics());
         }
 
         /// Undo/Redo operations
@@ -1116,7 +1099,6 @@ pub fn Rope(comptime T: type) type {
             self.curr_history = h;
             self.root = h.root;
             self.metrics_generation = h.metrics_generation;
-            self.version += 1;
             self.push_redo(r);
             if (self.undo_depth > 0) self.undo_depth -= 1;
             return h.meta;
@@ -1130,7 +1112,6 @@ pub fn Rope(comptime T: type) type {
             self.curr_history = h;
             self.root = h.root;
             self.metrics_generation = h.metrics_generation;
-            self.version += 1;
             self.push_undo(u);
             return h.meta;
         }
@@ -1166,7 +1147,6 @@ pub fn Rope(comptime T: type) type {
             try empty.applyEndsInvariant();
             if (meta) |value| try self.store_undo(value);
             self.root = empty.root;
-            self.version += 1;
         }
 
         /// Replace the rope content with new items, using same structure as from_slice
@@ -1178,78 +1158,6 @@ pub fn Rope(comptime T: type) type {
             }
 
             self.root = try rootFromSlice(self.allocator, items);
-            self.version += 1;
-        }
-
-        fn rebuildMarkerCache(self: *Self) !void {
-            if (!marker_enabled) return;
-            text_work.add(.marker_rebuilds, 1);
-
-            self.marker_cache.clear();
-
-            const RebuildContext = struct {
-                cache: *MarkerCache,
-                current_leaf: u32 = 0,
-                current_weight: u32 = 0,
-
-                fn walker(ctx: *anyopaque, data: *const T, idx: u32) Node.WalkerResult {
-                    _ = idx;
-                    const context = @as(*@This(), @ptrCast(@alignCast(ctx)));
-
-                    const tag = std.meta.activeTag(data.*);
-
-                    const leaf_weight = if (@hasDecl(T, "Metrics")) blk: {
-                        if (@hasDecl(T, "measure")) {
-                            const metrics = data.measure();
-                            break :blk if (@hasDecl(T.Metrics, "weight")) metrics.weight() else 1;
-                        }
-                        break :blk 1;
-                    } else 1;
-
-                    if (markerTypeIndex(tag)) |marker_idx| {
-                        context.cache.positions[marker_idx].append(context.cache.allocator, .{
-                            .leaf_index = context.current_leaf,
-                            .global_weight = context.current_weight,
-                        }) catch |e| {
-                            return .{ .keep_walking = false, .err = e };
-                        };
-                    }
-
-                    context.current_leaf += 1;
-                    text_work.add(.marker_leaves, 1);
-                    context.current_weight += leaf_weight;
-                    return .{};
-                }
-            };
-
-            var ctx = RebuildContext{ .cache = &self.marker_cache };
-            try self.walk(&ctx, RebuildContext.walker);
-
-            self.marker_cache.version = self.version;
-        }
-
-        fn markerPositions(self: *Self, tag: std.meta.Tag(T)) ?[]const MarkerPosition {
-            if (!marker_enabled) return null;
-            const marker_idx = markerTypeIndex(tag) orelse return null;
-
-            if (self.marker_cache.version != self.version) {
-                self.rebuildMarkerCache() catch return null;
-            }
-
-            return self.marker_cache.positions[marker_idx].items;
-        }
-
-        pub fn markerCount(self: *Self, tag: std.meta.Tag(T)) u32 {
-            const items = self.markerPositions(tag) orelse return 0;
-            return @intCast(items.len);
-        }
-
-        pub fn getMarker(self: *Self, tag: std.meta.Tag(T), occurrence: u32) ?MarkerPosition {
-            if (!marker_enabled) return null;
-            text_work.add(.marker_lookups, 1);
-            const items = self.markerPositions(tag) orelse return null;
-            if (occurrence >= items.len) return null;
-            return items[occurrence];
         }
     };
 }

@@ -378,9 +378,6 @@ pub const Segment = union(enum) {
     brk: void,
     linestart: void,
 
-    /// Define which union tags are markers (for O(1) line lookup)
-    pub const MarkerTypes = &[_]std.meta.Tag(Segment){ .brk, .linestart };
-
     /// Metrics for aggregation in the rope tree
     /// These enable O(log n) row/col coordinate mapping and efficient line queries
     pub const Metrics = struct {

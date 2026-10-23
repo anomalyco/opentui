@@ -11,9 +11,11 @@ pub const Counts = struct {
     /// `measureForDimensions` calls that miss the measure cache.
     measure_passes: u64 = 0,
     measure_lines: u64 = 0,
-    marker_rebuilds: u64 = 0,
-    marker_leaves: u64 = 0,
-    marker_lookups: u64 = 0,
+    /// Line lookups by rope descent, and the branches they visit.
+    line_seeks: u64 = 0,
+    line_seek_nodes: u64 = 0,
+    /// Rope nodes whose metrics a tab-width change recomputes.
+    remeasure_nodes: u64 = 0,
     /// Linear steps over render-cluster records before each drawn virtual chunk.
     cluster_scan_steps: u64 = 0,
     left_skip_steps: u64 = 0,

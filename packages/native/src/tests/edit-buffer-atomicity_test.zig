@@ -153,7 +153,6 @@ test "EditBuffer atomicity - invalid and empty edits preserve redo history" {
     try std.testing.expectEqual(@as(u32, 1), eb.getPrimaryCursor().row);
     eb.cursor = cursor;
     try std.testing.expectEqual(before.root, eb.tb.rope().root);
-    try std.testing.expectEqual(before.version, eb.tb.rope().version);
     try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
     try std.testing.expectEqual(before.redo_history, eb.tb.rope().redo_history);
     try std.testing.expectEqual(before.curr_history, eb.tb.rope().curr_history);

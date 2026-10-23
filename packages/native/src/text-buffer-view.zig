@@ -1066,8 +1066,7 @@ pub const UnifiedTextBufferView = struct {
             };
         }
 
-        const linestart = rope.getMarker(.linestart, coords.row) orelse return null;
-        var seg_idx = linestart.leaf_index + 1;
+        var seg_idx = (iter_mod.lineStart(rope, coords.row) orelse return null).leaf_index + 1;
         var cols_before: u32 = 0;
         const mem_registry = self.text_buffer.memRegistry();
         const tab_width = self.text_buffer.tabWidth();

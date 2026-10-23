@@ -1,4 +1,5 @@
 const std = @import("std");
+const iter_mod = @import("../text-buffer-iterators.zig");
 const TestPools = @import("test-pools.zig").TestPools;
 const editor_view = @import("../editor-view.zig");
 const edit_buffer = @import("../edit-buffer.zig");
@@ -136,7 +137,6 @@ test "EditorView - rejected text replacement preserves selection and viewport" {
         try std.testing.expectError(error.OutOfMemory, result);
         try std.testing.expect(failing.has_induced_failure);
         try std.testing.expectEqual(before.root, eb.tb.rope().root);
-        try std.testing.expectEqual(before.version, eb.tb.rope().version);
         try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
         try std.testing.expectEqual(before.redo_history, eb.tb.rope().redo_history);
         try std.testing.expectEqual(before.curr_history, eb.tb.rope().curr_history);
@@ -635,22 +635,14 @@ test "EditorView - inserting newlines maintains rope integrity" {
     const line_count_1 = eb.getTextBuffer().lineCount();
     try std.testing.expectEqual(@as(u32, 4), line_count_1);
 
-    if (rope_init.getMarker(.linestart, 2)) |m2| {
-        if (rope_init.getMarker(.linestart, 3)) |m3| {
-            try std.testing.expect(m2.global_weight != m3.global_weight);
-        }
-    }
+    try std.testing.expect(iter_mod.lineStart(rope_init, 2).?.weight != iter_mod.lineStart(rope_init, 3).?.weight);
 
     try eb.insertText("\n");
 
     const line_count_2 = eb.getTextBuffer().lineCount();
     try std.testing.expectEqual(@as(u32, 5), line_count_2);
 
-    if (rope_init.getMarker(.linestart, 3)) |m3| {
-        if (rope_init.getMarker(.linestart, 4)) |m4| {
-            try std.testing.expect(m3.global_weight != m4.global_weight);
-        }
-    }
+    try std.testing.expect(iter_mod.lineStart(rope_init, 3).?.weight != iter_mod.lineStart(rope_init, 4).?.weight);
 }
 
 test "EditorView - cursor positioning after wide grapheme" {
@@ -775,7 +767,6 @@ test "EditorView - cursor should be able to land after closing paren on line wit
         // Should not jump to next line until we've reached the end of the current line
         if (prev_row == 0 and cursor.row == 1) {
             // We jumped to the next line - check that we were at the end
-            const iter_mod = @import("../text-buffer-iterators.zig");
             const line_width = iter_mod.lineWidthAt(eb.getTextBuffer().rope(), 0);
             try std.testing.expectEqual(line_width, prev_col);
             break;
