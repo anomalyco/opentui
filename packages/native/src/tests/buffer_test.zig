@@ -1490,7 +1490,7 @@ test "OptimizedBuffer - a scissor never moves the text glyphs it leaves visible"
     const black = ansi.rgbColor(0, 0, 0, 255);
     const white = ansi.rgbColor(255, 255, 255, 255);
     const texts = [_][]const u8{
-        // The packed span of a cell holds at most four cells, so this cluster is four wide in wcwidth.
+        // The model walks packed spans, which hold at most four cells; this cluster is exactly four wide in wcwidth.
         "\u{1f469}\u{200d}\u{1f4bb}XY",
         "\u{1f1fa}\u{1f1f8}XY",
         "a\u{4e2d}b\tc",

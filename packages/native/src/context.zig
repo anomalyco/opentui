@@ -1308,7 +1308,7 @@ pub const Context = struct {
         try target.checkImageResources();
         if (x < 0 or y < 0 or x >= target.width or y >= target.height) return;
         const char = source.chars[index].char;
-        const width = grapheme.encodedCharWidth(char);
+        const width: u32 = source.chars[index].width;
         if (width > target.width - @as(u32, @intCast(x))) return;
         for (0..width) |offset| {
             if (!target.isPointInScissor(x + @as(i32, @intCast(offset)), y)) return;
