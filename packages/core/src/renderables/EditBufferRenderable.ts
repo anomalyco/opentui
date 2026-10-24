@@ -3,6 +3,7 @@ import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } f
 import { EditBuffer, type LogicalCursor } from "../edit-buffer.js"
 import { EditorView, type VisualCursor } from "../editor-view.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
+import { scrollOnce } from "../lib/scroll-chain.js"
 import type {
   RenderContext,
   Highlight,
@@ -481,7 +482,12 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   protected override onMouseEvent(event: any): void {
     if (event.type === "scroll") {
-      this.handleScroll(event)
+      scrollOnce(event, () => {
+        const before = this.editorView.getViewport()
+        this.handleScroll(event)
+        const after = this.editorView.getViewport()
+        return after.offsetX !== before.offsetX || after.offsetY !== before.offsetY
+      })
     }
   }
 

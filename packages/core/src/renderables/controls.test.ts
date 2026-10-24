@@ -13,6 +13,8 @@ import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
 import { SliderRenderable } from "./Slider.js"
 import { TabSelectRenderable } from "./TabSelect.js"
+import { TextRenderable } from "./Text.js"
+import { TextareaRenderable } from "./Textarea.js"
 
 const clock = new ManualClock()
 let setup: TestRendererSetup
@@ -246,6 +248,69 @@ test("ScrollBox host requests per frame", async () => {
     trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}`)
   }
   expect(trace.join(" ")).toBe("idle:0 scroll:0 wheel:0 append:1 auto:1 stop:0")
+})
+
+// One wheel step over an inner scroller in an outer ScrollBox (scrolled to 5, rows 5..8 show the inner node). The
+// inner scroller takes a step that moves it; otherwise the step reaches the outer box. `x` is a horizontal-only
+// ScrollBox (as in a wide formula inside a transcript) in an outer box that also scrolls sideways. Columns: inner
+// start, wheel, then the inner offset and the outer box's top,left after the step.
+type InnerKind = "scrollbox" | "x" | "text" | "textarea"
+const chaining: [InnerKind, number, string, number, string][] = [
+  ...(["scrollbox", "text", "textarea"] as const).flatMap((kind): [InnerKind, number, string, number, string][] => [
+    [kind, 0, "down", 1, "5,0"],
+    [kind, 0, "up", 0, "4,0"],
+    [kind, 3, "down", 4, "5,0"],
+    [kind, 3, "up", 2, "5,0"],
+    [kind, 6, "down", 6, "6,0"],
+    [kind, 6, "up", 5, "5,0"],
+  ]),
+  ["x", 0, "down", 0, "6,0"],
+  ["x", 0, "shift+down", 1, "5,0"],
+  ["x", 40, "shift+down", 40, "5,1"],
+]
+
+test.each(chaining)("wheel chaining over an inner %s at %d, %s", async (kind, start, wheel, inner, outer) => {
+  const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`).join("\n")
+  const outerBox = new ScrollBoxRenderable(renderer, { width: 30, height: 10, scrollX: true })
+  const filler = () => new BoxRenderable(renderer, { width: 40, height: 1, flexShrink: 0 })
+  for (let i = 0; i < 5; i++) outerBox.add(filler())
+  const node =
+    kind === "scrollbox" || kind === "x"
+      ? new ScrollBoxRenderable(renderer, {
+          width: 20,
+          height: 4,
+          flexShrink: 0,
+          scrollX: kind === "x",
+          scrollY: kind !== "x",
+        })
+      : kind === "text"
+        ? new TextRenderable(renderer, { content: lines, width: 20, height: 4, flexShrink: 0 })
+        : new TextareaRenderable(renderer, { initialValue: lines, width: 20, height: 4, flexShrink: 0 })
+  if (node instanceof ScrollBoxRenderable) {
+    for (let i = 0; i < 10; i++) node.add(new BoxRenderable(renderer, { width: kind === "x" ? 60 : 10, height: 1 }))
+  }
+  outerBox.add(node)
+  for (let i = 0; i < 30; i++) outerBox.add(filler())
+  renderer.root.add(outerBox)
+  await setup.renderOnce()
+  outerBox.scrollTop = 5
+  const offset = () =>
+    node instanceof ScrollBoxRenderable
+      ? kind === "x"
+        ? node.scrollLeft
+        : node.scrollTop
+      : node instanceof TextRenderable
+        ? node.scrollY
+        : node.editorView.getViewport().offsetY
+  if (node instanceof ScrollBoxRenderable) node.scrollTo(kind === "x" ? { x: start, y: 0 } : start)
+  else if (node instanceof TextRenderable) node.scrollY = start
+  else node.editorView.setViewport(0, start, node.width, node.height, true)
+  await setup.renderOnce()
+  expect([offset(), `${outerBox.scrollTop},${outerBox.scrollLeft}`]).toEqual([start, "5,0"])
+  const [modifier, direction] = wheel.includes("+") ? wheel.split("+") : ["", wheel]
+  await setup.mockMouse.scroll(2, 1, direction as "down", { modifiers: { shift: modifier === "shift" } })
+  await setup.renderOnce()
+  expect([offset(), `${outerBox.scrollTop},${outerBox.scrollLeft}`]).toEqual([inner, outer])
 })
 
 // A subclass that overrides renderSelf paints through the JS fallback, which must match the native paint, also at
