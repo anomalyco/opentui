@@ -129,7 +129,7 @@ test "text work: a burst of K edits lays the editor out once, at the next frame"
     }
 }
 
-test "text work: the frame after one edit lays out only the lines it changed" {
+test "text work: the frame after one edit lays out and measures only the lines it changed" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
@@ -137,14 +137,14 @@ test "text work: the frame after one edit lays out only the lines it changed" {
     const paste = "pasted line of text that is shorter than the wrap width\n" ** 100;
     const Op = enum { insert, delete, paste, undo, enter, join };
     // Lines laid out = document lines × `per_line` + `extra`. Before dirty line ranges, every
-    // row was 1 × the document (paste +100, Enter +1, join −1).
-    const rows = [_]struct { op: Op, per_line: u64, extra: i64 }{
-        .{ .op = .insert, .per_line = 0, .extra = 1 },
-        .{ .op = .delete, .per_line = 0, .extra = 1 },
-        .{ .op = .paste, .per_line = 0, .extra = 101 },
-        .{ .op = .undo, .per_line = 0, .extra = 1 },
-        .{ .op = .enter, .per_line = 0, .extra = 2 },
-        .{ .op = .join, .per_line = 0, .extra = 1 },
+    // row was 1 × the document (paste +100, Enter +1, join −1); `lines` is the change in lines.
+    const rows = [_]struct { op: Op, per_line: u64, extra: i64, lines: i64 }{
+        .{ .op = .insert, .per_line = 0, .extra = 1, .lines = 0 },
+        .{ .op = .delete, .per_line = 0, .extra = 1, .lines = 0 },
+        .{ .op = .paste, .per_line = 0, .extra = 101, .lines = 100 },
+        .{ .op = .undo, .per_line = 0, .extra = 1, .lines = 0 },
+        .{ .op = .enter, .per_line = 0, .extra = 2, .lines = 1 },
+        .{ .op = .join, .per_line = 0, .extra = 1, .lines = -1 },
     };
     for ([_]u64{ 1_000, 10_000 }) |lines| {
         const text = try repeatLines(allocator, line, lines);
@@ -167,6 +167,9 @@ test "text work: the frame after one edit lays out only the lines it changed" {
             defer screen.deinit();
             screen.drawEditorView(ev, 0, 0);
             _ = plain.getVirtualLineCount();
+            // Yoga measures at the render width and, for a box narrower than its space, at another.
+            const view = if (viewport) ev.getTextBufferView() else plain;
+            for ([_]u32{ 120, 100 }) |width| _ = try view.measureForDimensions(width, 40);
 
             errdefer std.debug.print("lines {d} viewport {} mode {s} op {s}\n", .{ lines, viewport, @tagName(mode), @tagName(row.op) });
             switch (row.op) {
@@ -177,11 +180,15 @@ test "text work: the frame after one edit lays out only the lines it changed" {
                 .enter => try eb.insertText("\n"),
             }
             _ = text_work.take();
+            for ([_]u32{ 120, 100 }) |width| _ = try view.measureForDimensions(width, 40);
             if (viewport) screen.drawEditorView(ev, 0, 0) else _ = plain.getVirtualLineCount();
             const frame = text_work.take();
             const laid_out: u64 = @intCast(@as(i64, @intCast(lines * row.per_line)) + row.extra);
             // Every edit is at row 10 (a join at row 9), so the offsets of the lines after row 10 move.
             try std.testing.expectEqual([3]u64{ 1, laid_out, lines - 11 }, [3]u64{ frame.layouts, frame.lines_laid_out, frame.lines_shifted });
+            // Both measures walk the document; unwrapped ones read the rope.
+            const measured: u64 = if (mode == .none) 0 else 2 * @as(u64, @intCast(@as(i64, @intCast(lines)) + row.lines));
+            try std.testing.expectEqual([2]u64{ 2, measured }, [2]u64{ frame.measure_passes, frame.measure_lines });
         };
     }
 }
