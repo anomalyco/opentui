@@ -55,6 +55,29 @@ describe("Textarea - Selection Tests", () => {
       expect(editor.getSelectedText()).toBe("Hello ")
     })
 
+    it("should insert after a forward mouse selection when the selection is cleared", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello World!",
+        width: 40,
+        height: 10,
+        selectable: true,
+      })
+
+      editor.focus()
+      await currentMouse.drag(editor.x, editor.y, editor.x + 4, editor.y)
+      await renderOnce()
+
+      expect(editor.getSelectedText()).toBe("Hello")
+
+      editor.clearSelection()
+      expect(editor.hasSelection()).toBe(false)
+
+      editor.insertText(" Big")
+
+      expect(editor.plainText).toBe("Hello Big World!")
+      expect(editor.logicalCursor.col).toBe(9)
+    })
+
     it("should return selected text from multi-line content", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "AAAA\nBBBB\nCCCC",

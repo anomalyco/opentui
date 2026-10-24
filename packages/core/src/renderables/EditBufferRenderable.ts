@@ -270,7 +270,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   set cursorOffset(offset: number) {
-    this.clearSelection()
+    this.discardSelection()
     this.editorView.setCursorByOffset(offset ?? 0)
     this.requestRender()
   }
@@ -699,13 +699,29 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   clearSelection(): boolean {
     const had = this.hasSelection()
-    this.lastLocalSelection = null
-    this.editorView.resetLocalSelection()
-    this._ctx.clearSelection()
+    if (had && this.isForwardSelection()) {
+      this.editBuffer.setCursorByOffset(this.getSelection()!.end)
+    }
+    this.discardSelection()
     if (had) {
       this.requestRender()
     }
     return had
+  }
+
+  private isForwardSelection(): boolean {
+    if (!this.lastLocalSelection) return false
+    return (
+      this.lastLocalSelection.anchorY < this.lastLocalSelection.focusY ||
+      (this.lastLocalSelection.anchorY === this.lastLocalSelection.focusY &&
+        this.lastLocalSelection.anchorX < this.lastLocalSelection.focusX)
+    )
+  }
+
+  private discardSelection(): void {
+    this.lastLocalSelection = null
+    this.editorView.resetLocalSelection()
+    this._ctx.clearSelection()
   }
 
   deleteSelection(): boolean {
@@ -717,7 +733,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   setCursor(row: number, col: number): void {
-    this.clearSelection()
+    this.discardSelection()
     this.editBuffer.setCursor(row, col)
     this.requestRender()
   }
@@ -786,7 +802,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const selection = this.getSelection()
     if (!selection) return false
     this.editBuffer.setCursorByOffset(edge === "start" ? selection.start : selection.end)
-    this.clearSelection()
+    this.discardSelection()
     return true
   }
 
@@ -831,7 +847,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   public gotoLine(line: number): void {
-    this.clearSelection()
+    this.discardSelection()
     this.editBuffer.gotoLine(line)
     this.requestRender()
   }
@@ -1164,7 +1180,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   protected updateSelectionForMovement(shiftPressed: boolean, isBeforeMovement: boolean): void {
     if (!shiftPressed) {
       this._keyboardSelectionActive = false
-      this.clearSelection()
+      this.discardSelection()
       return
     }
 
