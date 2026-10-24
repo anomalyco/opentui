@@ -438,6 +438,69 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     (try f.owner.raw().getSession(f.id)).cancel();
 }
 
+test "Scene frame work solves Yoga only for text writes that can change the measured size" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    const label = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 2);
+    try f.owner.sceneSetText(label, "ab");
+    try f.owner.sceneMoveNode(label, f.root, 0);
+    // The first buffer owns its style; the other two share `style`, so a styled write to one
+    // republishes the style to both.
+    const style = try f.owner.createSyntaxStyle();
+    var texts: [3]context.Handle = undefined;
+    var views: [3]context.Handle = undefined;
+    for (&texts, &views, 0..) |*text, *view, index| {
+        text.* = try f.owner.createTextBuffer(.unicode);
+        try f.owner.textBufferSetText(text.*, "c\td");
+        if (index > 0) try f.owner.textBufferSetSyntaxStyle(text.*, style);
+        view.* = try f.owner.createTextBufferView(text.*);
+        const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT_VIEW, @intCast(3 + index));
+        try f.owner.sceneSetTextView(node, view.*);
+        try f.owner.sceneMoveNode(node, f.root, @intCast(1 + index));
+    }
+    const red: context.StyledTextChunk = .{ .byte_count = 3, .foreground = .{ 1, 0, 0, 1 } };
+    const Write = enum { none, scene_same, scene_styled_same, same, styled_same, batch_same, batch_new, defaults, highlight, shared_styled_same, syntax_style, scene_new, styled_new, tab_width, wrap_mode, clear, append, stale_slot };
+    // `batch_new` and `scene_new` keep the byte count, so only the byte comparison sees the change.
+    // After a clear or an append, the replacement slot still holds "c\tde" but the text does not.
+    const rows = [_]struct { Write, u64 }{
+        .{ .none, 0 },         .{ .scene_same, 0 }, .{ .scene_styled_same, 0 }, .{ .same, 0 },      .{ .styled_same, 0 },
+        .{ .batch_same, 0 },   .{ .batch_new, 1 },  .{ .defaults, 0 },          .{ .highlight, 0 }, .{ .shared_styled_same, 0 },
+        .{ .syntax_style, 0 }, .{ .scene_new, 1 },  .{ .styled_new, 1 },        .{ .tab_width, 1 }, .{ .wrap_mode, 1 },
+        .{ .clear, 1 },        .{ .append, 1 },     .{ .stale_slot, 1 },        .{ .clear, 1 },     .{ .stale_slot, 1 },
+    };
+    _ = try presentWork(f, .{});
+    var expected: [rows.len]u64 = undefined;
+    var actual: [rows.len]u64 = undefined;
+    for (rows, 0..) |row, index| {
+        switch (row[0]) {
+            .none => {},
+            .scene_same => try f.owner.sceneSetText(label, "ab"),
+            .scene_styled_same => try f.owner.sceneSetStyledText(label, "ab", &.{.{ .byte_count = 2, .foreground = .{ 1, 0, 0, 1 } }}),
+            .same => try f.owner.textBufferSetText(texts[0], "c\td"),
+            .styled_same => try f.owner.textBufferSetStyledText(texts[0], "c\td", &.{red}),
+            .batch_same, .batch_new => {
+                var info: [1]context.Context.TextReplacementInfo = undefined;
+                const bytes = if (row[0] == .batch_same) "c\td" else "c\nd";
+                try f.owner.textBufferReplaceStyledBatch(&.{.{ .buffer = texts[0], .view = views[0], .bytes = bytes, .chunks = &.{red} }}, &info);
+            },
+            .defaults => try f.owner.textBufferSetDefaults(texts[0], .{ .fields = .{ .foreground = true }, .foreground = .{ 0, 1, 0, 1 } }),
+            .highlight => try f.owner.textBufferHighlight(texts[0], .{ .add_range = .{ .start = 0, .end = 1, .style_id = 1 } }),
+            .shared_styled_same => try f.owner.textBufferSetStyledText(texts[1], "c\td", &.{red}),
+            .syntax_style => try f.owner.textBufferSetSyntaxStyle(texts[0], style),
+            .scene_new => try f.owner.sceneSetStyledText(label, "a\n", &.{.{ .byte_count = 2 }}),
+            .styled_new => try f.owner.textBufferSetStyledText(texts[0], "c\tde", &.{.{ .byte_count = 4 }}),
+            .tab_width => try f.owner.textBufferSetTabWidth(texts[0], 8),
+            .wrap_mode => try f.owner.textViewCommand(views[0], .{ .wrap_mode = .char }),
+            .clear => try f.owner.textBufferClear(texts[0], false),
+            .append => try f.owner.textBufferAppend(texts[0], "wxyz"),
+            .stale_slot => try f.owner.textBufferSetText(texts[0], "c\tde"),
+        }
+        expected[index] = row[1];
+        actual[index] = (try presentWork(f, .{})).yoga_solves;
+    }
+    try testing.expectEqualSlices(u64, &expected, &actual);
+}
+
 // A reply changes the visibility of a member whose feedback already started. The visibility
 // stamp must give way to the walk: no request may reach a node the reply hid.
 test "Scene feedback visibility follows replies that hide, detach, or move a started member" {
@@ -508,7 +571,7 @@ const StaleReply = struct {
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame.
 test "Scene frame work counts viewport refresh and culling work" {
-    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, placed_reply, destroy_reply };
+    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, measure_same_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, placed_reply, destroy_reply };
     const sizes = [_]u32{ 16, 256, 4096 };
     const expected = [sizes.len][std.meta.fields(Frame).len][5]u64{
         .{
@@ -519,6 +582,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 16, 0, 24, 0, 1 }, // options_prepare
             .{ 0, 0, 10, 0, 1 }, // options_color
             .{ 16, 0, 24, 0, 1 }, // measure_text
+            .{ 0, 0, 10, 0, 1 }, // measure_same_text
             .{ 16, 0, 24, 0, 1 }, // editor_cursor
             .{ 16, 0, 23, 0, 1 }, // hidden
             .{ 0, 0, 10, 0, 1 }, // hidden_unchanged
@@ -536,6 +600,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 256, 0, 264, 0, 1 }, // options_prepare
             .{ 0, 0, 10, 0, 1 }, // options_color
             .{ 256, 0, 264, 0, 1 }, // measure_text
+            .{ 0, 0, 10, 0, 1 }, // measure_same_text
             .{ 256, 0, 264, 0, 1 }, // editor_cursor
             .{ 256, 0, 263, 0, 1 }, // hidden
             .{ 0, 0, 10, 0, 1 }, // hidden_unchanged
@@ -553,6 +618,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 4096, 0, 4104, 0, 1 }, // options_prepare
             .{ 0, 0, 10, 0, 1 }, // options_color
             .{ 4096, 0, 4104, 0, 1 }, // measure_text
+            .{ 0, 0, 10, 0, 1 }, // measure_same_text
             .{ 4096, 0, 4104, 0, 1 }, // editor_cursor
             .{ 4096, 0, 4103, 0, 1 }, // hidden
             .{ 0, 0, 10, 0, 1 }, // hidden_unchanged
@@ -620,6 +686,15 @@ test "Scene frame work counts viewport refresh and culling work" {
                     _ = try presentWork(f, .{});
                     try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
                     break :blk try presentWork(f, .{});
+                },
+                // The same bytes again: the write keeps the Yoga measure (no solve) and leaves the view
+                // prepared, so nothing is stale.
+                .measure_same_text => blk: {
+                    try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
+                    const result = try presentWork(f, .{});
+                    try testing.expect(!(try f.owner.raw().getRenderable(rows[n / 2 + 1])).scene_node.?.text.?.view.virtual_lines_dirty);
+                    try testing.expectEqual(@as(u64, 0), result.yoga_solves);
+                    break :blk result;
                 },
                 // A cursor move in a culled editor between frames.
                 .editor_cursor => blk: {

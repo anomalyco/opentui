@@ -22,7 +22,7 @@ import { ImageRenderable } from "../renderables/Image.js"
 import { NativeImage } from "../image.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
-import { NativeError, NativeStatus } from "../zig.js"
+import { NativeError, NativeSceneHook, NativeStatus } from "../zig.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -71,6 +71,8 @@ class CountingRenderable extends Renderable {
   protected renderSelf(): void {
     this.renderCount += 1
   }
+  protected onUpdate(): void {}
+  protected onResize(): void {}
 
   public getScreenPosition(): { x: number; y: number } {
     return { x: this.screenX, y: this.screenY }
@@ -781,64 +783,30 @@ describe("Renderable - Child Management", () => {
     expect(second.isDestroyed).toBe(true)
   })
 
-  test("renderBefore position changes hit at the prepared position until the next frame", async () => {
-    testRenderer.requestRender = () => {}
-
-    const renderable = new TestRenderable(testRenderer, {
-      id: "hook-moved-hit-grid",
-      position: "absolute",
-      left: 2,
-      top: 3,
-      width: 4,
-      height: 2,
-      renderBefore: function () {
-        if (this.translateX === 0) {
-          this.translateX = 5
-        }
-      },
-    })
-
-    testRenderer.root.add(renderable)
-    await renderOnce()
-
-    expect(renderable.screenX).toBe(7)
-    expect(testRenderer.hitTest(2, 3)).toBe(renderable.num)
-    expect(testRenderer.hitTest(7, 3)).not.toBe(renderable.num)
-
-    await renderOnce()
-
-    expect(testRenderer.hitTest(7, 3)).toBe(renderable.num)
-    expect(testRenderer.hitTest(2, 3)).not.toBe(renderable.num)
-  })
-
-  test("renderBefore position changes compose frame buffers at the prepared position until the next frame", async () => {
+  test("renderBefore position changes hit and compose at the prepared position until the next frame", async () => {
     const setup = await createTestRenderer({ width: 12, height: 4 })
     try {
       class BufferedMark extends Renderable {
         protected renderSelf(buffer: OptimizedBuffer): void {
-          buffer.drawText("BB", 0, 0, RGBA.fromInts(255, 255, 255))
+          buffer.drawText("B".repeat(this.width), 0, 0, RGBA.fromInts(255, 255, 255))
         }
       }
       const renderable = new BufferedMark(setup.renderer, {
-        buffered: true,
-        position: "absolute",
-        left: 2,
-        top: 1,
-        width: 2,
-        height: 1,
+        ...{ buffered: true, position: "absolute", left: 2, top: 1, width: 2, height: 1 },
         renderBefore: function () {
           if (this.translateX === 0) this.translateX = 5
         },
       })
+      const frame = () => [setup.captureCharFrame().split("\n")[1], [2, 7].map((x) => setup.renderer.hitTest(x, 1))]
       setup.renderer.root.add(renderable)
       await setup.renderOnce()
-
-      expect(renderable.screenX).toBe(7)
-      expect(setup.captureCharFrame().split("\n")[1]).toBe("  BB        ")
-
+      expect([renderable.screenX, ...frame()]).toEqual([7, "  BB        ", [renderable.num, 0]])
       await setup.renderOnce()
-
-      expect(setup.captureCharFrame().split("\n")[1]).toBe("       BB   ")
+      expect(frame()).toEqual(["       BB   ", [0, renderable.num]])
+      // A buffered node that grows gets a larger buffer.
+      renderable.width = 4
+      await setup.renderOnce()
+      expect(frame()[0]).toBe("       BBBB ")
     } finally {
       setup.renderer.destroy()
       await setup.renderer.closed
@@ -1753,15 +1721,14 @@ describe("Renderable - tree model", () => {
 })
 
 describe("Renderable - hook installation", () => {
-  // Each way to provide a hook, on a plain subclass and on built-ins with a native body, runs the hook in frames.
-  // Clearing an optional hook stops it. Construction publishes prototype hooks; a scan before the frame finds fields.
-  // Text skips the generic paint decorations (`beforeAfter: false`, documented), and its constructor assigns its own
-  // lifecycle pass over a subclass method, as on `main`.
+  // Every hook install on subclasses with and without own hooks and on built-ins. Construction publishes host hooks
+  // once; reflection (a field, or defineProperty over a published hook) runs only after refreshHooks(), and a failed
+  // refresh keeps the old hooks. An onLifecyclePass field runs (attachment registers it). Text skips paint decorations.
   const skipped = (base: string, install: string, hook: string) =>
     base === "Text" &&
     (hook === "renderBefore" || hook === "renderAfter" || (install === "prototype" && hook === "onLifecyclePass"))
-  const hooks = ["renderSelf", "onUpdate", "renderBefore", "renderAfter", "onLifecyclePass"] as const
-  const bases = { Renderable: TestRenderable, Box: BoxRenderable, Text: TextRenderable } as const
+  const hooks = "renderSelf onUpdate onResize onLayoutResize renderBefore renderAfter onLifecyclePass".split(" ")
+  const bases = { Plain: TestRenderable, Own: CountingRenderable, Box: BoxRenderable, Text: TextRenderable } as const
   const installs = ["prototype", "field", "option", "assignment", "defineProperty"] as const
   const cases = (Object.keys(bases) as (keyof typeof bases)[]).flatMap((base) =>
     installs.flatMap((install) =>
@@ -1775,30 +1742,50 @@ describe("Renderable - hook installation", () => {
     let calls = 0
     const handler = () => void calls++
     const descriptor = { value: handler, writable: true, enumerable: true, configurable: true }
-    const Base = bases[base] as typeof TestRenderable
-    class Probe extends Base {
+    class Probe extends (bases[base] as typeof TestRenderable) {
       constructor(ctx: RenderContext, options: RenderableOptions) {
         super(ctx, options)
         if (install === "field") Object.defineProperty(this, hook, descriptor)
       }
     }
     if (install === "prototype") Object.defineProperty(Probe.prototype, hook, { ...descriptor, enumerable: false })
-    const node = new Probe(testRenderer, { width: 4, height: 1, ...(install === "option" && { [hook]: handler }) })
+    const scene = testRenderer.nativeScene
+    const [publish, published] = [scene.setHooks, [] as number[]]
+    let fail = false
+    scene.setHooks = (...args) => {
+      if (fail) throw new Error("native")
+      published.push(args[1])
+      return publish.apply(scene, args)
+    }
+    const options = install === "option" && { renderBefore() {}, renderAfter() {}, [hook]: handler }
+    const node = new Probe(testRenderer, { width: 4, height: 1, ...options })
+    const host = base === "Own" || install === "option" || (install === "prototype" && hook !== "onLifecyclePass")
+    expect(published.length).toBe(Number(host))
     testRenderer.root.add(node)
     if (install === "assignment") Reflect.set(node, hook, handler)
-    if (install === "defineProperty") {
-      Object.defineProperty(node, hook, descriptor)
-      node.refreshHooks()
-    }
+    if (install === "defineProperty")
+      (hook === "onLifecyclePass" || Reflect.set(node, hook, () => {})) && Object.defineProperty(node, hook, descriptor)
+    fail = Object.hasOwn(node, hook) && hook !== "onLifecyclePass"
+    if (fail) expect(() => node.refreshHooks()).toThrow("native")
+    fail = false
+    node.width = 5
+    if (hook.endsWith("Resize")) node.onLifecyclePass = () => {} // It must not drop the first frame's resize.
 
     await renderOnce()
     if (skipped(base, install, hook)) return expect(calls).toBe(0)
+    expect(hooks.filter((name) => name !== hook && Object.hasOwn(node, name))).toEqual([])
+    if (hook !== "onLifecyclePass") expect(calls > 0).toBe(!Object.hasOwn(node, hook))
+    if (Object.hasOwn(node, hook)) node.refreshHooks()
+    node.width = 6
+    await renderOnce()
     expect(calls).toBeGreaterThan(0)
-    if (hook === "renderSelf" || hook === "onUpdate") return
+    if (hook === "renderSelf" || hook.endsWith("Resize")) return
     Reflect.set(node, hook, null)
+    if (install === "prototype" || hook === "onUpdate") node.refreshHooks() // A data property shadows the setter.
     calls = 0
     await renderOnce()
     expect(calls).toBe(0)
+    if (hook === "onUpdate") expect(published.at(-1)! & NativeSceneHook.Update).toBe(0)
   })
 })
 

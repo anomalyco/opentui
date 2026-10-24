@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import type { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer } from "../buffer.js"
+import { RGBA } from "../lib/RGBA.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -305,6 +306,18 @@ test("a nullish scrollbar visible write restores visibility that follows the scr
   bar.scrollSize = 30
   expect(bar.visible).toBe(true)
   bar.destroyRecursively()
+})
+
+test("refreshHooks() binds a frameBuffer field that replaces the surface", async () => {
+  const frame = new FrameBufferRenderable(renderer, { width: 6, height: 1 })
+  const replacement = OptimizedBuffer.create(6, 1, renderer.widthMethod, { owner: renderer.nativeScene })
+  replacement.drawText("NEWBUF", 0, 0, RGBA.fromInts(255, 255, 255))
+  Object.defineProperty(frame, "frameBuffer", { value: replacement, writable: true, configurable: true })
+  frame.refreshHooks()
+  renderer.root.add(frame)
+  await setup.renderOnce()
+  expect(setup.captureCharFrame().split("\n")[0].slice(0, 6)).toBe("NEWBUF")
+  replacement.destroy()
 })
 
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.

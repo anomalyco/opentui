@@ -78,7 +78,7 @@ import {
 } from "./lib/renderable.validations.js"
 
 const BrandedRenderable: unique symbol = Symbol.for("@opentui/core/Renderable")
-const nativeSceneMethodNames = [
+const hookNames = [
   "renderSelf",
   "onResize",
   "onLayoutResize",
@@ -86,20 +86,12 @@ const nativeSceneMethodNames = [
   "renderBefore",
   "renderAfter",
   "onLifecyclePass",
-  "selectable",
 ] as const
-const nativeSceneMethodDefaults: Partial<Record<(typeof nativeSceneMethodNames)[number], unknown>> = {
-  selectable: false,
-  onLifecyclePass: null,
-  renderBefore: undefined,
-  renderAfter: undefined,
-}
-const nativeSceneHookUpdates = nativeConstants.OT_SCENE_HOOK_UPDATE | nativeConstants.OT_SCENE_HOOK_IDLE_UPDATE
-const nativeSceneHookListeners = nativeConstants.OT_SCENE_HOOK_RESIZE | nativeConstants.OT_SCENE_HOOK_LAYOUT_CHANGED
+type PaintHook = (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
+/** A node's hooks: its class's methods at construction, public assignments, and the last refreshHooks(). */
+type Hooks = Record<(typeof hookNames)[number], any>
 const nativeSceneHookBeforeAfter =
   nativeConstants.OT_SCENE_HOOK_RENDER_BEFORE | nativeConstants.OT_SCENE_HOOK_RENDER_AFTER
-const nativeSceneHookHostMethods =
-  nativeConstants.OT_SCENE_HOOK_UPDATE | nativeSceneHookBeforeAfter | nativeConstants.OT_SCENE_HOOK_RENDER_SELF
 
 function isRowFlexDirection(direction: FlexDirection): boolean {
   return direction === FlexDirection.Row || direction === FlexDirection.RowReverse
@@ -207,8 +199,8 @@ export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> ex
   onSizeChange?: (this: T) => void
 }
 
-/** Class-owned native integration, declared with defineNativeIntegration(). Method identities
- * identify work performed by native; overrides use the ordinary host hook dispatcher. */
+/** Class-owned native integration, declared as the class's static `nativeIntegration`. Method
+ * identities identify work performed by native; overrides use the ordinary host hook dispatcher. */
 export interface NativeRenderableIntegration {
   readonly kind: Parameters<NativeScene["driver"]["renderLib"]["sceneCreateNode"]>[2]
   readonly body:
@@ -226,8 +218,6 @@ export interface NativeRenderableIntegration {
   readonly bufferComposition?: "native"
   readonly lineInfo?: boolean
   readonly measure?: (this: Renderable, ...constraints: Parameters<MeasureFunction>) => ReturnType<MeasureFunction>
-  /** Only an own description can promise that construction adds no hook class fields. */
-  readonly construction?: "prototype" | "fields"
 }
 
 export function isRenderable(obj: any): obj is Renderable {
@@ -307,6 +297,16 @@ export abstract class Renderable extends BaseRenderable {
     body: { native: this.prototype.renderSelf },
   }
 
+  private static readonly baseHooks: Hooks = {
+    renderSelf: this.prototype.renderSelf,
+    onResize: this.prototype.onResize,
+    onLayoutResize: this.prototype.onLayoutResize,
+    onUpdate: this.prototype.onUpdate,
+    renderBefore: undefined,
+    renderAfter: undefined,
+    onLifecyclePass: null,
+  }
+
   /** @internal Stable class description shared by creation, hook registration, and dispatch. */
   readonly nativeIntegration: NativeRenderableIntegration
 
@@ -345,11 +345,10 @@ export abstract class Renderable extends BaseRenderable {
   protected _liveCount: number = 0
 
   private _sizeChangeListener: (() => void) | undefined = undefined
-  private _nativeSceneHookFlags = 0
+  private _hooks: Hooks = Renderable.baseHooks
   protected _nativeSceneHookGeneration = 0n
   private _nativeSceneHooksRegistered = false
   private _nativeSceneResize = false
-  private _nativeSceneResizeCallbacks?: { onResize: unknown; onLayoutResize: unknown }
   private _nativeSceneHookLayout?: {
     revision: number
     layout?: NativeSceneLayout
@@ -361,8 +360,7 @@ export abstract class Renderable extends BaseRenderable {
   private _observedLayoutRevision = -1
   private _computedLayout?: NativeSceneLayout
   private _computedLayoutRevision = -1
-  private _nativeSceneMethods?: Partial<Record<(typeof nativeSceneMethodNames)[number], unknown>>
-  private _nativeSceneMethodsPending = false
+  private _selectable = false
   private _mouseListener: ((event: MouseEvent) => void) | null = null
   private _mouseListeners: Partial<Record<MouseEventType, (event: MouseEvent) => void>> = {}
   private _pasteListener: ((event: PasteEvent) => void) | undefined = undefined
@@ -377,10 +375,25 @@ export abstract class Renderable extends BaseRenderable {
   protected _childrenInLayoutOrder: Renderable[] = []
   public parent: Renderable | null = null
 
-  declare public onLifecyclePass: (() => void) | null
-
-  declare public renderBefore?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
-  declare public renderAfter?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
+  // Accessors, so a class field that overrides one is a type error (TS2610) instead of a silent shadow.
+  public get onLifecyclePass(): (() => void) | null {
+    return this._hooks.onLifecyclePass
+  }
+  public set onLifecyclePass(value: (() => void) | null | undefined) {
+    this.setHook("onLifecyclePass", value)
+  }
+  public get renderBefore(): PaintHook | undefined {
+    return this._hooks.renderBefore
+  }
+  public set renderBefore(value: PaintHook | null | undefined) {
+    this.setHook("renderBefore", value)
+  }
+  public get renderAfter(): PaintHook | undefined {
+    return this._hooks.renderAfter
+  }
+  public set renderAfter(value: PaintHook | null | undefined) {
+    this.setHook("renderAfter", value)
+  }
 
   constructor(ctx: RenderContext, options: RenderableOptions<any>) {
     super(options)
@@ -403,9 +416,12 @@ export abstract class Renderable extends BaseRenderable {
       this._opacity = clampOpacity(options.opacity)
 
       ctx.nativeScene.createNode(this, options)
-      if (options.renderBefore !== undefined) this.renderBefore = options.renderBefore
-      if (options.renderAfter !== undefined) this.renderAfter = options.renderAfter
-      if (this.nativeSceneNeedsHookPublish()) this.setNativeSceneHooks(this._nativeSceneHookFlags)
+      const hooks = {} as Hooks
+      for (const name of hookNames) hooks[name] = this[name]
+      for (const name of ["renderBefore", "renderAfter"] as const) {
+        if (options[name] !== undefined) hooks[name] = Renderable.normalizeHook(name, options[name])
+      }
+      this.publishHooks(hooks)
       this.setDisplay(this._visible ? Display.Flex : Display.None)
       this.setupYogaProperties(options)
       if (this.nativeIntegration.measure) this.setMeasureFunc(this.nativeIntegration.measure.bind(this))
@@ -419,10 +435,6 @@ export abstract class Renderable extends BaseRenderable {
 
       if (this.buffered) {
         this.createFrameBuffer()
-      }
-      // Derived class fields run after super(); leaf classes cannot grow hooks that way.
-      if (!Object.hasOwn(new.target, "nativeIntegration") || this.nativeIntegration.construction !== "prototype") {
-        ctx.nativeScene.scheduleHookScan(this)
       }
     } catch (error) {
       try {
@@ -1527,7 +1539,7 @@ export abstract class Renderable extends BaseRenderable {
     if (this._visible) {
       // TODO: Should probably .markDirty()
       this.handleFrameBufferResize(width, height)
-      this.onResize(width, height)
+      this._hooks.onResize.call(this, width, height)
       this.requestRender()
     }
   }
@@ -1577,7 +1589,6 @@ export abstract class Renderable extends BaseRenderable {
       if (this._ctx.nativeScene !== child._ctx.nativeScene) {
         throw new Error("Cannot move renderables between native scenes")
       }
-      if (!child.isDestroyed) this._ctx.nativeScene.refreshPendingHooks(child)
       let previous = child.parent
       if (previous && previous !== this && previous.remove !== Renderable.prototype.remove) {
         // Custom removal owns its policy and cleanup; placement cannot roll back those side effects.
@@ -1836,151 +1847,62 @@ export abstract class Renderable extends BaseRenderable {
     this._ctx.nativeScene.setPaint(this, paint)
   }
 
-  // Share accessor functions across nodes; retain handler identity per node.
-  private static nativeSceneMethods = nativeSceneMethodNames.map((name) => {
-    const normalize = (value: unknown) => {
-      if (name === "selectable") return value
-      if (name === "onLifecyclePass") value ??= null
-      else if (name === "renderBefore" || name === "renderAfter") value ??= undefined
-      else if (name === "onUpdate") value ??= nativeSceneMethodDefaults.onUpdate
-      if (
-        typeof value !== "function" &&
-        !((name === "renderBefore" || name === "renderAfter" || name === "onLifecyclePass") && value == null)
-      )
-        throw new TypeError(`Invalid ${name} hook`)
-      return value
-    }
-    return {
-      name,
-      normalize,
-      descriptor: {
-        configurable: true,
-        get(this: Renderable) {
-          const methods = this._nativeSceneMethods
-          if (methods && name in methods) return methods[name]
-          return nativeSceneMethodDefaults[name]
-        },
-        set(this: Renderable, value: unknown) {
-          if (name === "selectable") {
-            if (this.isFreed()) return
-            this.assertMutable()
-            this.ensureNativeSceneMethods()[name] = value
-            return
-          }
-          value = normalize(value)
-          if (value === this[name]) return
-          this.setNativeSceneHooks(this._nativeSceneHookFlags, { [name]: value })
-          this.ensureNativeSceneMethods()[name] = value
-          if (name === "onLifecyclePass") {
-            if (!value) this._ctx.unregisterLifecyclePass(this)
-            else if (this.parent) this._ctx.registerLifecyclePass(this)
-            else this._ctx.nativeScene.lifecyclePasses.refresh(this)
-          }
-        },
-      },
-    }
-  })
-
   static {
-    const prototype = this.prototype as Renderable
-    nativeSceneMethodDefaults.renderSelf = prototype.renderSelf
-    nativeSceneMethodDefaults.onResize = prototype.onResize
-    nativeSceneMethodDefaults.onLayoutResize = prototype.onLayoutResize
-    nativeSceneMethodDefaults.onUpdate = prototype.onUpdate
-    for (const method of this.nativeSceneMethods) {
-      if (
-        method.name === "renderSelf" ||
-        method.name === "onResize" ||
-        method.name === "onLayoutResize" ||
-        method.name === "onUpdate"
-      ) {
-        this.installNativeSceneMethod(prototype, method, nativeSceneMethodDefaults[method.name])
-      } else {
-        Object.defineProperty(prototype, method.name, method.descriptor)
-      }
-    }
-  }
-
-  /** Declare integration once per class, before instances exist. Prototype methods retain
-   * super calls, while assignment publishes through the same accessors as discovered fields. */
-  protected static defineNativeIntegration(integration: NativeRenderableIntegration): NativeRenderableIntegration {
-    for (const method of Renderable.nativeSceneMethods) {
-      let prototype: object | null = this.prototype
-      while (prototype) {
-        const descriptor = Object.getOwnPropertyDescriptor(prototype, method.name)
-        if (descriptor) {
-          if ("value" in descriptor) this.installNativeSceneMethod(this.prototype, method, descriptor.value)
-          break
-        }
-        prototype = Object.getPrototypeOf(prototype)
-      }
-    }
-    return integration
-  }
-
-  private static installNativeSceneMethod(
-    prototype: Renderable,
-    method: (typeof Renderable.nativeSceneMethods)[number],
-    handler: unknown,
-  ): void {
-    const instance = {
-      ...method.descriptor,
-      get(this: Renderable) {
-        const methods = this._nativeSceneMethods
-        return methods && method.name in methods ? methods[method.name] : handler
-      },
-    }
-    Object.defineProperty(prototype, method.name, {
+    Object.defineProperty(this.prototype, "selectable", {
       configurable: true,
-      get() {
-        // A super lookup must return this class's implementation, not the live instance override.
-        return handler
+      get(this: Renderable) {
+        return this._selectable
       },
-      set(this: Renderable, value: unknown) {
-        Object.defineProperty(this, method.name, instance)
-        method.descriptor.set.call(this, value)
+      set(this: Renderable, value: boolean) {
+        if (this.isFreed()) return
+        this.assertMutable()
+        this._selectable = value
       },
     })
   }
 
-  /** Snapshot reflective hook replacements and restore normal callback assignment.
-   * Call after defineProperty/delete, or to finalize fields after early constructor attachment.
-   * Ordinary paint and style changes do not discover hooks. */
+  private static normalizeHook(name: (typeof hookNames)[number], value: unknown): unknown {
+    if (value == null && name !== "renderSelf" && name !== "onResize" && name !== "onLayoutResize") {
+      return name === "onUpdate" ? Renderable.baseHooks.onUpdate : name === "onLifecyclePass" ? null : undefined
+    }
+    if (typeof value !== "function") throw new TypeError(`Invalid ${name} hook`)
+    return value
+  }
+
+  private setHook(name: "renderBefore" | "renderAfter" | "onLifecyclePass", value: unknown): void {
+    value = Renderable.normalizeHook(name, value)
+    if (value === this._hooks[name]) return
+    const hooks = { ...this._hooks, [name]: value }
+    if (name !== "onLifecyclePass") return this.publishHooks(hooks)
+    // A lifecycle pass sets no native hook bit; only its registration changes.
+    this._hooks = hooks
+    this.syncLifecyclePass()
+  }
+
+  private syncLifecyclePass(): void {
+    if (!this.onLifecyclePass) this._ctx.unregisterLifecyclePass(this)
+    else if (this.parent) this._ctx.registerLifecyclePass(this)
+    else this._ctx.nativeScene.lifecyclePasses.refresh(this)
+  }
+
+  /** Adopt hooks that an instance class field, `Object.defineProperty`, or an instance assignment of a
+   * protected hook method supplied. Until this call, the node runs the hooks of its class. */
   public refreshHooks(): void {
     if (this._isDestroyed) return
     this.assertMutable()
-    try {
-      this._scanNativeSceneHooks()
-    } catch (error) {
-      this._ctx.nativeScene.scheduleHookScan(this)
-      throw error
+    const hooks = {} as Hooks
+    for (const name of hookNames) hooks[name] = Renderable.normalizeHook(name, this[name])
+    this.publishHooks(hooks)
+    // Later assignments of the public hooks go through their setters again.
+    for (const name of ["renderBefore", "renderAfter", "onLifecyclePass"] as const) {
+      if (!Object.hasOwn(this, name)) continue
+      delete this[name]
+      // A prototype data property shadows the setter; keep the adopted value on the instance.
+      if (this[name] !== hooks[name]) Reflect.set(this, name, hooks[name])
     }
+    this.syncLifecyclePass()
+    this._refreshNativeSceneSurface()
     this.requestRender()
-  }
-
-  /** @internal Snapshot hooks for construction, explicit refresh, or retry. */
-  _scanNativeSceneHooks(): void {
-    if (!this._isDestroyed) this.refreshNativeSceneMethods()
-  }
-
-  private ensureNativeSceneMethods(): NonNullable<Renderable["_nativeSceneMethods"]> {
-    return (this._nativeSceneMethods ??= {})
-  }
-
-  private nativeSceneNeedsHookPublish(): boolean {
-    if (this.buffered) return true
-    if (!this.usesNativeDrawing(this.renderSelf)) return true
-    if (this.hostUpdateFlags(this.onUpdate) !== 0) return true
-    const onResize = this.onResize
-    const onLayoutResize = this.onLayoutResize
-    if (onLayoutResize !== nativeSceneMethodDefaults.onLayoutResize) return true
-    if (
-      !this._nativeSceneHooksRegistered &&
-      this.nativeIntegration.beforeAfter !== false &&
-      (this.renderBefore || this.renderAfter)
-    )
-      return true
-    return this.needsHostResize(onResize)
   }
 
   private usesNativeDrawing(renderSelf: unknown): boolean {
@@ -1995,7 +1917,7 @@ export abstract class Renderable extends BaseRenderable {
 
   private needsHostResize(onResize: unknown): boolean {
     const resize = this.nativeIntegration.lifecycle?.resize
-    return onResize !== nativeSceneMethodDefaults.onResize && onResize !== resize?.native
+    return onResize !== Renderable.baseHooks.onResize && onResize !== resize?.native
   }
 
   private hostUpdateFlags(onUpdate: unknown): number {
@@ -2003,119 +1925,53 @@ export abstract class Renderable extends BaseRenderable {
     if (update && onUpdate === update.idle) {
       return update.active(this) ? NativeSceneHook.Update : NativeSceneHook.IdleUpdate
     }
-    return onUpdate === nativeSceneMethodDefaults.onUpdate ? 0 : NativeSceneHook.Update
-  }
-
-  private refreshNativeSceneMethods(): void {
-    this._refreshNativeSceneSurface()
-    const methods = Renderable.nativeSceneMethods
-    for (let index = 0; index < methods.length; index++) {
-      const method = methods[index]
-      const name = method.name
-      const own = Object.getOwnPropertyDescriptor(this, name)
-      if (own?.set === method.descriptor.set) continue
-      const handler = method.normalize(this[name as keyof this])
-      if (!own && handler === nativeSceneMethodDefaults[name]) continue
-      this.ensureNativeSceneMethods()[name] = handler
-      Object.defineProperty(this, name, method.descriptor)
-      // Prototype hooks were published by super(); capture their later assignments without another admission.
-      if (own) this._nativeSceneMethodsPending = true
-    }
-    if (this._nativeSceneMethodsPending) {
-      this.setNativeSceneHooks(this._nativeSceneHookFlags, {
-        onResize: this.onResize,
-        onLayoutResize: this.onLayoutResize,
-      })
-      if (!this.onLifecyclePass) this._ctx.unregisterLifecyclePass(this)
-      else if (this.parent) this._ctx.registerLifecyclePass(this)
-      else this._ctx.nativeScene.lifecyclePasses.refresh(this)
-      // A failed prerequisite flush must not make installed descriptors look fully published.
-      this._nativeSceneMethodsPending = false
-    }
+    return onUpdate === Renderable.baseHooks.onUpdate ? 0 : NativeSceneHook.Update
   }
 
   protected refreshNativeSceneHooks(): void {
-    this.setNativeSceneHooks(this._nativeSceneHookFlags)
+    this.publishHooks(this._hooks)
   }
 
-  /** @internal Retained surfaces restore their binding accessor during the same construction refresh. */
+  /** @internal Retained surfaces restore their binding accessor when hooks are refreshed. */
   _refreshNativeSceneSurface(): void {}
 
-  private setNativeSceneHooks(
-    flags: number,
-    overrides: Partial<
-      Record<
-        "renderSelf" | "onResize" | "onLayoutResize" | "onUpdate" | "renderBefore" | "renderAfter" | "onLifecyclePass",
-        unknown
-      >
-    > = {},
-    lineInfo?: boolean,
+  /** Publish the flags for `hooks`, then adopt them. `pending` carries listener changes that are about to apply. */
+  private publishHooks(
+    hooks: Hooks,
+    pending: { resize?: number; layout?: number; lineInfo?: boolean; sizeChange?: unknown } = {},
   ): void {
-    if (this.isFreed()) return
-    const scene = this._ctx.nativeScene
-    const previousFlags = this._nativeSceneHookFlags
-    const previousGeneration = this._nativeSceneHookGeneration
-    const method = (name: keyof typeof overrides) => (name in overrides ? overrides[name] : this[name])
-    const onUpdate = method("onUpdate")
-    flags =
-      (flags & ~nativeSceneHookHostMethods) |
-      (method("renderBefore") ? NativeSceneHook.RenderBefore : 0) |
-      (method("renderAfter") ? NativeSceneHook.RenderAfter : 0)
-    const renderSelf = method("renderSelf")
-    if (!this.usesNativeDrawing(renderSelf)) flags |= NativeSceneHook.RenderSelf
-    // A caller getter can accept another hook mutation while these options are read.
-    const overridden =
-      ("onUpdate" in overrides ? nativeSceneHookUpdates : 0) |
-      ("onResize" in overrides || "onLayoutResize" in overrides ? NativeSceneHook.Resize : 0) |
-      ("renderBefore" in overrides ? NativeSceneHook.RenderBefore : 0) |
-      ("renderAfter" in overrides ? NativeSceneHook.RenderAfter : 0) |
-      ("renderSelf" in overrides ? NativeSceneHook.RenderSelf : 0)
-    const changed = (previousFlags ^ this._nativeSceneHookFlags) & ~overridden
-    flags = (flags & ~changed) | (this._nativeSceneHookFlags & changed)
-    const resizeCallbacks = {
-      onResize:
-        "onResize" in overrides ? overrides.onResize : (this._nativeSceneResizeCallbacks?.onResize ?? this.onResize),
-      onLayoutResize:
-        "onLayoutResize" in overrides
-          ? overrides.onLayoutResize
-          : (this._nativeSceneResizeCallbacks?.onLayoutResize ?? this.onLayoutResize),
-    }
-    const resize =
-      this.buffered ||
-      resizeCallbacks.onLayoutResize !== Renderable.prototype.onLayoutResize ||
-      this.needsHostResize(resizeCallbacks.onResize)
-    if (this._nativeSceneResize !== resize)
-      flags =
-        (flags & ~NativeSceneHook.Resize) |
-        (this._sizeChangeListener || this.listenerCount("resize") ? NativeSceneHook.Resize : 0)
-    if (resize) flags |= NativeSceneHook.Resize
-    lineInfo ??= !!this.nativeIntegration.lineInfo && this.listenerCount("line-info-change") > 0
-    // Getters can change activity or accept a new implicit hook with the same flags.
-    const update =
-      "onUpdate" in overrides || previousGeneration === this._nativeSceneHookGeneration
-        ? this.hostUpdateFlags(onUpdate)
-        : this._nativeSceneHookFlags & nativeSceneHookUpdates
-    flags = (flags & ~nativeSceneHookUpdates) | update
-    const generation = this._nativeSceneHookGeneration + 1n
-    if (flags !== 0 || lineInfo || this._nativeSceneHooksRegistered) {
-      let nativeFlags = flags
-      if (this.nativeIntegration.beforeAfter === false) {
-        nativeFlags &= ~nativeSceneHookBeforeAfter
+    if (!this.isFreed()) {
+      const integration = this.nativeIntegration
+      const resize =
+        this.buffered ||
+        hooks.onLayoutResize !== Renderable.baseHooks.onLayoutResize ||
+        this.needsHostResize(hooks.onResize)
+      const sizeChange = "sizeChange" in pending ? pending.sizeChange : this._sizeChangeListener
+      const lineInfo = pending.lineInfo ?? (!!integration.lineInfo && this.listenerCount("line-info-change") > 0)
+      const flags =
+        (hooks.renderBefore ? NativeSceneHook.RenderBefore : 0) |
+        (hooks.renderAfter ? NativeSceneHook.RenderAfter : 0) |
+        (this.usesNativeDrawing(hooks.renderSelf) ? 0 : NativeSceneHook.RenderSelf) |
+        this.hostUpdateFlags(hooks.onUpdate) |
+        (resize || sizeChange || (pending.resize ?? this.listenerCount("resize")) > 0 ? NativeSceneHook.Resize : 0) |
+        ((pending.layout ?? this.listenerCount(LayoutEvents.LAYOUT_CHANGED)) > 0 ? NativeSceneHook.LayoutChanged : 0)
+      const generation = this._nativeSceneHookGeneration + 1n
+      if (flags !== 0 || lineInfo || this._nativeSceneHooksRegistered) {
+        let nativeFlags = flags
+        if (integration.beforeAfter === false) nativeFlags &= ~nativeSceneHookBeforeAfter
+        if (!resize && integration.lifecycle?.resize) {
+          nativeFlags =
+            (nativeFlags & ~NativeSceneHook.Resize) | (lineInfo && integration.lineInfo ? NativeSceneHook.Resize : 0)
+        }
+        if (nativeFlags & NativeSceneHook.RenderSelf) nativeFlags |= NativeSceneHook.RenderAfter
+        const scene = this._ctx.nativeScene
+        scene.setHooks(this, nativeFlags, generation, this.styledDimension("width"), this.styledDimension("height"))
+        this._nativeSceneHooksRegistered = true
       }
-      const nativeResize = this.nativeIntegration.lifecycle?.resize
-      if (!resize && nativeResize) {
-        nativeFlags =
-          (nativeFlags & ~NativeSceneHook.Resize) |
-          (lineInfo && this.nativeIntegration.lineInfo ? NativeSceneHook.Resize : 0)
-      }
-      if (nativeFlags & NativeSceneHook.RenderSelf) nativeFlags |= NativeSceneHook.RenderAfter
-      scene.setHooks(this, nativeFlags, generation, this.styledDimension("width"), this.styledDimension("height"))
-      this._nativeSceneHooksRegistered = true
+      this._nativeSceneResize = resize
+      this._nativeSceneHookGeneration = generation
     }
-    this._nativeSceneResizeCallbacks = resize ? resizeCallbacks : undefined
-    this._nativeSceneResize = resize
-    this._nativeSceneHookFlags = flags
-    this._nativeSceneHookGeneration = generation
+    this._hooks = hooks
   }
 
   /** @internal Refresh only requested host hooks, never walk wrappers to collect layout. */
@@ -2128,14 +1984,14 @@ export abstract class Renderable extends BaseRenderable {
     try {
       switch (request.kind) {
         case NativeSceneFrame.Update:
-          this.onUpdate(deltaTime)
+          this._hooks.onUpdate.call(this, deltaTime)
           break
         case NativeSceneFrame.Resize:
           if (this._nativeSceneResize) {
             this._nativeSceneHookLayout.paintLayout =
               (currentGeometry && request.paintLayout) || this._ctx.nativeScene.getLayout(this, "paint")
             this._nativeSceneHookLayout.paintRevision = revision
-            this.onLayoutResize(request.width, request.height)
+            this._hooks.onLayoutResize.call(this, request.width, request.height)
           } else {
             const resize = this.nativeIntegration.lifecycle?.resize
             if (!resize) {
@@ -2187,7 +2043,7 @@ export abstract class Renderable extends BaseRenderable {
     try {
       if (slot.hooks & NativeSceneHook.RenderBefore) {
         recorder.slot(index, NativeScenePaintPhase.Before, slot.opacity)
-        this.renderBefore?.call(this, buffer, deltaTime)
+        this._hooks.renderBefore?.call(this, buffer, deltaTime)
         // Native code drops a node destroyed by its own hook, with its recording.
         if (this._isDestroyed) return
       }
@@ -2200,7 +2056,7 @@ export abstract class Renderable extends BaseRenderable {
       if (slot.hooks & NativeSceneHook.RenderAfter) {
         recorder.slot(index, NativeScenePaintPhase.After, slot.opacity)
         if (this.nativeIntegration.beforeAfter !== false) {
-          this.renderAfter?.call(this, buffer, deltaTime)
+          this._hooks.renderAfter?.call(this, buffer, deltaTime)
           this.markClean()
         }
         if (
@@ -2217,7 +2073,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   protected _invokeNativePaint(buffer: OptimizedBuffer, deltaTime: number): void {
-    this.renderSelf(buffer, deltaTime)
+    this._hooks.renderSelf.call(this, buffer, deltaTime)
   }
 
   public get isDestroyed(): boolean {
@@ -2490,24 +2346,12 @@ export abstract class Renderable extends BaseRenderable {
       else if (event === "line-info-change") lineInfo += delta
       else layout += delta
     }
-    this.setNativeSceneHooks(
-      (this._nativeSceneHookFlags & ~nativeSceneHookListeners) |
-        (resize > 0 || this._sizeChangeListener ? NativeSceneHook.Resize : 0) |
-        (layout > 0 ? NativeSceneHook.LayoutChanged : 0),
-      {},
-      lineInfo > 0,
-    )
+    this.publishHooks(this._hooks, { resize, layout, lineInfo: lineInfo > 0 })
     this.runCleanup((run) => {
       run(change)
       // Meta-listeners can mutate subscriptions or throw. Keep their accepted changes rather than rolling them back.
       run(() => {
-        if (!this._isDestroyed) {
-          const flags =
-            (this._nativeSceneHookFlags & ~nativeSceneHookListeners) |
-            (this.listenerCount("resize") > 0 || this._sizeChangeListener ? NativeSceneHook.Resize : 0) |
-            (this.listenerCount(LayoutEvents.LAYOUT_CHANGED) > 0 ? NativeSceneHook.LayoutChanged : 0)
-          this.setNativeSceneHooks(flags)
-        }
+        if (!this._isDestroyed) this.publishHooks(this._hooks)
       })
     })
     return this
@@ -2586,8 +2430,7 @@ export abstract class Renderable extends BaseRenderable {
   public set onSizeChange(handler: (() => void) | undefined) {
     if (handler !== this._sizeChangeListener) {
       if (handler != null && typeof handler !== "function") throw new TypeError("Invalid size change hook")
-      const flags = this._nativeSceneHookFlags & ~NativeSceneHook.Resize
-      this.setNativeSceneHooks(flags | (handler || this.listenerCount("resize") > 0 ? NativeSceneHook.Resize : 0))
+      this.publishHooks(this._hooks, { sizeChange: handler })
     }
     this._sizeChangeListener = handler
   }
@@ -2613,11 +2456,10 @@ export abstract class Renderable extends BaseRenderable {
 }
 
 export class RootRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...Renderable.nativeIntegration,
     kind: "root",
-    construction: "prototype",
-  })
+  }
   private _currentRenderable: Renderable | undefined
 
   constructor(ctx: RenderContext) {

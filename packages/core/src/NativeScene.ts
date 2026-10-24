@@ -128,9 +128,6 @@ export class NativeScene {
   private layoutRevision = 0
   // Style and paint setters stage here; native sees them at the next flush boundary.
   private readonly staging = new SceneStaging()
-  // Only construction and failed explicit refreshes need deferred discovery.
-  private hookScans = new Set<Renderable>()
-  private scanningHooks = false
   // The library's Yoga host is stable for this scene's lifetime; hot setters skip the lookup chain.
   private readonly yogaHost: YogaHost
 
@@ -199,56 +196,6 @@ export class NativeScene {
       this.staging.clear()
     } finally {
       if (!this.staging.pending) this.yogaHost.forgetScene(this)
-    }
-  }
-
-  /** @internal Keep construction pending until a boundary after derived class fields have run. */
-  scheduleHookScan(renderable: Renderable): void {
-    if (this.stopped) return
-    this.hookScans.add(renderable)
-  }
-
-  /** @internal Restore assignment accessors at attachment, but keep discovery pending:
-   * an intermediate constructor can attach before the most-derived fields run. */
-  refreshPendingHooks(renderable: Renderable): void {
-    if (this.scanningHooks || !this.hookScans.has(renderable)) return
-    this.scanningHooks = true
-    try {
-      renderable._scanNativeSceneHooks()
-    } finally {
-      this.scanningHooks = false
-    }
-  }
-
-  /** Scans may publish hooks natively or register lifecycle passes, so this runs
-   * before lifecycle passes and native resumes. Reentrant scheduling drains in
-   * bounded batches without walking the scene. */
-  private drainHookScans(): void {
-    if (this.scanningHooks) throw new Error("Native scene hook discovery is already active")
-    if (this.hookScans.size === 0) return
-    this.scanningHooks = true
-    let visits = 0
-    try {
-      while (this.hookScans.size !== 0) {
-        const pending = this.hookScans
-        this.hookScans = new Set()
-        try {
-          for (const renderable of pending) {
-            if (this.stopped) return
-            if (++visits > maxHostRequests) throw new Error("Native scene hook discovery work limit exceeded")
-            renderable._scanNativeSceneHooks()
-            pending.delete(renderable)
-          }
-        } catch (error) {
-          if (!this.stopped) {
-            for (const renderable of this.hookScans) pending.add(renderable)
-            this.hookScans = pending
-          }
-          throw error
-        }
-      }
-    } finally {
-      this.scanningHooks = false
     }
   }
 
@@ -324,7 +271,6 @@ export class NativeScene {
       this.changeGeometry()
       renderable._releaseSceneHandle()
       this.nodes.delete(renderable.num)
-      this.hookScans.delete(renderable)
       this.renderer.unregisterLifecyclePass(renderable)
     } catch (error) {
       if (flushFailure) {
@@ -620,9 +566,7 @@ export class NativeScene {
     if (root === owner || (root.parent && !attached)) throw new Error("Snapshot root belongs to another parent")
     if (!attached) owner.add(root)
     try {
-      this.drainHookScans()
       this.runLifecyclePasses()
-      this.drainHookScans()
       this.assertAlive()
       this.flushStaged()
       try {
@@ -642,7 +586,6 @@ export class NativeScene {
     // Native code admits one attempt per Session; a second one would fail with FrameBusy.
     if (this.paintedFrame) throw new Error("Native scene is already painting a frame")
     this.renderer.root._setCurrentRenderable(undefined)
-    this.drainHookScans()
     this.runLifecyclePasses()
     this.advancePaint(deltaTime, getPaintOptions)
   }
@@ -656,7 +599,6 @@ export class NativeScene {
         if (!renderable.isDestroyed) {
           renderable.onLifecyclePass?.call(renderable)
         }
-        this.drainHookScans()
       }
     }
   }
@@ -666,7 +608,6 @@ export class NativeScene {
     let recording: Uint8Array | null = null
     try {
       while (!this.stopped) {
-        this.drainHookScans()
         const options = { ...getPaintOptions(), maxLayoutRounds, maxHostRequests }
         if (this.stopped || this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
         // Lifecycle passes and hooks stage writes; native must accept them before it continues.
@@ -806,7 +747,6 @@ export class NativeScene {
     // Nothing staged can matter to a scene whose every node is about to be released.
     this.staging.clear()
     this.yogaHost.forgetScene(this)
-    this.hookScans.clear()
     let failure: { error: unknown } | undefined
     try {
       // Include detached nodes: the scene, not membership in root, owns their handles.
