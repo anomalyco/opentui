@@ -2104,33 +2104,18 @@ test "calculateTextWidth: validate against unicode-width-map.zon" {
         return err;
     };
 
-    var successes: usize = 0;
     var failures: usize = 0;
-
     for (width_entries) |entry| {
-        const codepoint_str = entry.codepoint;
-        const expected_width = entry.width;
-
-        // Parse "U+XXXX" from codepoint string
-        if (codepoint_str.len < 3 or !std.mem.startsWith(u8, codepoint_str, "U+")) {
-            continue;
-        }
-        const hex_str = codepoint_str[2..];
-        const code_point = std.fmt.parseInt(u21, hex_str, 16) catch continue;
-
+        try testing.expect(std.mem.startsWith(u8, entry.codepoint, "U+"));
         var buf: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(code_point, &buf) catch continue;
-        const str = buf[0..len];
-
-        const actual_width = utf8.calculateTextWidth(str, 4, .hidden, false, .unicode);
-
-        if (actual_width == expected_width) {
-            successes += 1;
-        } else {
+        const str = buf[0..try std.unicode.utf8Encode(try std.fmt.parseInt(u21, entry.codepoint[2..], 16), &buf)];
+        for (std.enums.values(utf8.WidthMethod)) |method| {
+            const actual = utf8.calculateTextWidth(str, 4, .hidden, false, method);
+            if (actual == entry.width) continue;
+            std.debug.print("{s} {s}: {d}, expected {d}\n", .{ entry.codepoint, @tagName(method), actual, entry.width });
             failures += 1;
         }
     }
-
     try testing.expectEqual(@as(usize, 0), failures);
 }
 
