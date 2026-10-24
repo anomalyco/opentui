@@ -336,8 +336,8 @@ describe("detectLinks", () => {
     syntaxStyle.destroy()
     resourceContext.destroy()
 
-    const white = [255, 255, 255, 255]
-    const blue = [100, 150, 255, 255]
+    const white: [number, number, number, number] = [255, 255, 255, 255]
+    const blue: [number, number, number, number] = [100, 150, 255, 255]
     expect(result.map((item) => [item.text, item.fg?.toInts(), item.attributes])).toEqual([
       ["<", white, bold],
       ["https://auto.test", white, bold],
