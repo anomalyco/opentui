@@ -316,7 +316,6 @@ export class NativeScene {
     if (this.staging.stageStyle(this.driver.context, handle, group, kind, edge, unit, value, flags)) {
       this.yogaHost.stageScene(this)
     }
-    this.changeGeometry()
   }
 
   /** @internal Accept this scene's staged prefix before reading native style.
@@ -386,7 +385,9 @@ export class NativeScene {
     const handle = renderable._getSceneHandle(this)
     if (this.staging.full) this.flushStaged()
     if (this.staging.stagePaint(this.driver.context, handle, paint, renderable)) this.yogaHost.stageScene(this)
-    this.changeGeometry()
+    // Of paint, only a translation moves layout reads. Constructors send the current values.
+    const { translateX = renderable.translateX, translateY = renderable.translateY } = paint
+    if (translateX !== renderable.translateX || translateY !== renderable.translateY) this.changeGeometry()
   }
 
   setBackground(renderable: Renderable, color: RGBA): void {

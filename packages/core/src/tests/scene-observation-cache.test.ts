@@ -17,7 +17,7 @@ afterEach(() => {
 describe("scene layout observations", () => {
   test("random writes inside and outside hooks: getters match native reads, and only some writes re-read", async () => {
     // Writes that make the next warm read call native again (issue 310), and whether they stage a flush.
-    const invalidates = (name: string) => name !== "backgroundColor"
+    const invalidates = (name: string) => ["translateX", "translateY", "move"].includes(name)
     const inHookPaintReads = (invalidated: boolean) => (invalidated ? 1 : 0)
     let hook: ((node: Renderable, phase: string) => void) | undefined
     class Probe extends BoxRenderable {
