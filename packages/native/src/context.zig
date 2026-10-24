@@ -3264,7 +3264,7 @@ pub const Context = struct {
             });
             view.view.setViewportSize(viewport.width, viewport.height);
         } else view.view.setViewport(viewport);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn textViewCommand(self: *Context, handle: Handle, command: TextViewCommand) !void {
@@ -3529,7 +3529,7 @@ pub const Context = struct {
         try validateViewport(viewport);
         try view.prepareView();
         if (size_only) view.view.setViewportSize(viewport.width, viewport.height) else view.view.setViewport(viewport, move_cursor);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn editorSetScrollMargin(self: *Context, handle: Handle, margin: f32) !void {

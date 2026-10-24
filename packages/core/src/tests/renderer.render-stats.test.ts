@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { rgbToHex } from "../lib/RGBA.js"
+import { BoxRenderable } from "../renderables/Box.js"
 import { CodeRenderable } from "../renderables/Code.js"
+import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
+import { TextareaRenderable } from "../renderables/Textarea.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { SyntaxStyle } from "../syntax-style.js"
@@ -136,8 +139,8 @@ describe("native renderer stats", () => {
     expect(await refreshes()).toBe(1_001)
   })
 
-  test("frameWork solves Yoga only for text writes that can change the measured size", async () => {
-    const result = await createTestRenderer({ width: 40, height: 6 })
+  test("frameWork solves Yoga only for text writes and viewports that can change the measured size", async () => {
+    const result = await createTestRenderer({ width: 40, height: 12 })
     renderer = result.renderer
     // Solid builds `<text fg={...}>` content from child nodes.
     const label = new TextRenderable(renderer, { fg: "#808080" })
@@ -155,7 +158,16 @@ describe("native renderer stats", () => {
       treeSitterClient: highlights,
       conceal: false,
     })
-    for (const child of [label, plain, code]) renderer.root.add(child)
+    const syntaxStyle = SyntaxStyle.fromStyles({}, renderer.nativeScene)
+    const treeSitterClient = new MockTreeSitterClient()
+    // A solve that resizes these runs their resize hooks, which set the text view or editor viewport.
+    const column = new BoxRenderable(renderer, { width: 20, flexDirection: "column" })
+    const block = new CodeRenderable(renderer, { content: "const pending = true", syntaxStyle, treeSitterClient })
+    column.add(block)
+    column.add(new MarkdownRenderable(renderer, { content: "Some *words* here", syntaxStyle, treeSitterClient }))
+    const scrolled = new CodeRenderable(renderer, { content: "s1\ns2", syntaxStyle, treeSitterClient, height: 1 })
+    const editor = new TextareaRenderable(renderer, { initialValue: "e1\ne2", height: 1 })
+    for (const child of [label, plain, code, column, scrolled, editor]) renderer.root.add(child)
     const highlight = async () => {
       await result.renderOnce()
       highlights.resolveHighlightOnce()
@@ -170,23 +182,28 @@ describe("native renderer stats", () => {
           .lines.flatMap((line) => line.spans)
           .find((span) => span.text.startsWith(text))!.fg,
       )
-    const rows: [string, () => unknown, number, [string, string]?][] = [
+    const drawn = (text: string) => result.captureCharFrame().includes(text)
+    const rows: [string, () => unknown, number, [() => unknown, unknown]?][] = [
       ["nothing", () => {}, 0],
-      ["same fg on node text", () => (label.fg = "#808080"), 0, ["Simulated", "#808080"]],
-      ["new fg on node text", () => (label.fg = "#ff0000"), 0, ["Simulated", "#ff0000"]],
-      ["new fg on a child span", () => (span.fg = "#0000ff"), 0, ["Model", "#0000ff"]],
+      ["same fg on node text", () => (label.fg = "#808080"), 0, [() => fgOf("Simulated"), "#808080"]],
+      ["new fg on node text", () => (label.fg = "#ff0000"), 0, [() => fgOf("Simulated"), "#ff0000"]],
+      ["new fg on a child span", () => (span.fg = "#0000ff"), 0, [() => fgOf("Model"), "#0000ff"]],
       ["same string content", () => (plain.content = "plain"), 0],
-      ["new fg on code", () => (code.fg = "#00ff00"), 0, ["const", "#00ff00"]],
+      ["new fg on code", () => (code.fg = "#00ff00"), 0, [() => fgOf("const"), "#00ff00"]],
+      ["code and markdown parent resize", () => (column.width = 30), 1, [() => block.height, 1]],
+      ["parent resize that wraps code", () => (column.width = 10), 1, [() => block.height, 3]],
+      ["code scroll", () => (scrolled.scrollY = 1), 0, [() => [drawn("s1"), drawn("s2")], [false, true]]],
+      ["textarea scroll", () => editor.editorView.setViewport(0, 1, 40, 1, true), 0, [() => drawn("e2"), true]],
       ["new string content", () => (plain.content = "plain!"), 1],
       ["code wrap mode", () => (code.wrapMode = "char"), 1],
       ["code tab width", () => code["textBuffer"].setTabWidth(8), 1],
-      ["concealing highlight", () => ((code.conceal = true), highlight()), 1, ["pending", "#00ff00"]],
+      ["concealing highlight", () => ((code.conceal = true), highlight()), 1, [() => fgOf("pending"), "#00ff00"]],
     ]
     const actual = []
     for (const [name, change, , probe] of rows) {
       await change()
       await result.renderOnce()
-      actual.push([name, renderer.getNativeStats().frameWork.yogaSolves, probe && fgOf(probe[0])])
+      actual.push([name, renderer.getNativeStats().frameWork.yogaSolves, probe?.[0]()])
     }
     expect(actual).toEqual(rows.map(([name, , solves, probe]) => [name, solves, probe?.[1]]))
   })
