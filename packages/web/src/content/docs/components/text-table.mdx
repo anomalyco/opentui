@@ -143,6 +143,28 @@ Selection-related methods are:
 | `getSelection()`                | The first selected cell's `{ start, end }` range, or `null`       |
 | `getSelectedText()`             | Tab/newline-delimited nonempty selected cell text                 |
 
+## Find the cell under the pointer
+
+Give cell chunks a `metadata` value. `getStyledTextHit(x, y)` takes cells relative to the table and returns the
+metadata of the presented fragment with the content cell that shows it:
+
+```typescript
+const table = new TextTableRenderable(renderer, {
+  content: rows.map((row) => [[{ __isChunk: true, text: row.name, metadata: row }]]),
+  onMouseDown(event) {
+    const hit = this.getStyledTextHit(event.x - Math.trunc(this.screenX), event.y - Math.trunc(this.screenY))
+    if (hit) select(hit.metadata, hit.cell.row, hit.cell.column)
+  },
+})
+```
+
+`cell.row` and `cell.column` index the `content` array. Borders, padding, and empty space return `null`. The rules
+are the same as for [text lookups](/docs/components/text#find-the-text-under-the-pointer), including the whole-cell
+coordinates.
+
+The metadata comes from the presented frame, but `cell` comes from the current layout. Between a layout change and
+the next presented frame, a cell that shows the same metadata value as a neighbour can be reported as that neighbour.
+
 ## Options
 
 TextTable also accepts the standard [renderable layout options](/docs/core-concepts/renderables#layout-properties).

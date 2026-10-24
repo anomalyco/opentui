@@ -31,6 +31,7 @@ const segment_merge_tests = @import("tests/segment-merge.test.zig");
 const word_wrap_editing_tests = @import("tests/word-wrap-editing_test.zig");
 const renderer_tests = @import("tests/renderer_test.zig");
 const renderer_presentation_tests = @import("tests/renderer-presentation_test.zig");
+const renderer_presented_links_tests = @import("tests/renderer-presented-links_test.zig");
 const terminal_tests = @import("tests/terminal_test.zig");
 const mem_registry_tests = @import("tests/mem-registry_test.zig");
 const wrap_cache_perf_tests = @import("tests/wrap-cache-perf_test.zig");
@@ -122,6 +123,7 @@ comptime {
     _ = word_wrap_editing_tests;
     _ = renderer_tests;
     _ = renderer_presentation_tests;
+    _ = renderer_presented_links_tests;
     _ = terminal_tests;
     _ = mem_registry_tests;
     _ = wrap_cache_perf_tests;

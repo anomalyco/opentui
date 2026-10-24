@@ -1,6 +1,6 @@
 import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } from "../lib/selection.js"
-import { TextBuffer, type TextChunk } from "../text-buffer.js"
+import { TextBuffer, type StyledTextHit, type TextChunk } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { type RenderContext, type LineInfoProvider } from "../types.js"
@@ -530,6 +530,28 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   protected renderSelf(buffer: OptimizedBuffer): void {
     this.drawToBuffer(buffer, this._screenX, this._screenY)
+  }
+
+  /**
+   * The text fragment that the last presented frame shows at a cell relative to this renderable's
+   * top-left corner, or null.
+   *
+   * A hit requires two things of the presented frame: the presented hit grid names this renderable
+   * at that cell, and the cell shows a fragment of this renderable's current content. Covered,
+   * clipped, padding, ellipsis, unpresented, and replaced cells therefore return null, as do all
+   * cells while mouse input is disabled or while another renderable captures the pointer.
+   */
+  public getStyledTextHit(x: number, y: number): StyledTextHit | null {
+    if (this.isDestroyed || !Number.isInteger(x) || !Number.isInteger(y)) return null
+    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return null
+    const scene = this._ctx.nativeScene
+    const screenX = Math.trunc(this.screenX) + x
+    const screenY = Math.trunc(this.screenY) + y
+    const key = scene.presentedFragmentKey(screenX, screenY)
+    if (key === 0 || scene.hitTest(screenX, screenY) !== this.num) return null
+    // Keys belong to their install owner: the scene text node, or the shared buffer of Code.
+    if (scene.fragmentKeyScope(key) !== (this.nativeTextScene ? this : this.textBuffer)) return null
+    return Object.freeze({ metadata: scene.resolveFragmentKey(key) })
   }
 
   /** Draw the current text viewport in destination-buffer coordinates without changing layout or hits. */
