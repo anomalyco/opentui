@@ -151,23 +151,27 @@ describe("native renderer stats", () => {
     const plain = new TextRenderable(renderer, { content: "plain" })
     const highlights = new MockTreeSitterClient()
     highlights.setMockResult({ highlights: [[0, 6, "keyword", { conceal: "" }]] })
+    const syntaxStyle = SyntaxStyle.fromStyles({}, renderer.nativeScene)
     const code = new CodeRenderable(renderer, {
       content: "const pending = true",
       filetype: "typescript",
-      syntaxStyle: SyntaxStyle.fromStyles({}, renderer.nativeScene),
+      syntaxStyle,
       treeSitterClient: highlights,
       conceal: false,
     })
-    const syntaxStyle = SyntaxStyle.fromStyles({}, renderer.nativeScene)
     const treeSitterClient = new MockTreeSitterClient()
     // A solve that resizes these runs their resize hooks, which set the text view or editor viewport.
     const column = new BoxRenderable(renderer, { width: 20, flexDirection: "column" })
+    // A hook runs mid-frame, after `scrolled` and `editor` prepared their views for this round.
+    let hook: (() => void) | undefined
+    column["onUpdate"] = () => (hook?.(), (hook = undefined))
+    column.refreshHooks()
     const block = new CodeRenderable(renderer, { content: "const pending = true", syntaxStyle, treeSitterClient })
     column.add(block)
     column.add(new MarkdownRenderable(renderer, { content: "Some *words* here", syntaxStyle, treeSitterClient }))
     const scrolled = new CodeRenderable(renderer, { content: "s1\ns2", syntaxStyle, treeSitterClient, height: 1 })
     const editor = new TextareaRenderable(renderer, { initialValue: "e1\ne2", height: 1 })
-    for (const child of [label, plain, code, column, scrolled, editor]) renderer.root.add(child)
+    for (const child of [label, plain, code, scrolled, editor, column]) renderer.root.add(child)
     const highlight = async () => {
       await result.renderOnce()
       highlights.resolveHighlightOnce()
@@ -194,6 +198,20 @@ describe("native renderer stats", () => {
       ["parent resize that wraps code", () => (column.width = 10), 1, [() => block.height, 3]],
       ["code scroll", () => (scrolled.scrollY = 1), 0, [() => [drawn("s1"), drawn("s2")], [false, true]]],
       ["textarea scroll", () => editor.editorView.setViewport(0, 1, 40, 1, true), 0, [() => drawn("e2"), true]],
+      ["textarea scroll that keeps the cursor", () => editor.editorView.setViewport(0, 0, 40, 1, false), 0],
+      // Preparation puts the hook's viewport width of 1 back to the layout width before paint.
+      [
+        "code scroll in a hook",
+        () => (hook = () => scrolled["textBufferView"].setViewport(0, 0, 1, 1)),
+        0,
+        [() => [drawn("s1"), drawn("s2")], [true, false]],
+      ],
+      [
+        "textarea scroll in a hook",
+        () => (hook = () => editor.editorView.setViewport(0, 0, 1, 1, true)),
+        0,
+        [() => drawn("e1"), true],
+      ],
       ["new string content", () => (plain.content = "plain!"), 1],
       ["code wrap mode", () => (code.wrapMode = "char"), 1],
       ["code tab width", () => code["textBuffer"].setTabWidth(8), 1],
