@@ -319,17 +319,18 @@ test "Scene hit tests answer from the last presented scene frame" {
         for (row.hits, 0..) |num, x| try testing.expectEqual(num, try f.owner.sceneHitTest(f.id, @intCast(x), 0));
         try testing.expectEqual(@as(u32, 0), try f.owner.sceneHitTest(f.id, @intCast(width), 0));
     }
-    // A hit test walks presented members from the top and stops at the first that covers the cell.
+    // A hit test walks presented members from the top and stops at the first that covers the
+    // cell; a cell outside the screen walks none. Rows: x, y, number, members walked.
     const top = try f.owner.sceneCreateNode(f.id, 1, 3);
     try f.owner.sceneSetStyle(top, 4, 0, 0, 1, 1, 1);
     try f.owner.sceneMoveNode(top, box, 0);
     try f.owner.sceneSetPaint(box, .{});
     _ = try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false);
     try drain(f.owner, f.id);
-    for ([_][3]u32{ .{ 0, 3, 1 }, .{ 1, 2, 2 }, .{ 3, 0, 2 } }) |query| {
+    for ([_][4]u32{ .{ 0, 0, 3, 1 }, .{ 1, 0, 2, 2 }, .{ 3, 0, 0, 2 }, .{ 4, 0, 0, 0 }, .{ 0, 1, 0, 0 } }) |query| {
         const before = f.state.test_hit_steps;
-        try testing.expectEqual(query[1], try f.owner.sceneHitTest(f.id, @intCast(query[0]), 0));
-        try testing.expectEqual(@as(u64, query[2]), f.state.test_hit_steps - before);
+        try testing.expectEqual(query[2], try f.owner.sceneHitTest(f.id, @intCast(query[0]), @intCast(query[1])));
+        try testing.expectEqual(@as(u64, query[3]), f.state.test_hit_steps - before);
     }
 }
 

@@ -1219,7 +1219,8 @@ pub const Scene = struct {
     /// The token of the topmost presented hit rectangle at a cell, or 0.
     pub fn hitToken(self: *Scene, cli: *const renderer.CliRenderer, x: u32, y: u32) u32 {
         self.settleHits(cli);
-        if (self.presented_hits_frame != cli.presented_hits_frame) return 0;
+        // Every hit lies inside the screen.
+        if (x >= cli.width or y >= cli.height or self.presented_hits_frame != cli.presented_hits_frame) return 0;
         const hits = self.presented_hits.items;
         const index = topmostHit(hits, x, y);
         if (builtin.is_test) self.test_hit_steps += hits.len - (index orelse 0);
@@ -1334,13 +1335,13 @@ pub const Scene = struct {
     fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
         const node = entry.node.scene_node.?;
         const cells = cellLayout(entry.layout);
+        const painted = intersection(.{
+            .x = @intFromFloat(cells.screenX),
+            .y = @intFromFloat(cells.screenY),
+            .width = @intFromFloat(cells.width),
+            .height = @intFromFloat(cells.height),
+        }, entry.clip);
         if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
-            const painted = intersection(.{
-                .x = @intFromFloat(cells.screenX),
-                .y = @intFromFloat(cells.screenY),
-                .width = @intFromFloat(cells.width),
-                .height = @intFromFloat(cells.height),
-            }, entry.clip);
             self.frame_work.member_cells += @as(u64, painted.width) * painted.height;
             const target = cli.getNextBuffer();
             // A natively composed image buffer receives its node's hook drawing, like its body.
@@ -1357,14 +1358,8 @@ pub const Scene = struct {
         }
         self.frame_work.members_painted += 1;
         if (!options.use_mouse or node.num == options.excluded_hit_num) return;
-        const hit = intersection(.{
-            .x = @intFromFloat(cells.screenX),
-            .y = @intFromFloat(cells.screenY),
-            .width = @intFromFloat(cells.width),
-            .height = @intFromFloat(cells.height),
-        }, entry.clip);
         // The clip lies inside the screen, so hit coordinates are never negative.
-        if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token });
+        if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token });
     }
 
     /// Each phase starts with only the member's inherited clip and opacity.
