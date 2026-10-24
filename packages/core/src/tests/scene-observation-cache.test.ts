@@ -596,11 +596,6 @@ describe("scene staging", () => {
   const stageWidth = (staging: SceneStaging, node = nodeAt(1, 1), value = 1, target = context) =>
     staging.stageStyle(target, node, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, value, 0)
   test.each<[string, (staging: SceneStaging) => unknown, string]>([
-    [
-      "an unknown style group",
-      (staging) => staging.stageStyle(context, nodeAt(1, 1), 9, 0, 0, 0, 0, 0),
-      "InvalidArgument",
-    ],
     ["an infinite style value", (staging) => stageWidth(staging, nodeAt(1, 1), Infinity), "Scene style value"],
     [
       "a fractional enum value",
@@ -706,22 +701,26 @@ describe("scene staging", () => {
     ])
   })
 
-  test("a flush reports a record native rejects once and then applies later records", async () => {
+  class Custom extends Renderable {
+    paint(paint: { border?: number; opacity?: number }): void {
+      this.setNativeScenePaint(paint)
+    }
+  }
+  // Native validates staged records; one it rejects is reported once by the flush, which then applies later records.
+  test.each<[string, (node: Custom) => void]>([
+    // Only Box paints border sides; the encoder cannot see the node kind.
+    ["a border on a non-box", (node) => node.paint({ border: 15 })],
+    ["an unknown style group", (node) => renderer!.nativeScene.setStyle(node, 9, 0, 0, 0, 0)],
+  ])("a flush rejects %s once and then applies later records", async (_, stage) => {
     const setup = await createTestRenderer({ width: 20, height: 5 })
     renderer = setup.renderer
-    // Only Box paints border sides; the encoder cannot see the node kind, so native rejects this record.
-    class BorderedText extends Renderable {
-      stageBorder(): void {
-        this.setNativeScenePaint({ border: 15 })
-      }
-    }
-    const custom = new BorderedText(renderer, { width: 3, height: 1 })
+    const custom = new Custom(renderer, { width: 3, height: 1 })
     const box = new BoxRenderable(renderer, { width: 3, height: 1 })
     renderer.root.add(custom)
     renderer.root.add(box)
     await setup.renderOnce()
 
-    custom.stageBorder()
+    stage(custom)
     box.width = 9
     expect(() => renderer!.nativeScene.flushStaged()).toThrow("InvalidArgument after 0 of 2 staged entries")
     expect(renderer.nativeScene.hasStagedMutations).toBe(true)

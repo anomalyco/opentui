@@ -88,13 +88,7 @@ export type NativeAudioStreamFormat = NativeAudioStreamFormatType
 import { isBunfsPath } from "./lib/bunfs.js"
 import { resolveNativeLibraryPath } from "#opentui/runtime-assets"
 import { allocStruct } from "bun-ffi-structs"
-import {
-  nativeSymbols,
-  nativeCallbacks,
-  nativeLayouts,
-  nativeConstants,
-  nativeStyleEnumMaxima,
-} from "./native-abi.generated.js"
+import { nativeSymbols, nativeCallbacks, nativeLayouts, nativeConstants } from "./native-abi.generated.js"
 
 registerEnvVar({
   name: "OPENTUI_LIBC",
@@ -1697,51 +1691,6 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
   return fields
 }
 
-function validateSceneStyle(group: number, kind: number, edge: number, unit: number, value: number, flags: number) {
-  const c = nativeConstants
-  if (
-    group > c.OT_STYLE_DIMENSION ||
-    group === c.OT_STYLE_BORDER ||
-    (group !== c.OT_STYLE_DIMENSION && flags !== 0) ||
-    flags > c.OT_STYLE_DISABLE_FLEX_SHRINK
-  ) {
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  }
-  if (
-    (group === c.OT_STYLE_ENUM || group === c.OT_STYLE_FLOAT) &&
-    (edge !== c.OT_EDGE_NONE || unit !== c.OT_UNIT_UNDEFINED)
-  ) {
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  }
-  if (group === c.OT_STYLE_DIMENSION && edge !== c.OT_EDGE_NONE)
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  let valid = false
-  switch (group) {
-    case c.OT_STYLE_ENUM:
-      valid = kind < nativeStyleEnumMaxima.length && value <= nativeStyleEnumMaxima[kind]
-      break
-    case c.OT_STYLE_FLOAT:
-      valid = kind <= c.OT_STYLE_FLOAT_ASPECT_RATIO
-      break
-    case c.OT_STYLE_VALUE:
-      valid =
-        kind <= c.OT_STYLE_VALUE_GAP &&
-        unit <= c.OT_UNIT_AUTO &&
-        (kind < c.OT_STYLE_VALUE_MARGIN || edge <= (kind === c.OT_STYLE_VALUE_GAP ? c.OT_GUTTER_ALL : c.OT_EDGE_ALL)) &&
-        !(
-          unit === c.OT_UNIT_AUTO &&
-          ((kind >= c.OT_STYLE_VALUE_MIN_WIDTH && kind <= c.OT_STYLE_VALUE_MAX_HEIGHT) ||
-            kind === c.OT_STYLE_VALUE_PADDING ||
-            kind === c.OT_STYLE_VALUE_GAP)
-        )
-      break
-    case c.OT_STYLE_DIMENSION:
-      valid = kind <= c.OT_DIMENSION_HEIGHT && unit <= c.OT_UNIT_AUTO
-      break
-  }
-  if (!valid) throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-}
-
 // Packed paint records hold fields in header bit order, and SceneStaging indexes these entries by bit position.
 const scenePropertyWords = (
   [
@@ -1910,7 +1859,6 @@ export class SceneStaging {
     unit = toSafeFFIU32Length(unit, "Scene style unit")
     value = SceneStaging.checkStyleValue(group, value)
     flags = toSafeFFIU32Length(flags, "Scene style flags")
-    validateSceneStyle(group, kind, edge, unit, value, flags)
     // Size kinds (width through flex basis) have no edge; keep unused bits out of the packed record.
     if (group === nativeConstants.OT_STYLE_VALUE && kind < nativeConstants.OT_STYLE_VALUE_MARGIN) edge = 0
     const handle = encodedContextHandle(context, node)

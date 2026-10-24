@@ -2097,5 +2097,3 @@ export const nativeConstants = {
   OT_CLIPBOARD_SHUTDOWN_READY: 1,
   OT_CLIPBOARD_SHUTDOWN_INVALID_HANDLE: 2,
 } as const
-
-export const nativeStyleEnumMaxima = [2, 3, 5, 8, 8, 8, 2, 2, 2, 1, 1] as const
