@@ -1190,6 +1190,201 @@ test "processCapabilityResponse - tmux sets explicit_cursor_positioning" {
     try testing.expectEqual(utf8.WidthMethod.wcwidth, term.caps.unicode);
 }
 
+// tmux 3.6 and newer measure most VS16, keycap, ZWJ, and emoji modifier sequences as grapheme clusters,
+// so `.unicode` is the closer default starting with 3.6; some sequences still differ. Older or unknown
+// versions keep per-code-point wcwidth (issue #1654).
+const tmux_version_width_cases = [_]struct { version: []const u8, expected: utf8.WidthMethod }{
+    .{ .version = "3.5a", .expected = .wcwidth },
+    .{ .version = "3.6", .expected = .unicode },
+    .{ .version = "3.6a", .expected = .unicode },
+    .{ .version = "3.6-rc", .expected = .unicode },
+    .{ .version = "3.7c", .expected = .unicode },
+    .{ .version = "3.10", .expected = .unicode },
+    .{ .version = "4.0", .expected = .unicode },
+    .{ .version = "next-3.8", .expected = .unicode },
+    .{ .version = "next-3.5", .expected = .wcwidth },
+    .{ .version = "2.9", .expected = .wcwidth },
+    .{ .version = "openbsd-7.8", .expected = .wcwidth },
+    .{ .version = "", .expected = .wcwidth },
+    .{ .version = "3", .expected = .wcwidth },
+    .{ .version = "3.", .expected = .wcwidth },
+    .{ .version = "3.x", .expected = .wcwidth },
+    .{ .version = "x.6", .expected = .wcwidth },
+    .{ .version = "99999999999.1", .expected = .wcwidth },
+};
+
+test "processCapabilityResponse - tmux XTVERSION selects width method by version" {
+    for (tmux_version_width_cases) |case| {
+        var term = Terminal.init(.{});
+        var buf: [64]u8 = undefined;
+        const response = try std.fmt.bufPrint(&buf, "\x1bP>|tmux {s}\x1b\\", .{case.version});
+
+        term.processCapabilityResponse(response);
+
+        errdefer std.debug.print("tmux version: '{s}'\n", .{case.version});
+        try testing.expectEqual(Terminal.Multiplexer.tmux, term.multiplexer);
+        try testing.expect(term.caps.explicit_cursor_positioning);
+        try testing.expectEqual(case.expected, term.caps.unicode);
+    }
+}
+
+test "environment overrides - TERM_PROGRAM tmux version selects width method" {
+    for (tmux_version_width_cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        try env.put("TERM", "tmux-256color");
+        try env.put("TERM_PROGRAM", "tmux");
+        try env.put("TERM_PROGRAM_VERSION", case.version);
+
+        const term = Terminal.init(.{ .env_map = &env });
+
+        errdefer std.debug.print("tmux version: '{s}'\n", .{case.version});
+        try testing.expectEqual(Terminal.Multiplexer.tmux, term.multiplexer);
+        try testing.expect(term.caps.explicit_cursor_positioning);
+        try testing.expectEqual(case.expected, term.caps.unicode);
+    }
+}
+
+test "environment overrides - tmux without a tmux version keeps wcwidth" {
+    try expectWidthMethodForEnv(&.{.{ .key = "TMUX", .value = "/tmp/tmux-1000/default,12345,0" }}, .wcwidth);
+    try expectWidthMethodForEnv(&.{.{ .key = "TERM", .value = "tmux-256color" }}, .wcwidth);
+    try expectWidthMethodForEnv(&.{.{ .key = "TERM_PROGRAM", .value = "tmux" }}, .wcwidth);
+    // A version that belongs to another TERM_PROGRAM does not describe tmux.
+    try expectWidthMethodForEnv(&.{
+        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,12345,0" },
+        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
+        .{ .key = "TERM_PROGRAM_VERSION", .value = "3.7" },
+    }, .wcwidth);
+}
+
+test "processCapabilityResponse - tmux XTVERSION version wins over the environment version" {
+    const cases = [_]struct { env_version: []const u8, reply_version: []const u8, before: utf8.WidthMethod, after: utf8.WidthMethod }{
+        .{ .env_version = "3.5a", .reply_version = "3.7c", .before = .wcwidth, .after = .unicode },
+        .{ .env_version = "3.7c", .reply_version = "3.5a", .before = .unicode, .after = .wcwidth },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        try env.put("TERM_PROGRAM", "tmux");
+        try env.put("TERM_PROGRAM_VERSION", case.env_version);
+        var term = Terminal.init(.{ .env_map = &env });
+        try testing.expectEqual(case.before, term.caps.unicode);
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        var buf: [64]u8 = undefined;
+
+        term.processCapabilityResponse(try std.fmt.bufPrint(&buf, "\x1bP>|tmux {s}\x1b\\", .{case.reply_version}));
+        try term.enableDetectedFeatures(&writer, false);
+        term.checkEnvironmentOverrides();
+
+        try testing.expectEqual(case.after, term.caps.unicode);
+    }
+}
+
+test "processCapabilityResponse - reply text containing tmux does not select tmux widths" {
+    var term = Terminal.init(.{});
+
+    term.processCapabilityResponse("\x1b]0;tmux\x07\x1bP>|kitty(0.40.1)\x1b\\");
+
+    try testing.expectEqual(Terminal.Multiplexer.none, term.multiplexer);
+    try testing.expectEqual(utf8.WidthMethod.unicode, term.caps.unicode);
+}
+
+test "width force overrides survive tmux replies before and after setup" {
+    const cases = [_]struct { key: []const u8, reply_version: []const u8, expected: utf8.WidthMethod }{
+        .{ .key = "OPENTUI_FORCE_WCWIDTH", .reply_version = "3.7c", .expected = .wcwidth },
+        .{ .key = "OPENTUI_FORCE_UNICODE", .reply_version = "3.5a", .expected = .unicode },
+        .{ .key = "OPENTUI_FORCE_NOZWJ", .reply_version = "3.7c", .expected = .no_zwj },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |late_reply| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        try env.put(case.key, "1");
+        var term = Terminal.init(.{ .env_map = &env });
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        var buf: [64]u8 = undefined;
+        const reply = try std.fmt.bufPrint(&buf, "\x1bP>|tmux {s}\x1b\\", .{case.reply_version});
+
+        if (!late_reply) term.processCapabilityResponse(reply);
+        try term.enableDetectedFeatures(&writer, false);
+        if (late_reply) term.processCapabilityResponse(reply);
+        errdefer std.debug.print("{s} late_reply={}\n", .{ case.key, late_reply });
+        try testing.expectEqual(case.expected, term.caps.unicode);
+        // Later unrelated replies must not reapply the detected tmux width.
+        term.processCapabilityResponse("\x1b[?1004;2$y");
+        try testing.expectEqual(case.expected, term.caps.unicode);
+    };
+}
+
+test "width force overrides survive non-tmux width replies" {
+    const cases = [_]struct { key: []const u8, expected: utf8.WidthMethod }{
+        .{ .key = "OPENTUI_FORCE_WCWIDTH", .expected = .wcwidth },
+        .{ .key = "OPENTUI_FORCE_NOZWJ", .expected = .no_zwj },
+    };
+    const replies = [_][]const u8{ "\x1bP>|kitty(0.40.1)\x1b\\", "\x1b[?2027;2$y" };
+    for (cases) |case| for (replies) |reply| {
+        // Arrange
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put(case.key, "1");
+        var term = Terminal.init(.{ .env_map = &env });
+
+        // Act
+        term.processCapabilityResponse(reply);
+
+        // Assert
+        errdefer std.debug.print("{s} reply='{s}'\n", .{ case.key, reply });
+        try testing.expectEqual(case.expected, term.caps.unicode);
+    };
+}
+
+test "tmux XTVERSION replaces a locked Ghostty width profile" {
+    for ([_][]const u8{ "3.5a", "3.7c" }, [_]utf8.WidthMethod{ .wcwidth, .unicode }) |version, expected| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        // Stale outer-terminal identity without tmux env keys, as in a custom launcher.
+        try env.put("TERM_PROGRAM", "ghostty");
+        try env.put("TERM_PROGRAM_VERSION", "1.3.1");
+        var term = Terminal.init(.{ .env_map = &env });
+        try testing.expectEqual(utf8.WidthMethod.unicode_wide, term.caps.unicode);
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        var buf: [64]u8 = undefined;
+
+        term.processCapabilityResponse(try std.fmt.bufPrint(&buf, "\x1bP>|tmux {s}\x1b\\", .{version}));
+        try term.enableDetectedFeatures(&writer, false);
+
+        try testing.expectEqual(Terminal.Multiplexer.tmux, term.multiplexer);
+        try testing.expectEqual(expected, term.caps.unicode);
+    }
+}
+
+test "tmux width policy keeps Zellij and forwarded remote guards" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("ZELLIJ", "0");
+    try env.put("TERM_PROGRAM", "tmux");
+    try env.put("TERM_PROGRAM_VERSION", "3.5a");
+    const zellij = Terminal.init(.{ .env_map = &env });
+    try testing.expectEqual(Terminal.Multiplexer.zellij, zellij.multiplexer);
+    try testing.expectEqual(utf8.WidthMethod.unicode, zellij.caps.unicode);
+
+    var remote = Terminal.init(.{ .remote_mode = .auto });
+    defer remote.deinit();
+    try remote.setHostEnvVar(testing.allocator, "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
+    try remote.setHostEnvVar(testing.allocator, "TERM_PROGRAM", "tmux");
+    try remote.setHostEnvVar(testing.allocator, "TERM_PROGRAM_VERSION", "3.5a");
+    try testing.expectEqual(Terminal.Multiplexer.none, remote.multiplexer);
+    try testing.expectEqual(utf8.WidthMethod.unicode, remote.caps.unicode);
+}
+
 test "processCapabilityResponse - alacritty sets explicit_cursor_positioning" {
     var term: Terminal = .{};
 

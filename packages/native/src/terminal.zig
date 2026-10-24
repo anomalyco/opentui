@@ -220,6 +220,8 @@ explicit_width_probe_reports_pending: u8 = 0,
 unicode_wide_locked: ?bool = null,
 host_env_hyperlinks: bool = false,
 hyperlinks_override: ?bool = null,
+/// Width method chosen by an OPENTUI_FORCE_* variable. It wins over every detected width.
+unicode_override: ?utf8.WidthMethod = null,
 
 state: struct {
     alt_screen: bool = false,
@@ -698,6 +700,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     self.image_protocol = .auto;
     self.skip_explicit_width_query = false;
     self.hyperlinks_override = null;
+    self.unicode_override = null;
 
     // Always just try to enable bracketed paste, even if it was reported as not supported
     self.caps.bracketed_paste = true;
@@ -745,7 +748,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     if (!self.term_info.from_xtversion) {
         if (env_map.get("TMUX")) |_| {
             self.multiplexer = .tmux;
-            self.caps.unicode = .wcwidth;
+            self.caps.unicode = envTmuxWidthMethod(env_map);
             self.caps.explicit_cursor_positioning = true;
         } else if (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null) {
             self.multiplexer = .zellij;
@@ -762,7 +765,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
         } else if (env_map.get("TERM")) |term| {
             if (std.mem.startsWith(u8, term, "tmux")) {
                 self.multiplexer = .tmux;
-                self.caps.unicode = .wcwidth;
+                self.caps.unicode = envTmuxWidthMethod(env_map);
                 self.caps.explicit_cursor_positioning = true;
             } else if (std.mem.startsWith(u8, term, "screen")) {
                 self.multiplexer = .screen;
@@ -822,7 +825,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
 
             if (!self.isInZellij() and std.mem.eql(u8, prog, "tmux")) {
                 self.multiplexer = .tmux;
-                self.caps.unicode = .wcwidth;
+                self.caps.unicode = envTmuxWidthMethod(env_map);
                 self.caps.explicit_cursor_positioning = true;
             }
 
@@ -894,14 +897,15 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     self.applyKnownUnicodeWidthIdentity();
 
     if (env_map.get("OPENTUI_FORCE_WCWIDTH")) |_| {
-        self.caps.unicode = .wcwidth;
+        self.unicode_override = .wcwidth;
     }
     if (env_map.get("OPENTUI_FORCE_UNICODE")) |_| {
-        self.caps.unicode = .unicode;
+        self.unicode_override = .unicode;
     }
     if (env_map.get("OPENTUI_FORCE_NOZWJ")) |_| {
-        self.caps.unicode = .no_zwj;
+        self.unicode_override = .no_zwj;
     }
+    self.applyUnicodeOverride();
 
     if (env_map.get("OPENTUI_FORCE_EXPLICIT_WIDTH")) |val| {
         if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1")) {
@@ -1273,11 +1277,15 @@ fn applyKnownGraphicsIdentity(self: *Terminal) void {
 }
 
 fn applyKnownUnicodeWidthIdentity(self: *Terminal) void {
+    // The lock keeps a direct Ghostty profile stable after startup. A multiplexer found later
+    // draws the cells itself, so its own width policy replaces the locked profile.
     if (self.unicode_wide_locked) |enabled| {
-        if (enabled) {
-            self.caps.unicode = .unicode_wide;
+        if (self.multiplexer == .none) {
+            if (enabled) {
+                self.caps.unicode = .unicode_wide;
+            }
+            return;
         }
-        return;
     }
 
     if (self.caps.unicode == .unicode_wide) {
@@ -1291,6 +1299,39 @@ fn applyKnownUnicodeWidthIdentity(self: *Terminal) void {
     if (!ghosttyWideGraphemeWidths(version)) return;
     if (self.term_info.from_xtversion and !std.ascii.eqlIgnoreCase(self.getTerminalName(), "ghostty")) return;
     self.caps.unicode = .unicode_wide;
+}
+
+/// Apply the width method forced by an OPENTUI_FORCE_* variable, if one is set.
+fn applyUnicodeOverride(self: *Terminal) void {
+    if (self.unicode_override) |method| {
+        self.caps.unicode = method;
+    }
+}
+
+/// Return the width method that matches how a tmux release measures pane cells.
+///
+/// tmux 3.6 and newer measure most VS16, keycap, ZWJ, and emoji modifier sequences as grapheme
+/// clusters, so `.unicode` is the closer default starting with 3.6; some sequences still differ.
+/// Older versions keep `.wcwidth`. Accepts `3.6`, `3.6a`, `3.6-rc`, `next-3.8`; not `openbsd-7.8`.
+fn tmuxWidthMethod(version: []const u8) utf8.WidthMethod {
+    const release = if (std.mem.startsWith(u8, version, "next-")) version["next-".len..] else version;
+    var parts = std.mem.splitScalar(u8, release, '.');
+    const major = std.fmt.parseInt(u32, parts.next() orelse return .wcwidth, 10) catch return .wcwidth;
+    const minor_text = parts.next() orelse return .wcwidth;
+    // The minor number can have a letter or pre-release suffix, as in "3.6a" or "3.6-rc".
+    var digits: usize = 0;
+    while (digits < minor_text.len and std.ascii.isDigit(minor_text[digits])) : (digits += 1) {}
+    const minor = std.fmt.parseInt(u32, minor_text[0..digits], 10) catch return .wcwidth;
+    if (major > 3 or (major == 3 and minor >= 6)) return .unicode;
+    return .wcwidth;
+}
+
+/// Return the tmux width method from the pane environment. tmux sets TERM_PROGRAM_VERSION
+/// only together with TERM_PROGRAM=tmux, so another program's version is never used.
+fn envTmuxWidthMethod(env_map: *const std.process.Environ.Map) utf8.WidthMethod {
+    const program = env_map.get("TERM_PROGRAM") orelse return .wcwidth;
+    if (!std.mem.eql(u8, program, "tmux")) return .wcwidth;
+    return tmuxWidthMethod(env_map.get("TERM_PROGRAM_VERSION") orelse return .wcwidth);
 }
 
 pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
@@ -1412,10 +1453,13 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         }
     }
 
-    if (std.mem.find(u8, response, "tmux")) |_| {
-        self.caps.unicode = .wcwidth;
+    // Only the parsed XTVERSION identity selects tmux widths. Other reply text can contain "tmux".
+    if (self.isXtversionTmux()) {
+        self.caps.unicode = tmuxWidthMethod(self.getTerminalVersion());
         self.caps.explicit_cursor_positioning = true;
     }
+    // This runs for every reply, so a forced width stays in effect after setup too.
+    self.applyUnicodeOverride();
 
     if (std.mem.find(u8, response, "alacritty")) |_| {
         self.caps.explicit_cursor_positioning = true;

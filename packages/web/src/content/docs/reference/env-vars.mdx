@@ -40,7 +40,8 @@ not OpenTUI configuration keys. Read [Terminal capabilities](/docs/reference/ter
 | `CELL_ASPECT_RATIO`             | `number`  | computed         | `ThreeCliRenderer` creation | Override the Three.js cell aspect ratio              |
 
 `OPENTUI_FORCE_WCWIDTH`, `OPENTUI_FORCE_UNICODE`, and `OPENTUI_FORCE_NOZWJ` are native presence flags. Any value,
-including `0` or `false`, enables the override. Leave the variable unset to disable it.
+including `0` or `false`, enables the override. Leave the variable unset to disable it. A forced width method also wins
+over terminal replies that arrive after setup.
 
 `OPENTUI_GRAPHICS` recognizes only lowercase `false` or `0` to disable graphics detection. Lowercase `true` or `1`
 keeps automatic detection. Other values do not change automatic behavior. `OPENTUI_IMAGE_PROTOCOL` is
