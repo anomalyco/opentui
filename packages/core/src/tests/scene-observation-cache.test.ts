@@ -602,6 +602,20 @@ describe("scene staging", () => {
       (staging) => staging.stageStyle(context, nodeAt(1, 1), 0, 9, 0, 0, 0.5, 0),
       "enum value",
     ],
+    // Packed records hold each field in one byte; a wider value would alias another property.
+    ...(
+      [
+        [256 + c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT],
+        [2 ** 31, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT],
+        [c.OT_STYLE_VALUE, 256 + c.OT_STYLE_VALUE_MARGIN, 0, c.OT_UNIT_POINT],
+        [c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_MARGIN, 256, c.OT_UNIT_POINT],
+        [c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, 256 + c.OT_UNIT_POINT],
+      ] as const
+    ).map(([group, kind, edge, unit]): [string, (staging: SceneStaging) => unknown, string] => [
+      `style fields ${[group, kind, edge, unit]}`,
+      (staging) => staging.stageStyle(context, nodeAt(1, 1), group, kind, edge, unit, 1, 0),
+      "InvalidArgument",
+    ]),
     ["another Context object", (staging) => stageWidth(staging, nodeAt(1, 1), 1, otherContext), "WrongContext"],
     ["another Context id", (staging) => stageWidth(staging, { ...nodeAt(1, 1), contextId: 8n }), "WrongContext"],
     ["a destroyed node's paint", (staging) => staging.stagePaint(context, nodeAt(1, 2), { zIndex: 2 }), "StaleHandle"],

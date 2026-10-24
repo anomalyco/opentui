@@ -1854,6 +1854,9 @@ export class SceneStaging {
     unit = toSafeFFIU32Length(unit, "Scene style unit")
     value = SceneStaging.checkStyleValue(group, value)
     flags = toSafeFFIU32Length(flags, "Scene style flags")
+    // Each field packs into one header byte; native cannot see wider bits, which would select another property.
+    if (Math.max(group, kind, edge, unit) > 0xff)
+      throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
     // Size kinds (width through flex basis) have no edge; keep unused bits out of the packed record.
     if (group === nativeConstants.OT_STYLE_VALUE && kind < nativeConstants.OT_STYLE_VALUE_MARGIN) edge = 0
     const handle = encodedContextHandle(context, node)
