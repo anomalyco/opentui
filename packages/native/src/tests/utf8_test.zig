@@ -2030,8 +2030,8 @@ test "calculateTextWidth: each default-ignorable code point takes the cells Ghos
         for (std.enums.values(utf8.WidthMethod)) |width_method| {
             errdefer std.debug.print("width_method={t} code point={x}\n", .{ width_method, cp });
             try testing.expectEqual(cells, utf8.calculateTextWidth(bytes[1..len], 4, .hidden, false, width_method));
-            // OpenTUI widens any one-cell base before VS16 to two cells.
-            if (cp == 0xfe0f) continue;
+            // The grapheme methods widen any one-cell base before VS16 to two cells.
+            if (cp == 0xfe0f and width_method != .wcwidth) continue;
             try testing.expectEqual(1 + cells, utf8.calculateTextWidth(bytes[0..len], 4, .hidden, false, width_method));
             // Grapheme-safe wrapping measures the cluster as it grows, in every width method.
             try testing.expectEqual(1 + cells, utf8.findWrapPosByWidthGraphemeSafe(bytes[0..len], 4, 4, .hidden, false, width_method).columns_used);

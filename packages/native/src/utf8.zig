@@ -530,7 +530,7 @@ const GraphemeWidthState = struct {
     width: u32 = 0,
     has_width: bool = false,
     is_regional_indicator_pair: bool = false,
-    has_vs16: bool = false,
+    is_emoji_modifier_base: bool = false,
     has_indic_virama: bool = false,
     width_method: WidthMethod,
 
@@ -540,7 +540,7 @@ const GraphemeWidthState = struct {
             .width = first_width,
             .has_width = (first_width > 0),
             .is_regional_indicator_pair = (first_cp >= 0x1F1E6 and first_cp <= 0x1F1FF),
-            .has_vs16 = false,
+            .is_emoji_modifier_base = uucode.get(.grapheme_break, first_cp) == .emoji_modifier_base,
             .has_indic_virama = false,
             .width_method = width_method,
         };
@@ -572,7 +572,6 @@ const GraphemeWidthState = struct {
         const is_devanagari_base = (cp >= 0x0915 and cp <= 0x0939) or (cp >= 0x0958 and cp <= 0x095F);
 
         if (is_vs16) {
-            self.has_vs16 = true;
             if (self.has_width and self.width == 1) {
                 self.width = 2;
             }
@@ -590,6 +589,9 @@ const GraphemeWidthState = struct {
         } else if (!self.has_width and cp_width > 0) {
             self.width = cp_width;
             self.has_width = true;
+        } else if (self.is_emoji_modifier_base and self.width_method != .unicode_wide and uucode.get(.grapheme_break, cp) == .emoji_modifier) {
+            // kitty, foot and WezTerm draw an emoji modifier sequence in two cells; Ghostty, unicode_wide's terminal, in one.
+            self.width = 2;
         } else if (self.width_method == .unicode_wide and self.has_width and !uucode.get(.wcwidth_zero_in_grapheme, cp)) {
             self.width = @max(self.width, 2);
         } else if (self.has_width and is_spacing_mark and cp_width > 0) {
