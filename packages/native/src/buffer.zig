@@ -527,10 +527,7 @@ const TextRow = struct {
                 self.byte_offset = @min(start + length, self.text.len);
             }
             const bytes = self.text[start..self.byte_offset];
-            const width = if (cluster != null and target.width_method != .wcwidth)
-                cluster.?.width_cols
-            else
-                utf8.getWidthAt(bytes, 0, tab_width, .hidden, target.width_method);
+            const width = if (cluster) |entry| entry.width_cols else utf8.getWidthAt(bytes, 0, tab_width, .hidden, target.width_method);
             if (width == 0) continue;
             const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
             self.advance_cells += width;

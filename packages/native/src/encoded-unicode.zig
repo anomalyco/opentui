@@ -41,7 +41,7 @@ pub const EncodedUnicode = struct {
                 byte_offset += std.unicode.utf8ByteSequenceLength(input[start]) catch unreachable;
             }
             const bytes = input[start..byte_offset];
-            const width = utf8.getWidthAt(bytes, 0, tab_width, .hidden, width_method);
+            const width = utf8.getGraphemeWidthAt(bytes, 0, tab_width, .hidden, width_method);
             if (width == 0) continue;
             if (!buffer.isPrintableGlyph(bytes)) {
                 result.appendNTimesAssumeCapacity(.{ .width = 1, .char = buffer.DEFAULT_SPACE_CHAR }, width);

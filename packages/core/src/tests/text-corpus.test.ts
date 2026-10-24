@@ -8,6 +8,7 @@ import { EditBuffer } from "../edit-buffer.js"
 import { EditorView } from "../editor-view.js"
 import { TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
+import { RGBA } from "../lib/RGBA.js"
 import type { LineInfo, WidthMethod } from "../types.js"
 
 type Row = Record<string, any> & { id: string }
@@ -165,6 +166,17 @@ function runRow(row: Row, method: string, failures: string[]): void {
       const target = view(buffer, null)
       target.setViewport(x, 0, row.cols ?? 80, 1)
       check("draw_at", same(drawRows(target, row.cols ?? 80, 1), expected.filter(Boolean)))
+    }
+    if (row.draw_text) {
+      const target = own(OptimizedBuffer.create(80, 1, methods[method], { owner: context }))
+      // The row with its trailing blanks, so a glyph drawn in other columns shows.
+      const drawn = (draw: () => void): string => (target.clear(), draw(), decoder.decode(target.getRealCharBytes()))
+      const glyphs = drawn(() => target.drawText(text, 0, 0, RGBA.fromValues(1, 1, 1, 1)))
+      check("draw_text", glyphs === drawn(() => target.drawTextBuffer(unwrapped, 0, 0)))
+      const encoded = target.encodeUnicode(text)
+      const cells = encoded.data.reduce((sum, glyph) => sum + glyph.width, 0)
+      check("encode", cells === unwrapped.lineInfo.lineWidthCols[0])
+      target.freeUnicode(encoded)
     }
     for (const [start, end, expected] of want("select") ?? []) {
       const target = view(buffer, null)
