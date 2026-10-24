@@ -1,6 +1,5 @@
 import type { SyntaxStyle } from "../syntax-style.js"
 import type { TextChunk } from "../text-buffer.js"
-import { createTextAttributes } from "../utils.js"
 import type { SimpleHighlight } from "./tree-sitter/types.js"
 
 const URL_SCOPES = ["markup.link.url", "string.special.url"]
@@ -110,7 +109,7 @@ export function detectLinks(
   if (ranges.length === 0) return chunks
   ranges.sort((a, b) => a.start - b.start || b.end - a.end || Number(b.label ?? false) - Number(a.label ?? false))
 
-  const bareStyle = context.syntaxStyle?.getStyle("markup.link.label")
+  const bareStyle = context.syntaxStyle?.mergeStyles("markup.link.label")
   const linkedChunks: TextChunk[] = []
   let contentPos = 0
   let rangeIndex = 0
@@ -158,7 +157,7 @@ export function detectLinks(
       if (range.bare && bareStyle) {
         if (bareStyle.fg) linked.fg = bareStyle.fg
         if (bareStyle.bg) linked.bg = bareStyle.bg
-        linked.attributes = (linked.attributes ?? 0) | createTextAttributes(bareStyle)
+        linked.attributes = (linked.attributes ?? 0) | bareStyle.attributes
       }
       linkedChunks.push(linked)
       position = linkEnd

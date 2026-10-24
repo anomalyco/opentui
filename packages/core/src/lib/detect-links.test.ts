@@ -310,25 +310,59 @@ describe("detectLinks", () => {
   test("splits only bare HTTP URLs from surrounding prose and punctuation", () => {
     const content = "ftp://ignored.test mailto:user@test See HtTpS://one.test/path, then (http://two.test/a_(b))."
     const chunks = [chunk(content)]
+
+    const result = detectLinks(chunks, { content, highlights: [] })
+
+    expect(result.map((item) => [item.text, item.link?.url])).toEqual([
+      ["ftp://ignored.test mailto:user@test See ", undefined],
+      ["HtTpS://one.test/path", "HtTpS://one.test/path"],
+      [", then (", undefined],
+      ["http://two.test/a_(b)", "http://two.test/a_(b)"],
+      [").", undefined],
+    ])
+  })
+
+  test("styles bare URLs like link labels without restyling named links or autolinks", () => {
+    const content = "[label](https://named.test) <https://auto.test> https://bare.test"
+    const namedStart = content.indexOf("https://named.test")
+    const autoStart = content.indexOf("https://auto.test")
+    const bareStart = content.indexOf("https://bare.test")
+    const highlights: SimpleHighlight[] = [
+      [1, 6, "markup.link.label"],
+      [namedStart, namedStart + "https://named.test".length, "markup.link.url"],
+      [autoStart, autoStart + "https://auto.test".length, "markup.link.url"],
+    ]
+    const bold = createTextAttributes({ bold: true })
+    const chunks = [
+      chunk("label"),
+      chunk("https://named.test"),
+      chunk("https://auto.test"),
+      { ...chunk("https://bare.test"), attributes: bold },
+    ]
+    const sourceRanges = [
+      { start: 1, end: 6 },
+      { start: namedStart, end: namedStart + "https://named.test".length },
+      { start: autoStart, end: autoStart + "https://auto.test".length },
+      { start: bareStart, end: content.length },
+    ]
     const resourceContext = new ResourceContext({ objectCapacity: 64, renderCellsMax: 1 })
     const syntaxStyle = SyntaxStyle.fromStyles(
       { "markup.link.label": { fg: RGBA.fromInts(100, 150, 255, 255), underline: true } },
       resourceContext,
     )
 
-    const result = detectLinks(chunks, { content, highlights: [], syntaxStyle })
+    const result = detectLinks(chunks, { content, highlights, sourceRanges, syntaxStyle })
     syntaxStyle.destroy()
     resourceContext.destroy()
 
     const white = [255, 255, 255, 255]
     const blue = [100, 150, 255, 255]
-    const underline = createTextAttributes({ underline: true })
+    const boldUnderline = createTextAttributes({ bold: true, underline: true })
     expect(result.map((item) => [item.text, item.link?.url, item.fg?.toInts(), item.attributes])).toEqual([
-      ["ftp://ignored.test mailto:user@test See ", undefined, white, 0],
-      ["HtTpS://one.test/path", "HtTpS://one.test/path", blue, underline],
-      [", then (", undefined, white, 0],
-      ["http://two.test/a_(b)", "http://two.test/a_(b)", blue, underline],
-      [").", undefined, white, 0],
+      ["label", "https://named.test", white, 0],
+      ["https://named.test", "https://named.test", white, 0],
+      ["https://auto.test", "https://auto.test", white, 0],
+      ["https://bare.test", "https://bare.test", blue, boldUnderline],
     ])
   })
 
