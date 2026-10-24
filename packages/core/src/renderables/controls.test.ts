@@ -13,6 +13,8 @@ import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
 import { SliderRenderable } from "./Slider.js"
 import { TabSelectRenderable } from "./TabSelect.js"
+import { TextRenderable } from "./Text.js"
+import { TextareaRenderable } from "./Textarea.js"
 
 const clock = new ManualClock()
 let setup: TestRendererSetup
@@ -222,6 +224,140 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
     )
   }
   expect(trace.join(" ")).toBe(expected)
+})
+
+// Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling.
+test("ScrollBox host requests per frame", async () => {
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
+  for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
+  renderer.root.add(scroll)
+  await setup.renderOnce()
+  const steps: Record<string, () => unknown> = {
+    idle: () => {},
+    scroll: () => scroll.scrollBy(3),
+    wheel: () => setup.mockMouse.scroll(5, 5, "down"),
+    append: () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    auto: () => (scroll.updateAutoScroll(10, 9), clock.advance(100)),
+    stop: () => scroll.stopAutoScroll(),
+  }
+  const trace: string[] = []
+  for (const [name, step] of Object.entries(steps)) {
+    await step()
+    renderer.requestRender()
+    await setup.renderOnce()
+    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}`)
+  }
+  expect(trace.join(" ")).toBe("idle:0 scroll:0 wheel:0 append:1 auto:1 stop:0")
+})
+
+// Wheel steps over an inner scroller in an outer ScrollBox (scrolled to 5, rows 5..8 show the inner node). A step
+// belongs to the innermost scroller that can still move that way, which keeps its acceleration and fractional
+// remainder; at its edge, or on an axis it cannot scroll, the step reaches the outer box. `x` is a horizontal-only
+// ScrollBox (as in a wide formula inside a transcript); `textx` and `textareax` hold 40-cell lines without wrapping.
+// The outer box also scrolls sideways. Columns: inner start, steps (`grow` adds four rows to an inner ScrollBox), the
+// inner offset and the outer box's top,left after the steps, and the inner box's acceleration per step.
+type InnerKind = "scrollbox" | "x" | "text" | "textarea" | "textx" | "textareax"
+type ChainRow = [InnerKind, number, string, number, string, number[]?]
+const chaining: ChainRow[] = [
+  ...(["scrollbox", "text", "textarea"] as const).flatMap((kind): ChainRow[] => [
+    [kind, 0, "down", 1, "5,0"],
+    [kind, 0, "up", 0, "4,0"],
+    [kind, 3, "down", 4, "5,0"],
+    [kind, 3, "up", 2, "5,0"],
+    [kind, 6, "down", 6, "6,0"],
+    [kind, 6, "up", 5, "5,0"],
+    [kind, 3, "shift+down", 3, "5,1"],
+  ]),
+  ["x", 0, "down", 0, "6,0"],
+  ["x", 0, "shift+down", 1, "5,0"],
+  ["x", 40, "shift+down", 40, "5,1"],
+  ...(["textx", "textareax"] as const).flatMap((kind): ChainRow[] => [
+    [kind, 0, "right", 1, "5,0"],
+    [kind, 0, "shift+down", 1, "5,0"],
+    [kind, 20, "right", 20, "5,1"],
+  ]),
+  // A reversal drops the remainder left by an accelerated step, so the step still moves the inner box.
+  ["scrollbox", 3, "down,up", 4, "5,0", [2.5, 1]],
+  // Half-cell steps add up in the inner box only.
+  ["scrollbox", 3, "down,down,down,down", 5, "5,0", [0.5]],
+  // Steps the inner box cannot take do not tick its acceleration.
+  ["x", 0, "down,down,shift+down", 1, "7,0", [1, 5, 9]],
+  // An edge clamp drops the remainder; after growth the next half step only adds up.
+  ["scrollbox", 5, "down,grow,down", 6, "5,0", [2.5, 0.6]],
+]
+
+// A rest parameter keeps the callback's arity at zero, so rows without an acceleration do not look like a `done` test.
+test.each(chaining)("wheel chaining over an inner %s at %d, %s", async (...row: ChainRow) => {
+  const [kind, start, steps, inner, outer, accel] = row
+  const wide = kind === "textx" || kind === "textareax"
+  const lines = Array.from({ length: 10 }, (_, i) => `line ${i}` + (wide ? " " + "x".repeat(33) : "")).join("\n")
+  const outerBox = new ScrollBoxRenderable(renderer, { width: 30, height: 10, scrollX: true })
+  const filler = () => new BoxRenderable(renderer, { width: 40, height: 1, flexShrink: 0 })
+  for (let i = 0; i < 5; i++) outerBox.add(filler())
+  let tick = 0
+  const scrollAcceleration = accel && { tick: () => accel[Math.min(tick++, accel.length - 1)], reset: () => {} }
+  const size = { width: 20, height: 4, flexShrink: 0, ...(wide ? { wrapMode: "none" as const } : {}) }
+  const node =
+    kind === "scrollbox" || kind === "x"
+      ? new ScrollBoxRenderable(renderer, { ...size, scrollX: kind === "x", scrollY: kind !== "x", scrollAcceleration })
+      : kind === "text" || kind === "textx"
+        ? new TextRenderable(renderer, { ...size, content: lines })
+        : new TextareaRenderable(renderer, { ...size, initialValue: lines })
+  const rows = (count: number) => {
+    if (!(node instanceof ScrollBoxRenderable)) return
+    for (let i = 0; i < count; i++) node.add(new BoxRenderable(renderer, { width: kind === "x" ? 60 : 10, height: 1 }))
+  }
+  rows(10)
+  outerBox.add(node)
+  for (let i = 0; i < 30; i++) outerBox.add(filler())
+  renderer.root.add(outerBox)
+  await setup.renderOnce()
+  outerBox.scrollTop = 5
+  const offset = () =>
+    node instanceof ScrollBoxRenderable
+      ? kind === "x"
+        ? node.scrollLeft
+        : node.scrollTop
+      : node instanceof TextRenderable
+        ? wide
+          ? node.scrollX
+          : node.scrollY
+        : node.editorView.getViewport()[wide ? "offsetX" : "offsetY"]
+  if (node instanceof ScrollBoxRenderable) node.scrollTo(kind === "x" ? { x: start, y: 0 } : start)
+  else if (node instanceof TextRenderable) node[wide ? "scrollX" : "scrollY"] = start
+  else if (wide) {
+    // The editor keeps its cursor in view, so put it where the sideways offset can move without hiding it.
+    node.setCursor(0, start + 5)
+    node.editorView.setViewport(start, 0, node.width, node.height, false)
+  } else node.editorView.setViewport(0, start, node.width, node.height, true)
+  await setup.renderOnce()
+  expect([offset(), `${outerBox.scrollTop},${outerBox.scrollLeft}`]).toEqual([start, "5,0"])
+  for (const step of steps.split(",")) {
+    if (step === "grow") rows(4)
+    else {
+      const [modifier, direction] = step.includes("+") ? step.split("+") : ["", step]
+      await setup.mockMouse.scroll(2, 1, direction as "down", { modifiers: { shift: modifier === "shift" } })
+    }
+    await setup.renderOnce()
+  }
+  expect([offset(), `${outerBox.scrollTop},${outerBox.scrollLeft}`]).toEqual([inner, outer])
+})
+
+// Only a scroller inside the current one keeps it from taking a step: a listener that passes the same event to a
+// sibling box (scroll sync) scrolls both.
+test("wheel event passed on to a sibling ScrollBox scrolls both", async () => {
+  const row = new BoxRenderable(renderer, { flexDirection: "row", width: 40, height: 4 })
+  const [left, right] = [0, 1].map(() => {
+    const box = new ScrollBoxRenderable(renderer, { width: 20, height: 4 })
+    for (let i = 0; i < 10; i++) box.add(new BoxRenderable(renderer, { height: 1 }))
+    row.add(box)
+    return box
+  })
+  left.onMouseScroll = (event) => right.processMouseEvent(event)
+  renderer.root.add(row)
+  await setup.renderOnce()
+  await setup.mockMouse.scroll(2, 1, "down")
+  expect([left.scrollTop, right.scrollTop]).toEqual([1, 1])
 })
 
 // A subclass that overrides renderSelf paints through the JS fallback, which must match the native paint, also at

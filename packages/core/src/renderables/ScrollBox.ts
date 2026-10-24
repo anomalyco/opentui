@@ -1,6 +1,7 @@
 import { type KeyEvent } from "../lib/index.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
-import type { BaseRenderable, Renderable, RenderableOptions } from "../Renderable.js"
+import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
+import type { BaseRenderable, NativeRenderableIntegration, Renderable, RenderableOptions } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
 import type { RenderContext } from "../types.js"
 import { BoxRenderable, type BoxOptions } from "./Box.js"
@@ -91,7 +92,15 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
 }
 
 export class ScrollBoxRenderable extends BoxRenderable {
-  static override readonly nativeIntegration = BoxRenderable.nativeIntegration
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
+    ...BoxRenderable.nativeIntegration,
+    lifecycle: {
+      update: {
+        idle: this.prototype.onUpdate,
+        active: (renderable) => (renderable as ScrollBoxRenderable)["isAutoScrolling"],
+      },
+    },
+  }
   static idCounter = 0
   private internalId = 0
   public readonly wrapper: BoxRenderable
@@ -547,49 +556,32 @@ export class ScrollBoxRenderable extends BoxRenderable {
     return this.content.getRenderable(id)
   }
 
+  /** Takes a wheel step when the box can still move that way. Acceleration and the fractional remainder belong to the
+   * box that takes the step; a reversal or an edge clamp drops the remainder. */
+  private scrollByWheel(event: MouseEvent): boolean {
+    const dir = wheelDirection(event)
+    const vertical = dir === "up" || dir === "down"
+    if (!vertical && dir !== "left" && dir !== "right") return false
+    const bar = vertical ? this.verticalScrollBar : this.horizontalScrollBar
+    const sign = dir === "up" || dir === "left" ? -1 : 1
+    const position = bar.scrollPosition
+    if (sign < 0 ? position <= 0 : position >= bar.scrollSize - bar.viewportSize) return false
+
+    let remainder = vertical ? this.scrollAccumulatorY : this.scrollAccumulatorX
+    if (remainder * sign < 0) remainder = 0
+    remainder += sign * (event.scroll?.delta ?? 0) * this.scrollAccel.tick(Date.now())
+    const step = Math.trunc(remainder)
+    if (step !== 0 && vertical) this.scrollTop = position + step
+    else if (step !== 0) this.scrollLeft = position + step
+    // An edge clamp keeps no remainder toward the edge it hit.
+    remainder = bar.scrollPosition - position === step ? remainder - step : 0
+    if (vertical) this.scrollAccumulatorY = remainder
+    else this.scrollAccumulatorX = remainder
+    return true
+  }
+
   protected onMouseEvent(event: MouseEvent): void {
-    if (event.type === "scroll") {
-      let dir = event.scroll?.direction
-      if (event.modifiers.shift)
-        dir = dir === "up" ? "left" : dir === "down" ? "right" : dir === "right" ? "down" : "up"
-
-      const baseDelta = event.scroll?.delta ?? 0
-      const now = Date.now()
-      const multiplier = this.scrollAccel.tick(now)
-      const scrollAmount = baseDelta * multiplier
-
-      if (dir === "up") {
-        this.scrollAccumulatorY -= scrollAmount
-        const integerScroll = Math.trunc(this.scrollAccumulatorY)
-        if (integerScroll !== 0) {
-          this.scrollTop += integerScroll
-          this.scrollAccumulatorY -= integerScroll
-        }
-      } else if (dir === "down") {
-        this.scrollAccumulatorY += scrollAmount
-        const integerScroll = Math.trunc(this.scrollAccumulatorY)
-        if (integerScroll !== 0) {
-          this.scrollTop += integerScroll
-          this.scrollAccumulatorY -= integerScroll
-        }
-      } else if (dir === "left") {
-        this.scrollAccumulatorX -= scrollAmount
-        const integerScroll = Math.trunc(this.scrollAccumulatorX)
-        if (integerScroll !== 0) {
-          this.scrollLeft += integerScroll
-          this.scrollAccumulatorX -= integerScroll
-        }
-      } else if (dir === "right") {
-        this.scrollAccumulatorX += scrollAmount
-        const integerScroll = Math.trunc(this.scrollAccumulatorX)
-        if (integerScroll !== 0) {
-          this.scrollLeft += integerScroll
-          this.scrollAccumulatorX -= integerScroll
-        }
-      }
-
-      this.syncManualScrollState()
-    }
+    if (event.type === "scroll") scrollOnce(event, this, () => this.scrollByWheel(event))
 
     if (event.type === "drag" && event.isDragging) {
       this.updateAutoScroll(event.x, event.y)
@@ -627,6 +619,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
     this.isAutoScrolling = true
     this.live = true
+    this.refreshNativeSceneHooks()
   }
 
   public updateAutoScroll(mouseX: number, mouseY: number): void {
@@ -651,8 +644,11 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.isAutoScrolling = false
     this.autoScrollAccumulatorX = 0
     this.autoScrollAccumulatorY = 0
-    // Auto-scroll is the only reason a ScrollBox goes live.
-    if (wasAutoScrolling) this.live = false
+    // Auto-scroll is the only reason a ScrollBox goes live or asks for updates.
+    if (wasAutoScrolling) {
+      this.live = false
+      this.refreshNativeSceneHooks()
+    }
   }
 
   private handleAutoScroll(deltaTime: number): void {
