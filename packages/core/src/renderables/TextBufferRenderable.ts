@@ -3,7 +3,7 @@ import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } f
 import { TextBuffer, type TextChunk } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
-import { scrollOnce } from "../lib/scroll-chain.js"
+import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
 import { type RenderContext, type LineInfoProvider } from "../types.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { LineInfo, NativeSceneTextOptions } from "../zig.js"
@@ -140,7 +140,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   protected onMouseEvent(event: any): void {
     if (event.type === "scroll") {
-      scrollOnce(event, () => {
+      scrollOnce(event, this, () => {
         const [x, y] = [this.scrollX, this.scrollY]
         this.handleScroll(event)
         return this.scrollX !== x || this.scrollY !== y
@@ -151,7 +151,8 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   protected handleScroll(event: any): void {
     if (!event.scroll) return
 
-    const { direction, delta } = event.scroll
+    const { delta } = event.scroll
+    const direction = wheelDirection(event)
 
     if (direction === "up") {
       this.scrollY -= delta
