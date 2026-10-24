@@ -19,6 +19,9 @@ describe("scene layout observations", () => {
     // Writes that make the next warm read call native again (issue 310), and whether they stage a flush.
     const invalidates = (name: string) => ["translateX", "translateY", "move"].includes(name)
     let hook: ((node: Renderable, phase: string) => void) | undefined
+    const renderBefore = function (this: Renderable) {
+      hook?.(this, "renderBefore")
+    }
     class Probe extends BoxRenderable {
       protected override renderSelf(buffer: OptimizedBuffer): void {
         hook?.(this, "renderSelf")
@@ -47,7 +50,8 @@ describe("scene layout observations", () => {
       const box = (options: object) => new BoxRenderable(renderer!, options)
       const a = box({ position: "absolute", left: 2, top: 1, width: 30, height: 10, flexDirection: "row" })
       const [b, d] = [box({ width: 8, height: 4, border: true }), box({ width: 6, height: 2 })]
-      const [c, f] = [new Probe(renderer, { width: 4, height: 1 }), new Probe(renderer, { marginLeft: 2, height: 2 })]
+      const probe = (options: object) => new Probe(renderer!, { ...options, renderBefore })
+      const [c, f] = [probe({ width: 4, height: 1 }), probe({ marginLeft: 2, height: 2 })]
       const e = new Keeper(renderer, { position: "absolute", left: 40, top: 5, width: 20, height: 8, paddingTop: 1 })
       ;(b.add(c), a.add(b), a.add(d), e.add(f), renderer.root.add(a), renderer.root.add(e))
       await setup.renderOnce()
@@ -71,14 +75,15 @@ describe("scene layout observations", () => {
       // and the public layout outside it.
       const getters = (node: Renderable) => [node.x, node.y, node.width, node.height, node.screenX, node.screenY]
       const geometry = (node: any) => {
-        const { left, top, width } = node.getLayout()
-        return [...getters(node), left, top, width, node._screenX, node._screenY, node._paintWidth]
+        const { left, top, width, height } = node.getLayout()
+        const paint = [node._screenX, node._screenY, node._paintWidth, node._paintHeight]
+        return [...getters(node), left, top, width, height, ...paint]
       }
       const native = (node: Renderable, inHook: boolean) => {
         const [p, y] = [scene.getLayout(node), scene.getLayout(node, true)]
         const s = inHook ? scene.getLayout(node, "paint") : p
-        const at = (l: typeof p) => [l.screenX, l.screenY, l.width]
-        return [...at(p), p.height, p.screenX, p.screenY, y.left, y.top, y.width, ...at(s)]
+        const at = (l: typeof p) => [l.screenX, l.screenY, l.width, l.height]
+        return [...at(p), p.screenX, p.screenY, y.left, y.top, y.width, y.height, ...at(s)]
       }
       const stale: string[] = []
       const check = (label: string, hooked?: Renderable) =>
@@ -112,12 +117,13 @@ describe("scene layout observations", () => {
         if (random(3) === 0) {
           // The first hook of the phase writes; every later hook, on either node, checks: an earlier slot's write can
           // stale a later one.
-          const phase = random(2) ? "renderSelf" : "onUpdate"
-          let [seen, written] = [false, false]
+          const phase = ["renderSelf", "onUpdate", "renderBefore"][random(3)]
+          const seen = new Set<string>()
+          let written = false
           hook = (node, current) => {
-            // The first hook after a step reads its own geometry from the request without a native call.
-            if (!seen) {
-              seen = true
+            // The first hook of each kind reads its own geometry from the request or slot without a native call.
+            if (!seen.has(current)) {
+              seen.add(current)
               const first = ownWork(node)
               if (first.join() !== "0,0,0") stale.push(`${label} first hook ${first}`)
             }
