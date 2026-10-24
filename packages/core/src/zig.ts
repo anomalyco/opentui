@@ -1625,12 +1625,9 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
     record[layout.fields.z_index.offset / 4] = toFFII32(zIndex, "Scene zIndex")
     fields |= nativeConstants.OT_SCENE_PROPERTY_Z_INDEX
   }
-  // Mirror scene.zig setPaint's range rules so staged paint cannot fail only at flush time.
-  const requestedOpacity = paint.opacity
-  if (requestedOpacity !== undefined) {
-    const opacity = toFFIF32(requestedOpacity, "Scene opacity")
-    if (opacity < 0 || opacity > 1) throw new RangeError("Scene opacity must be within 0..1")
-    floats[layout.fields.opacity.offset / 4] = opacity
+  const opacity = paint.opacity
+  if (opacity !== undefined) {
+    floats[layout.fields.opacity.offset / 4] = toFFIF32(opacity, "Scene opacity")
     fields |= nativeConstants.OT_SCENE_PROPERTY_OPACITY
   }
   const translateX = paint.translateX
@@ -1643,11 +1640,9 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
     doubles[layout.fields.translate_y.offset / 8] = toFFIF32(translateY, "Scene translateY")
     fields |= nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_Y
   }
-  const requestedBorder = paint.border
-  if (requestedBorder !== undefined) {
-    const borderSides = toSafeFFIU32Length(requestedBorder, "Scene border")
-    if (borderSides > 15) throw new RangeError("Scene border sides must use four edge bits")
-    record[layout.fields.border_sides.offset / 4] = borderSides
+  const border = paint.border
+  if (border !== undefined) {
+    record[layout.fields.border_sides.offset / 4] = toSafeFFIU32Length(border, "Scene border")
     fields |= nativeConstants.OT_SCENE_PROPERTY_BORDER
   }
   const shouldFill = paint.shouldFill

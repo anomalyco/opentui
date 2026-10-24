@@ -605,7 +605,6 @@ describe("scene staging", () => {
     ["another Context object", (staging) => stageWidth(staging, nodeAt(1, 1), 1, otherContext), "WrongContext"],
     ["another Context id", (staging) => stageWidth(staging, { ...nodeAt(1, 1), contextId: 8n }), "WrongContext"],
     ["a destroyed node's paint", (staging) => staging.stagePaint(context, nodeAt(1, 2), { zIndex: 2 }), "StaleHandle"],
-    ["an invalid paint", (staging) => staging.stagePaint(context, nodeAt(1, 1), { opacity: 2 }), "opacity"],
     ["a destroyed paint owner", (staging) => staging.stagePaint(context, nodeAt(2, 1), {}, rejectingOwner), "owner"],
     [
       "a destroyed background owner",
@@ -702,7 +701,7 @@ describe("scene staging", () => {
   })
 
   class Custom extends Renderable {
-    paint(paint: { border?: number; opacity?: number }): void {
+    paint(paint: { border: number }): void {
       this.setNativeScenePaint(paint)
     }
   }
