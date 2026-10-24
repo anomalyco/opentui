@@ -294,10 +294,19 @@ test "TextBufferView live word metadata follows views history and buffer switche
     defer for (buffers) |buffer| buffer.deinit();
     const switched = try TextBufferView.init(std.testing.allocator, buffers[0]);
     defer switched.deinit();
+    switched.setWrapMode(.word);
     _ = switched.getVirtualLines();
+    _ = try switched.measureForDimensions(40, 24);
     switched.switchToBuffer(buffers[1]);
     try buffers[0].reset();
     try std.testing.expectEqual(@as(usize, 5_001), switched.getVirtualLines().len);
+    try std.testing.expectEqual(@as(u32, 5_001), (try switched.measureForDimensions(40, 24)).line_count);
+    // The switched-to buffer does not track the view, so its later edits are found by the baseline.
+    switched.setWrapWidth(40);
+    _ = switched.getVirtualLines();
+    try buffers[1].reset();
+    for ([_]u32{ 40, 30 }) |width| try std.testing.expectEqual(@as(u32, 1), (try switched.measureForDimensions(width, 24)).line_count);
+    try std.testing.expectEqual(@as(usize, 1), switched.getVirtualLines().len);
     view.switchToBuffer(other);
     try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
@@ -1512,9 +1521,9 @@ test "TextBufferView word wrapping - layout cache OOM falls back to complete str
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
     view.setWrapMode(.word);
-    view.setWrapWidth(80);
     const measured = try view.measureForDimensions(80, 24);
     try std.testing.expectEqual(@as(u32, 26), measured.line_count);
+    view.setWrapWidth(80);
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const layout_allocator = tb.layout_cache.allocator;
@@ -2844,35 +2853,38 @@ test "TextBufferView measureForDimensions - matches the rendered layout" {
     }
 }
 
-test "TextBufferView measureForDimensions - word summary OOM returns computed result" {
+test "TextBufferView measureForDimensions - a ledger that cannot be kept still returns the measurement" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const text = try std.testing.allocator.alloc(u8, 512);
-    defer std.testing.allocator.free(text);
-    @memset(text, 'a');
-    try tb.setText(text);
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-    view.setWrapMode(.word);
-
-    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    const internal_allocator = tb.allocator;
-    tb.allocator = failing.allocator();
-    defer tb.allocator = internal_allocator;
-    const result = try view.measureForDimensions(80, 24);
-
-    try std.testing.expect(failing.has_induced_failure);
-    try std.testing.expectEqual(@as(u32, 7), result.line_count);
-    try std.testing.expectEqual(@as(u32, 80), result.width_cols_max);
-
-    const recomputed = try view.measureForDimensions(79, 24);
-    try std.testing.expectEqual(@as(u32, 7), recomputed.line_count);
-    try std.testing.expectEqual(@as(u32, 79), recomputed.width_cols_max);
+    // Fail each allocation of a measure, an edit, and a measure of the changed lines in turn. A
+    // builder failure fails its measure; a ledger failure drops the ledger, never the measurement,
+    // and never costs a second pass.
+    var dropped_after_edit = false;
+    var failure: usize = 0;
+    while (true) : (failure += 1) {
+        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        try tb.setText("word " ** 40 ++ "\nshort line");
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const view = try TextBufferView.init(failing.allocator(), tb);
+        defer view.deinit();
+        const full = try TextBufferView.init(std.testing.allocator, tb);
+        defer full.deinit();
+        for ([_]*TextBufferView{ view, full }) |current| current.setWrapMode(.word);
+        full.force_full_layout = true;
+        failing.fail_index = failing.alloc_index + failure;
+        const warm = view.measureForDimensions(30, 24) catch continue;
+        try std.testing.expectEqual(try full.measureForDimensions(30, 24), warm);
+        try tb.append(" and a tail of words");
+        _ = text_work.take();
+        const result = view.measureForDimensions(30, 24) catch continue;
+        try std.testing.expect(text_work.take().measure_passes <= 1);
+        try std.testing.expectEqual(try full.measureForDimensions(30, 24), result);
+        if (!failing.has_induced_failure) break;
+        if (view.measure_ledger.baseline == null) dropped_after_edit = true;
+    }
+    try std.testing.expect(dropped_after_edit);
 }
 
 test "TextBufferView word wrap - first line offset reduces initial line width" {
@@ -4476,6 +4488,14 @@ fn expectSameAsFullLayout(edited: *TextBufferView, full: *TextBufferView) !void 
     };
 }
 
+/// Measures at the render width and at another width equal those of a view that lays out and
+/// measures every line each time.
+fn expectSameMeasure(edited: *TextBufferView, full: *TextBufferView) !void {
+    for ([_]u32{ edited.wrap_width.?, edited.wrap_width.? + 3 }) |width| {
+        try std.testing.expectEqual(try full.measureForDimensions(width, 24), try edited.measureForDimensions(width, 24));
+    }
+}
+
 // With a first-line offset, line 0's first row is narrower: a line that moves to or from row 0
 // (delete line 0, its undo and redo, a prepended line) is laid out again in both ropes.
 test "TextBufferView a line that moves to or from line 0 wraps for its new row" {
@@ -4514,6 +4534,7 @@ test "TextBufferView a line that moves to or from line 0 wraps for its new row" 
                 else => unreachable,
             }
             try expectSameAsFullLayout(views[0], views[1]);
+            try expectSameMeasure(views[0], views[1]);
         }
     }
 }
@@ -4582,17 +4603,25 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                 8 => _ = edit.redo() catch |err| if (err != error.Stop) return err,
                 9 => if (random.boolean()) {
                     edit.setTabWidth(if (random.boolean()) 2 else 4);
-                } else for (&views) |*pair| for (pair) |view| view.setWrapWidth(view.wrap_width.? % 7 + 1),
+                } else for (&views) |*pair| for (pair) |view| {
+                    // One setting per step, so a measure at an unchanged width meets each one.
+                    if (step % 3 == 0) view.setWrapWidth(view.wrap_width.? % 7 + 1);
+                    if (step % 3 == 1) view.setWrapMode(modes[(@intFromEnum(view.wrap_mode) + 1) % modes.len]);
+                    if (step % 3 == 2) view.setFirstLineOffset(view.first_line_offset ^ 2);
+                },
                 else => unreachable,
             }
             // Views read at different times see different ranges of changed lines. A count read
             // lays out without truncating.
-            for (views) |pair| switch (random.uintLessThan(u8, 4)) {
+            for (views) |pair| switch (random.uintLessThan(u8, 5)) {
                 0 => {},
                 1 => _ = pair[0].getVirtualLineCount(),
+                // A measure at the render width lays out; one at another width keeps a ledger.
+                2 => try expectSameMeasure(pair[0], pair[1]),
                 else => {
                     try expectSameAsFullLayout(pair[0], pair[1]);
                     if (!pair[0].truncate and !splitsGrapheme(edit.tb, pair[0].wrap_mode)) try expectSameWrap(pair[0]);
+                    try expectSameMeasure(pair[0], pair[1]);
                 },
             };
         }

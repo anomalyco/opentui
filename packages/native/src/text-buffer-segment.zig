@@ -35,14 +35,6 @@ pub const WordLayoutInfo = struct {
     },
 };
 
-const CachedMeasure = struct {
-    wrap_width: u32,
-    first_width: u32,
-    tab_width: u8,
-    width_method: utf8.WidthMethod,
-    result: WordMeasureSummary,
-};
-
 /// Cached layout is keyed by tab width and width method. A chunk belongs to one text buffer,
 /// whose control display never changes, so the keys omit it.
 pub const TextChunkColdState = struct {
@@ -59,7 +51,6 @@ pub const TextChunkColdState = struct {
     next_layout_cache: ?*TextChunkColdState = null,
     layout_used: bool = false,
     line_breaks_ready: bool = false,
-    measure_word: ?CachedMeasure = null,
 };
 
 /// Layout arrays are disposable; the cold states and rope history remain arena-owned.
@@ -107,11 +98,6 @@ pub const ChunkLayoutCache = struct {
             cold.line_breaks_ready = false;
         }
     }
-};
-
-pub const WordMeasureSummary = struct {
-    line_count: u32,
-    width_max: u32,
 };
 
 /// A chunk represents a contiguous sequence of UTF-8 bytes from a specific memory buffer
@@ -182,41 +168,6 @@ pub const TextChunk = struct {
             .wrap_breaks = cached,
             .cjk_breaks = cold.cjk_breaks.items,
             .word_classes = cold.word_classes,
-        };
-    }
-
-    pub fn getWordMeasureSummary(
-        self: *const TextChunk,
-        wrap_width: u32,
-        first_width: u32,
-        tab_width: u8,
-        width_method: utf8.WidthMethod,
-    ) ?WordMeasureSummary {
-        const cold = self.cold orelse return null;
-        const cached = cold.measure_word orelse return null;
-        if (cached.wrap_width != wrap_width or
-            cached.first_width != first_width or
-            cached.tab_width != tab_width or
-            cached.width_method != width_method) return null;
-        return cached.result;
-    }
-
-    pub fn setWordMeasureSummary(
-        self: *const TextChunk,
-        allocator: Allocator,
-        wrap_width: u32,
-        first_width: u32,
-        tab_width: u8,
-        width_method: utf8.WidthMethod,
-        summary: WordMeasureSummary,
-    ) TextBufferError!void {
-        const cold = try self.getOrCreateCold(allocator);
-        cold.measure_word = .{
-            .wrap_width = wrap_width,
-            .first_width = first_width,
-            .tab_width = tab_width,
-            .width_method = width_method,
-            .result = summary,
         };
     }
 

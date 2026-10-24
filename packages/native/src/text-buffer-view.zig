@@ -267,6 +267,28 @@ const LayoutBaseline = struct {
     tab_generation: u64,
 };
 
+/// Measurements at one width other than the render width, one per logical line, kept across
+/// edits like the render layout, so a measure after an edit walks only the changed lines.
+const MeasureLedger = struct {
+    width: u32 = 0,
+    wrap_mode: WrapMode = .none,
+    first_line_offset: u32 = 0,
+    baseline: ?LayoutBaseline = null,
+    lines: std.ArrayListUnmanaged(MeasureResult) = .empty,
+};
+
+/// A measure's totals, and one entry per logical line when `lines` is set.
+const MeasureOutput = struct {
+    result: MeasureResult = .{ .line_count = 0, .width_cols_max = 0 },
+    lines: ?*std.ArrayListUnmanaged(MeasureResult) = null,
+    lines_allocator: Allocator = undefined,
+};
+
+fn addMeasure(total: *MeasureResult, part: MeasureResult) void {
+    total.line_count += part.line_count;
+    total.width_cols_max = @max(total.width_cols_max, part.width_cols_max);
+}
+
 const LineRange = struct {
     first: u32 = 0,
     start: seg_mod.UnifiedRope.Position = .{ .leaf_index = 0, .weight = 0 },
@@ -334,6 +356,7 @@ pub const UnifiedTextBufferView = struct {
     arena_dead_bytes: usize = 0,
     /// Tests set this to compare partial layouts with full ones.
     force_full_layout: bool = false,
+    measure_ledger: MeasureLedger = .{},
 
     /// Persistent arena for measureForDimensions. Each call resets it with
     /// retain_capacity to avoid mmap/munmap churn during streaming.
@@ -453,6 +476,7 @@ pub const UnifiedTextBufferView = struct {
         // The retired-text pool counts arena capacity, so pooled views keep none.
         _ = self.virtual_lines_arena.reset(.free_all);
         self.word_layout.reset(.free_all);
+        self.measure_ledger.lines.clearAndFree(self.global_allocator);
     }
 
     pub fn reinitStorage(self: *Self) TextBufferViewError!void {
@@ -464,7 +488,8 @@ pub const UnifiedTextBufferView = struct {
         return @sizeOf(Self) + @sizeOf(std.heap.ArenaAllocator) +
             UnifiedTextBuffer.arenaStorageBytes(self.virtual_lines_arena) +
             UnifiedTextBuffer.arenaStorageBytes(&self.word_layout.arena) +
-            UnifiedTextBuffer.arenaStorageBytes(&self.measure_arena);
+            UnifiedTextBuffer.arenaStorageBytes(&self.measure_arena) +
+            self.measure_ledger.lines.capacity * @sizeOf(MeasureResult);
     }
 
     pub fn prepare(self: *Self) TextBufferViewError!void {
@@ -570,10 +595,12 @@ pub const UnifiedTextBufferView = struct {
     }
 
     pub fn updateVirtualLines(self: *Self) void {
-        const buffer_dirty = self.text_buffer.isViewDirty(self.view_id);
+        // The baseline, not the buffer's dirty flag, tells whether the text changed: a view switched
+        // to another buffer is not registered there.
+        const buffer_dirty = if (self.baseline) |baseline| !std.meta.eql(baseline, self.currentBaseline()) else true;
         if (!self.virtual_lines_dirty and !buffer_dirty) return;
 
-        const change = self.changedLines();
+        const change = self.changedLines(self.baseline, self.cached_line_vline_counts.items.len);
         const word_storage = self.wrap_mode == .word and self.wrap_width != null;
         // Partial layouts leave dead bytes in the arenas, and detached chunks in the chunk layout
         // cache. Once the dead bytes outgrow the live ones, a full layout frees them all.
@@ -611,14 +638,17 @@ pub const UnifiedTextBufferView = struct {
         }
         // A full word layout frees detached entries; storage built in it borrows only live ones.
         self.word_layout.releases = cache.releases;
-        const rope = self.text_buffer.rope();
-        self.baseline = .{
-            .root = rope.root,
-            .clears = cache.clears,
+        self.baseline = self.currentBaseline();
+        self.virtual_lines_dirty = false;
+        if (self.text_buffer == self.original_text_buffer) self.text_buffer.clearViewDirty(self.view_id);
+    }
+
+    fn currentBaseline(self: *const Self) LayoutBaseline {
+        return .{
+            .root = self.text_buffer.rope().root,
+            .clears = self.text_buffer.layout_cache.clears,
             .tab_generation = self.text_buffer.tab_metrics_generation,
         };
-        self.virtual_lines_dirty = false;
-        self.text_buffer.clearViewDirty(self.view_id);
     }
 
     const garbage_slack_bytes = 16 * 1024;
@@ -641,9 +671,9 @@ pub const UnifiedTextBufferView = struct {
     /// no baseline, a reset arena (its nodes may be reused), or new tab widths (leaves change in
     /// place), or a change of every line. The word preflight follows the whole document's ASCII flag, but an ASCII line lays
     /// out the same either way, so a flip needs no full layout.
-    fn changedLines(self: *const Self) ?LineChange {
+    fn changedLines(self: *const Self, maybe_baseline: ?LayoutBaseline, line_count: usize) ?LineChange {
         if (self.force_full_layout) return null;
-        const baseline = self.baseline orelse return null;
+        const baseline = maybe_baseline orelse return null;
         const rope = self.text_buffer.rope();
         // A buffer switch drops the baseline, so it is always this buffer's.
         if (baseline.clears != self.text_buffer.layout_cache.clears or
@@ -660,7 +690,7 @@ pub const UnifiedTextBufferView = struct {
         // edits make one that does not.
         if (leaves_old == 0 or leaves_new == 0) return null;
         if (!old.get(0).?.isLineStart() or !rope.get(0).?.isLineStart()) return null;
-        std.debug.assert(line_count_old == self.cached_line_vline_counts.items.len);
+        std.debug.assert(line_count_old == line_count);
 
         const limit = @min(leaves_old, leaves_new);
         const prefix = rope.sharedLeaves(old.root, .start, limit) orelse return null;
@@ -1047,6 +1077,7 @@ pub const UnifiedTextBufferView = struct {
 
     pub fn switchToBuffer(self: *Self, buffer: *UnifiedTextBuffer) void {
         if (self.text_buffer != buffer) self.cached_measure_count = 0;
+        self.dropLedger();
         self.word_layout.reset(.free_all);
         self.text_buffer = buffer;
         self.virtual_lines_dirty = true;
@@ -1772,9 +1803,9 @@ pub const UnifiedTextBufferView = struct {
         return true;
     }
 
-    /// Measure dimensions for given width/height WITHOUT modifying virtual lines cache
-    /// This is useful for Yoga measure functions that need to know dimensions without committing changes
-    /// Special case: width=0 or wrap_mode=.none means "measure intrinsic/max-content width" (no wrapping)
+    /// Rows and widest row of the text wrapped at `width`, for Yoga's measure function. Width 0 or
+    /// wrap mode none measures the intrinsic width (no wrapping). At the render width this lays the
+    /// view out, as the next read or frame would; at another width it updates the measure ledger.
     pub fn measureForDimensions(self: *Self, width: u32, height: u32) TextBufferViewError!MeasureResult {
         _ = height; // Height is for future use, currently only width affects layout
         const epoch = self.text_buffer.getContentEpoch();
@@ -1795,24 +1826,7 @@ pub const UnifiedTextBufferView = struct {
             }
         }
 
-        text_work.add(.measure_passes, 1);
-        var result: MeasureResult = .{ .line_count = 0, .width_cols_max = 0 };
-        // Without wrapping, the rope metrics hold both answers.
-        if (width == 0 or self.wrap_mode == .none) {
-            result.line_count = self.text_buffer.lineCount();
-            result.width_cols_max = self.text_buffer.lineWidthColsMax();
-        } else {
-            // Reuse arena capacity to avoid allocation overhead during streaming.
-            _ = self.measure_arena.reset(.retain_capacity);
-            const measure_allocator = self.measure_arena.allocator();
-
-            const calculated = switch (self.wrap_mode) {
-                .none => unreachable,
-                .char => calculateVirtualLinesGeneric(.measure, .char, measure_allocator, self.text_buffer, .{}, width, self.first_line_offset, &result, null),
-                .word => calculateVirtualLinesGeneric(.measure, .word, measure_allocator, self.text_buffer, .{}, width, self.first_line_offset, &result, null),
-            };
-            if (!calculated) return TextBufferViewError.OutOfMemory;
-        }
+        const result = try self.measureUncached(width);
 
         // Publish only completed measurements, preserving earlier entries on failure.
         if (!cache_matches) self.cached_measure_count = 0;
@@ -1829,6 +1843,67 @@ pub const UnifiedTextBufferView = struct {
         self.cached_measure_buffer = self.text_buffer;
 
         return result;
+    }
+
+    fn measureUncached(self: *Self, width: u32) TextBufferViewError!MeasureResult {
+        // Without wrapping, the rope metrics hold both answers.
+        if (width == 0 or self.wrap_mode == .none) {
+            if (self.wrap_mode == .none) self.dropLedger();
+            text_work.add(.measure_passes, 1);
+            return .{ .line_count = self.text_buffer.lineCount(), .width_cols_max = self.text_buffer.lineWidthColsMax() };
+        }
+        // At the render width the render layout is the measurement. Bring it up to date, which the
+        // frame would do next anyway.
+        if (self.wrap_width == width) {
+            self.updateVirtualLines();
+            if (!self.virtual_lines_dirty) {
+                var result: MeasureResult = .{ .line_count = @intCast(self.virtual_lines.items.len), .width_cols_max = 0 };
+                for (self.cached_line_widths.items) |row_width| result.width_cols_max = @max(result.width_cols_max, row_width);
+                return result;
+            }
+        }
+        // Otherwise measure the lines that changed since the ledger at this width, or every line.
+        const ledger = &self.measure_ledger;
+        const same_settings = ledger.width == width and ledger.wrap_mode == self.wrap_mode and ledger.first_line_offset == self.first_line_offset;
+        const all = std.math.maxInt(u32);
+        const change = (if (same_settings) self.changedLines(ledger.baseline, ledger.lines.items.len) else null) orelse
+            LineChange{ .first = 0, .old_count = @intCast(ledger.lines.items.len), .new_count = all, .weight_delta = 0 };
+        var staged: std.ArrayListUnmanaged(MeasureResult) = .empty;
+        defer staged.deinit(self.global_allocator);
+        var out: MeasureOutput = .{ .lines = &staged, .lines_allocator = self.global_allocator };
+        if (change.old_count != 0 or change.new_count != 0) {
+            text_work.add(.measure_passes, 1);
+            // Reuse arena capacity to avoid allocation overhead during streaming.
+            _ = self.measure_arena.reset(.retain_capacity);
+            const allocator = self.measure_arena.allocator();
+            const range: LineRange = if (change.new_count == all) .{} else .{
+                .first = change.first,
+                .start = iter_mod.lineStart(self.text_buffer.rope(), change.first).?,
+                .count = change.new_count,
+            };
+            if (!switch (self.wrap_mode) {
+                .none => unreachable,
+                .char => calculateVirtualLinesGeneric(.measure, .char, allocator, self.text_buffer, range, width, self.first_line_offset, &out, null),
+                .word => calculateVirtualLinesGeneric(.measure, .word, allocator, self.text_buffer, range, width, self.first_line_offset, &out, null),
+            }) return TextBufferViewError.OutOfMemory;
+        }
+        // The other lines keep their measurements. If the ledger cannot take the new ones it goes,
+        // and the measurement holds either way.
+        var result = out.result;
+        for (ledger.lines.items[0..change.first]) |line| addMeasure(&result, line);
+        for (ledger.lines.items[change.first + change.old_count ..]) |line| addMeasure(&result, line);
+        const kept = out.lines != null and if (ledger.lines.replaceRange(self.global_allocator, change.first, change.old_count, staged.items)) |_| true else |_| false;
+        if (!kept) {
+            self.dropLedger();
+            return result;
+        }
+        ledger.* = .{ .width = width, .wrap_mode = self.wrap_mode, .first_line_offset = self.first_line_offset, .baseline = self.currentBaseline(), .lines = ledger.lines };
+        return result;
+    }
+
+    fn dropLedger(self: *Self) void {
+        self.measure_ledger.baseline = null;
+        self.measure_ledger.lines.clearAndFree(self.global_allocator);
     }
 
     const CalculationMode = enum { render, measure };
@@ -1931,7 +2006,7 @@ pub const UnifiedTextBufferView = struct {
         range: LineRange,
         wrap_w: u32,
         first_line_offset: u32,
-        result: if (calculation == .render) VirtualLineOutput else *MeasureResult,
+        result: if (calculation == .render) VirtualLineOutput else *MeasureOutput,
         word_layout: ?*WordLayoutStorage,
     ) bool {
         comptime std.debug.assert(wrap_mode != .none);
@@ -1963,8 +2038,8 @@ pub const UnifiedTextBufferView = struct {
             word_chunk: if (wrap_mode == .word) ?*const TextChunk else void = if (wrap_mode == .word) null else {},
             word_chunk_col_start: if (wrap_mode == .word) u32 else void = if (wrap_mode == .word) 0 else {},
             word_chunk_byte_start: if (wrap_mode == .word) u32 else void = if (wrap_mode == .word) 0 else {},
-            logical_measure_line_count: if (wrap_mode == .word and calculation == .measure) u32 else void = if (wrap_mode == .word and calculation == .measure) 0 else {},
-            logical_measure_width_max: if (wrap_mode == .word and calculation == .measure) u32 else void = if (wrap_mode == .word and calculation == .measure) 0 else {},
+            line_rows: if (calculation == .measure) u32 else void = if (calculation == .measure) 0 else {},
+            line_width: if (calculation == .measure) u32 else void = if (calculation == .measure) 0 else {},
             failed: bool = false,
 
             fn lineWrapWidth(wctx: *@This()) u32 {
@@ -1996,12 +2071,8 @@ pub const UnifiedTextBufferView = struct {
 
             fn recordVirtualLine(wctx: *@This()) Allocator.Error!void {
                 if (comptime calculation == .measure) {
-                    wctx.result.line_count += 1;
-                    wctx.result.width_cols_max = @max(wctx.result.width_cols_max, wctx.current_vline_width_cols);
-                    if (comptime wrap_mode == .word) {
-                        wctx.logical_measure_line_count += 1;
-                        wctx.logical_measure_width_max = @max(wctx.logical_measure_width_max, wctx.current_vline_width_cols);
-                    }
+                    wctx.line_rows += 1;
+                    wctx.line_width = @max(wctx.line_width, wctx.current_vline_width_cols);
                 } else {
                     const out = wctx.result;
                     try out.virtual_lines.append(wctx.allocator, wctx.current_vline);
@@ -2577,24 +2648,13 @@ pub const UnifiedTextBufferView = struct {
                 }
             }
 
-            fn segment_callback(ctx_ptr: *anyopaque, _: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void {
+            fn segment_callback(ctx_ptr: *anyopaque, _: u32, chunk: *const TextChunk, _: u32) void {
                 const wctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (wctx.failed) return;
 
                 if (comptime wrap_mode == .word) {
-                    // Printable ASCII cannot join graphemes across chunks. Stream it,
-                    // retaining the single-chunk measurement-summary shortcut.
+                    // Printable ASCII cannot join graphemes across chunks. Stream it.
                     if (!wctx.word_line_preflight) {
-                        if (comptime calculation == .measure) {
-                            if (wctx.word_line_first_chunk) |first| {
-                                processWordChunk(wctx, first);
-                                wctx.word_line_first_chunk = null;
-                                if (wctx.failed) return;
-                            } else if (chunk_idx_in_line == 0) {
-                                wctx.word_line_first_chunk = chunk;
-                                return;
-                            }
-                        }
                         processWordChunk(wctx, chunk);
                         return;
                     }
@@ -2642,41 +2702,16 @@ pub const UnifiedTextBufferView = struct {
                 if (wctx.failed) return;
                 text_work.add(if (calculation == .render) .lines_laid_out else .measure_lines, 1);
 
-                var used_measure_cache = false;
-                var measure_cache_chunk: ?*const TextChunk = null;
-                var measure_cache_first_width: u32 = 0;
-                if (comptime wrap_mode == .word and calculation == .measure) {
-                    if (wctx.word_line_first_chunk != null and wctx.word_line_chunks.items.len == 0) {
-                        const chunk = wctx.word_line_first_chunk.?;
-                        measure_cache_chunk = chunk;
-                        const first_width = wctx.lineWrapWidth();
-                        measure_cache_first_width = first_width;
-                        if (chunk.getWordMeasureSummary(
-                            wctx.wrap_w,
-                            first_width,
-                            wctx.text_buffer.tabWidth(),
-                            wctx.text_buffer.widthMethod(),
-                        )) |summary| {
-                            wctx.result.line_count += summary.line_count;
-                            wctx.result.width_cols_max = @max(wctx.result.width_cols_max, summary.width_max);
-                            wctx.document_cell_offset += chunk.width_cols;
-                            used_measure_cache = true;
-                        }
-                    }
-                }
-
                 if (comptime wrap_mode == .word) {
-                    if (!used_measure_cache) {
-                        if (wctx.word_line_first_chunk) |chunk| {
-                            processWordChunk(wctx, chunk);
-                            if (wctx.failed) return;
-                        }
-                        for (wctx.word_line_chunks.items) |chunk| {
-                            processWordChunk(wctx, chunk);
-                            if (wctx.failed) return;
-                        }
-                        finalizePendingWord(wctx);
+                    if (wctx.word_line_first_chunk) |chunk| {
+                        processWordChunk(wctx, chunk);
+                        if (wctx.failed) return;
                     }
+                    for (wctx.word_line_chunks.items) |chunk| {
+                        processWordChunk(wctx, chunk);
+                        if (wctx.failed) return;
+                    }
+                    finalizePendingWord(wctx);
                     clearPendingWord(wctx);
                     wctx.word_line_first_chunk = null;
                     wctx.word_line_chunks.clearRetainingCapacity();
@@ -2686,7 +2721,7 @@ pub const UnifiedTextBufferView = struct {
                     wctx.current_vline.chunks.items.len > 0
                 else
                     wctx.current_vline_width_cols > 0;
-                if (!used_measure_cache and (has_content or line_info.width_cols == 0)) {
+                if (has_content or line_info.width_cols == 0) {
                     if (comptime calculation == .render) {
                         wctx.current_vline.width_cols = wctx.current_vline_width_cols;
                         wctx.current_vline.source_line = wctx.line_idx;
@@ -2699,29 +2734,16 @@ pub const UnifiedTextBufferView = struct {
                     if (comptime calculation == .render) wctx.current_line_vline_count += 1;
                 }
 
-                if (comptime wrap_mode == .word and calculation == .measure) {
-                    if (!used_measure_cache) {
-                        if (measure_cache_chunk) |chunk| {
-                            // Summary storage is best-effort; this measurement remains valid on OOM.
-                            chunk.setWordMeasureSummary(
-                                wctx.text_buffer.getAllocator(),
-                                wctx.wrap_w,
-                                measure_cache_first_width,
-                                wctx.text_buffer.tabWidth(),
-                                wctx.text_buffer.widthMethod(),
-                                .{
-                                    .line_count = wctx.logical_measure_line_count,
-                                    .width_max = wctx.logical_measure_width_max,
-                                },
-                            ) catch |err| switch (err) {
-                                error.OutOfMemory => {},
-                                else => {
-                                    wctx.failed = true;
-                                    return;
-                                },
-                            };
-                        }
-                    }
+                if (comptime calculation == .measure) {
+                    const out = wctx.result;
+                    const line: MeasureResult = .{ .line_count = wctx.line_rows, .width_cols_max = wctx.line_width };
+                    addMeasure(&out.result, line);
+                    // Per-line results are best-effort; without them the totals still hold.
+                    if (out.lines) |lines| lines.append(out.lines_allocator, line) catch {
+                        out.lines = null;
+                    };
+                    wctx.line_rows = 0;
+                    wctx.line_width = 0;
                 }
 
                 if (comptime calculation == .render) {
@@ -2764,10 +2786,6 @@ pub const UnifiedTextBufferView = struct {
                     wctx.source_line_cjk_breaks = true;
                     wctx.word_line_last_cp = null;
                     wctx.word_chunk = null;
-                }
-                if (comptime wrap_mode == .word and calculation == .measure) {
-                    wctx.logical_measure_line_count = 0;
-                    wctx.logical_measure_width_max = 0;
                 }
             }
         };

@@ -137,14 +137,14 @@ test "text work: the frame after one edit lays out and measures only the lines i
     const paste = "pasted line of text that is shorter than the wrap width\n" ** 100;
     const Op = enum { insert, delete, paste, undo, enter, join };
     // Lines laid out = document lines × `per_line` + `extra`. Before dirty line ranges, every
-    // row was 1 × the document (paste +100, Enter +1, join −1); `lines` is the change in lines.
-    const rows = [_]struct { op: Op, per_line: u64, extra: i64, lines: i64 }{
-        .{ .op = .insert, .per_line = 0, .extra = 1, .lines = 0 },
-        .{ .op = .delete, .per_line = 0, .extra = 1, .lines = 0 },
-        .{ .op = .paste, .per_line = 0, .extra = 101, .lines = 100 },
-        .{ .op = .undo, .per_line = 0, .extra = 1, .lines = 0 },
-        .{ .op = .enter, .per_line = 0, .extra = 2, .lines = 1 },
-        .{ .op = .join, .per_line = 0, .extra = 1, .lines = -1 },
+    // row was 1 × the document (paste +100, Enter +1, join −1).
+    const rows = [_]struct { op: Op, per_line: u64, extra: i64 }{
+        .{ .op = .insert, .per_line = 0, .extra = 1 },
+        .{ .op = .delete, .per_line = 0, .extra = 1 },
+        .{ .op = .paste, .per_line = 0, .extra = 101 },
+        .{ .op = .undo, .per_line = 0, .extra = 1 },
+        .{ .op = .enter, .per_line = 0, .extra = 2 },
+        .{ .op = .join, .per_line = 0, .extra = 1 },
     };
     for ([_]u64{ 1_000, 10_000 }) |lines| {
         const text = try repeatLines(allocator, line, lines);
@@ -186,9 +186,10 @@ test "text work: the frame after one edit lays out and measures only the lines i
             const laid_out: u64 = @intCast(@as(i64, @intCast(lines * row.per_line)) + row.extra);
             // Every edit is at row 10 (a join at row 9), so the offsets of the lines after row 10 move.
             try std.testing.expectEqual([3]u64{ 1, laid_out, lines - 11 }, [3]u64{ frame.layouts, frame.lines_laid_out, frame.lines_shifted });
-            // Both measures walk the document; unwrapped ones read the rope.
-            const measured: u64 = if (mode == .none) 0 else 2 * @as(u64, @intCast(@as(i64, @intCast(lines)) + row.lines));
-            try std.testing.expectEqual([2]u64{ 2, measured }, [2]u64{ frame.measure_passes, frame.measure_lines });
+            // The measure at the render width reads the render layout; the other measures the changed
+            // lines into its ledger. Before, both walked the document. Unwrapped ones read the rope.
+            const expected: [2]u64 = if (mode == .none) .{ 2, 0 } else .{ 1, laid_out };
+            try std.testing.expectEqual(expected, [2]u64{ frame.measure_passes, frame.measure_lines });
         };
     }
 }
@@ -270,7 +271,7 @@ test "text work: replaced lines and word metadata stay within a constant factor 
     }
 }
 
-test "text work: an append measures and lays out a 5,000-line view once each" {
+test "text work: an append to a 5,000-line view measures and lays out its last line once" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
@@ -291,8 +292,9 @@ test "text work: an append measures and lays out a 5,000-line view once each" {
     _ = try view.measureForDimensions(40, 24);
     _ = try view.measureForDimensions(40, 24);
     _ = view.getVirtualLineCount();
-    // The second measure hits the cache; render lays out the last line again.
-    try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .splices = 1, .measure_passes = 1, .measure_lines = 5_000, .line_seeks = 4, .line_seek_nodes = 57, .ascii_bytes = 154 });
+    // The measure at the render width lays out the last line again, and the render reuses it.
+    // Before the shared measure: 1 pass of 5,000 measure lines.
+    try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .splices = 1, .line_seeks = 4, .line_seek_nodes = 57, .ascii_bytes = 77 });
 }
 
 test "text work: line lookups after an edit in a 10,000-line buffer" {
@@ -392,7 +394,7 @@ test "text work: drawing a long unwrapped line scrolled right skips every cluste
     }
 }
 
-test "text work: a changed scene frame measures and lays out an auto-height text node in two passes" {
+test "text work: a changed scene frame lays out an auto-height text node once for measure and paint" {
     const allocator = std.testing.allocator;
     const f = try scene_fixture.Fixture.init(allocator, 80, 24, .{});
     defer f.deinit();
@@ -404,17 +406,38 @@ test "text work: a changed scene frame measures and lays out an auto-height text
     defer allocator.free(text);
     try f.owner.sceneSetText(node, text);
 
-    const changed: Counts = .{ .layouts = 1, .lines_laid_out = 5_000, .measure_passes = 1, .measure_lines = 5_000, .clusters_drawn = 972, .ascii_bytes = 810_000 };
+    // The first frame measures before paint gives the view its width, so it walks the text twice.
     _ = text_work.take();
     try scene_fixture.repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
-    try expectWork(changed);
+    try expectWork(.{ .layouts = 1, .lines_laid_out = 5_000, .measure_passes = 1, .measure_lines = 5_000, .clusters_drawn = 972, .ascii_bytes = 810_000 });
     try scene_fixture.repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
     try expectWork(.{ .clusters_drawn = 972 });
     text[10] = 'X';
     try f.owner.sceneSetText(node, text);
     _ = text_work.take();
     try scene_fixture.repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
-    try expectWork(changed);
+    // The measure lays the node out at its width and paint reuses it; the text is new, so every
+    // line. Before: a measure pass of 5,000 lines as well.
+    try expectWork(.{ .layouts = 1, .lines_laid_out = 5_000, .clusters_drawn = 972, .ascii_bytes = 405_000 });
+
+    // An auto-height wrapped editor: after a one-character edit, measure and paint share one
+    // layout of the edited line. Before: 5,000 measure lines and 1 laid-out line.
+    try f.owner.sceneDestroyNode(node);
+    const edit = try f.owner.createEditBuffer(.unicode);
+    const editor = try f.owner.createEditorView(edit, 1, 1);
+    try f.owner.editorCommand(editor, .{ .wrap_mode = .word });
+    const editor_node = try f.owner.sceneCreateNode(f.id, 5, 2);
+    try f.owner.sceneSetEditorView(editor_node, editor);
+    try f.owner.sceneSetStyle(editor_node, 4, 0, 0, 1, 80, 1);
+    try f.owner.sceneMoveNode(editor_node, f.root, 0);
+    try f.owner.editSetText(edit, text, false);
+    try scene_fixture.repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
+    try f.owner.editSetCursor(edit, 10, 0);
+    try f.owner.editInsertText(edit, "x");
+    _ = text_work.take();
+    try scene_fixture.repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
+    const frame = text_work.take();
+    try std.testing.expectEqual([4]u64{ 1, 1, 0, 0 }, [4]u64{ frame.layouts, frame.lines_laid_out, frame.measure_passes, frame.measure_lines });
 }
 
 /// Loads the parts as chunks, measures once at each width to warm, then returns the work
@@ -426,8 +449,8 @@ fn measureSweep(allocator: std.mem.Allocator, pools: *TestPools, parts: []const 
     defer view.deinit();
     try tb.setText(parts[0]);
     for (parts[1..]) |part| try tb.append(part);
+    // No render width, so every width is measured, not read from a layout.
     view.setWrapMode(mode);
-    view.setWrapWidth(80);
     for (76..84) |width| _ = try view.measureForDimensions(@intCast(width), 100);
     _ = text_work.take();
     for (76..84, 0..) |width, i| {

@@ -14,7 +14,7 @@ pub const Counts = struct {
     lines_shifted: u64 = 0,
     /// Partial layouts that reach the splice of their staged lines.
     splices: u64 = 0,
-    /// `measureForDimensions` calls that miss the measure cache.
+    /// Measures that walk lines, and the logical lines they measure.
     measure_passes: u64 = 0,
     measure_lines: u64 = 0,
     /// Line lookups by rope descent, and the branches they visit.
