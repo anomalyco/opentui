@@ -2030,8 +2030,8 @@ test "calculateTextWidth: each default-ignorable code point takes the cells Ghos
         for (std.enums.values(utf8.WidthMethod)) |width_method| {
             errdefer std.debug.print("width_method={t} code point={x}\n", .{ width_method, cp });
             try testing.expectEqual(cells, utf8.calculateTextWidth(bytes[1..len], 4, .hidden, false, width_method));
-            // OpenTUI widens any one-cell base before VS16 to two cells.
-            if (cp == 0xfe0f) continue;
+            // The grapheme methods widen any one-cell base before VS16 to two cells.
+            if (cp == 0xfe0f and width_method != .wcwidth) continue;
             try testing.expectEqual(1 + cells, utf8.calculateTextWidth(bytes[0..len], 4, .hidden, false, width_method));
             // Grapheme-safe wrapping measures the cluster as it grows, in every width method.
             try testing.expectEqual(1 + cells, utf8.findWrapPosByWidthGraphemeSafe(bytes[0..len], 4, 4, .hidden, false, width_method).columns_used);
@@ -2080,57 +2080,21 @@ test "calculateTextWidth: complex text with emojis and multiple scripts" {
 }
 
 test "calculateTextWidth: validate against unicode-width-map.zon" {
-    const zon_content = @embedFile("unicode-width-map.zon");
-
-    // Use arena allocator to avoid memory leaks from ZON parser string allocations
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const zon_with_null = try allocator.dupeZ(u8, zon_content);
-
-    const WidthEntry = struct {
-        codepoint: []const u8,
-        width: i32,
-    };
-
-    const width_entries = std.zon.parse.fromSliceAlloc(
-        []const WidthEntry,
-        allocator,
-        zon_with_null,
-        null,
-        .{},
-    ) catch |err| {
-        return err;
-    };
-
-    var successes: usize = 0;
+    // Runs of code points with the width terminals draw them in.
+    const Run = struct { first: u21, last: u21, width: u32 };
+    const runs = try std.zon.parse.fromSliceAlloc([]const Run, testing.allocator, @embedFile("unicode-width-map.zon"), null, .{});
+    defer std.zon.parse.free(testing.allocator, runs);
     var failures: usize = 0;
-
-    for (width_entries) |entry| {
-        const codepoint_str = entry.codepoint;
-        const expected_width = entry.width;
-
-        // Parse "U+XXXX" from codepoint string
-        if (codepoint_str.len < 3 or !std.mem.startsWith(u8, codepoint_str, "U+")) {
-            continue;
-        }
-        const hex_str = codepoint_str[2..];
-        const code_point = std.fmt.parseInt(u21, hex_str, 16) catch continue;
-
+    for (runs) |run| for (run.first..run.last + 1) |cp| {
         var buf: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(code_point, &buf) catch continue;
-        const str = buf[0..len];
-
-        const actual_width = utf8.calculateTextWidth(str, 4, .hidden, false, .unicode);
-
-        if (actual_width == expected_width) {
-            successes += 1;
-        } else {
+        const str = buf[0..try std.unicode.utf8Encode(@intCast(cp), &buf)];
+        for (std.enums.values(utf8.WidthMethod)) |method| {
+            const actual = utf8.calculateTextWidth(str, 4, .hidden, false, method);
+            if (actual == run.width) continue;
+            std.debug.print("U+{X:0>4} {s}: {d}, expected {d}\n", .{ cp, @tagName(method), actual, run.width });
             failures += 1;
         }
-    }
-
+    };
     try testing.expectEqual(@as(usize, 0), failures);
 }
 

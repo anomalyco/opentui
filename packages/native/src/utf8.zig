@@ -438,88 +438,8 @@ inline fn eawToWidth(cp: u21, eaw: uucode.types.EastAsianWidth) i16 {
     // conjoining jamo fillers U+115F and U+1160 keep their widths: they start a Hangul syllable cluster.
     if (cp != 0x00AD and cp != 0x115F and cp != 0x1160 and uucode.get(.is_default_ignorable, cp)) return 0;
 
-    if (eaw == .fullwidth or eaw == .wide) return 2;
-
-    if (cp >= 0x1F000 and cp <= 0x1F02B) return 2;
-    if (cp >= 0x1F030 and cp <= 0x1F093) return 2;
-    if (cp >= 0x1F0A0 and cp <= 0x1F0AE) return 2;
-    if (cp >= 0x1F0B1 and cp <= 0x1F0BF) return 2;
-    if (cp >= 0x1F0C1 and cp <= 0x1F0CF) return 2;
-    if (cp >= 0x1F0D1 and cp <= 0x1F0F5) return 2;
-
-    if (cp == 0x231A or cp == 0x231B) return 2;
-    if (cp == 0x2329 or cp == 0x232A) return 2;
-    if (cp >= 0x23E9 and cp <= 0x23EC) return 2;
-    if (cp == 0x23F0 or cp == 0x23F3) return 2;
-    if (cp >= 0x25FD and cp <= 0x25FE) return 2;
-
-    if (cp >= 0x2614 and cp <= 0x2615) return 2;
-    if (cp == 0x2622 or cp == 0x2623) return 2;
-    if (cp >= 0x2630 and cp <= 0x2637) return 2;
-    if (cp >= 0x2648 and cp <= 0x2653) return 2;
-    if (cp == 0x267F or cp == 0x2693 or cp == 0x269B) return 2;
-    if (cp >= 0x26AA and cp <= 0x26AB) return 2;
-    if (cp >= 0x26BD and cp <= 0x26BE) return 2;
-    if (cp >= 0x26C4 and cp <= 0x26C5) return 2;
-    if (cp == 0x26CE or cp == 0x26D1 or cp == 0x26D4) return 2;
-    if (cp == 0x26EA or cp == 0x26F2 or cp == 0x26F3) return 2;
-    if (cp == 0x26F5 or cp == 0x26FA or cp == 0x26FD) return 2;
-
-    if (cp == 0x203C or cp == 0x2049) return 2;
-    if (cp == 0x2705 or cp >= 0x270A and cp <= 0x270B) return 2;
-    if (cp == 0x2728 or cp == 0x274C or cp == 0x274E) return 2;
-    if (cp >= 0x2753 and cp <= 0x2755) return 2;
-    if (cp == 0x2757) return 2;
-    if (cp >= 0x2760 and cp <= 0x2767) return 2;
-    if (cp >= 0x2795 and cp <= 0x2797) return 2;
-    if (cp == 0x27B0 or cp == 0x27BF) return 2;
-    if (cp >= 0x2B1B and cp <= 0x2B1C) return 2;
-    if (cp >= 0x2B50 and cp <= 0x2B50) return 2;
-    if (cp >= 0x2B55 and cp <= 0x2B55) return 2;
-
-    if (cp >= 0x1F300 and cp <= 0x1F320) return 2;
-    if (cp >= 0x1F32D and cp <= 0x1F335) return 2;
-    if (cp >= 0x1F337 and cp <= 0x1F37C) return 2;
-    if (cp >= 0x1F37E and cp <= 0x1F393) return 2;
-    if (cp >= 0x1F3A0 and cp <= 0x1F3CA) return 2;
-    if (cp >= 0x1F3CF and cp <= 0x1F3D3) return 2;
-    if (cp >= 0x1F3E0 and cp <= 0x1F3F0) return 2;
-    if (cp == 0x1F3F4) return 2;
-    if (cp >= 0x1F3F8 and cp <= 0x1F3FF) return 2;
-    if (cp >= 0x1F400 and cp <= 0x1F43E) return 2;
-    if (cp == 0x1F440) return 2;
-    if (cp >= 0x1F442 and cp <= 0x1F4FC) return 2;
-    if (cp >= 0x1F4FF and cp <= 0x1F6C5) return 2;
-    if (cp == 0x1F6CC) return 2;
-    if (cp >= 0x1F6D0 and cp <= 0x1F6D2) return 2;
-    if (cp >= 0x1F6D5 and cp <= 0x1F6D7) return 2;
-    if (cp >= 0x1F6DC and cp <= 0x1F6DF) return 2;
-    if (cp >= 0x1F6EB and cp <= 0x1F6EC) return 2;
-    if (cp >= 0x1F6F4 and cp <= 0x1F6FC) return 2;
-    if (cp >= 0x1F700 and cp <= 0x1F773) return 2;
-    if (cp >= 0x1F780 and cp <= 0x1F7D8) return 2;
-    if (cp >= 0x1F7E0 and cp <= 0x1F7EB) return 2;
-    if (cp >= 0x1F800 and cp <= 0x1F80B) return 2;
-    if (cp >= 0x1F810 and cp <= 0x1F847) return 2;
-    if (cp >= 0x1F850 and cp <= 0x1F859) return 2;
-    if (cp >= 0x1F860 and cp <= 0x1F887) return 2;
-    if (cp >= 0x1F890 and cp <= 0x1F8AD) return 2;
-    if (cp >= 0x1F8B0 and cp <= 0x1F8B1) return 2;
-    if (cp >= 0x1F90C and cp <= 0x1F93A) return 2;
-    if (cp >= 0x1F93C and cp <= 0x1F945) return 2;
-    if (cp >= 0x1F947 and cp <= 0x1FA53) return 2;
-    if (cp >= 0x1FA60 and cp <= 0x1FA6D) return 2;
-    if (cp >= 0x1FA70 and cp <= 0x1FA74) return 2;
-    if (cp >= 0x1FA78 and cp <= 0x1FA7C) return 2;
-    if (cp >= 0x1FA80 and cp <= 0x1FA86) return 2;
-    if (cp >= 0x1FA90 and cp <= 0x1FAAC) return 2;
-    if (cp >= 0x1FAB0 and cp <= 0x1FABA) return 2;
-    if (cp >= 0x1FAC0 and cp <= 0x1FAC5) return 2;
-    if (cp >= 0x1FAD0 and cp <= 0x1FAD9) return 2;
-    if (cp >= 0x1FAE0 and cp <= 0x1FAE7) return 2;
-    if (cp >= 0x1FAF0 and cp <= 0x1FAF8) return 2;
-
-    return 1;
+    // Terminals draw every other code point in one cell, text-default emoji too; VS16 widens those per grapheme.
+    return if (eaw == .fullwidth or eaw == .wide) 2 else 1;
 }
 
 /// How layout measures a control character: a C0 control other than tab, line feed, and
@@ -610,7 +530,7 @@ const GraphemeWidthState = struct {
     width: u32 = 0,
     has_width: bool = false,
     is_regional_indicator_pair: bool = false,
-    has_vs16: bool = false,
+    is_emoji_modifier_base: bool = false,
     has_indic_virama: bool = false,
     width_method: WidthMethod,
 
@@ -620,7 +540,7 @@ const GraphemeWidthState = struct {
             .width = first_width,
             .has_width = (first_width > 0),
             .is_regional_indicator_pair = (first_cp >= 0x1F1E6 and first_cp <= 0x1F1FF),
-            .has_vs16 = false,
+            .is_emoji_modifier_base = uucode.get(.grapheme_break, first_cp) == .emoji_modifier_base,
             .has_indic_virama = false,
             .width_method = width_method,
         };
@@ -652,7 +572,6 @@ const GraphemeWidthState = struct {
         const is_devanagari_base = (cp >= 0x0915 and cp <= 0x0939) or (cp >= 0x0958 and cp <= 0x095F);
 
         if (is_vs16) {
-            self.has_vs16 = true;
             if (self.has_width and self.width == 1) {
                 self.width = 2;
             }
@@ -670,6 +589,9 @@ const GraphemeWidthState = struct {
         } else if (!self.has_width and cp_width > 0) {
             self.width = cp_width;
             self.has_width = true;
+        } else if (self.is_emoji_modifier_base and self.width_method != .unicode_wide and uucode.get(.grapheme_break, cp) == .emoji_modifier) {
+            // kitty, foot and WezTerm draw an emoji modifier sequence in two cells; Ghostty, unicode_wide's terminal, in one.
+            self.width = 2;
         } else if (self.width_method == .unicode_wide and self.has_width and !uucode.get(.wcwidth_zero_in_grapheme, cp)) {
             self.width = @max(self.width, 2);
         } else if (self.has_width and is_spacing_mark and cp_width > 0) {
