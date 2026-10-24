@@ -444,7 +444,6 @@ export interface NativeSceneFrameRequest {
   readonly height: number
   paintLayout?: NativeSceneLayout
   publicLayout?: NativeSceneLayout
-  /** Host observation revision; never part of native ticket authority. */
 }
 
 export interface NativeSplitSnapshot {

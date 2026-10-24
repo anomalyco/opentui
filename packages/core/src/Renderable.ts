@@ -1940,7 +1940,6 @@ export abstract class Renderable extends BaseRenderable {
   /** @internal Refresh only requested host hooks, never walk wrappers to collect layout. */
   _runNativeSceneHook(request: NativeSceneFrameRequest, deltaTime: number): void {
     if (this._isDestroyed || request.hookGeneration !== this._nativeSceneHookGeneration) return
-    const previousLayout = this._paintLayout
     this.observeLayout(request.publicLayout)
     this._paintLayout = request.paintLayout
     try {
@@ -1965,7 +1964,7 @@ export abstract class Renderable extends BaseRenderable {
           break
       }
     } finally {
-      this._paintLayout = previousLayout
+      this._paintLayout = undefined
     }
   }
 
@@ -1982,7 +1981,6 @@ export abstract class Renderable extends BaseRenderable {
     // Native code paints the phases the slot requested even if an earlier hook changed this
     // node's hooks, so record them with the current methods instead of skipping the slot.
     if (this._isDestroyed) return
-    const previousLayout = this._paintLayout
     this.observeLayout(publicLayout)
     this._paintLayout = slot.paintLayout
     // Buffered bodies draw into their own buffer. When native code composes that buffer, it
@@ -2022,7 +2020,7 @@ export abstract class Renderable extends BaseRenderable {
           frame.drawFrameBuffer(Math.trunc(this._screenX), Math.trunc(this._screenY), this.frameBuffer)
       }
     } finally {
-      this._paintLayout = previousLayout
+      this._paintLayout = undefined
     }
   }
 

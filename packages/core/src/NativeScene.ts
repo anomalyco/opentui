@@ -154,7 +154,8 @@ export class NativeScene {
     return this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed
   }
 
-  /** Frames, measurement, moves, destroys, and translations are the only changes a layout read can see. */
+  /** Frames, moves, destroys, and translations are the only changes a layout read can see. Measurement and cancels
+   * change none today; they bump so that a native solve or observation outside a frame step stays covered. */
   private changeLayout(): void {
     this.layoutRevision = this.layoutRevision === Number.MAX_SAFE_INTEGER ? 0 : this.layoutRevision + 1
   }
