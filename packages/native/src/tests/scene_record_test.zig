@@ -124,12 +124,11 @@ fn submit(f: Fixture, request: scene.FrameRequest, recording: *const Recording) 
     return f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view());
 }
 
-/// Submits a recording. A rejected one must leave no attempt, draft, snapshot, or hits; both leave no stack entries.
+/// Submits a recording. A rejected one must leave no attempt, draft, or snapshot; both leave no stack entries.
 fn submitChecked(f: Fixture, request: scene.FrameRequest, recording: *const Recording) !?scene.FrameRequest {
     const result = submit(f, request, recording) catch null;
     try testing.expect(f.cli.getNextBuffer().scissor_stack.items.len == 0 and f.cli.getNextBuffer().opacity_stack.items.len == 0);
     if (result == null) try testing.expect(f.state.attempt == null and f.state.painted == null and f.state.paint_members.items.len == 0);
-    if (result == null) try testing.expect(std.mem.allEqual(u32, f.cli.nextHitGrid, 0));
     return result;
 }
 
@@ -169,8 +168,8 @@ test "Scene record plays each phase at its slot around the native body" {
     try testing.expectEqual(@as(u32, 'y'), cells.get(1, 0).?.char);
     try testing.expectEqual(@as(u32, ' '), cells.get(2, 0).?.char);
     try testing.expectEqual(ansi.rgbColor(3, 0, 0, 255), cells.get(2, 0).?.bg);
-    try testing.expectEqual(try token(f, first), f.cli.nextHitGrid[0]);
-    try testing.expectEqual(try token(f, second), f.cli.nextHitGrid[2]);
+    try testing.expectEqual(try token(f, first), f.draftHit(0));
+    try testing.expectEqual(try token(f, second), f.draftHit(2));
     try testing.expectEqual(@as(usize, 0), cells.scissor_stack.items.len);
     try testing.expectEqual(@as(usize, 0), cells.opacity_stack.items.len);
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
@@ -189,7 +188,7 @@ test "Scene record self replaces the native body and unrecorded phases draw noth
     const cells = f.cli.getNextBuffer();
     try testing.expectEqual(options.background, cells.get(0, 0).?.bg);
     try testing.expectEqual(@as(u32, 's'), cells.get(1, 0).?.char);
-    try testing.expectEqual(try token(f, child), f.cli.nextHitGrid[0]);
+    try testing.expectEqual(try token(f, child), f.draftHit(0));
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
@@ -221,9 +220,9 @@ test "Scene record hooks mutate before paint without tearing or reviving destroy
     try testing.expectEqual(options.background, cells.get(4, 0).?.bg);
     try testing.expectEqual(@as(u32, ' '), cells.get(4, 0).?.char);
     try testing.expectEqual(options.background, cells.get(6, 0).?.bg);
-    try testing.expectEqual(first_token, f.cli.nextHitGrid[0]);
-    try testing.expectEqual(@as(u32, 0), f.cli.nextHitGrid[4]);
-    try testing.expectEqual(@as(u32, 0), f.cli.nextHitGrid[6]);
+    try testing.expectEqual(first_token, f.draftHit(0));
+    try testing.expectEqual(@as(u32, 0), f.draftHit(4));
+    try testing.expectEqual(@as(u32, 0), f.draftHit(6));
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
     const next = try f.owner.sceneFrameStep(f.id, null, options);
     try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_RECORD), next.kind);
@@ -323,7 +322,7 @@ test "Scene record paints nodes that a hook hides from the prepared membership u
         const next = f.cli.getNextBuffer();
         try testing.expectEqual(if (painted) ansi.rgbColor(2, 0, 0, 255) else options.background, next.get(0, 0).?.bg);
         try testing.expectEqual(@as(u32, if (painted) 's' else ' '), next.get(2, 0).?.char);
-        try testing.expectEqual(if (painted) try token(f, surface) else 0, f.cli.nextHitGrid[2]);
+        try testing.expectEqual(if (painted) try token(f, surface) else 0, f.draftHit(2));
         try f.owner.sceneFrameCancel(f.id, done.frame_id);
     }
 }

@@ -419,9 +419,10 @@ typedef struct ot_scene_layout {
 #define OT_SCENE_FULL_PATH_IMAGES UINT32_C(4)
 
 /* Fields from work_frame_id on count the work of the last presented scene
- * frame: preparation, paint, encoding, and the hit-grid commit. They are
- * deterministic work counts, not times, and their values may change between
- * versions as the renderer does less work. Cancelled, failed, and skipped frames,
+ * frame: preparation, paint, and encoding. They are deterministic work
+ * counts, not times, and their values may change between versions as the
+ * renderer does less work. The three hit_cells fields are zero: paint records
+ * one hit rectangle per member, and a hit test walks them. Cancelled, failed, and skipped frames,
  * non-scene renders, and snapshot-only split renders leave them unchanged.
  * work_frame_id is the frame_id of the counted frame, or zero before the first.
  * full_path_reasons holds OT_SCENE_FULL_PATH_* bits: FORCED (debug flag),
@@ -847,7 +848,7 @@ ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t obse
  * ot_scene_frame_commit, or cancel it before painting again. Frame-qualified
  * effects and capture may run before commit. Initialize out_frame's exact
  * size/version and zero reserved fields; rejection leaves it unchanged.
- * No output or hit-grid publication occurs until commit and output completion.
+ * No output or hit publication occurs until commit and output completion.
  * Pending presentation rejects painting; accepted scene mutations remain valid.
  * excluded_hit_num is the captured node's public number, or zero. It excludes
  * only that node from this frame's hits, not its painting or descendants.
@@ -2721,7 +2722,8 @@ ot_status ot_session_attach_renderer_with_env(
 /* Submit at most one frame. force is 0 or 1. OT_RENDER_PENDING also means that
  * an earlier accepted frame is still pending; no second frame was accepted.
  * SKIPPED and FAILED accept no output and require an explicit new submission.
- * Only output completion publishes frame_count and the pending hit grid.
+ * Only output completion publishes frame_count. A frame submitted here has no
+ * scene hits: after it, ot_scene_hit_test returns 0 until a scene frame presents.
  * A live scene preparation or painted draft returns OT_FRAME_BUSY; submit a
  * painted draft with ot_scene_frame_commit instead.
  * On an error return, out_result remains unchanged. */
@@ -2764,8 +2766,9 @@ ot_status ot_scene_frame_draw_buffer(ot_context *context, const ot_handle *sessi
  * or an idle frame. They emit no terminal output. enabled is 0 or 1; corner is
  * 0 top-left, 1 top-right, 2 bottom-left, or 3 bottom-right. Times must be finite
  * and nonnegative. Memory byte counts use the renderer's existing u32 range.
- * Hit-grid dumping retains the renderer's best-effort file I/O semantics and
- * uses Context I/O, writing hitgrid_<timestamp>.txt in the working directory. */
+ * Hit-grid dumping writes, per cell, the last digit of the presented hit token
+ * (or '.') with best-effort file I/O through Context I/O, to
+ * hitgrid_<timestamp>.txt in the working directory. */
 ot_status ot_session_set_debug_overlay(ot_context *, const ot_handle *session, uint32_t enabled, uint32_t corner);
 ot_status ot_session_update_stats(ot_context *, const ot_handle *session, double overall_ms, uint32_t fps, double callback_ms);
 ot_status ot_session_update_memory_stats(ot_context *, const ot_handle *session, uint32_t heap_used, uint32_t heap_total, uint32_t array_buffers);

@@ -1789,14 +1789,13 @@ test "renderer - resize updates dimensions" {
     try std.testing.expectEqual(@as(u32, 40), cli_renderer.height);
 }
 
-test "renderer - resize allocation failures preserve both buffers and hit grids" {
+test "renderer - resize allocation failures preserve both buffers and published hits" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
     defer links.deinit();
     for ([_][2]u32{ .{ 4, 1 }, .{ 3, 2 } }) |dimensions| {
-        const allocation_count: usize = if (dimensions[0] * dimensions[1] > 4) 12 else 10;
-        for (0..allocation_count) |fail_index| {
+        for (0..10) |fail_index| {
             var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
             const target = try CliRenderer.createWithOptions(failing.allocator(), 2, 2, &pool, .{
                 .io = io,
@@ -1816,8 +1815,7 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             target.nextRenderBuffer.set(0, 0, cell);
             try pool.decref(grapheme_id);
             try links.decref(link_id);
-            target.currentHitGrid[3] = 42;
-            target.nextHitGrid[3] = 43;
+            target.presented_hits_frame = 42;
             target.terminal.setCursorPosition(2, 2, true);
             var current = try target.currentRenderBuffer.acquireLease();
             defer current.release();
@@ -1825,8 +1823,6 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             defer next.release();
             const current_snapshot = try current.snapshot();
             const next_snapshot = try next.snapshot();
-            const current_hits = target.currentHitGrid;
-            const next_hits = target.nextHitGrid;
             const live_bytes = failing.allocated_bytes - failing.freed_bytes;
             failing.fail_index = failing.alloc_index + fail_index;
 
@@ -1834,19 +1830,14 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             try std.testing.expectEqual(live_bytes, failing.allocated_bytes - failing.freed_bytes);
             try std.testing.expectEqual(@as(u32, 2), target.width);
             try std.testing.expectEqual(@as(u32, 2), target.height);
-            try std.testing.expectEqual(@as(u32, 2), target.hitGridWidth);
-            try std.testing.expectEqual(@as(u32, 2), target.hitGridHeight);
             try std.testing.expectEqualDeep(current_snapshot, try current.snapshot());
             try std.testing.expectEqualDeep(next_snapshot, try next.snapshot());
             try std.testing.expectEqual(current.storage.?, target.currentRenderBuffer.storage);
             try std.testing.expectEqual(next.storage.?, target.nextRenderBuffer.storage);
             try std.testing.expectEqualDeep(cell, target.currentRenderBuffer.get(0, 0).?);
             try std.testing.expectEqualDeep(cell, target.nextRenderBuffer.get(0, 0).?);
-            try std.testing.expectEqual(current_hits.ptr, target.currentHitGrid.ptr);
-            try std.testing.expectEqual(next_hits.ptr, target.nextHitGrid.ptr);
-            try std.testing.expectEqual(@as(u32, 42), target.checkHit(1, 1));
-            try std.testing.expectEqual(@as(u32, 43), target.nextHitGrid[3]);
-            try std.testing.expect(!target.hitGridResizeInvalidated);
+            try std.testing.expectEqual(@as(u64, 42), target.presented_hits_frame);
+            try std.testing.expectEqual(@as(u64, 0), target.hits_generation);
             try std.testing.expectEqual(@as(u32, 2), target.terminal.getCursorPosition().y);
             try std.testing.expectEqual(@as(u32, 2), try pool.getRefcount(grapheme_id));
             try std.testing.expectEqual(@as(u32, 2), try links.getRefcount(link_id));
@@ -1860,11 +1851,8 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
                 try std.testing.expectEqual(dimensions[1], frame.height);
                 try std.testing.expectEqual(@as(u64, 2), frame.storage.generation);
             }
-            try std.testing.expectEqual(dimensions[0], target.hitGridWidth);
-            try std.testing.expectEqual(dimensions[1], target.hitGridHeight);
-            for (target.currentHitGrid) |hit| try std.testing.expectEqual(@as(u32, 0), hit);
-            for (target.nextHitGrid) |hit| try std.testing.expectEqual(@as(u32, 0), hit);
-            try std.testing.expect(target.hitGridResizeInvalidated);
+            try std.testing.expectEqual(@as(u64, 0), target.presented_hits_frame);
+            try std.testing.expectEqual(@as(u64, 1), target.hits_generation);
             try std.testing.expect(!current.isCurrent());
             try std.testing.expect(!next.isCurrent());
             try std.testing.expectEqual(cell.char, current_snapshot.buffer.char[0]);
@@ -1875,31 +1863,6 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             try target.resize(dimensions[0], dimensions[1]);
         }
     }
-}
-
-test "renderer - resize clears stale hit grid coordinates" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        4,
-        2,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    cli_renderer.addToCurrentHitGridClipped(2, 0, 1, 1, 99);
-    try std.testing.expectEqual(@as(u32, 99), cli_renderer.checkHit(2, 0));
-
-    try cli_renderer.resize(2, 2);
-
-    try std.testing.expectEqual(@as(u32, 0), cli_renderer.checkHit(0, 1));
-
-    _ = cli_renderer.render(false);
-    try std.testing.expect(cli_renderer.getHitGridDirty());
 }
 
 test "renderer - background color setting" {
@@ -3874,8 +3837,7 @@ test "FeedBackend - suspend from a published split batch callback preserves stat
     cli.terminal.state.kitty_keyboard = true;
     cli.terminal.state.kitty_keyboard_flags = 5;
     _ = cli.resetSplitScrollback(1, 4);
-    cli.currentHitGrid[0] = 42;
-    cli.nextHitGrid[0] = 43;
+    cli.presented_hits_frame = 42;
     const snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = link_pool, .pool = pool });
     defer snapshot.deinit();
     try snapshot.drawText("kept", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
@@ -3901,7 +3863,7 @@ test "FeedBackend - suspend from a published split batch callback preserves stat
     try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.csiUPop) != null);
     try std.testing.expectEqual(@as(u32, 3), cli.splitScrollback.published_rows);
     try std.testing.expectEqual(@as(u32, 3), final.renderOffset);
-    try std.testing.expectEqual(@as(u32, 43), cli.currentHitGrid[0]);
+    try std.testing.expectEqual(@as(u64, 0), cli.presented_hits_frame);
     try std.testing.expect(!cli.splitBatchActive);
     try std.testing.expect(!cli.terminal.state.alt_screen);
     try std.testing.expect(!cli.terminal.state.kitty_keyboard);
@@ -4350,27 +4312,27 @@ test "FeedBackend - skipped frame keeps the published hit grid and clears its pa
     defer feed.destroy();
     defer cli_renderer.destroy();
 
-    cli_renderer.addToHitGrid(0, 0, 1, 1, 11);
+    cli_renderer.scene_work = .{ .work_frame_id = 11 };
     try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.render(true));
     var spans: [8]native_span_feed.SpanInfo = undefined;
     var count = feed.drainSpans(&spans);
     for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 11), cli_renderer.presented_hits_frame);
     const cleared_char = cli_renderer.getNextBuffer().buffer.char[0];
 
-    cli_renderer.addToHitGrid(0, 0, 1, 1, 22);
+    cli_renderer.scene_work = .{ .work_frame_id = 22 };
     try cli_renderer.getNextBuffer().drawText("X", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
     const blocker = [_]u8{'x'} ** 193;
     try feed.writeAtomic(&blocker);
     try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(true));
-    try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 11), cli_renderer.presented_hits_frame);
     try std.testing.expectEqual(cleared_char, cli_renderer.getNextBuffer().buffer.char[0]);
 
     count = feed.drainSpans(&spans);
     for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    cli_renderer.addToHitGrid(0, 0, 1, 1, 22);
+    cli_renderer.scene_work = .{ .work_frame_id = 22 };
     try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.render(true));
-    try std.testing.expectEqual(@as(u32, 22), cli_renderer.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 22), cli_renderer.presented_hits_frame);
 }
 
 test "FeedBackend - skipped frame retries unsent terminal controls" {

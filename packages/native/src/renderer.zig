@@ -106,7 +106,7 @@ pub const RenderStatsSnapshot = struct {
     frameWork: FrameWork,
 };
 
-/// Work counts of one scene frame: scene paint, encoding, and hit-grid commit.
+/// Work counts of one scene frame: scene paint and encoding.
 /// Counts are deterministic; none reads a clock.
 pub const FrameWork = struct {
     work_frame_id: u64 = 0,
@@ -122,9 +122,6 @@ pub const FrameWork = struct {
     members_painted: u64 = 0,
     member_cells: u64 = 0,
     cells_cleared: u64 = 0,
-    hit_cells_written: u64 = 0,
-    hit_cells_cleared: u64 = 0,
-    hit_cells_compared: u64 = 0,
     rows_compared: u64 = 0,
     rows_diffed: u64 = 0,
     full_path_reasons: u32 = 0,
@@ -369,29 +366,11 @@ pub const CliRenderer = struct {
         .corner = .bottomRight,
     },
 
-    // Hit grid for mouse event dispatch.
-    //
-    // The hit grid is a screen-sized array where each cell stores the renderable ID
-    // at that position. Mouse events query checkHit(x, y) to find which element to
-    // dispatch to.
-    //
-    // Double buffering: During render, addToHitGrid writes to nextHitGrid. After
-    // render completes, the buffers swap. This keeps hit testing consistent during
-    // a frame. Queries see the previous frame's state, not a half-built grid.
-    //
-    // On-demand sync: addToCurrentHitGridClipped writes currentHitGrid directly, so
-    // a Zig caller can update hit targets between renders.
-    //
-    // Scissor clipping: addToHitGrid and addToCurrentHitGridClipped clip to the top
-    // of hitScissorStack (screen coordinates). Scene frames clip hits themselves;
-    // they push no rects and only clear the stack.
-    currentHitGrid: []u32,
-    nextHitGrid: []u32,
-    hitGridWidth: u32,
-    hitGridHeight: u32,
-    hitScissorStack: std.ArrayListUnmanaged(buf.ClipRect),
-    hitGridDirty: bool = false,
-    hitGridResizeInvalidated: bool = false,
+    // The scene keeps hit rectangles; the renderer publishes which scene frame's hits
+    // a completed presentation shows. Zero publishes none: non-scene presentations
+    // and resize. Resize also retires the hits of a painted, uncommitted draft.
+    presented_hits_frame: u64 = 0,
+    hits_generation: u64 = 0,
 
     lastCursorStyleTag: ?u8 = null,
     lastCursorBlinking: ?bool = null,
@@ -497,15 +476,6 @@ pub const CliRenderer = struct {
         try cellsUpdated.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
         try frameCallbackTimes.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
 
-        const hitGridSize = width * height;
-        const currentHitGrid = try allocator.alloc(u32, hitGridSize);
-        errdefer allocator.free(currentHitGrid);
-        const nextHitGrid = try allocator.alloc(u32, hitGridSize);
-        errdefer allocator.free(nextHitGrid);
-        @memset(currentHitGrid, 0); // Initialize with 0 (no renderable)
-        @memset(nextHitGrid, 0);
-        const hitScissorStack: std.ArrayListUnmanaged(buf.ClipRect) = .empty;
-
         // Backend variant selected once by opts.output.
         var backend: OutputBackend = switch (opts.output) {
             .stdout => .{ .buffered = try BufferedBackend.createStdoutWithIo(allocator, opts.io) },
@@ -565,11 +535,6 @@ pub const CliRenderer = struct {
             .kittyTransport = .{ .io = opts.io },
             .host_driven_time = opts.host_driven_time,
             .logger = opts.logger,
-            .currentHitGrid = currentHitGrid,
-            .nextHitGrid = nextHitGrid,
-            .hitGridWidth = width,
-            .hitGridHeight = height,
-            .hitScissorStack = hitScissorStack,
             .palette_rgba = undefined,
             .default_fg_rgba = ansi.defaultColor(255, 255, 255, 255),
             .default_bg_rgba = ansi.defaultColor(0, 0, 0, 255),
@@ -620,10 +585,6 @@ pub const CliRenderer = struct {
         var sixel_cache = self.sixelCache.iterator();
         while (sixel_cache.next()) |entry| self.allocator.free(entry.value_ptr.payload);
         self.sixelCache.deinit(self.allocator);
-
-        self.allocator.free(self.currentHitGrid);
-        self.allocator.free(self.nextHitGrid);
-        self.hitScissorStack.deinit(self.allocator);
 
         self.allocator.destroy(self);
     }
@@ -877,21 +838,11 @@ pub const CliRenderer = struct {
             if (bytes) |packet| try self.backend.feed.feed.writeAtomic(packet);
             return;
         }
-        const newHitGridSize = std.math.mul(u32, width, height) catch return error.InvalidDimensions;
+        _ = std.math.mul(u32, width, height) catch return error.InvalidDimensions;
         var current = try self.currentRenderBuffer.prepareResize(width, height);
         defer current.deinit();
         var next = try self.nextRenderBuffer.prepareResize(width, height);
         defer next.deinit();
-        const newHitGrids: ?[2][]u32 = if (newHitGridSize > self.currentHitGrid.len) grids: {
-            const newCurrentHitGrid = try self.allocator.alloc(u32, newHitGridSize);
-            errdefer self.allocator.free(newCurrentHitGrid);
-            const newNextHitGrid = try self.allocator.alloc(u32, newHitGridSize);
-            break :grids .{ newCurrentHitGrid, newNextHitGrid };
-        } else null;
-        errdefer if (newHitGrids) |grids| {
-            self.allocator.free(grids[0]);
-            self.allocator.free(grids[1]);
-        };
         if (bytes) |packet| try self.backend.feed.feed.writeAtomic(packet);
 
         // Every fallible allocation finishes before any visible state changes.
@@ -902,23 +853,8 @@ pub const CliRenderer = struct {
         self.nextRenderBuffer.setBlendBackdropColor(ansi.rgbColor(ansi.red(self.backgroundColor), ansi.green(self.backgroundColor), ansi.blue(self.backgroundColor), 255));
         self.currentRenderBuffer.clear(ansi.rgbColor(0, 0, 0, 255), CLEAR_CHAR);
         self.nextRenderBuffer.clear(self.backgroundColor, null);
-        if (newHitGrids) |grids| {
-            self.allocator.free(self.currentHitGrid);
-            self.allocator.free(self.nextHitGrid);
-            self.currentHitGrid = grids[0];
-            self.nextHitGrid = grids[1];
-        }
-
-        @memset(self.currentHitGrid, 0);
-        @memset(self.nextHitGrid, 0);
-        self.hitGridResizeInvalidated = true;
-
-        // Always update dimensions. The backing buffer is at least as large as
-        // width*height, so this is safe even when the terminal shrinks. Without
-        // this, checkHit keeps using stale dimensions after a shrink and returns
-        // 0 for any coordinate beyond the old bounds.
-        self.hitGridWidth = width;
-        self.hitGridHeight = height;
+        self.presented_hits_frame = 0;
+        self.hits_generation += 1;
 
         const cursor = self.terminal.getCursorPosition();
         self.terminal.setCursorPosition(@min(cursor.x, width), @min(cursor.y, height), cursor.visible);
@@ -1052,7 +988,6 @@ pub const CliRenderer = struct {
 
     fn clearSkippedFrameState(self: *CliRenderer) void {
         self.nextRenderBuffer.clear(self.backgroundColor, null);
-        @memset(self.nextHitGrid, 0);
     }
 
     fn finishSkippedFrame(self: *CliRenderer) RenderStatus {
@@ -1065,7 +1000,6 @@ pub const CliRenderer = struct {
     fn finishFailedFrame(self: *CliRenderer) RenderStatus {
         self.kittyTransport.cancel(.io_error);
         self.pendingImages.clearRetainingCapacity();
-        @memset(self.nextHitGrid, 0);
         self.invalidateTerminalState();
         return .failed;
     }
@@ -1095,12 +1029,8 @@ pub const CliRenderer = struct {
         self.mousePointerStateValid = false;
     }
 
-    fn commitPendingHitGrid(self: *CliRenderer) void {
-        self.hitGridDirty = self.hitGridResizeInvalidated or !std.mem.eql(u32, self.currentHitGrid, self.nextHitGrid);
-        const previous = self.currentHitGrid;
-        self.currentHitGrid = self.nextHitGrid;
-        self.nextHitGrid = previous;
-        @import("utils.zig").fillU32(self.nextHitGrid, 0);
+    fn publishHits(self: *CliRenderer, work: ?FrameWork) void {
+        self.presented_hits_frame = if (work) |value| value.work_frame_id else 0;
     }
 
     fn renderResult(self: *CliRenderer, status: RenderStatus) RenderResult {
@@ -1192,12 +1122,8 @@ pub const CliRenderer = struct {
         self.renderStats.renderTime = pending.render_time;
         if (pending.split_state) |state| self.restoreSplitFrameState(state);
         if (!pending.snapshot_only) {
-            if (pending.work) |work| {
-                self.last_frame_work = work;
-                if (!self.hitGridResizeInvalidated) self.last_frame_work.hit_cells_compared += self.nextHitGrid.len;
-                self.last_frame_work.hit_cells_cleared += self.nextHitGrid.len;
-            }
-            self.commitPendingHitGrid();
+            if (pending.work) |work| self.last_frame_work = work;
+            self.publishHits(pending.work);
             self.commitPendingImageState();
         } else {
             self.invalidateTerminalState();
@@ -1299,7 +1225,7 @@ pub const CliRenderer = struct {
             self.renderStats = previous_stats;
             return status;
         }
-        self.commitPendingHitGrid();
+        self.publishHits(self.scene_work);
         self.commitPendingImageState();
 
         self.collectFrameStats(deltaTime);
@@ -1534,7 +1460,7 @@ pub const CliRenderer = struct {
                             self.renderStats = previous_stats;
                             result_status = self.finishUnpublishedFrame(status);
                         } else {
-                            self.commitPendingHitGrid();
+                            self.publishHits(null);
                             self.commitPendingImageState();
                             result_status = status;
                             self.collectFrameStats(deltaTime);
@@ -1596,7 +1522,7 @@ pub const CliRenderer = struct {
                         self.renderStats = previous_stats;
                         result_status = self.finishUnpublishedFrame(status);
                     } else {
-                        self.commitPendingHitGrid();
+                        self.publishHits(null);
                         self.commitPendingImageState();
                         result_status = status;
                         self.collectFrameStats(self.splitBatchDeltaTime);
@@ -2192,7 +2118,7 @@ pub const CliRenderer = struct {
         }
         const status = renderStatusFromWrite(write_status);
         if (status != .rendered) return self.finishUnpublishedFrame(status);
-        self.commitPendingHitGrid();
+        self.publishHits(null);
         self.commitPendingImageState();
         return status;
     }
@@ -3434,194 +3360,6 @@ pub const CliRenderer = struct {
 
     pub fn writeOutMultiple(self: *CliRenderer, data_slices: []const []const u8) void {
         self.backend.writeOutMultiple(data_slices);
-    }
-
-    /// Write a renderable's bounds to nextHitGrid for the upcoming frame.
-    ///
-    /// Called during render for each visible renderable. The rect is clipped to
-    /// the current hit scissor stack, so elements inside overflow:hidden parents
-    /// only register hits within the visible region. Later renderables overwrite
-    /// earlier ones. Z-order is determined by render order.
-    pub fn addToHitGrid(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        std.debug.assert(self.pendingPresentation == null);
-        const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
-        const startX = @max(0, clipped.x);
-        const startY = @max(0, clipped.y);
-        const endX = @min(
-            @as(i32, @intCast(self.hitGridWidth)),
-            clipped.x + @as(i32, @intCast(clipped.width)),
-        );
-        const endY = @min(
-            @as(i32, @intCast(self.hitGridHeight)),
-            clipped.y + @as(i32, @intCast(clipped.height)),
-        );
-
-        if (startX >= endX or startY >= endY) return;
-
-        const uStartX: u32 = @intCast(startX);
-        const uStartY: u32 = @intCast(startY);
-        const uEndX: u32 = @intCast(endX);
-        const uEndY: u32 = @intCast(endY);
-
-        for (uStartY..uEndY) |row| {
-            const rowStart = row * self.hitGridWidth;
-            const startIdx = rowStart + uStartX;
-            const endIdx = rowStart + uEndX;
-
-            @memset(self.nextHitGrid[startIdx..endIdx], id);
-        }
-    }
-
-    /// Clear currentHitGrid before an immediate rebuild with addToCurrentHitGridClipped.
-    pub fn clearCurrentHitGrid(self: *CliRenderer) void {
-        std.debug.assert(self.pendingPresentation == null);
-        @memset(self.currentHitGrid, 0);
-    }
-
-    /// Return whether the hit grid changed during the last completed presentation.
-    /// Pending presentation queries do not consume resize invalidation.
-    pub fn getHitGridDirty(self: *CliRenderer) bool {
-        const dirty = self.hitGridDirty;
-        if (self.pendingPresentation == null) self.hitGridResizeInvalidated = false;
-        return dirty;
-    }
-
-    /// Return the renderable ID at screen position (x, y), or 0 if none.
-    pub fn checkHit(self: *CliRenderer, x: u32, y: u32) u32 {
-        if (x >= self.hitGridWidth or y >= self.hitGridHeight) {
-            return 0;
-        }
-
-        const index = y * self.hitGridWidth + x;
-        return self.currentHitGrid[index];
-    }
-
-    /// Return the current (topmost) hit scissor rect, or null if the stack is empty.
-    fn getCurrentHitScissorRect(self: *const CliRenderer) ?buf.ClipRect {
-        if (self.hitScissorStack.items.len == 0) return null;
-        return self.hitScissorStack.items[self.hitScissorStack.items.len - 1];
-    }
-
-    /// Intersect a rect with the current hit scissor. Returns null if fully clipped.
-    fn clipRectToHitScissor(self: *const CliRenderer, x: i32, y: i32, width: u32, height: u32) ?buf.ClipRect {
-        const scissor = self.getCurrentHitScissorRect() orelse return buf.ClipRect{
-            .x = x,
-            .y = y,
-            .width = width,
-            .height = height,
-        };
-
-        const rect_end_x = x + @as(i32, @intCast(width));
-        const rect_end_y = y + @as(i32, @intCast(height));
-        const scissor_end_x = scissor.x + @as(i32, @intCast(scissor.width));
-        const scissor_end_y = scissor.y + @as(i32, @intCast(scissor.height));
-
-        const intersect_x = @max(x, scissor.x);
-        const intersect_y = @max(y, scissor.y);
-        const intersect_end_x = @min(rect_end_x, scissor_end_x);
-        const intersect_end_y = @min(rect_end_y, scissor_end_y);
-
-        if (intersect_x >= intersect_end_x or intersect_y >= intersect_end_y) {
-            return null;
-        }
-
-        return .{
-            .x = intersect_x,
-            .y = intersect_y,
-            .width = @intCast(intersect_end_x - intersect_x),
-            .height = @intCast(intersect_end_y - intersect_y),
-        };
-    }
-
-    /// Push a scissor rect for hit grid clipping.
-    ///
-    /// The rect is intersected with any existing scissor, so nested overflow:hidden
-    /// containers compound correctly. All coordinates are in screen space.
-    pub fn hitGridPushScissorRect(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32) void {
-        var rect: buf.ClipRect = .{
-            .x = x,
-            .y = y,
-            .width = width,
-            .height = height,
-        };
-
-        if (self.getCurrentHitScissorRect() != null) {
-            const intersect = self.clipRectToHitScissor(rect.x, rect.y, rect.width, rect.height);
-            if (intersect) |clipped| {
-                rect = clipped;
-            } else {
-                rect = buf.ClipRect{ .x = 0, .y = 0, .width = 0, .height = 0 };
-            }
-        }
-
-        self.hitScissorStack.append(self.allocator, rect) catch |err| {
-            self.logger.warn("Failed to push hit-grid scissor rect: {}", .{err});
-        };
-    }
-
-    pub fn hitGridPopScissorRect(self: *CliRenderer) void {
-        if (self.hitScissorStack.items.len > 0) {
-            _ = self.hitScissorStack.pop();
-        }
-    }
-
-    /// Clear all hit grid scissors. Scene frames call this before painting.
-    pub fn hitGridClearScissorRects(self: *CliRenderer) void {
-        self.hitScissorStack.clearRetainingCapacity();
-    }
-
-    /// Write directly to currentHitGrid with scissor clipping.
-    ///
-    /// Unlike addToHitGrid (which writes to nextHitGrid for the upcoming frame),
-    /// this updates the grid that checkHit reads right now.
-    pub fn addToCurrentHitGridClipped(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        std.debug.assert(self.pendingPresentation == null);
-        const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
-
-        const startX = @max(0, clipped.x);
-        const startY = @max(0, clipped.y);
-        const endX = @min(@as(i32, @intCast(self.hitGridWidth)), clipped.x + @as(i32, @intCast(clipped.width)));
-        const endY = @min(@as(i32, @intCast(self.hitGridHeight)), clipped.y + @as(i32, @intCast(clipped.height)));
-
-        if (startX >= endX or startY >= endY) return;
-
-        const uStartX: u32 = @intCast(startX);
-        const uStartY: u32 = @intCast(startY);
-        const uEndX: u32 = @intCast(endX);
-        const uEndY: u32 = @intCast(endY);
-
-        for (uStartY..uEndY) |row| {
-            const rowStart = row * self.hitGridWidth;
-            const startIdx = rowStart + uStartX;
-            const endIdx = rowStart + uEndX;
-
-            @memset(self.currentHitGrid[startIdx..endIdx], id);
-        }
-    }
-
-    pub fn dumpHitGrid(self: *CliRenderer) void {
-        const timestamp = std.Io.Clock.now(.real, self.io).toSeconds();
-        var filename_buf: [64]u8 = undefined;
-        const filename = std.fmt.bufPrint(&filename_buf, "hitgrid_{d}.txt", .{timestamp}) catch return;
-
-        const file = std.Io.Dir.cwd().createFile(self.io, filename, .{}) catch return;
-        defer file.close(self.io);
-
-        var fileBuffer: [4096]u8 = undefined;
-        var fileWriter = file.writer(self.io, &fileBuffer);
-        const writer = &fileWriter.interface;
-
-        for (0..self.hitGridHeight) |y| {
-            for (0..self.hitGridWidth) |x| {
-                const index = y * self.hitGridWidth + x;
-                const id = self.currentHitGrid[index];
-
-                const char = if (id == 0) '.' else ('0' + @as(u8, @intCast(id % 10)));
-                writer.writeByte(char) catch return;
-            }
-            writer.writeByte('\n') catch return;
-        }
-        writer.flush() catch {};
     }
 
     pub fn restoreTerminalModes(self: *CliRenderer) void {

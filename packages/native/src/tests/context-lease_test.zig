@@ -342,8 +342,8 @@ fn leaseWithAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "Context lease allocation failures clean up ownership and preserve resize snapshots" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, leaseWithAllocationFailures, .{});
-    // Two storage headers, eight arrays, then two hit grids precede resize commit.
-    for (0..12) |fail_index| {
+    // Two storage headers and eight arrays precede resize commit.
+    for (0..10) |fail_index| {
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
         const owner = try context.Context.init(failing.allocator(), std.testing.io, .{ .object_capacity = 3 });
         defer owner.deinit() catch unreachable;

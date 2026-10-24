@@ -3792,9 +3792,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lastOverRenderableNum = source.num
       this.capturedRenderable = undefined
       // Dropping the renderable needs to push another frame when the renderer is not live
-      // to update the hit grid, otherwise capturedRenderable won't be in the hit grid and will not receive mouse events
+      // to update the hits, otherwise capturedRenderable won't be in the hits and will not receive mouse events
       this.requestRender()
-      // A source does not drop onto itself or its subtree; until that frame the hit grid still holds the source.
+      // A source does not drop onto itself or its subtree; until that frame the presented hits still hold the source.
       if (maybeRenderable && this.isWithinContainer(maybeRenderable, source)) return true
       if (maybeRenderable) {
         this.sendMouseEvent(maybeRenderable, new MouseEvent(maybeRenderable, { ...mouseEvent, type: "drop", source }))
@@ -3825,8 +3825,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   /**
-   * Recheck hover state after hit grid changes.
-   * Called after render when native code detects the hit grid changed.
+   * Recheck hover state against the hits of the frame just presented.
+   * Called after every rendered frame.
    * Fires out/over events if the element under the cursor changed.
    */
   private recheckHoverState(): void {
@@ -4950,7 +4950,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.renderStats.fps = this.currentFps
 
         if (nativeStatus === "rendered") {
-          // Check if hit grid changed and recheck hover state if needed
+          // The presented frame's hits may have moved under the pointer.
           if (this._useMouse) {
             this.recheckHoverState()
           }

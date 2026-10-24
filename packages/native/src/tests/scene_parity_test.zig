@@ -37,6 +37,8 @@ const content_slot = 2;
 const scaffold_slots = 3;
 const reference = 0;
 const candidate = 1;
+// The largest screen a resize step picks (20×8).
+const max_cells = 20 * 8;
 
 const Kind = enum { box, text, slider };
 
@@ -618,7 +620,12 @@ const Harness = struct {
         for (self.model.handles, 0..) |maybe, slot| {
             if (maybe != null and self.model.hooks[slot] != 0 and self.model.hiddenAbove(slot)) hidden_hooked = true;
         }
-        const drafted = cellHash(self.twins[candidate].cli.getNextBuffer(), self.twins[candidate].cli.nextHitGrid);
+        const drafted = cellHash(self.twins[candidate].cli.getNextBuffer());
+        // The draft's hit token per cell, as a grid that every member overwrote in paint order.
+        var drafted_hits: [max_cells]u32 = undefined;
+        const draft = self.twins[candidate];
+        const cells = draft.cli.width * draft.cli.height;
+        for (drafted_hits[0..cells], 0..) |*hit, index| hit.* = draft.draftHit(index);
         var statuses: [2]@import("../session.zig").RenderStatus = undefined;
         for (self.twins, 0..) |twin, index| {
             statuses[index] = try twin.owner.sceneFrameCommit(twin.id, twin.state.painted.?.ticket, spec.force);
@@ -632,7 +639,10 @@ const Harness = struct {
         try testing.expectEqual(statuses[0], statuses[1]);
         try testing.expectEqualSlices(u8, self.bytes[reference].items, self.bytes[candidate].items);
         // The encoder synced every drafted cell into the presented buffer, and the hits followed.
-        try testing.expectEqual(drafted, cellHash(self.twins[candidate].cli.currentRenderBuffer, self.twins[candidate].cli.currentHitGrid));
+        try testing.expectEqual(drafted, cellHash(self.twins[candidate].cli.currentRenderBuffer));
+        for (drafted_hits[0..cells], 0..) |hit, index| {
+            try testing.expectEqual(hit, draft.state.hitToken(draft.cli, @intCast(index % draft.cli.width), @intCast(index / draft.cli.width)));
+        }
         try self.expectSamePresentation();
         if (spec.force) self.decoder_synced = true;
         try self.expectDecoded();
@@ -669,15 +679,19 @@ const Harness = struct {
     fn expectSamePresentation(self: *Harness) !void {
         const expected = self.twins[reference].cli;
         const actual = self.twins[candidate].cli;
+        const owners = .{ self.twins[reference], self.twins[candidate] };
         const cells = .{ expected.currentRenderBuffer.buffer, actual.currentRenderBuffer.buffer };
         try testing.expectEqualSlices(u32, cells[0].char, cells[1].char);
         try testing.expectEqualSlices([4]u16, cells[0].fg, cells[1].fg);
         try testing.expectEqualSlices([4]u16, cells[0].bg, cells[1].bg);
         try testing.expectEqualSlices(u32, cells[0].attributes, cells[1].attributes);
-        try testing.expectEqualSlices(u32, expected.currentHitGrid, actual.currentHitGrid);
+        for (0..expected.height) |y| {
+            for (0..expected.width) |x| {
+                try testing.expectEqual(try owners[0].owner.sceneHitTest(owners[0].id, @intCast(x), @intCast(y)), try owners[1].owner.sceneHitTest(owners[1].id, @intCast(x), @intCast(y)));
+            }
+        }
         // The encoder cleared the next buffer; the presented one holds the frame.
         for (self.twins) |twin| try expectBufferInvariants(twin.cli.currentRenderBuffer);
-        const owners = .{ self.twins[reference], self.twins[candidate] };
         try testing.expectEqualDeep(try owners[0].owner.sceneGetCursorState(owners[0].id), try owners[1].owner.sceneGetCursorState(owners[1].id));
         for (0..4) |_| {
             const x = self.random.intRangeLessThan(i32, -1, @intCast(expected.width + 1));
@@ -751,7 +765,6 @@ const Harness = struct {
         try testing.expect(work.full_path_reasons & renderer.FrameWork.full_path_forced != 0);
         try testing.expect(work.candidate_visits != 0);
         try testing.expect(work.cells_cleared >= 2 * cells);
-        try testing.expect(work.hit_cells_cleared >= 2 * cells);
         // Every round refreshes every child of a bound, visible content (B2 W3).
         const content_shown = !self.model.hidden[content_slot] and !self.model.hiddenAbove(content_slot);
         if (self.model.bound and content_shown) try testing.expect(work.viewport_child_refreshes >= self.model.children[content_slot].items.len);
@@ -803,9 +816,9 @@ const Harness = struct {
     }
 };
 
-fn cellHash(target: *const @import("../buffer.zig").OptimizedBuffer, hits: []const u32) u64 {
+fn cellHash(target: *const @import("../buffer.zig").OptimizedBuffer) u64 {
     var hash = std.hash.Wyhash.init(0);
-    inline for (.{ target.buffer.char, target.buffer.fg, target.buffer.bg, target.buffer.attributes, hits }) |slice| hash.update(std.mem.sliceAsBytes(slice));
+    inline for (.{ target.buffer.char, target.buffer.fg, target.buffer.bg, target.buffer.attributes }) |slice| hash.update(std.mem.sliceAsBytes(slice));
     return hash.final();
 }
 

@@ -66,11 +66,11 @@ renderer.root.add(box)
 
 ## Hit order and propagation
 
-The hit grid is the native grid that maps each cell to a renderable for mouse hit testing. While native code paints a frame, it writes the bounds of each visible node to the hit grid. In overlapping cells, a later write replaces an earlier one.
+Mouse hit testing uses the hit list: the bounds of each visible node, in paint order, which native code records while it paints a frame. A hit test returns the last node in paint order whose bounds cover the cell.
 
 Children paint after their parent. Siblings paint in ascending `zIndex` order, so the sibling with the higher `zIndex` gets the hit in overlapping cells.
 
-The hit grid uses the same clipping as `overflow: "hidden"` and `"scroll"`. Native code fills the hit grid only when mouse input is on. During a drag capture, it leaves the captured renderable out of the grid. After each rendered frame, OpenTUI checks the hit target under the last pointer position again, unless a drag capture is active. Thus, a layout change can emit `out` and `over` without pointer movement.
+The hit list uses the same clipping as `overflow: "hidden"` and `"scroll"`. Native code records it only when mouse input is on. During a drag capture, it leaves the captured renderable out of the list. After each rendered frame, OpenTUI checks the hit target under the last pointer position again, unless a drag capture is active. Thus, a layout change can emit `out` and `over` without pointer movement.
 
 Mouse events start at the hit target and bubble through `parent` links. `event.stopPropagation()` prevents later ancestors from receiving that event.
 
