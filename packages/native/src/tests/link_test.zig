@@ -236,6 +236,15 @@ test "LinkPool - interning failure retires an exhausted generation before retry"
     try std.testing.expectEqual(pool.getTotalSlots() - 1, pool.getFreeSlotCount());
 }
 
+test "isWritableTarget rejects control bytes" {
+    try std.testing.expect(link.isWritableTarget("https://example.com/path"));
+    try std.testing.expect(link.isWritableTarget(""));
+    try std.testing.expect(!link.isWritableTarget("https://example.com/\x1b]52;c;QQ==\x07"));
+    try std.testing.expect(!link.isWritableTarget("https://example.com/\x7f"));
+    try std.testing.expect(!link.isWritableTarget("https://example.com/\x9b2;title"));
+    try std.testing.expect(!link.isWritableTarget("\x00"));
+}
+
 test "LinkPool and LinkTracker match a reference model" {
     for (0..8) |seed| try test_pools.checkPoolModel(test_pools.LinkSpec, seed, 400);
 }

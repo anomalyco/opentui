@@ -3,7 +3,21 @@ import type { SimpleHighlight } from "./tree-sitter/types.js"
 
 const URL_SCOPES = ["markup.link.url", "string.special.url"]
 const HTTP_URL_PREFIX = /https?:\/\//i
-const BARE_URL = /https?:\/\/[^\s<>"`]+/gi
+// Control characters terminate a bare URL: the native renderer writes link
+// targets verbatim into the OSC 8 sequence, so an embedded escape would end it
+// early and let the rest of the URL run as its own escape sequence.
+const BARE_URL = /https?:\/\/[^\s<>"`\x00-\x1f\x7f-\x9f]+/gi
+
+// Link targets reach the native renderer verbatim and are written into an OSC 8
+// sequence there. A control byte would end that sequence early and let the rest
+// of the target run as its own escape, so a target never carries one — not from
+// the bare-URL matcher and not from a highlighted destination either.
+const CONTROL_BYTE = /[\x00-\x1f\x7f-\x9f]/
+
+export function sanitizeLinkTarget(target: string): string {
+  const index = target.search(CONTROL_BYTE)
+  return index === -1 ? target : target.slice(0, index)
+}
 
 export function normalizeMarkdownLinkTarget(destination: string): string {
   return destination.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, "$1")
@@ -37,7 +51,7 @@ export function detectLinks(
     }
     if (!URL_SCOPES.includes(group)) continue
 
-    const url = content.slice(start, end)
+    const url = sanitizeLinkTarget(content.slice(start, end))
     if (!url) continue
     ranges.push({ start, end, url })
   }
@@ -52,7 +66,8 @@ export function detectLinks(
 
     const label = labels.get(labelEnd - 2)
     if (!label) continue
-    range.url = normalizeMarkdownLinkTarget(range.url)
+    range.url = sanitizeLinkTarget(normalizeMarkdownLinkTarget(range.url))
+    if (!range.url) continue
     ranges.push({ ...label, url: range.url, label: true })
   }
 
@@ -64,7 +79,7 @@ export function detectLinks(
 
     for (const match of content.matchAll(BARE_URL)) {
       const start = match.index
-      let url = match[0]
+      let url = sanitizeLinkTarget(match[0])
       let openParens = 0
       let closeParens = 0
       for (const character of url) {
