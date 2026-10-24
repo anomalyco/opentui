@@ -1,6 +1,6 @@
 import { type KeyEvent } from "../lib/index.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
-import type { BaseRenderable, Renderable, RenderableOptions } from "../Renderable.js"
+import type { BaseRenderable, NativeRenderableIntegration, Renderable, RenderableOptions } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
 import type { RenderContext } from "../types.js"
 import { BoxRenderable, type BoxOptions } from "./Box.js"
@@ -91,7 +91,15 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
 }
 
 export class ScrollBoxRenderable extends BoxRenderable {
-  static override readonly nativeIntegration = BoxRenderable.nativeIntegration
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
+    ...BoxRenderable.nativeIntegration,
+    lifecycle: {
+      update: {
+        idle: this.prototype.onUpdate,
+        active: (renderable) => (renderable as ScrollBoxRenderable)["isAutoScrolling"],
+      },
+    },
+  }
   static idCounter = 0
   private internalId = 0
   public readonly wrapper: BoxRenderable
@@ -627,6 +635,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
     this.isAutoScrolling = true
     this.live = true
+    this.refreshNativeSceneHooks()
   }
 
   public updateAutoScroll(mouseX: number, mouseY: number): void {
@@ -651,8 +660,11 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.isAutoScrolling = false
     this.autoScrollAccumulatorX = 0
     this.autoScrollAccumulatorY = 0
-    // Auto-scroll is the only reason a ScrollBox goes live.
-    if (wasAutoScrolling) this.live = false
+    // Auto-scroll is the only reason a ScrollBox goes live or asks for updates.
+    if (wasAutoScrolling) {
+      this.live = false
+      this.refreshNativeSceneHooks()
+    }
   }
 
   private handleAutoScroll(deltaTime: number): void {

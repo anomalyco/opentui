@@ -224,6 +224,30 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
   expect(trace.join(" ")).toBe(expected)
 })
 
+// Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling.
+test("ScrollBox host requests per frame", async () => {
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
+  for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
+  renderer.root.add(scroll)
+  await setup.renderOnce()
+  const steps: Record<string, () => unknown> = {
+    idle: () => {},
+    scroll: () => scroll.scrollBy(3),
+    wheel: () => setup.mockMouse.scroll(5, 5, "down"),
+    append: () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    auto: () => (scroll.updateAutoScroll(10, 9), clock.advance(100)),
+    stop: () => scroll.stopAutoScroll(),
+  }
+  const trace: string[] = []
+  for (const [name, step] of Object.entries(steps)) {
+    await step()
+    renderer.requestRender()
+    await setup.renderOnce()
+    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}`)
+  }
+  expect(trace.join(" ")).toBe("idle:0 scroll:0 wheel:0 append:1 auto:1 stop:0")
+})
+
 // A subclass that overrides renderSelf paints through the JS fallback, which must match the native paint, also at
 // fractional and negative translations.
 const paintCases: [string, typeof BoxRenderable, object][] = [
