@@ -2617,9 +2617,18 @@ pub const OptimizedBuffer = struct {
                                         finalFg = selFg;
                                     }
                                 } else {
-                                    const temp = lineFg;
-                                    finalFg = if (ansi.alpha(lineBg) > 0) lineBg else ansi.rgbColor(0, 0, 0, 255);
-                                    finalBg = temp;
+                                    // Reverse video: the highlight takes the text colour and the text
+                                    // takes the cell background. A cell with no opaque background has
+                                    // nothing to reuse, so pick black or white from the highlight's
+                                    // luminance. Always forcing black is unreadable on light themes,
+                                    // where the highlight ends up dark.
+                                    finalBg = lineFg;
+                                    finalFg = if (ansi.alpha(lineBg) > 0)
+                                        lineBg
+                                    else if (luminance(lineFg) > 0.5)
+                                        ansi.rgbColor(0, 0, 0, 255)
+                                    else
+                                        ansi.rgbColor(255, 255, 255, 255);
                                 }
                                 break;
                             }
