@@ -3468,7 +3468,8 @@ test "renderer - repaintSplitFooter viewport scroll uses explicit split scroll d
     _ = cli_renderer.repaintSplitFooter(2, true);
 
     const output = test_cli_renderer.lastOutput();
-    try std.testing.expect(std.mem.find(u8, output, "\x1b[2S") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b7\x1b[10;1H\n\n\x1b8") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[2S") == null);
     try std.testing.expect(std.mem.find(u8, output, "\x1b[4S") == null);
     try std.testing.expectEqual(@as(u32, 2), cli_renderer.getSplitOutputOffset(2));
 }
