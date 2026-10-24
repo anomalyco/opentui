@@ -96,7 +96,7 @@ export class ScrollBarRenderable extends Renderable {
   set scrollPosition(value: number) {
     if (this.isDestroyed) return
     this.assertMutable()
-    const newPosition = Math.round(Math.min(Math.max(0, value ?? 0), this.scrollSize - this.viewportSize))
+    const newPosition = Math.round(Math.max(0, Math.min(value ?? 0, this.scrollSize - this.viewportSize)))
     if (!Number.isFinite(newPosition)) {
       throw new RangeError("Scene scroll positions must be finite numbers")
     }

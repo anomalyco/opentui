@@ -181,6 +181,13 @@ const scrolling: [string, object, string, string][] = [
     "10,10 17,10 20,10 21,10 15,10 15,3 15,10 15,10-",
   ],
   ["auto-scroll without scrollX", {}, "#10 auto:0,5", "10,0 10,0-"],
+  // Content shorter than the viewport and narrower than its padded width: no step moves, and no position is negative.
+  [
+    "content that fits",
+    { scrollX: true, contentOptions: { minHeight: 0 }, viewportOptions: { paddingRight: 3 }, child: { height: 3 } },
+    "#100 down end right wheel:down shift+wheel:down",
+    "0,0 0,0 0,0 0,0 0,0 0,0",
+  ],
   // The thumb in column 19 owns the drag even when the first motion report is off it; a later drag from the
   // content across the bar does not scroll.
   ...["19", "18"].map((x): [string, object, string, string] => [
@@ -192,8 +199,9 @@ const scrolling: [string, object, string, string][] = [
 ]
 
 test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
-  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10, ...options })
-  scroll.add(new BoxRenderable(renderer, { width: 100, height: 100 }))
+  const { child = { width: 100, height: 100 }, ...rest } = options as { child?: object }
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10, ...rest })
+  scroll.add(new BoxRenderable(renderer, child))
   renderer.root.add(scroll)
   await setup.renderOnce()
   const trace: string[] = []
@@ -439,6 +447,9 @@ test("a nullish scrollbar visible write restores visibility that follows the scr
   Object.assign(bar, { scrollSize: 10, viewportSize: 20, visible: true })
   Object.assign(bar, { visible: null })
   expect(bar.visible).toBe(false)
+  // The range is below zero, so every write clamps to 0.
+  bar.scrollPosition = 3
+  expect([bar.scrollPosition, bar.slider.value]).toEqual([0, 0])
   bar.scrollSize = 30
   expect(bar.visible).toBe(true)
   bar.destroyRecursively()
