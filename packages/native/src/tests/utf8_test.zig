@@ -2080,42 +2080,21 @@ test "calculateTextWidth: complex text with emojis and multiple scripts" {
 }
 
 test "calculateTextWidth: validate against unicode-width-map.zon" {
-    const zon_content = @embedFile("unicode-width-map.zon");
-
-    // Use arena allocator to avoid memory leaks from ZON parser string allocations
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const zon_with_null = try allocator.dupeZ(u8, zon_content);
-
-    const WidthEntry = struct {
-        codepoint: []const u8,
-        width: i32,
-    };
-
-    const width_entries = std.zon.parse.fromSliceAlloc(
-        []const WidthEntry,
-        allocator,
-        zon_with_null,
-        null,
-        .{},
-    ) catch |err| {
-        return err;
-    };
-
+    // Runs of code points with the width terminals draw them in.
+    const Run = struct { first: u21, last: u21, width: u32 };
+    const runs = try std.zon.parse.fromSliceAlloc([]const Run, testing.allocator, @embedFile("unicode-width-map.zon"), null, .{});
+    defer std.zon.parse.free(testing.allocator, runs);
     var failures: usize = 0;
-    for (width_entries) |entry| {
-        try testing.expect(std.mem.startsWith(u8, entry.codepoint, "U+"));
+    for (runs) |run| for (run.first..run.last + 1) |cp| {
         var buf: [4]u8 = undefined;
-        const str = buf[0..try std.unicode.utf8Encode(try std.fmt.parseInt(u21, entry.codepoint[2..], 16), &buf)];
+        const str = buf[0..try std.unicode.utf8Encode(@intCast(cp), &buf)];
         for (std.enums.values(utf8.WidthMethod)) |method| {
             const actual = utf8.calculateTextWidth(str, 4, .hidden, false, method);
-            if (actual == entry.width) continue;
-            std.debug.print("{s} {s}: {d}, expected {d}\n", .{ entry.codepoint, @tagName(method), actual, entry.width });
+            if (actual == run.width) continue;
+            std.debug.print("U+{X:0>4} {s}: {d}, expected {d}\n", .{ cp, @tagName(method), actual, run.width });
             failures += 1;
         }
-    }
+    };
     try testing.expectEqual(@as(usize, 0), failures);
 }
 
