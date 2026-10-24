@@ -31,7 +31,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     paintBuffer: "destination",
   }
 
-  protected _defaultFg: RGBA
+  protected _defaultFg: RGBA | null
   protected _defaultBg: RGBA
   protected _defaultAttributes: number
   protected _selectionBg: RGBA | undefined
@@ -53,7 +53,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   private readonly nativeTextScene: RenderContext["nativeScene"] | undefined
 
   protected _defaultOptions = {
-    fg: RGBA.fromValues(1, 1, 1, 1),
+    fg: undefined as RGBA | undefined,
     bg: RGBA.fromValues(0, 0, 0, 0),
     selectionBg: undefined,
     selectionFg: undefined,
@@ -75,7 +75,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     let syntaxStyle: SyntaxStyle | undefined
 
     try {
-      this._defaultFg = RGBA.clone(parseColor(options.fg ?? this._defaultOptions.fg))
+      this._defaultFg = options.fg ? RGBA.clone(parseColor(options.fg)) : null
       this._defaultBg = RGBA.clone(parseColor(options.bg ?? this._defaultOptions.bg))
       this._defaultAttributes = options.attributes ?? this._defaultOptions.attributes
       this._selectionBg = options.selectionBg ? RGBA.clone(parseColor(options.selectionBg)) : undefined

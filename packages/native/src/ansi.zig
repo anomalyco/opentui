@@ -395,7 +395,7 @@ pub const ANSI = struct {
     // Color scheme
     pub const colorSchemeSet = "\x1b[?2031h";
     pub const colorSchemeReset = "\x1b[?2031l";
-    pub const oscThemeQueries = "\x1b]10;?\x07\x1b]11;?\x07";
+    pub const oscThemeQueries = "\x1b]11;?\x07\x1b]10;?\x07";
 
     // Key encoding
     pub const csiUPush = "\x1b[>{d}u";
