@@ -68,7 +68,7 @@ pub const UnifiedTextBuffer = struct {
     logger: *const logger.Logger,
 
     _rope: UnifiedRope,
-    syntax_style: ?*const SyntaxStyle,
+    style_binding: ss.Borrower,
 
     pool: *gp.GraphemePool,
     link_pool: *link.LinkPool,
@@ -308,7 +308,7 @@ pub const UnifiedTextBuffer = struct {
             .io = options.io,
             .logger = options.logger,
             ._rope = init_rope,
-            .syntax_style = null,
+            .style_binding = .{},
             .pool = pool,
             .link_pool = link_pool,
             .link_tracker = null,
@@ -346,10 +346,7 @@ pub const UnifiedTextBuffer = struct {
     /// The caller has retired all views. Keep controls and empty registration
     /// tables; the dormant rope must not be read before reinitStorage.
     pub fn retireStorage(self: *Self) void {
-        if (self.syntax_style) |style| {
-            (@constCast(style)).offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-        }
-        self.syntax_style = null;
+        self.style_binding.bind(null);
 
         self.view_dirty_flags.clearRetainingCapacity();
         self.free_view_ids.clearRetainingCapacity();
@@ -385,7 +382,7 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn reinitStorage(self: *Self, width_method: utf8.WidthMethod) TextBufferError!void {
-        std.debug.assert(self.next_view_id == 0 and self.syntax_style == null and self.link_tracker == null);
+        std.debug.assert(self.next_view_id == 0 and self.style_binding.style == null and self.link_tracker == null);
         // retireStorage left only capacity behind.
         std.debug.assert(self.mem_registry.buffers.items.len == 0 and self.view_dirty_flags.items.len == 0);
         std.debug.assert(self.line_highlights.items.len == 0 and self.line_spans.items.len == 0);
@@ -576,25 +573,12 @@ pub const UnifiedTextBuffer = struct {
         self.default_attributes = null;
     }
 
-    fn onSyntaxStyleDestroyed(ctx_ptr: *anyopaque) void {
-        const self = @as(*Self, @ptrCast(@alignCast(ctx_ptr)));
-        self.syntax_style = null;
-    }
-
-    pub fn setSyntaxStyle(self: *Self, syntax_style: ?*const SyntaxStyle) void {
-        if (self.syntax_style == syntax_style) return;
-
-        if (syntax_style) |style| {
-            (@constCast(style)).onDestroy(@ptrCast(self), onSyntaxStyleDestroyed) catch return;
-        }
-        if (self.syntax_style) |prev| {
-            (@constCast(prev)).offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-        }
-        self.syntax_style = syntax_style;
+    pub fn setSyntaxStyle(self: *Self, syntax_style: ?*SyntaxStyle) void {
+        self.style_binding.bind(syntax_style);
     }
 
     pub fn getSyntaxStyle(self: *const Self) ?*const SyntaxStyle {
-        return self.syntax_style;
+        return self.style_binding.style;
     }
 
     fn clearLinkRefs(self: *Self) void {
@@ -615,7 +599,7 @@ pub const UnifiedTextBuffer = struct {
     /// attached SyntaxStyle.
     pub fn resolveStyle(self: *const Self, id: u32) ?StyleDefinition {
         if (id == 0) return null;
-        if (id & run_style_flag == 0) return (self.syntax_style orelse return null).resolveById(id);
+        if (id & run_style_flag == 0) return (self.style_binding.style orelse return null).resolveById(id);
         const index = id & ~run_style_flag;
         // Run refs come only from this buffer's styled text, which replaces them with the map.
         std.debug.assert(index != 0 and index <= self.run_styles.count());

@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const buffer = @import("buffer.zig");
-const events = @import("event-emitter.zig");
 const text_work = @import("text-work.zig");
 
 pub const RGBA = buffer.RGBA;
@@ -20,7 +19,33 @@ pub const SyntaxStyleError = error{
     StyleNotFound,
 };
 
-pub const Event = enum { Destroy };
+/// A text buffer's binding to the style it draws with. The style lists its borrowers, so a
+/// definition change visits only them. `dependent` is the Context object that owns the buffer.
+pub const Borrower = struct {
+    style: ?*SyntaxStyle = null,
+    previous: ?*Borrower = null,
+    next: ?*Borrower = null,
+    dependent: Dependent = .none,
+
+    pub const Dependent = union(enum) { none, text: *anyopaque, edit: *anyopaque };
+
+    /// Binding never allocates, so it cannot fail.
+    pub fn bind(self: *Borrower, style: ?*SyntaxStyle) void {
+        if (self.style == style) return;
+        self.unbind();
+        const next = style orelse return;
+        self.* = .{ .style = next, .next = next.borrowers, .dependent = self.dependent };
+        if (next.borrowers) |head| head.previous = self;
+        next.borrowers = self;
+    }
+
+    fn unbind(self: *Borrower) void {
+        const style = self.style orelse return;
+        if (self.previous) |previous| previous.next = self.next else style.borrowers = self.next;
+        if (self.next) |next| next.previous = self.previous;
+        self.* = .{ .dependent = self.dependent };
+    }
+};
 
 /// The first id that registration never returns (`OT_STYLE_RUN_FLAG`).
 pub const id_limit: u32 = 0x8000_0000;
@@ -34,7 +59,7 @@ pub const SyntaxStyle = struct {
     id_to_style: std.AutoHashMapUnmanaged(u32, StyleDefinition),
     next_id: u32,
 
-    emitter: events.EventEmitter(Event),
+    borrowers: ?*Borrower = null,
 
     pub fn init(global_allocator: Allocator) SyntaxStyleError!*SyntaxStyle {
         const self = global_allocator.create(SyntaxStyle) catch return SyntaxStyleError.OutOfMemory;
@@ -53,8 +78,6 @@ pub const SyntaxStyle = struct {
             .name_to_id = .empty,
             .id_to_style = .empty,
             .next_id = 1, // Start from 1, 0 can be used as "invalid"
-            // Subscriptions survive replacement of the definition arena.
-            .emitter = events.EventEmitter(Event).init(global_allocator),
         };
 
         return self;
@@ -64,8 +87,8 @@ pub const SyntaxStyle = struct {
         const global_allocator = self.global_allocator;
         defer global_allocator.destroy(self);
 
-        self.emitter.emit(.Destroy);
-        self.emitter.deinit();
+        // Borrowers outlive the style: they draw without it from now on.
+        while (self.borrowers) |borrower| borrower.unbind();
         self.arena.deinit();
         global_allocator.destroy(self.arena);
         self.* = undefined;
@@ -117,13 +140,5 @@ pub const SyntaxStyle = struct {
 
     pub fn getStyleCount(self: *const SyntaxStyle) usize {
         return self.id_to_style.count();
-    }
-
-    pub fn onDestroy(self: *SyntaxStyle, ctx: *anyopaque, handle: *const fn (*anyopaque) void) SyntaxStyleError!void {
-        self.emitter.on(.Destroy, .{ .ctx = ctx, .handle = handle }) catch return SyntaxStyleError.OutOfMemory;
-    }
-
-    pub fn offDestroy(self: *SyntaxStyle, ctx: *anyopaque, handle: *const fn (*anyopaque) void) void {
-        self.emitter.off(.Destroy, .{ .ctx = ctx, .handle = handle });
     }
 };

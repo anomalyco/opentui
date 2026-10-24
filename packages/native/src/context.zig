@@ -3161,8 +3161,8 @@ pub const Context = struct {
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
         const style = if (style_handle) |id| try self.getSyntaxStyle(id) else null;
+        text.buffer.style_binding.dependent = .{ .text = text };
         text.buffer.setSyntaxStyle(style);
-        if (text.buffer.getSyntaxStyle() != style) return error.OutOfMemory;
         text.invalidate(false);
     }
 
@@ -3338,39 +3338,19 @@ pub const Context = struct {
         if (definition.fg) |color| try buf.validateColor(color);
         if (definition.bg) |color| try buf.validateColor(color);
         const style = try self.getSyntaxStyle(handle);
-        try self.checkStyleDependents(style);
-        const id = try style.registerStyleDefinition(name, definition);
-        self.invalidateStyleDependents(style);
-        return id;
+        // Paint resolves styles from the table every frame, so borrowers need no invalidation.
+        try checkStyleDependents(style);
+        return style.registerStyleDefinition(name, definition);
     }
 
-    fn checkStyleDependents(self: *Context, style: *const syntax_style.SyntaxStyle) !void {
-        // Buffers subscribe before borrowing a style; construction has no dependents to scan.
-        const listeners = style.emitter.listeners.get(.Destroy) orelse return;
-        if (listeners.items.len == 0) return;
-        text_work.add(.style_dependent_slots, self.objects.slots.len);
-        for (self.objects.slots) |slot| {
-            if (slot.kind == .edit_buffer and slot.ptr != null) {
-                const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.tb.getSyntaxStyle() == style) try dependent.checkMutable();
-            } else if (slot.kind == .text_buffer and slot.ptr != null) {
-                const dependent: *SharedText = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.getSyntaxStyle() == style) try dependent.checkMutable();
-            }
-        }
-    }
-
-    fn invalidateStyleDependents(self: *Context, style: *const syntax_style.SyntaxStyle) void {
-        const listeners = style.emitter.listeners.get(.Destroy) orelse return;
-        if (listeners.items.len == 0) return;
-        text_work.add(.style_dependent_slots, self.objects.slots.len);
-        for (self.objects.slots) |slot| {
-            if (slot.kind == .edit_buffer and slot.ptr != null) {
-                const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.tb.getSyntaxStyle() == style) dependent.invalidate();
-            } else if (slot.kind == .text_buffer and slot.ptr != null) {
-                const dependent: *SharedText = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.getSyntaxStyle() == style) dependent.invalidate(false);
+    fn checkStyleDependents(style: *const syntax_style.SyntaxStyle) !void {
+        var next = style.borrowers;
+        while (next) |borrower| : (next = borrower.next) {
+            if (borrower.dependent != .none) text_work.add(.style_dependent_visits, 1);
+            switch (borrower.dependent) {
+                .none => {},
+                .text => |text| try @as(*SharedText, @ptrCast(@alignCast(text))).checkMutable(),
+                .edit => |edit| try @as(*Edit, @ptrCast(@alignCast(edit))).checkMutable(),
             }
         }
     }
@@ -3381,8 +3361,8 @@ pub const Context = struct {
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
         const style = if (style_handle) |id| try self.getSyntaxStyle(id) else null;
+        edit.buffer.tb.style_binding.dependent = .{ .edit = edit };
         edit.buffer.tb.setSyntaxStyle(style);
-        if (edit.buffer.tb.getSyntaxStyle() != style) return error.OutOfMemory;
         edit.invalidate();
     }
 

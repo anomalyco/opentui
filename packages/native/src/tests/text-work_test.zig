@@ -518,12 +518,13 @@ test "text work: styled text interns each distinct chunk style and scans no obje
     else
         .{ .byte_count = 2, .attributes = 1 };
     // Zero borrowers: no style is attached. A styled set never writes the attached style, so the
-    // number of borrowers and the object table size do not change its work.
-    const rows = [_]struct { capacity: u32, borrowers: u32, slots: u64 }{
-        .{ .capacity = 64, .borrowers = 0, .slots = 0 },
-        .{ .capacity = 64, .borrowers = 1, .slots = 128 },
-        .{ .capacity = 64, .borrowers = 8, .slots = 128 },
-        .{ .capacity = 4096, .borrowers = 1, .slots = 8192 },
+    // number of borrowers and the object table size do not change its work. Registering a style
+    // checks each borrowing text or edit buffer once, whatever the table size.
+    const rows = [_]struct { capacity: u32, borrowers: u32, edits: u32 = 0 }{
+        .{ .capacity = 64, .borrowers = 0 },
+        .{ .capacity = 64, .borrowers = 1 },
+        .{ .capacity = 64, .borrowers = 8, .edits = 1 },
+        .{ .capacity = 4096, .borrowers = 1 },
     };
     for (rows) |row| {
         errdefer std.debug.print("capacity {d}, borrowers {d}\n", .{ row.capacity, row.borrowers });
@@ -536,9 +537,10 @@ test "text work: styled text interns each distinct chunk style and scans no obje
             buffer.* = try owner.createTextBuffer(.unicode);
             if (row.borrowers > 0) try owner.textBufferSetSyntaxStyle(buffer.*, style);
         }
+        for (0..row.edits) |_| try owner.editSetSyntaxStyle(try owner.createEditBuffer(.unicode), style);
         _ = text_work.take();
         _ = try owner.syntaxStyleRegister(style, "type", .{ .fg = null, .bg = null, .attributes = 2 });
-        try expectWork(.{ .style_registrations = 1, .style_dependent_slots = row.slots });
+        try expectWork(.{ .style_registrations = 1, .style_dependent_visits = row.borrowers + row.edits });
         for ([_]ctx.Handle{ buffers[0], buffers[@max(row.borrowers, 1) - 1] }) |buffer| {
             try owner.textBufferSetStyledText(buffer, bytes, &chunks);
             try expectWork(.{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 2 });

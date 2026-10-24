@@ -1609,7 +1609,8 @@ const TextState = struct {
     span_counts: [2]usize = @splat(0),
     slots: usize,
     links: u32,
-    style: ?*const text_buffer.SyntaxStyle,
+    // An address: expectEqualDeep would follow the style's borrower list in circles.
+    style: usize,
     run_styles: usize,
     undo_depth: usize,
 
@@ -1620,7 +1621,7 @@ const TextState = struct {
             .highlights = tb.getHighlightCount(),
             .slots = tb.memRegistry().getUsedSlots(),
             .links = if (tb.link_tracker) |*tracker| tracker.getLinkCount() else 0,
-            .style = tb.getSyntaxStyle(),
+            .style = if (tb.getSyntaxStyle()) |style| @intFromPtr(style) else 0,
             .run_styles = tb.run_styles.count(),
             .undo_depth = tb.rope().undo_depth,
         };
