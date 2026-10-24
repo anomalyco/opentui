@@ -1122,8 +1122,15 @@ export class MarkdownRenderable extends Renderable {
 
     if (row.marginBottom !== marginBottom) row.marginBottom = marginBottom
     if (marker.width !== markerWidth) marker.width = markerWidth
-    if (marker.chunks[0]?.text !== markerText) {
-      marker.content = new StyledText([this.createChunk(markerText, "markup.list")])
+    const current = marker.chunks[0]
+    const next = this.createChunk(markerText, "markup.list")
+    if (
+      current?.text !== next.text ||
+      !colorsEqual(current.fg, next.fg) ||
+      !colorsEqual(current.bg, next.bg) ||
+      current.attributes !== next.attributes
+    ) {
+      marker.content = new StyledText([next])
     }
   }
 
@@ -1155,13 +1162,22 @@ export class MarkdownRenderable extends Renderable {
       : null
   }
 
+  private getHorizontalRuleColor(): RGBA | string {
+    return this.getStyle("conceal")?.fg ?? this._fg ?? "#888888"
+  }
+
+  private applyHorizontalRuleRenderable(renderable: Renderable, marginBottom: number): void {
+    renderable.marginBottom = marginBottom
+    if (renderable instanceof BoxRenderable) renderable.borderColor = this.getHorizontalRuleColor()
+  }
+
   private createHorizontalRuleRenderable(id: string, marginBottom: number = 0): BoxRenderable {
     return new BoxRenderable(this.ctx, {
       id,
       width: "100%",
       height: 1,
       border: ["top"],
-      borderColor: this.getStyle("conceal")?.fg ?? this._fg ?? "#888888",
+      borderColor: this.getHorizontalRuleColor(),
       flexShrink: 0,
       marginBottom,
     })
@@ -1889,7 +1905,7 @@ export class MarkdownRenderable extends Renderable {
     token: MarkedToken,
     index: number,
     nextToken: MarkedToken | undefined,
-    forceListRefresh: boolean = false,
+    forceRefresh: boolean = false,
   ): void {
     const marginBottom = this.getInterBlockMargin(token, nextToken)
 
@@ -1908,7 +1924,7 @@ export class MarkdownRenderable extends Renderable {
         !this.applyListRenderable(
           state.renderable,
           token as Tokens.List,
-          forceListRefresh ? undefined : (state.token as Tokens.List),
+          forceRefresh ? undefined : (state.token as Tokens.List),
           `${this.id}-block-${index}`,
           marginBottom,
         )
@@ -1921,13 +1937,13 @@ export class MarkdownRenderable extends Renderable {
     }
 
     if (token.type === "hr") {
-      state.renderable.marginBottom = marginBottom
+      this.applyHorizontalRuleRenderable(state.renderable, marginBottom)
       return
     }
 
     if (token.type === "table") {
       const tableToken = token as Tokens.Table
-      const { cache, changed } = this.buildTableContentCache(tableToken, state.tableContentCache)
+      const { cache, changed } = this.buildTableContentCache(tableToken, state.tableContentCache, forceRefresh)
 
       if (!cache) {
         if (state.renderable instanceof CodeRenderable) {
@@ -2054,7 +2070,7 @@ export class MarkdownRenderable extends Renderable {
           this.destroyUnusedDefaultRenderable(custom.renderable)
         }
 
-        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token)
+        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token, forceTableRefresh)
         existing.renderable.marginBottom = 0
         if (existing.marginTop !== block.marginTop) {
           this.applyMargins(existing.renderable, block.marginTop, 0)
@@ -2289,7 +2305,7 @@ export class MarkdownRenderable extends Renderable {
       }
 
       if (state.token.type === "hr") {
-        state.renderable.marginBottom = marginBottom
+        this.applyHorizontalRuleRenderable(state.renderable, marginBottom)
         continue
       }
 
