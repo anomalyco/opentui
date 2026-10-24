@@ -3289,7 +3289,10 @@ pub const Context = struct {
             .truncate => |enabled| view.view.setTruncate(enabled),
             .text_align => |alignment| view.view.setTextAlign(alignment),
         }
-        view.invalidate();
+        switch (command) {
+            .wrap_width, .wrap_mode, .first_line_offset => view.invalidate(),
+            .tab_indicator, .truncate, .text_align => view.invalidatePreparation(),
+        }
     }
 
     pub fn textViewSetTabColor(self: *Context, handle: Handle, color: ?buf.RGBA) !void {
@@ -3299,7 +3302,7 @@ pub const Context = struct {
         try view.checkMutable();
         if (color) |rgba| try buf.validateColor(rgba);
         view.view.setTabIndicatorColor(color);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn textViewSelect(self: *Context, handle: Handle, options: TextSelection) !bool {
@@ -3540,7 +3543,7 @@ pub const Context = struct {
         try view.edit.checkMutable();
         if (view.view.follow_pending) try view.prepareView();
         view.view.setScrollMargin(margin);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn editorCommand(self: *Context, handle: Handle, command: EditorCommand) !void {
@@ -3566,7 +3569,7 @@ pub const Context = struct {
             .tab_indicator => |indicator| view.view.setTabIndicator(indicator),
         }
         switch (command) {
-            .wrap_mode, .tab_indicator => view.invalidate(),
+            .wrap_mode => view.invalidate(),
             else => view.invalidatePreparation(),
         }
     }

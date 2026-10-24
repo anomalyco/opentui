@@ -140,7 +140,7 @@ describe("native renderer stats", () => {
   })
 
   test("frameWork solves Yoga only for text writes and viewports that can change the measured size", async () => {
-    const result = await createTestRenderer({ width: 40, height: 12 })
+    const result = await createTestRenderer({ width: 40, height: 20 })
     renderer = result.renderer
     // Solid builds `<text fg={...}>` content from child nodes.
     const label = new TextRenderable(renderer, { fg: "#808080" })
@@ -171,7 +171,15 @@ describe("native renderer stats", () => {
     column.add(new MarkdownRenderable(renderer, { content: "Some *words* here", syntaxStyle, treeSitterClient }))
     const scrolled = new CodeRenderable(renderer, { content: "s1\ns2", syntaxStyle, treeSitterClient, height: 1 })
     const editor = new TextareaRenderable(renderer, { initialValue: "e1\ne2", height: 1 })
-    for (const child of [label, plain, code, scrolled, editor, column]) renderer.root.add(child)
+    const tabs = new CodeRenderable(renderer, {
+      content: "a\tb\nlong line",
+      syntaxStyle,
+      treeSitterClient,
+      width: 8,
+      wrapMode: "none",
+    })
+    const margins = new TextareaRenderable(renderer, { initialValue: "m0\tx\nm1\nm2\nm3\nm4\nm5\nm6", height: 5 })
+    for (const child of [label, plain, code, scrolled, editor, column, tabs, margins]) renderer.root.add(child)
     const highlight = async () => {
       await result.renderOnce()
       highlights.resolveHighlightOnce()
@@ -187,6 +195,12 @@ describe("native renderer stats", () => {
           .find((span) => span.text.startsWith(text))!.fg,
       )
     const drawn = (text: string) => result.captureCharFrame().includes(text)
+    const rowsOf = (node: CodeRenderable | TextareaRenderable) =>
+      result
+        .captureCharFrame()
+        .split("\n")
+        .slice(node.y, node.y + 2)
+        .map((line) => line.slice(node.x, node.x + node.width).trimEnd())
     const rows: [string, () => unknown, number, [() => unknown, unknown]?][] = [
       ["nothing", () => {}, 0],
       ["same fg on node text", () => (label.fg = "#808080"), 0, [() => fgOf("Simulated"), "#808080"]],
@@ -212,8 +226,21 @@ describe("native renderer stats", () => {
         0,
         [() => drawn("e1"), true],
       ],
+      ["code text align", () => (tabs.textAlign = "right"), 0, [() => rowsOf(tabs), ["    a  b", "long lin"]]],
+      ["code tab indicator", () => (tabs.tabIndicator = ">"), 0, [() => rowsOf(tabs), ["    a> b", "long lin"]]],
+      ["code tab indicator color", () => (tabs.tabIndicatorColor = "#ff0000"), 0, [() => fgOf(">"), "#ff0000"]],
+      ["code truncate", () => (tabs.truncate = true), 0, [() => rowsOf(tabs), ["    a> b", "lo...ine"]]],
+      ["textarea tab indicator", () => (margins.tabIndicator = ">"), 0, [() => rowsOf(margins), ["m0> x", "m1"]]],
+      // With the cursor on m4, a margin of two rows scrolls to m2; the old margin of one row scrolls to m1.
+      [
+        "textarea scroll margin",
+        () => (margins.editorView.setScrollMargin(0.5), margins.gotoLine(4)),
+        0,
+        [() => rowsOf(margins), ["m2", "m3"]],
+      ],
       ["new string content", () => (plain.content = "plain!"), 1],
       ["code wrap mode", () => (code.wrapMode = "char"), 1],
+      ["textarea wrap mode", () => (margins.wrapMode = "char"), 1],
       ["code tab width", () => code["textBuffer"].setTabWidth(8), 1],
       ["concealing highlight", () => ((code.conceal = true), highlight()), 1, [() => fgOf("pending"), "#00ff00"]],
     ]
