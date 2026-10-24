@@ -2062,6 +2062,25 @@ test("inline formatting with conceal=false", async () => {
   `)
 })
 
+// A lone `~` usually marks an approximation or a numeric range (3~5, ~30%), so only double tildes strike through.
+test("single tildes stay literal text", async () => {
+  const markdown = `Ranges like 3~5 and ~30% are common.`
+
+  expect(await renderMarkdown(markdown, false)).toMatchInlineSnapshot(`
+    "
+    Ranges like 3~5 and ~30% are common."
+  `)
+})
+
+test("double tildes strike through", async () => {
+  const markdown = `This has ~~struck~~ text in it.`
+
+  expect(await renderMarkdown(markdown)).toMatchInlineSnapshot(`
+    "
+    This has struck text in it."
+  `)
+})
+
 // Link tests
 
 for (const hyperlinks of [false, true]) {
