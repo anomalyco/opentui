@@ -348,13 +348,18 @@ export class ExtmarksController {
           return
         }
 
-        const startOffset = this.positionToOffset(startLine, startCol)
-        const endOffset = this.positionToOffset(endLine, endCol)
-        const length = endOffset - startOffset
+        // A virtual extmark is one unit: a range that cuts into one, as a word or line delete
+        // ending inside it does, deletes all of it rather than leaving a fragment.
+        const [startOffset, endOffset] = this.expandToVirtualExtmarks(
+          this.positionToOffset(startLine, startCol),
+          this.positionToOffset(endLine, endCol),
+        )
+        const start = this.offsetToPosition(startOffset)
+        const end = this.offsetToPosition(endOffset)
 
-        this.originalDeleteRange(startLine, startCol, endLine, endCol)
+        this.originalDeleteRange(start.row, start.col, end.row, end.col)
         this.saveSnapshot()
-        this.adjustExtmarksAfterDeletion(startOffset, length)
+        this.adjustExtmarksAfterDeletion(startOffset, endOffset - startOffset)
       })
 
     this.editBuffer.deleteLine = (): void =>
@@ -520,6 +525,16 @@ export class ExtmarksController {
       this.extmarksByTypeId.get(extmark.typeId)?.delete(id)
       this.metadata.delete(id)
     }
+  }
+
+  private expandToVirtualExtmarks(start: number, end: number): [number, number] {
+    if (start >= end) return [start, end]
+    const cut = [...this.extmarks.values()].find(
+      (extmark) =>
+        extmark.virtual && extmark.start < end && extmark.end > start && (extmark.start < start || extmark.end > end),
+    )
+    if (!cut) return [start, end]
+    return this.expandToVirtualExtmarks(Math.min(start, cut.start), Math.max(end, cut.end))
   }
 
   private findVirtualExtmarkContaining(offset: number): Extmark | null {
