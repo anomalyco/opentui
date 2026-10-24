@@ -3,6 +3,7 @@ import { nativeConstants, nativeLayouts } from "../native-abi.generated.js"
 import { RGBA } from "../lib/RGBA.js"
 import { LayoutEvents, Renderable } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
+import type { OptimizedBuffer } from "../buffer.js"
 import { createTestRenderer, type TestRenderer } from "../testing.js"
 import { NativeStatus, SceneStaging, resolveRenderLib, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
 
@@ -14,30 +15,142 @@ afterEach(() => {
 })
 
 describe("scene layout observations", () => {
-  test("repeated reads follow frames, host writes, and translations", async () => {
-    const setup = await createTestRenderer({ width: 20, height: 5 })
-    renderer = setup.renderer
-    const box = new BoxRenderable(renderer, { width: 4, height: 1 })
-    renderer.root.add(box)
-    await setup.renderOnce()
-
-    const first = box.getComputedLayout()
-    expect(first.width).toBe(4)
-    first.width = 99
-    expect(box.getComputedLayout().width).toBe(4)
-    expect(box.getComputedLayout()).not.toBe(box.getComputedLayout())
-    expect(box.width).toBe(4)
-
-    box.width = 7
-    await setup.renderOnce()
-    expect(box.getComputedLayout().width).toBe(7)
-    expect(box.width).toBe(7)
-
-    box.translateX = 3
-    expect(box.x).toBe(3)
-
-    box.destroy()
-    expect(() => box.getComputedLayout()).toThrow()
+  test("random writes inside and outside hooks: getters match native reads, and only some writes re-read", async () => {
+    // Writes that make the next warm read call native again (issue 310), and whether they stage a flush.
+    const invalidates = (name: string) => ["translateX", "translateY", "move"].includes(name)
+    let hook: ((node: Renderable, phase: string) => void) | undefined
+    const renderBefore = function (this: Renderable) {
+      hook?.(this, "renderBefore")
+    }
+    class Probe extends BoxRenderable {
+      protected override renderSelf(buffer: OptimizedBuffer): void {
+        hook?.(this, "renderSelf")
+        super.renderSelf(buffer)
+      }
+      protected override onUpdate(): void {
+        hook?.(this, "onUpdate")
+      }
+    }
+    // Keeps its children attached through destroy and reads them last, so only native detaches them.
+    class Keeper extends BoxRenderable {
+      watched: Renderable[] = []
+      override remove(child: Renderable): void {
+        if (!this.isDestroyed) super.remove(child)
+      }
+      protected override destroySelf(): void {
+        for (const node of this.watched) if (!node.isDestroyed) void node.x
+      }
+    }
+    for (let round = 1; round <= 10; round++) {
+      let seed = round
+      const random = (n: number) => ((seed = (Math.imul(seed, 48271) + 11) % 2147483647) >>> 0) % n
+      const setup = await createTestRenderer({ width: 80, height: 20 })
+      renderer = setup.renderer
+      const scene = renderer.nativeScene
+      const box = (options: object) => new BoxRenderable(renderer!, options)
+      const a = box({ position: "absolute", left: 2, top: 1, width: 30, height: 10, flexDirection: "row" })
+      const [b, d] = [box({ width: 8, height: 4, border: true }), box({ width: 6, height: 2 })]
+      const probe = (options: object) => new Probe(renderer!, { ...options, renderBefore })
+      const [c, f] = [probe({ width: 4, height: 1 }), probe({ marginLeft: 2, height: 2 })]
+      const e = new Keeper(renderer, { position: "absolute", left: 40, top: 5, width: 20, height: 8, paddingTop: 1 })
+      ;(b.add(c), a.add(b), a.add(d), e.add(f), renderer.root.add(a), renderer.root.add(e))
+      await setup.renderOnce()
+      const nodes: Renderable[] = (e.watched = [a, b, c, d, e, f])
+      const live = () => nodes.filter((node) => !node.isDestroyed)
+      // Each write changes its value: a write of the current value is skipped before it reaches the scene.
+      const padding = new Map<Renderable, number>()
+      const writes: [string, (node: any) => unknown][] = [
+        ["width", (node) => (node.width = node._width === 5 ? 9 : 5)],
+        ["paddingLeft", (node) => (node.paddingLeft = padding.set(node, 1 - (padding.get(node) ?? 0)).get(node))],
+        ["opacity", (node) => (node.opacity = node.opacity === 1 ? 0.5 : 1)],
+        ["zIndex", (node) => (node.zIndex += 1)],
+        ["border", (node) => (node.border = node.border !== true)],
+        ["backgroundColor", (node) => (node.backgroundColor = random(2) ? "#ff0000" : "#00ff00")],
+        ["translateX", (node) => (node.translateX += random(2) ? 1 : -1)],
+        ["translateY", (node) => (node.translateY += random(2) ? 1 : -1)],
+        ["move", () => [a, b, e][random(3)].add([c, d, f][random(3)])],
+        ["construct", () => box({})],
+      ]
+      // Every getter, then a fresh native read of each. Paint getters read the paint layout inside the node's hook
+      // and the public layout outside it.
+      const getters = (node: Renderable) => [node.x, node.y, node.width, node.height, node.screenX, node.screenY]
+      const geometry = (node: any) => {
+        const { left, top, width, height } = node.getLayout()
+        const paint = [node._screenX, node._screenY, node._paintWidth, node._paintHeight]
+        return [...getters(node), left, top, width, height, ...paint]
+      }
+      const native = (node: Renderable, inHook: boolean) => {
+        const [p, y] = [scene.getLayout(node), scene.getLayout(node, true)]
+        const s = inHook ? scene.getLayout(node, "paint") : p
+        const at = (l: typeof p) => [l.screenX, l.screenY, l.width, l.height]
+        return [...at(p), p.screenX, p.screenY, y.left, y.top, y.width, y.height, ...at(s)]
+      }
+      const stale: string[] = []
+      const check = (label: string, hooked?: Renderable) =>
+        live().forEach((node) => {
+          const [got, want] = [geometry(node), native(node, node === hooked)]
+          if (got.join() !== want.join()) stale.push(`${label} #${nodes.indexOf(node)}: ${got} != ${want}`)
+        })
+      // ot_scene_get_layout calls by mode (public, paint) and ot_scene_flush calls, while `read` runs.
+      const symbols = (scene.driver.renderLib as any).opentui.symbols
+      const { ot_scene_get_layout: getLayout, ot_scene_flush: flush } = symbols
+      const work = (read: () => void) => {
+        const counts = [0, 0, 0]
+        const modes = [nativeConstants.OT_LAYOUT_PUBLIC, nativeConstants.OT_LAYOUT_PAINT]
+        symbols.ot_scene_get_layout = (...args: any[]) => (counts[modes.indexOf(args[2])]++, getLayout(...args))
+        symbols.ot_scene_flush = (...args: any[]) => (counts[2]++, flush(...args))
+        try {
+          read()
+        } finally {
+          Object.assign(symbols, { ot_scene_get_layout: getLayout, ot_scene_flush: flush })
+        }
+        return counts
+      }
+      const ownWork = (node: any) => work(() => void [...getters(node), node._screenX])
+      check("first frame")
+      for (let step = 0; step < 150; step++) {
+        const [name, apply] = writes[random(writes.length)]
+        const write = () => apply(nodes[random(6)])
+        const label = `${round}:${step} ${name}`
+        const inv = invalidates(name)
+        const flushes = inv && name !== "move" ? 1 : 0
+        if (random(3) === 0) {
+          // The first hook of the phase writes; every later hook, on either node, checks: an earlier slot's write can
+          // stale a later one.
+          const phase = ["renderSelf", "onUpdate", "renderBefore"][random(3)]
+          const seen = new Set<string>()
+          let written = false
+          hook = (node, current) => {
+            // The first hook of each kind reads its own geometry from the request or slot without a native call.
+            if (!seen.has(current)) {
+              seen.add(current)
+              const first = ownWork(node)
+              if (first.join() !== "0,0,0") stale.push(`${label} first hook ${first}`)
+            }
+            check(`${label}@${phase} seen in #${nodes.indexOf(node)} ${current}`, node)
+            if (written || current !== phase) return
+            written = true
+            write()
+            const after = ownWork(node)
+            if (after.join() !== [inv ? 1 : 0, 0, flushes].join()) stale.push(`${label}@${phase} work ${after}`)
+            check(`${label}@${phase}`, node)
+          }
+        } else {
+          write()
+          const counts = work(() => live().forEach(getters))
+          if (counts.join() !== [inv ? live().length : 0, 0, flushes].join()) stale.push(`${label} work ${counts}`)
+          check(label)
+        }
+        if (hook || random(2) === 0) await setup.renderOnce()
+        hook = undefined
+        check(`${label} frame`)
+      }
+      e.destroy()
+      check(`${round} destroy`)
+      expect(() => e.getLayout()).toThrow()
+      expect(stale).toEqual([])
+      renderer.destroy()
+    }
   })
 })
 
