@@ -1391,7 +1391,6 @@ test "EditorView - placeholder initialization rejection leaves no published owne
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
             try std.testing.expect(ev.placeholder_buffer == null);
-            try std.testing.expect(ev.placeholder_syntax_style == null);
             try std.testing.expect(!ev.placeholder_active);
             try std.testing.expectEqual(view, ev.getTextBufferView());
             try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
@@ -1403,17 +1402,14 @@ test "EditorView - placeholder initialization rejection leaves no published owne
 
 fn setOwnedPlaceholderForTest(ev: *EditorView, bytes: []const u8, url: []const u8) !void {
     const allocator = ev.global_allocator;
-    const style = try text_buffer.SyntaxStyle.init(allocator);
-    errdefer style.deinit();
     var prepared_links = link.LinkTracker.init(allocator, ev.edit_buffer.tb.link_pool);
     defer prepared_links.deinit();
     const id = try prepared_links.trackUrl(url);
-    const style_id = try style.registerStyle("hint", ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1), null, ansi.TextAttributes.setLinkId(1, id));
     const copy = try allocator.dupe(u8, bytes);
     errdefer allocator.free(copy);
-    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+    try ev.setPlaceholderOwnedStyledText(copy, &.{.{
         .byte_count = @intCast(bytes.len),
-        .style_id = style_id,
+        .style = .{ .fg = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1), .bg = null, .attributes = ansi.TextAttributes.setLinkId(1, id) },
     }}, &prepared_links);
     std.debug.assert(prepared_links.getLinkCount() == 0);
 }
@@ -1444,7 +1440,7 @@ test "EditorView - placeholder owned replacement preserves accepted state on all
             const selection = ev.getSelection();
             const measured = try view.measureForDimensions(10, 2);
             const old_buffer = ev.placeholder_buffer;
-            const old_style = ev.placeholder_syntax_style;
+            const old_styles = if (old_buffer) |buffer| buffer.run_styles.count() else 0;
             const active_buffer = ev.getTextBuffer();
             const epoch = active_buffer.getContentEpoch();
             const old_link_count = links.getLiveSlotCount();
@@ -1464,7 +1460,7 @@ test "EditorView - placeholder owned replacement preserves accepted state on all
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 try std.testing.expect(failing.has_induced_failure);
                 try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
-                try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
+                try std.testing.expectEqual(old_styles, if (ev.placeholder_buffer) |buffer| buffer.run_styles.count() else 0);
                 try std.testing.expectEqual(initial == .visible, ev.placeholder_active);
                 try std.testing.expectEqual(active_buffer, ev.getTextBuffer());
                 try std.testing.expectEqual(epoch, active_buffer.getContentEpoch());
@@ -1477,7 +1473,7 @@ test "EditorView - placeholder owned replacement preserves accepted state on all
                     var actual: [64]u8 = undefined;
                     try std.testing.expectEqualStrings("old\u{754c}", actual[0..buffer.getTextRange(0, std.math.maxInt(u32), &actual)]);
                     const highlight = buffer.getLineHighlightsSlice(0)[0];
-                    const definition = old_style.?.resolveById(highlight.style_id).?;
+                    const definition = buffer.resolveStyle(highlight.style_id).?;
                     const id = ansi.TextAttributes.getLinkId(definition.attributes);
                     try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
                     try std.testing.expectEqual(@as(u32, 5), highlight.col_end);
@@ -1511,34 +1507,30 @@ test "EditorView - placeholder owned rejection retains caller inputs and legacy 
     defer ev.deinit();
     const background = ansi.indexedColor(254, 228, 228, 228);
     eb.tb.setDefaultBg(background);
-    const style = try text_buffer.SyntaxStyle.init(allocator);
     var transferred = false;
-    defer if (!transferred) style.deinit();
     var prepared_links = link.LinkTracker.init(allocator, &links);
     defer prepared_links.deinit();
     const id = try prepared_links.trackUrl("https://example.com/hint");
-    const style_id = try style.registerStyle("hint", null, null, ansi.TextAttributes.setLinkId(1, id));
+    const hint: text_buffer.StyleDefinition = .{ .fg = null, .bg = null, .attributes = ansi.TextAttributes.setLinkId(1, id) };
     const copy = try allocator.dupe(u8, "H\u{754c}");
     defer if (!transferred) allocator.free(copy);
     for ([_]bool{ false, true }) |has_previous| {
         if (has_previous) try owned_styled.setPlaceholder(ev, &.{.{ .text = "legacy", .attributes = 1 }});
         const old_buffer = ev.placeholder_buffer;
-        const old_style = ev.placeholder_syntax_style;
         const active = ev.getTextBuffer();
-        try std.testing.expectError(error.InvalidIndex, ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+        try std.testing.expectError(error.InvalidIndex, ev.setPlaceholderOwnedStyledText(copy, &.{.{
             .byte_count = @intCast(copy.len + 1),
-            .style_id = style_id,
+            .style = hint,
         }}, &prepared_links));
         try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
-        try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
         try std.testing.expectEqual(active, ev.getTextBuffer());
         try std.testing.expectEqualStrings("H\u{754c}", copy);
         try std.testing.expectEqual(@as(u32, 1), prepared_links.getLinkCount());
         try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
     }
-    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+    try ev.setPlaceholderOwnedStyledText(copy, &.{.{
         .byte_count = @intCast(copy.len),
-        .style_id = style_id,
+        .style = hint,
     }}, &prepared_links);
     transferred = true;
     try std.testing.expectEqual(@as(u32, 0), prepared_links.getLinkCount());

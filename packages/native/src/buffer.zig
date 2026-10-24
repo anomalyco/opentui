@@ -2370,17 +2370,15 @@ pub const OptimizedBuffer = struct {
                 std.math.maxInt(u32);
 
             // Apply the style at the starting position
-            if (span_idx < spans.len and spans[span_idx].col <= start_col and spans[span_idx].style_id != 0) {
-                if (text_buffer.getSyntaxStyle()) |style| {
-                    if (style.resolveById(spans[span_idx].style_id)) |resolved_style| {
-                        if (resolved_style.fg) |fg| {
-                            lineFg = fg;
-                        }
-                        if (resolved_style.bg) |bg| {
-                            lineBg = bg;
-                        }
-                        lineAttributes |= resolved_style.attributes;
+            if (span_idx < spans.len and spans[span_idx].col <= start_col) {
+                if (text_buffer.resolveStyle(spans[span_idx].style_id)) |resolved_style| {
+                    if (resolved_style.fg) |fg| {
+                        lineFg = fg;
                     }
+                    if (resolved_style.bg) |bg| {
+                        lineBg = bg;
+                    }
+                    lineAttributes |= resolved_style.attributes;
                 }
             }
 
@@ -2541,18 +2539,14 @@ pub const OptimizedBuffer = struct {
                         lineBg = defaultBg;
                         lineAttributes = defaultAttributes;
 
-                        if (text_buffer.getSyntaxStyle()) |style| {
-                            if (new_span.style_id != 0) {
-                                if (style.resolveById(new_span.style_id)) |resolved_style| {
-                                    if (resolved_style.fg) |fg| {
-                                        lineFg = fg;
-                                    }
-                                    if (resolved_style.bg) |bg| {
-                                        lineBg = bg;
-                                    }
-                                    lineAttributes |= resolved_style.attributes;
-                                }
+                        if (text_buffer.resolveStyle(new_span.style_id)) |resolved_style| {
+                            if (resolved_style.fg) |fg| {
+                                lineFg = fg;
                             }
+                            if (resolved_style.bg) |bg| {
+                                lineBg = bg;
+                            }
+                            lineAttributes |= resolved_style.attributes;
                         }
 
                         next_change_col = new_span.next_col;
@@ -2584,18 +2578,14 @@ pub const OptimizedBuffer = struct {
                                 lineFg = defaultFg;
                                 lineBg = defaultBg;
                                 lineAttributes = defaultAttributes;
-                                if (text_buffer.getSyntaxStyle()) |style| {
-                                    if (active_span.style_id != 0) {
-                                        if (style.resolveById(active_span.style_id)) |resolved_style| {
-                                            if (resolved_style.fg) |fg| {
-                                                lineFg = fg;
-                                            }
-                                            if (resolved_style.bg) |bg| {
-                                                lineBg = bg;
-                                            }
-                                            lineAttributes |= resolved_style.attributes;
-                                        }
+                                if (text_buffer.resolveStyle(active_span.style_id)) |resolved_style| {
+                                    if (resolved_style.fg) |fg| {
+                                        lineFg = fg;
                                     }
+                                    if (resolved_style.bg) |bg| {
+                                        lineBg = bg;
+                                    }
+                                    lineAttributes |= resolved_style.attributes;
                                 }
                                 next_change_col = active_span.next_col;
                             }

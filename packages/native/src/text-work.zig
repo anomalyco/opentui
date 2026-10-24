@@ -38,10 +38,9 @@ pub const Counts = struct {
     /// Styled-text replacements of one buffer and the bytes each copies.
     styled_text_sets: u64 = 0,
     styled_text_bytes: u64 = 0,
-    /// `registerStyleDefinition` calls, new names and overwrites alike.
+    /// `registerStyleDefinition` calls (new names and overwrites) and new run styles of a
+    /// styled replacement.
     style_registrations: u64 = 0,
-    /// Entries that `prepareDefinitions` copies into a provisional style table.
-    style_entries_copied: u64 = 0,
     /// Object-table slots that the scans for buffers borrowing a shared style visit.
     style_dependent_slots: u64 = 0,
     /// `buildLineSpans` calls and the highlights they sort.

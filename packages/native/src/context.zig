@@ -267,7 +267,6 @@ pub const SharedText = struct {
     handle: Handle,
     buffer: *text_buffer.UnifiedTextBuffer,
     input_mem_id: u8,
-    owned_style: ?*syntax_style.SyntaxStyle = null,
     views: ?*TextView = null,
     pool_next: ?*SharedText = null,
 
@@ -441,7 +440,6 @@ pub const Text = struct {
     buffer: *text_buffer.UnifiedTextBuffer,
     view: *text_buffer_view.UnifiedTextBufferView,
     input_mem_id: ?u8 = null,
-    owned_style: ?*syntax_style.SyntaxStyle = null,
     initial_viewport: ?text_buffer_view.Viewport = null,
     // Retain logical changes even when both positions truncate to the same cell.
     scroll_x: f64 = 0,
@@ -2372,11 +2370,6 @@ pub const Context = struct {
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         if (try self.replaceTextContent(text, bytes)) textResourceChanged(text);
-        if (text.owned_style) |style| {
-            text.buffer.setSyntaxStyle(null);
-            text.owned_style = null;
-            style.deinit();
-        }
         node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
@@ -2411,12 +2404,10 @@ pub const Context = struct {
         buffer: text_buffer.UnifiedTextBuffer.PreparedOwnedStyledText = undefined,
         buffer_ready: bool = false,
         bytes: ?[]const u8 = null,
-        style: ?*syntax_style.SyntaxStyle = null,
         links: link.LinkTracker,
 
         fn deinit(prepared: *PreparedStyledTextResource, allocator: std.mem.Allocator) void {
             if (prepared.buffer_ready) prepared.buffer.deinit();
-            if (prepared.style) |style| style.deinit();
             if (prepared.bytes) |bytes| allocator.free(bytes);
             prepared.links.deinit();
         }
@@ -2435,20 +2426,13 @@ pub const Context = struct {
             offset += chunk.byte_count;
         }
         if (offset != bytes.len) return error.InvalidOptions;
-        const retained_style: ?*syntax_style.SyntaxStyle = if (@TypeOf(text) == *SharedText and text.owned_style == null)
-            if (text.buffer.getSyntaxStyle()) |style| @constCast(style) else null
-        else
-            null;
-        if (retained_style) |retained| try self.checkStyleDependents(retained);
         prepared.* = .{ .links = link.LinkTracker.init(self.allocator, &self.links) };
         errdefer prepared.deinit(self.allocator);
-        const style = if (retained_style) |retained| try retained.prepareDefinitions() else try syntax_style.SyntaxStyle.init(self.allocator);
-        prepared.style = style;
         const ranges = try self.allocator.alloc(text_buffer.OwnedStyledChunk, chunks.len);
         defer self.allocator.free(ranges);
         offset = 0;
         var range_count: usize = 0;
-        for (chunks, 0..) |chunk, index| {
+        for (chunks) |chunk| {
             if (chunk.byte_count == 0) continue;
             var attributes = chunk.attributes;
             if (chunk.link_url) |url| {
@@ -2461,21 +2445,9 @@ pub const Context = struct {
                 }
             }
             offset += chunk.byte_count;
-            var name_bytes: [20]u8 = undefined;
-            const name = if (retained_style != null)
-                try std.fmt.bufPrint(&name_bytes, "chunk{d}", .{index})
-            else
-                try std.fmt.bufPrint(&name_bytes, "{d}", .{index});
-            const register_chunk = if (retained_style != null)
-                text.buffer.measureText(bytes[offset - chunk.byte_count .. offset]) > 0
-            else
-                chunk.foreground != null or chunk.background != null or attributes != 0;
             ranges[range_count] = .{
                 .byte_count = chunk.byte_count,
-                .style_id = if (register_chunk)
-                    try style.registerStyle(name, chunk.foreground, chunk.background, attributes)
-                else
-                    0,
+                .style = .{ .fg = chunk.foreground, .bg = chunk.background, .attributes = attributes },
             };
             range_count += 1;
         }
@@ -2483,22 +2455,14 @@ pub const Context = struct {
         prepared.bytes = copy;
         text_work.add(.styled_text_sets, 1);
         text_work.add(.styled_text_bytes, copy.len);
-        if (retained_style != null) try style.retainLinks(&self.links);
-        try text.buffer.prepareOwnedStyledText(&prepared.buffer, copy, text.input_mem_id, style, ranges[0..range_count], &prepared.links, retained_style);
+        try text.buffer.prepareOwnedStyledText(&prepared.buffer, copy, text.input_mem_id, ranges[0..range_count], &prepared.links);
         prepared.buffer_ready = true;
     }
 
-    fn commitStyledTextResource(self: *Context, prepared: *PreparedStyledTextResource, text: anytype) bool {
+    fn commitStyledTextResource(_: *Context, prepared: *PreparedStyledTextResource, text: anytype) bool {
         const changed = !holdsBytes(text, prepared.bytes.?);
         text.input_mem_id = prepared.buffer.commit();
         prepared.bytes = null;
-        if (prepared.buffer.retained_style) |retained| self.invalidateStyleDependents(retained);
-        if (prepared.buffer.retained_style == null) {
-            const previous = text.owned_style;
-            text.owned_style = prepared.style;
-            prepared.style = null;
-            if (previous) |old| old.deinit();
-        }
         return changed;
     }
 
@@ -3034,9 +2998,9 @@ pub const Context = struct {
         return value;
     }
 
-    /// The caller has destroyed every view and the owned style.
+    /// The caller has destroyed every view.
     fn releaseSharedTextStorage(self: *Context, value: *SharedText) void {
-        std.debug.assert(value.views == null and value.owned_style == null);
+        std.debug.assert(value.views == null);
         if (!self.closing and self.shared_text_pool_count < @min(self.objects.slots.len, text_pool_count_max)) {
             value.buffer.retireStorage();
             const bytes = @sizeOf(SharedText) + value.buffer.retainedStorageBytes();
@@ -3090,11 +3054,6 @@ pub const Context = struct {
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         const changed = try self.replaceTextContent(text, bytes);
         text.reclaimAppendBuffers();
-        if (text.owned_style) |style| {
-            text.buffer.setSyntaxStyle(null);
-            text.owned_style = null;
-            style.deinit();
-        }
         text.invalidate(changed);
     }
 
@@ -3140,7 +3099,7 @@ pub const Context = struct {
             };
             const text = try self.getTextBuffer(replacement.buffer);
             const dependent = try self.getTextBufferView(replacement.view);
-            if (dependent.text != text or text.buffer.getSyntaxStyle() != text.owned_style) return error.InvalidOptions;
+            if (dependent.text != text) return error.InvalidOptions;
             for (views[0..index]) |previous| if (previous.text == text) return error.InvalidOptions;
             try text.checkMutable();
             views[index] = dependent;
@@ -3204,10 +3163,6 @@ pub const Context = struct {
         const style = if (style_handle) |id| try self.getSyntaxStyle(id) else null;
         text.buffer.setSyntaxStyle(style);
         if (text.buffer.getSyntaxStyle() != style) return error.OutOfMemory;
-        if (text.owned_style) |previous| {
-            text.owned_style = null;
-            previous.deinit();
-        }
         text.invalidate(false);
     }
 
@@ -3629,18 +3584,14 @@ pub const Context = struct {
             view.invalidate();
             return;
         }
-        const style = try syntax_style.SyntaxStyle.init(self.allocator);
-        errdefer style.deinit();
         const ranges = try self.allocator.alloc(text_buffer.OwnedStyledChunk, chunks.len);
         defer self.allocator.free(ranges);
-        for (chunks, ranges, 0..) |chunk, *range, index| {
-            var name_buffer: [10]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buffer, "{d}", .{index}) catch unreachable;
-            range.* = .{ .byte_count = chunk.byte_count, .style_id = try style.registerStyle(name, chunk.foreground, chunk.background, chunk.attributes) };
+        for (chunks, ranges) |chunk, *range| {
+            range.* = .{ .byte_count = chunk.byte_count, .style = .{ .fg = chunk.foreground, .bg = chunk.background, .attributes = chunk.attributes } };
         }
         const copy = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(copy);
-        try view.view.setPlaceholderOwnedStyledText(copy, style, ranges, null);
+        try view.view.setPlaceholderOwnedStyledText(copy, ranges, null);
         view.invalidate();
     }
 
@@ -3769,8 +3720,6 @@ pub const Context = struct {
     fn destroyTextResource(self: *Context, text: *Text) void {
         text.view.retireStorage();
         text.buffer.retireStorage();
-        if (text.owned_style) |style| style.deinit();
-        text.owned_style = null;
         if (!self.closing and self.text_pool_count < @min(self.objects.slots.len, text_pool_count_max)) {
             const bytes = @sizeOf(Text) + text.buffer.retainedStorageBytes() + text.view.retainedStorageBytes();
             if (bytes <= text_storage_bytes_max and bytes <= text_pool_bytes_max - self.text_pool_bytes) {
@@ -3787,7 +3736,6 @@ pub const Context = struct {
     fn freeTextStorage(self: *Context, text: *Text) void {
         text.view.deinit();
         text.buffer.deinit();
-        if (text.owned_style) |style| style.deinit();
         self.allocator.destroy(text);
     }
 
@@ -3862,8 +3810,6 @@ pub const Context = struct {
                 while (value.views) |view| self.destroyToken(self.objects.beginDestroy(view.handle) catch unreachable);
                 // Detach the buffer from its style before the style goes away.
                 value.buffer.setSyntaxStyle(null);
-                if (value.owned_style) |style| style.deinit();
-                value.owned_style = null;
                 self.releaseSharedTextStorage(value);
             },
             .text_buffer_view => {

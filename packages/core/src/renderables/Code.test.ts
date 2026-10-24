@@ -1683,19 +1683,12 @@ test("CodeRenderable - onHighlight callback can add custom highlights", async ()
 
   expect(codeRenderable.plainText).toBe("const message = 'hello';")
 
-  // Verify both the original keyword highlight and the custom highlight are applied
+  // Both the original keyword highlight and the custom highlight are styled ranges that draw their colors.
   const lineHighlights = codeRenderable.getLineHighlights(0)
-  expect(lineHighlights.length).toBeGreaterThanOrEqual(2)
-
-  // Check keyword highlight exists with the correct styleId
-  const keywordStyleId = syntaxStyle.getStyleId("keyword")
-  const keywordHighlight = lineHighlights.find((h) => h.styleId === keywordStyleId)
-  expect(keywordHighlight).toBeDefined()
-
-  // Check custom highlight exists with the correct styleId
-  const customStyleId = syntaxStyle.getStyleId("custom.highlight")
-  const customHighlight = lineHighlights.find((h) => h.styleId === customStyleId)
-  expect(customHighlight).toBeDefined()
+  expect(lineHighlights.find((h) => h.start === 0 && h.end === 5)?.styleId).toBeGreaterThan(0)
+  expect(lineHighlights.find((h) => h.start === 6 && h.end === 13)?.styleId).toBeGreaterThan(0)
+  expect(findSpanContaining(captureSpans(), "const")?.fg?.toInts()).toEqual(RGBA.fromValues(0, 0, 1, 1).toInts())
+  expect(findSpanContaining(captureSpans(), "message")?.fg?.toInts()).toEqual(RGBA.fromValues(1, 0, 0, 1).toInts())
 })
 
 test("CodeRenderable - onHighlight callback returning undefined uses original highlights", async () => {
@@ -1826,13 +1819,10 @@ test("CodeRenderable - onHighlight callback supports async functions", async () 
   expect(asyncCallbackCompleted).toBe(true)
   expect(codeRenderable.plainText).toBe("const message = 'hello';")
 
-  // Verify the async highlight was applied
+  // The async highlight is a styled range that draws its color.
   const lineHighlights = codeRenderable.getLineHighlights(0)
-  expect(lineHighlights.length).toBeGreaterThanOrEqual(2)
-
-  const asyncStyleId = syntaxStyle.getStyleId("async.highlight")
-  const asyncHighlight = lineHighlights.find((h) => h.styleId === asyncStyleId && h.start === 6 && h.end === 13)
-  expect(asyncHighlight).toBeDefined()
+  expect(lineHighlights.find((h) => h.start === 6 && h.end === 13)?.styleId).toBeGreaterThan(0)
+  expect(findSpanContaining(captureSpans(), "message")?.fg?.toInts()).toEqual(RGBA.fromValues(0, 1, 0, 1).toInts())
 })
 
 test("CodeRenderable - streaming mode caches highlights between updates", async () => {

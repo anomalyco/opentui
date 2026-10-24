@@ -7,6 +7,10 @@ const iter = @import("text-buffer-iterators.zig");
 const text_work = @import("text-work.zig");
 const Owner = abi.ContextHandle;
 
+comptime {
+    std.debug.assert(c.OT_STYLE_RUN_FLAG == @import("syntax-style.zig").id_limit);
+}
+
 /// Validates admission only; checked Context methods acquire their own mutation guard.
 pub fn admit(context: ?*Owner, read: bool) !*Owner {
     const owner = context orelse return error.InvalidOptions;
@@ -468,7 +472,7 @@ pub fn highlightFromC(operation: u32, argument: u32, highlight: ?*const c.ot_edi
         ((operation == c.OT_EDIT_HIGHLIGHT_ADD_RANGE or operation == c.OT_EDIT_HIGHLIGHT_CLEAR_ALL) and argument != 0) or
         ((operation <= c.OT_EDIT_HIGHLIGHT_ADD_RANGE) != (highlight != null)) or
         (operation == c.OT_EDIT_HIGHLIGHT_REMOVE_REF and argument > 65535)) return error.InvalidOptions;
-    if (highlight) |h| if (h.priority > 255 or h.ref > 65535) return error.InvalidOptions;
+    if (highlight) |h| if (h.priority > 255 or h.ref > 65535 or h.style_id & c.OT_STYLE_RUN_FLAG != 0) return error.InvalidOptions;
     const range: ctx.TextHighlight.Range = if (highlight) |h| .{
         .start = h.start,
         .end = h.end,

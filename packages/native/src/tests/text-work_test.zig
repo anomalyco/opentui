@@ -508,7 +508,7 @@ test "text work: each UTF-8 scan entry counts its seeks, width reads, and bytes"
     try expectAfter(utf8.findGraphemePosByWidth("\u{e9}\u{e9}\u{e9}", 1, 4, .hidden, false, true, .unicode), .{ .prefix_seeks = 1, .bytes_scanned = 2 });
 }
 
-test "text work: styled text on a buffer that borrows a style registers every chunk and scans the object table" {
+test "text work: styled text interns each distinct chunk style and scans no objects" {
     const ctx = @import("../context.zig");
     const bytes = "const x = 1;\nfoo";
     // 8 chunks of 2 bytes that alternate 2 styles.
@@ -517,14 +517,13 @@ test "text work: styled text on a buffer that borrows a style registers every ch
         .{ .byte_count = 2, .foreground = .{ 255, 0, 0, 255 } }
     else
         .{ .byte_count = 2, .attributes = 1 };
-    // Zero borrowers: the buffer owns the style that styled text creates. `copied` is per set: the
-    // second set copies the `chunkN` names of the first too. A borrowed style measures each chunk;
-    // `scanned` is the "\nf" chunk on the scalar path.
-    const rows = [_]struct { capacity: u32, borrowers: u32, slots: u64, copied: [2]u64, scanned: u64 }{
-        .{ .capacity = 64, .borrowers = 0, .slots = 0, .copied = .{ 0, 0 }, .scanned = 0 },
-        .{ .capacity = 64, .borrowers = 1, .slots = 128, .copied = .{ 4, 12 }, .scanned = 2 },
-        .{ .capacity = 64, .borrowers = 8, .slots = 128, .copied = .{ 4, 12 }, .scanned = 2 },
-        .{ .capacity = 4096, .borrowers = 1, .slots = 8192, .copied = .{ 4, 12 }, .scanned = 2 },
+    // Zero borrowers: no style is attached. A styled set never writes the attached style, so the
+    // number of borrowers and the object table size do not change its work.
+    const rows = [_]struct { capacity: u32, borrowers: u32, slots: u64 }{
+        .{ .capacity = 64, .borrowers = 0, .slots = 0 },
+        .{ .capacity = 64, .borrowers = 1, .slots = 128 },
+        .{ .capacity = 64, .borrowers = 8, .slots = 128 },
+        .{ .capacity = 4096, .borrowers = 1, .slots = 8192 },
     };
     for (rows) |row| {
         errdefer std.debug.print("capacity {d}, borrowers {d}\n", .{ row.capacity, row.borrowers });
@@ -540,11 +539,11 @@ test "text work: styled text on a buffer that borrows a style registers every ch
         _ = text_work.take();
         _ = try owner.syntaxStyleRegister(style, "type", .{ .fg = null, .bg = null, .attributes = 2 });
         try expectWork(.{ .style_registrations = 1, .style_dependent_slots = row.slots });
-        // The last borrower reuses the `chunkN` names of the first.
-        for ([_]ctx.Handle{ buffers[0], buffers[@max(row.borrowers, 1) - 1] }, row.copied) |buffer, copied| {
+        for ([_]ctx.Handle{ buffers[0], buffers[@max(row.borrowers, 1) - 1] }) |buffer| {
             try owner.textBufferSetStyledText(buffer, bytes, &chunks);
-            try expectWork(.{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 8, .style_entries_copied = copied, .style_dependent_slots = row.slots, .bytes_scanned = row.scanned });
+            try expectWork(.{ .styled_text_sets = 1, .styled_text_bytes = 16, .style_registrations = 2 });
         }
+        try std.testing.expectEqual(4, (try owner.raw().getSyntaxStyle(style)).getStyleCount());
     }
 }
 

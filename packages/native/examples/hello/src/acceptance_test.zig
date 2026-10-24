@@ -63,8 +63,6 @@ test "styled text renders through the public Zig module without JavaScript" {
 
     const text_buffer = try opentui.UnifiedTextBuffer.init(allocator, &graphemes, &links, .unicode);
     defer text_buffer.deinit();
-    const syntax_style = try opentui.text_buffer.SyntaxStyle.init(allocator);
-    defer syntax_style.deinit();
     const view = try opentui.UnifiedTextBufferView.init(allocator, text_buffer);
     defer view.deinit();
     view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 1 });
@@ -75,21 +73,14 @@ test "styled text renders through the public Zig module without JavaScript" {
     var link_tracker = opentui.LinkTracker.init(allocator, &links);
     defer link_tracker.deinit();
     const link_id = try link_tracker.trackUrl(link_url);
-    const open_id = try syntax_style.registerStyle("open", amber, null, opentui.TextAttributes.BOLD);
-    const tui_id = try syntax_style.registerStyle(
-        "tui",
-        cyan,
-        null,
-        opentui.TextAttributes.setLinkId(opentui.TextAttributes.UNDERLINE, link_id),
-    );
     const text = try allocator.dupe(u8, "OpenTUI");
     var transferred = false;
     errdefer if (!transferred) allocator.free(text);
     const chunks = [_]opentui.text_buffer.OwnedStyledChunk{
-        .{ .byte_count = 4, .style_id = open_id },
-        .{ .byte_count = 3, .style_id = tui_id },
+        .{ .byte_count = 4, .style = .{ .fg = amber, .bg = null, .attributes = opentui.TextAttributes.BOLD } },
+        .{ .byte_count = 3, .style = .{ .fg = cyan, .bg = null, .attributes = opentui.TextAttributes.setLinkId(opentui.TextAttributes.UNDERLINE, link_id) } },
     };
-    _ = try text_buffer.replaceOwnedStyledText(text, null, syntax_style, &chunks, &link_tracker);
+    _ = try text_buffer.replaceOwnedStyledText(text, null, &chunks, &link_tracker);
     transferred = true;
 
     renderer.getNextBuffer().drawTextBuffer(view, 0, 0);

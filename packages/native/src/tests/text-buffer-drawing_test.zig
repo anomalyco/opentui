@@ -1024,11 +1024,10 @@ test "owned styled text - basic rendering with single chunk" {
     var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
-    const styled = try owned_styled.replace(tb, null, &.{.{
+    _ = try owned_styled.replace(tb, null, &.{.{
         .text = "Hello World",
         .fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0),
     }});
-    defer styled.style.deinit();
 
     var out_buffer: [100]u8 = undefined;
     const written = tb.getPlainTextIntoBuffer(&out_buffer);
@@ -1045,11 +1044,10 @@ test "owned styled text - multiple chunks render correctly" {
     defer tb.deinit();
 
     const fg_color = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const styled = try owned_styled.replace(tb, null, &.{
+    _ = try owned_styled.replace(tb, null, &.{
         .{ .text = "Hello ", .fg = fg_color },
         .{ .text = "World", .fg = fg_color },
     });
-    defer styled.style.deinit();
 
     var out_buffer: [100]u8 = undefined;
     const written = tb.getPlainTextIntoBuffer(&out_buffer);
@@ -2427,13 +2425,12 @@ test "owned styled text - scalar-split grapheme keeps the following token color"
     inline for (.{ .wcwidth, .unicode, .no_zwj, .unicode_wide }) |method| {
         const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
         defer tb.deinit();
-        const styled = try owned_styled.replace(tb, null, &.{
+        _ = try owned_styled.replace(tb, null, &.{
             .{ .text = "👩", .fg = red },
             .{ .text = "\u{200d}", .fg = red },
             .{ .text = "💻", .fg = red },
             .{ .text = "X", .fg = green },
         });
-        defer styled.style.deinit();
         const view = try TextBufferView.init(std.testing.allocator, tb);
         defer view.deinit();
         const output = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = method });
@@ -2468,14 +2465,13 @@ test "owned styled text - highlight positioning with Unicode text" {
     const fg_normal = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
     const bg_highlight = ansi.rgbaFromFloats(0.0, 1.0, 0.0, 1.0); // Green background
 
-    const styled = try owned_styled.replace(tb, null, &.{
+    _ = try owned_styled.replace(tb, null, &.{
         .{ .text = text_part1, .fg = fg_normal },
         .{ .text = text_part2, .fg = fg_normal },
         .{ .text = text_part3, .fg = fg_normal },
         .{ .text = text_part4, .fg = fg_normal, .bg = bg_highlight },
         .{ .text = text_part5, .fg = fg_normal },
     });
-    defer styled.style.deinit();
 
     // Verify the text content
     var out_buffer: [100]u8 = undefined;
@@ -2756,7 +2752,7 @@ test "drawTextBuffer - owned styled text with multiple colors and horizontal scr
     const blue_color = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
     const yellow_color = ansi.rgbaFromFloats(1.0, 1.0, 0.0, 1.0);
 
-    const styled = try owned_styled.replace(tb, null, &.{
+    _ = try owned_styled.replace(tb, null, &.{
         .{ .text = "const", .fg = red_color },
         .{ .text = " x = ", .fg = white_color },
         .{ .text = "function", .fg = green_color },
@@ -2766,7 +2762,6 @@ test "drawTextBuffer - owned styled text with multiple colors and horizontal scr
         .{ .text = "2", .fg = yellow_color },
         .{ .text = "; }", .fg = white_color },
     });
-    defer styled.style.deinit();
 
     view.setWrapMode(.none);
     view.setWrapWidth(null);

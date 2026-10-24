@@ -28,13 +28,12 @@ test "TextBuffer styled seek - JSON tokens retain every line span" {
         }
     }
     var current: ?owned_styled.Result = null;
-    defer if (current) |c| c.style.deinit();
     for (0..2) |_| {
         try owned_styled.replaceInPlace(tb, &current, &parts);
-        const style = current.?.style;
         try std.testing.expectEqual(line_count + 1, tb.getLineCount());
         try std.testing.expectEqual(parts.len, tb.getHighlightCount());
-        try std.testing.expectEqual(parts.len, style.getStyleCount());
+        // Equal chunk styles share one entry; token 0 sets nothing and has none.
+        try std.testing.expectEqual(4, tb.run_styles.count());
         for (0..line_count) |row| {
             const highlights = tb.getLineHighlights(row);
             const spans = tb.line_spans.items[row].items;
@@ -46,7 +45,7 @@ test "TextBuffer styled seek - JSON tokens retain every line span" {
                 try std.testing.expectEqual(end, highlights[token].col_end);
                 try std.testing.expect(highlights[token].internal);
                 try std.testing.expectEqual(1, highlights[token].priority);
-                try std.testing.expectEqual(token, style.resolveById(highlights[token].style_id).?.attributes);
+                try std.testing.expectEqual(token, if (tb.resolveStyle(highlights[token].style_id)) |definition| definition.attributes else 0);
                 try std.testing.expectEqual(start, spans[token].col);
                 try std.testing.expectEqual(end, spans[token].next_col);
                 try std.testing.expectEqual(highlights[token].style_id, spans[token].style_id);
@@ -97,7 +96,6 @@ test "TextBuffer styled seek - display widths multiline chunks and links" {
         const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
         defer tb.deinit();
         var current: ?owned_styled.Result = null;
-        defer if (current) |c| c.style.deinit();
         for ([_]u8{ 2, 4 }) |tab_width| {
             tb.setTabWidth(tab_width);
             try owned_styled.replaceInPlace(tb, &current, &.{
@@ -107,16 +105,15 @@ test "TextBuffer styled seek - display widths multiline chunks and links" {
                 .{ .text = "\n" ++ combining ++ "\n\tX", .fg = fg, .bg = bg, .attributes = 3, .url = url },
                 .{ .text = "\n\u{301}\n", .fg = fg, .bg = bg, .attributes = 3, .url = url },
             });
-            const style = current.?.style;
             try std.testing.expectEqual(9, tb.getLineCount());
             try std.testing.expectEqual(4, tb.getHighlightCount());
-            try std.testing.expectEqual(2, style.getStyleCount());
+            try std.testing.expectEqual(1, tb.run_styles.count());
             for ([_]usize{ 2, 4, 5, 6 }, [_][]const u8{ first, emoji, combining, "\tX" }) |row, text| {
                 const highlights = tb.getLineHighlights(row);
                 try std.testing.expectEqual(1, highlights.len);
                 try std.testing.expectEqual(0, highlights[0].col_start);
                 try std.testing.expectEqual(tb.measureText(text), highlights[0].col_end);
-                const definition = style.resolveById(highlights[0].style_id).?;
+                const definition = tb.resolveStyle(highlights[0].style_id).?;
                 try std.testing.expectEqualDeep(fg, definition.fg.?);
                 try std.testing.expectEqualDeep(bg, definition.bg.?);
                 const link_id = ansi.TextAttributes.getLinkId(definition.attributes);
@@ -220,7 +217,6 @@ test "TextBuffer styled text - failed growth keeps storage safe to reuse" {
     const tb = try TextBuffer.init(failing.allocator(), &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var current: ?owned_styled.Result = null;
-    defer if (current) |c| c.style.deinit();
     try owned_styled.replaceInPlace(tb, &current, &.{.{ .text = "a" }});
 
     failing.fail_index = failing.alloc_index;
@@ -476,8 +472,7 @@ test "TextBuffer removal rejection - mixed refs preserve accepted highlights and
             for (0..32) |fail_index| {
                 const tb = try TextBuffer.init(std.testing.allocator, &pool, &links, .wcwidth);
                 defer tb.deinit();
-                const styled = try owned_styled.replace(tb, null, &.{.{ .text = "abcdef\nabcdef", .attributes = 1 }});
-                defer styled.style.deinit();
+                _ = try owned_styled.replace(tb, null, &.{.{ .text = "abcdef\nabcdef", .attributes = 1 }});
                 for (0..2) |line_idx| try tb.addHighlight(line_idx, 2, 6, 9, 2, 200);
                 const highlights = try std.testing.allocator.dupe(Highlight, tb.getLineHighlights(0));
                 defer std.testing.allocator.free(highlights);

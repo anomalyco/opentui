@@ -1342,7 +1342,8 @@ typedef struct ot_editor_style {
  * Reset uses mask=7 and flags=0. */
 ot_status ot_edit_buffer_set_defaults(ot_context *, const ot_handle *, uint32_t mask, const ot_editor_style *);
 /* Names are copied UTF-8; registering an existing name replaces its definition.
- * Empty names are valid; name may be NULL only when byte_count is zero. */
+ * Empty names are valid; name may be NULL only when byte_count is zero. Ids are
+ * below OT_STYLE_RUN_FLAG. */
 ot_status ot_syntax_style_register(ot_context *, const ot_handle *, const uint8_t *name,
     uint32_t byte_count, const ot_editor_style *, uint32_t *out_id);
 /* Unknown names return id=0. Names are borrowed only for the query. */
@@ -1355,6 +1356,10 @@ ot_status ot_syntax_style_get_count(ot_context *, const ot_handle *, uint32_t *o
 #define OT_EDIT_HIGHLIGHT_REMOVE_REF UINT32_C(2)
 #define OT_EDIT_HIGHLIGHT_CLEAR_LINE UINT32_C(3)
 #define OT_EDIT_HIGHLIGHT_CLEAR_ALL UINT32_C(4)
+/* Highlight style ids with this bit name a text buffer's styled-text styles; styled
+ * text interns them by value in the buffer and never writes the attached SyntaxStyle.
+ * get_highlights reports them; equal styles share one id, unstyled text has id 0. */
+#define OT_STYLE_RUN_FLAG UINT32_C(0x80000000)
 typedef struct ot_edit_highlight {
     uint32_t start;
     uint32_t end;
@@ -1363,7 +1368,8 @@ typedef struct ot_edit_highlight {
     uint32_t ref;
 } ot_edit_highlight;
 /* highlight is required only for ADD operations. argument is line for ADD_LINE/
- * CLEAR_LINE, ref for REMOVE_REF, zero otherwise. priority<=255, ref<=65535.
+ * CLEAR_LINE, ref for REMOVE_REF, zero otherwise. priority<=255, ref<=65535, and
+ * style_id has no OT_STYLE_RUN_FLAG.
  * start/end are display columns: within line argument for ADD_LINE; for ADD_RANGE,
  * document offsets that skip line breaks, unlike cursor, selection, and get_range
  * offsets, which count one cell per line break. In "ab\ncd", range 3..4 is "d". */
@@ -1729,12 +1735,12 @@ ot_status ot_text_buffer_view_destroy(ot_context *, const ot_handle *);
 ot_status ot_text_buffer_set_text(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count);
 ot_status ot_text_buffer_append(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count);
 ot_status ot_text_buffer_clear(ot_context *, const ot_handle *, uint32_t reset);
-/* Empty chunks retain their ordinal for generated chunkN names, but register no
- * style or link. Unlike direct scene text, chunk_count can exceed byte_count. */
+/* Empty chunks register no style or link. Unlike direct scene text, chunk_count can
+ * exceed byte_count. clear without reset keeps styled highlights but drops their links. */
 ot_status ot_text_buffer_set_styled_text(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count,
     const ot_styled_text_chunk *, uint32_t chunk_count, const uint8_t *urls, uint32_t url_byte_count);
 /* Atomic replacement of buffer-owned styled text. Every buffer appears once and
- * view must be its dependent view. Borrowed SyntaxStyles are not supported.
+ * view must be its dependent view.
  * Success resets selection on each named view, retaining defaults and geometry.
  * Failure leaves every buffer, view and output unchanged. Inputs are borrowed
  * only for the call. Output has count entries; NULL spans require zero count.

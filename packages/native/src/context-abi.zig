@@ -4103,7 +4103,7 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
     linked.link_byte_count = 3;
     var urls = [_]u8{ '_', 0xff, 0, 0x1b };
     const text = (try owner.raw().getRenderable(node)).scene_node.?.text.?;
-    const style = text.owned_style;
+    const kept = text.buffer.run_styles.keys()[0];
     const epoch = text.buffer.getContentEpoch();
     for (0..13) |field| {
         var invalid = linked;
@@ -4131,7 +4131,7 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
             else => unreachable,
         }
         try std.testing.expectEqual(expected, ot_scene_set_styled_text(handle, &id, "next", 4, &.{invalid}, 1, &urls, urls.len));
-        try std.testing.expectEqual(style, text.owned_style);
+        try std.testing.expectEqualDeep(&[_]@TypeOf(kept){kept}, text.buffer.run_styles.keys());
         try std.testing.expectEqual(epoch, text.buffer.getContentEpoch());
         try std.testing.expectEqual(@as(u64, 0), owner.links.getTotalSlots());
     }
