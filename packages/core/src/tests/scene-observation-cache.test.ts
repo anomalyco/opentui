@@ -18,7 +18,6 @@ describe("scene layout observations", () => {
   test("random writes inside and outside hooks: getters match native reads, and only some writes re-read", async () => {
     // Writes that make the next warm read call native again (issue 310), and whether they stage a flush.
     const invalidates = (name: string) => ["translateX", "translateY", "move"].includes(name)
-    const inHookPaintReads = (invalidated: boolean) => (invalidated ? 1 : 0)
     let hook: ((node: Renderable, phase: string) => void) | undefined
     class Probe extends BoxRenderable {
       protected override renderSelf(buffer: OptimizedBuffer): void {
@@ -54,43 +53,37 @@ describe("scene layout observations", () => {
       await setup.renderOnce()
       const nodes: Renderable[] = (e.watched = [a, b, c, d, e, f])
       const live = () => nodes.filter((node) => !node.isDestroyed)
-      const pick = () => nodes[random(6)] as BoxRenderable
       // Each write changes its value: a write of the current value is skipped before it reaches the scene.
-      const state = new Map<string, number>()
-      const toggle = (key: string, values: unknown[]) => {
-        const node = pick() as any
-        const index = 1 - (state.get(`${key}${nodes.indexOf(node)}`) ?? 1)
-        state.set(`${key}${nodes.indexOf(node)}`, index)
-        node[key] = values[index]
-      }
-      const writes: [string, () => void][] = [
-        ["width", () => toggle("width", [5, 9])],
-        ["paddingLeft", () => toggle("paddingLeft", [1, 0])],
-        ["opacity", () => toggle("opacity", [0.5, 1])],
-        ["zIndex", () => toggle("zIndex", [1, 2])],
-        ["border", () => void ((node) => (node.border = node.border !== true))(pick())],
-        ["backgroundColor", () => void (pick().backgroundColor = random(2) ? "#ff0000" : "#00ff00")],
-        ["translateX", () => void ((node) => (node.translateX += random(2) ? 1 : -1))(pick())],
-        ["translateY", () => void ((node) => (node.translateY += random(2) ? 1 : -1))(pick())],
+      const padding = new Map<Renderable, number>()
+      const writes: [string, (node: any) => unknown][] = [
+        ["width", (node) => (node.width = node._width === 5 ? 9 : 5)],
+        ["paddingLeft", (node) => (node.paddingLeft = padding.set(node, 1 - (padding.get(node) ?? 0)).get(node))],
+        ["opacity", (node) => (node.opacity = node.opacity === 1 ? 0.5 : 1)],
+        ["zIndex", (node) => (node.zIndex += 1)],
+        ["border", (node) => (node.border = node.border !== true)],
+        ["backgroundColor", (node) => (node.backgroundColor = random(2) ? "#ff0000" : "#00ff00")],
+        ["translateX", (node) => (node.translateX += random(2) ? 1 : -1)],
+        ["translateY", (node) => (node.translateY += random(2) ? 1 : -1)],
         ["move", () => [a, b, e][random(3)].add([c, d, f][random(3)])],
-        ["construct", () => void box({})],
+        ["construct", () => box({})],
       ]
-      // Every getter, then a fresh native read of each (public, Yoga, and paint for hooks).
+      // Every getter, then a fresh native read of each. Paint getters read the paint layout inside the node's hook
+      // and the public layout outside it.
       const getters = (node: Renderable) => [node.x, node.y, node.width, node.height, node.screenX, node.screenY]
-      const geometry = (node: any, inHook: boolean) => {
+      const geometry = (node: any) => {
         const { left, top, width } = node.getLayout()
-        return [...getters(node), left, top, width, ...(inHook ? [node._screenX, node._screenY, node._paintWidth] : [])]
+        return [...getters(node), left, top, width, node._screenX, node._screenY, node._paintWidth]
       }
       const native = (node: Renderable, inHook: boolean) => {
-        const [p, y, s] = [scene.getLayout(node), scene.getLayout(node, true), scene.getLayout(node, "paint")]
-        return [p.screenX, p.screenY, p.width, p.height, p.screenX, p.screenY, y.left, y.top, y.width].concat(
-          inHook ? [s.screenX, s.screenY, s.width] : [],
-        )
+        const [p, y] = [scene.getLayout(node), scene.getLayout(node, true)]
+        const s = inHook ? scene.getLayout(node, "paint") : p
+        const at = (l: typeof p) => [l.screenX, l.screenY, l.width]
+        return [...at(p), p.height, p.screenX, p.screenY, y.left, y.top, y.width, ...at(s)]
       }
       const stale: string[] = []
       const check = (label: string, hooked?: Renderable) =>
         live().forEach((node) => {
-          const [got, want] = [geometry(node, node === hooked), native(node, node === hooked)]
+          const [got, want] = [geometry(node), native(node, node === hooked)]
           if (got.join() !== want.join()) stale.push(`${label} #${nodes.indexOf(node)}: ${got} != ${want}`)
         })
       // ot_scene_get_layout calls by mode (public, paint) and ot_scene_flush calls, while `read` runs.
@@ -108,9 +101,11 @@ describe("scene layout observations", () => {
         }
         return counts
       }
+      const ownWork = (node: any) => work(() => void [...getters(node), node._screenX])
       check("first frame")
       for (let step = 0; step < 150; step++) {
-        const [name, write] = writes[random(writes.length)]
+        const [name, apply] = writes[random(writes.length)]
+        const write = () => apply(nodes[random(6)])
         const label = `${round}:${step} ${name}`
         const inv = invalidates(name)
         const flushes = inv && name !== "move" ? 1 : 0
@@ -118,15 +113,20 @@ describe("scene layout observations", () => {
           // The first hook of the phase writes; every later hook, on either node, checks: an earlier slot's write can
           // stale a later one.
           const phase = random(2) ? "renderSelf" : "onUpdate"
-          let written = false
+          let [seen, written] = [false, false]
           hook = (node, current) => {
+            // The first hook after a step reads its own geometry from the request without a native call.
+            if (!seen) {
+              seen = true
+              const first = ownWork(node)
+              if (first.join() !== "0,0,0") stale.push(`${label} first hook ${first}`)
+            }
             check(`${label}@${phase} seen in #${nodes.indexOf(node)} ${current}`, node)
             if (written || current !== phase) return
             written = true
             write()
-            const counts = work(() => void [...getters(node), (node as any)._screenX])
-            if (counts.join() !== [inv ? 1 : 0, inHookPaintReads(inv), flushes].join())
-              stale.push(`${label}@${phase} work ${counts}`)
+            const after = ownWork(node)
+            if (after.join() !== [inv ? 1 : 0, 0, flushes].join()) stale.push(`${label}@${phase} work ${after}`)
             check(`${label}@${phase}`, node)
           }
         } else {

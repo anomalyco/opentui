@@ -445,7 +445,6 @@ export interface NativeSceneFrameRequest {
   paintLayout?: NativeSceneLayout
   publicLayout?: NativeSceneLayout
   /** Host observation revision; never part of native ticket authority. */
-  geometryRevision?: number
 }
 
 export interface NativeSplitSnapshot {
@@ -7706,7 +7705,6 @@ export class FFIRenderLib {
             flags & nativeConstants.OT_SCENE_GEOMETRY_PUBLIC
               ? decodeSceneLayout(scratch.geometryValues, scratch.geometryCoordinates, fields.public_layout.offset)
               : undefined,
-          geometryRevision: undefined,
         }
       } catch (error) {
         const livePointer = this.nativeContexts.get(context)
