@@ -65,19 +65,29 @@ test.each(["previous-blur", "renderer-focus", "renderer-blur"] as const)(
   },
 )
 
-test("detaching a focused child clears former ancestor focus projections", () => {
+test("detaching a focused child clears former ancestor focus projections", async () => {
+  // A paint hook marks its node clean, so the focus change must mark every ancestor dirty again.
+  const outer = new BoxRenderable(testRenderer, { renderAfter: () => {} })
   const parent = new BoxRenderable(testRenderer, { focusable: true })
   const child = new BoxRenderable(testRenderer, { focusable: true })
-  testRenderer.root.add(parent)
+  testRenderer.root.add(outer)
+  outer.add(parent)
   parent.add(child)
+  await testRenderer.idle()
+  expect(outer.isDirty).toBe(false)
   child.focus()
+  expect(outer.isDirty).toBe(true)
   expect(parent.hasFocusedDescendant).toBe(true)
   parent.remove(child)
   expect(parent.hasFocusedDescendant).toBe(false)
-  expect(testRenderer.root.hasFocusedDescendant).toBe(false)
+  expect(outer.hasFocusedDescendant).toBe(false)
   expect(child.focused).toBe(true)
   parent.add(child)
   expect(parent.hasFocusedDescendant).toBe(true)
+  // Only a focused node counts: the renderer can point at one that has not taken focus.
+  child.blur()
+  testRenderer.focusRenderable(child)
+  expect(parent.hasFocusedDescendant).toBe(false)
 })
 
 test("disabling focusability releases focus and input subscriptions", async () => {
