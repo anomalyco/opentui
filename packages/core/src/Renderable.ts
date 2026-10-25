@@ -2006,10 +2006,12 @@ export abstract class Renderable extends BaseRenderable {
     this.assertMutable()
     this.destroyLayoutBacking((run) => {
       run(() => this.destroyOwnedResources())
+      // Read before listeners run: one may move or clear the focus.
+      const heldFocus = this._focused || this.hasFocusedDescendant
       this._isDestroyed = true
       run(() => this.emit(RenderableEvents.DESTROYED))
 
-      if (this._focused || this.hasFocusedDescendant) run(() => this.propagateFocusChange(false))
+      if (heldFocus) run(() => this.propagateFocusChange(false))
       if (this.parent) {
         const parent = this.parent
         run(() => parent.remove(this))
