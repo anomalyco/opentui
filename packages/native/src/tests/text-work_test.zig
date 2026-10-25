@@ -349,9 +349,10 @@ test "text work: line lookups after an edit in a 10,000-line buffer" {
     _ = text_work.take();
     try eb.insertText("x");
     try eb.backspace();
-    try expectWork(.{ .line_seeks = 17, .line_seek_nodes = 274, .prefix_seeks = 3 });
+    // A deletion takes its cursor from the join, not from a lookup of the line it shortened.
+    try expectWork(.{ .line_seeks = 13, .line_seek_nodes = 212, .prefix_seeks = 3 });
     try eb.deleteForward();
-    try expectWork(.{ .line_seeks = 17, .line_seek_nodes = 267, .prefix_seeks = 3, .grapheme_width_reads = 1 });
+    try expectWork(.{ .line_seeks = 13, .line_seek_nodes = 203, .prefix_seeks = 3, .grapheme_width_reads = 1 });
 
     const tb = eb.getTextBuffer();
     try tb.append("\nappended");

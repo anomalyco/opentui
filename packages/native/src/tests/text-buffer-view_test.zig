@@ -4385,6 +4385,7 @@ pub fn expectGraphemeBoundaries(tb: *TextBuffer) !void {
             continue;
         };
         const bytes = chunk.getBytes(tb.memRegistry());
+        if (bytes.len == 0) return error.TestUnexpectedResult;
         var pos: usize = 0;
         while (pos < bytes.len) : (pos += utf8.decodeUtf8Unchecked(bytes, pos).len) {
             const cp = utf8.decodeUtf8Unchecked(bytes, pos).cp;
@@ -4579,6 +4580,8 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                     var offset = random.uintAtMost(u32, total);
                     if (edit.tb.cursorUnitBoundsAtOffset(offset)) |bounds| offset = bounds.start;
                     try edit.setCursorByOffset(offset);
+                    // Also the editor's own stops, which in wcwidth fall inside a grapheme (record 339).
+                    for (0..random.uintLessThan(u8, 3)) |_| edit.moveRight();
                     // Up to 6 tokens at once is a paste.
                     for (0..random.intRangeAtMost(usize, 1, 6)) |_| try edit.insertText(tokens[random.uintLessThan(usize, tokens.len)]);
                 },
