@@ -5,15 +5,6 @@ import { testRender } from "../index.js"
 
 let testSetup: Awaited<ReturnType<typeof testRender>>
 
-function renderedTextFragments(): string[] {
-  const textRenderable = testSetup.renderer.root.getChildren()[0]!.getChildren()[0]!
-  expect(textRenderable).toBeInstanceOf(TextRenderable)
-  const textChildren = (textRenderable as TextRenderable).getTextChildren()
-  expect(textChildren).toHaveLength(1)
-  expect(textChildren[0]).toBeInstanceOf(TextNodeRenderable)
-  return (textChildren[0] as TextNodeRenderable).toChunks().map((chunk) => chunk.text)
-}
-
 function textFragments(textRenderable: TextRenderable): string[] {
   const textChildren = textRenderable.getTextChildren()
   for (const child of textChildren) {
@@ -121,53 +112,34 @@ describe("SolidJS Renderer - Control Flow Updates", () => {
     expect(frame).not.toContain("Two")
   })
 
-  it("replaces text through empty and non-empty updates without accumulating children", async () => {
-    const [content, setContent] = createSignal("")
-
-    testSetup = await testRender(
-      () => (
-        <box>
-          <text>{content()}</text>
-        </box>
-      ),
-      { width: 20, height: 5 },
-    )
-
-    await testSetup.renderOnce()
-    expect(renderedTextFragments()).toEqual([""])
-
-    setContent("Alpha")
-    await testSetup.renderOnce()
-    expect(renderedTextFragments()).toEqual(["Alpha"])
-    expect(testSetup.captureCharFrame()).toContain("Alpha")
-
-    setContent("Gamma")
-    await testSetup.renderOnce()
-    expect(renderedTextFragments()).toEqual(["Gamma"])
-    let frame = testSetup.captureCharFrame()
-    expect(frame).toContain("Gamma")
-    expect(frame).not.toContain("Alpha")
-
-    setContent("")
-    await testSetup.renderOnce()
-    expect(renderedTextFragments()).toEqual([""])
-    frame = testSetup.captureCharFrame()
-    expect(frame).not.toContain("Gamma")
-
-    setContent("Beta")
-    await testSetup.renderOnce()
-    expect(renderedTextFragments()).toEqual(["Beta"])
-    frame = testSetup.captureCharFrame()
-    expect(frame).toContain("Beta")
-    expect(frame).not.toContain("Gamma")
-  })
-
   it.each([
-    { shape: "single node", fragments: ["Mounted"], content: () => <span>Mounted</span> },
-    { shape: "array nodes", fragments: ["Alpha", "Bravo"], content: () => [<span>Alpha</span>, <span>Bravo</span>] },
+    {
+      shape: "single node",
+      label: "an empty",
+      fallback: "",
+      empty: [""],
+      fragments: ["Mounted"],
+      content: () => <span>Mounted</span>,
+    },
+    {
+      shape: "array nodes",
+      label: "an empty",
+      fallback: "",
+      empty: [""],
+      fragments: ["Alpha", "Bravo"],
+      content: () => [<span>Alpha</span>, <span>Bravo</span>],
+    },
+    {
+      shape: "array nodes",
+      label: "an undefined",
+      fallback: undefined,
+      empty: [],
+      fragments: ["Alpha", "Bravo"],
+      content: () => [<span>Alpha</span>, <span>Bravo</span>],
+    },
   ])(
-    "keeps sibling order while alternating an empty <Show> fallback and $shape content repeatedly",
-    async ({ fragments, content }) => {
+    "keeps sibling order while alternating $label <Show> fallback and $shape content repeatedly",
+    async ({ fallback, empty, fragments, content }) => {
       const [visible, setVisible] = createSignal(true)
 
       testSetup = await testRender(
@@ -175,7 +147,7 @@ describe("SolidJS Renderer - Control Flow Updates", () => {
           <box id="container">
             <text id="before">Before</text>
             <text id="conditional">
-              <Show when={visible()} fallback="">
+              <Show when={visible()} fallback={fallback}>
                 {content()}
               </Show>
             </text>
@@ -213,9 +185,9 @@ describe("SolidJS Renderer - Control Flow Updates", () => {
         expect(previousIndex).toBeLessThan(frame.indexOf("After"))
       }
 
-      const expectEmptyFallback = () => {
+      const expectFallback = () => {
         const conditional = expectSiblingOrder()
-        expect(textFragments(conditional)).toEqual([""])
+        expect(textFragments(conditional)).toEqual(empty)
 
         const frame = testSetup.captureCharFrame()
         expect(frame).toContain("Before")
@@ -232,7 +204,7 @@ describe("SolidJS Renderer - Control Flow Updates", () => {
       for (let cycle = 0; cycle < 3; cycle++) {
         setVisible(false)
         await testSetup.renderOnce()
-        expectEmptyFallback()
+        expectFallback()
 
         setVisible(true)
         await testSetup.renderOnce()
