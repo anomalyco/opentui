@@ -10,44 +10,21 @@ pub const WidthMethod = enum(u8) {
     unicode_wide = 3,
 };
 
-/// Check if a byte slice contains only printable ASCII (32..126)
-/// Uses SIMD16 for fast checking
-pub fn isAsciiOnly(text: []const u8) bool {
-    if (text.len == 0) return false;
-
-    const vector_len = 16;
-    const Vec = @Vector(vector_len, u8);
-
-    const min_printable: Vec = @splat(32);
-    const max_printable: Vec = @splat(126);
-
+/// Length of the run of printable ASCII (32..126) at the start of `text`. Uses SIMD16.
+pub fn printableAsciiPrefixLen(text: []const u8) usize {
+    const Vec = @Vector(16, u8);
     var pos: usize = 0;
-
-    // Process full 16-byte vectors
-    while (pos + vector_len <= text.len) {
-        const chunk: Vec = text[pos..][0..vector_len].*;
-
-        // Check if all bytes are in [32, 126]
-        const too_low = chunk < min_printable;
-        const too_high = chunk > max_printable;
-
-        // Check if any byte is out of range
-        if (@reduce(.Or, too_low) or @reduce(.Or, too_high)) {
-            return false;
-        }
-
-        pos += vector_len;
+    while (pos + 16 <= text.len) : (pos += 16) {
+        const chunk: Vec = text[pos..][0..16].*;
+        if (@reduce(.Or, chunk < @as(Vec, @splat(32))) or @reduce(.Or, chunk > @as(Vec, @splat(126)))) break;
     }
+    while (pos < text.len and text[pos] >= 32 and text[pos] <= 126) pos += 1;
+    return pos;
+}
 
-    // Handle remaining bytes with scalar code
-    while (pos < text.len) : (pos += 1) {
-        const b = text[pos];
-        if (b < 32 or b > 126) {
-            return false;
-        }
-    }
-
-    return true;
+/// Check if a byte slice is not empty and holds only printable ASCII (32..126).
+pub fn isAsciiOnly(text: []const u8) bool {
+    return text.len > 0 and printableAsciiPrefixLen(text) == text.len;
 }
 
 pub const LineBreakKind = enum {
