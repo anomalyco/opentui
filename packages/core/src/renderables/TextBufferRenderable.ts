@@ -7,7 +7,6 @@ import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
 import { type RenderContext, type LineInfoProvider } from "../types.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { LineInfo, NativeSceneTextOptions } from "../zig.js"
-import { SyntaxStyle } from "../syntax-style.js"
 
 export interface TextBufferOptions extends RenderableOptions<TextBufferRenderable> {
   fg?: string | RGBA
@@ -50,7 +49,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   // Ordinary scene Text owns an aggregate; resource-backed widgets own these wrappers.
   protected textBuffer!: TextBuffer
   protected textBufferView!: TextBufferView
-  protected _textBufferSyntaxStyle!: SyntaxStyle
   private readonly nativeTextScene: RenderContext["nativeScene"] | undefined
 
   protected _defaultOptions = {
@@ -73,7 +71,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
     let textBuffer: TextBuffer | undefined
     let textBufferView: TextBufferView | undefined
-    let syntaxStyle: SyntaxStyle | undefined
 
     try {
       this._defaultFg = RGBA.clone(parseColor(options.fg ?? this._defaultOptions.fg))
@@ -103,10 +100,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       this.textBufferView = textBufferView
       this._firstLineOffset = ctx.claimFirstLineOffset?.(this) ?? 0
 
-      syntaxStyle = SyntaxStyle.create(ctx.nativeScene)
-      this._textBufferSyntaxStyle = syntaxStyle
-      textBuffer.setSyntaxStyle(syntaxStyle)
-
       this.textBufferView.setWrapMode(this._wrapMode)
       this.textBufferView.setTextAlign(this._textAlign)
       this.textBufferView.setFirstLineOffset(this._firstLineOffset)
@@ -130,8 +123,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       this.updateTextInfo()
     } catch (error) {
       this.abortConstruction(error, (run) => {
-        run(() => textBuffer?.setSyntaxStyle(null))
-        run(() => syntaxStyle?.destroy())
         run(() => textBufferView?.destroy())
         run(() => textBuffer?.destroy())
       })
@@ -551,8 +542,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   protected override destroyOwnedResources(): void {
     if (this.nativeTextScene) return
     this.runCleanup((run) => {
-      run(() => this.textBuffer.setSyntaxStyle(null))
-      run(() => this._textBufferSyntaxStyle.destroy())
       run(() => this.textBufferView.destroy())
       run(() => this.textBuffer.destroy())
     })

@@ -321,7 +321,8 @@ test("content work: each streamed delta sends the whole text to the highlighter 
     markdown: (options: any) => new MarkdownRenderable(currentRenderer, { ...options, internalBlockMode: "top-level" }),
   }
   // Calls and bytes by mode and by every native symbol that takes bytes. Text arrives as Uint8Array (handles and
-  // chunk records are wider arrays); the output read fills a Uint8Array, so it is left out.
+  // chunk records are wider arrays); the output read fills a Uint8Array, so it is left out. Native objects created
+  // count as calls with no bytes.
   const work: Record<string, number[]> = {}
   let mode = ""
   const count = (name: string, bytes: number) => {
@@ -334,6 +335,7 @@ test("content work: each streamed delta sends the whole text to the highlighter 
   for (const [name, original] of Object.entries(originals)) {
     if (typeof original !== "function" || name === "ot_session_read_output") continue
     symbols[name] = (...args) => {
+      if (name.endsWith("_create")) count(name, 0)
       for (const arg of args) if (arg instanceof Uint8Array) count(name, arg.length)
       return original(...args)
     }
@@ -377,6 +379,8 @@ test("content work: each streamed delta sends the whole text to the highlighter 
     "markdown ot_text_buffer_set_styled_text": [28, 1566],
     "markdown ot_scene_set_styled_text": [2, 4],
     "markdown ot_text_buffer_set_text": [1, 10],
+    "markdown ot_text_buffer_create": [6, 0],
+    "markdown ot_text_buffer_view_create": [6, 0],
   })
 })
 
