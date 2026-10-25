@@ -124,6 +124,21 @@ describe("native renderer stats", () => {
     }
   })
 
+  test("a capture keeps the presented frame, so the next frame repaints only what changed", async () => {
+    const result = await createTestRenderer({ width: 6, height: 3 })
+    renderer = result.renderer
+    const text = new TextRenderable(renderer, { content: "x", width: 1, height: 1 })
+    renderer.root.add(text)
+    await result.renderOnce()
+    await result.renderOnce()
+    expect(result.captureCharFrame()).toContain("x")
+    result.captureSpans()
+    text.content = "y"
+    await result.renderOnce()
+    expect(renderer.getNativeStats().frameWork).toMatchObject({ damageRows: 1, fullPathReasons: 0 })
+    expect(result.captureCharFrame()).toContain("y")
+  })
+
   test("a culled ScrollBox refreshes its rows only on frames that change layout", async () => {
     const result = await createTestRenderer({ width: 40, height: 10 })
     renderer = result.renderer

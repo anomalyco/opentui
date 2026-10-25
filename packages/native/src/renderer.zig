@@ -340,7 +340,9 @@ pub const CliRenderer = struct {
     retained_lost: u32 = 0,
     /// Something wrote the next buffer after paint: encode every row and retain nothing.
     encode_all_rows: bool = false,
-    encode_tainted: bool = false,
+    /// A `.current` lease may have written the presented cells: the next encode diffs every
+    /// row. Next still holds the presented frame, so retention holds.
+    current_written: bool = false,
     /// The last encode was a scene frame's, so the next buffer still holds its cells.
     next_scene_retained: bool = false,
     /// Written by each encode.
@@ -1007,7 +1009,8 @@ pub const CliRenderer = struct {
         };
     }
 
-    fn clearSkippedFrameState(self: *CliRenderer) void {
+    /// Also discards a failed scene draft.
+    pub fn clearSkippedFrameState(self: *CliRenderer) void {
         self.nextRenderBuffer.clear(self.backgroundColor, null);
         self.next_scene_retained = false;
         self.taint(FrameWork.full_path_unretained);
@@ -2890,8 +2893,10 @@ pub const CliRenderer = struct {
         const palette_force = self.last_rendered_palette_epoch == null or self.last_rendered_palette_epoch.? != self.palette_epoch;
         const should_force = force or self.force_full_repaint or palette_force;
         const has_image_state = self.nextRenderBuffer.image_placements.items.len != 0 or self.currentImages.items.len != 0;
-        self.encode_tainted = self.encode_all_rows;
+        const tainted = self.encode_all_rows;
         self.encode_all_rows = false;
+        const current_written = self.current_written;
+        self.current_written = false;
         self.encode_work = .{
             .full_path_reasons = (if (should_force) FrameWork.full_path_screen else 0) | (if (has_image_state) FrameWork.full_path_images else 0),
         };
@@ -2968,7 +2973,7 @@ pub const CliRenderer = struct {
         const hyperlinksEnabled = self.terminal.getCapabilities().hyperlinks;
         var use_row_equality = !should_force and !clears_pending;
         // Rows outside a scene draft's damage equal the presented frame (retained paint).
-        const damage = if (clears_pending or has_image_state or self.encode_tainted) null else self.scene_damage;
+        const damage = if (clears_pending or has_image_state or tainted or current_written) null else self.scene_damage;
         std.debug.assert(damage == null or damage.?.bit_length == self.height);
 
         for (0..self.height) |uy| {
@@ -3375,8 +3380,9 @@ pub const CliRenderer = struct {
         }
 
         // A scene frame keeps its cells for retained paint; other frames start blank, and so
-        // do frames with images, which never retain and whose placements hold image references.
-        self.next_scene_retained = self.scene_work != null and !has_image_state;
+        // do frames written after paint and frames with images, whose placements hold image
+        // references. None of them is retained.
+        self.next_scene_retained = self.scene_work != null and !has_image_state and !tainted;
         if (self.next_scene_retained) return;
         self.nextRenderBuffer.clear(self.backgroundColor, null);
         self.encode_work.cells_cleared += @as(u64, self.width) * self.height;

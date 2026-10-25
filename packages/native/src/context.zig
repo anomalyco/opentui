@@ -233,8 +233,9 @@ pub const Editor = struct {
     previous: ?*Editor = null,
     next: ?*Editor = null,
     node: ?*native_renderable.NativeRenderable = null,
-    // Every mutation gate takes a fresh epoch, so retained paint repaints the bound node.
-    paint_epoch: u64 = 0,
+    // Taken at creation and by every mutation gate, so retained paint repaints the bound node,
+    // including when the editor is destroyed.
+    paint_epoch: u64,
 
     pub fn checkMutable(self: *Editor) yoga.Error!void {
         self.paint_epoch = nextPaintEpoch();
@@ -304,8 +305,9 @@ pub const TextView = struct {
     previous: ?*TextView = null,
     next: ?*TextView = null,
     node: ?*native_renderable.NativeRenderable = null,
-    // Every mutation gate takes a fresh epoch, so retained paint repaints the bound node.
-    paint_epoch: u64 = 0,
+    // Taken at creation and by every mutation gate, so retained paint repaints the bound node,
+    // including when the view is destroyed.
+    paint_epoch: u64,
 
     pub fn checkMutable(self: *TextView) yoga.Error!void {
         self.paint_epoch = nextPaintEpoch();
@@ -872,7 +874,7 @@ pub const Context = struct {
             return error.PresentationPending;
         }
         // Raw cell access may write either buffer.
-        if (which == .next) attached.leaveRetained() else attached.taint(renderer.FrameWork.full_path_tainted);
+        if (which == .next) attached.leaveRetained() else attached.current_written = true;
         return self.acquireBufferLease(switch (which) {
             .current => attached.getCurrentBuffer(),
             .next => attached.getNextBuffer(),
@@ -2808,7 +2810,7 @@ pub const Context = struct {
         const owned = value.scene orelse return error.SceneNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         if (attached.width > std.math.maxInt(i32) or attached.height > std.math.maxInt(i32)) return error.InvalidDimensions;
-        errdefer attached.getNextBuffer().clear(attached.backgroundColor, null);
+        errdefer attached.clearSkippedFrameState();
         const result = try owned.frameStep(self, attached, null, .{
             .background = background,
             .use_mouse = use_mouse,
@@ -3067,7 +3069,7 @@ pub const Context = struct {
         const view = try text_buffer_view.UnifiedTextBufferView.init(self.allocator, text.buffer);
         errdefer view.deinit();
         const handle = try self.objects.insert(.text_buffer_view, value);
-        value.* = .{ .handle = handle, .text = text, .view = view, .next = text.views };
+        value.* = .{ .handle = handle, .text = text, .view = view, .next = text.views, .paint_epoch = nextPaintEpoch() };
         if (text.views) |next| next.previous = value;
         text.views = value;
         return handle;
@@ -3340,7 +3342,7 @@ pub const Context = struct {
         const view = try editor_view.EditorView.init(self.allocator, edit.buffer, width, height);
         errdefer view.deinit();
         const handle = try self.objects.insert(.editor_view, value);
-        value.* = .{ .handle = handle, .edit = edit, .view = view, .next = edit.views };
+        value.* = .{ .handle = handle, .edit = edit, .view = view, .next = edit.views, .paint_epoch = nextPaintEpoch() };
         if (edit.views) |next| next.previous = value;
         edit.views = value;
         return handle;

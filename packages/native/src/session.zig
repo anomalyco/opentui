@@ -626,6 +626,8 @@ pub const Session = struct {
                 if (self.renderer) |attached| {
                     attached.getNextBuffer().clearScissorRects();
                     attached.getNextBuffer().clearOpacity();
+                    // A cancelled draft is never presented, painted or skipped.
+                    attached.taint(renderer.FrameWork.full_path_unretained);
                 }
             }
             owned.cancelFrame();

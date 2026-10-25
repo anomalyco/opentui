@@ -541,7 +541,7 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     (try f.owner.raw().getSession(f.id)).cancel();
 }
 
-const Retained = enum { unchanged, focus, blur, register, destroy_style, unbind, rebind, select, reset, editor_select, z_order, surface_write, resend, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, recorded, image };
+const Retained = enum { unchanged, focus, blur, register, destroy_style, unbind, rebind, select, reset, styled_text, text_options, view_paint_off, view_paint_on, box_details, arrow, editor_select, editor_rebind, editor_unbind, z_order, surface_write, resend, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, preserve, recorded, image };
 
 /// A node at a fixed place, painted after its earlier siblings.
 fn placedAt(f: Fixture, parent: context.Handle, kind: u32, num: u32, left: f32, top: f32, width: f32, height: f32) !context.Handle {
@@ -554,15 +554,21 @@ fn placedAt(f: Fixture, parent: context.Handle, kind: u32, num: u32, left: f32, 
     return node;
 }
 
-// Retained paint (B3) on a 10 x 8 screen: a box (rows 0-2), a text (row 3), a text view of a
+// Retained paint (B3) on a 10 x 9 screen: a box (rows 0-2), a text (row 3), a text view of a
 // styled shared buffer (row 4), an editor (row 5), a surface taller than its node (rows 6-7),
-// and at column 8 a parent (row 0) whose child (rows 2-3) paints under a later sibling. Each
-// row changes one input and expects the rows it damages and the full-path reasons; VERIFY
-// fails any frame that keeps a row that changed.
+// an arrow (row 8), and at column 8 a parent (row 0) whose child (rows 2-3) paints under a
+// later sibling. Each row changes one input and expects the rows it damages and the full-path
+// reasons. The table runs without VERIFY, then with it: VERIFY must pass and change no count.
 test "Scene frame retained paint damages the rows of changed inputs only" {
-    const f = try Fixture.init(testing.allocator, 10, 8, .{});
+    var results: [2][std.meta.fields(Retained).len + 6]FrameWork = undefined;
+    for ([_]bool{ false, true }, &results) |verify, *counts| try retainedTable(verify, counts);
+    try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
+}
+
+fn retainedTable(verify: bool, counts: []FrameWork) !void {
+    const f = try Fixture.init(testing.allocator, 10, 9, .{});
     defer f.deinit();
-    try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+    if (verify) try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
     const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0, 0, 6, 3);
     const text = try placedAt(f, f.root, c.OT_SCENE_TEXT, 3, 0, 3, 6, 1);
     const view_node = try placedAt(f, f.root, c.OT_SCENE_TEXT_VIEW, 4, 0, 4, 6, 1);
@@ -571,6 +577,7 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
     const parent = try placedAt(f, f.root, c.OT_SCENE_BOX, 7, 8, 0, 1, 1);
     _ = try placedAt(f, parent, c.OT_SCENE_BOX, 8, 0, 2, 2, 2);
     const above = try placedAt(f, f.root, c.OT_SCENE_BOX, 9, 8, 2, 2, 2);
+    const arrow = try placedAt(f, f.root, c.OT_SCENE_ARROW, 11, 0, 8, 1, 1);
     try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_ALL, .focusable = true });
     try f.owner.sceneSetPaint(above, .{ .background = .{ 0, 90, 0, 255 } });
     try f.owner.sceneSetPaint((try f.owner.raw().getRenderable(parent)).scene_node.?.children.items[0].scene_node.?.handle, .{ .background = .{ 90, 0, 0, 255 } });
@@ -585,6 +592,7 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
     try f.owner.sceneSetTextView(view_node, view);
     const edit = try f.owner.createEditBuffer(.unicode);
     const editor = try f.owner.createEditorView(edit, 6, 1);
+    var fresh_editor: context.Handle = undefined;
     try f.owner.sceneSetEditorView(editor_node, editor);
     try f.owner.editSetText(edit, "edit", false);
     try f.owner.editSetSyntaxStyle(edit, style);
@@ -593,7 +601,6 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
     const scratch = try f.owner.createBuffer(2, 1, .{});
     try f.owner.drawBufferText(scratch, "zz", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
     _ = try presentWork(f, .{});
-    const tainted = FrameWork.full_path_tainted;
     const lost = FrameWork.full_path_tainted | FrameWork.full_path_unretained;
     const rows = [_]struct { change: Retained, damage: u32, reasons: u32 = 0 }{
         // The surface's rows repaint on every frame: its cells are not fingerprinted.
@@ -605,11 +612,23 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
         .{ .change = .destroy_style, .damage = 4 },
         .{ .change = .unbind, .damage = 3 },
         .{ .change = .rebind, .damage = 3 },
+        // A view no mutation gate touched still repaints when destroyed.
+        .{ .change = .unbind, .damage = 3 },
+        .{ .change = .rebind, .damage = 3 },
         .{ .change = .select, .damage = 3 },
         .{ .change = .reset, .damage = 3 },
+        .{ .change = .styled_text, .damage = 3 },
+        .{ .change = .text_options, .damage = 3 },
+        .{ .change = .view_paint_off, .damage = 3 },
+        .{ .change = .view_paint_on, .damage = 3 },
+        .{ .change = .box_details, .damage = 5 },
+        .{ .change = .arrow, .damage = 3 },
         .{ .change = .editor_select, .damage = 3 },
-        // Paint order is an input: the reordered child and the sibling it now covers repaint.
-        .{ .change = .z_order, .damage = 5 },
+        .{ .change = .editor_rebind, .damage = 3 },
+        .{ .change = .editor_unbind, .damage = 3 },
+        // Paint order is an input: the reordered child, the sibling it now covers, and the
+        // arrow after them repaint.
+        .{ .change = .z_order, .damage = 6 },
         .{ .change = .surface_write, .damage = 2 },
         // Equal values and layout-only setters that keep the layout change nothing.
         .{ .change = .resend, .damage = 2 },
@@ -619,21 +638,25 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
         // A palette change re-encodes every row of the kept frame.
         .{ .change = .palette, .damage = 2, .reasons = FrameWork.full_path_screen },
         // A write after paint reaches the terminal, and the next frame repaints in full.
-        .{ .change = .draft_write, .damage = 8, .reasons = tainted },
-        .{ .change = .session_draw, .damage = 8, .reasons = lost },
-        .{ .change = .lease_next, .damage = 8, .reasons = lost },
-        .{ .change = .lease_current, .damage = 8, .reasons = lost },
-        .{ .change = .raw_render, .damage = 8, .reasons = lost },
-        .{ .change = .skipped_commit, .damage = 8, .reasons = FrameWork.full_path_unretained },
-        .{ .change = .width_method, .damage = 8, .reasons = FrameWork.full_path_unretained },
+        .{ .change = .draft_write, .damage = 9, .reasons = lost },
+        .{ .change = .session_draw, .damage = 9, .reasons = lost },
+        .{ .change = .lease_next, .damage = 9, .reasons = lost },
+        // A write to the presented cells keeps the kept frame and re-encodes every row.
+        .{ .change = .lease_current, .damage = 2 },
+        .{ .change = .raw_render, .damage = 9, .reasons = lost },
+        .{ .change = .skipped_commit, .damage = 9, .reasons = FrameWork.full_path_unretained },
+        .{ .change = .width_method, .damage = 9, .reasons = FrameWork.full_path_unretained },
+        // Leaving unwritten cells as they are is a frame option: both changes repaint in full.
+        .{ .change = .preserve, .damage = 9, .reasons = FrameWork.full_path_options },
         // A hook draws outside its node's rows; the frame after a recorded one repaints in full.
-        .{ .change = .recorded, .damage = 8, .reasons = FrameWork.full_path_unretained },
+        .{ .change = .recorded, .damage = 9, .reasons = FrameWork.full_path_unretained },
         // The first image takes the full path although only its rows changed.
-        .{ .change = .image, .damage = 8, .reasons = FrameWork.full_path_images },
+        .{ .change = .image, .damage = 9, .reasons = FrameWork.full_path_images },
     };
     var image_node: context.Handle = undefined;
-    for (rows) |row| {
-        errdefer std.debug.print("row {s}\n", .{@tagName(row.change)});
+    comptime std.debug.assert(rows.len + 3 <= std.meta.fields(Retained).len + 6);
+    for (rows, 0..) |row, row_index| {
+        errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
         switch (row.change) {
             .unchanged => {},
             .focus => try f.owner.sceneSetFocus(box, true),
@@ -650,6 +673,16 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
             },
             .select => try testing.expect(try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_SET, .focus_x = 3, .background = ansi.rgbColor(0, 0, 255, 255) })),
             .reset => try testing.expect(try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_RESET })),
+            .styled_text => try f.owner.sceneSetStyledText(text, "hello", &.{.{ .byte_count = 5, .foreground = ansi.rgbColor(0, 255, 255, 255) }}),
+            .text_options => try f.owner.sceneSetTextOptions(text, .{ .attributes = ansi.TextAttributes.BOLD }),
+            .view_paint_off, .view_paint_on => try f.owner.sceneSetTextViewPaint(view_node, row.change == .view_paint_on),
+            .box_details => try f.owner.sceneSetBoxDetails(box, .{ .title = "t" }),
+            .arrow => try f.owner.sceneSetArrow(arrow, .{ .direction = 1 }),
+            .editor_rebind => {
+                fresh_editor = try f.owner.createEditorView(edit, 6, 1);
+                try f.owner.sceneSetEditorView(editor_node, fresh_editor);
+            },
+            .editor_unbind => try f.owner.destroy(fresh_editor),
             .editor_select => _ = try f.owner.editorSelect(editor, .{ .operation = .local, .focus_x = 2, .background = ansi.rgbColor(0, 0, 255, 255) }),
             .z_order => try f.owner.scenePatchPaint(parent, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = 1 }),
             .surface_write => try f.owner.drawBufferText(surface, "s", 0, 1, ansi.rgbColor(255, 255, 255, 255), null, 0),
@@ -684,6 +717,15 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
                 try testing.expectEqual(.skipped, try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false));
                 try drain(f.owner, f.id);
             },
+            .preserve => {
+                var preserving = options;
+                preserving.preserve_unwritten = true;
+                const done = try f.step(null, preserving, c.OT_SCENE_FRAME_DONE, null);
+                try testing.expectEqual(@as(u32, 9), f.state.frame_work.damage_rows);
+                try testing.expect(f.state.frame_work.full_path_reasons & FrameWork.full_path_options != 0);
+                _ = try f.owner.sceneFrameCommit(f.id, done, false);
+                try drain(f.owner, f.id);
+            },
             .width_method => {
                 f.cli.terminal.caps.unicode = if (f.cli.nextRenderBuffer.width_method == .wcwidth) .unicode else .wcwidth;
                 f.cli.syncWidthMethod();
@@ -711,17 +753,32 @@ test "Scene frame retained paint damages the rows of changed inputs only" {
             },
         }
         const result = try presentWork(f, .{});
+        counts[row_index] = result;
         try testing.expectEqual(row.damage, result.damage_rows);
         try testing.expectEqual(row.reasons, result.full_path_reasons);
-        if (row.change == .draft_write) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(4, 7).?.char);
-        if (row.change == .recorded) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(9, 7).?.char);
+        switch (row.change) {
+            .draft_write => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(4, 7).?.char),
+            .recorded => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(9, 7).?.char),
+            .unbind => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 4).?.char),
+            .editor_unbind => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 5).?.char),
+            .lease_current => {
+                try testing.expectEqual(@as(u64, 9), result.rows_compared);
+                try testing.expectEqual(f.cli.nextRenderBuffer.buffer.bg[0], f.cli.currentRenderBuffer.buffer.bg[0]);
+            },
+            else => {},
+        }
     }
     // Frames retain again once no image is placed or shown.
     try f.owner.sceneDestroyNode(image_node);
-    try testing.expectEqual(FrameWork.full_path_images | FrameWork.full_path_unretained, (try presentWork(f, .{})).full_path_reasons);
-    try testing.expectEqual(FrameWork.full_path_unretained, (try presentWork(f, .{})).full_path_reasons);
-    try testing.expectEqual(@as(u32, 2), (try presentWork(f, .{})).damage_rows);
+    counts[rows.len] = try presentWork(f, .{});
+    counts[rows.len + 1] = try presentWork(f, .{});
+    counts[rows.len + 2] = try presentWork(f, .{});
+    try testing.expectEqual(FrameWork.full_path_images | FrameWork.full_path_unretained, counts[rows.len].full_path_reasons);
+    try testing.expectEqual(FrameWork.full_path_unretained, counts[rows.len + 1].full_path_reasons);
+    try testing.expectEqual(@as(u32, 2), counts[rows.len + 2].damage_rows);
+    for (counts[rows.len + 3 ..]) |*unused| unused.* = .{};
     // A presented frame that differs from what paint produces fails a verified frame.
+    if (!verify) return;
     try f.cli.currentRenderBuffer.drawText("X", 9, 3, ansi.rgbColor(255, 255, 255, 255), null, 0);
     try testing.expectError(error.RetainedMismatch, f.owner.scenePaint(f.id, options.background, true, 0));
 }
@@ -753,7 +810,97 @@ test "Scene frame retained paint repaints in full after a skipped commit and und
     _ = try presentWork(f, .{});
     const result = try presentWork(f, .{});
     try testing.expectEqual(@as(u32, 14), result.damage_rows);
-    try testing.expectEqual(FrameWork.full_path_tainted, result.full_path_reasons);
+    try testing.expectEqual(FrameWork.full_path_tainted | FrameWork.full_path_unretained, result.full_path_reasons);
+}
+
+const Lifecycle = enum { unchanged, unbind_view, unbind_editor, failed_hooks, failed_background, failed_recording, cancel_skip, surface_image };
+
+// Frames that end without a presented paint, and resources that end without a mutation: the
+// frame after each repaints what changed. The text (row 0), a view and an editor created over
+// filled buffers and never mutated (rows 1-2), and a box (row 3) skip paint when unchanged.
+// The table runs without VERIFY, then with it: VERIFY must pass and change no count.
+test "Scene frame retained paint repaints after failed, cancelled, and unbinding frames" {
+    var results: [2][std.meta.fields(Lifecycle).len]FrameWork = undefined;
+    for ([_]bool{ false, true }, &results) |verify, *counts| try lifecycleTable(verify, counts);
+    try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
+}
+
+fn lifecycleTable(verify: bool, counts: []FrameWork) !void {
+    const f = try Fixture.init(testing.allocator, 10, 5, .{});
+    defer f.deinit();
+    if (verify) try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+    const text = try placedAt(f, f.root, c.OT_SCENE_TEXT, 2, 0, 0, 6, 1);
+    try f.owner.sceneSetText(text, "kept");
+    const view_node = try placedAt(f, f.root, c.OT_SCENE_TEXT_VIEW, 3, 0, 1, 6, 1);
+    const shared = try f.owner.createTextBuffer(.unicode);
+    try f.owner.textBufferSetText(shared, "view");
+    const view = try f.owner.createTextBufferView(shared);
+    try f.owner.sceneSetTextView(view_node, view);
+    const editor_node = try placedAt(f, f.root, c.OT_SCENE_EDITOR, 4, 0, 2, 6, 1);
+    const edit = try f.owner.createEditBuffer(.unicode);
+    try f.owner.editSetText(edit, "edit", false);
+    const editor = try f.owner.createEditorView(edit, 6, 1);
+    try f.owner.sceneSetEditorView(editor_node, editor);
+    const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 5, 0, 3, 6, 1);
+    try f.owner.sceneSetPaint(box, .{ .background = .{ 0, 0, 90, 255 } });
+    const scratch = try f.owner.createBuffer(2, 1, .{});
+    _ = try presentWork(f, .{});
+    const rows = [_]struct { change: Lifecycle, damage: u32, reasons: u32 = 0, force: bool = false }{
+        .{ .change = .unchanged, .damage = 0 },
+        .{ .change = .unbind_view, .damage = 1 },
+        .{ .change = .unbind_editor, .damage = 1 },
+        // A rejected one-call paint clears next; a forced commit after it must not show that.
+        .{ .change = .failed_hooks, .damage = 5, .reasons = FrameWork.full_path_screen | FrameWork.full_path_unretained, .force = true },
+        .{ .change = .failed_background, .damage = 5, .reasons = FrameWork.full_path_screen | FrameWork.full_path_unretained, .force = true },
+        // A failed recorded frame keeps the reasons it consumed.
+        .{ .change = .failed_recording, .damage = 5, .reasons = FrameWork.full_path_tainted | FrameWork.full_path_unretained },
+        .{ .change = .cancel_skip, .damage = 5, .reasons = FrameWork.full_path_unretained },
+        // The first image placement in a surface takes the full path.
+        .{ .change = .surface_image, .damage = 5, .reasons = FrameWork.full_path_images },
+    };
+    for (rows, counts) |row, *count| {
+        errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
+        switch (row.change) {
+            .unchanged => {},
+            .unbind_view => try f.owner.destroy(view),
+            .unbind_editor => try f.owner.destroy(editor),
+            .failed_hooks => {
+                try f.owner.sceneSetHooks(text, c.OT_SCENE_HOOK_RENDER_AFTER, 1, 6, 1);
+                try testing.expectError(error.UnsupportedResource, f.owner.scenePaint(f.id, options.background, true, 0));
+                try f.owner.sceneSetHooks(text, 0, 2, 6, 1);
+            },
+            .failed_background => try testing.expectError(error.InvalidOptions, f.owner.scenePaint(f.id, .{ 0x4000, 0, 0, 255 }, true, 0)),
+            .failed_recording => {
+                try f.owner.drawSessionBuffer(f.id, scratch, 0, 4);
+                try f.owner.sceneSetHooks(text, c.OT_SCENE_HOOK_RENDER_AFTER, 3, 6, 1);
+                const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
+                var recording: Recording = .{};
+                recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+                recording.stack(99, 0, 0, 1);
+                try testing.expect(std.meta.isError(f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view())));
+                try f.owner.sceneSetHooks(text, 0, 4, 6, 1);
+            },
+            .cancel_skip => {
+                const draft = try f.owner.scenePaint(f.id, options.background, true, 0);
+                try testing.expectEqual(@as(u32, 0), f.state.frame_work.damage_rows);
+                try f.owner.sceneFrameCancel(f.id, draft.frame_id);
+            },
+            .surface_image => {
+                const custom = try placedAt(f, f.root, c.OT_SCENE_CUSTOM, 6, 8, 4, 2, 1);
+                const surface = try f.owner.createBuffer(2, 1, .{});
+                const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
+                _ = try f.owner.drawBufferImage(surface, null, try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 }), .{ .width = 2, .height = 1, .protocol = .kitty });
+                try testing.expect((try f.owner.raw().getBuffer(surface)).image_placements.items.len != 0);
+                try f.owner.sceneSetSurface(custom, surface);
+            },
+        }
+        count.* = try presentWork(f, .{ .force = row.force });
+        try testing.expectEqual(row.damage, count.damage_rows);
+        try testing.expectEqual(row.reasons, count.full_path_reasons);
+        if (row.change == .unbind_view) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 1).?.char);
+        if (row.change == .unbind_editor) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 2).?.char);
+        try testing.expectEqual(@as(u32, 'k'), f.cli.currentRenderBuffer.get(0, 0).?.char);
+    }
 }
 
 test "Scene frame work solves Yoga only for text writes that can change the measured size" {
@@ -940,122 +1087,126 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 8191, 12, 8202, 1, 2 }, // destroy_reply
         },
     };
-    var all: [sizes.len][std.meta.fields(Frame).len][5]u64 = undefined;
-    for (sizes, &all) |n, *actual| {
-        const f = try Fixture.init(testing.allocator, 8, 4, .{ .limits = .{ .object_capacity = 8192 } });
-        defer f.deinit();
-        const viewport = try f.owner.sceneCreateNode(f.id, 1, 2);
-        try f.owner.sceneSetStyle(viewport, 4, 0, 0, 1, 4, 1);
-        try f.owner.sceneSetStyle(viewport, 4, 1, 0, 1, 2, 1);
-        try f.owner.sceneSetStyle(viewport, 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
-        try f.owner.sceneMoveNode(viewport, f.root, 0);
-        const content = try f.owner.sceneCreateNode(f.id, 1, 3);
-        try f.owner.sceneSetStyle(content, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
-        try f.owner.sceneMoveNode(content, viewport, 0);
-        try f.owner.sceneSetViewport(content, viewport);
-        const rows = try testing.allocator.alloc(context.Handle, n);
-        defer testing.allocator.free(rows);
-        // One culled row is an editor.
-        const edit = try f.owner.createEditBuffer(.unicode);
-        try f.owner.editSetText(edit, "ab", false);
-        for (rows, 0..) |*row_handle, index| {
-            const editor = index == n / 2 + 2;
-            const row = try f.owner.sceneCreateNode(f.id, if (editor) c.OT_SCENE_EDITOR else c.OT_SCENE_TEXT, @intCast(4 + index));
-            row_handle.* = row;
-            if (editor) {
-                try f.owner.sceneSetEditorView(row, try f.owner.createEditorView(edit, 1, 1));
-            } else try f.owner.sceneSetText(row, &.{'a' + @as(u8, @intCast(index % 26))});
-            try f.owner.sceneSetStyle(row, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
-            try f.owner.sceneSetStyle(row, 4, 0, 0, 1, 8, 1);
-            try f.owner.sceneMoveNode(row, content, @intCast(index));
+    // VERIFY changes no count.
+    for ([_]bool{ false, true }) |verify| {
+        var all: [sizes.len][std.meta.fields(Frame).len][5]u64 = undefined;
+        for (sizes, &all) |n, *actual| {
+            const f = try Fixture.init(testing.allocator, 8, 4, .{ .limits = .{ .object_capacity = 8192 } });
+            defer f.deinit();
+            if (verify) try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+            const viewport = try f.owner.sceneCreateNode(f.id, 1, 2);
+            try f.owner.sceneSetStyle(viewport, 4, 0, 0, 1, 4, 1);
+            try f.owner.sceneSetStyle(viewport, 4, 1, 0, 1, 2, 1);
+            try f.owner.sceneSetStyle(viewport, 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+            try f.owner.sceneMoveNode(viewport, f.root, 0);
+            const content = try f.owner.sceneCreateNode(f.id, 1, 3);
+            try f.owner.sceneSetStyle(content, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+            try f.owner.sceneMoveNode(content, viewport, 0);
+            try f.owner.sceneSetViewport(content, viewport);
+            const rows = try testing.allocator.alloc(context.Handle, n);
+            defer testing.allocator.free(rows);
+            // One culled row is an editor.
+            const edit = try f.owner.createEditBuffer(.unicode);
+            try f.owner.editSetText(edit, "ab", false);
+            for (rows, 0..) |*row_handle, index| {
+                const editor = index == n / 2 + 2;
+                const row = try f.owner.sceneCreateNode(f.id, if (editor) c.OT_SCENE_EDITOR else c.OT_SCENE_TEXT, @intCast(4 + index));
+                row_handle.* = row;
+                if (editor) {
+                    try f.owner.sceneSetEditorView(row, try f.owner.createEditorView(edit, 1, 1));
+                } else try f.owner.sceneSetText(row, &.{'a' + @as(u8, @intCast(index % 26))});
+                try f.owner.sceneSetStyle(row, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+                try f.owner.sceneSetStyle(row, 4, 0, 0, 1, 8, 1);
+                try f.owner.sceneMoveNode(row, content, @intCast(index));
+            }
+            const culled = rows[n / 2];
+            for (std.enums.values(Frame)) |frame| {
+                const w = switch (frame) {
+                    .first, .unchanged, .hidden_unchanged => try presentWork(f, .{}),
+                    .scroll => blk: {
+                        try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
+                        break :blk try presentWork(f, .{});
+                    },
+                    // A culled row grows: the frame solves.
+                    .grow => blk: {
+                        try f.owner.sceneSetStyle(rows[n - 1], 4, 1, 0, 1, 2, 1);
+                        break :blk try presentWork(f, .{});
+                    },
+                    .options_prepare => blk: {
+                        try f.owner.sceneSetTextOptions(culled, .{ .truncate = true });
+                        break :blk try presentWork(f, .{});
+                    },
+                    // A color change on a culled row prepares nothing.
+                    .options_color => blk: {
+                        try f.owner.sceneSetTextOptions(culled, .{ .truncate = true, .foreground = .{ 1, 2, 3, 255 } });
+                        break :blk try presentWork(f, .{});
+                    },
+                    // Text replaced on a culled row without a Yoga measure function does not solve.
+                    .measure_text => blk: {
+                        try f.owner.sceneSetMeasure(rows[n / 2 + 1], null);
+                        _ = try presentWork(f, .{});
+                        try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
+                        break :blk try presentWork(f, .{});
+                    },
+                    // The same bytes again: the write keeps the Yoga measure (no solve) and leaves the view
+                    // prepared, so nothing is stale.
+                    .measure_same_text => blk: {
+                        try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
+                        const result = try presentWork(f, .{});
+                        try testing.expect(!(try f.owner.raw().getRenderable(rows[n / 2 + 1])).scene_node.?.text.?.view.virtual_lines_dirty);
+                        try testing.expectEqual(@as(u64, 0), result.yoga_solves);
+                        break :blk result;
+                    },
+                    // A cursor move in a culled editor between frames.
+                    .editor_cursor => blk: {
+                        try f.owner.editSetCursor(edit, 0, 1);
+                        break :blk try presentWork(f, .{});
+                    },
+                    // A hidden row at the top overlaps the viewport with its zeroed layout.
+                    .hidden => blk: {
+                        try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 0 });
+                        try f.owner.sceneSetStyle(rows[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+                        break :blk try presentWork(f, .{});
+                    },
+                    // A culled row's RESIZE request, cancelled; the next frame does not solve.
+                    .cancelled => blk: {
+                        try f.owner.sceneSetHooks(rows[n - 2], c.OT_SCENE_HOOK_RESIZE, 1, 8, 1);
+                        try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 2, 1);
+                        const request = try f.step(null, options, c.OT_SCENE_FRAME_RESIZE, rows[n - 2]);
+                        try f.owner.sceneFrameCancel(f.id, request.frame_id);
+                        break :blk try presentStepped(f, NoReply{});
+                    },
+                    // A culled row's RESIZE reply changes text options on an already refreshed row.
+                    .stale_reply => blk: {
+                        try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 3, 1);
+                        break :blk try presentStepped(f, StaleReply{ .target = culled, .truncate = false });
+                    },
+                    // ... or on the requesting row itself.
+                    .stale_requester => blk: {
+                        try f.owner.sceneSetTextOptions(rows[n - 2], .{});
+                        try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 1, 1);
+                        break :blk try presentStepped(f, StaleReply{ .target = rows[n - 2] });
+                    },
+                    // ... or destroys the last row, whose refresh is still queued.
+                    // ... or on a row moved in place, which refreshes as placed before the batch.
+                    .placed_reply => blk: {
+                        try f.owner.sceneSetTextOptions(rows[n - 2], .{});
+                        try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 2, 1);
+                        try f.owner.sceneMoveNode(rows[n - 2], content, @intCast(n - 2));
+                        const result = try presentStepped(f, StaleReply{ .target = rows[n - 2] });
+                        try testing.expect((try f.owner.raw().getRenderable(rows[n - 2])).scene_node.?.text.?.view.truncation_applied);
+                        break :blk result;
+                    },
+                    .destroy_reply => blk: {
+                        try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 3, 1);
+                        break :blk try presentStepped(f, StaleReply{ .target = rows[n - 1], .destroy = true });
+                    },
+                };
+                actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds };
+            }
         }
-        const culled = rows[n / 2];
-        for (std.enums.values(Frame)) |frame| {
-            const w = switch (frame) {
-                .first, .unchanged, .hidden_unchanged => try presentWork(f, .{}),
-                .scroll => blk: {
-                    try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
-                    break :blk try presentWork(f, .{});
-                },
-                // A culled row grows: the frame solves.
-                .grow => blk: {
-                    try f.owner.sceneSetStyle(rows[n - 1], 4, 1, 0, 1, 2, 1);
-                    break :blk try presentWork(f, .{});
-                },
-                .options_prepare => blk: {
-                    try f.owner.sceneSetTextOptions(culled, .{ .truncate = true });
-                    break :blk try presentWork(f, .{});
-                },
-                // A color change on a culled row prepares nothing.
-                .options_color => blk: {
-                    try f.owner.sceneSetTextOptions(culled, .{ .truncate = true, .foreground = .{ 1, 2, 3, 255 } });
-                    break :blk try presentWork(f, .{});
-                },
-                // Text replaced on a culled row without a Yoga measure function does not solve.
-                .measure_text => blk: {
-                    try f.owner.sceneSetMeasure(rows[n / 2 + 1], null);
-                    _ = try presentWork(f, .{});
-                    try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
-                    break :blk try presentWork(f, .{});
-                },
-                // The same bytes again: the write keeps the Yoga measure (no solve) and leaves the view
-                // prepared, so nothing is stale.
-                .measure_same_text => blk: {
-                    try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
-                    const result = try presentWork(f, .{});
-                    try testing.expect(!(try f.owner.raw().getRenderable(rows[n / 2 + 1])).scene_node.?.text.?.view.virtual_lines_dirty);
-                    try testing.expectEqual(@as(u64, 0), result.yoga_solves);
-                    break :blk result;
-                },
-                // A cursor move in a culled editor between frames.
-                .editor_cursor => blk: {
-                    try f.owner.editSetCursor(edit, 0, 1);
-                    break :blk try presentWork(f, .{});
-                },
-                // A hidden row at the top overlaps the viewport with its zeroed layout.
-                .hidden => blk: {
-                    try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 0 });
-                    try f.owner.sceneSetStyle(rows[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
-                    break :blk try presentWork(f, .{});
-                },
-                // A culled row's RESIZE request, cancelled; the next frame does not solve.
-                .cancelled => blk: {
-                    try f.owner.sceneSetHooks(rows[n - 2], c.OT_SCENE_HOOK_RESIZE, 1, 8, 1);
-                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 2, 1);
-                    const request = try f.step(null, options, c.OT_SCENE_FRAME_RESIZE, rows[n - 2]);
-                    try f.owner.sceneFrameCancel(f.id, request.frame_id);
-                    break :blk try presentStepped(f, NoReply{});
-                },
-                // A culled row's RESIZE reply changes text options on an already refreshed row.
-                .stale_reply => blk: {
-                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 3, 1);
-                    break :blk try presentStepped(f, StaleReply{ .target = culled, .truncate = false });
-                },
-                // ... or on the requesting row itself.
-                .stale_requester => blk: {
-                    try f.owner.sceneSetTextOptions(rows[n - 2], .{});
-                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 1, 1);
-                    break :blk try presentStepped(f, StaleReply{ .target = rows[n - 2] });
-                },
-                // ... or destroys the last row, whose refresh is still queued.
-                // ... or on a row moved in place, which refreshes as placed before the batch.
-                .placed_reply => blk: {
-                    try f.owner.sceneSetTextOptions(rows[n - 2], .{});
-                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 2, 1);
-                    try f.owner.sceneMoveNode(rows[n - 2], content, @intCast(n - 2));
-                    const result = try presentStepped(f, StaleReply{ .target = rows[n - 2] });
-                    try testing.expect((try f.owner.raw().getRenderable(rows[n - 2])).scene_node.?.text.?.view.truncation_applied);
-                    break :blk result;
-                },
-                .destroy_reply => blk: {
-                    try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 3, 1);
-                    break :blk try presentStepped(f, StaleReply{ .target = rows[n - 1], .destroy = true });
-                },
-            };
-            actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds };
-        }
+        try testing.expectEqual(expected, all);
     }
-    try testing.expectEqual(expected, all);
 }
 
 // The bench's scenes at small sizes. Columns: every FrameWork field after work_frame_id, in

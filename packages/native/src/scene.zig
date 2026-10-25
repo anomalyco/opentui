@@ -423,6 +423,8 @@ pub const Scene = struct {
     records_options: FrameOptions = undefined,
     presented_options: FrameOptions = undefined,
     damage: std.DynamicBitSetUnmanaged = .{},
+    // The scratch buffer of a verified skip while it paints (OT_SCENE_DEBUG_VERIFY).
+    verify_target: ?*buffer.OptimizedBuffer = null,
     attempt: ?Attempt = null,
     painted: ?Painted = null,
     cancelled_paint: bool = false,
@@ -855,6 +857,8 @@ pub const Scene = struct {
         errdefer {
             self.releaseEditorCursor(cli);
             self.cancelFrame();
+            // A failed frame is never retained, and keeps the reasons it consumed.
+            cli.taint(renderer.FrameWork.full_path_unretained);
         }
         defer if (self.attempt != null) self.work.clearRetainingCapacity();
         const active = &self.attempt.?;
@@ -1015,14 +1019,15 @@ pub const Scene = struct {
             }
             try self.markFocus(objects);
             const damage = try self.planPaint(objects, cli, active.options);
-            if (damage == .none and !self.verifiesRetained()) {
+            const verify = damage != .all and self.verifiesRetained();
+            // Next still holds the presented frame, unless a lease may have written current.
+            if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), false);
+            if (damage == .none) {
                 try self.skipPaint(cli);
+                if (verify) try self.verifySkip(owner, cli, active.options);
             } else {
-                // Verification paints a skipped frame too, and checks that it changed nothing.
-                const skipped = self.frame_work;
                 try self.paintFrame(owner, cli, active.options, null, false);
-                if (damage != .all and self.verifiesRetained()) try self.verifyRetained(cli, damage);
-                if (damage == .none) self.frame_work = skipped;
+                if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), true);
             }
             return self.finishPaint(cli, reusable_work, damage);
         }
@@ -1032,6 +1037,7 @@ pub const Scene = struct {
         const active = self.attempt.?;
         std.debug.assert(self.painted == null);
         std.debug.assert(!retain_work or active.request_id == 0);
+        cli.retained_lost = 0;
         const done: FrameRequest = .{
             .session = self.session,
             .root = active.root,
@@ -1313,8 +1319,8 @@ pub const Scene = struct {
             self.presented_records_frame = self.records_frame;
             self.presented_options = self.records_options;
         }
+        // finishPaint consumes the reasons, so a failed frame keeps them.
         var reasons = cli.retained_lost;
-        cli.retained_lost = 0;
         // Writes before this frame's paint are repainted; writes after it taint this frame.
         cli.encode_all_rows = false;
         if (self.forcesFullFrame()) reasons |= renderer.FrameWork.full_path_forced;
@@ -1395,6 +1401,7 @@ pub const Scene = struct {
         var painted = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, entry.clip);
         // A surface draws at its own size, which can pass the node's rows.
         if (entry.node.surface) |source| {
+            if (source.image_placements.items.len != 0) reasons.* |= renderer.FrameWork.full_path_images;
             const drawn = intersection(.{ .x = x, .y = y, .width = source.width, .height = source.height }, entry.clip);
             if (drawn.height > painted.height) painted = drawn;
         }
@@ -1444,20 +1451,56 @@ pub const Scene = struct {
         self.maintainCursor(cli, cursor);
     }
 
-    /// OT_SCENE_DEBUG_VERIFY: after a full repaint, every row outside the damage must still
-    /// equal the presented frame, and a skipped frame's hits must equal the presented ones.
-    fn verifyRetained(self: *Scene, cli: *renderer.CliRenderer, damage: Damage) !void {
-        const next = cli.getNextBuffer().buffer;
-        const current = cli.getCurrentBuffer().buffer;
-        for (0..cli.height) |row| {
-            if (self.damage.isSet(row)) continue;
-            const start = row * cli.width;
-            const end = start + cli.width;
-            if (!std.mem.eql(u32, next.char[start..end], current.char[start..end]) or !std.mem.eql(u32, next.attributes[start..end], current.attributes[start..end]) or
-                !std.mem.eql(u8, std.mem.sliceAsBytes(next.fg[start..end]), std.mem.sliceAsBytes(current.fg[start..end])) or
-                !std.mem.eql(u8, std.mem.sliceAsBytes(next.bg[start..end]), std.mem.sliceAsBytes(current.bg[start..end]))) return error.RetainedMismatch;
+    /// OT_SCENE_DEBUG_VERIFY: every row of two buffers, or every row outside the damage, holds
+    /// the same cells.
+    fn verifyRows(self: *const Scene, first: *const buffer.OptimizedBuffer, second: *const buffer.OptimizedBuffer, outside_damage: bool) !void {
+        const width = first.width;
+        for (0..first.height) |row| {
+            if (outside_damage and self.damage.isSet(row)) continue;
+            const start = row * width;
+            const end = start + width;
+            const a = first.buffer;
+            const b = second.buffer;
+            if (!std.mem.eql(u32, a.char[start..end], b.char[start..end]) or !std.mem.eql(u32, a.attributes[start..end], b.attributes[start..end]) or
+                !std.mem.eql(u8, std.mem.sliceAsBytes(a.fg[start..end]), std.mem.sliceAsBytes(b.fg[start..end])) or
+                !std.mem.eql(u8, std.mem.sliceAsBytes(a.bg[start..end]), std.mem.sliceAsBytes(b.bg[start..end]))) return error.RetainedMismatch;
         }
-        if (damage == .none and !std.mem.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(self.presented_hits.items))) return error.RetainedMismatch;
+    }
+
+    /// OT_SCENE_DEBUG_VERIFY on a skipped frame: a full repaint into a scratch buffer equals the
+    /// kept cells, and its hits the kept hits. It changes no view, cursor, counter, hit, or
+    /// buffer the frame keeps.
+    fn verifySkip(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions) !void {
+        const next = cli.getNextBuffer();
+        const scratch = try buffer.OptimizedBuffer.init(self.allocator, next.width, next.height, .{ .pool = next.pool, .link_pool = next.link_pool, .logger = next.logger, .width_method = next.width_method, .id = "verify buffer" });
+        defer scratch.deinit();
+        scratch.respectAlpha = next.respectAlpha;
+        scratch.blendBackdropColor = next.blendBackdropColor;
+        try scratch.scissor_stack.ensureTotalCapacity(self.allocator, 1);
+        try scratch.opacity_stack.ensureTotalCapacity(self.allocator, 1);
+        scratch.clear(options.background, if (options.preserve_unwritten) 0 else null);
+        const kept = self.hits;
+        self.hits = .empty;
+        defer {
+            self.hits.deinit(self.allocator);
+            self.hits = kept;
+        }
+        try self.hits.ensureTotalCapacity(self.allocator, self.work.items.len);
+        const work = self.frame_work;
+        defer self.frame_work = work;
+        self.verify_target = scratch;
+        defer self.verify_target = null;
+        for (self.work.items) |entry| {
+            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
+            try self.paintMember(owner, cli, entry, options, .{});
+        }
+        try self.verifyRows(scratch, next, false);
+        if (!std.mem.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(kept.items))) return error.RetainedMismatch;
+    }
+
+    /// Where paint draws: next, or the scratch buffer of a verified skip.
+    fn paintTarget(self: *const Scene, cli: *renderer.CliRenderer) *buffer.OptimizedBuffer {
+        return self.verify_target orelse cli.getNextBuffer();
     }
 
     /// Snapshot prepared membership and return one request for every paint hook.
@@ -1572,7 +1615,7 @@ pub const Scene = struct {
         }, entry.clip);
         if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
             self.frame_work.member_cells += @as(u64, painted.width) * painted.height;
-            const target = cli.getNextBuffer();
+            const target = self.paintTarget(cli);
             // A natively composed image buffer receives its node's hook drawing, like its body.
             const surface = if (node.kind == api.OT_SCENE_IMAGE) node.control.image.buffer else null;
             try enterMember(target, entry);
@@ -1614,25 +1657,25 @@ pub const Scene = struct {
     }
 
     fn paintNode(self: *Scene, cli: *renderer.CliRenderer, entry: Work, cells: Layout) !void {
-        const target = cli.getNextBuffer();
+        const target = self.paintTarget(cli);
         const node = entry.node.scene_node.?;
         const x: i32 = @intFromFloat(cells.screenX);
         const y: i32 = @intFromFloat(cells.screenY);
         const width: u32 = @intFromFloat(cells.width);
         const height: u32 = @intFromFloat(cells.height);
         if (node.text) |text| {
-            if (entry.filtered) try prepareView(&self.frame_work, node, entry.layout);
+            if (entry.filtered and self.verify_target == null) try prepareView(&self.frame_work, node, entry.layout);
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(text.view, x, y);
         } else if (node.kind == api.OT_SCENE_TEXT_VIEW) {
             const view = node.control.text_view.view orelse return;
-            if (entry.filtered or self.preparation_dirty) try prepareView(&self.frame_work, node, entry.layout);
+            if ((entry.filtered or self.preparation_dirty) and self.verify_target == null) try prepareView(&self.frame_work, node, entry.layout);
             if (!node.control.text_view.paint) return;
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(view.view, x, y);
         } else if (node.kind == api.OT_SCENE_EDITOR) {
             const editor = node.editor orelse return;
-            if (entry.filtered or self.preparation_dirty) try prepareView(&self.frame_work, node, entry.layout);
+            if ((entry.filtered or self.preparation_dirty) and self.verify_target == null) try prepareView(&self.frame_work, node, entry.layout);
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawEditorViewChecked(editor.view, x, y);
         } else if (node.kind == api.OT_SCENE_IMAGE) {
