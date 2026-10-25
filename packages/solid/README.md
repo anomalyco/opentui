@@ -5,7 +5,7 @@ Solid.js support for [OpenTUI](https://github.com/anomalyco/opentui).
 ## Installation
 
 ```bash
-bun install solid-js@^1.9.16 @opentui/solid
+bun install solid-js@^1.9 @opentui/solid
 ```
 
 ## Usage

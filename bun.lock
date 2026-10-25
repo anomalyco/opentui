@@ -82,7 +82,7 @@
         "@opentui/react": "workspace:*",
         "@opentui/solid": "workspace:*",
         "react": ">=19.2.0",
-        "solid-js": "^1.9.16",
+        "solid-js": "^1.9.12",
       },
       "optionalPeers": [
         "@opentui/react",
@@ -167,7 +167,7 @@
         "typescript": "^5",
       },
       "peerDependencies": {
-        "solid-js": "^1.9.16",
+        "solid-js": "^1.9.12",
       },
     },
     "packages/solid/examples": {

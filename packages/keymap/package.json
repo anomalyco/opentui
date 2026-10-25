@@ -71,7 +71,7 @@
     "@opentui/react": "workspace:*",
     "@opentui/solid": "workspace:*",
     "react": ">=19.2.0",
-    "solid-js": "^1.9.16"
+    "solid-js": "^1.9.12"
   },
   "peerDependenciesMeta": {
     "@opentui/react": {
