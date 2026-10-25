@@ -40,7 +40,7 @@ const candidate = 1;
 // The largest screen a resize step picks (20×8).
 const max_cells = 20 * 8;
 
-const Kind = enum { box, text, slider };
+const Kind = enum { box, text, slider, editor };
 
 /// One scripted step, drawn once and applied to both twins.
 const Op = union(enum) {
@@ -59,6 +59,9 @@ const Op = union(enum) {
     slider: struct { slot: usize, value: f64, orientation: u32 },
     viewport: bool,
     resize: struct { width: u32, height: u32 },
+    editor: struct { slot: usize, seed: u32, show_cursor: bool, style: u32 },
+    /// A cursor the host places itself, as a Textarea-free app or a hook does.
+    host_cursor: struct { x: i32, y: i32, visible: bool },
 };
 
 /// Options drawn once per frame.
@@ -72,6 +75,8 @@ const FrameSpec = struct {
 /// order. A frame stably sorts the paint children of every parent it visits by z.
 const Model = struct {
     handles: [node_count_max]?[2]context.Handle = @splat(null),
+    /// Each editor node's edit buffer, per twin.
+    edits: [node_count_max][2]context.Handle = undefined,
     kind: [node_count_max]Kind = @splat(.box),
     parent: [node_count_max]?usize = @splat(null),
     children: [node_count_max]std.ArrayListUnmanaged(usize) = @splat(.empty),
@@ -181,6 +186,9 @@ const Stats = struct {
     layout_changes: u32 = 0,
     records: u32 = 0,
     decoded: u32 = 0,
+    /// Frames that end with an editor's cursor, and with a host cursor shown.
+    editor_cursors: u32 = 0,
+    host_cursors: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -293,10 +301,16 @@ const Harness = struct {
                     .box => c.OT_SCENE_BOX,
                     .text => c.OT_SCENE_TEXT,
                     .slider => c.OT_SCENE_SLIDER,
+                    .editor => c.OT_SCENE_EDITOR,
                 };
                 const created = try f.owner.sceneCreateNode(f.id, kind, Model.num(value.slot));
                 if (self.model.handles[value.slot] == null) self.model.handles[value.slot] = undefined;
                 self.model.handles[value.slot].?[twin] = created;
+                if (value.kind == .editor) {
+                    const edit = try f.owner.createEditBuffer(.unicode);
+                    try f.owner.sceneSetEditorView(created, try f.owner.createEditorView(edit, 1, 1));
+                    self.model.edits[value.slot][twin] = edit;
+                }
             },
             .move => |value| try f.owner.sceneMoveNode(self.handle(twin, value.slot), if (value.parent) |parent| self.handle(twin, parent) else null, value.index),
             .destroy => |slot| try f.owner.sceneDestroyNode(self.handle(twin, slot)),
@@ -326,6 +340,12 @@ const Harness = struct {
             .hooks => |value| try f.owner.sceneSetHooks(self.handle(twin, value.slot), value.flags, self.model.hook_generation[value.slot] + 1, 1, 1),
             .viewport => |bound| try f.owner.sceneSetViewport(self.handle(twin, content_slot), if (bound) self.handle(twin, viewport_slot) else null),
             .resize => |value| try f.owner.resizeSessionRenderer(f.id, value.width, value.height),
+            .editor => |value| {
+                const lines = [_][]const u8{ "", "ab", "a\nbc", "\u{754c}x\n\n" };
+                try f.owner.editSetText(self.model.edits[value.slot][twin], lines[value.seed % lines.len], false);
+                try f.owner.sceneSetEditorOptions(self.handle(twin, value.slot), .{ .show_cursor = value.show_cursor, .style = value.style });
+            },
+            .host_cursor => |value| try f.owner.controlSession(f.id, .{ .cursor = .{ .position = .{ .x = value.x, .y = value.y, .visible = value.visible } } }),
         }
     }
 
@@ -349,9 +369,10 @@ const Harness = struct {
     fn generate(self: *Harness) ?Op {
         const random = self.random;
         const empty = random.intRangeLessThan(usize, scaffold_slots, node_count_max);
-        if (self.model.handles[empty] == null) return .{ .create = .{ .slot = empty, .kind = switch (random.uintLessThan(u32, 8)) {
+        if (self.model.handles[empty] == null) return .{ .create = .{ .slot = empty, .kind = switch (random.uintLessThan(u32, 9)) {
             0, 1 => .box,
             2 => .slider,
+            8 => .editor,
             else => .text,
         } } };
         const slot = self.liveSlot(scaffold_slots) orelse return null;
@@ -368,14 +389,18 @@ const Harness = struct {
                 break :blk .{ .move = .{ .slot = slot, .parent = parent, .index = random.uintLessThan(u32, @intCast(siblings + 2)) } };
             },
             8 => .{ .destroy = slot },
-            // Focus moves favor nodes with focusable borders, where focus changes the border color.
+            // Focus moves favor editors, which own the cursor, and nodes with focusable borders,
+            // where focus changes the border color.
             9 => .{ .focus = .{ .slot = for (scaffold_slots..node_count_max) |candidate_slot| {
-                if (self.model.handles[candidate_slot] != null and self.model.focusable[candidate_slot] and random.boolean()) break candidate_slot;
+                if (self.model.handles[candidate_slot] == null) continue;
+                if ((self.model.focusable[candidate_slot] or self.model.kind[candidate_slot] == .editor) and random.boolean()) break candidate_slot;
             } else slot, .focused = random.boolean() } },
             10 => self.generateHooks() orelse self.generateReply(slot),
             15 => self.generateHookedChange() orelse self.generateReply(slot),
             11 => if (random.boolean()) .{ .viewport = random.boolean() } else .{ .resize = .{ .width = random.intRangeAtMost(u32, 10, 20), .height = random.intRangeAtMost(u32, 4, 8) } },
             13, 14 => if (self.model.kind[slot] == .text) self.generateText(slot) else self.generateReply(slot),
+            16 => .{ .host_cursor = .{ .x = random.intRangeAtMost(i32, 0, 20), .y = random.intRangeAtMost(i32, 0, 8), .visible = random.boolean() } },
+            17 => if (self.model.kind[slot] == .editor) .{ .editor = .{ .slot = slot, .seed = random.int(u32), .show_cursor = random.uintLessThan(u32, 4) != 0, .style = random.uintLessThan(u32, 4) } } else self.generateReply(slot),
             12 => .{ .paint = .{ .slot = content_slot, .fields = c.OT_SCENE_PROPERTY_TRANSLATE_Y, .paint = .{ .translateY = @floatFromInt(-random.intRangeAtMost(i32, 0, 12)) } } },
             else => self.generateReply(slot),
         };
@@ -653,6 +678,9 @@ const Harness = struct {
         self.stats.filtered += @intFromBool(work.overlap_tests != 0);
         self.stats.filtered_requests += @intFromBool(work.overlap_tests != 0 and work.host_requests != 0);
         self.stats.hidden_hooked += @intFromBool(hidden_hooked);
+        const cursor = try self.twins[candidate].owner.sceneGetCursorState(self.twins[candidate].id);
+        self.stats.editor_cursors += @intFromBool(self.twins[candidate].state.editor_cursor_owned);
+        self.stats.host_cursors += @intFromBool(cursor.visible and !self.twins[candidate].state.editor_cursor_owned);
         // Field by field: the struct's padding is unspecified.
         inline for (std.meta.fields(renderer.FrameWork)) |field| {
             self.stats.digest = std.hash.Wyhash.hash(self.stats.digest, std.mem.asBytes(&@field(work, field.name)));
@@ -839,12 +867,12 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     }
     // Every frame kind B2 relies on is reached in quantity (about a quarter of today's counts;
     // decoded frames at about half), and each minimum fails if the draw that produces its kind
-    // is removed. Counts at 64 x 256: reused 583, filtered 1,242, filtered with a request 510,
-    // hooked under a hidden ancestor 6,038, reply hid the requester's parent 46, reply detached
-    // the requester 40, content-child RESIZE 54, a truncation change in its reply 53, unmeasured
-    // content text replaced 17, UPDATE 3,254, RESIZE 78, LAYOUT_CHANGED 2,015, recordings 667,
-    // decoded 15,256.
-    const minimums: Stats = .{ .reused = 145, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 10, .reply_detaches = 10, .content_resizes = 30, .content_reply_texts = 15, .unmeasured_texts = 5, .updates = 650, .resizes = 18, .layout_changes = 460, .records = 130, .decoded = 9000 };
+    // is removed. Counts at 64 x 256: reused 399, filtered 1,458, filtered with a request 547,
+    // hooked under a hidden ancestor 5,631, reply hid the requester's parent 43, reply detached
+    // the requester 58, content-child RESIZE 67, a truncation change in its reply 67, unmeasured
+    // content text replaced 16, UPDATE 3,407, RESIZE 85, LAYOUT_CHANGED 1,921, recordings 663,
+    // decoded 15,361, an editor's cursor 1,674, a host cursor 6,658.
+    const minimums: Stats = .{ .reused = 145, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 10, .reply_detaches = 10, .content_resizes = 30, .content_reply_texts = 15, .unmeasured_texts = 5, .updates = 650, .resizes = 18, .layout_changes = 460, .records = 130, .decoded = 9000, .editor_cursors = 400, .host_cursors = 1600 };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
         errdefer std.debug.print("{s}: {d}\n", .{ field.name, @field(total, field.name) });
