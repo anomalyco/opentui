@@ -132,78 +132,70 @@ test "Scene editor checked preparation reports allocation failure and retries wi
     try testing.expect((try owner.sceneGetCursorState(fixture.session)).visible);
 }
 
-/// Paints a fresh draft, answering a RECORD request with an empty recording.
-fn paintFrame(owner: *context.Context, id: context.Handle) !void {
-    const state = (try owner.raw().getSession(id)).scene.?;
-    if (state.painted) |painted| try owner.sceneFrameCancel(id, painted.ticket.frame_id);
-    var request = try owner.sceneFrameStep(id, null, frame_options);
-    if (request.kind == @import("context_abi_c").OT_SCENE_FRAME_RECORD) request = try owner.sceneFrameStepWithRecording(id, request, frame_options, &.{});
-    try testing.expectEqual(@as(u32, 0), request.kind);
-}
-
 test "Scene editor cursor is maintained once per frame for the focused editor member" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
     const fixture = try setup(owner, 4, 1);
-    // Three editors in rows 0 to 2, then a box in row 3. Editor 1 can carry a paint hook.
-    var editors: [3]context.Handle = .{ fixture.node, undefined, undefined };
-    for (editors[1..], 1..) |*node, index| {
+    // Editors in rows 0 to 2, then a box in row 3. Editor 1 can carry a paint hook.
+    var nodes: [4]context.Handle = .{ fixture.node, undefined, undefined, undefined };
+    for (nodes[1..3], 1..) |*node, index| {
         node.* = try owner.sceneCreateNode(fixture.session, 5, @intCast(2 + index));
         try owner.sceneSetEditorView(node.*, try owner.createEditorView(try owner.createEditBuffer(.unicode), 1, 1));
-        try dimensions(owner, node.*, 4, 1);
-        try owner.sceneMoveNode(node.*, fixture.root, @intCast(index));
     }
-    const box = try owner.sceneCreateNode(fixture.session, 1, 5);
-    try dimensions(owner, box, 4, 1);
-    try owner.sceneMoveNode(box, fixture.root, 3);
-    const Focus = enum { none, first, last, box };
+    nodes[3] = try owner.sceneCreateNode(fixture.session, 1, 5);
+    for (nodes[1..], 1..) |node, index| {
+        try dimensions(owner, node, 4, 1);
+        try owner.sceneMoveNode(node, fixture.root, @intCast(index));
+    }
+    // The first editor draws a red line cursor, the last a green underline.
+    try owner.sceneSetEditorOptions(nodes[0], .{ .style = 1, .color = .{ 255, 0, 0, 255 } });
     const rows = [_]struct {
-        focus: Focus,
+        // Index of the focused node, if any.
+        focus: ?usize,
         show_cursor: bool = true,
         hidden: bool = false,
         hooked: bool = false,
         host: bool = false,
-        // Cursor x, y, visible after each of the row's two frames.
-        cursor: [3]u32,
+        // Cursor x, y, visible, style, and red channel after each of the row's two frames.
+        cursor: [5]u32,
         // Cursor steps on the row's first frame (after the change) and its second.
         steps: [2]u64,
     }{
-        .{ .focus = .none, .cursor = .{ 1, 1, 0 }, .steps = .{ 0, 0 } },
-        .{ .focus = .first, .cursor = .{ 1, 1, 1 }, .steps = .{ 1, 1 } },
-        .{ .focus = .last, .cursor = .{ 1, 3, 1 }, .steps = .{ 1, 1 } },
+        .{ .focus = null, .cursor = .{ 1, 1, 0, 3, 255 }, .steps = .{ 0, 0 } },
+        .{ .focus = 0, .cursor = .{ 1, 1, 1, 1, 255 }, .steps = .{ 1, 1 } },
+        .{ .focus = 2, .cursor = .{ 1, 3, 1, 2, 0 }, .steps = .{ 1, 1 } },
+        // Hiding the focused editor releases the cursor once, even while it stays in reused work.
+        .{ .focus = 2, .hidden = true, .cursor = .{ 1, 1, 0, 2, 0 }, .steps = .{ 1, 0 } },
+        .{ .focus = 2, .cursor = .{ 1, 3, 1, 2, 0 }, .steps = .{ 1, 1 } },
         // Hiding the focused editor's cursor releases it once.
-        .{ .focus = .last, .show_cursor = false, .cursor = .{ 1, 1, 0 }, .steps = .{ 2, 1 } },
-        .{ .focus = .first, .cursor = .{ 1, 1, 1 }, .steps = .{ 1, 1 } },
+        .{ .focus = 2, .show_cursor = false, .cursor = .{ 1, 1, 0, 2, 0 }, .steps = .{ 2, 1 } },
+        .{ .focus = 0, .cursor = .{ 1, 1, 1, 1, 255 }, .steps = .{ 1, 1 } },
         // Focus moving off every editor releases the cursor once.
-        .{ .focus = .box, .cursor = .{ 1, 1, 0 }, .steps = .{ 1, 0 } },
-        .{ .focus = .last, .hidden = true, .cursor = .{ 1, 1, 0 }, .steps = .{ 0, 0 } },
-        .{ .focus = .first, .hooked = true, .cursor = .{ 1, 1, 1 }, .steps = .{ 1, 2 } },
+        .{ .focus = 3, .cursor = .{ 1, 1, 0, 1, 255 }, .steps = .{ 1, 0 } },
+        .{ .focus = 0, .hooked = true, .cursor = .{ 1, 1, 1, 1, 255 }, .steps = .{ 1, 2 } },
         // A host cursor survives frames without a focused editor; a focused editor wins.
-        .{ .focus = .none, .host = true, .cursor = .{ 9, 5, 1 }, .steps = .{ 0, 0 } },
-        .{ .focus = .first, .host = true, .cursor = .{ 1, 1, 1 }, .steps = .{ 1, 1 } },
+        .{ .focus = null, .host = true, .cursor = .{ 9, 5, 1, 1, 255 }, .steps = .{ 0, 0 } },
+        .{ .focus = 0, .host = true, .cursor = .{ 1, 1, 1, 1, 255 }, .steps = .{ 1, 1 } },
     };
     const state = (try owner.raw().getSession(fixture.session)).scene.?;
     for (rows) |row| {
-        const focused: ?context.Handle = switch (row.focus) {
-            .none => null,
-            .first => editors[0],
-            .last => editors[2],
-            .box => box,
-        };
-        for (editors ++ [_]context.Handle{box}) |node| try owner.sceneSetFocus(node, if (focused) |target| std.meta.eql(target, node) else false);
-        try owner.sceneSetEditorOptions(editors[2], .{ .show_cursor = row.show_cursor });
-        try owner.sceneSetStyle(editors[2], 0, 9, 0, 0, if (row.hidden) 1 else 0, 0);
-        try owner.sceneSetHooks(editors[1], if (row.hooked) 16 else 0, state.last_frame_id + 1, 4, 1);
+        for (nodes, 0..) |node, index| try owner.sceneSetFocus(node, row.focus == index);
+        try owner.sceneSetEditorOptions(nodes[2], .{ .show_cursor = row.show_cursor, .style = 2, .color = .{ 0, 255, 0, 255 } });
+        try owner.sceneSetStyle(nodes[2], 0, 9, 0, 0, if (row.hidden) 1 else 0, 0);
+        // A hidden node placed in this frame stays in the reused work list, marked hidden.
+        if (row.hidden) try owner.sceneMoveNode(nodes[2], fixture.root, 2);
+        try owner.sceneSetHooks(nodes[1], if (row.hooked) 16 else 0, state.last_frame_id + 1, 4, 1);
         for (row.steps, 0..) |steps, frame| {
+            errdefer std.debug.print("row {any} frame {d}\n", .{ row.focus, frame });
             if (row.host) try owner.controlSession(fixture.session, .{ .cursor = .{ .position = .{ .x = 9, .y = 5, .visible = true } } });
             const before = state.test_cursor_steps;
-            try paintFrame(owner, fixture.session);
+            if (state.painted) |painted| try owner.sceneFrameCancel(fixture.session, painted.ticket.frame_id);
+            var request = try owner.sceneFrameStep(fixture.session, null, frame_options);
+            if (request.kind != 0) request = try owner.sceneFrameStepWithRecording(fixture.session, request, frame_options, &.{});
+            try testing.expectEqual(@as(u32, 0), request.kind);
             const cursor = try owner.sceneGetCursorState(fixture.session);
-            try testing.expectEqual(row.cursor, [3]u32{ cursor.x, cursor.y, @intFromBool(cursor.visible) });
-            testing.expectEqual(steps, state.test_cursor_steps - before) catch |err| {
-                std.debug.print("row {any} frame {d}\n", .{ row.focus, frame });
-                return err;
-            };
+            try testing.expectEqual(row.cursor, [5]u32{ cursor.x, cursor.y, @intFromBool(cursor.visible), cursor.style, @intFromFloat(cursor.color[0] * 255) });
+            try testing.expectEqual(steps, state.test_cursor_steps - before);
         }
     }
 }

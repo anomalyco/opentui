@@ -11,9 +11,9 @@
 //!   checks every presented reference frame;
 //! - a frame kind it must reach: count it in `Stats` and give it a minimum in
 //!   the test.
-//! The script has no editor, image, or linked text yet, so cursor, image, and
-//! link shortcuts are invisible to it: B3 adds those node kinds before its
-//! frame skip uses this harness as its gate.
+//! The script has editors, focus moves, and host cursors, but no image or
+//! linked text yet, so image and link shortcuts are invisible to it: B3 adds
+//! those node kinds before its frame skip uses this harness as its gate.
 const std = @import("std");
 const testing = std.testing;
 const c = @import("context_abi_c");
