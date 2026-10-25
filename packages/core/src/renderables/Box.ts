@@ -314,6 +314,8 @@ export class BoxRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
+    // A layout-only box records nothing; native would draw nothing for it either.
+    if (borderMask(this.borderSides) === 0 && !(this._shouldFill && this._backgroundColor.a > 0)) return
     // A buffered box draws at its own buffer's origin; the buffer is composed at the box's position.
     const own = buffer === this.frameBuffer
     this._ctx.nativeScene.drawBody(

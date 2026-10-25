@@ -6,6 +6,7 @@ import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import type { CapturedFrame } from "../types.js"
+import { NativePaintRecorder } from "../zig.js"
 import { BoxRenderable } from "./Box.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
@@ -383,6 +384,7 @@ const paintCases: [string, typeof BoxRenderable, object][] = [
   ],
   ["Box focused", BoxRenderable, { border: true, shouldFill: false, backgroundColor: "#ff0000", focusable: true }],
   ["Box layout-only", BoxRenderable, {}],
+  ["Box fill only", BoxRenderable, { backgroundColor: "#203040" }],
   // A focused child gives a focusable box its focused border and title color.
   ["Box focus-within", BoxRenderable, { border: true, focusable: true, title: "f", focusWithin: true }],
   // 328: a buffered box draws at its buffer's origin; only the JS control is buffered.
@@ -394,17 +396,22 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
   const errors: string[] = []
   const onError = ({ error }: { error: Error }) => errors.push(error.message)
   renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+  // Recording bytes per frame: a box that draws nothing must record nothing.
+  let recorded = 0
+  const end = NativePaintRecorder.prototype.end
+  NativePaintRecorder.prototype.end = function (this: NativePaintRecorder) {
+    recorded += this.recording?.length ?? 0
+    end.call(this)
+  }
   const Js = class extends Native {
     protected override renderSelf(buffer: OptimizedBuffer): void {
       jsPaints++
       super.renderSelf(buffer)
     }
   }
-  for (const [translateX, translateY] of [
-    [0, 0],
-    [0.5, 0.5],
-    [-1.5, -0.5],
-  ]) {
+  // Slider thumbs differ at a negative fractional origin until PR 3; boxes must match there too.
+  const translations = [[0, 0], [0.5, 0.5], [-1.5, -0.5], ...(name.startsWith("Box") ? [[-2.5, -1.5]] : [])]
+  for (const [translateX, translateY] of translations) {
     const frames: CapturedFrame[] = []
     for (const Control of [Js, Native]) {
       const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
@@ -441,7 +448,9 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
     }
   }
   renderer.off(CliRenderEvents.RENDER_ERROR, onError)
-  expect(jsPaints).toBe(3)
+  NativePaintRecorder.prototype.end = end
+  expect(jsPaints).toBe(translations.length)
+  if (name === "Box layout-only") expect(recorded).toBe(0)
 })
 
 // As on `main`, controls and graphemes longer than a cell holds are accepted when set and skipped when drawn.
