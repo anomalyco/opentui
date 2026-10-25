@@ -248,8 +248,11 @@ describe("native stdin parser: adapter", () => {
   })
 
   test("reports Core's key fields", () => {
-    const [enter, linefeed, altA, kittyA, keypad, repeat, base, f5, altUp, altO] = parse(native, [
-      Buffer.from("\r\n\x1bA\x1b[97;2u\x1bOp\x1b[97;1:2u\x1b[1089::99;5u\x1b[15;5~\x1b\x1b[A\xcf", "latin1"),
+    const [enter, linefeed, altA, kittyA, keypad, repeat, base, f5, altUp, altMok, altO, altBracket] = parse(native, [
+      Buffer.from(
+        "\r\n\x1bA\x1b[97;2u\x1bOp\x1b[97;1:2u\x1b[1089::99;5u\x1b[15;5~\x1b\x1b[A\x1b\x1b[27;5;65~\xcf\xdb",
+        "latin1",
+      ),
     ]).map((event) => (event.type === "key" ? event.key : null))
     expect(enter).toMatchObject({ name: "return", sequence: "\r", source: "raw" })
     expect(linefeed).toMatchObject({ name: "linefeed", sequence: "\n" })
@@ -260,7 +263,9 @@ describe("native stdin parser: adapter", () => {
     expect(base).toMatchObject({ name: "с", ctrl: true, baseCode: 99 })
     expect(f5).toMatchObject({ name: "f5", ctrl: true, code: "[15~", option: false })
     expect(altUp).toMatchObject({ name: "up", meta: true, option: true, raw: "\x1b\x1b[A" })
+    expect(altMok).toMatchObject({ name: "A", ctrl: true, meta: true, shift: false, option: true })
     expect(altO).toMatchObject({ name: "O", meta: true, shift: true, option: false, raw: "\x1bO" })
+    expect(altBracket).toMatchObject({ name: "[", meta: true, shift: false, option: false, raw: "\x1b[" })
   })
 
   test("suspension stops input time so a reply split across it still completes", () => {
