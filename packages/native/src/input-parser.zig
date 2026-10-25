@@ -252,6 +252,8 @@ pub const InputParser = struct {
     pub fn deadlineNs(self: *const InputParser) ?u64 {
         const waits = switch (self.state) {
             // A UTF-8 lead byte's continuation bytes must follow, so no pause cuts a scalar short.
+            // Opt-in 8-bit Meta (urxvt meta8, rxvt --meta8, Eterm -8, iTerm2 Option as Meta) is read
+            // as UTF-8; an explicit "input is not UTF-8" mode could restore it without a timer.
             .ground, .expired, .paste, .utf8 => false,
             .csi => |csi| !csi.deferred or !self.deferrable(),
             else => true,
