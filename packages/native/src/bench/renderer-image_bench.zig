@@ -47,6 +47,17 @@ fn drawTextBackdrop(target: *buffer.OptimizedBuffer) void {
     }
 }
 
+// The renderer salts Kitty image ids with the clock, and the id's digit count changes the bytes per
+// frame in the row names. A fixed salt keeps the names the same on every run.
+const IMAGE_ID_SALT: u32 = 1_000_000_000;
+
+fn createRenderer(allocator: std.mem.Allocator, width: u32, height: u32, pool: *gp.GraphemePool, link_pool: *link.LinkPool) !test_renderer_mod.TestRenderer {
+    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, width, height, pool, link_pool);
+    test_renderer.renderer.imageIdSalt = IMAGE_ID_SALT;
+    test_renderer.renderer.kittyHistoryNextImageId = IMAGE_ID_SALT + gp.IMAGE_ID_MASK + 1;
+    return test_renderer;
+}
+
 const FrameCost = struct {
     stats: bench_utils.BenchStats = .{},
     total_bytes: u64 = 0,
@@ -69,7 +80,7 @@ fn runPlacementScenario(
     animate: bool,
     text_change: bool,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     switch (protocol) {
         .kitty => test_renderer.renderer.terminal.caps.kitty_graphics = true,
@@ -129,7 +140,7 @@ fn runPlacementScenario(
 }
 
 fn runLargeStillTransmit(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool, link_pool: *link.LinkPool) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
@@ -206,7 +217,7 @@ fn runStaticKittyPlacementCount(
     link_pool: *link.LinkPool,
     count: usize,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
@@ -256,7 +267,7 @@ fn runDirtySixelOverlapCount(
     link_pool: *link.LinkPool,
     count: usize,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, 1, 1, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, 1, 1, pool, link_pool);
     defer test_renderer.deinit();
     test_renderer.renderer.terminal.caps.sixel = true;
 
@@ -321,7 +332,7 @@ fn runSplitImageCommit(
     protocol: Protocol,
     placement_count: usize,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     switch (protocol) {
         .kitty => test_renderer.renderer.terminal.caps.kitty_graphics = true,
