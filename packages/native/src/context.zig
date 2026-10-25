@@ -1,4 +1,5 @@
 const std = @import("std");
+const nextPaintEpoch = @import("utils.zig").nextPaintEpoch;
 const api = @import("context_abi_c");
 const handles = @import("context-handles.zig");
 const grapheme = @import("grapheme.zig");
@@ -232,8 +233,11 @@ pub const Editor = struct {
     previous: ?*Editor = null,
     next: ?*Editor = null,
     node: ?*native_renderable.NativeRenderable = null,
+    // Every mutation gate takes a fresh epoch, so retained paint repaints the bound node.
+    paint_epoch: u64 = 0,
 
     pub fn checkMutable(self: *Editor) yoga.Error!void {
+        self.paint_epoch = nextPaintEpoch();
         if (self.node) |node| try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         var next = self.view.measure_dependents;
         while (next) |node| : (next = node.measure_next) try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
@@ -300,8 +304,11 @@ pub const TextView = struct {
     previous: ?*TextView = null,
     next: ?*TextView = null,
     node: ?*native_renderable.NativeRenderable = null,
+    // Every mutation gate takes a fresh epoch, so retained paint repaints the bound node.
+    paint_epoch: u64 = 0,
 
     pub fn checkMutable(self: *TextView) yoga.Error!void {
+        self.paint_epoch = nextPaintEpoch();
         if (self.node) |node| try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         var next = self.view.measure_dependents;
         while (next) |node| : (next = node.measure_next) try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
@@ -864,6 +871,8 @@ pub const Context = struct {
         if (value.frame_end_offset != null or attached.pendingPresentation != null) {
             return error.PresentationPending;
         }
+        // Raw cell access may write either buffer.
+        if (which == .next) attached.leaveRetained() else attached.taint(renderer.FrameWork.full_path_tainted);
         return self.acquireBufferLease(switch (which) {
             .current => attached.getCurrentBuffer(),
             .next => attached.getNextBuffer(),
@@ -883,6 +892,7 @@ pub const Context = struct {
             return error.PresentationPending;
         }
         const source = try self.getBuffer(source_handle);
+        attached.leaveRetained();
         const target = attached.getNextBuffer();
         try drawContextBuffer(target, source, x, y, .{});
     }
@@ -2029,6 +2039,13 @@ pub const Context = struct {
         return node;
     }
 
+    /// For setters of what a node paints; a rejected change only repaints the node.
+    fn scenePaintNode(self: *Context, handle: Handle) !*native_renderable.NativeRenderable {
+        const node = try self.sceneMutableNode(handle);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
+        return node;
+    }
+
     pub fn sceneDestroyNode(self: *Context, handle: Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
@@ -2064,14 +2081,14 @@ pub const Context = struct {
     pub fn sceneSetBoxDetails(self: *Context, handle: Handle, details: scene.BoxDetails) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         try value.scene_node.?.owner.setBoxDetails(value, details);
     }
 
     pub fn sceneSetImage(self: *Context, handle: Handle, source_handle: ?Handle, fit: image.Fit, protocol: image.RenderProtocol, buffer_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         if (node.scene_node.?.kind != api.OT_SCENE_IMAGE) return error.WrongKind;
         try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         const source = if (source_handle) |id| try self.getImage(id) else null;
@@ -2088,7 +2105,7 @@ pub const Context = struct {
     pub fn sceneSetSurface(self: *Context, handle: Handle, buffer_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         if (node.scene_node.?.kind != api.OT_SCENE_CUSTOM) return error.WrongKind;
         try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         const source = if (buffer_handle) |id| try self.getBuffer(id) else null;
@@ -2100,7 +2117,7 @@ pub const Context = struct {
     pub fn sceneSetEditorView(self: *Context, handle: Handle, view_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_EDITOR) return error.WrongKind;
         const editor = if (view_handle) |id| try self.getEditorView(id) else null;
@@ -2117,7 +2134,7 @@ pub const Context = struct {
     pub fn sceneSetEditorOptions(self: *Context, handle: Handle, options: scene.EditorOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_EDITOR) return error.WrongKind;
         if (options.style > 3 or (options.mouse_pointer > api.OT_MOUSE_POINTER_MAX and
@@ -2129,7 +2146,7 @@ pub const Context = struct {
     pub fn sceneSetTextView(self: *Context, handle: Handle, view_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_TEXT_VIEW) return error.WrongKind;
         const text_view = if (view_handle) |id| try self.getTextBufferView(id) else null;
@@ -2146,7 +2163,7 @@ pub const Context = struct {
     pub fn sceneSetTextViewPaint(self: *Context, handle: Handle, enabled: bool) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_TEXT_VIEW) return error.WrongKind;
         node.control.text_view.paint = enabled;
@@ -2338,7 +2355,7 @@ pub const Context = struct {
     pub fn sceneSetSlider(self: *Context, handle: Handle, options: scene.SliderOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_SLIDER) return error.WrongKind;
         try buf.validateColor(options.foreground);
@@ -2361,7 +2378,7 @@ pub const Context = struct {
     pub fn sceneSetArrow(self: *Context, handle: Handle, options: scene.ArrowOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_ARROW) return error.WrongKind;
         if (options.direction > 3 or options.attributes & ~@import("ansi.zig").TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
@@ -2379,7 +2396,7 @@ pub const Context = struct {
     pub fn sceneSetText(self: *Context, handle: Handle, bytes: []const u8) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
@@ -2399,7 +2416,7 @@ pub const Context = struct {
     pub fn sceneSetStyledText(self: *Context, handle: Handle, bytes: []const u8, chunks: []const StyledTextChunk) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
@@ -2484,7 +2501,7 @@ pub const Context = struct {
     pub fn sceneSetTextOptions(self: *Context, handle: Handle, options: scene.TextOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         if (options.attributes & ~@import("ansi.zig").TextAttributes.ATTRIBUTE_BASE_MASK != 0 or
             options.first_line_offset > std.math.maxInt(i32) or
@@ -2569,6 +2586,7 @@ pub const Context = struct {
         // Reset participates in wrapper cleanup after Session cancellation and
         // must not depend on Yoga health or allocate view caches.
         const node = if (options.operation == api.OT_SCENE_TEXT_SELECTION_RESET) try self.sceneNode(handle) else try self.sceneMutableNode(handle);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
         const text = node.scene_node.?.text orelse return error.WrongKind;
         const changed = if (options.operation == api.OT_SCENE_TEXT_SELECTION_RESET) reset: {
             const had_selection = text.view.getSelection() != null;
@@ -2836,6 +2854,7 @@ pub const Context = struct {
         if (!painted.destination.matches(attached.getNextBuffer())) return error.StaleFrame;
         if (self.lease_count >= self.lease_count_max) return error.LeaseLimit;
         try self.objects.checkCapacity();
+        attached.taint(renderer.FrameWork.full_path_tainted);
         const access = try self.allocator.create(FrameBufferLease);
         errdefer self.allocator.destroy(access);
         const target = switch (which) {
@@ -2876,6 +2895,7 @@ pub const Context = struct {
         const access = try owned.checkPainted(frame);
         const target = attached.getNextBuffer();
         if (!access.destination.matches(target)) return error.StaleFrame;
+        attached.taint(renderer.FrameWork.full_path_tainted);
         return target;
     }
 
@@ -2916,7 +2936,7 @@ pub const Context = struct {
         const value = try self.getSession(session_handle);
         try value.checkOpen();
         const owned = value.scene orelse return error.SceneNotAttached;
-        if (flags & ~api.OT_SCENE_DEBUG_FULL_FRAME != 0) return error.InvalidOptions;
+        if (flags & ~@as(u32, api.OT_SCENE_DEBUG_FULL_FRAME | api.OT_SCENE_DEBUG_VERIFY) != 0) return error.InvalidOptions;
         try value.checkFrameIdle();
         owned.debug_flags = flags;
     }

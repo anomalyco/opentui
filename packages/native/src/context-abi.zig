@@ -2355,7 +2355,6 @@ pub fn ot_scene_get_stats(context: ?*ContextHandle, session_ptr: ?*const c.ot_ha
         .average_cells_updated = result.averageCellsUpdated,
         .render_time_valid = @intFromBool(result.renderTime != null),
         .stdout_write_time_valid = @intFromBool(result.outputWriteTime != null),
-        .reserved = 0,
     };
     // The header names each work field after its FrameWork field.
     inline for (std.meta.fields(@TypeOf(result.frameWork))) |field| @field(out, field.name) = @field(result.frameWork, field.name);
@@ -4001,20 +4000,20 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(@as(u32, 0), cursor.blinking);
     try std.testing.expectEqual(@as(u32, 0), cursor.reserved);
     var stats: c.ot_scene_stats = std.mem.zeroes(c.ot_scene_stats);
-    stats.reserved = 7;
+    stats.damage_rows = 7;
     for ([_][2]u32{ .{ @sizeOf(c.ot_scene_stats) - 8, c.OT_CONTEXT_ABI_VERSION }, .{ @sizeOf(c.ot_scene_stats), c.OT_CONTEXT_ABI_VERSION - 1 } }, [_]c.ot_status{ c.OT_INVALID_ARGUMENT, c.OT_UNSUPPORTED_VERSION }) |header, status| {
         stats.struct_size = header[0];
         stats.abi_version = header[1];
         try std.testing.expectEqual(status, ot_scene_get_stats(handle, &session_c, &stats));
-        try std.testing.expectEqual(@as(u32, 7), stats.reserved);
+        try std.testing.expectEqual(@as(u32, 7), stats.damage_rows);
     }
     stats.struct_size = @sizeOf(c.ot_scene_stats);
     stats.abi_version = c.OT_CONTEXT_ABI_VERSION;
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_stats(handle, &session_c, &stats));
     // Painted drafts publish no work; only presented scene frames do.
     try std.testing.expectEqual(@as(u64, 0), stats.work_frame_id);
-    try std.testing.expectEqual(@as(u32, 0), stats.reserved);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_debug_flags(handle, &session_c, 2));
+    try std.testing.expectEqual(@as(u32, 0), stats.damage_rows);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_debug_flags(handle, &session_c, 4));
     try std.testing.expectEqual(c.OT_FRAME_BUSY, ot_scene_set_debug_flags(handle, &session_c, c.OT_SCENE_DEBUG_FULL_FRAME));
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_debug_flags(handle, &session_c, c.OT_SCENE_DEBUG_FULL_FRAME));

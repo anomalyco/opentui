@@ -13,6 +13,7 @@ const text_buffer_view = @import("text-buffer-view.zig");
 const utf8 = @import("utf8.zig");
 const image = @import("image.zig");
 const Context = @import("context.zig").Context;
+const nextPaintEpoch = @import("utils.zig").nextPaintEpoch;
 const scene_record = @import("scene-record.zig");
 const api = @import("context_abi_c");
 
@@ -180,7 +181,35 @@ const Painted = struct {
     ticket: FrameRequest,
     destination: BufferIdentity,
     work: renderer.FrameWork,
+    // Rows that may differ from the presented frame, or null for every row.
+    damage: ?*const std.DynamicBitSetUnmanaged,
 };
+
+/// What a member's cells depend on. Equal inputs paint equal cells in the same rows.
+const PaintInputs = struct {
+    layout: Layout,
+    clip: buffer.ClipRect,
+    opacity: f32,
+    // Position in paint order: an order change repaints both members it swaps.
+    rank: u32,
+    focused: bool,
+    node_epoch: u64,
+    resource_epoch: u64,
+    // A destroyed style unbinds its borrowers without a mutation gate.
+    styled: bool,
+};
+
+/// One painted member of a frame and the rows it paints.
+const Record = struct {
+    token: u32,
+    top: u32,
+    bottom: u32,
+    // Bodies native code cannot fingerprint (surfaces) always repaint.
+    stable: bool,
+    inputs: PaintInputs,
+};
+
+const Damage = enum { all, rows, none };
 
 const Attempt = struct {
     root: handles.Handle,
@@ -274,6 +303,10 @@ pub const Node = struct {
     placement: u64 = 0,
     resize_width: f64 = 0,
     resize_height: f64 = 0,
+    // Changes with every setter of what the node itself paints.
+    paint_epoch: u64 = 0,
+    // The node's record in a frame's records: two slots, for the presented and the draft frame.
+    records: [2]struct { frame: u64 = 0, index: u32 = 0 } = .{ .{}, .{} },
 };
 
 const Work = struct {
@@ -381,6 +414,15 @@ pub const Scene = struct {
     hits_frame: u64 = 0,
     hits_generation: u64 = 0,
     presented_hits_frame: u64 = 0,
+    // Paint records of the draft frame and of the presented frame, which retained paint
+    // compares; the damaged rows of the draft.
+    records: std.ArrayListUnmanaged(Record) = .empty,
+    presented_records: std.ArrayListUnmanaged(Record) = .empty,
+    records_frame: u64 = 0,
+    presented_records_frame: u64 = 0,
+    records_options: FrameOptions = undefined,
+    presented_options: FrameOptions = undefined,
+    damage: std.DynamicBitSetUnmanaged = .{},
     attempt: ?Attempt = null,
     painted: ?Painted = null,
     cancelled_paint: bool = false,
@@ -398,7 +440,7 @@ pub const Scene = struct {
     measure_failed: bool = false,
     // The active attempt's work; it moves into the DONE draft and dies with a cancelled attempt.
     frame_work: renderer.FrameWork = .{},
-    // OT_SCENE_DEBUG_* bits. Every shortcut that skips frame work tests FULL_FRAME; today that is work-list reuse.
+    // OT_SCENE_DEBUG_* bits. Every shortcut that skips frame work tests FULL_FRAME.
     debug_flags: u32 = 0,
     test_sort_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     test_hit_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
@@ -427,6 +469,9 @@ pub const Scene = struct {
         self.segments.deinit(self.allocator);
         self.hits.deinit(self.allocator);
         self.presented_hits.deinit(self.allocator);
+        self.records.deinit(self.allocator);
+        self.presented_records.deinit(self.allocator);
+        self.damage.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -655,6 +700,7 @@ pub const Scene = struct {
         {
             self.work.clearRetainingCapacity();
         }
+        if (!std.meta.eql(node.paint, paint)) node.paint_epoch = nextPaintEpoch();
         node.paint = paint;
     }
 
@@ -761,6 +807,10 @@ pub const Scene = struct {
 
     pub fn requalifyPainted(self: *Scene, cli: *renderer.CliRenderer) void {
         if (self.painted) |*painted| painted.destination = BufferIdentity.init(cli.getNextBuffer());
+    }
+
+    fn verifiesRetained(self: *const Scene) bool {
+        return self.debug_flags & api.OT_SCENE_DEBUG_VERIFY != 0;
     }
 
     /// Limits stay fixed; paint options can change on a checked acknowledgement.
@@ -964,12 +1014,21 @@ pub const Scene = struct {
                 }
             }
             try self.markFocus(objects);
-            try self.paintFrame(owner, cli, active.options, null, false);
-            return self.finishPaint(cli, reusable_work);
+            const damage = try self.planPaint(objects, cli, active.options);
+            if (damage == .none and !self.verifiesRetained()) {
+                try self.skipPaint(cli);
+            } else {
+                // Verification paints a skipped frame too, and checks that it changed nothing.
+                const skipped = self.frame_work;
+                try self.paintFrame(owner, cli, active.options, null, false);
+                if (damage != .all and self.verifiesRetained()) try self.verifyRetained(cli, damage);
+                if (damage == .none) self.frame_work = skipped;
+            }
+            return self.finishPaint(cli, reusable_work, damage);
         }
     }
 
-    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, retain_work: bool) FrameRequest {
+    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, retain_work: bool, damage: Damage) FrameRequest {
         const active = self.attempt.?;
         std.debug.assert(self.painted == null);
         std.debug.assert(!retain_work or active.request_id == 0);
@@ -998,6 +1057,7 @@ pub const Scene = struct {
             .ticket = done,
             .destination = BufferIdentity.init(cli.getNextBuffer()),
             .work = self.frame_work,
+            .damage = if (damage == .all) null else &self.damage,
         };
         return done;
     }
@@ -1202,6 +1262,10 @@ pub const Scene = struct {
         try target.opacity_stack.ensureTotalCapacity(self.allocator, 1);
         cli.setBackgroundColor(options.background);
         target.clear(options.background, if (options.preserve_unwritten) 0 else null);
+        // The draft replaces the retained frame until its presentation; raw users then see the
+        // draft's cells, as before.
+        cli.next_scene_retained = false;
+        cli.retained_frame_id = 0;
         self.frame_work.cells_cleared += @as(u64, target.width) * target.height;
         self.settleHits(cli);
         self.hits.clearRetainingCapacity();
@@ -1238,6 +1302,162 @@ pub const Scene = struct {
             depth += 1;
             value.scene_node.?.focus_frame = frame_id;
         }
+    }
+
+    /// Counts every row as damaged and returns why the frame cannot compare its members with
+    /// the presented frame's. A recorded frame calls only this: hooks may draw anywhere in their
+    /// clip, so it keeps no records, and the frame after it has none to compare with.
+    fn fullPathReasons(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions) u32 {
+        if (self.records_frame != 0 and self.records_frame == cli.retained_frame_id) {
+            std.mem.swap(std.ArrayListUnmanaged(Record), &self.records, &self.presented_records);
+            self.presented_records_frame = self.records_frame;
+            self.presented_options = self.records_options;
+        }
+        var reasons = cli.retained_lost;
+        cli.retained_lost = 0;
+        // Writes before this frame's paint are repainted; writes after it taint this frame.
+        cli.encode_all_rows = false;
+        if (self.forcesFullFrame()) reasons |= renderer.FrameWork.full_path_forced;
+        if (self.presented_records_frame == 0 or self.presented_records_frame != cli.retained_frame_id) reasons |= renderer.FrameWork.full_path_unretained;
+        if (reasons & renderer.FrameWork.full_path_unretained == 0 and
+            (!std.meta.eql(options.background, self.presented_options.background) or options.use_mouse != self.presented_options.use_mouse or
+                options.excluded_hit_num != self.presented_options.excluded_hit_num or options.preserve_unwritten != self.presented_options.preserve_unwritten))
+        {
+            reasons |= renderer.FrameWork.full_path_options;
+        }
+        if (cli.currentImages.items.len != 0 or cli.nextRenderBuffer.image_placements.items.len != 0) reasons |= renderer.FrameWork.full_path_images;
+        self.frame_work.full_path_reasons |= reasons;
+        self.frame_work.damage_rows = cli.height;
+        return reasons;
+    }
+
+    /// Records the frame's members and decides which rows can differ from the presented frame.
+    fn planPaint(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, options: FrameOptions) !Damage {
+        const frame_id = self.attempt.?.frame_id;
+        var reasons = self.fullPathReasons(cli, options);
+        self.records.clearRetainingCapacity();
+        self.records_frame = frame_id;
+        self.records_options = options;
+        try self.records.ensureTotalCapacity(self.allocator, self.work.items.len);
+        for (self.work.items) |entry| {
+            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
+            self.record(entry, &reasons);
+        }
+        self.frame_work.full_path_reasons |= reasons;
+        if (reasons != 0) return .all;
+        try self.damage.resize(self.allocator, cli.height, false);
+        self.damage.unsetAll();
+        // Rows of every member whose inputs changed, before and after, and of every member that left.
+        for (self.records.items) |entry| {
+            const node = self.recordNode(objects, entry.token).?;
+            const old = self.recordOf(node, self.presented_records_frame, self.presented_records.items);
+            if (old != null and entry.stable and old.?.stable and std.meta.eql(old.?.inputs, entry.inputs)) continue;
+            self.damage.setRangeValue(.{ .start = entry.top, .end = entry.bottom }, true);
+            if (old) |previous| self.damageRows(previous);
+        }
+        for (self.presented_records.items) |previous| {
+            const node = self.recordNode(objects, previous.token) orelse {
+                self.damageRows(previous);
+                continue;
+            };
+            if (self.recordOf(node, frame_id, self.records.items) == null) self.damageRows(previous);
+        }
+        const rows = self.damage.count();
+        self.frame_work.damage_rows = @intCast(rows);
+        return if (rows == 0) .none else .rows;
+    }
+
+    fn damageRows(self: *Scene, previous: Record) void {
+        // A resize takes the full path, so presented rows fit the screen.
+        self.damage.setRangeValue(.{ .start = previous.top, .end = @min(previous.bottom, self.damage.bit_length) }, true);
+    }
+
+    fn recordNode(self: *const Scene, objects: *const handles.Table, token: u32) ?*Node {
+        const handle = self.tokens.get(token) orelse return null;
+        const value = objects.get(handle, .native_renderable, native.NativeRenderable) catch return null;
+        return value.scene_node;
+    }
+
+    fn recordOf(_: *const Scene, node: *const Node, frame: u64, records: []const Record) ?Record {
+        std.debug.assert(frame != 0);
+        for (node.records) |slot| {
+            if (slot.frame == frame) return records[slot.index];
+        }
+        return null;
+    }
+
+    fn record(self: *Scene, entry: Work, reasons: *u32) void {
+        const node = entry.node.scene_node.?;
+        if (node.kind == api.OT_SCENE_IMAGE) reasons.* |= renderer.FrameWork.full_path_images;
+        const cells = cellLayout(entry.layout);
+        const x: i32 = @intFromFloat(cells.screenX);
+        const y: i32 = @intFromFloat(cells.screenY);
+        var painted = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, entry.clip);
+        // A surface draws at its own size, which can pass the node's rows.
+        if (entry.node.surface) |source| {
+            const drawn = intersection(.{ .x = x, .y = y, .width = source.width, .height = source.height }, entry.clip);
+            if (drawn.height > painted.height) painted = drawn;
+        }
+        var resource_epoch: u64 = 0;
+        var styled = false;
+        if (node.kind == api.OT_SCENE_TEXT_VIEW) {
+            if (node.control.text_view.view) |view| {
+                resource_epoch = view.paint_epoch;
+                styled = view.text.buffer.getSyntaxStyle() != null;
+            }
+        } else if (node.editor) |editor| {
+            resource_epoch = editor.paint_epoch;
+            styled = editor.edit.buffer.tb.getSyntaxStyle() != null;
+        }
+        const slot: usize = @intFromBool(node.records[0].frame == self.presented_records_frame and self.presented_records_frame != 0);
+        node.records[slot] = .{ .frame = self.records_frame, .index = @intCast(self.records.items.len) };
+        self.records.appendAssumeCapacity(.{
+            .token = node.token,
+            .top = @intCast(painted.y),
+            .bottom = @intCast(painted.y + @as(i64, painted.height)),
+            .stable = entry.node.surface == null,
+            .inputs = .{
+                .layout = entry.layout,
+                .clip = entry.clip,
+                .opacity = entry.opacity,
+                .rank = @intCast(self.records.items.len),
+                .focused = node.focus_frame == self.attempt.?.frame_id,
+                .node_epoch = node.paint_epoch,
+                .resource_epoch = resource_epoch,
+                .styled = styled,
+            },
+        });
+    }
+
+    /// The presented frame stays: no cells, hits, or rows change. The cursor follows the
+    /// focused editor as on every frame.
+    fn skipPaint(self: *Scene, cli: *renderer.CliRenderer) !void {
+        self.settleHits(cli);
+        self.hits.clearRetainingCapacity();
+        try self.hits.appendSlice(self.allocator, self.presented_hits.items);
+        self.hits_frame = self.attempt.?.frame_id;
+        self.hits_generation = cli.hits_generation;
+        var cursor: ?Work = null;
+        for (self.work.items) |entry| {
+            if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and entry.visible and self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
+        }
+        self.maintainCursor(cli, cursor);
+    }
+
+    /// OT_SCENE_DEBUG_VERIFY: after a full repaint, every row outside the damage must still
+    /// equal the presented frame, and a skipped frame's hits must equal the presented ones.
+    fn verifyRetained(self: *Scene, cli: *renderer.CliRenderer, damage: Damage) !void {
+        const next = cli.getNextBuffer().buffer;
+        const current = cli.getCurrentBuffer().buffer;
+        for (0..cli.height) |row| {
+            if (self.damage.isSet(row)) continue;
+            const start = row * cli.width;
+            const end = start + cli.width;
+            if (!std.mem.eql(u32, next.char[start..end], current.char[start..end]) or !std.mem.eql(u32, next.attributes[start..end], current.attributes[start..end]) or
+                !std.mem.eql(u8, std.mem.sliceAsBytes(next.fg[start..end]), std.mem.sliceAsBytes(current.fg[start..end])) or
+                !std.mem.eql(u8, std.mem.sliceAsBytes(next.bg[start..end]), std.mem.sliceAsBytes(current.bg[start..end]))) return error.RetainedMismatch;
+        }
+        if (damage == .none and !std.mem.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(self.presented_hits.items))) return error.RetainedMismatch;
     }
 
     /// Snapshot prepared membership and return one request for every paint hook.
@@ -1296,8 +1516,9 @@ pub const Scene = struct {
         try self.markFocus(&owner.objects);
         // Hooks may change text or views after preparation; refresh them before drawing.
         const refresh_views = self.preparation_dirty or try self.needsSolve(cli, root);
+        _ = self.fullPathReasons(cli, self.attempt.?.options);
         try self.paintFrame(owner, cli, self.attempt.?.options, recording, refresh_views);
-        return self.finishPaint(cli, false);
+        return self.finishPaint(cli, false, .all);
     }
 
     const Phases = struct {

@@ -417,6 +417,9 @@ typedef struct ot_scene_layout {
 #define OT_SCENE_FULL_PATH_FORCED UINT32_C(1)
 #define OT_SCENE_FULL_PATH_SCREEN UINT32_C(2)
 #define OT_SCENE_FULL_PATH_IMAGES UINT32_C(4)
+#define OT_SCENE_FULL_PATH_TAINTED UINT32_C(8)
+#define OT_SCENE_FULL_PATH_UNRETAINED UINT32_C(16)
+#define OT_SCENE_FULL_PATH_OPTIONS UINT32_C(32)
 
 /* Fields from work_frame_id on count the work of the last presented scene
  * frame: preparation, paint, and encoding. They are deterministic work
@@ -426,8 +429,15 @@ typedef struct ot_scene_layout {
  * non-scene renders, and snapshot-only split renders leave them unchanged.
  * work_frame_id is the frame_id of the counted frame, or zero before the first.
  * full_path_reasons holds OT_SCENE_FULL_PATH_* bits: FORCED (debug flag),
- * SCREEN (forced, invalidated, or palette-changed encode), IMAGES
- * (image placements present). */
+ * SCREEN (forced, invalidated, or palette-changed encode), IMAGES (image
+ * placements present), TAINTED (the buffers were written outside scene paint),
+ * UNRETAINED (no presented scene frame to compare with: the first frame, a
+ * resize, or the frame after a recorded frame or one that was not presented),
+ * OPTIONS (background, use_mouse, excluded_hit_num, or preserve_unwritten
+ * changed). A recorded frame repaints every row. Otherwise, without a reason,
+ * a frame repaints only when a painted member's inputs changed, and the encoder
+ * diffs only the damage_rows rows they cover; an unchanged frame has
+ * damage_rows 0 and paints nothing. */
 typedef struct ot_scene_stats {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -461,7 +471,7 @@ typedef struct ot_scene_stats {
     uint32_t full_path_reasons;
     uint32_t host_requests;
     uint32_t layout_rounds;
-    uint32_t reserved;
+    uint32_t damage_rows;
 } ot_scene_stats;
 
 typedef struct ot_scene_cursor_state {
@@ -858,6 +868,7 @@ ot_status ot_scene_paint(ot_context *, const ot_handle *session, const uint16_t 
 ot_status ot_scene_hit_test(ot_context *, const ot_handle *session, int32_t x, int32_t y, uint32_t *out_num);
 ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_stats *out_stats);
 #define OT_SCENE_DEBUG_FULL_FRAME UINT32_C(1)
+#define OT_SCENE_DEBUG_VERIFY UINT32_C(2)
 /* Diagnostic switches for tests. FULL_FRAME rebuilds each frame's preparation
  * and paint lists instead of reusing the last frame's, and every later shortcut
  * that skips frame work also tests it; Yoga still solves only a dirty tree, and
@@ -867,7 +878,9 @@ ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_st
  * OT_SESSION_CLOSED, a failed one OT_OUTPUT_FAILED, other bits
  * OT_INVALID_ARGUMENT, a Session without a scene OT_INVALID_PHASE, and an active
  * frame attempt, draft, or frame lease OT_FRAME_BUSY. Rejection keeps the flags.
- * Flags persist for the Session. */
+ * Flags persist for the Session. VERIFY paints frames that retained paint would
+ * skip or diff partly and fails the frame step with OT_INTERNAL_ERROR if a row
+ * it would not encode differs from the presented frame. */
 ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
 /* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
  * Colors use normalized float channels. Output requires exact size/version. */
