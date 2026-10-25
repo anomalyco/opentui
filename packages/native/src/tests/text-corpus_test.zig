@@ -297,28 +297,24 @@ fn runRow(run: Run) !void {
         const screen = try OptimizedBuffer.init(gpa, 80, 1, .{ .pool = &run.pools.graphemes, .link_pool = &run.pools.links, .width_method = run.method });
         defer screen.deinit();
         var same = true;
-        var first: u32 = 0;
-        // X on each cell of a glyph clears the whole glyph: the row equals the glyphs drawn without it, then X.
-        for (encoded.chars, 0..) |covered, skip| {
-            defer first += covered.width;
-            for (first..first + covered.width) |x| {
-                var rows: [2][]const u8 = undefined;
-                for (&rows, 0..) |*drawn, i| {
-                    screen.clear(.{ 0, 0, 0, 1 }, 32);
-                    if (i == 0) screen.drawTextBuffer(v, 0, 0) else {
-                        var glyph_x: u32 = 0;
-                        for (encoded.chars, 0..) |char, n| {
-                            if (n != skip) screen.drawChar(char.char, glyph_x, 0, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 1 }, 0);
-                            glyph_x += char.width;
-                        }
+        // A mark (X or the two-cell 中) clears each glyph it covers: the row equals the other glyphs, then the mark.
+        for (0..utf8.calculateTextWidth(text, 4, .hidden, false, run.method)) |x| for ([_]struct { []const u8, u32 }{ .{ "X", 1 }, .{ "\u{4e2d}", 2 } }) |mark| {
+            var rows: [2][]const u8 = undefined;
+            for (&rows, 0..) |*drawn, i| {
+                screen.clear(.{ 0, 0, 0, 1 }, 32);
+                if (i == 0) screen.drawTextBuffer(v, 0, 0) else {
+                    var glyph_x: u32 = 0;
+                    for (encoded.chars) |char| {
+                        if (glyph_x + char.width <= x or glyph_x >= x + mark[1]) screen.drawChar(char.char, glyph_x, 0, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 1 }, 0);
+                        glyph_x += char.width;
                     }
-                    try screen.drawText("X", @intCast(x), 0, .{ 1, 1, 1, 1 }, null, 0);
-                    const raw = try run.arena.alloc(u8, screen.getRealCharSize());
-                    drawn.* = raw[0..try screen.writeResolvedChars(raw, false)];
                 }
-                same = same and std.mem.eql(u8, rows[0], rows[1]);
+                try screen.drawText(mark[0], @intCast(x), 0, .{ 1, 1, 1, 1 }, null, 0);
+                const raw = try run.arena.alloc(u8, screen.getRealCharSize());
+                drawn.* = raw[0..try screen.writeResolvedChars(raw, false)];
             }
-        }
+            same = same and std.mem.eql(u8, rows[0], rows[1]);
+        };
         try run.check("overdraw", same);
         if (run.method == .wcwidth or run.method == .unicode) for ([_]bool{ false, true }) |explicit| {
             try run.check("terminal", try terminalShowsFrames(run, text, explicit));

@@ -186,22 +186,24 @@ function runRow(row: Row, method: string, failures: string[]): void {
       const white = RGBA.fromValues(1, 1, 1, 1)
       const drawn = (draw: () => void): string => (target.clear(), draw(), decoder.decode(target.getRealCharBytes()))
       const encoded = target.encodeUnicode(text)
-      // X on each cell of a glyph clears the whole glyph: the row equals the glyphs drawn without it, then X.
+      // A mark (X or the two-cell 中) clears each glyph it covers: the row equals the other glyphs, then the mark.
       let ok = true
-      let first = 0
-      for (const covered of encoded.data) {
-        for (let x = first; x < first + covered.width; x++) {
-          const over = drawn(() => (target.drawTextBuffer(unwrapped, 0, 0), target.drawText("X", x, 0, white)))
+      const width = encoded.data.reduce((sum, glyph) => sum + glyph.width, 0)
+      for (let x = 0; x < width; x++) {
+        for (const [mark, cells] of [
+          ["X", 1],
+          ["中", 2],
+        ] as const) {
+          const over = drawn(() => (target.drawTextBuffer(unwrapped, 0, 0), target.drawText(mark, x, 0, white)))
           const without = drawn(() => {
             encoded.data.reduce((at, glyph) => {
-              if (glyph !== covered) target.drawChar(glyph.char, at, 0, white, white)
+              if (at + glyph.width <= x || at >= x + cells) target.drawChar(glyph.char, at, 0, white, white)
               return at + glyph.width
             }, 0)
-            target.drawText("X", x, 0, white)
+            target.drawText(mark, x, 0, white)
           })
           ok &&= over === without
         }
-        first += covered.width
       }
       target.freeUnicode(encoded)
       check("overdraw", ok)

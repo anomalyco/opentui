@@ -1205,6 +1205,7 @@ pub const OptimizedBuffer = struct {
                             while (tail_i <= tail_end) : (tail_i += 1) {
                                 const tail_char = self.buffer.char[tail_i];
                                 if (!gp.isContinuationChar(tail_char) or gp.graphemeIdFromChar(tail_char) != old_id) continue;
+                                if (gp.charLeftExtent(tail_char) != tail_i - cont_index) continue;
                                 const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
                                 if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
                                 self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
@@ -1879,7 +1880,7 @@ pub const OptimizedBuffer = struct {
         attributes: u32,
     ) BufferError!void {
         if (grapheme_bytes.len == 0 or cell_width == 0 or x >= self.width or y >= self.height) return;
-        if (x + cell_width > self.width) return;
+        if (x + cell_width > self.width or cell_width > gp.glyph_width_max) return;
         for (0..cell_width) |offset| {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
