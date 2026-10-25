@@ -360,31 +360,33 @@ test "input parser text, controls, and Alt prefixes" {
 test "input parser bytes that are not UTF-8 are eight-bit Alt keys" {
     try check("\xffa", &.{ k(K.backspace, ALT), ch('a') });
     try check("\xe4a", &.{ kr('d', ALT, "\xe4"), ch('a') });
-    try check("\xe4\xb8a", &.{ k('d', ALT), k('8', ALT), ch('a') });
     try check("\xc0A", &.{ k('@', ALT), ch('A') });
-    // The ESC of an Alt prefix stays in the first fallback key.
-    try check("\x1b\xe4a", &.{ kr('d', ALT, "\x1b\xe4"), ch('a') });
+    try check("\x9c\x93", &.{ k('\\', mods(&.{ CTRL, ALT })), k('s', mods(&.{ CTRL, ALT })) });
     // Valid framing that decodes to no scalar still yields one key.
     try check("\xed\xa0\x80", &.{kt(0xfffd, NONE, "\u{fffd}")});
     try check("\xe0\x80\x80", &.{ch(0xfffd)});
     try check("\xf4\x90\x80\x80", &.{ch(0xfffd)});
-    // A UTF-8 scalar split across feeds, and one cut short by the timeout.
-    for ([_][]const u8{ "é", "中", "👍" }) |text| {
-        for (1..text.len) |index| {
+    // A scalar of each lead range waits for its rest without a deadline (issue 344).
+    for ([_][]const u8{ "\u{80}", "\u{7ff}", "\u{800}", "\u{ff5e}", "\u{10000}", "\u{10ffff}" }) |text| {
+        for (1..text.len) |index| for ([_]u64{ 0, 25, std.time.ms_per_s, std.time.ms_per_min }) |pause| {
             var harness = try Harness.create();
             defer harness.deinit();
             try expectGot(text, &.{}, try harness.feed(text[0..index]));
+            try testing.expectEqual(null, harness.parser.deadlineNs());
+            try expectGot(text, &.{}, try harness.wait(pause));
             const scalar = try std.unicode.utf8Decode(text);
             try expectGot(text, &.{ch(scalar)}, try harness.feed(text[index..]));
-        }
+        };
     }
-    var harness = try Harness.create();
-    defer harness.deinit();
-    try expectGot("", &.{}, try harness.feed("\xe4\xb8"));
-    try expectGot("", &.{}, try harness.wait(19));
-    try expectGot("", &.{ k('d', ALT), k('8', ALT) }, try harness.wait(1));
-    try expectGot("", &.{}, try harness.feed("\x1b\xe4"));
-    try expectGot("", &.{kr('d', ALT, "\x1b\xe4")}, try harness.wait(20));
+    // A byte that cannot continue the scalar ends the wait: the buffered bytes are eight-bit Alt
+    // keys, the first with the ESC of an Alt prefix, and the byte parses as usual.
+    for ([_]struct { []const u8, []const u8, []const Expect }{
+        .{ "\xe4\xb8", "a", &.{ k('d', ALT), k('8', ALT), ch('a') } },
+        .{ "\xe4", "\x1b[A", &.{ k('d', ALT), k(K.up, NONE) } },
+        .{ "\xe4\xb8", "\x1bq", &.{ k('d', ALT), k('8', ALT), k('q', ALT) } },
+        .{ "\x1b\xe4", "a", &.{ kr('d', ALT, "\x1b\xe4"), ch('a') } },
+        .{ "\x1b\xe2", "\x9c\x93", &.{kr(0x2713, ALT, "\x1b\u{2713}")} },
+    }) |case| try checkTimed(.{}, case[0], 0, case[1], case[2]);
 }
 
 test "input parser Escape forms resolve by timeout" {

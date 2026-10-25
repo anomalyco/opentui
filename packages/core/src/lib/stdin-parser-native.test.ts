@@ -250,7 +250,7 @@ describe("native stdin parser: adapter", () => {
   test("reports Core's key fields", () => {
     const [enter, linefeed, altA, kittyA, keypad, repeat, base, f5, altUp, altMok, altO, altBracket] = parse(native, [
       Buffer.from(
-        "\r\n\x1bA\x1b[97;2u\x1bOp\x1b[97;1:2u\x1b[1089::99;5u\x1b[15;5~\x1b\x1b[A\x1b\x1b[27;5;65~\xcf\xdb",
+        "\r\n\x1bA\x1b[97;2u\x1bOp\x1b[97;1:2u\x1b[1089::99;5u\x1b[15;5~\x1b\x1b[A\x1b\x1b[27;5;65~\xcf\xdbx",
         "latin1",
       ),
     ]).map((event) => (event.type === "key" ? event.key : null))

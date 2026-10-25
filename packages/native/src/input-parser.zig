@@ -251,7 +251,8 @@ pub const InputParser = struct {
     /// When the host should call feed with zero bytes, or null.
     pub fn deadlineNs(self: *const InputParser) ?u64 {
         const waits = switch (self.state) {
-            .ground, .expired, .paste => false,
+            // A UTF-8 lead byte's continuation bytes must follow, so no pause cuts a scalar short.
+            .ground, .expired, .paste, .utf8 => false,
             .csi => |csi| !csi.deferred or !self.deferrable(),
             else => true,
         };
@@ -323,7 +324,6 @@ pub const InputParser = struct {
                 self.state = .ground;
                 emitReply(sink, self.unit[1..self.unit_len], .csi, flags.reply_fragment);
             },
-            .utf8 => |utf8| self.utf8Fallback(utf8.alt, sink),
             .csi => |csi| {
                 if (!csi.deferred and self.deferrable()) {
                     self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true } };
@@ -337,7 +337,7 @@ pub const InputParser = struct {
             },
             // After 20 ms of silence the rest of the garbage is more likely typing.
             .discard => self.state = .ground,
-            .ground, .expired, .paste => unreachable,
+            .ground, .expired, .utf8, .paste => unreachable,
         }
     }
 
