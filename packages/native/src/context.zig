@@ -1849,16 +1849,18 @@ pub const Context = struct {
         try target.drawEditorViewChecked(editor.view, x, y);
     }
 
-    pub fn drawSceneText(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
+    pub fn drawSceneBody(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        try self.drawSceneTextOn(try self.bufferDrawTarget(handle, frame), node_handle, x, y);
+        try self.drawSceneBodyOn(try self.bufferDrawTarget(handle, frame), node_handle, x, y);
     }
 
-    pub fn drawSceneTextOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
+    pub fn drawSceneBodyOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
         const node = try self.sceneNode(node_handle);
-        const text = node.scene_node.?.text orelse return error.WrongKind;
+        const owned = node.scene_node.?;
+        if (owned.text == null and owned.kind != api.OT_SCENE_BOX) return error.WrongKind;
         if (x >= target.width or y >= target.height) return;
+        const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
         try text.prepareView();
         try target.drawTextBufferChecked(text.view, x, y);
     }

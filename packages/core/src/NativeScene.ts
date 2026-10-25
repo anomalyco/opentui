@@ -486,10 +486,10 @@ export class NativeScene {
     return this.driver.renderLib.sceneGetText(this.driver.context, renderable._getSceneHandle(this))
   }
 
-  /** @internal Inherited Text drawing records or draws at the caller's position. */
-  drawText(renderable: Renderable, buffer: OptimizedBuffer, x: number, y: number): void {
+  /** @internal Inherited Text and Box drawing records or draws the native body at the caller's position. */
+  drawBody(renderable: Renderable, buffer: OptimizedBuffer, x: number, y: number): void {
     this.flushStaged()
-    buffer._drawSceneText(this, renderable._getSceneHandle(this), x, y)
+    buffer._drawSceneBody(this, renderable._getSceneHandle(this), x, y)
   }
 
   setTextSelection(

@@ -533,7 +533,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   public drawToBuffer(buffer: OptimizedBuffer, x: number, y: number): void {
     if (this.isDestroyed) throw new Error("Cannot draw destroyed text")
     if (this.nativeTextScene) {
-      this.nativeTextScene.drawText(this, buffer, Math.trunc(x), Math.trunc(y))
+      this.nativeTextScene.drawBody(this, buffer, Math.trunc(x), Math.trunc(y))
       return
     }
     buffer.drawTextBuffer(this.textBufferView, Math.trunc(x), Math.trunc(y))

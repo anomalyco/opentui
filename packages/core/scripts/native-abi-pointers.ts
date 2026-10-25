@@ -123,7 +123,7 @@ export const nativePointerPolicies = {
   ot_scene_set_text_view_paint: { 0: context, 1: buffer },
   ot_buffer_draw_text_view: { 0: context, 1: buffer, 2: optional, 3: buffer },
   ot_buffer_draw_editor_view: { 0: context, 1: buffer, 2: optional, 3: buffer },
-  ot_buffer_draw_scene_text: { 0: context, 1: buffer, 2: optional, 3: buffer },
+  ot_buffer_draw_scene_body: { 0: context, 1: buffer, 2: optional, 3: buffer },
   ot_edit_buffer_create: { 0: context, 1: buffer, 2: buffer },
   ot_edit_buffer_destroy: { 0: context, 1: buffer },
   ot_editor_view_create: { 0: context, 1: buffer, 4: buffer },

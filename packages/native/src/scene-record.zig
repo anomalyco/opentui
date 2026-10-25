@@ -176,7 +176,7 @@ fn commandSize(operation: u32, body: []const u8) !usize {
             if (value.has_mask > 1 or (value.has_mask == 0 and value.mask_count != 0)) return error.InvalidOptions;
             return @sizeOf(c.ot_scene_record_color_matrix) + @as(usize, value.mask_count) * @sizeOf(f32);
         },
-        c.OT_SCENE_RECORD_TEXT_VIEW, c.OT_SCENE_RECORD_EDITOR_VIEW, c.OT_SCENE_RECORD_SCENE_TEXT => return @sizeOf(c.ot_scene_record_view),
+        c.OT_SCENE_RECORD_TEXT_VIEW, c.OT_SCENE_RECORD_EDITOR_VIEW, c.OT_SCENE_RECORD_SCENE_BODY => return @sizeOf(c.ot_scene_record_view),
         c.OT_SCENE_RECORD_IMAGE => return @sizeOf(c.ot_scene_record_image),
         c.OT_SCENE_RECORD_UNICODE => return @sizeOf(c.ot_scene_record_unicode),
         else => return error.InvalidOptions,
@@ -303,9 +303,9 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
             const value = try fixed(c.ot_scene_record_view, body);
             try owner.drawEditorViewOn(target, handleFromC(value.source), value.x, value.y);
         },
-        c.OT_SCENE_RECORD_SCENE_TEXT => {
+        c.OT_SCENE_RECORD_SCENE_BODY => {
             const value = try fixed(c.ot_scene_record_view, body);
-            try owner.drawSceneTextOn(target, handleFromC(value.source), value.x, value.y);
+            try owner.drawSceneBodyOn(target, handleFromC(value.source), value.x, value.y);
         },
         c.OT_SCENE_RECORD_IMAGE => {
             const value = try fixed(c.ot_scene_record_image, body);

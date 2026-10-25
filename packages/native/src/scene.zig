@@ -1229,6 +1229,26 @@ pub const Scene = struct {
         return if (index) |found| hits[found].token else 0;
     }
 
+    /// Paint a box body at a host-chosen cell with the node's paint size and the current focus.
+    /// A node no frame has prepared has no cells and draws nothing.
+    pub fn paintBody(self: *const Scene, objects: *const handles.Table, target: *buffer.OptimizedBuffer, value: *const native.NativeRenderable, x: i32, y: i32) !void {
+        const node = value.scene_node.?;
+        std.debug.assert(node.kind == api.OT_SCENE_BOX);
+        var layout = try getPaintLayout(value);
+        layout.screenX = @floatFromInt(x);
+        layout.screenY = @floatFromInt(y);
+        layout = cellLayout(layout);
+        if (layout.width < 1 or layout.height < 1) return;
+        var focused = if (self.focus) |handle| try objects.get(handle, .native_renderable, native.NativeRenderable) else null;
+        var depth: u32 = 0;
+        const within = while (focused) |cursor| : (focused = cursor.scene_node.?.parent) {
+            if (cursor == value) break true;
+            if (depth == yoga.depth_max) return error.YogaDepthLimit;
+            depth += 1;
+        } else false;
+        try paintBox(target, node.paint, layout, within, node.control.box);
+    }
+
     fn markFocus(self: *Scene, objects: *const handles.Table) !void {
         const frame_id = self.attempt.?.frame_id;
         var focused = if (self.focus) |handle| try objects.get(handle, .native_renderable, native.NativeRenderable) else null;

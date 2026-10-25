@@ -37,6 +37,7 @@ const grid = {
 let setup: TestRendererSetup
 const errors: unknown[] = []
 let sceneText: TextRenderable
+let sceneBox: BoxRenderable
 let pixel: NativeImage
 const scene = () => setup.renderer.nativeScene
 const pixels = new Uint8Array(4 * 4 * 4).map((_, index) => (index * 37) & 0xff)
@@ -47,6 +48,8 @@ beforeAll(async () => {
   // Hidden scene text keeps its layout without painting itself.
   sceneText = new TextRenderable(setup.renderer, { content: "scene", width: 5, height: 1, opacity: 0 })
   setup.renderer.root.add(sceneText)
+  sceneBox = new BoxRenderable(setup.renderer, { border: true, title: "bx", width: 6, height: 3, opacity: 0 })
+  setup.renderer.root.add(sceneBox)
   pixel = NativeImage.fromRgba(pixels, 1, 1, 4, { owner: scene().resourceContext })
 })
 
@@ -148,7 +151,8 @@ const operations: Record<string, (buffer: OptimizedBuffer) => void> = {
     view.destroy()
     edit.destroy()
   },
-  "scene text": (buffer) => scene().drawText(sceneText, buffer, 3, 0),
+  "scene text": (buffer) => scene().drawBody(sceneText, buffer, 3, 0),
+  "scene box": (buffer) => scene().drawBody(sceneBox, buffer, 2, 1),
   // One image shares the scene's Context; the other is copied into it from the automatic image Context.
   images: (buffer) => {
     const shared = NativeImage.fromRgba(pixels, 4, 4, 16, { owner: scene().resourceContext })
@@ -182,7 +186,7 @@ const rejectedCalls: ((buffer: OptimizedBuffer) => void)[] = [
   (buffer) => buffer.drawGrayscaleBuffer(0.5, 0, new Float32Array(1), 1, 1),
   (buffer) => buffer.colorMatrixUniform(sepia, 1, -1 as never),
   (buffer) => buffer.colorMatrix(sepia, [0, 0, 1] as never),
-  (buffer) => scene().drawText(sceneText, buffer, 0.5, 0),
+  (buffer) => scene().drawBody(sceneText, buffer, 0.5, 0),
   (buffer) => buffer.drawImage(pixel, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, "bogus" as never),
   (buffer) => {
     const encoded = buffer.encodeUnicode("👋")

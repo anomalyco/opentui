@@ -5,6 +5,7 @@ import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
+import type { CapturedFrame } from "../types.js"
 import { BoxRenderable } from "./Box.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
@@ -382,6 +383,8 @@ const paintCases: [string, typeof BoxRenderable, object][] = [
   ],
   ["Box focused", BoxRenderable, { border: true, shouldFill: false, backgroundColor: "#ff0000", focusable: true }],
   ["Box layout-only", BoxRenderable, {}],
+  // A focused child gives a focusable box its focused border and title color.
+  ["Box focus-within", BoxRenderable, { border: true, focusable: true, title: "f", focusWithin: true }],
 ]
 
 test.each(paintCases)("%s JS fallback paint matches native paint", async (name, Native, options) => {
@@ -400,14 +403,18 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
     [0.5, 0.5],
     [-1.5, -0.5],
   ]) {
-    const frames: unknown[] = []
+    const frames: CapturedFrame[] = []
     for (const Control of [Js, Native]) {
       const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
       Object.assign(parent, { translateX, translateY })
       const node = new Control(renderer, { width: 9, height: 4, ...options })
       parent.add(node)
       renderer.root.add(parent)
-      if (node.focusable) node.focus()
+      if ("focusWithin" in options) {
+        const child = new BoxRenderable(renderer, { focusable: true, width: 1, height: 1 })
+        node.add(child)
+        child.focus()
+      } else if (node.focusable) node.focus()
       await setup.renderOnce()
       frames.push(setup.captureSpans())
       parent.destroyRecursively()
@@ -420,6 +427,10 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
     } else {
       expect(errors.splice(0)).toEqual([])
       expect(frames[0]).toEqual(frames[1])
+      if ("focusWithin" in options) {
+        const corner = frames[1].lines.flatMap((line) => line.spans).find((span) => span.text.includes("f"))
+        expect(corner?.fg.toInts()).toEqual([0, 170, 255, 255])
+      }
     }
   }
   renderer.off(CliRenderEvents.RENDER_ERROR, onError)

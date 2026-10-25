@@ -1812,10 +1812,11 @@ ot_status ot_buffer_draw_text_view(ot_context *, const ot_handle *target, const 
     const ot_handle *view, int32_t x, int32_t y);
 /* Same destination rules as ot_buffer_draw_text_view. Paints synchronously with
  * the destination's current clipping and opacity, without publishing cursor state.
- * The scene-text source is a native Text node, not an independent text-view handle. */
+ * The scene-body source is a Text or Box scene node, drawn as its built-in painting
+ * would draw it at x, y with the node's paint size and the current focus. */
 ot_status ot_buffer_draw_editor_view(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
     const ot_handle *view, int32_t x, int32_t y);
-ot_status ot_buffer_draw_scene_text(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
+ot_status ot_buffer_draw_scene_body(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
     const ot_handle *node, int32_t x, int32_t y);
 
 #define OT_BUFFER_TEXT_BYTES_MAX UINT32_C(65536)
@@ -2574,7 +2575,7 @@ ot_status ot_buffer_color_matrix(ot_context *, const ot_handle *, const ot_scene
 #define OT_SCENE_RECORD_COLOR_MATRIX UINT32_C(7)
 #define OT_SCENE_RECORD_TEXT_VIEW UINT32_C(8)
 #define OT_SCENE_RECORD_EDITOR_VIEW UINT32_C(9)
-#define OT_SCENE_RECORD_SCENE_TEXT UINT32_C(10)
+#define OT_SCENE_RECORD_SCENE_BODY UINT32_C(10)
 #define OT_SCENE_RECORD_IMAGE UINT32_C(11)
 #define OT_SCENE_RECORD_UNICODE UINT32_C(12)
 #define OT_SCENE_RECORD_GRAYSCALE_FOREGROUND UINT32_C(1)
@@ -2669,8 +2670,8 @@ typedef struct ot_scene_record_color_matrix {
     uint32_t mask_count;
 } ot_scene_record_color_matrix;
 
-/* TEXT_VIEW, EDITOR_VIEW, and SCENE_TEXT draw a text-buffer view, an editor
- * view, or a scene text node, as for their ot_buffer_draw_* operations. */
+/* TEXT_VIEW, EDITOR_VIEW, and SCENE_BODY draw a text-buffer view, an editor
+ * view, or a scene node's body, as for their ot_buffer_draw_* operations. */
 typedef struct ot_scene_record_view {
     ot_scene_record_header header;
     ot_handle source;

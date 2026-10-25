@@ -675,13 +675,13 @@ pub fn ot_buffer_draw_editor_view(context: ?*ContextHandle, target: ?*const c.ot
     return c.OT_OK;
 }
 
-pub fn ot_buffer_draw_scene_text(context: ?*ContextHandle, target: ?*const c.ot_handle, frame: ?*const c.ot_scene_frame_request, source: ?*const c.ot_handle, x: i32, y: i32) callconv(.c) c.ot_status {
+pub fn ot_buffer_draw_scene_body(context: ?*ContextHandle, target: ?*const c.ot_handle, frame: ?*const c.ot_scene_frame_request, source: ?*const c.ot_handle, x: i32, y: i32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
     if (target == null or source == null) return sessionError(owner, error.InvalidOptions);
     const request = if (frame) |p| frameRequestFromC(p.*) catch |err| return sessionError(owner, err) else null;
-    owner.core.drawSceneText(handleFromC(target.?.*), request, handleFromC(source.?.*), x, y) catch |err| return sessionError(owner, err);
+    owner.core.drawSceneBody(handleFromC(target.?.*), request, handleFromC(source.?.*), x, y) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -2539,7 +2539,7 @@ test "Context synchronous text drawing ABI validates sources and frame records b
     const target = handleToC(try core.createBuffer(4, 1, .{}));
     const buffer = try core.raw().getBuffer(handleFromC(target));
     inline for ([_]bool{ false, true }) |is_editor| {
-        const draw = if (is_editor) ot_buffer_draw_editor_view else ot_buffer_draw_scene_text;
+        const draw = if (is_editor) ot_buffer_draw_editor_view else ot_buffer_draw_scene_body;
         const source = handleToC(if (is_editor) view else node);
         buffer.clear(@splat(0), null);
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, draw(null, &target, null, &source, 0, 0));
