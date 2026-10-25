@@ -278,9 +278,10 @@ export class ExtmarksController {
           const startCursor = this.offsetToPosition(virtualExtmark.start)
           const endCursor = this.offsetToPosition(virtualExtmark.end)
           const deleteOffset = virtualExtmark.start
-          const deleteLength = virtualExtmark.end - virtualExtmark.start
 
-          this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+          const deleteLength = this.measureDeletion(() =>
+            this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col),
+          )
           this.saveSnapshot()
           this.deleteExtmarkById(virtualExtmark.id)
           this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
@@ -288,10 +289,9 @@ export class ExtmarksController {
           return
         }
 
-        this.originalDeleteCharBackward()
+        const deleteLength = this.measureDeletion(() => this.originalDeleteCharBackward())
         this.saveSnapshot()
         const deleteOffset = this.editBuffer.getCursorPosition().offset
-        const deleteLength = currentOffset - deleteOffset
         if (deleteLength > 0) {
           this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
         }
@@ -320,9 +320,10 @@ export class ExtmarksController {
           const startCursor = this.offsetToPosition(virtualExtmark.start)
           const endCursor = this.offsetToPosition(virtualExtmark.end)
           const deleteOffset = virtualExtmark.start
-          const deleteLength = virtualExtmark.end - virtualExtmark.start
 
-          this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+          const deleteLength = this.measureDeletion(() =>
+            this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col),
+          )
           this.saveSnapshot()
           this.deleteExtmarkById(virtualExtmark.id)
           this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
@@ -330,10 +331,7 @@ export class ExtmarksController {
           return
         }
 
-        const deleteEndOffset = this.getNextCursorOffset(currentOffset)
-        const deleteLength = deleteEndOffset - currentOffset
-
-        this.originalDeleteChar()
+        const deleteLength = this.measureDeletion(() => this.originalDeleteChar())
         this.saveSnapshot()
 
         if (deleteLength > 0) {
@@ -348,11 +346,8 @@ export class ExtmarksController {
           return
         }
 
-        const startOffset = this.positionToOffset(startLine, startCol)
-        const endOffset = this.positionToOffset(endLine, endCol)
-        const length = endOffset - startOffset
-
-        this.originalDeleteRange(startLine, startCol, endLine, endCol)
+        const startOffset = Math.min(this.positionToOffset(startLine, startCol), this.positionToOffset(endLine, endCol))
+        const length = this.measureDeletion(() => this.originalDeleteRange(startLine, startCol, endLine, endCol))
         this.saveSnapshot()
         this.adjustExtmarksAfterDeletion(startOffset, length)
       })
@@ -586,11 +581,18 @@ export class ExtmarksController {
     return this.editBuffer.positionToOffset(row, col)
   }
 
-  private getNextCursorOffset(currentOffset: number): number {
-    this.originalMoveCursorRight()
-    const nextOffset = this.editBuffer.getCursorPosition().offset
-    this.originalSetCursorByOffset(currentOffset)
-    return nextOffset
+  /** Cells a deletion removes from the document. A grapheme rejoined across it can change widths, so measure the end. */
+  private measureDeletion(deletion: () => void): number {
+    const end = () => {
+      const cursor = this.editBuffer.getCursorPosition().offset
+      this.editBuffer.gotoLine(this.editBuffer.getLineCount() - 1)
+      const offset = this.editBuffer.getEOL().offset
+      this.originalSetCursorByOffset(cursor)
+      return offset
+    }
+    const before = end()
+    deletion()
+    return before - end()
   }
 
   private updateHighlights(): void {

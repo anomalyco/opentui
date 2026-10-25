@@ -3145,9 +3145,7 @@ pub const Context = struct {
         // Each append takes a registry slot. When none is left, one owned copy of the whole
         // document replaces them all, so a long append stream copies O(n^2) bytes in total.
         if (text.buffer.mem_registry.getFreeSlots() == 0) try text.buffer.flattenMemRegistry();
-        const copy = try self.allocator.dupe(u8, bytes);
-        errdefer self.allocator.free(copy);
-        try text.buffer.appendWithOwnership(copy, true);
+        try text.buffer.appendCopy(bytes);
         text.invalidate(true);
     }
 

@@ -9,6 +9,7 @@ const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
 const OptimizedBuffer = @import("../buffer.zig").OptimizedBuffer;
 const EncodedUnicode = @import("../encoded-unicode.zig").EncodedUnicode;
+const expectGraphemeBoundaries = @import("text-buffer-view_test.zig").expectGraphemeBoundaries;
 const Value = std.json.Value;
 const gpa = std.testing.allocator;
 
@@ -55,6 +56,7 @@ const Run = struct {
         const tb = try TextBuffer.initWithOptions(gpa, &self.pools.graphemes, &self.pools.links, self.method, .{ .control_display = control });
         tb.setTabWidth(@intCast(self.int("tab", 4)));
         for (parts) |part| try tb.append(part);
+        try expectGraphemeBoundaries(tb);
         return tb;
     }
 
@@ -220,6 +222,7 @@ fn runRow(run: Run) !void {
         eb = e;
         e.getTextBuffer().setTabWidth(@intCast(run.int("tab", 4)));
         for (ops.array.items) |op| try applyOp(e, op.array.items);
+        try expectGraphemeBoundaries(e.getTextBuffer());
         break :blk e.getTextBuffer();
     } else try run.load(parts.items);
     defer if (eb == null) tb.deinit();

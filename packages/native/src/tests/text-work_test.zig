@@ -298,6 +298,43 @@ test "text work: an append to a 5,000-line view measures and lays out its last l
     try expectWork(.{ .layouts = 1, .lines_laid_out = 1, .rope_diff_nodes = 73, .splices = 1, .line_seeks = 4, .line_seek_nodes = 57, .ascii_bytes = 77 });
 }
 
+test "text work: rejoining a grapheme split across chunks copies only that grapheme" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const text = try repeatLines(allocator, "line", 10_000);
+    defer allocator.free(text);
+    // Appends copy their bytes as before; a join adds the tail it moves (an appended grapheme's
+    // start). Edits copy their bytes to the add buffer as before; a join adds the grapheme it copies.
+    const Row = struct { set: []const u8, append: ?[]const u8 = null, typed: []const []const u8 = &.{}, col: u32 = 0, joins: u64, bytes: u64 };
+    const rows = [_]Row{
+        .{ .set = "abc", .append = "def", .joins = 0, .bytes = 0 },
+        .{ .set = "\u{65e5}", .append = "\u{672c}", .joins = 0, .bytes = 0 },
+        .{ .set = "\u{1f1e6}\u{1f1e7}\u{1f1e8}", .append = "\u{1f1e9}", .joins = 1, .bytes = 4 },
+        .{ .set = "\u{1f1e6}\u{1f1e7}", .append = "\u{1f1e8}", .joins = 0, .bytes = 0 },
+        .{ .set = "x", .typed = &.{ "abc", "\u{65e5}\u{672c}" }, .col = 1, .joins = 0, .bytes = 0 },
+        // Typed in place: the mark follows `e` in the add buffer, so the chunks split there.
+        .{ .set = "x", .typed = &.{ "e", "\u{301}" }, .col = 1, .joins = 1, .bytes = 0 },
+        .{ .set = "ex", .typed = &.{"\u{301}"}, .col = 5, .joins = 1, .bytes = 3 },
+    };
+    for (rows) |row| {
+        const eb = try EditBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode, null);
+        defer eb.deinit();
+        try eb.setText(text);
+        try eb.tb.append(row.set);
+        if (row.append) |bytes| {
+            _ = text_work.take();
+            try eb.tb.appendCopy(bytes);
+        } else {
+            try eb.setCursor(10_000, row.col);
+            _ = text_work.take();
+            for (row.typed) |bytes| try eb.insertText(bytes);
+        }
+        const work = text_work.take();
+        try std.testing.expectEqual([2]u64{ row.joins, row.bytes }, [2]u64{ work.grapheme_joins, work.grapheme_join_bytes });
+    }
+}
+
 test "text work: line lookups after an edit in a 10,000-line buffer" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);

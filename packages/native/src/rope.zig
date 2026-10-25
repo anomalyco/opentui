@@ -342,11 +342,14 @@ pub fn Rope(comptime T: type) type {
 
             pub const LeafSplitResult = struct { left: T, right: T };
 
+            /// Leaves that replace two neighbors; `more` asks to check the last of them against the next leaf.
+            pub const LeafJoin = struct { left: ?T = null, joined: T, right: ?T = null, more: bool };
+
             pub const LeafSplitFn = struct {
                 ctx: ?*anyopaque = null,
                 splitFn: *const fn (allocator: Allocator, ctx: ?*anyopaque, leaf: *const T, weight_in_leaf: u32) error{ OutOfBounds, OutOfMemory }!LeafSplitResult,
-                /// Joins two leaves that `T.canMerge` accepts. Without it, they stay apart.
-                mergeFn: ?*const fn (ctx: ?*anyopaque, left: *const T, right: *const T) T = null,
+                /// Joins or reshapes two neighboring leaves, or returns null to keep them. Without it, they stay apart.
+                joinFn: ?*const fn (ctx: ?*anyopaque, left: *const T, right: *const T) error{OutOfMemory}!?LeafJoin = null,
 
                 pub fn call(self: *const @This(), allocator: Allocator, leaf: *const T, weight: u32) error{ OutOfBounds, OutOfMemory }!LeafSplitResult {
                     return self.splitFn(allocator, self.ctx, leaf, weight);
@@ -375,8 +378,10 @@ pub fn Rope(comptime T: type) type {
                         }
 
                         const split_result = try split_leaf_fn.call(allocator, &l.data, target_weight);
-                        const left_node = try new_leaf(allocator, split_result.left);
-                        const right_node = try new_leaf(allocator, split_result.right);
+                        // An empty piece, as when a wide grapheme straddles the weight, leaves no leaf
+                        // that would sit between the leaves a join must see.
+                        const left_node = if (@hasDecl(T, "isVoid") and split_result.left.isVoid()) empty_leaf else try new_leaf(allocator, split_result.left);
+                        const right_node = if (@hasDecl(T, "isVoid") and split_result.right.isVoid()) empty_leaf else try new_leaf(allocator, split_result.right);
                         return .{ .left = left_node, .right = right_node };
                     },
                     .branch => |*b| {
@@ -886,17 +891,17 @@ pub fn Rope(comptime T: type) type {
                 return try Node.join_balanced(left_with_insert, R, self.allocator);
             }
 
-            // Merge after the rewrite: dropping an orphaned linestart can bring two text leaves together.
-            const l_last = getLastLeafIn(L);
-            const r_first = getFirstLeafIn(R);
-            if (@hasDecl(T, "canMerge") and leaf_fn != null and leaf_fn.?.mergeFn != null and
-                l_last != null and r_first != null and T.canMerge(l_last.?, r_first.?))
-            {
-                const merged = leaf_fn.?.mergeFn.?(leaf_fn.?.ctx, l_last.?, r_first.?);
-                const merged_leaf = try Node.new_leaf(self.allocator, merged);
+            // Join after the rewrite: dropping an orphaned linestart can bring two text leaves together.
+            const join_fn = if (leaf_fn) |f| f.joinFn orelse null else null;
+            while (join_fn) |join| {
+                const joined = try join(leaf_fn.?.ctx, getLastLeafIn(L) orelse break, getFirstLeafIn(R) orelse break) orelse break;
                 L = try dropLast(L, self.allocator, self.empty_leaf);
                 R = try dropFirst(R, self.allocator, self.empty_leaf);
-                L = try Node.join_balanced(L, merged_leaf, self.allocator);
+                // The last leaf placed on the left meets the next leaf on the right in the next round.
+                for ([_]?T{ joined.left, joined.joined, joined.right }) |maybe_leaf| {
+                    if (maybe_leaf) |leaf| L = try Node.join_balanced(L, try Node.new_leaf(self.allocator, leaf), self.allocator);
+                }
+                if (!joined.more) break;
             }
 
             return try Node.join_balanced(L, R, self.allocator);

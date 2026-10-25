@@ -352,4 +352,21 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       expect(highlights.length).toBe(1)
     })
   })
+
+  describe("Deletions that rejoin a grapheme", () => {
+    // Deleting `x` joins U+1F44B and U+1F3FB into one 2-cell grapheme, so `Z` moves 3 cells, not 1.
+    for (const [name, remove] of [
+      ["Delete", () => (textarea.editBuffer.setCursor(0, 2), textarea.editBuffer.deleteChar())],
+      ["Backspace", () => (textarea.editBuffer.setCursor(0, 3), textarea.editBuffer.deleteCharBackward())],
+      ["deleteRange", () => textarea.editBuffer.deleteRange(0, 2, 0, 3)],
+    ] as const) {
+      it(`${name} shifts the marks after it by the change in width`, async () => {
+        await setup("\u{1f44b}x\u{1f3fb}Z")
+        const id = extmarks.create({ start: 5, end: 6 })
+        remove()
+        expect(textarea.plainText).toBe("\u{1f44b}\u{1f3fb}Z")
+        expect(extmarks.get(id)).toMatchObject({ start: 2, end: 3 })
+      })
+    }
+  })
 })

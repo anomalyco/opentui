@@ -1147,8 +1147,6 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
         wrap: bool = false,
         scissor_width: u32 = 4,
         truncate: bool = false,
-        /// The one-chunk text that draws the same cells, when it is not the joined chunks.
-        reference: ?[]const u8 = null,
         /// Per source, the cell that holds the mark, or null when no drawn glyph comes before it.
         mark: [2]?u32,
     };
@@ -1163,7 +1161,7 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
         .{ .chunks = &.{ "abcde", "\u{301}" }, .truncate = true, .mark = .{ 3, 3 } },
         .{ .chunks = &.{ "abcd", "\u{301}e" }, .truncate = true, .mark = .{ null, null } },
         .{ .chunks = &.{ "a", "\u{301}", "bcdef" }, .viewport = .{ .x = 0, .y = 0, .width = 5, .height = 2 }, .truncate = true, .mark = .{ 0, 0 } },
-        .{ .chunks = &.{ "\u{2714}", "\u{fe0f}" }, .reference = "\u{2714}", .mark = .{ null, null } },
+        .{ .chunks = &.{ "\u{2714}", "\u{fe0f}" }, .mark = .{ 0, 0 } },
         .{ .chunks = &.{ "a\t", "\u{301}" }, .mark = .{ null, null } },
         .{ .chunks = &.{ "abc", "\u{301}d" }, .viewport = .{ .x = 0, .y = 0, .width = 3, .height = 2 }, .wrap = true, .mark = .{ 2, 2 } },
         .{ .chunks = &.{ "\u{4e2d}", "\u{301}", "\u{301}" }, .mark = .{ 0, 0 } },
@@ -1177,7 +1175,7 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
         // The editor scrolls to its cursor, so it cannot keep a viewport that starts right of column 0.
         if (source == .insert and (row.viewport.x != 0 or row.truncate)) continue;
         errdefer std.debug.print("opacity={d} source={t} chunks={any}\n", .{ opacity, source, row.chunks });
-        const text = try std.mem.concat(std.testing.allocator, u8, if (row.reference) |reference| &.{reference} else row.chunks);
+        const text = try std.mem.concat(std.testing.allocator, u8, row.chunks);
         defer std.testing.allocator.free(text);
         const one_chunk = try OptimizedBuffer.init(std.testing.allocator, 4, 2, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
         defer one_chunk.deinit();

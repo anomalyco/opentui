@@ -258,6 +258,9 @@ test "EditBuffer - text typed in pieces measures and moves like the same text se
         },
         .{ .pieces = &.{ .{ .bytes = "\u{1f468}" }, .{ .bytes = "\u{200d}" }, .{ .bytes = "\u{1f469}" }, .{ .bytes = "\u{200d}\u{1f467}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{1f1fa}" }, .{ .bytes = "\u{1f1f8}" } } },
+        // A multi-line insert that ends by joining the text after it leaves the cursor past the joined grapheme.
+        .{ .pieces = &.{ .{ .bytes = "\u{fe0f}Z" }, .{ .col = 0, .bytes = "x\n\u{263a}" } }, .text = "x\n\u{263a}\u{fe0f}Z", .before = "x\n\u{263a}\u{fe0f}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{fe0f}Z" }, .{ .col = 0, .replace = true, .bytes = "x\n\u{263a}" } }, .text = "x\n\u{263a}\u{fe0f}Z", .before = "x\n\u{263a}\u{fe0f}" },
         .{ .pieces = &.{ .{ .bytes = "\u{ac01}" }, .{ .bytes = "\u{11a8}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{263a}" }, .{ .bytes = "\u{fe0f}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{65e5}" }, .{ .bytes = "\u{301}" } } },
