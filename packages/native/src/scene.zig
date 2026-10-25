@@ -322,6 +322,21 @@ pub const PaintSlot = struct {
     opacity: f32,
 };
 
+/// A painted member's rect within its clip, in screen cells.
+pub const Hit = struct { x: u32, y: u32, width: u32, height: u32, token: u32 };
+
+/// The index of the last hit in paint order that covers a cell: what a grid that every
+/// member overwrote in paint order would hold there.
+pub fn topmostHit(hits: []const Hit, x: u32, y: u32) ?usize {
+    var index = hits.len;
+    while (index != 0) {
+        index -= 1;
+        const hit = hits[index];
+        if (x >= hit.x and y >= hit.y and x - hit.x < hit.width and y - hit.y < hit.height) return index;
+    }
+    return null;
+}
+
 const Filter = struct {
     viewport: Layout,
     row: bool,
@@ -359,6 +374,13 @@ pub const Scene = struct {
     paint_members: std.ArrayListUnmanaged(PaintMember) = .empty,
     paint_slots: std.ArrayListUnmanaged(PaintSlot) = .empty,
     segments: std.ArrayListUnmanaged(scene_record.Segments) = .empty,
+    // Hit rectangles in paint order: the draft frame's, and the presented frame's. A hit
+    // test walks the presented ones from the top, so no frame writes a screen-sized grid.
+    hits: std.ArrayListUnmanaged(Hit) = .empty,
+    presented_hits: std.ArrayListUnmanaged(Hit) = .empty,
+    hits_frame: u64 = 0,
+    hits_generation: u64 = 0,
+    presented_hits_frame: u64 = 0,
     attempt: ?Attempt = null,
     painted: ?Painted = null,
     cancelled_paint: bool = false,
@@ -379,6 +401,7 @@ pub const Scene = struct {
     // OT_SCENE_DEBUG_* bits. Every shortcut that skips frame work tests FULL_FRAME; today that is work-list reuse.
     debug_flags: u32 = 0,
     test_sort_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    test_hit_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator, config: *yoga.Config, session: handles.Handle) !*Scene {
         const self = try allocator.create(Scene);
@@ -400,6 +423,8 @@ pub const Scene = struct {
         self.paint_members.deinit(self.allocator);
         self.paint_slots.deinit(self.allocator);
         self.segments.deinit(self.allocator);
+        self.hits.deinit(self.allocator);
+        self.presented_hits.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -1166,19 +1191,40 @@ pub const Scene = struct {
         self.editor_cursor_owned = false;
     }
 
-    fn beginPaint(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions) !void {
+    fn beginPaint(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions, members: usize) !void {
         self.releaseEditorCursor(cli);
         const target = cli.getNextBuffer();
         target.clearScissorRects();
         target.clearOpacity();
-        cli.hitGridClearScissorRects();
         try target.scissor_stack.ensureTotalCapacity(self.allocator, 1);
         try target.opacity_stack.ensureTotalCapacity(self.allocator, 1);
         cli.setBackgroundColor(options.background);
         target.clear(options.background, if (options.preserve_unwritten) 0 else null);
-        @import("utils.zig").fillU32(cli.nextHitGrid, 0);
         self.frame_work.cells_cleared += @as(u64, target.width) * target.height;
-        self.frame_work.hit_cells_cleared += cli.nextHitGrid.len;
+        self.settleHits(cli);
+        self.hits.clearRetainingCapacity();
+        try self.hits.ensureTotalCapacity(self.allocator, members);
+        self.hits_frame = self.attempt.?.frame_id;
+        self.hits_generation = cli.hits_generation;
+    }
+
+    /// The draft's hits become the presented ones once the renderer published its frame.
+    fn settleHits(self: *Scene, cli: *const renderer.CliRenderer) void {
+        if (self.hits_frame == 0 or self.hits_frame != cli.presented_hits_frame or self.hits_generation != cli.hits_generation) return;
+        std.mem.swap(std.ArrayListUnmanaged(Hit), &self.hits, &self.presented_hits);
+        self.presented_hits_frame = self.hits_frame;
+        self.hits_frame = 0;
+    }
+
+    /// The token of the topmost presented hit rectangle at a cell, or 0.
+    pub fn hitToken(self: *Scene, cli: *const renderer.CliRenderer, x: u32, y: u32) u32 {
+        self.settleHits(cli);
+        // Every hit lies inside the screen.
+        if (x >= cli.width or y >= cli.height or self.presented_hits_frame != cli.presented_hits_frame) return 0;
+        const hits = self.presented_hits.items;
+        const index = topmostHit(hits, x, y);
+        if (builtin.is_test) self.test_hit_steps += hits.len - (index orelse 0);
+        return if (index) |found| hits[found].token else 0;
     }
 
     fn markFocus(self: *Scene, objects: *const handles.Table) !void {
@@ -1262,13 +1308,10 @@ pub const Scene = struct {
     /// the visible paint list with native bodies only.
     fn paintFrame(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
         const target = cli.getNextBuffer();
-        errdefer {
-            target.clear(cli.backgroundColor, null);
-            @memset(cli.nextHitGrid, 0);
-        }
+        errdefer target.clear(cli.backgroundColor, null);
         defer target.clearScissorRects();
         defer target.clearOpacity();
-        try self.beginPaint(cli, options);
+        try self.beginPaint(cli, options, if (recording == null) self.work.items.len else self.paint_members.items.len);
         const bytes = recording orelse {
             for (self.work.items) |entry| {
                 if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
@@ -1292,13 +1335,13 @@ pub const Scene = struct {
     fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
         const node = entry.node.scene_node.?;
         const cells = cellLayout(entry.layout);
+        const painted = intersection(.{
+            .x = @intFromFloat(cells.screenX),
+            .y = @intFromFloat(cells.screenY),
+            .width = @intFromFloat(cells.width),
+            .height = @intFromFloat(cells.height),
+        }, entry.clip);
         if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
-            const painted = intersection(.{
-                .x = @intFromFloat(cells.screenX),
-                .y = @intFromFloat(cells.screenY),
-                .width = @intFromFloat(cells.width),
-                .height = @intFromFloat(cells.height),
-            }, entry.clip);
             self.frame_work.member_cells += @as(u64, painted.width) * painted.height;
             const target = cli.getNextBuffer();
             // A natively composed image buffer receives its node's hook drawing, like its body.
@@ -1314,7 +1357,9 @@ pub const Scene = struct {
             if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, cells);
         }
         self.frame_work.members_painted += 1;
-        addHit(&self.frame_work, cli, cells, entry.clip, node.num, node.token, options);
+        if (!options.use_mouse or node.num == options.excluded_hit_num) return;
+        // The clip lies inside the screen, so hit coordinates are never negative.
+        if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token });
     }
 
     /// Each phase starts with only the member's inherited clip and opacity.
@@ -1480,19 +1525,6 @@ pub const Scene = struct {
                 .top = paint_options.borderSides & api.OT_BORDER_TOP != 0,
             }, border_color, paint_options.background, options.title_color orelse border_color, paint_options.shouldFill != 0, if (options.title.len != 0) options.title else null, @intCast(options.title_alignment), if (options.bottom_title.len != 0) options.bottom_title else null, @intCast(options.bottom_title_alignment));
         }
-    }
-
-    fn addHit(work: *renderer.FrameWork, cli: *renderer.CliRenderer, layout: Layout, clip: buffer.ClipRect, num: u32, token: u32, options: FrameOptions) void {
-        if (!options.use_mouse or num == options.excluded_hit_num) return;
-        const hit = intersection(.{
-            .x = @intFromFloat(layout.screenX),
-            .y = @intFromFloat(layout.screenY),
-            .width = @intFromFloat(layout.width),
-            .height = @intFromFloat(layout.height),
-        }, clip);
-        // The clip lies inside the screen and scene paint pushes no hit scissor, so the grid writes exactly this area.
-        work.hit_cells_written += @as(u64, hit.width) * hit.height;
-        cli.addToHitGrid(hit.x, hit.y, hit.width, hit.height, token);
     }
 
     fn viewportNode(self: *Scene, objects: *const handles.Table, handle: handles.Handle) !*native.NativeRenderable {

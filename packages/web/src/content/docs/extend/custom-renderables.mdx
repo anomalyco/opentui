@@ -107,7 +107,7 @@ The parent owns tree placement. Your code still owns resources that the instance
 | `BaseRenderable` | Text-node-like or framework-only tree nodes without terminal layout | Requires implementations of `add`, `remove`, `insertBefore`, child access, lookup, and `requestRender`          |
 
 A scene node is the native node that represents a `Renderable` in the native scene. Native code walks the scene to lay
-out and paint the tree. While it paints, it fills the hit grid, the native grid used for mouse hit testing.
+out and paint the tree. While it paints, it records the hit list, the node bounds used for mouse hit testing.
 `BaseRenderable` does not create a scene node, so it has no Yoga layout and does not draw. Most extensions must use
 `Renderable`.
 
@@ -308,7 +308,7 @@ Call `super.onResize(width, height)` from an override. The base method calls `on
 ## Reuse interaction behavior
 
 `Renderable` supplies focus, keyboard subscription, mouse bubbling, and selection hooks. Native code adds each visible
-scene node to the hit grid. Do not create a second interaction system in a subclass.
+scene node to the hit list. Do not create a second interaction system in a subclass.
 
 When every instance can own focus, override `protected static readonly defaultFocusable = true`. Assigning `null` or
 `undefined` to `focusable` restores that default. Override `handleKeyPress`, `handlePaste`, `onMouseEvent`, or the
