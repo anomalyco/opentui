@@ -978,6 +978,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     const kitty: ip.Expectations = .{ .kitty_keyboard = true };
     const replies: ip.Expectations = .{ .replies = true };
     const cpr: ip.Expectations = .{ .replies = true, .cursor_position = true };
+    const sentinel: ip.Expectations = .{ .replies = true, .sentinel = true };
     for ([_]struct { ip.Expectations, []const u8, usize, []const u8, []const Expect }{
         // A fragment, and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
         .{ plain, "\x1b[", 1, "q", &.{ frag("\x1b["), ch('q') } },
@@ -1028,6 +1029,37 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         // Only the shapes the host waits for defer: `CSI 8 ; h ; w t` is not a pixel reply.
         .{ replies, "\x1b[8;600;80", 1, "t", &.{ frag("\x1b[8;600;80"), ch('t') } },
         .{ replies, "\x1b[1;2:3:4:5", 1, "R", &.{ frag("\x1b[1;2:3:4:5"), ch('R') } },
+        // Without SENTINEL a pause still cuts a string, a bare introducer, or a number short (issue 342).
+        .{ replies, "\x1b]11;rg", 1, "b\x07", &.{ frag("\x1b]11;rg"), ch('b'), k('g', CTRL) } },
+        .{ replies, "\x1b[", 1, "?c", &.{ frag("\x1b["), ch('?'), ch('c') } },
+        .{ replies, "\x1b[24", 1, ";", &.{ frag("\x1b[24"), ch(';') } },
+        // With SENTINEL a string that begins like a reply waits however long the pause.
+        .{ sentinel, "\x1b]1", 0, "1;rgb:0/0/0\x07", &.{reply("\x1b]11;rgb:0/0/0\x07")} },
+        .{ sentinel, "\x1b]11;rgb:0/0/0\x1b", 0, "\\", &.{reply("\x1b]11;rgb:0/0/0\x1b\\")} },
+        .{ sentinel, "\x1bP>", 0, "|kitty(0.40.1)\x1b\\", &.{reply("\x1bP>|kitty(0.40.1)\x1b\\")} },
+        .{ sentinel, "\x1bP1$r0m\x1b", 0, "\\", &.{reply("\x1bP1$r0m\x1b\\")} },
+        .{ sentinel, "\x1b_Gi=1;", 0, "OK\x1b\\", &.{reply("\x1b_Gi=1;OK\x1b\\")} },
+        .{ sentinel, "\x1b]11;rg", 0, "\x1b[?62c", &.{ frag("\x1b]11;rg"), reply("\x1b[?62c") } },
+        // A bare introducer or a number waits for a byte that begins a reply; another byte is typed.
+        .{ sentinel, "\x1b[", 0, "?62c", &.{reply("\x1b[?62c")} },
+        .{ sentinel, "\x1b[24", 0, ";80R", &.{report("\x1b[24;80R")} },
+        .{ sentinel, "\x1b]", 0, "11;rgb:0/0/0\x07", &.{reply("\x1b]11;rgb:0/0/0\x07")} },
+        .{ sentinel, "\x1bP", 0, ">|kitty\x1b\\", &.{reply("\x1bP>|kitty\x1b\\")} },
+        .{ sentinel, "\x1b_", 0, "Gi=1;OK\x1b\\", &.{reply("\x1b_Gi=1;OK\x1b\\")} },
+        .{ sentinel, "\x1b[", 0, "j", &.{ frag("\x1b["), ch('j') } },
+        .{ sentinel, "\x1b[", 0, "\x1b[A", &.{ frag("\x1b["), k(K.up, NONE) } },
+        .{ sentinel, "\x1b\x1b[", 0, "j", &.{ k(K.escape, NONE), frag("\x1b["), ch('j') } },
+        .{ sentinel, "\x1b[24", 0, "j", &.{ frag("\x1b[24"), ch('j') } },
+        .{ sentinel, "\x1b]", 0, "j", &.{ frag("\x1b]"), ch('j') } },
+        .{ sentinel, "\x1bP", 0, "+q", &.{ frag("\x1bP"), ch('+'), ch('q') } },
+        .{ sentinel, "\x1b_", 0, "g", &.{ frag("\x1b_"), ch('g') } },
+        .{ sentinel, "\x1b]", 0, "\x1b[A", &.{ frag("\x1b]"), k(K.up, NONE) } },
+        // A lone Escape, SS3, and strings that begin like no reply still time out.
+        .{ sentinel, "\x1b", 1, "j", &.{ k(K.escape, NONE), ch('j') } },
+        .{ sentinel, "\x1bO", 1, "a", &.{ frag("\x1bO"), ch('a') } },
+        .{ sentinel, "\x1b]x", 1, "1", &.{ frag("\x1b]x"), ch('1') } },
+        .{ sentinel, "\x1bP+", 1, "q", &.{ frag("\x1bP+"), ch('q') } },
+        .{ sentinel, "\x1b_g", 1, "q", &.{ frag("\x1b_g"), ch('q') } },
     }) |case| try checkTimed(case[0], case[1], case[2], case[3], case[4]);
     // A deferred unit has no deadline until a byte continues it.
     var harness = try Harness.create();
@@ -1052,6 +1084,60 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     _ = try harness.feed("\x1b[4;1");
     harness.parser.setExpectations(.{});
     try expectGot("", &.{frag("\x1b[4;1")}, try harness.wait(20));
+    // The DA1 reply ends every hold: once the host clears SENTINEL, a held unit times out as before.
+    for ([_]struct { []const u8, []const Expect }{
+        .{ "\x1b]11;rg", &.{frag("\x1b]11;rg")} },
+        .{ "\x1b_", &.{frag("\x1b_")} },
+        .{ "\x1b[", &.{frag("\x1b[")} },
+        .{ "\x1b[24", &.{frag("\x1b[24")} },
+        .{ "\x1b_G" ++ [_]u8{'9'} ** ip.unit_bytes_max, &.{} },
+    }) |case| {
+        harness.parser.setExpectations(sentinel);
+        _ = try harness.feed(case[0]);
+        try expectGot(case[0], &.{}, try harness.wait(60_000));
+        harness.parser.setExpectations(.{ .replies = true });
+        try expectGot(case[0], case[1], try harness.wait(0));
+    }
+    // An overlong reply is discarded up to its terminator, however long it takes.
+    harness.parser.setExpectations(sentinel);
+    _ = try harness.feed("\x1b_G" ++ [_]u8{'9'} ** ip.unit_bytes_max);
+    try expectGot("", &.{}, try harness.wait(60_000));
+    try expectGot("", &.{ch('q')}, try harness.feed("9\x1b\\q"));
+    // A discarded CSI is no string: it still times out.
+    _ = try harness.feed("\x1b[" ++ [_]u8{'9'} ** ip.sequence_bytes_max);
+    try expectGot("", &.{}, try harness.wait(20));
+    try expectGot("", &.{ ch('1'), ch('q') }, try harness.feed("1q"));
+}
+
+test "input parser types no reply byte at any cut or pause while a sentinel is out" {
+    const sentinel: ip.Expectations = .{ .replies = true, .sentinel = true };
+    for ([_][]const u8{
+        "\x1b[?62;22c",          "\x1b[?2026;2$y",            "\x1b[?5u",                   "\x1b[24;80R",      "\x1b[4;600;800t",
+        "\x1b]11;rgb:0/0/0\x07", "\x1b]4;1;rgb:cd/0/0\x1b\\", "\x1bP>|kitty(0.40.1)\x1b\\", "\x1bP1+r54\x1b\\", "\x1b_Gi=31;OK\x1b\\",
+    }) |input| {
+        var whole = try Harness.create();
+        defer whole.deinit();
+        whole.parser.setExpectations(sentinel);
+        _ = try whole.feed(input);
+        _ = try whole.feed("j");
+        try testing.expectEqual(@as(usize, 2), whole.out.items.len);
+        for (1..input.len) |cut| for ([_]u64{ 25, 5_000, 60_000 }) |pause| {
+            var harness = try Harness.create();
+            defer harness.deinit();
+            harness.parser.setExpectations(sentinel);
+            _ = try harness.feed(input[0..cut]);
+            // A lone Escape still times out; the reply after it is not typed.
+            try expectGot(input, if (cut == 1) &.{k(K.escape, NONE)} else &.{}, try harness.wait(pause));
+            _ = try harness.feed(input[cut..]);
+            _ = try harness.feed("j");
+            if (!gotEql(whole.out.items, harness.out.items[@intFromBool(cut == 1)..])) {
+                std.debug.print("cut {d}, pause {d} ms\n", .{ cut, pause });
+                dump("whole", input, whole.out.items);
+                dump("cut", input, harness.out.items);
+                return error.TestUnexpectedResult;
+            }
+        };
+    }
 }
 
 test "input parser recovers mouse reports after a timed-out Escape" {
@@ -1097,6 +1183,31 @@ test "input parser recovers mouse reports after a timed-out Escape" {
     try expectGot("", &.{kr('[', NONE, "[")}, try harness.wait(1));
     // Without a timed-out Escape, `[<` is text.
     try check("[<35;20;5m", &.{ ch('['), ch('<'), ch('3'), ch('5'), ch(';'), ch('2'), ch('0'), ch(';'), ch('5'), ch('m') });
+    // With SENTINEL an introducer and a byte that begin a reply resume it; other bytes are typed,
+    // and a lone introducer times out.
+    const sentinel: ip.Expectations = .{ .replies = true, .sentinel = true };
+    for ([_]struct { ip.Expectations, []const u8, []const Expect }{
+        .{ sentinel, "]11;rgb:0/0/0\x07", &.{reply("\x1b]11;rgb:0/0/0\x07")} },
+        .{ sentinel, "[24;80R", &.{report("\x1b[24;80R")} },
+        .{ sentinel, "[<0;1;1M", &.{down(0, 0, 0)} },
+        .{ sentinel, "[A", &.{ kt('[', NONE, "["), ch('A') } },
+        .{ sentinel, "]x", &.{ kt(']', NONE, "]"), ch('x') } },
+        .{ sentinel, "P+", &.{ kt('P', NONE, "P"), ch('+') } },
+        .{ sentinel, "_g", &.{ kt('_', NONE, "_"), ch('g') } },
+        .{ .{ .replies = true }, "[?", &.{ kt('[', NONE, "["), ch('?') } },
+        .{ .{ .replies = true }, "]1", &.{ kt(']', NONE, "]"), ch('1') } },
+        .{ .{ .replies = true }, "P>", &.{ kt('P', NONE, "P"), ch('>') } },
+    }) |case| {
+        harness.parser.setExpectations(case[0]);
+        _ = try harness.feed("\x1b");
+        try expectGot("", &.{k(K.escape, NONE)}, try harness.wait(20));
+        try expectGot(case[1], case[2], try harness.feed(case[1]));
+    }
+    harness.parser.setExpectations(sentinel);
+    _ = try harness.feed("\x1b");
+    _ = try harness.wait(20);
+    try expectGot("", &.{}, try harness.feed("_"));
+    try expectGot("", &.{kr('_', NONE, "_")}, try harness.wait(20));
 }
 
 test "input parser stays split invariant" {
@@ -1225,7 +1336,9 @@ test "input parser arbitrary bytes with uneven time stay bounded" {
         const chunk = try arbitraryBytes(testing.allocator, &seed, 64);
         defer testing.allocator.free(chunk);
         harness.now += (next(&seed) % 30) * ms;
-        harness.parser.setExpectations(@bitCast(@as(u8, @intCast(next(&seed) % 8))));
+        // SENTINEL implies REPLIES.
+        const bits: u8 = @intCast(next(&seed) % 16);
+        harness.parser.setExpectations(@bitCast(bits | bits >> 3));
         _ = try harness.feed(chunk);
         if (next(&seed) % 4 == 0) _ = try harness.wait(20);
         harness.out.clearRetainingCapacity();

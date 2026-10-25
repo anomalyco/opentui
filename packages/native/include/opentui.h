@@ -2289,6 +2289,7 @@ typedef struct ot_session_pump_result {
 #define OT_INPUT_EXPECT_REPLIES UINT32_C(1)
 #define OT_INPUT_EXPECT_KITTY_KEYBOARD UINT32_C(2)
 #define OT_INPUT_EXPECT_CURSOR_POSITION UINT32_C(4)
+#define OT_INPUT_EXPECT_SENTINEL UINT32_C(8)
 
 #define OT_INPUT_EVENTS_MIN UINT32_C(4)
 #define OT_INPUT_PAYLOAD_BYTES_MIN UINT32_C(4384)
@@ -2963,6 +2964,13 @@ ot_status ot_session_input_feed(
  * modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting and makes
  * CSI R and CSI 1 ; N R replies, since the Kitty protocol sends F3 as CSI 13 ~;
  * a session with a renderer applies its terminal's negotiated state instead.
+ * SENTINEL, which implies REPLIES, means that a DA1 reply (CSI ? ... c) ends the
+ * outstanding queries; clear it when that reply arrives. While it is set, a
+ * partial reply waits without a deadline: an OSC, DCS, or APC string that begins
+ * like one (OSC and a digit, DCS and > or a digit, APC and G), a bare CSI, OSC,
+ * DCS, or APC introducer, and a CSI of digits. A bare introducer that timed out
+ * continues only with a byte that begins a reply. A lone Escape still times out,
+ * and a reply that follows it is not typed.
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 
