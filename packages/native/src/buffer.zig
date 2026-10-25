@@ -43,12 +43,13 @@ pub fn validateTextInput(text: []const u8) error{ TextLimit, InvalidUnicode }!vo
 /// The grapheme pool stores at most this many bytes per cluster.
 pub const grapheme_bytes_max = 128;
 
-/// Reports whether one cell may hold a cluster. The renderer prints cell text as is, so a
-/// control code point (C0, DEL, or C1) would move the terminal cursor, and the grapheme pool
-/// stores at most grapheme_bytes_max bytes. Checked draws write any other cluster as blank
-/// cells of its width instead of failing. Text layout gives a lone control zero width.
-pub fn isPrintableGlyph(bytes: []const u8) bool {
-    if (bytes.len > grapheme_bytes_max) return false;
+/// Reports whether one cell may hold a cluster `width` cells wide. The renderer prints cell text
+/// as is, so a control code point (C0, DEL, or C1) would move the terminal cursor, the grapheme
+/// pool stores at most grapheme_bytes_max bytes, and a cell spans at most gp.glyph_width_max cells.
+/// Checked draws write any other cluster as blank cells of its width instead of failing. Text
+/// layout gives a lone control zero width.
+pub fn isPrintableGlyph(bytes: []const u8, width: u32) bool {
+    if (bytes.len > grapheme_bytes_max or width > gp.glyph_width_max) return false;
     for (bytes, 0..) |byte, index| {
         if (byte < 0x20 or byte == 0x7f) return false;
         // U+0080..U+009F encode as C2 80..C2 9F.
@@ -531,7 +532,7 @@ const TextRow = struct {
             if (width == 0) continue;
             const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
             self.advance_cells += width;
-            const blank = !isPrintableGlyph(bytes);
+            const blank = !isPrintableGlyph(bytes, width);
             // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
             if (!blank and glyph_x < 0) continue;
             const first: u32 = @intCast(@max(glyph_x, 0));
@@ -1128,21 +1129,19 @@ pub const OptimizedBuffer = struct {
         } else if (gp.isClusterChar(prev_char) and prev_char != cell.char) {
             // If overwriting a grapheme span (start or continuation) with a different char, clear that span first
             const row_start: u32 = y * self.width;
-            const row_end: u32 = row_start + self.width - 1;
-            const left = gp.charLeftExtent(prev_char);
-            const right = gp.charRightExtent(prev_char);
             const id = gp.graphemeIdFromChar(prev_char);
 
             if (new_start_id) |new_id| self.grapheme_tracker.add(new_id);
             tracker_replaced = true;
 
-            const span_start = index - @min(left, index - row_start);
-            const span_end = index + @min(right, row_end - index);
+            // The span's cells hold its ID and their offset from its start.
+            const span_start = index - @min(gp.charLeftExtent(prev_char), index - row_start);
+            const span_end = @min(span_start + gp.glyph_width_max, row_start + self.width);
 
-            var span_i: u32 = span_start;
-            while (span_i <= span_end) : (span_i += 1) {
+            for (span_start..span_end) |span_i| {
                 const span_char = self.buffer.char[span_i];
                 if (!gp.isClusterChar(span_char) or gp.graphemeIdFromChar(span_char) != id) continue;
+                if (gp.charLeftExtent(span_char) != span_i - span_start) continue;
                 // Overlaps can leave continuations after their start was replaced.
                 if (gp.isGraphemeChar(span_char)) self.grapheme_tracker.remove(id);
                 const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
@@ -1222,7 +1221,7 @@ pub const OptimizedBuffer = struct {
                 @memset(self.buffer.attributes[index + 1 .. index + 1 + right], cell.attributes);
                 var k: u32 = 1;
                 while (k <= right) : (k += 1) {
-                    self.buffer.char[index + k] = gp.packContinuation(k, right - k, id);
+                    self.buffer.char[index + k] = gp.packContinuation(k, id);
                     if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
                 }
             }
@@ -1920,7 +1919,7 @@ pub const OptimizedBuffer = struct {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
         if (!std.unicode.utf8ValidateSlice(grapheme_bytes)) return error.InvalidUnicode;
-        if (!isPrintableGlyph(grapheme_bytes)) {
+        if (!isPrintableGlyph(grapheme_bytes, cell_width)) {
             for (0..cell_width) |offset| {
                 self.set(x + @as(u32, @intCast(offset)), y, makeCell(DEFAULT_SPACE_CHAR, fg, bg, attributes));
             }
@@ -2507,7 +2506,7 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes);
+                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes, cluster_width_cols);
                     if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));

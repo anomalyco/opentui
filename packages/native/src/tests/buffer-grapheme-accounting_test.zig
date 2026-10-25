@@ -76,7 +76,7 @@ test "grapheme accounting - overlapping continuations remove only overwritten st
         try std.testing.expectEqual(@as(u32, 6), target.link_tracker.used_ids.get(new_link).?);
         try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(old_link));
         try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(new_link));
-        try std.testing.expectEqual(gp.packContinuation(1, 0, second_id), target.buffer.char[6]);
+        try std.testing.expectEqual(gp.packContinuation(1, second_id), target.buffer.char[6]);
 
         // Head cleanup must preserve links on independent occurrences.
         cell.char = gp.packGraphemeStart(second_id, 4);

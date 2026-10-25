@@ -1037,8 +1037,9 @@ typedef struct ot_unicode_char {
     uint32_t character;
 } ot_unicode_char;
 
-/* Encodes one record per drawn glyph. Controls produce no record. A tab or a
- * grapheme over the native 128-byte limit produces one width-1 space per cell. */
+/* Encodes one record per drawn glyph. Controls produce no record. A tab, or a
+ * grapheme over the native 128-byte limit or 16 cells, produces one width-1
+ * space per cell. */
 ot_status ot_unicode_create(ot_context *, const uint8_t *bytes, uint32_t byte_count,
     uint32_t width_method, ot_handle *out_unicode);
 ot_status ot_unicode_destroy(ot_context *, const ot_handle *unicode);
@@ -2461,8 +2462,8 @@ ot_status ot_buffer_resize(
  * cells inside the target and skips a glyph that starts left of column 0.
  * Text/title byte counts are bounded by OT_BUFFER_TEXT_BYTES_MAX; invalid UTF-8
  * returns OT_INVALID_ARGUMENT. C0/C1/DEL controls occupy no cells. A tab (two
- * cells) and a grapheme over the native 128-byte limit draw as spaces of their
- * width. CELL, CELL_BLEND, and CHAR write a space for a control character.
+ * cells) and a grapheme over the native 128-byte limit or 16 cells draw as
+ * spaces of their width. CELL, CELL_BLEND, and CHAR write a space for a control character.
  * Image-bearing targets return OT_UNSUPPORTED_RESOURCE.
  * Raw resource IDs are rejected. Rejection preserves cells except that any Box
  * title drawing failure may partially modify the destination; callers must

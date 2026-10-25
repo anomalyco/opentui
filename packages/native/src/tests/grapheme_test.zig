@@ -32,62 +32,22 @@ test "GraphemePool - bit manipulation functions" {
     try std.testing.expectEqual(id, gp.graphemeIdFromChar(packed_char));
 }
 
-test "GraphemePool - extent encoding and decoding" {
-    const right: u32 = 2;
-    const char_with_right = (right << gp.CHAR_EXT_RIGHT_SHIFT) | gp.CHAR_FLAG_GRAPHEME;
-    try std.testing.expectEqual(right, gp.charRightExtent(char_with_right));
-
-    const left: u32 = 1;
-    const char_with_left = (left << gp.CHAR_EXT_LEFT_SHIFT) | gp.CHAR_FLAG_GRAPHEME;
-    try std.testing.expectEqual(left, gp.charLeftExtent(char_with_left));
-}
-
-test "GraphemePool - packGraphemeStart" {
-    const gid: u32 = 0x1234;
-    const width: u32 = 2;
-
-    const packed_char = gp.packGraphemeStart(gid, width);
-
-    try std.testing.expect(gp.isGraphemeChar(packed_char));
-
-    try std.testing.expectEqual(gid, gp.graphemeIdFromChar(packed_char));
-
-    try std.testing.expectEqual(width - 1, gp.charRightExtent(packed_char));
-
-    try std.testing.expectEqual(@as(u32, 0), gp.charLeftExtent(packed_char));
-}
-
-test "GraphemePool - packGraphemeStart saturates wider wcwidth clusters" {
-    const packed_char = gp.packGraphemeStart(0x1234, 8);
-
-    try std.testing.expectEqual(gp.CHAR_EXT_MASK, gp.charRightExtent(packed_char));
-    try std.testing.expectEqual(gp.CHAR_EXT_MASK + 1, gp.encodedCharWidth(packed_char));
-}
-
-test "GraphemePool - packContinuation" {
-    const gid: u32 = 0x1234;
-    const left: u32 = 1;
-    const right: u32 = 2;
-
-    const packed_char = gp.packContinuation(left, right, gid);
-
-    try std.testing.expect(gp.isContinuationChar(packed_char));
-
-    try std.testing.expectEqual(gid, gp.graphemeIdFromChar(packed_char));
-
-    try std.testing.expectEqual(left, gp.charLeftExtent(packed_char));
-    try std.testing.expectEqual(right, gp.charRightExtent(packed_char));
-}
-
-test "GraphemePool - encodedCharWidth" {
-    const single = @as(u32, 'A');
-    try std.testing.expectEqual(@as(u32, 1), gp.encodedCharWidth(single));
-
-    const grapheme_2 = gp.packGraphemeStart(0x1234, 2);
-    try std.testing.expectEqual(@as(u32, 2), gp.encodedCharWidth(grapheme_2));
-
-    const cont = gp.packContinuation(1, 1, 0x1234);
-    try std.testing.expectEqual(@as(u32, 3), gp.encodedCharWidth(cont));
+test "GraphemePool - every span a cell holds packs and unpacks with any grapheme ID" {
+    try std.testing.expectEqual(@as(u32, 1), gp.encodedCharWidth('A'));
+    for ([_]u32{ 0, gp.GRAPHEME_ID_MASK }) |gid| for (1..gp.glyph_width_max + 1) |width| {
+        const start = gp.packGraphemeStart(gid, @intCast(width));
+        try std.testing.expect(gp.isGraphemeChar(start));
+        try std.testing.expectEqual(gid, gp.graphemeIdFromChar(start));
+        try std.testing.expectEqual(width, gp.encodedCharWidth(start));
+        try std.testing.expectEqual(@as(u32, 0), gp.charLeftExtent(start));
+        for (1..width) |left| {
+            const continuation = gp.packContinuation(@intCast(left), gid);
+            try std.testing.expect(gp.isContinuationChar(continuation));
+            try std.testing.expectEqual(gid, gp.graphemeIdFromChar(continuation));
+            try std.testing.expectEqual(left, gp.charLeftExtent(continuation));
+            try std.testing.expectEqual(@as(u32, 0), gp.encodedCharWidth(continuation));
+        }
+    };
 }
 
 test "GraphemeTracker - getTotalGraphemeBytes" {
