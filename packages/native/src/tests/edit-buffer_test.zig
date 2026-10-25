@@ -99,7 +99,7 @@ test "EditBuffer - native notifications do not allocate" {
 
 test "EditBuffer - native notifications keep cursor content and history order" {
     const Capture = struct {
-        events: [8]edit_buffer.NativeEvent = undefined,
+        events: [16]edit_buffer.NativeEvent = undefined,
         count: usize = 0,
 
         fn callback(data: *anyopaque, event: edit_buffer.NativeEvent) void {
@@ -120,12 +120,11 @@ test "EditBuffer - native notifications keep cursor content and history order" {
     defer eb.deinit();
     try eb.insertText("a");
     _ = try eb.undo();
-    try std.testing.expectEqualSlices(edit_buffer.NativeEvent, &.{
-        .cursor_changed,
-        .content_changed,
-        .cursor_changed,
-        .history_cursor_changed,
-    }, capture.events[0..capture.count]);
+    _ = try eb.redo();
+    // Undo and redo change the text as an edit does, then report the history step.
+    const edit = [_]edit_buffer.NativeEvent{ .cursor_changed, .content_changed };
+    const history = edit ++ .{.history_cursor_changed};
+    try std.testing.expectEqualSlices(edit_buffer.NativeEvent, &(edit ++ history ++ history), capture.events[0..capture.count]);
 }
 
 test "EditBuffer - native notifications stay with their buffer" {
