@@ -570,6 +570,19 @@ inline fn isPrintableAscii(bytes: []const u8) bool {
     return bytes.len == 1 and bytes[0] >= 0x20 and bytes[0] < 0x7f;
 }
 
+/// Index of the first render cluster whose `key` is at least `value`. Clusters are sorted and do
+/// not overlap, so both keys rise with the index.
+fn findRenderCluster(clusters: []const utf8.RenderClusterInfo, comptime key: enum { byte_end, col_start }, value: u32, comptime counter: std.meta.FieldEnum(text_work.Counts)) usize {
+    var lo: usize = 0;
+    var hi = clusters.len;
+    while (lo < hi) : (text_work.add(counter, 1)) {
+        const mid = lo + (hi - lo) / 2;
+        const cluster = clusters[mid];
+        if ((if (key == .byte_end) cluster.byte_start + cluster.byte_len else cluster.col_start) < value) lo = mid + 1 else hi = mid;
+    }
+    return lo;
+}
+
 inline fn makeCell(char: u32, fg: RGBA, bg: RGBA, attributes: u32) Cell {
     return .{
         .char = char,
@@ -2396,14 +2409,11 @@ pub const OptimizedBuffer = struct {
                 }
                 const col_end = vchunk.col_start_in_chunk + vchunk.width_cols;
                 var col = vchunk.col_start_in_chunk;
-                var special_idx: usize = 0;
                 var byte_offset = vchunk.byte_start_in_chunk;
                 const byte_end = vchunk.byte_start_in_chunk + vchunk.byte_len;
 
-                while (special_idx < render_clusters.len and render_clusters[special_idx].byte_start + render_clusters[special_idx].byte_len <= byte_offset) {
-                    special_idx += 1;
-                    text_work.add(.cluster_scan_steps, 1);
-                }
+                // Cluster k ends after byte k, so the first one that ends after `byte_offset` is at most `byte_offset`.
+                var special_idx = findRenderCluster(render_clusters[0..@min(render_clusters.len, byte_offset)], .byte_end, byte_offset + 1, .cluster_scan_steps);
 
                 // Left of the viewport nothing draws and marks have no base, so skip whole chunks by
                 // width and resume after the last cluster that starts left of the viewport. The loop
@@ -2416,12 +2426,7 @@ pub const OptimizedBuffer = struct {
                         continue;
                     }
                     const target_col = col + (horizontal_offset - rendered_col_in_vline);
-                    var lo = special_idx;
-                    var hi = render_clusters.len;
-                    while (lo < hi) : (text_work.add(.left_skip_steps, 1)) {
-                        const mid = lo + (hi - lo) / 2;
-                        if (render_clusters[mid].col_start < target_col) lo = mid + 1 else hi = mid;
-                    }
+                    const lo = special_idx + findRenderCluster(render_clusters[special_idx..], .col_start, target_col, .left_skip_steps);
                     if (lo > special_idx and render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len <= byte_end) {
                         byte_offset = render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len;
                         col = render_clusters[lo - 1].col_start + render_clusters[lo - 1].width_cols;
