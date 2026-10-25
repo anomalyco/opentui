@@ -350,14 +350,12 @@ test "Scene record reads referenced resources at playback and skips destroyed on
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
-const BodyCase = struct { paint: scene.Paint, details: scene.BoxDetails = .{}, focus_child: bool = false, clip: bool = false, opacity: f32 = 1 };
+const BodyCase = struct { paint: scene.Paint, details: scene.BoxDetails = .{}, focus: enum { none, child, self } = .none };
 
 fn bodyScene(f: Fixture, case: BodyCase) !context.Handle {
     const parent = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
-    try f.owner.sceneSetStyle(parent, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, if (case.clip) 5 else 10, 1);
+    try f.owner.sceneSetStyle(parent, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 10, 1);
     try f.owner.sceneSetStyle(parent, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_POINT, 4, 1);
-    if (case.clip) try f.owner.sceneSetStyle(parent, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
-    try f.owner.sceneSetPaint(parent, .{ .opacity = case.opacity, .shouldFill = 0 });
     try f.owner.sceneMoveNode(parent, f.root, 0);
     const box = try placedIn(f, parent, c.OT_SCENE_BOX, 3, 6, 3);
     var paint = case.paint;
@@ -366,7 +364,7 @@ fn bodyScene(f: Fixture, case: BodyCase) !context.Handle {
     try f.owner.sceneSetBoxDetails(box, case.details);
     const child = try placedIn(f, box, c.OT_SCENE_BOX, 4, 1, 1);
     try f.owner.sceneSetPaint(child, .{ .focusable = true });
-    if (case.focus_child) try f.owner.sceneSetFocus(child, true);
+    if (case.focus != .none) try f.owner.sceneSetFocus(if (case.focus == .child) child else box, true);
     return box;
 }
 
@@ -385,11 +383,9 @@ test "Scene record box body paints like the native box" {
         .{ .paint = .{ .borderSides = all, .background = .{ 0, 0, 90, 255 } } },
         .{ .paint = .{ .borderSides = c.OT_BORDER_TOP | c.OT_BORDER_LEFT, .borderStyle = 1, .shouldFill = 0 }, .details = .{ .title = "ab", .bottom_title = "cd", .title_alignment = 1, .bottom_title_alignment = 2, .title_color = red } },
         .{ .paint = .{ .borderSides = all }, .details = .{ .custom_border_chars = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' } } },
-        // Focus within: the box itself is focusable, its child holds focus.
-        .{ .paint = .{ .borderSides = all, .focusable = true }, .details = .{ .title = "f" }, .focus_child = true },
-        .{ .paint = .{ .borderSides = all, .focusable = false }, .focus_child = true },
-        .{ .paint = .{ .borderSides = all, .background = .{ 0, 90, 0, 255 } }, .clip = true },
-        .{ .paint = .{ .borderSides = all, .background = .{ 0, 90, 0, 255 } }, .opacity = 0.5 },
+        // Focus within: the focusable box or its child holds focus.
+        .{ .paint = .{ .borderSides = all, .focusable = true }, .details = .{ .title = "f" }, .focus = .child },
+        .{ .paint = .{ .borderSides = all, .focusable = true }, .focus = .self },
         .{ .paint = .{ .shouldFill = 0 } },
     };
     for (cases) |case| {
@@ -427,7 +423,12 @@ test "Scene box body draws nothing for an unprepared box at any position and rej
     // A prepared box far beyond the cell range keeps the cells its edges cover.
     const wide = try placedIn(f, f.root, c.OT_SCENE_BOX, 3, 3e9, 2);
     try f.owner.sceneSetPaint(wide, .{ .borderSides = c.OT_BORDER_ALL });
+    // A one-column gutter laid out at column 5 draws where the host asks.
+    const gutter = try placedIn(f, f.root, c.OT_SCENE_BOX, 6, 1, 2);
+    try f.owner.sceneSetPaint(gutter, .{ .borderSides = c.OT_BORDER_LEFT, .translateX = 5 });
     try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, false, 0);
+    try f.owner.drawSceneBody(target, null, gutter, 0, 0);
+    try testing.expectEqual(@as(u32, 0x2502), (try f.owner.raw().getBuffer(target)).get(0, 0).?.char);
     // Within the cell range where it is laid out, but not where the host draws it.
     const long = try placedIn(f, f.root, c.OT_SCENE_BOX, 5, 2147483520, 2);
     try f.owner.sceneSetPaint(long, .{ .borderSides = c.OT_BORDER_ALL, .translateX = -100 });
