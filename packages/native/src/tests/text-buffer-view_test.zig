@@ -4606,8 +4606,7 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                 2 => try expectSameMeasure(pair[0], pair[1]),
                 else => {
                     try expectSameAsFullLayout(pair[0], pair[1]);
-                    // Word wrap still turns CJK breaks off on a line with a junction a grapheme may cross.
-                    if (!pair[0].truncate and pair[0].wrap_mode != .word) try expectSameWrap(pair[0]);
+                    if (!pair[0].truncate) try expectSameWrap(pair[0]);
                     try expectSameMeasure(pair[0], pair[1]);
                 },
             };

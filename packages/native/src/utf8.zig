@@ -1469,11 +1469,10 @@ pub const ChunkLayoutInfo = struct {
     word_classes: WordClassEdges,
 };
 
-// Endpoint classes and codepoints support script transitions and chunk-edge checks.
+// Endpoint classes support script transitions at chunk edges.
 pub const WordClassEdges = struct {
     first: WordClass,
     last: WordClass,
-    last_cp: ?u21 = null,
     has_cjk_breaks: bool = false,
 };
 
@@ -1489,7 +1488,7 @@ pub fn chunkWordClassEdges(text: []const u8) WordClassEdges {
         continuation_count += 1;
     }
     const last = decodeUtf8Unchecked(text, last_start).cp;
-    return .{ .first = classifyWordClass(first), .last = classifyWordClass(last), .last_cp = last };
+    return .{ .first = classifyWordClass(first), .last = classifyWordClass(last) };
 }
 
 inline fn emitLayoutWrapBreak(
@@ -1840,7 +1839,7 @@ fn walkChunkLayoutInfoGeneric(
         );
     }
 
-    return .{ .first = first_word_class, .last = if (cluster_started) cluster_class else .other, .last_cp = prev_cp, .has_cjk_breaks = has_cjk_breaks };
+    return .{ .first = first_word_class, .last = if (cluster_started) cluster_class else .other, .has_cjk_breaks = has_cjk_breaks };
 }
 
 /// Find sparse render-cluster metadata for multibyte clusters and tabs.
