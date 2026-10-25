@@ -362,7 +362,7 @@ test "text work: drawing a long line scrolled right or down searches for its fir
         .{ .unit = "\u{754c}", .wrap = .char, .scan = .{ 308, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_200, 1_200, 1_192 } },
         .{ .unit = "\u{754c}", .wrap = .word, .scan = .{ 308, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_200, 1_200, 1_192 } },
         .{ .unit = "e\u{301}", .wrap = .char, .scan = .{ 337, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 2_400, 2_400, 2_352 } },
-        .{ .unit = "ab\t", .wrap = .char, .scan = .{ 279, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_800, 1_800, 1_776 } },
+        .{ .unit = "\tab", .wrap = .char, .scan = .{ 279, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_800, 1_800, 1_776 } },
         .{ .unit = "\u{1f600}", .wrap = .word, .scan = .{ 301, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_200, 1_200, 1_192 } },
         .{ .unit = "ab\u{754c}c\u{1f600}d e\u{301}f\tgh ", .wrap = .word, .scan = .{ 300, 570, 570 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_950, 1_950, 1_911 } },
     };

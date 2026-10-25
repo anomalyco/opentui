@@ -570,15 +570,13 @@ inline fn isPrintableAscii(bytes: []const u8) bool {
     return bytes.len == 1 and bytes[0] >= 0x20 and bytes[0] < 0x7f;
 }
 
-/// Index of the first render cluster whose `key` is at least `value`. Clusters are sorted and do
-/// not overlap, so both keys rise with the index.
-fn findRenderCluster(clusters: []const utf8.RenderClusterInfo, comptime key: enum { byte_end, col_start }, value: u32, comptime counter: std.meta.FieldEnum(text_work.Counts)) usize {
+/// Index of the first render cluster whose `key` is at least `value`; clusters are sorted by both keys.
+fn findRenderCluster(clusters: []const utf8.RenderClusterInfo, comptime key: enum { byte_start, col_start }, value: u32, comptime counter: std.meta.FieldEnum(text_work.Counts)) usize {
     var lo: usize = 0;
     var hi = clusters.len;
     while (lo < hi) : (text_work.add(counter, 1)) {
         const mid = lo + (hi - lo) / 2;
-        const cluster = clusters[mid];
-        if ((if (key == .byte_end) cluster.byte_start + cluster.byte_len else cluster.col_start) < value) lo = mid + 1 else hi = mid;
+        if (@field(clusters[mid], @tagName(key)) < value) lo = mid + 1 else hi = mid;
     }
     return lo;
 }
@@ -2412,8 +2410,8 @@ pub const OptimizedBuffer = struct {
                 var byte_offset = vchunk.byte_start_in_chunk;
                 const byte_end = vchunk.byte_start_in_chunk + vchunk.byte_len;
 
-                // Cluster k ends after byte k, so the first one that ends after `byte_offset` is at most `byte_offset`.
-                var special_idx = findRenderCluster(render_clusters[0..@min(render_clusters.len, byte_offset)], .byte_end, byte_offset + 1, .cluster_scan_steps);
+                // Cluster k starts at byte k or later, so the first one at `byte_offset` has an index of at most `byte_offset`.
+                var special_idx = findRenderCluster(render_clusters[0..@min(render_clusters.len, byte_offset)], .byte_start, byte_offset, .cluster_scan_steps);
 
                 // Left of the viewport nothing draws and marks have no base, so skip whole chunks by
                 // width and resume after the last cluster that starts left of the viewport. The loop
