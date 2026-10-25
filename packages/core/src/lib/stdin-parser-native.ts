@@ -82,7 +82,7 @@ const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
 }
 // Core's `code` for legacy sequences: the introducer, number, and final without modifiers.
 const LEGACY_CODE_RE = /^\x1b+(O|\[\[?)(?:(\d+)(?:;\d+)?([~^$])|(?:1;)?\d*([a-zA-Z]))/
-const LEGACY_SEQUENCE_RE = /^\x1b\x1b?[[O]/
+const LEGACY_SEQUENCE_RE = /^\x1b\x1b?[[O]./s
 const KEYPAD_TEXT = new Set(Object.values(printableKeypadText))
 
 function concat(parts: Uint8Array[]): Uint8Array {
@@ -433,8 +433,8 @@ function parsedKey(
   const raw = keyRaw(rawBytes)
   const text = textBytes.length === 0 ? "" : UTF8.decode(textBytes)
   const alt = (modifiers & C.OT_INPUT_MOD_ALT) !== 0
-  // Core sets option for a modifier parameter or an `ESC ESC` key sequence, not for ESC + character.
-  const option = alt && (kitty || LEGACY_SEQUENCE_RE.test(raw))
+  // Core sets option, and keeps a letter's case and Shift bit, only for a sequence: not for ESC + character.
+  const sequence = kitty || LEGACY_SEQUENCE_RE.test(raw)
   let shift = (modifiers & C.OT_INPUT_MOD_SHIFT) !== 0
   let name: string
   if (code === 0) {
@@ -447,7 +447,7 @@ function parsedKey(
   } else {
     name = String.fromCodePoint(code)
     // Core names a typed uppercase letter by its lowercase key with Shift; Alt keeps the case.
-    if (!kitty && code >= 0x41 && code <= 0x5a) {
+    if (!sequence && code >= 0x41 && code <= 0x5a) {
       shift = true
       if (!alt) name = name.toLowerCase()
     }
@@ -457,7 +457,7 @@ function parsedKey(
     ctrl: (modifiers & C.OT_INPUT_MOD_CTRL) !== 0,
     meta: alt || (modifiers & C.OT_INPUT_MOD_META) !== 0,
     shift,
-    option,
+    option: alt && sequence,
     sequence: text || raw,
     number: /^[0-9]$/.test(name),
     raw,
