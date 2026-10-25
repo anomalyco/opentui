@@ -362,12 +362,9 @@ test "input parser bytes that are not UTF-8 are eight-bit Alt keys" {
     try check("\xe4a", &.{ kr('d', ALT, "\xe4"), ch('a') });
     try check("\xc0A", &.{ k('@', ALT), ch('A') });
     try check("\x9c\x93", &.{ k('\\', mods(&.{ CTRL, ALT })), k('s', mods(&.{ CTRL, ALT })) });
-    // Valid framing that decodes to no scalar still yields one key.
-    try check("\xed\xa0\x80", &.{kt(0xfffd, NONE, "\u{fffd}")});
-    try check("\xe0\x80\x80", &.{ch(0xfffd)});
-    try check("\xf4\x90\x80\x80", &.{ch(0xfffd)});
+    try check("\xe0\x80\x80", &.{ k('`', ALT), k(' ', mods(&.{ CTRL, ALT })), k(' ', mods(&.{ CTRL, ALT })) });
     // A scalar of each lead range waits for its rest without a deadline (issue 344).
-    for ([_][]const u8{ "\u{80}", "\u{7ff}", "\u{800}", "\u{ff5e}", "\u{10000}", "\u{10ffff}" }) |text| {
+    for ([_][]const u8{ "\u{80}", "\u{7ff}", "\u{800}", "\u{d7ff}", "\u{ff5e}", "\u{10000}", "\u{10ffff}" }) |text| {
         for (1..text.len) |index| for ([_]u64{ 0, 25, std.time.ms_per_s, std.time.ms_per_min }) |pause| {
             var harness = try Harness.create();
             defer harness.deinit();
@@ -379,8 +376,14 @@ test "input parser bytes that are not UTF-8 are eight-bit Alt keys" {
         };
     }
     // A byte that cannot continue the scalar ends the wait: the buffered bytes are eight-bit Alt
-    // keys, the first with the ESC of an Alt prefix, and the byte parses as usual.
+    // keys, the first with the ESC of an Alt prefix, and the byte parses as usual. A second byte
+    // outside its lead's range (overlong, surrogate, above U+10FFFF) cannot continue it either.
     for ([_]struct { []const u8, []const u8, []const Expect }{
+        .{ "\xe0", "\x9f", &.{ k('`', ALT), k('_', mods(&.{ CTRL, ALT })) } },
+        .{ "\xed", "\xa0", &.{ k('m', ALT), k(' ', ALT) } },
+        .{ "\xf0", "\x8f", &.{ k('p', ALT), k('o', mods(&.{ CTRL, ALT })) } },
+        .{ "\xf4", "\x90", &.{ k('t', ALT), k('p', mods(&.{ CTRL, ALT })) } },
+        .{ "\xe2", "\xc3\xa9", &.{ k('b', ALT), ch(0xe9) } },
         .{ "\xe4\xb8", "a", &.{ k('d', ALT), k('8', ALT), ch('a') } },
         .{ "\xe4", "\x1b[A", &.{ k('d', ALT), k(K.up, NONE) } },
         .{ "\xe4\xb8", "\x1bq", &.{ k('d', ALT), k('8', ALT), k('q', ALT) } },
