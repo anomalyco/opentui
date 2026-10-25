@@ -619,10 +619,8 @@ pub const Session = struct {
         if (self.scene) |owned| {
             if (owned.painted != null) {
                 if (self.renderer) |attached| {
-                    @memset(attached.nextHitGrid, 0);
                     attached.getNextBuffer().clearScissorRects();
                     attached.getNextBuffer().clearOpacity();
-                    attached.hitGridClearScissorRects();
                 }
             }
             owned.cancelFrame();

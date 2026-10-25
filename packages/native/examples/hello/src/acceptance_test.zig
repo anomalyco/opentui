@@ -206,7 +206,6 @@ test "Session terminal lifecycle renders and restores through the public Zig pum
                     try std.testing.expectEqual(@as(u32, 'p'), cells.buffer.char[0]);
                 }
                 try owner.destroy(source);
-                renderer.addToHitGrid(0, 0, 6, 1, 71);
                 try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
                 try owner.beginSessionClose(id);
                 try std.testing.expectError(error.ContextBusy, owner.destroy(id));
@@ -220,7 +219,6 @@ test "Session terminal lifecycle renders and restores through the public Zig pum
     try std.testing.expect(restored);
     try std.testing.expectEqual(.restored, (try owner.getSessionTerminalState(id)).phase);
     try std.testing.expectEqual(@as(u64, 1), renderer.getRenderStats().frameCount);
-    try std.testing.expectEqual(@as(u32, 71), renderer.checkHit(0, 0));
     try std.testing.expectEqual(2 * opentui.session.cursor_settle_ns, now_ns);
     try std.testing.expect(std.mem.startsWith(u8, output.slice(), "prefix"));
     try std.testing.expect(std.mem.find(u8, output.slice(), "pumped\u{754c}") != null);

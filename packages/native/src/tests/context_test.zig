@@ -472,7 +472,6 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     value.terminal.caps.hyperlinks = true;
     const current = value.getCurrentBuffer();
     const next = value.getNextBuffer();
-    value.addToHitGrid(0, 0, 1, 1, 11);
     try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
     try std.testing.expect((try drain(owner, id, &output)).len > 0);
     try std.testing.expectEqual(@as(u32, 0), current.grapheme_tracker.used_ids.capacity());
@@ -482,7 +481,6 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     try drawTrackedCells(next, 1, 'k');
     const glyph_id = gp.graphemeIdFromChar(next.buffer.char[0]);
     const link_id = ansi.TextAttributes.getLinkId(next.buffer.attributes[0]);
-    value.addToHitGrid(0, 0, 1, 1, 22);
 
     failing.fail_index = failing.alloc_index;
     failing.resize_fail_index = failing.resize_index;
@@ -491,16 +489,14 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     try std.testing.expectEqual(previous_written, (try owner.raw().getSession(id)).getStats().bytes_written);
     try std.testing.expectEqual(previous_stats, value.getRenderStats());
     try std.testing.expectEqualSlices(u32, &previous_chars, current.buffer.char);
-    try std.testing.expectEqual(@as(u32, 11), value.checkHit(0, 0));
     try std.testing.expectEqual(@as(u32, 1), try owner.graphemes.getRefcount(glyph_id));
     try std.testing.expectEqual(@as(u32, 1), try owner.links.getRefcount(link_id));
 
     failing.fail_index = std.math.maxInt(usize);
     failing.resize_fail_index = std.math.maxInt(usize);
-    value.addToHitGrid(0, 0, 1, 1, 22);
     try std.testing.expectEqual(.pending, try owner.renderSession(id, false));
     const bytes = try drain(owner, id, &output);
-    try std.testing.expectEqual(@as(u32, 22), value.checkHit(0, 0));
+    try std.testing.expectEqual(previous_stats.frameCount + 1, value.getRenderStats().frameCount);
     try std.testing.expect(std.mem.find(u8, bytes, "k\xcc\x81") != null);
     try std.testing.expect(std.mem.find(u8, bytes, try owner.links.get(link_id)) != null);
 }

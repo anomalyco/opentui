@@ -62,6 +62,13 @@ pub const Fixture = struct {
         try std.testing.expectEqualSlices([4]u16, expected.fg, cells.fg);
         try std.testing.expectEqualSlices([4]u16, expected.bg, cells.bg);
         try std.testing.expectEqualSlices(u32, expected.attributes, cells.attributes);
-        try std.testing.expectEqualSlices(u32, self.cli.nextHitGrid, actual.cli.nextHitGrid);
+        try std.testing.expectEqualSlices(scene.Hit, self.state.hits.items, actual.state.hits.items);
+    }
+
+    /// The draft frame's hit token at a cell index of the screen.
+    pub fn draftHit(self: Fixture, index: usize) u32 {
+        const hits = self.state.hits.items;
+        const found = scene.topmostHit(hits, @intCast(index % self.cli.width), @intCast(index / self.cli.width)) orelse return 0;
+        return hits[found].token;
     }
 };

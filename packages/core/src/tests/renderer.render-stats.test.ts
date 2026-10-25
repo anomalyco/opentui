@@ -94,9 +94,9 @@ describe("native renderer stats", () => {
         membersPainted: 1,
         memberCells: 3,
         cellsCleared: 16,
-        hitCellsWritten: 3,
-        hitCellsCleared: 16,
-        hitCellsCompared: 8,
+        hitCellsWritten: 0,
+        hitCellsCleared: 0,
+        hitCellsCompared: 0,
         layoutRounds: 1,
       }
       await result.renderOnce()

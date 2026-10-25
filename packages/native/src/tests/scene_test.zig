@@ -142,16 +142,38 @@ test "Scene empty boxes skip paint setup but retain hits and descendant clipping
     try testing.expect(red > 0 and red < 200);
     try testing.expectEqual(black, next.get(3, 0).?.bg);
     try testing.expectEqual(black, next.get(4, 0).?.bg);
-    try testing.expectEqual(@as(u32, 0), f.cli.nextHitGrid[3]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(child)).scene_node.?.token, f.cli.nextHitGrid[2]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(parent)).scene_node.?.token, f.cli.nextHitGrid[8]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(peer)).scene_node.?.token, f.cli.nextHitGrid[4]);
+    try testing.expectEqual(@as(u32, 0), f.draftHit(3));
+    try testing.expectEqual((try f.owner.raw().getRenderable(child)).scene_node.?.token, f.draftHit(2));
+    try testing.expectEqual((try f.owner.raw().getRenderable(parent)).scene_node.?.token, f.draftHit(8));
+    try testing.expectEqual((try f.owner.raw().getRenderable(peer)).scene_node.?.token, f.draftHit(4));
 
     try f.owner.sceneSetPaint(peer, .{ .background = .{ 0, 200, 0, 255 } });
     try repaint(f.owner, f.id, frame_options.background, true, 0);
     try testing.expectEqual(ansi.rgbColor(0, 200, 0, 255), f.cli.getNextBuffer().get(4, 0).?.bg);
     try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().scissor_stack.items.len);
     try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().opacity_stack.items.len);
+}
+
+test "Scene hit walk answers what a grid overwritten in paint order holds" {
+    var prng = std.Random.DefaultPrng.init(0x316);
+    const random = prng.random();
+    var hits: [24]scene.Hit = undefined;
+    var grid: [9 * 5]u32 = undefined;
+    for (0..2000) |_| {
+        const count = random.uintAtMost(usize, hits.len);
+        @memset(&grid, 0);
+        for (hits[0..count], 0..) |*hit, index| {
+            const x = random.uintLessThan(u32, 9);
+            const y = random.uintLessThan(u32, 5);
+            // Ties between tokens and full or one-cell rects are common.
+            hit.* = .{ .x = x, .y = y, .width = random.intRangeAtMost(u32, 1, 9 - x), .height = random.intRangeAtMost(u32, 1, 5 - y), .token = random.intRangeAtMost(u32, 1, 4) + @as(u32, @intCast(index % 2)) };
+            for (hit.y..hit.y + hit.height) |row| @memset(grid[row * 9 + hit.x ..][0..hit.width], hit.token);
+        }
+        for (grid, 0..) |token, cell| {
+            const found = scene.topmostHit(hits[0..count], @intCast(cell % 9), @intCast(cell / 9));
+            try testing.expectEqual(token, if (found) |index| hits[index].token else 0);
+        }
+    }
 }
 
 test "Scene geometry cache retries a failed third solve in one frame with clean Yoga" {
@@ -200,8 +222,8 @@ test "Scene geometry cache retries a failed third solve in one frame with clean 
     try testing.expectEqual(@as(u32, 0), (try f.owner.sceneFrameStep(f.id, request, frame_options)).kind);
     try testing.expectEqual(@as(f32, 5), (try f.owner.sceneGetLayout(box, false)).width);
     try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(4, 0).?.bg);
-    try testing.expectEqual(node.token, f.cli.nextHitGrid[4]);
-    try testing.expectEqual(@as(u32, 0), f.cli.nextHitGrid[5]);
+    try testing.expectEqual(node.token, f.draftHit(4));
+    try testing.expectEqual(@as(u32, 0), f.draftHit(5));
     try f.owner.sceneFrameCancel(f.id, request.frame_id);
     try testing.expectEqual(@as(u32, 0), (try f.owner.sceneFrameStep(f.id, null, frame_options)).kind);
 }
@@ -271,8 +293,8 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try testing.expectEqual(@as(f32, 8), layout.width);
     try testing.expectEqual(@as(f64, 0), layout.screenY);
     try testing.expectEqual(@as(u32, 0x258c), f.cli.getNextBuffer().get(4, 0).?.char);
-    try testing.expectEqual((try f.owner.raw().getRenderable(slider)).scene_node.?.token, f.cli.nextHitGrid[7]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(children[10])).scene_node.?.token, f.cli.nextHitGrid[8]);
+    try testing.expectEqual((try f.owner.raw().getRenderable(slider)).scene_node.?.token, f.draftHit(7));
+    try testing.expectEqual((try f.owner.raw().getRenderable(children[10])).scene_node.?.token, f.draftHit(8));
     try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0 and f.state.work.items.len == 0);
     try testing.expect((try f.owner.raw().getRenderable(hidden)).scene_node.?.text.?.view.getViewport() == null);
 }
@@ -453,7 +475,7 @@ test "Scene text fully clipped coordinates never enter signed drawing arithmetic
         try f.owner.sceneSetPaint(text, .{ .translateX = translate[0], .translateY = translate[1] });
         try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, true, 0);
         for (f.cli.getNextBuffer().buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
-        for (f.cli.nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
+        try testing.expectEqual(@as(usize, 0), f.state.hits.items.len);
     }
 }
 

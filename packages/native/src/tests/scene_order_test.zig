@@ -38,7 +38,7 @@ fn expectTop(f: Fixture, child: context.Handle) !void {
         const cell = f.cli.getNextBuffer().get(@intCast(x), 0).?;
         try testing.expectEqual(@as(u32, ' '), cell.char);
         try testing.expectEqual(ansi.rgbColor(@intCast(node.num), 0, 0, 255), cell.bg);
-        try testing.expectEqual(node.token, f.cli.nextHitGrid[x]);
+        try testing.expectEqual(node.token, f.draftHit(x));
     }
     _ = try f.owner.sceneFrameCommit(f.id, f.state.painted.?.ticket, true);
     var bytes: [4096]u8 = undefined;

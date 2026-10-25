@@ -154,7 +154,6 @@ test "Scene frame cancellation revokes painted authority but pins scratch cells 
         try f.owner.sceneFrameCancel(f.id, frame.frame_id);
         try testing.expectEqual(@as(u32, 2), try f.owner.sceneHitTest(f.id, 0, 0));
         try testing.expectEqual(@as(u32, 0), try f.owner.sceneHitTest(f.id, 1, 0));
-        for ((try f.owner.raw().getSessionRenderer(f.id)).nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
         try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().scissor_stack.items.len);
         try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().opacity_stack.items.len);
         try testing.expectError(error.StaleLease, f.owner.bufferLeaseSnapshot(lease));
@@ -232,6 +231,107 @@ test "Scene painted node and root destruction retains graphemes but never resurr
     _ = try f.owner.sceneFrameCommit(f.id, frame, true);
     try drain(f.owner, f.id);
     try testing.expectEqual(@as(u32, 0), try f.owner.sceneHitTest(f.id, 0, 0));
+}
+
+test "Scene hit tests answer from the last presented scene frame" {
+    const f = try Fixture.init(testing.allocator, 4, 1, .{});
+    defer f.deinit();
+    const box = try f.owner.sceneCreateNode(f.id, 1, 2);
+    try f.owner.sceneSetStyle(box, 4, 0, 0, 1, 2, 1);
+    try f.owner.sceneMoveNode(box, f.root, 0);
+    const commits = [_]@import("../renderer.zig").SplitSnapshot{.{ .snapshot = f.cli.getCurrentBuffer(), .row_columns = 4 }};
+    const Step = enum { present, excluded, draft, pending, cancel, skip, raw, split, resize_draft, resize };
+    // Each row moves the box to x, runs one outcome, and expects the box's number at the
+    // listed column of the presented frame (0 for none).
+    const rows = [_]struct { step: Step, x: f64, hits: [4]u32 }{
+        .{ .step = .present, .x = 0, .hits = .{ 2, 2, 0, 0 } },
+        // The captured node's number leaves it out of the frame's hits.
+        .{ .step = .excluded, .x = 0, .hits = .{ 0, 0, 0, 0 } },
+        .{ .step = .present, .x = 0, .hits = .{ 2, 2, 0, 0 } },
+        // A frame presented while no hit test ran stays current while the next one is drafted.
+        .{ .step = .draft, .x = 1, .hits = .{ 0, 2, 2, 0 } },
+        .{ .step = .pending, .x = 2, .hits = .{ 0, 0, 2, 2 } },
+        .{ .step = .cancel, .x = 0, .hits = .{ 0, 0, 2, 2 } },
+        .{ .step = .skip, .x = 0, .hits = .{ 0, 0, 2, 2 } },
+        .{ .step = .present, .x = 1, .hits = .{ 0, 2, 2, 0 } },
+        // A non-scene render publishes no hits.
+        .{ .step = .raw, .x = 1, .hits = .{ 0, 0, 0, 0 } },
+        .{ .step = .present, .x = 0, .hits = .{ 2, 2, 0, 0 } },
+        .{ .step = .split, .x = 0, .hits = .{ 2, 2, 0, 0 } },
+        // Resize retires the hits of a painted draft, even after its later commit.
+        .{ .step = .resize_draft, .x = 2, .hits = .{ 0, 0, 0, 0 } },
+        .{ .step = .present, .x = 2, .hits = .{ 0, 0, 2, 2 } },
+        .{ .step = .resize, .x = 2, .hits = .{ 0, 0, 0, 0 } },
+    };
+    var width: u32 = 4;
+    for (rows) |row| {
+        try f.owner.sceneSetPaint(box, .{ .translateX = row.x });
+        switch (row.step) {
+            .present => {
+                _ = try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false);
+                try drain(f.owner, f.id);
+            },
+            .excluded => {
+                _ = try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 2), false);
+                try drain(f.owner, f.id);
+            },
+            .draft => {
+                _ = try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false);
+                try drain(f.owner, f.id);
+                try f.owner.sceneSetPaint(box, .{ .translateX = row.x + 1 });
+                const draft = try f.owner.scenePaint(f.id, options.background, true, 0);
+                for (row.hits, 0..) |num, x| try testing.expectEqual(num, try f.owner.sceneHitTest(f.id, @intCast(x), 0));
+                try f.owner.sceneFrameCancel(f.id, draft.frame_id);
+            },
+            .pending => {
+                try testing.expectEqual(.pending, try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), true));
+                // The pending frame's hits wait for its output.
+                try testing.expectEqual(@as(u32, 0), try f.owner.sceneHitTest(f.id, 3, 0));
+                try testing.expectEqual(@as(u32, 2), try f.owner.sceneHitTest(f.id, 1, 0));
+                try drain(f.owner, f.id);
+            },
+            .cancel => try f.owner.sceneFrameCancel(f.id, (try f.owner.scenePaint(f.id, options.background, true, 0)).frame_id),
+            .skip => {
+                try f.owner.writeSession(f.id, &([_]u8{'x'} ** 8192));
+                try testing.expectEqual(.skipped, try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false));
+                try drain(f.owner, f.id);
+            },
+            .raw => {
+                _ = try f.owner.renderSession(f.id, false);
+                try drain(f.owner, f.id);
+            },
+            .split => {
+                _ = try (try f.owner.raw().getSession(f.id)).renderSplit(null, &commits, 0, true);
+                try drain(f.owner, f.id);
+            },
+            .resize_draft => {
+                const draft = try f.owner.scenePaint(f.id, options.background, true, 0);
+                width = 5;
+                try f.owner.resizeSessionRenderer(f.id, width, 1);
+                _ = try f.owner.sceneFrameCommit(f.id, draft, false);
+                try drain(f.owner, f.id);
+            },
+            .resize => {
+                width = 4;
+                try f.owner.resizeSessionRenderer(f.id, width, 1);
+            },
+        }
+        for (row.hits, 0..) |num, x| try testing.expectEqual(num, try f.owner.sceneHitTest(f.id, @intCast(x), 0));
+        try testing.expectEqual(@as(u32, 0), try f.owner.sceneHitTest(f.id, @intCast(width), 0));
+    }
+    // A hit test walks presented members from the top and stops at the first that covers the
+    // cell; a cell outside the screen walks none. Rows: x, y, number, members walked.
+    const top = try f.owner.sceneCreateNode(f.id, 1, 3);
+    try f.owner.sceneSetStyle(top, 4, 0, 0, 1, 1, 1);
+    try f.owner.sceneMoveNode(top, box, 0);
+    try f.owner.sceneSetPaint(box, .{});
+    _ = try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false);
+    try drain(f.owner, f.id);
+    for ([_][4]u32{ .{ 0, 0, 3, 1 }, .{ 1, 0, 2, 2 }, .{ 3, 0, 0, 2 }, .{ 4, 0, 0, 0 }, .{ 0, 1, 0, 0 } }) |query| {
+        const before = f.state.test_hit_steps;
+        try testing.expectEqual(query[2], try f.owner.sceneHitTest(f.id, @intCast(query[0]), @intCast(query[1])));
+        try testing.expectEqual(@as(u64, query[3]), f.state.test_hit_steps - before);
+    }
 }
 
 fn allocationFailures(allocator: std.mem.Allocator) !void {
@@ -338,9 +438,6 @@ fn plainWork(frame_id: u64, visits: u64, reads: u64, solves: u64, rows_compared:
         .members_painted = 2,
         .member_cells = 10,
         .cells_cleared = 32,
-        .hit_cells_written = 10,
-        .hit_cells_cleared = 32,
-        .hit_cells_compared = 16,
         .rows_compared = rows_compared,
         .rows_diffed = rows_diffed,
         .full_path_reasons = reasons,
@@ -399,17 +496,15 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     const split = try f.owner.scenePaint(f.id, options.background, true, 0);
     _ = try session.renderSplit(split, &commits, 0, false);
     try drain(f.owner, f.id);
-    // After the snapshot it encodes every row; a frame without mouse hits writes no hit cells.
+    // After the snapshot it encodes every row; a frame without mouse hits presents none.
     try testing.expectEqual(plainWork(split.frame_id, 0, 0, 0, 0, 2, FrameWork.full_path_screen), try work(f));
-    var no_hits = plainWork(11, 0, 0, 0, 2, 0, 0);
-    no_hits.hit_cells_written = 0;
-    try testing.expectEqual(no_hits, try presentWork(f, .{ .use_mouse = false }));
-    // A resize clears more cells and skips the hit-grid compare.
+    try testing.expectEqual(@as(u32, 2), try f.owner.sceneHitTest(f.id, 0, 0));
+    try testing.expectEqual(plainWork(11, 0, 0, 0, 2, 0, 0), try presentWork(f, .{ .use_mouse = false }));
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneHitTest(f.id, 0, 0));
+    // A resize clears more cells.
     try f.owner.resizeSessionRenderer(f.id, 8, 3);
     var resized = plainWork(12, 3, 3, 1, 1, 3, 0);
     resized.cells_cleared = 48;
-    resized.hit_cells_cleared = 48;
-    resized.hit_cells_compared = 0;
     try testing.expectEqual(resized, try presentWork(f, .{}));
     const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
     const picture = try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 });
@@ -751,18 +846,18 @@ test "Scene frame work counts viewport refresh and culling work" {
 // declaration order (candidate visits through layout rounds). Track B steps change these rows.
 test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const bench = @import("../bench/scene-frame_bench.zig");
-    const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [20]u64 }{
-        .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 0, 0, 0, 1 } },
-        .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 1, 0, 0, 1 } },
-        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 87, 87, 174, 0, 0, 348, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 0, 0, 1, 1 } },
-        .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 87, 87, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 20000, 26209, 20000, 10000, 50, 0, 0, 1, 1 } },
-        .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 12320, 100, 12320, 6160, 44, 0, 0, 0, 1 } },
-        .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 12320, 100, 12320, 6160, 44, 1, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 0, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 104, 1, 217, 0, 100, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 1, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 20000, 29900, 20000, 10000, 50, 50, 0, 0, 1 } },
-        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 0, 102, 204, 53, 10000, 20000, 29900, 20000, 10000, 50, 0, 0, 0, 1 } },
-        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 70, 70, 100, 0, 0, 281, 0, 0, 40, 69, 4030, 20000, 85620, 20000, 10000, 50, 0, 0, 0, 1 } },
+    const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [17]u64 }{
+        .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 20000, 50, 0, 0, 0, 1 } },
+        .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 86, 9009, 20000, 50, 1, 0, 0, 1 } },
+        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 87, 87, 174, 0, 0, 348, 0, 0, 0, 86, 9009, 20000, 50, 0, 0, 1, 1 } },
+        .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 87, 87, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 20000, 50, 0, 0, 1, 1 } },
+        .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 12320, 44, 0, 0, 0, 1 } },
+        .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 12320, 44, 1, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 20000, 50, 0, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 104, 1, 217, 0, 100, 200, 53, 10000, 20000, 50, 1, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 20000, 50, 50, 0, 0, 1 } },
+        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 0, 102, 204, 53, 10000, 20000, 50, 0, 0, 0, 1 } },
+        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 70, 70, 100, 0, 0, 281, 0, 0, 40, 69, 4030, 20000, 50, 0, 0, 0, 1 } },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);
@@ -770,7 +865,7 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         // The second changed frame: the first one also settles hooks registered by the change.
         _ = try target.frame(row.change);
         const w = try target.frame(row.change);
-        var actual: [20]u64 = undefined;
+        var actual: [17]u64 = undefined;
         inline for (std.meta.fields(FrameWork)[1..], 0..) |field, index| actual[index] = @field(w, field.name);
         try testing.expectEqual(row.work, actual);
     }

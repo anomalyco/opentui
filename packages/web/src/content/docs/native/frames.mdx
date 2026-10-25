@@ -129,7 +129,7 @@ For each node, native code takes these steps before it paints the node's childre
 2. It plays the self phase, which replaces the node's native body. Without `RENDER_SELF`, the native body draws.
 3. For a focused editor node, it updates the terminal cursor and mouse pointer.
 4. It plays the after phase.
-5. When `use_mouse` is set, it adds the node to the _hit grid_. `ot_scene_hit_test` reads that grid after the frame is presented.
+5. When `use_mouse` is set, it adds the node's bounds to the _hit list_. `ot_scene_hit_test` reads that list after the frame is presented.
 
 An after hook on the box would therefore draw before the label, not after the whole subtree.
 Native code sorts siblings by `z_index` within each parent. It does not sort all nodes globally.
@@ -289,7 +289,7 @@ Paint hooks run after preparation and before painting. The prepared membership s
 | Change opacity, translation, or `z_index`                   | It paints with its prepared values. The next frame uses the new values |
 | Change a layout property, such as a width                   | It paints with its prepared layout. The next frame uses the new layout |
 | Insert a node                                               | It waits for the next prepared frame                                   |
-| Destroy a node, including itself                            | Native code skips it, its recording, and its hit-grid entry            |
+| Destroy a node, including itself                            | Native code skips it, its recording, and its hit-list entry            |
 | Hide a node with `display: none`                            | It still paints this frame. The next prepared frame drops it           |
 | Reparent or move a prepared node                            | It paints at its prepared position. The change waits a frame           |
 | Change clipping or inherited opacity                        | Prepared clipping and opacity stay fixed                               |

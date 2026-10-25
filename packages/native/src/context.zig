@@ -953,7 +953,22 @@ pub const Context = struct {
         const value = try self.getSession(handle);
         try value.checkOpen();
         const attached = value.renderer orelse return error.RendererNotAttached;
-        attached.dumpHitGrid();
+        const timestamp = std.Io.Clock.now(.real, self.io).toSeconds();
+        var filename_buf: [64]u8 = undefined;
+        const filename = std.fmt.bufPrint(&filename_buf, "hitgrid_{d}.txt", .{timestamp}) catch return;
+        const file = std.Io.Dir.cwd().createFile(self.io, filename, .{}) catch return;
+        defer file.close(self.io);
+        var file_buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(self.io, &file_buffer);
+        const writer = &file_writer.interface;
+        for (0..attached.height) |y| {
+            for (0..attached.width) |x| {
+                const token = if (value.scene) |owned| owned.hitToken(attached, @intCast(x), @intCast(y)) else 0;
+                writer.writeByte(if (token == 0) '.' else '0' + @as(u8, @intCast(token % 10))) catch return;
+            }
+            writer.writeByte('\n') catch return;
+        }
+        writer.flush() catch {};
     }
 
     pub fn renderSession(self: *Context, handle: Handle, force: bool) Error!session.RenderStatus {
@@ -2811,10 +2826,7 @@ pub const Context = struct {
         const owned = value.scene orelse return error.SceneNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         if (attached.width > std.math.maxInt(i32) or attached.height > std.math.maxInt(i32)) return error.InvalidDimensions;
-        errdefer {
-            attached.getNextBuffer().clear(attached.backgroundColor, null);
-            @memset(attached.nextHitGrid, 0);
-        }
+        errdefer attached.getNextBuffer().clear(attached.backgroundColor, null);
         const result = try owned.frameStep(self, attached, null, .{
             .background = background,
             .use_mouse = use_mouse,
@@ -2926,7 +2938,7 @@ pub const Context = struct {
         const attached = value.renderer orelse return error.RendererNotAttached;
         const owned = value.scene orelse return error.SceneNotAttached;
         if (x < 0 or y < 0) return 0;
-        const token = attached.checkHit(@intCast(x), @intCast(y));
+        const token = owned.hitToken(attached, @intCast(x), @intCast(y));
         const handle = owned.tokens.get(token) orelse return 0;
         const node = self.objects.get(handle, .native_renderable, native_renderable.NativeRenderable) catch return 0;
         const state = node.scene_node orelse return 0;
