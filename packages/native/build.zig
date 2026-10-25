@@ -697,6 +697,15 @@ pub fn build(b: *std.Build) void {
     addNativeAudioDependencies(b, bench_mod, native_target, macos_sdk_path);
     addYogaDependencies(b, bench_mod, false);
     if (native_target.result.os.tag == .macos) addMacOSSDKSearchPaths(b, bench_mod, macos_sdk_path.?);
+    // The benches in bench-isolated.zig compile as their own unit, so other benches cannot change their code.
+    const bench_isolated_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench-isolated.zig"),
+        .target = native_target,
+        .optimize = bench_optimize,
+        .link_libc = true,
+    });
+    applyDependencies(b, bench_isolated_mod, bench_optimize, native_target, build_options);
+    bench_mod.addObject(b.addObject(.{ .name = "opentui-bench-isolated", .root_module = bench_isolated_mod }));
     const run_bench = b.addRunArtifact(bench_exe);
     if (b.args) |args| {
         run_bench.addArgs(args);
