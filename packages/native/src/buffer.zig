@@ -2405,6 +2405,38 @@ pub const OptimizedBuffer = struct {
                     text_work.add(.cluster_scan_steps, 1);
                 }
 
+                // Left of the viewport nothing draws and marks have no base, so skip whole chunks by
+                // width, then resume after the last cluster that starts left of the viewport, then
+                // over printable ASCII at one cell per byte. The loop below skips what remains.
+                if (rendered_col_in_vline < horizontal_offset) {
+                    if (horizontal_offset - rendered_col_in_vline >= vchunk.width_cols) {
+                        text_work.add(.left_skip_steps, 1);
+                        document_cell_offset += vchunk.width_cols;
+                        rendered_col_in_vline += vchunk.width_cols;
+                        continue;
+                    }
+                    const target_col = col + (horizontal_offset - rendered_col_in_vline);
+                    var lo = special_idx;
+                    var hi = render_clusters.len;
+                    while (lo < hi) : (text_work.add(.left_skip_steps, 1)) {
+                        const mid = lo + (hi - lo) / 2;
+                        if (render_clusters[mid].col_start < target_col) lo = mid + 1 else hi = mid;
+                    }
+                    if (lo > special_idx and render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len <= byte_end) {
+                        byte_offset = render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len;
+                        col = render_clusters[lo - 1].col_start + render_clusters[lo - 1].width_cols;
+                        special_idx = lo;
+                    }
+                    const gap_end = if (special_idx < render_clusters.len) @min(render_clusters[special_idx].byte_start, byte_end) else byte_end;
+                    const ascii_len = @min(target_col -| col, gap_end -| byte_offset);
+                    if (chunk.isAsciiOnly() or utf8.isAsciiOnly(chunk_bytes[byte_offset..][0..ascii_len])) {
+                        byte_offset += ascii_len;
+                        col += ascii_len;
+                    }
+                    document_cell_offset += col - vchunk.col_start_in_chunk;
+                    rendered_col_in_vline += col - vchunk.col_start_in_chunk;
+                }
+
                 text_buffer_loop: while (byte_offset < byte_end) {
                     const at_special = special_idx < render_clusters.len and render_clusters[special_idx].byte_start == byte_offset;
 

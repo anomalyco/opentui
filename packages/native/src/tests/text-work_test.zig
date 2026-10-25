@@ -366,13 +366,19 @@ test "text work: drawing rows of a wrapped CJK line rescans its clusters from th
     try expectWork(.{ .cluster_scan_steps = 2_981_400, .clusters_drawn = 1_200 });
 }
 
-test "text work: drawing a long unwrapped line scrolled right skips every cluster before the viewport" {
+test "text work: drawing a long unwrapped line scrolled right skips the text before the viewport by chunk and cluster" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
-    const rows = [_]struct { unit: []const u8, draw: Counts }{
-        .{ .unit = "a", .draw = .{ .left_skip_steps = 130_992, .clusters_drawn = 80 } },
-        .{ .unit = "\u{754c}", .draw = .{ .left_skip_steps = 131_032, .clusters_drawn = 40 } },
+    const offsets = [_]u32{ 1_000, 50_000, 130_000 };
+    // With `part`, the line is appended in chunks of that many bytes.
+    const rows = [_]struct { unit: []const u8, part: usize = 0, steps: [offsets.len]u64, drawn: [offsets.len]u64 }{
+        .{ .unit = "a", .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
+        .{ .unit = "\u{754c}", .part = 3 * 1024, .steps = .{ 10, 34, 73 }, .drawn = .{ 40, 40, 40 } },
+        .{ .unit = "\u{754c}", .steps = .{ 17, 17, 17 }, .drawn = .{ 40, 40, 40 } },
+        .{ .unit = "\u{1f600}", .steps = .{ 17, 17, 17 }, .drawn = .{ 40, 40, 40 } },
+        .{ .unit = "ab\t", .steps = .{ 17, 17, 17 }, .drawn = .{ 60, 60, 60 } },
+        .{ .unit = "e\u{301}", .steps = .{ 17, 17, 17 }, .drawn = .{ 80, 80, 80 } },
     };
     for (rows) |row| {
         const text = try repeatText(allocator, row.unit, 131_072 * row.unit.len);
@@ -381,16 +387,20 @@ test "text work: drawing a long unwrapped line scrolled right skips every cluste
         defer tb.deinit();
         const view = try TextBufferView.init(allocator, tb);
         defer view.deinit();
-        try tb.setText(text);
+        if (row.part == 0) try tb.setText(text) else {
+            var start: usize = 0;
+            while (start < text.len) : (start += row.part) try tb.append(text[start..@min(start + row.part, text.len)]);
+        }
         view.setWrapMode(.none);
-        view.setViewport(.{ .x = tb.lineWidthAt(0) - 80, .y = 0, .width = 80, .height = 1 });
         const screen = try OptimizedBuffer.init(allocator, 80, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
         defer screen.deinit();
-        screen.drawTextBuffer(view, 0, 0);
-
-        _ = text_work.take();
-        screen.drawTextBuffer(view, 0, 0);
-        try expectWork(row.draw);
+        for (offsets, row.steps, row.drawn) |x, steps, drawn| {
+            view.setViewport(.{ .x = x, .y = 0, .width = 80, .height = 1 });
+            screen.drawTextBuffer(view, 0, 0);
+            _ = text_work.take();
+            screen.drawTextBuffer(view, 0, 0);
+            try expectWork(.{ .left_skip_steps = steps, .clusters_drawn = drawn });
+        }
     }
 }
 
