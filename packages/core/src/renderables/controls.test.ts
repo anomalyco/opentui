@@ -385,6 +385,8 @@ const paintCases: [string, typeof BoxRenderable, object][] = [
   ["Box layout-only", BoxRenderable, {}],
   // A focused child gives a focusable box its focused border and title color.
   ["Box focus-within", BoxRenderable, { border: true, focusable: true, title: "f", focusWithin: true }],
+  // 328: a buffered box draws at its buffer's origin; only the JS control is buffered.
+  ["Box buffered", BoxRenderable, { border: true, title: "b", backgroundColor: "#203040", buffered: true }],
 ]
 
 test.each(paintCases)("%s JS fallback paint matches native paint", async (name, Native, options) => {
@@ -407,7 +409,12 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
     for (const Control of [Js, Native]) {
       const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
       Object.assign(parent, { translateX, translateY })
-      const node = new Control(renderer, { width: 9, height: 4, ...options })
+      const node = new Control(renderer, {
+        width: 9,
+        height: 4,
+        ...options,
+        buffered: Control === Js && "buffered" in options,
+      })
       parent.add(node)
       renderer.root.add(parent)
       if ("focusWithin" in options) {
