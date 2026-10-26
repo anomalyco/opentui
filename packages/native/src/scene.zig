@@ -1873,13 +1873,19 @@ pub const Scene = struct {
             if (drawn.height > painted.height) painted = drawn;
         }
         // A member without paint hooks has an empty print: no rows, digest 0.
-        const print: scene_record.Fingerprint = if (phases.hooks == 0) .{} else scene_record.fingerprint(owner, phases.recording, phases.segments, phases.hooks, self.attempt.?.frame_id);
+        const print: scene_record.Fingerprint = if (phases.hooks == 0) .{} else scene_record.fingerprint(owner, entry.node, phases.recording, phases.segments, phases.hooks, self.attempt.?.frame_id);
         if (print.image) reasons.* |= renderer.FrameWork.full_path_images;
         if (print.non_local) reasons.* |= renderer.FrameWork.full_path_non_local;
         // Hooks draw inside the member clip, except non-local commands: a change to those, or
-        // their member leaving, damages every row.
-        const top = @min(painted.y, if (print.non_local) 0 else @max(print.top, entry.clip.y));
-        const bottom = @max(painted.y + @as(i64, painted.height), if (print.non_local) cli.height else @min(print.bottom, @as(i64, entry.clip.y) + entry.clip.height));
+        // their member leaving, damages every row. Rows outside the clip draw nothing.
+        const low = if (print.non_local) 0 else @max(print.top, entry.clip.y);
+        const high = if (print.non_local) cli.height else @min(print.bottom, @as(i64, entry.clip.y) + entry.clip.height);
+        var top: i64 = painted.y;
+        var bottom: i64 = painted.y + @as(i64, painted.height);
+        if (low < high) {
+            top = if (painted.height == 0) low else @min(top, low);
+            bottom = @max(bottom, high);
+        }
         var resource_epoch: u64 = 0;
         var styled = false;
         if (node.kind == api.OT_SCENE_TEXT_VIEW) {

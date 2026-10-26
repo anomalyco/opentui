@@ -744,7 +744,7 @@ fn fingerprint(f: Fixture, recording: *const Recording, hooks: u32) !scene_recor
     const slots = [_]scene.PaintSlot{.{ .node = f.root, .num = 1, .hooks = hooks, .hook_generation = 1, .layout = .{}, .public_layout = null, .clip = .{ .x = 0, .y = 0, .width = 1, .height = 1 }, .opacity = 1 }};
     var segments: [1]scene_record.Segments = undefined;
     try scene_record.index(recording.view(), &slots, &segments);
-    return scene_record.fingerprint(f.owner, recording.view(), segments[0], hooks, 1);
+    return scene_record.fingerprint(f.owner, try f.owner.raw().getRenderable(f.root), recording.view(), segments[0], hooks, 1);
 }
 
 fn appendClear(recording: *Recording) void {
@@ -759,7 +759,7 @@ test "Scene record fingerprints bound the rows each command kind writes" {
     const resources = try Resources.init(f);
     const source = try f.owner.createBuffer(2, 3, .{});
     const max = std.math.maxInt(i64);
-    const Draw = enum { text, fill, compose, stale_compose, clear };
+    const Draw = enum { text, fill, compose, stale_compose, clear, grid };
     const rows = [_]struct { command: union(enum) { command: Command, draw: Draw }, print: scene_record.Fingerprint }{
         .{ .command = .{ .command = .box }, .print = .{ .top = 0, .bottom = 3 } },
         .{ .command = .{ .command = .grid }, .print = .{ .top = 0, .bottom = 4 } },
@@ -780,6 +780,8 @@ test "Scene record fingerprints bound the rows each command kind writes" {
         .{ .command = .{ .draw = .compose }, .print = .{ .top = 0, .bottom = 3, .stable = false } },
         .{ .command = .{ .draw = .stale_compose }, .print = .{ .stable = false } },
         .{ .command = .{ .draw = .clear }, .print = .{ .non_local = true } },
+        // The fewest offsets a grid draws with.
+        .{ .command = .{ .draw = .grid }, .print = .{ .top = 1, .bottom = 4 } },
     };
     for (rows) |row| {
         var recording: Recording = .{};
@@ -792,6 +794,7 @@ test "Scene record fingerprints bound the rows each command kind writes" {
                 .compose => recording.compose(source, 0),
                 .stale_compose => recording.compose(resources.text, 0),
                 .clear => appendClear(&recording),
+                .grid => recording.append(c.ot_scene_record_grid{ .header = recordHeader(c.OT_SCENE_RECORD_GRID), .options = .{ .struct_size = @sizeOf(c.ot_buffer_grid_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = c.OT_BUFFER_GRID_OUTER, .reserved = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 }, .border_chars = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' } }, .column_count = 2, .row_count = 2 }, std.mem.sliceAsBytes(&[_]i32{ 0, 4, 1, 3 })),
             },
         }
         var print = try fingerprint(f, &recording, c.OT_SCENE_HOOK_RENDER_AFTER);
@@ -801,7 +804,7 @@ test "Scene record fingerprints bound the rows each command kind writes" {
 }
 
 const FrameWork = @import("../renderer.zig").FrameWork;
-const Hooked = enum { same, text, outside, back, phase, unphase, hooks, unicode, unicode_gone, view, view_text, editor, editor_text, body, body_text, body_box, body_resize, body_focus, view_styled, view_unstyled, compose, compose_write, view_again, stale, stale_again, clear, clear_again, clear_gone, matrix, matrix_gone, image, image_gone };
+const Hooked = enum { same, text, outside, back, above, below, offscreen, offscreen_text, offscreen_draw, onscreen, phase, unphase, hooks, unicode, unicode_gone, view, view_text, editor, editor_text, editor_styled, editor_unstyled, body, body_text, body_box, body_resize, body_focus, body_focused, body_blur, view_styled, view_unstyled, view_bind, view_resize, compose, compose_write, view_again, stale, stale_again, clear, clear_again, clear_gone, matrix, matrix_gone, image, image_gone };
 
 // A box on row 1 of a 10 x 6 screen records one command per frame. Each row changes the recording or
 // a resource it reads and expects the rows the frame damages and its full-path reasons. The
@@ -829,6 +832,9 @@ fn hookedTable(verify: bool, counts: []FrameWork) !void {
     // A box on row 0 whose body the hook draws on row 3.
     const other = try node(f.owner, f.id, f.root, 1, 3, 1);
     try f.owner.sceneSetPaint(other, .{ .translateX = 2, .borderSides = c.OT_BORDER_ALL, .focusable = true });
+    // A text view node at column 4 of row 0, bound later to the view a hook draws.
+    const bound = try node(f.owner, f.id, f.root, c.OT_SCENE_TEXT_VIEW, 4, 2);
+    try f.owner.sceneSetStyle(bound, 4, 0, 0, 1, 4, 1);
     var style: context.Handle = undefined;
     try f.owner.sceneSetHooks(hooked, before_after, 1, 2, 1);
     const resources = try Resources.init(f);
@@ -837,13 +843,21 @@ fn hookedTable(verify: bool, counts: []FrameWork) !void {
     first.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
     first.text("a", 0, 1);
     _ = try presentHooked(f, &first);
-    const non_local = FrameWork.full_path_non_local;
+    const non_local = c.OT_SCENE_FULL_PATH_NON_LOCAL;
     const rows = [_]struct { change: Hooked, damage: u32, reasons: u32 = 0, kept: bool = true }{
         .{ .change = .same, .damage = 0 },
         .{ .change = .text, .damage = 1 },
         // A hook draws outside its node but inside its clip: its rows reach the row it wrote.
         .{ .change = .outside, .damage = 4 },
         .{ .change = .back, .damage = 4 },
+        // Rows outside the clip, and a node moved out of it, add no damage.
+        .{ .change = .above, .damage = 1 },
+        .{ .change = .below, .damage = 1 },
+        .{ .change = .offscreen, .damage = 1, .kept = false },
+        .{ .change = .offscreen_text, .damage = 0 },
+        // A node outside its clip that draws inside it damages only the rows it draws.
+        .{ .change = .offscreen_draw, .damage = 1 },
+        .{ .change = .onscreen, .damage = 2, .kept = false },
         // Equal bytes in another phase, or with the node's body replaced, paint other cells.
         .{ .change = .phase, .damage = 1 },
         .{ .change = .unphase, .damage = 1 },
@@ -856,20 +870,28 @@ fn hookedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .view_text, .damage = 5 },
         .{ .change = .editor, .damage = 5 },
         .{ .change = .editor_text, .damage = 5 },
+        .{ .change = .editor_styled, .damage = 5 },
+        .{ .change = .editor_unstyled, .damage = 5 },
         .{ .change = .body, .damage = 5 },
         .{ .change = .body_text, .damage = 5, .kept = false },
         // A body reads its node's paint size and focus; a view reads whether its style lives.
         .{ .change = .body_box, .damage = 5 },
         .{ .change = .body_resize, .damage = 6, .kept = false },
         .{ .change = .body_focus, .damage = 6, .kept = false },
+        .{ .change = .body_focused, .damage = 0 },
+        .{ .change = .body_blur, .damage = 6, .kept = false },
         .{ .change = .view_styled, .damage = 5 },
         .{ .change = .view_unstyled, .damage = 5 },
+        // A view bound to another node takes that node's size, which no epoch tracks: the
+        // recording repaints on every frame, as a composed buffer does.
+        .{ .change = .view_bind, .damage = 6, .kept = false },
+        .{ .change = .view_resize, .damage = 6, .kept = false },
         // A composed buffer repaints on every frame, written or not.
         .{ .change = .compose, .damage = 6 },
         .{ .change = .compose_write, .damage = 2 },
         .{ .change = .view_again, .damage = 6 },
         // A destroyed view draws nothing, then stays unchanged.
-        .{ .change = .stale, .damage = 5 },
+        .{ .change = .stale, .damage = 6, .kept = false },
         .{ .change = .stale_again, .damage = 0 },
         // Non-local commands repaint in full; removing one repaints every row.
         .{ .change = .clear, .damage = 6, .reasons = non_local },
@@ -888,12 +910,17 @@ fn hookedTable(verify: bool, counts: []FrameWork) !void {
         recording.slot(0, if (row.change == .phase) c.OT_SCENE_RECORD_PHASE_BEFORE else c.OT_SCENE_RECORD_PHASE_AFTER);
         switch (row.change) {
             .same, .clear_gone, .matrix_gone, .image_gone => recording.text("a", 0, 1),
-            .text, .back, .phase, .unphase, .hooks => recording.text("b", 0, 1),
+            .text, .back, .onscreen, .phase, .unphase, .hooks => recording.text("b", 0, 1),
+            .above => recording.text("b", 0, -2),
+            .below => recording.text("b", 0, 6),
+            .offscreen => recording.text("b", 0, 8),
+            .offscreen_text => recording.text("c", 0, 8),
+            .offscreen_draw => recording.text("c", 0, 3),
             .unicode, .unicode_gone => appendCommand(&recording, .unicode, resources),
             .outside => recording.text("b", 0, 4),
-            .view, .view_text, .view_again, .view_styled, .view_unstyled, .stale, .stale_again => appendCommand(&recording, .text_view, resources),
-            .body_box, .body_resize, .body_focus => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(other), .x = 0, .y = 3 }, &.{}),
-            .editor, .editor_text => appendCommand(&recording, .editor_view, resources),
+            .view, .view_text, .view_again, .view_styled, .view_unstyled, .view_bind, .view_resize, .stale, .stale_again => appendCommand(&recording, .text_view, resources),
+            .body_box, .body_resize, .body_focus, .body_focused, .body_blur => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(other), .x = 0, .y = 3 }, &.{}),
+            .editor, .editor_text, .editor_styled, .editor_unstyled => appendCommand(&recording, .editor_view, resources),
             .body, .body_text => appendCommand(&recording, .scene_text, resources),
             .compose, .compose_write => recording.compose(source, 0),
             .clear, .clear_again => appendClear(&recording),
@@ -905,7 +932,15 @@ fn hookedTable(verify: bool, counts: []FrameWork) !void {
             .editor_text => try f.owner.editSetText(resources.edit, "edited", false),
             .body_text => try f.owner.sceneSetText(resources.scene_text, "edited"),
             .body_resize => try f.owner.sceneSetStyle(other, 4, 0, 0, 1, 4, 1),
-            .body_focus => try f.owner.sceneSetFocus(other, true),
+            .body_focus, .body_blur => try f.owner.sceneSetFocus(other, row.change == .body_focus),
+            .offscreen, .onscreen => try f.owner.scenePatchPaint(hooked, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (row.change == .offscreen) 8 else 1 }),
+            .editor_styled => {
+                style = try f.owner.createSyntaxStyle();
+                try f.owner.editSetSyntaxStyle(resources.edit, style);
+            },
+            .editor_unstyled => try f.owner.destroy(style),
+            .view_bind => try f.owner.sceneSetTextView(bound, resources.text_view),
+            .view_resize => try f.owner.sceneSetStyle(bound, 4, 0, 0, 1, 2, 1),
             .view_styled => {
                 style = try f.owner.createSyntaxStyle();
                 try f.owner.textBufferSetSyntaxStyle(resources.text, style);

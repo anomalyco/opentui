@@ -5,6 +5,7 @@ const context = @import("context.zig");
 const buffer = @import("buffer.zig");
 const handles = @import("context-handles.zig");
 const scene = @import("scene.zig");
+const native = @import("native-renderable.zig");
 const PaintSlot = scene.PaintSlot;
 
 const Context = context.Context;
@@ -239,7 +240,7 @@ pub const Fingerprint = struct {
 
 /// Fingerprint an indexed slot. Each command is bounded by its own fields; a view reaches the
 /// clip bottom, and a command that names no height or fails to decode reaches the whole clip.
-pub fn fingerprint(owner: *Context, bytes: []const u8, segments: Segments, hooks: u32, frame_id: u64) Fingerprint {
+pub fn fingerprint(owner: *Context, member: *const native.NativeRenderable, bytes: []const u8, segments: Segments, hooks: u32, frame_id: u64) Fingerprint {
     const clip_bottom = std.math.maxInt(i64);
     var result: Fingerprint = .{};
     var hasher = std.hash.Wyhash.init(hooks);
@@ -299,15 +300,24 @@ pub fn fingerprint(owner: *Context, bytes: []const u8, segments: Segments, hooks
                     var state = [2]u64{ 0, 0 };
                     var layout: scene.Layout = .{};
                     const source = handleFromC(value.source);
+                    // A view bound to another node takes that node's size, which no epoch tracks.
+                    var bound: ?*native.NativeRenderable = null;
                     if (header.operation == c.OT_SCENE_RECORD_TEXT_VIEW) {
-                        if (raw.getTextBufferView(source)) |view| state = .{ view.paint_epoch, @intFromBool(view.text.buffer.getSyntaxStyle() != null) } else |_| {}
+                        if (raw.getTextBufferView(source)) |view| {
+                            state = .{ view.paint_epoch, @intFromBool(view.text.buffer.getSyntaxStyle() != null) };
+                            bound = view.node;
+                        } else |_| {}
                     } else if (header.operation == c.OT_SCENE_RECORD_EDITOR_VIEW) {
-                        if (raw.getEditorView(source)) |editor| state = .{ editor.paint_epoch, @intFromBool(editor.edit.buffer.tb.getSyntaxStyle() != null) } else |_| {}
+                        if (raw.getEditorView(source)) |editor| {
+                            state = .{ editor.paint_epoch, @intFromBool(editor.edit.buffer.tb.getSyntaxStyle() != null) };
+                            bound = editor.node;
+                        } else |_| {}
                     } else if (raw.getRenderable(source)) |node| {
                         // A body paints at the node's paint size, with focus colors when focus lies within it.
                         state = .{ node.scene_node.?.paint_epoch, @intFromBool(node.scene_node.?.focus_frame == frame_id) };
                         layout = scene.getPaintLayout(node) catch .{};
                     } else |_| {}
+                    if (bound != null and bound.? != member) result.stable = false;
                     hasher.update(std.mem.asBytes(&state));
                     hasher.update(std.mem.asBytes(&layout));
                 },

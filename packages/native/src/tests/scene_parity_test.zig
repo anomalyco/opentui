@@ -39,6 +39,8 @@ const viewport_slot = 1;
 const content_slot = 2;
 /// The root, the viewport, and its content are never moved or destroyed.
 const scaffold_slots = 3;
+/// Paint hooks stay on the slots below this one.
+const paint_hook_slots_end = scaffold_slots + 4;
 const reference = 0;
 const candidate = 1;
 // The largest screen a resize step picks (20×8).
@@ -72,6 +74,9 @@ const Op = union(enum) {
     shared_text: u32,
     /// Highlights a range of the shared text with the shared style's first name.
     highlight: struct { start: u32, end: u32 },
+    /// Edits the readers, which only recordings show: the text of the view and the editor,
+    /// and the colors of the scene text.
+    reader: u32,
     /// Registers the shared style's name with a new color, or destroys the style first,
     /// so borrowers draw without it until a registration binds a new one.
     register: struct { foreground: u8, destroy: bool },
@@ -229,6 +234,8 @@ const Stats = struct {
     /// or draw an image.
     retained_records: u32 = 0,
     non_local_records: u32 = 0,
+    /// Recordings that drew a reader or another node's view with the same bytes on every frame.
+    steady_reads: u32 = 0,
     /// Draft writes after paint, and buffer writes or renders between frames.
     draft_writes: u32 = 0,
     raw_writes: u32 = 0,
@@ -264,6 +271,13 @@ const Harness = struct {
     scratch: [2]context.Handle = undefined,
     stale: [2]context.Handle = undefined,
     image: [2]context.Handle = undefined,
+    /// Per twin: a text view, an editor view, and a scene text, none of them on a node,
+    /// which only recordings draw; the view's text buffer and the editor's edit buffer.
+    readers: [2][3]context.Handle = undefined,
+    reader_text: [2]context.Handle = undefined,
+    reader_edit: [2]context.Handle = undefined,
+    /// Which hooked nodes draw steadily, and what, fixed per seed.
+    read_base: usize = 0,
     /// Hooks draw differently when it advances, with no scene change.
     hook_tick: usize = 0,
     recorded: bool = false,
@@ -282,7 +296,7 @@ const Harness = struct {
                 try twin.owner.sceneSetDebugFlags(twin.id, c.OT_SCENE_DEBUG_VERIFY);
             }
         }
-        var self: Harness = .{ .twins = twins, .random = random, .terminal = try newTerminal(16, 6) };
+        var self: Harness = .{ .twins = twins, .random = random, .terminal = try newTerminal(16, 6), .read_base = random.uintLessThan(usize, 16) };
         for (twins, 0..) |twin, index| {
             self.shared[index] = try twin.owner.createTextBuffer(.unicode);
             try twin.owner.textBufferSetText(self.shared[index], "shared text");
@@ -291,6 +305,13 @@ const Harness = struct {
             self.stale[index] = try twin.owner.createTextBufferView(self.shared[index]);
             try twin.owner.destroy(self.stale[index]);
             self.image[index] = try twin.owner.createImagePixels(&([_]u8{ 200, 40, 0, 255 } ** 4), 2, 2, .{ .stride = 8 });
+            self.reader_text[index] = try twin.owner.createTextBuffer(.unicode);
+            try twin.owner.textBufferSetText(self.reader_text[index], "rv");
+            self.reader_edit[index] = try twin.owner.createEditBuffer(.unicode);
+            try twin.owner.editSetText(self.reader_edit[index], "ed", false);
+            const text = try twin.owner.sceneCreateNode(twin.id, c.OT_SCENE_TEXT, 99);
+            try twin.owner.sceneSetText(text, "body");
+            self.readers[index] = .{ try twin.owner.createTextBufferView(self.reader_text[index]), try twin.owner.createEditorView(self.reader_edit[index], 4, 1), text };
         }
         try self.apply(.{ .register = .{ .foreground = 0, .destroy = false } });
         self.model.handles[root_slot] = .{ twins[0].root, twins[1].root };
@@ -426,6 +447,11 @@ const Harness = struct {
                 try f.owner.textBufferSetText(self.shared[twin], texts[seed % texts.len]);
             },
             .highlight => |value| try f.owner.textBufferHighlight(self.shared[twin], .{ .add_range = .{ .start = value.start, .end = value.end, .style_id = 1 } }),
+            .reader => |seed| {
+                try f.owner.textBufferSetText(self.reader_text[twin], ([_][]const u8{ "", "rv", "r\nv", "\u{754c}v" })[(seed / 4) % 4]);
+                try f.owner.editSetText(self.reader_edit[twin], ([_][]const u8{ "", "ab", "a\nbc", "\u{754c}x" })[seed % 4], false);
+                try f.owner.sceneSetTextOptions(self.readers[twin][2], .{ .foreground = .{ @intCast(seed % 256), 255, 255, 255 } });
+            },
             .register => |value| {
                 if (value.destroy) if (self.style[twin]) |style| {
                     try f.owner.destroy(style);
@@ -637,7 +663,7 @@ const Harness = struct {
                 break :blk .{ .hooks = .{ .slot = child, .flags = if (clear) 0 else c.OT_SCENE_HOOK_RESIZE | (if (random.boolean()) c.OT_SCENE_HOOK_UPDATE else 0) } };
             },
             else => blk: {
-                const hooked = random.intRangeLessThan(usize, scaffold_slots, scaffold_slots + 4);
+                const hooked = random.intRangeLessThan(usize, scaffold_slots, paint_hook_slots_end);
                 if (self.model.handles[hooked] == null) break :blk null;
                 var flags = random.intRangeLessThan(u32, 1, 128) & ~@as(u32, c.OT_SCENE_HOOK_LAYOUT_CHANGED);
                 // A box with a BEFORE hook also replaces its body, so recordings play native box bodies;
@@ -781,7 +807,8 @@ const Harness = struct {
                     recordings = .{ .{}, .{} };
                     try self.expectSameSlots(first, second, &recordings);
                     records = .{ recordings[reference].view(), recordings[candidate].view() };
-                    // Paint hooks may change the scene while they record.
+                    // Paint hooks may edit what steady recordings read, or change the scene.
+                    if (self.generateRead()) |op| try self.apply(op);
                     if (self.random.uintLessThan(u32, 4) == 0) {
                         try self.reply();
                         self.stats.record_replies += 1;
@@ -885,28 +912,40 @@ const Harness = struct {
             if (body) self.stats.bodies += 1;
             // Other slots draw text or a fill, in their node or beside it, a view, an editor, a text
             // body, a composed buffer, or a destroyed view; the first one now and then clears,
-            // recolors, or draws an image.
+            // recolors, or draws an image. Three nodes in four draw the same reader, or the view of
+            // a text view node, on the last row of their clip on every frame, so only the
+            // resource's own changes, or that node's size, repaint them.
+            const steady = (a.num + self.read_base) % 4 != 0 and !body;
+            const variant = (index + self.hook_tick) % 8;
+            const read = (a.num + self.read_base / 4) % 4;
+            const bound = if (read == 3) self.slotWith(.text_view) else null;
             const rare = if (index == 0) self.random.uintLessThan(u32, 64) else 64;
             self.stats.non_local_records += @intFromBool(!body and rare < 4);
+            self.stats.steady_reads += @intFromBool(steady and rare >= 4);
             const view_slot = self.slotWith(.text_view);
             for (recordings, [2]context.Handle{ a.node, b.node }, 0..) |*recording, node, twin| {
                 recording.slot(@intCast(index), phase);
-                const source: context.Handle = if (body) node else switch ((index + self.hook_tick) % 8) {
-                    3 => if (view_slot) |slot| self.model.views[slot][twin].? else self.stale[twin],
-                    4 => if (self.slotWith(.editor)) |slot| (try self.twins[twin].owner.raw().getRenderable(self.handle(twin, slot))).scene_node.?.editor.?.handle else self.stale[twin],
-                    5 => if (self.slotWith(.text)) |slot| self.handle(twin, slot) else self.stale[twin],
-                    7 => self.stale[twin],
-                    else => std.mem.zeroes(context.Handle),
+                const operations = [3]u32{ c.OT_SCENE_RECORD_TEXT_VIEW, c.OT_SCENE_RECORD_EDITOR_VIEW, c.OT_SCENE_RECORD_SCENE_BODY };
+                const view = struct {
+                    fn append(target: *Recording, operation: u32, source: context.Handle, at_x: i32, at_y: i32) void {
+                        target.append(c.ot_scene_record_view{ .header = .{ .size = 0, .operation = operation }, .source = .{ .context_id = source.context_id, .slot = source.slot, .generation = source.generation }, .x = at_x, .y = at_y }, &.{});
+                    }
                 };
-                const operation: u32 = if (body or ((index + self.hook_tick) % 8 == 5 and self.slotWith(.text) != null)) c.OT_SCENE_RECORD_SCENE_BODY else if ((index + self.hook_tick) % 8 == 4 and self.slotWith(.editor) != null) c.OT_SCENE_RECORD_EDITOR_VIEW else c.OT_SCENE_RECORD_TEXT_VIEW;
                 if (!body and rare < 4) {
                     appendNonLocal(recording, rare, self.image[twin]);
-                } else if (body or source.context_id != 0) {
-                    recording.append(c.ot_scene_record_view{ .header = .{ .size = 0, .operation = operation }, .source = .{ .context_id = source.context_id, .slot = source.slot, .generation = source.generation }, .x = x, .y = y }, &.{});
-                } else switch ((index + self.hook_tick) % 8) {
+                } else if (body) {
+                    view.append(recording, c.OT_SCENE_RECORD_SCENE_BODY, node, x, y);
+                } else if (steady) {
+                    const bottom = a.clip.y + @as(i32, @intCast(a.clip.height)) - 1;
+                    if (bound) |slot| view.append(recording, c.OT_SCENE_RECORD_TEXT_VIEW, self.model.views[slot][twin].?, a.clip.x, bottom) else view.append(recording, operations[read % 3], self.readers[twin][read % 3], a.clip.x, bottom);
+                } else switch (variant) {
                     0 => recording.text("r", x, y),
                     1 => recording.fill(x, y, 2, .{ @intCast(a.num), 40, 0, 255 }),
                     2 => recording.text("o", x + 3, y + 1),
+                    3 => view.append(recording, c.OT_SCENE_RECORD_TEXT_VIEW, if (view_slot) |slot| self.model.views[slot][twin].? else self.stale[twin], x, y),
+                    4 => view.append(recording, c.OT_SCENE_RECORD_EDITOR_VIEW, if (self.slotWith(.editor)) |slot| (try self.twins[twin].owner.raw().getRenderable(self.handle(twin, slot))).scene_node.?.editor.?.handle else self.stale[twin], x, y),
+                    5 => if (self.slotWith(.text)) |slot| view.append(recording, c.OT_SCENE_RECORD_SCENE_BODY, self.handle(twin, slot), x, y) else view.append(recording, c.OT_SCENE_RECORD_TEXT_VIEW, self.stale[twin], x, y),
+                    7 => view.append(recording, c.OT_SCENE_RECORD_TEXT_VIEW, self.stale[twin], x, y),
                     else => recording.compose(self.scratch[twin], x),
                 }
             }
@@ -914,9 +953,22 @@ const Harness = struct {
         if (self.random.uintLessThan(u32, 4) == 0) self.hook_tick +%= 1;
     }
 
-    /// The first slot of a kind whose resource a recording can read.
+    /// Five times in eight, an edit to what a steady recording reads: a highlight of the
+    /// shared text, the readers, or the width of a node that shows a view.
+    fn generateRead(self: *Harness) ?Op {
+        const random = self.random;
+        return switch (random.uintLessThan(u32, 8)) {
+            0 => .{ .highlight = .{ .start = random.uintLessThan(u32, 4), .end = random.uintLessThan(u32, 8) } },
+            1, 2, 4 => .{ .reader = random.int(u32) },
+            3 => .{ .style = .{ .slot = self.slotWith(.text_view) orelse return null, .group = c.OT_STYLE_DIMENSION, .kind = 0, .unit = 1, .value = @floatFromInt(random.intRangeAtMost(u32, 2, 8)), .flags = 1 } },
+            else => null,
+        };
+    }
+
+    /// The first slot of a kind whose resource a recording can read, past the slots that
+    /// take paint hooks, so a recording reads another node's resource.
     fn slotWith(self: *const Harness, kind: Kind) ?usize {
-        for (self.model.handles, 0..) |maybe, slot| {
+        for (self.model.handles[paint_hook_slots_end..], paint_hook_slots_end..) |maybe, slot| {
             if (maybe != null and self.model.kind[slot] == kind and (kind != .text_view or self.model.views[slot][0] != null)) return slot;
         }
         return null;
@@ -1174,8 +1226,9 @@ const Harness = struct {
                 }
                 try testing.expectEqual(self.model.paint[index].items.len, node.paint_children.items.len);
             }
-            try testing.expectEqual(live, f.state.count);
-            try testing.expectEqual(live, f.state.tokens.count());
+            // The reader text is a scene node outside the tree.
+            try testing.expectEqual(live + 1, f.state.count);
+            try testing.expectEqual(live + 1, f.state.tokens.count());
         }
     }
 
@@ -1235,18 +1288,18 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // fails if the draw that produces its kind is removed. Minimums are about a quarter of the
     // counts at 64 x 256 (decoded frames about two thirds), derived again after replies began to
     // destroy nodes: those must spare content rows, or viewport scenes fall below the culling
-    // cutoff (filtered frames with a request fell from 441 to 51). Counts: reused 9,018,
-    // filtered 893, filtered with a request 422, kept lists in such a frame 84, hooked under
-    // a hidden ancestor 4,770, reply hid the requester's parent 29, reply detached the
-    // requester 37, reply destroyed a node 330, a RECORD reply changed the scene 268,
-    // content-child RESIZE 44, a truncation change in its reply 40, unmeasured content text
-    // replaced 14, UPDATE 2,795, RESIZE 50, LAYOUT_CHANGED 1,678, recordings 948, box bodies 150,
-    // decoded 12,488, an editor's cursor 2,232, a host cursor 7,400, skipped paint 8,393, partly
-    // diffed 1,299, recorded frames that kept rows 304, non-local or image recordings 45, draft
-    // writes after paint 2,888, raw writes between frames 380, shared text changes shown 366,
-    // style changes shown 190, view binds 344, selections 240, equal re-sends 427, palette
-    // changes 77, frames showing a scroll node with children 1,308, scrolls and option changes
-    // 162, SCROLL requests 31.
+    // cutoff (filtered frames with a request fell from 441 to 51). Counts: reused 8,802,
+    // filtered 1,199, filtered with a request 359, kept lists in such a frame 57, hooked under
+    // a hidden ancestor 5,393, reply hid the requester's parent 41, reply detached the
+    // requester 25, reply destroyed a node 504, a RECORD reply changed the scene 95,
+    // content-child RESIZE 39, a truncation change in its reply 38, unmeasured content text
+    // replaced 21, UPDATE 4,044, RESIZE 47, LAYOUT_CHANGED 2,143, recordings 395, box bodies 81,
+    // decoded 12,947, an editor's cursor 1,667, a host cursor 8,313, skipped paint 8,209, partly
+    // diffed 1,289, recorded frames that kept rows 117, non-local or image recordings 21, steady
+    // reads 291, draft writes after paint 2,825, raw writes between frames 402, shared text
+    // changes shown 439, style changes shown 234, view binds 369, selections 238, equal
+    // re-sends 465, palette changes 91, frames showing a scroll node with children 967, scrolls
+    // and option changes 164, SCROLL requests 8.
     const minimums: Stats = .{
         .reused = 2200,
         .filtered = 260,
@@ -1256,22 +1309,23 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .reply_hides = 7,
         .reply_detaches = 9,
         .reply_destroys = 80,
-        .record_replies = 60,
+        .record_replies = 23,
         .content_resizes = 11,
         .content_reply_texts = 10,
         .unmeasured_texts = 3,
         .updates = 680,
         .resizes = 13,
         .layout_changes = 430,
-        .records = 240,
-        .bodies = 40,
+        .records = 98,
+        .bodies = 20,
         .decoded = 8300,
         .editor_cursors = 580,
         .host_cursors = 1900,
         .skipped = 2000,
         .partial = 300,
-        .retained_records = 76,
-        .non_local_records = 11,
+        .retained_records = 29,
+        .non_local_records = 5,
+        .steady_reads = 72,
         .draft_writes = 720,
         .raw_writes = 95,
         .shared_changes = 95,
@@ -1282,7 +1336,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .palettes = 19,
         .scroll_frames = 300,
         .scroll_changes = 42,
-        .scroll_requests = 7,
+        .scroll_requests = 2,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
