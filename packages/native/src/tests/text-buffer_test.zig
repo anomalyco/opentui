@@ -113,8 +113,7 @@ test "TextBuffer CJK layout cache survives history and multiple views" {
     try std.testing.expectEqual(@as(u32, 1), first.getVirtualLineCount());
     try tb.setText(original);
     try std.testing.expectEqual(@as(u32, 11), second.getVirtualLineCount());
-    const styled = try owned_styled.replace(tb, null, &.{.{ .text = replacement }});
-    defer styled.style.deinit();
+    _ = try owned_styled.replace(tb, null, &.{.{ .text = replacement }});
     try std.testing.expectEqual(@as(u32, 10), first.getVirtualLineCount());
     try std.testing.expectEqual(@as(u32, 8), second.getVirtualLineCount());
 }
@@ -939,11 +938,10 @@ test "TextBuffer owned styled replacement preserves previously registered memory
     const preserved_text = "Preserved data";
     const preserved_mem_id = try tb.registerMemBuffer(preserved_text, false);
 
-    const styled = try owned_styled.replace(tb, null, &.{
+    _ = try owned_styled.replace(tb, null, &.{
         .{ .text = "Styled " },
         .{ .text = "Text" },
     });
-    defer styled.style.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
 
@@ -1554,11 +1552,11 @@ fn setupPlainTextHistory(tb: *TextBuffer, style: *text_buffer.SyntaxStyle) !u8 {
     var prepared_links = link.LinkTracker.init(tb.global_allocator, tb.link_pool);
     defer prepared_links.deinit();
     const link_id = try prepared_links.trackUrl("https://example.com/plain");
-    const style_id = try style.registerStyle("chunk0", null, null, TextAttributes.setLinkId(0, link_id));
+    tb.setSyntaxStyle(style);
     const copy = try tb.global_allocator.dupe(u8, text);
-    const mem_id = tb.replaceOwnedStyledText(copy, null, style, &.{.{
+    const mem_id = tb.replaceOwnedStyledText(copy, null, &.{.{
         .byte_count = @intCast(text.len),
-        .style_id = style_id,
+        .style = .{ .fg = null, .bg = null, .attributes = TextAttributes.setLinkId(0, link_id) },
     }}, &prepared_links) catch |err| {
         tb.global_allocator.free(copy);
         return err;
@@ -1611,7 +1609,9 @@ const TextState = struct {
     span_counts: [2]usize = @splat(0),
     slots: usize,
     links: u32,
-    style: ?*const text_buffer.SyntaxStyle,
+    // An address: expectEqualDeep would follow the style's borrower list in circles.
+    style: usize,
+    run_styles: usize,
     undo_depth: usize,
 
     fn capture(tb: *TextBuffer) TextState {
@@ -1621,7 +1621,8 @@ const TextState = struct {
             .highlights = tb.getHighlightCount(),
             .slots = tb.memRegistry().getUsedSlots(),
             .links = if (tb.link_tracker) |*tracker| tracker.getLinkCount() else 0,
-            .style = tb.getSyntaxStyle(),
+            .style = if (tb.getSyntaxStyle()) |style| @intFromPtr(style) else 0,
+            .run_styles = tb.run_styles.count(),
             .undo_depth = tb.rope().undo_depth,
         };
         result.text_len = tb.getPlainTextIntoBuffer(&result.text);
@@ -1702,26 +1703,21 @@ fn replaceOwnedStyledForTest(
     mem_id: ?u8,
     byte_counts: []const u32,
     url: []const u8,
-) !struct { mem_id: u8, style: *text_buffer.SyntaxStyle, link_id: u32 } {
-    const style = try text_buffer.SyntaxStyle.init(tb.global_allocator);
-    errdefer style.deinit();
+) !struct { mem_id: u8, link_id: u32 } {
     var prepared_links = link.LinkTracker.init(tb.global_allocator, tb.link_pool);
     defer prepared_links.deinit();
     var link_id: u32 = 0;
     const chunks = try tb.global_allocator.alloc(text_buffer.OwnedStyledChunk, byte_counts.len);
     defer tb.global_allocator.free(chunks);
     for (byte_counts, 0..) |byte_count, i| {
-        var name_buffer: [32]u8 = undefined;
-        const name = try std.fmt.bufPrint(&name_buffer, "chunk{d}", .{i});
         link_id = try prepared_links.trackUrl(url);
         chunks[i] = .{
             .byte_count = byte_count,
-            .style_id = try style.registerStyle(name, null, null, TextAttributes.setLinkId(@intCast(i + 1), link_id)),
+            .style = .{ .fg = null, .bg = null, .attributes = TextAttributes.setLinkId(@intCast(i + 1), link_id) },
         };
     }
     return .{
-        .mem_id = try tb.replaceOwnedStyledText(text, mem_id, style, chunks, &prepared_links),
-        .style = style,
+        .mem_id = try tb.replaceOwnedStyledText(text, mem_id, chunks, &prepared_links),
         .link_id = link_id,
     };
 }
@@ -1740,7 +1736,6 @@ test "TextBuffer owned styled replacement preserves accepted linked content on a
             defer tb.deinit();
             const old_bytes = try allocator.dupe(u8, "accepted");
             const old = try replaceOwnedStyledForTest(tb, old_bytes, null, &.{8}, "https://old.test");
-            defer old.style.deinit();
             const before = TextState.capture(tb);
             const arena = tb.getArenaAllocatedBytes();
             const copy = try allocator.dupe(u8, "new\nlinked");
@@ -1753,11 +1748,9 @@ test "TextBuffer owned styled replacement preserves accepted linked content on a
             failing.resize_fail_index = std.math.maxInt(usize);
             if (result) |accepted| {
                 transferred = true;
-                defer accepted.style.deinit();
                 try std.testing.expectEqual(@as(u32, 0), try links.getRefcount(old.link_id));
                 try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(accepted.link_id));
-                try std.testing.expectEqual(@as(usize, 0), old.style.emitter.listeners.get(.Destroy).?.items.len);
-                try std.testing.expectEqual(@as(usize, 1), accepted.style.emitter.listeners.get(.Destroy).?.items.len);
+                try std.testing.expectEqual(@as(usize, 2), tb.run_styles.count());
                 try std.testing.expectEqual(copy.ptr, tb.getMemBuffer(accepted.mem_id).?.ptr);
                 var actual: [32]u8 = undefined;
                 try std.testing.expectEqualStrings(copy, actual[0..tb.getPlainTextIntoBuffer(&actual)]);
@@ -1770,7 +1763,6 @@ test "TextBuffer owned styled replacement preserves accepted linked content on a
                 try std.testing.expectEqual(arena, tb.getArenaAllocatedBytes());
                 try std.testing.expectEqual(@as(u64, 1), links.getLiveSlotCount());
                 try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(old.link_id));
-                try std.testing.expectEqual(@as(usize, 1), old.style.emitter.listeners.get(.Destroy).?.items.len);
                 try std.testing.expectEqualStrings("new\nlinked", copy);
             }
         }
@@ -1778,7 +1770,7 @@ test "TextBuffer owned styled replacement preserves accepted linked content on a
     }
 }
 
-test "TextBuffer prepared styled replacement abort detaches only the candidate and commit does not allocate" {
+test "TextBuffer prepared styled replacement abort keeps the accepted styles and commit does not allocate" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     const allocator = failing.allocator();
     var pool = gp.GraphemePool.init(allocator);
@@ -1789,23 +1781,17 @@ test "TextBuffer prepared styled replacement abort detaches only the candidate a
     defer tb.deinit();
     const old_copy = try allocator.dupe(u8, "accepted");
     const old = try replaceOwnedStyledForTest(tb, old_copy, null, &.{8}, "https://example.test/old");
-    defer old.style.deinit();
     const epoch = tb.getContentEpoch();
     const copy = try allocator.dupe(u8, "next");
     var transferred = false;
     defer if (!transferred) allocator.free(copy);
-    const style = try text_buffer.SyntaxStyle.init(allocator);
-    defer style.deinit();
-    const chunks = [_]text_buffer.OwnedStyledChunk{.{ .byte_count = 4, .style_id = 0 }};
+    const chunks = [_]text_buffer.OwnedStyledChunk{.{ .byte_count = 4, .style = .{ .fg = null, .bg = null, .attributes = 3 } }};
     var prepared: TextBuffer.PreparedOwnedStyledText = undefined;
-    try tb.prepareOwnedStyledText(&prepared, copy, old.mem_id, style, &chunks, null, null);
+    try tb.prepareOwnedStyledText(&prepared, copy, old.mem_id, &chunks, null);
     try std.testing.expectEqual(epoch, tb.getContentEpoch());
-    try std.testing.expectEqual(old.style, tb.getSyntaxStyle().?);
     prepared.deinit();
-    try std.testing.expectEqual(@as(usize, 0), style.emitter.listeners.get(.Destroy).?.items.len);
-    try std.testing.expectEqual(@as(usize, 1), old.style.emitter.listeners.get(.Destroy).?.items.len);
-    try std.testing.expectEqual(old.style, tb.getSyntaxStyle().?);
-    try tb.prepareOwnedStyledText(&prepared, copy, old.mem_id, style, &chunks, null, null);
+    try std.testing.expectEqual(@as(u32, 1), tb.run_styles.keys()[0].attributes & 0xff);
+    try tb.prepareOwnedStyledText(&prepared, copy, old.mem_id, &chunks, null);
     defer prepared.deinit();
     const allocations = failing.alloc_index;
     const resizes = failing.resize_index;
@@ -1816,7 +1802,7 @@ test "TextBuffer prepared styled replacement abort detaches only the candidate a
     try std.testing.expectEqual(allocations, failing.alloc_index);
     try std.testing.expectEqual(resizes, failing.resize_index);
     try std.testing.expect(!failing.has_induced_failure);
-    try std.testing.expectEqual(style, tb.getSyntaxStyle().?);
+    try std.testing.expectEqual(@as(u32, 3), tb.run_styles.keys()[0].attributes);
     try std.testing.expectEqual(epoch + 1, tb.getContentEpoch());
 }
 
@@ -1829,51 +1815,46 @@ test "TextBuffer owned styled replacement rejects unowned and foreign links with
     defer tb.deinit();
     const old_copy = try std.testing.allocator.dupe(u8, "accepted");
     const old = try replaceOwnedStyledForTest(tb, old_copy, null, &.{8}, "https://example.com/old");
-    defer old.style.deinit();
     const old_root = tb.rope().root;
     const epoch = tb.getContentEpoch();
     const copy = try std.testing.allocator.dupe(u8, "new");
     defer std.testing.allocator.free(copy);
-    const style = try text_buffer.SyntaxStyle.init(std.testing.allocator);
-    defer style.deinit();
     var prepared = link.LinkTracker.init(std.testing.allocator, &links);
     defer prepared.deinit();
     const id = try prepared.trackUrl("https://example.com/new");
-    const style_id = try style.registerStyle("new", null, null, TextAttributes.setLinkId(0, id));
-    const chunks = [_]text_buffer.OwnedStyledChunk{.{ .byte_count = 3, .style_id = style_id }};
+    var chunks = [_]text_buffer.OwnedStyledChunk{.{ .byte_count = 3, .style = .{ .fg = null, .bg = null, .attributes = TextAttributes.setLinkId(0, id) } }};
 
-    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, style, &chunks, null));
+    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, &chunks, null));
     var empty = link.LinkTracker.init(std.testing.allocator, &links);
     defer empty.deinit();
-    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, style, &chunks, &empty));
+    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, &chunks, &empty));
     var other_pool = link.LinkPool.init(std.testing.allocator);
     defer other_pool.deinit();
     var foreign = link.LinkTracker.init(std.testing.allocator, &other_pool);
     defer foreign.deinit();
     _ = try foreign.trackUrl("https://example.com/new");
-    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, style, &chunks, &foreign));
+    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, &chunks, &foreign));
     try std.testing.expectEqual(@as(u32, 1), foreign.getLinkCount());
 
-    _ = try style.registerStyle("new", null, null, TextAttributes.setLinkId(0, old.link_id));
-    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, style, &chunks, &tb.link_tracker.?));
-    _ = try style.registerStyle("new", null, null, TextAttributes.setLinkId(0, id));
+    chunks[0].style.attributes = TextAttributes.setLinkId(0, old.link_id);
+    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, &chunks, &tb.link_tracker.?));
+    chunks[0].style.attributes = TextAttributes.setLinkId(0, id);
     prepared.used_ids.getPtr(id).?.* = 0;
-    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, style, &chunks, &prepared));
+    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, &chunks, &prepared));
     try std.testing.expectEqual(@as(u32, 0), prepared.used_ids.get(id).?);
     prepared.used_ids.getPtr(id).?.* = 1;
     try links.decref(id);
-    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, style, &chunks, &prepared));
+    try std.testing.expectError(error.InvalidId, tb.replaceOwnedStyledText(copy, old.mem_id, &chunks, &prepared));
     try std.testing.expectEqual(@as(u32, 1), prepared.used_ids.get(id).?);
     _ = prepared.used_ids.remove(id);
 
     try std.testing.expectEqual(old_root, tb.rope().root);
     try std.testing.expectEqual(epoch, tb.getContentEpoch());
-    try std.testing.expectEqual(old.style, tb.getSyntaxStyle().?);
     try std.testing.expectEqual(@as(u32, 1), tb.link_tracker.?.getLinkCount());
     try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(old.link_id));
     try std.testing.expectEqual(@as(u64, 1), links.getLiveSlotCount());
     try std.testing.expectEqual(@as(usize, 1), tb.mem_registry.getUsedSlots());
-    try std.testing.expectEqual(@as(usize, 1), style.getStyleCount());
+    try std.testing.expectEqual(@as(usize, 1), tb.run_styles.count());
     try std.testing.expectEqualStrings("new", copy);
 }
 
@@ -1887,8 +1868,6 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
     const tb = try TextBuffer.init(allocator, &pool, &links, .unicode);
     defer tb.deinit();
     var mem_id: ?u8 = null;
-    var style: ?*text_buffer.SyntaxStyle = null;
-    defer if (style) |value| value.deinit();
     var retained: [5]usize = undefined;
     for (0..8) |iteration| {
         for ([_]struct { text: []const u8, styled: bool }{
@@ -1901,26 +1880,17 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
             const copy = try allocator.dupe(u8, case.text);
             var transferred = false;
             defer if (!transferred) allocator.free(copy);
-            const previous = style;
             if (case.styled) {
                 const sizes = [_]u32{@intCast(copy.len)};
-                const accepted = try replaceOwnedStyledForTest(tb, copy, mem_id, sizes[0..@intFromBool(copy.len > 0)], "https://example.com/transition");
-                mem_id = accepted.mem_id;
-                style = accepted.style;
+                mem_id = (try replaceOwnedStyledForTest(tb, copy, mem_id, sizes[0..@intFromBool(copy.len > 0)], "https://example.com/transition")).mem_id;
             } else {
                 mem_id = try tb.replaceOwnedText(copy, mem_id);
-                tb.setSyntaxStyle(null);
-                style = null;
                 try std.testing.expectEqual(@as(u32, 0), tb.getHighlightCount());
                 for (tb.line_spans.items) |list| try std.testing.expectEqual(@as(usize, 0), list.items.len);
             }
             transferred = true;
-            if (previous) |value| {
-                try std.testing.expectEqual(@as(usize, 0), value.emitter.listeners.get(.Destroy).?.items.len);
-                value.deinit();
-            }
-            try std.testing.expectEqual(style, tb.getSyntaxStyle());
             const link_count: u32 = @intFromBool(case.styled and copy.len > 0);
+            try std.testing.expectEqual(@as(usize, link_count), tb.run_styles.count());
             try std.testing.expectEqual(link_count, tb.link_tracker.?.getLinkCount());
             try std.testing.expectEqual(link_count, links.getLiveSlotCount());
             try std.testing.expectEqual(link_count, links.interned_live_ids.count());
@@ -1987,7 +1957,6 @@ test "TextBuffer clear and reset retire multipage links without pool allocation"
             part.* = .{ .text = "A", .url = url };
         }
         var styled = try owned_styled.replace(tb, null, &parts);
-        defer styled.style.deinit();
         const num_slots = links.num_slots;
         try std.testing.expect(num_slots > links.slots_per_page);
         try std.testing.expectEqual(parts.len, tb.link_tracker.?.getLinkCount());
@@ -1997,6 +1966,7 @@ test "TextBuffer clear and reset retire multipage links without pool allocation"
         failing.fail_index = alloc_index;
         failing.resize_fail_index = resize_index;
         if (reset) try tb.reset() else try tb.clear();
+        try std.testing.expectEqual(@as(usize, if (reset) 0 else parts.len), tb.run_styles.count());
         try std.testing.expectEqual(@as(u32, 0), tb.getLength());
         try std.testing.expectEqual(@as(u32, 0), tb.link_tracker.?.getLinkCount());
         try std.testing.expectEqual(@as(u32, 0), links.interned_live_ids.count());
@@ -2008,9 +1978,14 @@ test "TextBuffer clear and reset retire multipage links without pool allocation"
 
         failing.fail_index = std.math.maxInt(usize);
         failing.resize_fail_index = std.math.maxInt(usize);
-        const previous = styled;
-        styled = try owned_styled.replace(tb, if (reset) null else previous.mem_id, &parts);
-        previous.style.deinit();
+        if (!reset) {
+            // Clear keeps the styled highlights, but text appended under them links nowhere.
+            try tb.append("A");
+            const kept = tb.resolveStyle(tb.getLineHighlights(0)[0].style_id).?;
+            try std.testing.expectEqual(@as(u32, 0), TextAttributes.getLinkId(kept.attributes));
+        }
+        styled = try owned_styled.replace(tb, if (reset) null else styled.mem_id, &parts);
+        try std.testing.expect(TextAttributes.getLinkId(tb.resolveStyle(tb.getLineHighlights(0)[0].style_id).?.attributes) != 0);
         try std.testing.expectEqual(parts.len, tb.getLength());
         try std.testing.expectEqual(parts.len, tb.link_tracker.?.getLinkCount());
         try std.testing.expectEqual(num_slots, links.num_slots);
@@ -2026,11 +2001,10 @@ test "TextBuffer clear failure preserves text, highlights, links, and view state
     defer links.deinit();
     const tb = try TextBuffer.init(std.testing.allocator, &pool, &links, .unicode);
     defer tb.deinit();
-    const styled = try owned_styled.replace(tb, null, &.{.{
+    _ = try owned_styled.replace(tb, null, &.{.{
         .text = "old",
         .url = "https://example.com",
     }});
-    defer styled.style.deinit();
     const replacement = try tb.registerMemBuffer("replacement", false);
     try tb.rope().store_undo("styled");
     const view = try tb.registerView();

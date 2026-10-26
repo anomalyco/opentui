@@ -139,46 +139,88 @@ describe("ScrollBoxRenderable - child delegation", () => {
 })
 
 describe("ScrollBoxRenderable - culled content layout freshness", () => {
-  test("rows revealed after off-screen relayouts render at fresh positions", async () => {
-    const scrollbox = new ScrollBoxRenderable(testRenderer, {
-      id: "reveal-scrollbox",
-      width: 30,
-      height: 6,
-      viewportCulling: true,
-    })
-    testRenderer.root.add(scrollbox)
+  // Each case changes the layout of 40 culled rows (each 1 tall), renders, and checks the frame. `lines` maps a
+  // screen row to the row label it shows, or to null for a row without one.
+  const cases: {
+    name: string
+    act: (scrollbox: ScrollBoxRenderable, rows: BoxRenderable[]) => Promise<void>
+    lines?: [number, string | null][]
+    sizeChanges?: number
+  }[] = [
+    {
+      name: "rows revealed after several off-screen relayouts render at fresh positions",
+      act: async (scrollbox, rows) => {
+        scrollbox.scrollTo(scrollbox.scrollHeight)
+        await renderOnce()
+        for (const rowHeight of [2, 3, 2]) {
+          rows[0].height = rowHeight
+          await renderOnce()
+        }
+        scrollbox.scrollTo(0)
+      },
+      lines: [
+        [0, "row-0 "],
+        [2, "row-1 "],
+        [3, "row-2 "],
+        [4, "row-3 "],
+      ],
+    },
+    {
+      name: "a row that grows in the same frame as a scroll moves the rows culled against",
+      act: async (scrollbox, rows) => {
+        rows[0].height = 7
+        scrollbox.scrollTo(20)
+      },
+      lines: [0, 1, 2, 3, 4, 5].map((line) => [line, `row-${14 + line} `]),
+    },
+    {
+      name: "an off-screen row that resizes receives onSizeChange in that frame",
+      act: async (_, rows) => {
+        rows[30].height = 3
+      },
+      lines: [[0, "row-0 "]],
+      sizeChanges: 1,
+    },
+    {
+      name: "a row moved by a culled relayout renders at its new position once scrolled into view",
+      act: async (scrollbox, rows) => {
+        rows[10].height = 3
+        await renderOnce()
+        // rows[11] moved down by 2 while culled; its public position must say so.
+        scrollbox.scrollTo(rows[11].y - scrollbox.content.y - 1)
+      },
+      lines: [
+        [0, null],
+        [1, "row-11 "],
+        [2, "row-12 "],
+      ],
+    },
+  ]
 
-    const rows: BoxRenderable[] = []
-    for (let i = 0; i < 40; i++) {
-      const row = new BoxRenderable(testRenderer, { id: `reveal-row-${i}`, height: 1, flexShrink: 0 })
-      row.add(new TextRenderable(testRenderer, { content: `row-${i}` }))
-      scrollbox.add(row)
-      rows.push(row)
-    }
-    await renderOnce()
-
-    scrollbox.scrollTo(scrollbox.scrollHeight)
-    await renderOnce()
-
-    // While the top rows are culled (their subtrees skipped by traversal),
-    // relayout several times so any staleness in skipped subtrees would have
-    // multiple chances to accumulate before the rows are revealed again.
-    for (const rowHeight of [2, 3, 2]) {
-      rows[0].height = rowHeight
+  for (const { name, act, lines, sizeChanges } of cases) {
+    test(name, async () => {
+      const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 30, height: 6, viewportCulling: true })
+      testRenderer.root.add(scrollbox)
+      const rows: BoxRenderable[] = []
+      let resized = 0
+      for (let i = 0; i < 40; i++) {
+        const row = new BoxRenderable(testRenderer, { height: 1, flexShrink: 0, onSizeChange: () => resized++ })
+        row.add(new TextRenderable(testRenderer, { content: `row-${i}` }))
+        scrollbox.add(row)
+        rows.push(row)
+      }
       await renderOnce()
-    }
-
-    scrollbox.scrollTo(0)
-    await renderOnce()
-
-    // row-0 is now 2 tall, so the following rows must have shifted down and
-    // their text subtrees must render at fresh absolute positions.
-    const lines = captureCharFrame().split("\n")
-    expect(lines[0]).toContain("row-0")
-    expect(lines[2]).toContain("row-1")
-    expect(lines[3]).toContain("row-2")
-    expect(lines[4]).toContain("row-3")
-  })
+      resized = 0
+      await act(scrollbox, rows)
+      await renderOnce()
+      const frame = captureCharFrame().split("\n")
+      for (const [line, label] of lines ?? []) {
+        if (label === null) expect(frame[line]).not.toContain("row-")
+        else expect(frame[line]).toContain(label)
+      }
+      if (sizeChanges !== undefined) expect(resized).toBe(sizeChanges)
+    })
+  }
 })
 
 describe("ScrollBoxRenderable - clipping", () => {

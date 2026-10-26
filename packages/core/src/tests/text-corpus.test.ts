@@ -8,6 +8,7 @@ import { EditBuffer } from "../edit-buffer.js"
 import { EditorView } from "../editor-view.js"
 import { TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
+import { RGBA } from "../lib/RGBA.js"
 import type { LineInfo, WidthMethod } from "../types.js"
 
 type Row = Record<string, any> & { id: string }
@@ -165,6 +166,20 @@ function runRow(row: Row, method: string, failures: string[]): void {
       const target = view(buffer, null)
       target.setViewport(x, 0, row.cols ?? 80, 1)
       check("draw_at", same(drawRows(target, row.cols ?? 80, 1), expected.filter(Boolean)))
+    }
+    // At cols too, so a glyph that does not fit at the right edge is left out by every drawer.
+    for (const width of row.draw_text ? [80, row.cols ?? 80] : []) {
+      const target = own(OptimizedBuffer.create(width, 1, methods[method], { owner: context }))
+      // The row with its trailing blanks, so a glyph drawn in other columns shows.
+      const drawn = (draw: () => void): string => (target.clear(), draw(), decoder.decode(target.getRealCharBytes()))
+      const white = RGBA.fromValues(1, 1, 1, 1)
+      const layout = drawn(() => target.drawTextBuffer(unwrapped, 0, 0))
+      check("draw_text", drawn(() => target.drawText(text, 0, 0, white)) === layout)
+      const encoded = target.encodeUnicode(text)
+      const place = () =>
+        encoded.data.reduce((x, glyph) => (target.drawChar(glyph.char, x, 0, white, white), x + glyph.width), 0)
+      check("encode", drawn(place) === layout)
+      target.freeUnicode(encoded)
     }
     for (const [start, end, expected] of want("select") ?? []) {
       const target = view(buffer, null)

@@ -1045,7 +1045,7 @@ function snapshotScene(ctx: BenchmarkContext, runtime: ScenarioRuntime) {
   const numbers = new Map(nodes.map((node, index) => [node.num, index]))
   const hits = Array.from({ length: cells.width * cells.height }, (_, index) => {
     const hit = ctx.renderer.hitTest(index % cells.width, Math.floor(index / cells.width))
-    assert.ok(hit === 0 || numbers.has(hit), "hit grid references an unknown node")
+    assert.ok(hit === 0 || numbers.has(hit), "a hit test returned an unknown node")
     return numbers.get(hit) ?? -1
   })
   if (!runtime.log) assert.equal(hits[0], 1, "the first visible node must be hittable")

@@ -191,6 +191,8 @@ const Attempt = struct {
     requests: u32 = 0,
     request_id: u64 = 0,
     pending: ?FrameRequest = null,
+    // Scene.visibility_epoch when this round stamped prepared_visible.
+    visibility_epoch: u64 = 0,
 };
 
 pub const ImageState = struct {
@@ -243,11 +245,15 @@ pub const Node = struct {
         needs_layout: bool = true,
         display_none: bool = false,
         clips_children: bool = false,
+        // Visible with every ancestor when this round prepared the node.
+        prepared_visible: bool = false,
     } = .{},
     paint: Paint = .{},
     layout: Layout = .{},
     observed_layout: Layout = .{},
     viewport: ?handles.Handle = null,
+    // A filtered parent's layout_epoch when every child last refreshed, refreshing while a batch runs, or 0.
+    children_observed: u64 = 0,
     focus_frame: u64 = 0,
     text: ?*Text = null,
     editor: ?*Editor = null,
@@ -291,6 +297,8 @@ const PreparationFrame = struct {
 };
 
 const no_slot = std.math.maxInt(u32);
+// A filtered parent's children_observed while its refresh batch runs; no layout_epoch reaches it.
+const children_refreshing = std.math.maxInt(u64);
 
 /// A prepared member of a recorded frame. Handles survive the host's record batch.
 const PaintMember = struct {
@@ -313,6 +321,21 @@ pub const PaintSlot = struct {
     clip: buffer.ClipRect,
     opacity: f32,
 };
+
+/// A painted member's rect within its clip, in screen cells.
+pub const Hit = struct { x: u32, y: u32, width: u32, height: u32, token: u32 };
+
+/// The index of the last hit in paint order that covers a cell: what a grid that every
+/// member overwrote in paint order would hold there.
+pub fn topmostHit(hits: []const Hit, x: u32, y: u32) ?usize {
+    var index = hits.len;
+    while (index != 0) {
+        index -= 1;
+        const hit = hits[index];
+        if (x >= hit.x and y >= hit.y and x - hit.x < hit.width and y - hit.y < hit.height) return index;
+    }
+    return null;
+}
 
 const Filter = struct {
     viewport: Layout,
@@ -351,11 +374,20 @@ pub const Scene = struct {
     paint_members: std.ArrayListUnmanaged(PaintMember) = .empty,
     paint_slots: std.ArrayListUnmanaged(PaintSlot) = .empty,
     segments: std.ArrayListUnmanaged(scene_record.Segments) = .empty,
+    // Hit rectangles in paint order: the draft frame's, and the presented frame's. A hit
+    // test walks the presented ones from the top, so no frame writes a screen-sized grid.
+    hits: std.ArrayListUnmanaged(Hit) = .empty,
+    presented_hits: std.ArrayListUnmanaged(Hit) = .empty,
+    hits_frame: u64 = 0,
+    hits_generation: u64 = 0,
+    presented_hits_frame: u64 = 0,
     attempt: ?Attempt = null,
     painted: ?Painted = null,
     cancelled_paint: bool = false,
     last_frame_id: u64 = 0,
     layout_epoch: u64 = 0,
+    // Changes with any display or ancestry change, so stamped visibility goes stale mid-attempt.
+    visibility_epoch: u64 = 0,
     solve_frame: u64 = 0,
     solve_round: u32 = 0,
     layout_pending: bool = false,
@@ -369,6 +401,9 @@ pub const Scene = struct {
     // OT_SCENE_DEBUG_* bits. Every shortcut that skips frame work tests FULL_FRAME; today that is work-list reuse.
     debug_flags: u32 = 0,
     test_sort_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    test_hit_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    // Editor cursor work: placements tried and releases written.
+    test_cursor_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator, config: *yoga.Config, session: handles.Handle) !*Scene {
         const self = try allocator.create(Scene);
@@ -390,6 +425,8 @@ pub const Scene = struct {
         self.paint_members.deinit(self.allocator);
         self.paint_slots.deinit(self.allocator);
         self.segments.deinit(self.allocator);
+        self.hits.deinit(self.allocator);
+        self.presented_hits.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -500,6 +537,7 @@ pub const Scene = struct {
             node.placement = self.last_placement;
         } else if (destination == null) node.placement = 0;
         node.layout_flags.needs_layout = true;
+        self.visibility_epoch +%= 1;
         self.preparation_dirty = true;
         self.work.clearRetainingCapacity();
     }
@@ -535,6 +573,7 @@ pub const Scene = struct {
         if (self.focus) |focused| {
             if (std.meta.eql(focused, node.handle)) self.focus = null;
         }
+        self.visibility_epoch +%= 1;
         self.preparation_dirty = true;
         self.work.clearRetainingCapacity();
         const storage: native.NodeStorage = .{
@@ -672,8 +711,20 @@ pub const Scene = struct {
         self.layout_hook_count += @intFromBool(flags & scene_layout_hook_flags != 0);
         node.hook_flags = flags;
         node.hook_generation = generation;
+        self.invalidateObservation(value);
+    }
+
+    /// The node's next refresh may differ although its layout did not change: its filtered
+    /// parent refreshes every child in the next round.
+    pub fn markObservationStale(value: *native.NativeRenderable) void {
+        const parent = (value.scene_node orelse return).parent orelse return;
+        parent.scene_node.?.children_observed = 0;
+    }
+
+    pub fn invalidateObservation(self: *Scene, value: *native.NativeRenderable) void {
         self.preparation_dirty = true;
         self.work.clearRetainingCapacity();
+        markObservationStale(value);
     }
 
     pub fn cancelFrame(self: *Scene) void {
@@ -815,8 +866,11 @@ pub const Scene = struct {
                         if (operation.kind == .placed) node.placement = 0;
                     },
                     .prepass => {
+                        // The batch starts before placed children refresh, so their replies' stale marks survive it.
+                        if (operation.placement == 0 and node.viewport != null and
+                            (node.children_observed != self.layout_epoch or self.forcesFullFrame())) node.children_observed = children_refreshing;
                         // A resize callback can append to the live placement Set.
-                        self.feedback.appendAssumeCapacity(operation);
+                        self.feedback.appendAssumeCapacity(.{ .node = operation.node, .kind = .prepass, .placement = 1 });
                         const start = self.feedback.items.len;
                         for (node.children.items) |child| {
                             const state = child.scene_node.?;
@@ -840,6 +894,8 @@ pub const Scene = struct {
                             sortChildren(node, active.frame_id);
                             if (node.viewport != null) {
                                 self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
+                                // Refresh repeats its last result until a solve or a stale mark changes an input.
+                                if (node.children_observed == self.layout_epoch and !self.forcesFullFrame()) continue;
                                 for (node.paint_children.items, 0..) |child, index| {
                                     const state = child.scene_node.?;
                                     if (state.prepared_frame != active.frame_id or state.prepared_round != active.rounds) continue;
@@ -862,7 +918,11 @@ pub const Scene = struct {
                         // Drain every direct refresh before selecting a fixed update batch.
                         const filter = try self.childFilter(objects, value);
                         const parent_layout = if (filter != null) try composedLayout(value, false) else Layout{};
-                        if (node.viewport != null) active.filter_selected = true;
+                        if (node.viewport != null) {
+                            active.filter_selected = true;
+                            // A stale mark during the batch keeps it unobserved for the next round.
+                            if (node.children_observed == children_refreshing) node.children_observed = self.layout_epoch;
+                        }
                         var index = node.paint_children.items.len;
                         while (index != 0) {
                             index -= 1;
@@ -995,6 +1055,11 @@ pub const Scene = struct {
     }
 
     fn isVisibleMember(self: *Scene, value: *native.NativeRenderable) !bool {
+        const node = value.scene_node.?;
+        const active = self.attempt.?;
+        // Preparation enters only visible nodes, so its stamp answers until a display or ancestry change.
+        if (node.prepared_frame == active.frame_id and node.prepared_round == active.rounds and
+            active.visibility_epoch == self.visibility_epoch and !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
         var cursor: ?*native.NativeRenderable = value;
         var depth: u32 = 0;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
@@ -1100,6 +1165,7 @@ pub const Scene = struct {
             node.prepared_frame = active.frame_id;
             node.prepared_round = active.rounds;
             node.feedback_state = .unseen;
+            node.layout_flags.prepared_visible = entry.visible;
             if (!phases) {
                 if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
                 // With hooks, hidden roots never enter refresh; placed hidden children still do.
@@ -1113,6 +1179,7 @@ pub const Scene = struct {
                 node.layout_flags.needs_layout = false;
             }
         }
+        active.visibility_epoch = self.visibility_epoch;
         if (phases and self.work.items.len != 0) {
             const node = self.work.items[0].node.scene_node.?;
             self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .update });
@@ -1122,23 +1189,44 @@ pub const Scene = struct {
 
     fn releaseEditorCursor(self: *Scene, cli: *renderer.CliRenderer) void {
         if (!self.editor_cursor_owned) return;
+        if (builtin.is_test) self.test_cursor_steps += 1;
         cli.terminal.setCursorPosition(1, 1, false);
         self.editor_cursor_owned = false;
     }
 
-    fn beginPaint(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions) !void {
-        self.releaseEditorCursor(cli);
+    fn beginPaint(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions, members: usize) !void {
         const target = cli.getNextBuffer();
         target.clearScissorRects();
         target.clearOpacity();
-        cli.hitGridClearScissorRects();
         try target.scissor_stack.ensureTotalCapacity(self.allocator, 1);
         try target.opacity_stack.ensureTotalCapacity(self.allocator, 1);
         cli.setBackgroundColor(options.background);
         target.clear(options.background, if (options.preserve_unwritten) 0 else null);
-        @import("utils.zig").fillU32(cli.nextHitGrid, 0);
         self.frame_work.cells_cleared += @as(u64, target.width) * target.height;
-        self.frame_work.hit_cells_cleared += cli.nextHitGrid.len;
+        self.settleHits(cli);
+        self.hits.clearRetainingCapacity();
+        try self.hits.ensureTotalCapacity(self.allocator, members);
+        self.hits_frame = self.attempt.?.frame_id;
+        self.hits_generation = cli.hits_generation;
+    }
+
+    /// The draft's hits become the presented ones once the renderer published its frame.
+    fn settleHits(self: *Scene, cli: *const renderer.CliRenderer) void {
+        if (self.hits_frame == 0 or self.hits_frame != cli.presented_hits_frame or self.hits_generation != cli.hits_generation) return;
+        std.mem.swap(std.ArrayListUnmanaged(Hit), &self.hits, &self.presented_hits);
+        self.presented_hits_frame = self.hits_frame;
+        self.hits_frame = 0;
+    }
+
+    /// The token of the topmost presented hit rectangle at a cell, or 0.
+    pub fn hitToken(self: *Scene, cli: *const renderer.CliRenderer, x: u32, y: u32) u32 {
+        self.settleHits(cli);
+        // Every hit lies inside the screen.
+        if (x >= cli.width or y >= cli.height or self.presented_hits_frame != cli.presented_hits_frame) return 0;
+        const hits = self.presented_hits.items;
+        const index = topmostHit(hits, x, y);
+        if (builtin.is_test) self.test_hit_steps += hits.len - (index orelse 0);
+        return if (index) |found| hits[found].token else 0;
     }
 
     fn markFocus(self: *Scene, objects: *const handles.Table) !void {
@@ -1222,21 +1310,18 @@ pub const Scene = struct {
     /// the visible paint list with native bodies only.
     fn paintFrame(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
         const target = cli.getNextBuffer();
-        errdefer {
-            target.clear(cli.backgroundColor, null);
-            @memset(cli.nextHitGrid, 0);
-        }
+        errdefer target.clear(cli.backgroundColor, null);
         defer target.clearScissorRects();
         defer target.clearOpacity();
-        try self.beginPaint(cli, options);
-        const bytes = recording orelse {
-            for (self.work.items) |entry| {
-                if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
-                try self.paintMember(owner, cli, entry, options, .{});
-            }
-            return;
+        try self.beginPaint(cli, options, if (recording == null) self.work.items.len else self.paint_members.items.len);
+        // The focused editor among the painted members owns the cursor, wherever it paints.
+        var cursor: ?Work = null;
+        if (recording == null) for (self.work.items) |entry| {
+            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
+            try self.paintMember(owner, cli, entry, options, .{});
+            if (self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
         };
-        for (self.paint_members.items) |member| {
+        if (recording) |bytes| for (self.paint_members.items) |member| {
             const value = owner.objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
             std.debug.assert(value.scene_node.?.owner == self);
             const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or refresh_views };
@@ -1246,19 +1331,25 @@ pub const Scene = struct {
                 .hooks = self.paint_slots.items[member.slot].hooks,
             };
             try self.paintMember(owner, cli, entry, options, phases);
-        }
+            if (self.focusedEditor(value.scene_node.?)) cursor = entry;
+        };
+        self.maintainCursor(cli, cursor);
+    }
+
+    fn focusedEditor(self: *const Scene, node: *const Node) bool {
+        return node.editor != null and self.focus != null and std.meta.eql(self.focus.?, node.handle);
     }
 
     fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
         const node = entry.node.scene_node.?;
         const cells = cellLayout(entry.layout);
+        const painted = intersection(.{
+            .x = @intFromFloat(cells.screenX),
+            .y = @intFromFloat(cells.screenY),
+            .width = @intFromFloat(cells.width),
+            .height = @intFromFloat(cells.height),
+        }, entry.clip);
         if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
-            const painted = intersection(.{
-                .x = @intFromFloat(cells.screenX),
-                .y = @intFromFloat(cells.screenY),
-                .width = @intFromFloat(cells.width),
-                .height = @intFromFloat(cells.height),
-            }, entry.clip);
             self.frame_work.member_cells += @as(u64, painted.width) * painted.height;
             const target = cli.getNextBuffer();
             // A natively composed image buffer receives its node's hook drawing, like its body.
@@ -1269,12 +1360,13 @@ pub const Scene = struct {
             if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
                 try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_SELF);
             } else try self.paintNode(cli, entry, cells);
-            if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, cells);
             try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_AFTER);
             if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, cells);
         }
         self.frame_work.members_painted += 1;
-        addHit(&self.frame_work, cli, cells, entry.clip, node.num, node.token, options);
+        if (!options.use_mouse or node.num == options.excluded_hit_num) return;
+        // The clip lies inside the screen, so hit coordinates are never negative.
+        if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token });
     }
 
     /// Each phase starts with only the member's inherited clip and opacity.
@@ -1382,26 +1474,23 @@ pub const Scene = struct {
         _ = try target.drawImage(source, source.render_id, @intFromFloat(x), @intFromFloat(y), @intFromFloat(width), @intFromFloat(height), @intFromFloat(pixel_width), @intFromFloat(pixel_height), source_x, source_y, source_width, source_height, state.protocol);
     }
 
-    fn paintEditorCursor(self: *Scene, cli: *renderer.CliRenderer, node: *const Node, layout: Layout) !void {
-        // Cursor maintenance follows self drawing even when a host hook replaces the body.
-        const editor = node.editor orelse return;
-        if (self.focus == null or !std.meta.eql(self.focus.?, node.handle)) return;
+    /// Once per painted frame: place the cursor for the focused editor member, or release it.
+    /// The cursor follows the editor even when a host hook replaces its body.
+    fn maintainCursor(self: *Scene, cli: *renderer.CliRenderer, focused: ?Work) void {
+        const entry = focused orelse return self.releaseEditorCursor(cli);
+        if (builtin.is_test) self.test_cursor_steps += 1;
+        const node = entry.node.scene_node.?;
+        const layout = cellLayout(entry.layout);
         if (node.control.editor.mouse_pointer < std.meta.tags(@import("terminal.zig").MousePointerStyle).len) cli.terminal.setMousePointerStyle(@enumFromInt(node.control.editor.mouse_pointer));
-        if (!node.control.editor.show_cursor) return;
-        const cursor = editor.view.getVisualCursor();
+        if (!node.control.editor.show_cursor) return self.releaseEditorCursor(cli);
+        const cursor = node.editor.?.view.getVisualCursor();
         // Terminal keeps zero-based row/column in u16 alongside its public position.
         const position_max = @as(f64, std.math.maxInt(u16)) + 1;
         const cursor_x = std.math.clamp(layout.screenX + @as(f64, @floatFromInt(cursor.visual_col)) + 1, 1, position_max);
         const cursor_y = std.math.clamp(layout.screenY + @as(f64, @floatFromInt(cursor.visual_row)) + 1, 1, position_max);
-        const style: @import("terminal.zig").CursorStyle = switch (node.control.editor.style) {
-            0 => .block,
-            1 => .line,
-            2 => .underline,
-            3 => .default,
-            else => return error.InvalidOptions,
-        };
         cli.terminal.setCursorPosition(@intFromFloat(cursor_x), @intFromFloat(cursor_y), true);
-        cli.terminal.setCursorStyle(style, node.control.editor.blinking);
+        // Styles 0 to 3 are the enum's order; sceneSetEditorOptions rejects others.
+        cli.terminal.setCursorStyle(@enumFromInt(node.control.editor.style), node.control.editor.blinking);
         cli.terminal.setCursorColor(node.control.editor.color);
         self.editor_cursor_owned = true;
     }
@@ -1440,19 +1529,6 @@ pub const Scene = struct {
                 .top = paint_options.borderSides & api.OT_BORDER_TOP != 0,
             }, border_color, paint_options.background, options.title_color orelse border_color, paint_options.shouldFill != 0, if (options.title.len != 0) options.title else null, @intCast(options.title_alignment), if (options.bottom_title.len != 0) options.bottom_title else null, @intCast(options.bottom_title_alignment));
         }
-    }
-
-    fn addHit(work: *renderer.FrameWork, cli: *renderer.CliRenderer, layout: Layout, clip: buffer.ClipRect, num: u32, token: u32, options: FrameOptions) void {
-        if (!options.use_mouse or num == options.excluded_hit_num) return;
-        const hit = intersection(.{
-            .x = @intFromFloat(layout.screenX),
-            .y = @intFromFloat(layout.screenY),
-            .width = @intFromFloat(layout.width),
-            .height = @intFromFloat(layout.height),
-        }, clip);
-        // The clip lies inside the screen and scene paint pushes no hit scissor, so the grid writes exactly this area.
-        work.hit_cells_written += @as(u64, hit.width) * hit.height;
-        cli.addToHitGrid(hit.x, hit.y, hit.width, hit.height, token);
     }
 
     fn viewportNode(self: *Scene, objects: *const handles.Table, handle: handles.Handle) !*native.NativeRenderable {

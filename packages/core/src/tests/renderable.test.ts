@@ -73,10 +73,6 @@ class CountingRenderable extends Renderable {
   }
   protected onUpdate(): void {}
   protected onResize(): void {}
-
-  public getScreenPosition(): { x: number; y: number } {
-    return { x: this.screenX, y: this.screenY }
-  }
 }
 
 class TestFocusableRenderable extends Renderable {
@@ -192,116 +188,6 @@ describe("Renderable", () => {
     const renderable = new TestRenderable(testRenderer, { id: "test-live", live: true })
     expect(renderable.live).toBe(true)
     expect(renderable.liveCount).toBe(1)
-  })
-
-  test("screen position cache matches x/y after layout", async () => {
-    const parent = new CountingRenderable(testRenderer, {
-      id: "parent",
-      position: "absolute",
-      left: 10,
-      top: 4,
-      width: 30,
-      height: 10,
-    })
-    parent.translateX = 2
-    parent.translateY = 1
-
-    const child = new CountingRenderable(testRenderer, {
-      id: "child",
-      position: "absolute",
-      left: 3,
-      top: 2,
-      width: 8,
-      height: 4,
-    })
-    child.translateX = 1
-    child.translateY = 2
-
-    const grandchild = new CountingRenderable(testRenderer, {
-      id: "grandchild",
-      width: 4,
-      height: 2,
-    })
-    grandchild.translateX = 2
-    grandchild.translateY = 1
-
-    child.add(grandchild)
-    parent.add(child)
-    testRenderer.root.add(parent)
-
-    await renderOnce()
-
-    expect(parent.getScreenPosition()).toEqual({ x: parent.x, y: parent.y })
-    expect(child.getScreenPosition()).toEqual({ x: child.x, y: child.y })
-    expect(grandchild.getScreenPosition()).toEqual({ x: grandchild.x, y: grandchild.y })
-  })
-
-  test("screen position cache tracks translate changes on the next render", async () => {
-    const parent = new CountingRenderable(testRenderer, {
-      id: "parent",
-      position: "absolute",
-      left: 5,
-      top: 6,
-      width: 24,
-      height: 12,
-    })
-    const child = new CountingRenderable(testRenderer, {
-      id: "child",
-      width: 10,
-      height: 4,
-    })
-
-    parent.add(child)
-    testRenderer.root.add(parent)
-
-    await renderOnce()
-
-    parent.translateX = 7
-    parent.translateY = 3
-    child.translateX = 2
-    child.translateY = 5
-
-    expect(parent.screenX).toBe(parent.x)
-    expect(parent.screenY).toBe(parent.y)
-    expect(child.screenX).toBe(child.x)
-    expect(child.screenY).toBe(child.y)
-
-    await renderOnce()
-
-    expect(parent.getScreenPosition()).toEqual({ x: parent.x, y: parent.y })
-    expect(child.getScreenPosition()).toEqual({ x: child.x, y: child.y })
-  })
-})
-
-describe("Renderable - layout read caching invariants", () => {
-  test("grandchild screen position follows a translate-only ancestor move", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "cascade-parent",
-      position: "absolute",
-      left: 2,
-      top: 2,
-      width: 30,
-      height: 10,
-    })
-    const child = new TestRenderable(testRenderer, { id: "cascade-child", width: 20, height: 6 })
-    const grandchild = new TestRenderable(testRenderer, { id: "cascade-grandchild", width: 10, height: 2 })
-
-    child.add(grandchild)
-    parent.add(child)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    const beforeX = grandchild.screenX
-    const beforeY = grandchild.screenY
-
-    // Translate does not touch yoga: no relayout happens, only ancestor
-    // screen positions move. Every descendant must follow on the next frame.
-    parent.translateX = 7
-    parent.translateY = 5
-    await renderOnce()
-
-    expect(grandchild.screenX).toBe(beforeX + 7)
-    expect(grandchild.screenY).toBe(beforeY + 5)
   })
 })
 

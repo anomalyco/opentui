@@ -14,7 +14,7 @@ function syntheticABI(): { abi: HeaderABI; policies: PointerPolicies; addresses:
       layouts: {
         ot_r: { size: 8, alignment: 8, fields: { address: { offset: 0, size: 8, alignment: 8, type: "u64" } } },
       },
-      constants: { OT_STYLE_ENUM_A: 0, OT_STYLE_ENUM_A_MAX: 2 },
+      constants: {},
     },
     policies: { ot_f: { 0: buffer, 1: callback } },
     addresses: {
@@ -54,8 +54,6 @@ describe("checked native ABI generation", () => {
     ["explicit ownership policy: ot_r.address", ({ abi }) => (abi.layouts.ot_r!.fields.address!.type = "*u8")],
     ["Address field drift: ot_r.address", ({ abi }) => (abi.layouts.ot_r!.fields.address!.type = "u32")],
     ["needs bigint support: OT_BIG", ({ abi }) => (abi.constants.OT_BIG = 2 ** 53)],
-    ["Missing style enum constraint: OT_STYLE_ENUM_A", ({ abi }) => delete abi.constants.OT_STYLE_ENUM_A_MAX],
-    ["Missing style enum constraint: OT_STYLE_ENUM_B", ({ abi }) => (abi.constants.OT_STYLE_ENUM_B = 2)],
   ])("generation rejects %s", async (message, mutate) => {
     const input = syntheticABI()
     mutate(input)

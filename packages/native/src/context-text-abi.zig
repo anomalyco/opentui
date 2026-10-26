@@ -378,6 +378,10 @@ test "Context text copy queries report exact selected bytes and preserve short o
     inline for (.{ ot_text_buffer_highlight, editor.ot_edit_buffer_highlight }, .{ ot_text_buffer_get_highlights, editor.ot_edit_buffer_get_highlights }, .{ text_id, edit_id }) |add, get, id| {
         var records: [2]c.ot_edit_highlight = @splat(wide_ref);
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, add(&owner, &id, c.OT_EDIT_HIGHLIGHT_ADD_RANGE, 0, &wide_ref));
+        // Run style ids name styled text, never user highlights.
+        var run_ref = range;
+        run_ref.style_id |= c.OT_STYLE_RUN_FLAG;
+        try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, add(&owner, &id, c.OT_EDIT_HIGHLIGHT_ADD_RANGE, 0, &run_ref));
         try std.testing.expectEqual(c.OT_OK, add(&owner, &id, c.OT_EDIT_HIGHLIGHT_ADD_RANGE, 0, &range));
         try std.testing.expectEqual(c.OT_OK, add(&owner, &id, c.OT_EDIT_HIGHLIGHT_ADD_LINE, 1, &line));
         try std.testing.expectEqual(c.OT_OK, get(&owner, &id, 0, &records, 2, &count));
@@ -575,7 +579,7 @@ test "Context shared text ABI releases provisional linked replacement on allocat
             try std.testing.expectEqual(c.OT_OUT_OF_MEMORY, status);
             try std.testing.expectEqualStrings("kept", &bytes);
             try std.testing.expectEqual(epoch, resource.buffer.getContentEpoch());
-            try std.testing.expect(resource.owned_style == null);
+            try std.testing.expectEqual(@as(usize, 0), resource.buffer.run_styles.count());
         } else {
             try std.testing.expectEqual(c.OT_OK, status);
             try std.testing.expectEqualStrings("next", &bytes);
@@ -597,7 +601,7 @@ test "Context shared text batch rejects every allocation failure including the f
         defer owner.core.deinit() catch unreachable;
         var records: [2]c.ot_text_buffer_replacement = undefined;
         var roots: [2]*const @import("text-buffer-segment.zig").UnifiedRope.Node = undefined;
-        var styles: [2]*const @import("syntax-style.zig").SyntaxStyle = undefined;
+        var styles: [2]@import("syntax-style.zig").StyleDefinition = undefined;
         var epochs: [2]u64 = undefined;
         var chunk = std.mem.zeroes(c.ot_styled_text_chunk);
         chunk.struct_size = @sizeOf(c.ot_styled_text_chunk);
@@ -612,7 +616,7 @@ test "Context shared text batch rejects every allocation failure including the f
             try std.testing.expectEqual(c.OT_OK, ot_text_buffer_set_styled_text(&owner, &handle, "kept", 4, &.{chunk}, 1, "https://example.test/kept", 25));
             const value = try owner.core.raw().getTextBuffer(text_id);
             roots[index] = value.buffer.rope().root;
-            styles[index] = value.buffer.getSyntaxStyle().?;
+            styles[index] = value.buffer.run_styles.keys()[0];
             epochs[index] = value.buffer.getContentEpoch();
             (try owner.core.raw().getTextBufferView(view_id)).view.setSelection(0, 1, null, null);
             replacement.* = .{ .struct_size = @sizeOf(c.ot_text_buffer_replacement), .abi_version = c.OT_CONTEXT_ABI_VERSION, .buffer = handle, .view = abi.handleToC(view_id), .byte_offset = @intCast(index * 4), .byte_count = 4, .chunk_offset = @intCast(index), .chunk_count = 1 };
@@ -636,8 +640,7 @@ test "Context shared text batch rejects every allocation failure including the f
                 try std.testing.expectEqualStrings("kept", &bytes);
                 try std.testing.expectEqual(roots[index], value.buffer.rope().root);
                 try std.testing.expectEqual(epochs[index], value.buffer.getContentEpoch());
-                try std.testing.expectEqual(styles[index], value.buffer.getSyntaxStyle().?);
-                try std.testing.expectEqual(@as(usize, 1), styles[index].emitter.listeners.get(.Destroy).?.items.len);
+                try std.testing.expectEqualDeep(styles[index .. index + 1], value.buffer.run_styles.keys());
                 try std.testing.expect(dependent.view.selection != null);
                 try std.testing.expectEqual(@as(u32, 99), output[index].text_length);
                 try std.testing.expectEqual(@as(u32, 99), output[index].byte_count);
@@ -659,7 +662,7 @@ test "Context shared text batch rejects every allocation failure including the f
     try std.testing.expect(rejected > 20);
 }
 
-test "Context shared text batch validates identities limits admission and owned styles" {
+test "Context shared text batch validates identities limits admission and attached styles" {
     var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
     owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
@@ -731,18 +734,12 @@ test "Context shared text batch validates identities limits admission and owned 
     const busy = ot_text_buffer_replace_styled_batch(&owner, &records, 2, null, 0, null, 0, null, 0, &output);
     owner.core.mutating = false;
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, busy);
+    // An attached style is neither required nor written.
     const style = try owner.core.createSyntaxStyle();
+    _ = try owner.core.syntaxStyleRegister(style, "keyword", .{ .fg = null, .bg = null, .attributes = 1 });
     try owner.core.textBufferSetSyntaxStyle(abi.handleFromC(records[1].buffer), style);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_text_buffer_replace_styled_batch(&owner, &records, 2, null, 0, null, 0, null, 0, &output));
-    for (records, output) |replacement, info| {
-        var bytes: [4]u8 = undefined;
-        const buffer = (try owner.core.raw().getTextBuffer(abi.handleFromC(replacement.buffer))).buffer;
-        try std.testing.expectEqualStrings("kept", bytes[0..buffer.getPlainTextIntoBuffer(&bytes)]);
-        try std.testing.expectEqual(@as(u32, 99), info.text_length);
-        try std.testing.expectEqual(@as(u32, 99), info.byte_count);
-    }
-    try owner.core.textBufferSetSyntaxStyle(abi.handleFromC(records[1].buffer), null);
     try std.testing.expectEqual(c.OT_OK, ot_text_buffer_replace_styled_batch(&owner, &records, 2, null, 0, null, 0, null, 0, &output));
+    try std.testing.expectEqual(1, (try owner.core.raw().getSyntaxStyle(style)).getStyleCount());
     for (output) |info| {
         try std.testing.expectEqual(@as(u32, 0), info.text_length);
         try std.testing.expectEqual(@as(u32, 0), info.byte_count);
@@ -817,33 +814,53 @@ test "Context shared text ABI rejects a failed selection layout before publicati
     try std.testing.expectEqual(3, resource.view.virtual_lines.items.len);
 }
 
-test "Context shared text ABI preserves empty chunk ordinals" {
-    var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
-    defer owner.io_threaded.deinit();
-    owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
-    defer owner.core.deinit() catch unreachable;
-    const text_id = abi.handleToC(try owner.core.createTextBuffer(.unicode));
-    const style_id = try owner.core.createSyntaxStyle();
-    try owner.core.textBufferSetSyntaxStyle(abi.handleFromC(text_id), style_id);
-    var chunk = std.mem.zeroes(c.ot_styled_text_chunk);
-    chunk.struct_size = @sizeOf(c.ot_styled_text_chunk);
-    chunk.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    var chunks = [_]c.ot_styled_text_chunk{chunk} ** 5;
-    chunks[1].byte_count = 1;
-    chunks[1].flags = c.OT_SCENE_TEXT_FOREGROUND;
-    chunks[1].foreground = .{ 255, 0, 0, 255 };
-    chunks[3] = chunks[1];
-    try std.testing.expectEqual(c.OT_OK, ot_text_buffer_set_styled_text(&owner, &text_id, "xy", 2, &chunks, chunks.len, null, 0));
-    const style = try owner.core.raw().getSyntaxStyle(style_id);
-    try std.testing.expectEqual(null, style.resolveByName("chunk0"));
-    try std.testing.expect(style.resolveByName("chunk1") != null);
-    try std.testing.expectEqual(null, style.resolveByName("chunk2"));
-    try std.testing.expect(style.resolveByName("chunk3") != null);
-    try std.testing.expectEqual(null, style.resolveByName("chunk4"));
-    const buffer = (try owner.core.raw().getTextBuffer(abi.handleFromC(text_id))).buffer;
-    try std.testing.expectEqual(style.resolveByName("chunk1").?, buffer.getLineHighlights(0)[0].style_id);
-    try std.testing.expectEqual(c.OT_OK, ot_text_buffer_set_styled_text(&owner, &text_id, null, 0, &.{chunk}, 1, null, 0));
-    try std.testing.expectEqual(@as(u32, 0), buffer.getByteSize());
+test "Context shared text keeps each buffer's chunk styles when buffers share a style" {
+    const Chunk = ctx.StyledTextChunk;
+    const red: ?@import("ansi.zig").RGBA = .{ 255, 0, 0, 255 };
+    const blue: ?@import("ansi.zig").RGBA = .{ 0, 0, 255, 255 };
+    // Set A on one buffer and then B on another that shares its style; A must still draw as A does
+    // on a private style and on no style.
+    const Row = struct { text: []const u8, a: []const Chunk, b: []const Chunk };
+    const rows = [_]Row{
+        .{ .text = "aaa", .a = &.{.{ .byte_count = 3, .foreground = red }}, .b = &.{.{ .byte_count = 3, .foreground = blue }} },
+        .{ .text = "xaa", .a = &.{ .{ .byte_count = 1 }, .{ .byte_count = 2, .foreground = red } }, .b = &.{ .{ .byte_count = 1, .foreground = red }, .{ .byte_count = 2 } } },
+        .{ .text = "abc", .a = &.{ .{ .byte_count = 2, .attributes = 1 }, .{ .byte_count = 1, .background = blue } }, .b = &.{.{ .byte_count = 3, .attributes = 2 }} },
+        .{ .text = "ab", .a = &.{.{ .byte_count = 2, .link_url = "https://a.test" }}, .b = &.{.{ .byte_count = 2, .link_url = "https://b.test" }} },
+        .{ .text = "ab", .a = &.{ .{ .byte_count = 1, .foreground = red }, .{ .byte_count = 0 }, .{ .byte_count = 1, .foreground = blue } }, .b = &.{ .{ .byte_count = 1, .foreground = blue }, .{ .byte_count = 0 }, .{ .byte_count = 1, .foreground = red } } },
+        .{ .text = "abc", .a = &.{ .{ .byte_count = 2 }, .{ .byte_count = 1, .foreground = red } }, .b = &.{.{ .byte_count = 3, .foreground = red }} },
+    };
+    for (rows, 0..) |row, index| {
+        errdefer std.debug.print("row {d}\n", .{index});
+        const core = try ctx.Context.init(std.testing.allocator, std.testing.io, .{});
+        defer core.deinit() catch unreachable;
+        const shared = try core.createSyntaxStyle();
+        _ = try core.syntaxStyleRegister(shared, "keyword", .{ .fg = blue, .bg = null, .attributes = 0 });
+        const private = try core.createSyntaxStyle();
+        var handles: [4]ctx.Handle = undefined;
+        for (&handles, [_]?ctx.Handle{ shared, shared, private, null }) |*handle, style| {
+            handle.* = try core.createTextBuffer(.unicode);
+            if (style) |value| try core.textBufferSetSyntaxStyle(handle.*, value);
+        }
+        try core.textBufferSetStyledText(handles[0], row.text, row.a);
+        try core.textBufferSetStyledText(handles[1], row.text, row.b);
+        try core.textBufferSetStyledText(handles[2], row.text, row.a);
+        try core.textBufferSetStyledText(handles[3], row.text, row.a);
+        const a = (try core.raw().getTextBuffer(handles[0])).buffer;
+        for (handles[2..]) |handle| {
+            const expected = (try core.raw().getTextBuffer(handle)).buffer;
+            const highlights = expected.getLineHighlights(0);
+            try std.testing.expectEqual(highlights.len, a.getLineHighlights(0).len);
+            for (highlights, a.getLineHighlights(0)) |want, got| {
+                try std.testing.expectEqual(want.col_start, got.col_start);
+                try std.testing.expectEqual(want.col_end, got.col_end);
+                try std.testing.expectEqualDeep(expected.resolveStyle(want.style_id), a.resolveStyle(got.style_id));
+            }
+        }
+        // Styled text never writes the attached style.
+        const style = try core.raw().getSyntaxStyle(shared);
+        try std.testing.expectEqual(1, style.getStyleCount());
+        try std.testing.expectEqual(null, style.resolveByName("chunk0"));
+    }
 }
 
 test "Context shared text ABI records a text view in place of the native body" {

@@ -44,80 +44,45 @@ test "decodeUtf8Unchecked preserves scalar values and bounded progress" {
 // ASCII-ONLY DETECTION TESTS
 // ============================================================================
 
-test "isAsciiOnly: empty string" {
-    // Empty string is not ASCII-only by convention
-    try testing.expect(!utf8.isAsciiOnly(""));
-}
-
-test "isAsciiOnly: simple ASCII" {
-    try testing.expect(utf8.isAsciiOnly("Hello, World!"));
-    try testing.expect(utf8.isAsciiOnly("The quick brown fox"));
-    try testing.expect(utf8.isAsciiOnly("0123456789"));
-    try testing.expect(utf8.isAsciiOnly("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"));
-}
-
-test "isAsciiOnly: control chars rejected" {
-    try testing.expect(!utf8.isAsciiOnly("Hello\tWorld"));
-    try testing.expect(!utf8.isAsciiOnly("Hello\nWorld"));
-    try testing.expect(!utf8.isAsciiOnly("Hello\rWorld"));
-    try testing.expect(!utf8.isAsciiOnly("\x00"));
-    try testing.expect(!utf8.isAsciiOnly("\x1F"));
-}
-
-test "isAsciiOnly: extended ASCII rejected" {
-    try testing.expect(!utf8.isAsciiOnly("Hello\x7FWorld"));
-    try testing.expect(!utf8.isAsciiOnly("Hello\x80World"));
-    try testing.expect(!utf8.isAsciiOnly("Hello\xFFWorld"));
-}
-
-test "isAsciiOnly: Unicode rejected" {
-    try testing.expect(!utf8.isAsciiOnly("Hello 👋"));
-    try testing.expect(!utf8.isAsciiOnly("Hello 世界"));
-    try testing.expect(!utf8.isAsciiOnly("café"));
-    try testing.expect(!utf8.isAsciiOnly("Привет"));
-}
-
-test "isAsciiOnly: space character accepted" {
-    try testing.expect(utf8.isAsciiOnly(" "));
-    try testing.expect(utf8.isAsciiOnly("   "));
-    try testing.expect(utf8.isAsciiOnly("Hello World"));
-}
-
-test "isAsciiOnly: all printable ASCII chars" {
+test "printableAsciiPrefixLen and isAsciiOnly: printable ASCII is 32..126 at every SIMD position" {
     const all_printable = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-    try testing.expect(utf8.isAsciiOnly(all_printable));
-}
-
-test "isAsciiOnly: SIMD boundary tests" {
-    try testing.expect(utf8.isAsciiOnly("0123456789abcdef"));
-    try testing.expect(utf8.isAsciiOnly("0123456789abcde"));
-    try testing.expect(utf8.isAsciiOnly("0123456789abcdefg"));
-    try testing.expect(utf8.isAsciiOnly("0123456789abcdef0123456789abcdef"));
-    try testing.expect(utf8.isAsciiOnly("0123456789abcdef0123456789abcdefX"));
-}
-
-test "isAsciiOnly: non-ASCII at different positions" {
-    try testing.expect(!utf8.isAsciiOnly("Hello\x00World"));
-    try testing.expect(!utf8.isAsciiOnly("\x00bcdefghijklmnop"));
-    try testing.expect(!utf8.isAsciiOnly("0123456789abcde\x00"));
-    try testing.expect(!utf8.isAsciiOnly("0123456789abcdef\x00"));
-    try testing.expect(!utf8.isAsciiOnly("0123456789abcdef0123456789\x00bcdef"));
-    try testing.expect(!utf8.isAsciiOnly("0123456789abcdef01234\x00"));
-}
-
-test "isAsciiOnly: large ASCII text" {
-    const size = 10000;
-    const buf = try testing.allocator.alloc(u8, size);
-    defer testing.allocator.free(buf);
-
-    for (buf, 0..) |*b, i| {
-        b.* = 32 + @as(u8, @intCast(i % 95));
+    const rows = [_]struct { text: []const u8, prefix: usize }{
+        // The empty string is not ASCII-only by convention.
+        .{ .text = "", .prefix = 0 },
+        .{ .text = " ", .prefix = 1 },
+        .{ .text = "Hello, World!", .prefix = 13 },
+        .{ .text = all_printable, .prefix = all_printable.len },
+        .{ .text = "0123456789abcde", .prefix = 15 },
+        .{ .text = "0123456789abcdef", .prefix = 16 },
+        .{ .text = "0123456789abcdefg", .prefix = 17 },
+        .{ .text = "0123456789abcdef0123456789abcdefX", .prefix = 33 },
+        .{ .text = "Hello\tWorld", .prefix = 5 },
+        .{ .text = "Hello\nWorld", .prefix = 5 },
+        .{ .text = "Hello\rWorld", .prefix = 5 },
+        .{ .text = "\x1F", .prefix = 0 },
+        .{ .text = "Hello\x7FWorld", .prefix = 5 },
+        .{ .text = "Hello\x80World", .prefix = 5 },
+        .{ .text = "Hello\xFFWorld", .prefix = 5 },
+        .{ .text = "Hello \u{1f44b}", .prefix = 6 },
+        .{ .text = "caf\u{e9}", .prefix = 3 },
+        .{ .text = "\x00bcdefghijklmnop", .prefix = 0 },
+        .{ .text = "0123456789abcde\x00", .prefix = 15 },
+        .{ .text = "0123456789abcdef\x00", .prefix = 16 },
+        .{ .text = "0123456789ab\x7fdef0123", .prefix = 12 },
+        .{ .text = "0123456789abcdef0123456789\x00bcdef", .prefix = 26 },
+        .{ .text = "0123456789abcdef0123456789\x7fbcdef", .prefix = 26 },
+    };
+    for (rows) |row| {
+        try testing.expectEqual(row.prefix, utf8.printableAsciiPrefixLen(row.text));
+        try testing.expectEqual(row.text.len > 0 and row.prefix == row.text.len, utf8.isAsciiOnly(row.text));
     }
 
+    const buf = try testing.allocator.alloc(u8, 10_000);
+    defer testing.allocator.free(buf);
+    for (buf, 0..) |*b, i| b.* = 32 + @as(u8, @intCast(i % 95));
     try testing.expect(utf8.isAsciiOnly(buf));
-
     buf[5000] = 0x80;
-    try testing.expect(!utf8.isAsciiOnly(buf));
+    try testing.expectEqual(5000, utf8.printableAsciiPrefixLen(buf));
 }
 
 // ============================================================================
@@ -2030,8 +1995,8 @@ test "calculateTextWidth: each default-ignorable code point takes the cells Ghos
         for (std.enums.values(utf8.WidthMethod)) |width_method| {
             errdefer std.debug.print("width_method={t} code point={x}\n", .{ width_method, cp });
             try testing.expectEqual(cells, utf8.calculateTextWidth(bytes[1..len], 4, .hidden, false, width_method));
-            // OpenTUI widens any one-cell base before VS16 to two cells.
-            if (cp == 0xfe0f) continue;
+            // The grapheme methods widen any one-cell base before VS16 to two cells.
+            if (cp == 0xfe0f and width_method != .wcwidth) continue;
             try testing.expectEqual(1 + cells, utf8.calculateTextWidth(bytes[0..len], 4, .hidden, false, width_method));
             // Grapheme-safe wrapping measures the cluster as it grows, in every width method.
             try testing.expectEqual(1 + cells, utf8.findWrapPosByWidthGraphemeSafe(bytes[0..len], 4, 4, .hidden, false, width_method).columns_used);
@@ -2080,57 +2045,21 @@ test "calculateTextWidth: complex text with emojis and multiple scripts" {
 }
 
 test "calculateTextWidth: validate against unicode-width-map.zon" {
-    const zon_content = @embedFile("unicode-width-map.zon");
-
-    // Use arena allocator to avoid memory leaks from ZON parser string allocations
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const zon_with_null = try allocator.dupeZ(u8, zon_content);
-
-    const WidthEntry = struct {
-        codepoint: []const u8,
-        width: i32,
-    };
-
-    const width_entries = std.zon.parse.fromSliceAlloc(
-        []const WidthEntry,
-        allocator,
-        zon_with_null,
-        null,
-        .{},
-    ) catch |err| {
-        return err;
-    };
-
-    var successes: usize = 0;
+    // Runs of code points with the width terminals draw them in.
+    const Run = struct { first: u21, last: u21, width: u32 };
+    const runs = try std.zon.parse.fromSliceAlloc([]const Run, testing.allocator, @embedFile("unicode-width-map.zon"), null, .{});
+    defer std.zon.parse.free(testing.allocator, runs);
     var failures: usize = 0;
-
-    for (width_entries) |entry| {
-        const codepoint_str = entry.codepoint;
-        const expected_width = entry.width;
-
-        // Parse "U+XXXX" from codepoint string
-        if (codepoint_str.len < 3 or !std.mem.startsWith(u8, codepoint_str, "U+")) {
-            continue;
-        }
-        const hex_str = codepoint_str[2..];
-        const code_point = std.fmt.parseInt(u21, hex_str, 16) catch continue;
-
+    for (runs) |run| for (run.first..run.last + 1) |cp| {
         var buf: [4]u8 = undefined;
-        const len = std.unicode.utf8Encode(code_point, &buf) catch continue;
-        const str = buf[0..len];
-
-        const actual_width = utf8.calculateTextWidth(str, 4, .hidden, false, .unicode);
-
-        if (actual_width == expected_width) {
-            successes += 1;
-        } else {
+        const str = buf[0..try std.unicode.utf8Encode(@intCast(cp), &buf)];
+        for (std.enums.values(utf8.WidthMethod)) |method| {
+            const actual = utf8.calculateTextWidth(str, 4, .hidden, false, method);
+            if (actual == run.width) continue;
+            std.debug.print("U+{X:0>4} {s}: {d}, expected {d}\n", .{ cp, @tagName(method), actual, run.width });
             failures += 1;
         }
-    }
-
+    };
     try testing.expectEqual(@as(usize, 0), failures);
 }
 

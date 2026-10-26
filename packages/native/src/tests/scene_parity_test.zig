@@ -11,9 +11,9 @@
 //!   checks every presented reference frame;
 //! - a frame kind it must reach: count it in `Stats` and give it a minimum in
 //!   the test.
-//! The script has no editor, image, or linked text yet, so cursor, image, and
-//! link shortcuts are invisible to it: B3 adds those node kinds before its
-//! frame skip uses this harness as its gate.
+//! The script has editors, focus moves, and host cursors, but no image or
+//! linked text yet, so image and link shortcuts are invisible to it: B3 adds
+//! those node kinds before its frame skip uses this harness as its gate.
 const std = @import("std");
 const testing = std.testing;
 const c = @import("context_abi_c");
@@ -37,8 +37,10 @@ const content_slot = 2;
 const scaffold_slots = 3;
 const reference = 0;
 const candidate = 1;
+// The largest screen a resize step picks (20×8).
+const max_cells = 20 * 8;
 
-const Kind = enum { box, text, slider };
+const Kind = enum { box, text, slider, editor };
 
 /// One scripted step, drawn once and applied to both twins.
 const Op = union(enum) {
@@ -51,10 +53,15 @@ const Op = union(enum) {
     focus: struct { slot: usize, focused: bool },
     text: struct { slot: usize, seed: u32 },
     text_options: struct { slot: usize, options: scene.TextOptions },
+    /// Removes the Yoga measure function, so later text changes do not solve.
+    measure: usize,
     hooks: struct { slot: usize, flags: u32 },
     slider: struct { slot: usize, value: f64, orientation: u32 },
     viewport: bool,
     resize: struct { width: u32, height: u32 },
+    editor: struct { slot: usize, seed: u32, show_cursor: bool, style: u32 },
+    /// A cursor the host places itself, as a Textarea-free app or a hook does.
+    host_cursor: struct { x: i32, y: i32, visible: bool },
 };
 
 /// Options drawn once per frame.
@@ -68,6 +75,8 @@ const FrameSpec = struct {
 /// order. A frame stably sorts the paint children of every parent it visits by z.
 const Model = struct {
     handles: [node_count_max]?[2]context.Handle = @splat(null),
+    /// Each editor node's edit buffer, per twin.
+    edits: [node_count_max][2]context.Handle = undefined,
     kind: [node_count_max]Kind = @splat(.box),
     parent: [node_count_max]?usize = @splat(null),
     children: [node_count_max]std.ArrayListUnmanaged(usize) = @splat(.empty),
@@ -78,6 +87,10 @@ const Model = struct {
     text_options: [node_count_max]scene.TextOptions = @splat(.{}),
     hooks: [node_count_max]u32 = @splat(0),
     focusable: [node_count_max]bool = @splat(false),
+    /// The viewport content filters its children.
+    bound: bool = false,
+    /// Text whose Yoga measure function was removed.
+    unmeasured: [node_count_max]bool = @splat(false),
 
     fn deinit(self: *Model) void {
         for (&self.children, &self.paint) |*children, *paint| {
@@ -160,13 +173,22 @@ const Stats = struct {
     hidden_hooked: u32 = 0,
     /// Host replies that hid an ancestor of the requesting node mid-frame.
     reply_hides: u32 = 0,
+    /// Host replies that detached the requesting node mid-frame.
+    reply_detaches: u32 = 0,
     /// RESIZE requests from children of the viewport content.
     content_resizes: u32 = 0,
+    /// Replies to those requests that changed text on a content child, mid-batch.
+    content_reply_texts: u32 = 0,
+    /// Text replaced on a filtered content child without a measure function, so without a solve.
+    unmeasured_texts: u32 = 0,
     updates: u32 = 0,
     resizes: u32 = 0,
     layout_changes: u32 = 0,
     records: u32 = 0,
     decoded: u32 = 0,
+    /// Frames that end with an editor's cursor, and with a host cursor shown.
+    editor_cursors: u32 = 0,
+    host_cursors: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -239,6 +261,7 @@ const Harness = struct {
                 self.model.text_options[value.slot] = .{};
                 self.model.hooks[value.slot] = 0;
                 self.model.focusable[value.slot] = false;
+                self.model.unmeasured[value.slot] = false;
             },
             .move => |value| try self.model.move(value.slot, value.parent, value.index),
             .destroy => |slot| {
@@ -263,6 +286,9 @@ const Harness = struct {
                 self.model.hooks[value.slot] = value.flags;
             },
             .text_options => |value| self.model.text_options[value.slot] = value.options,
+            .viewport => |bound| self.model.bound = bound,
+            .measure => |slot| self.model.unmeasured[slot] = true,
+            .text => |value| self.stats.unmeasured_texts += @intFromBool(self.model.unmeasured[value.slot] and self.model.bound and self.model.parent[value.slot] == content_slot),
             else => {},
         }
     }
@@ -275,10 +301,16 @@ const Harness = struct {
                     .box => c.OT_SCENE_BOX,
                     .text => c.OT_SCENE_TEXT,
                     .slider => c.OT_SCENE_SLIDER,
+                    .editor => c.OT_SCENE_EDITOR,
                 };
                 const created = try f.owner.sceneCreateNode(f.id, kind, Model.num(value.slot));
                 if (self.model.handles[value.slot] == null) self.model.handles[value.slot] = undefined;
                 self.model.handles[value.slot].?[twin] = created;
+                if (value.kind == .editor) {
+                    const edit = try f.owner.createEditBuffer(.unicode);
+                    try f.owner.sceneSetEditorView(created, try f.owner.createEditorView(edit, 1, 1));
+                    self.model.edits[value.slot][twin] = edit;
+                }
             },
             .move => |value| try f.owner.sceneMoveNode(self.handle(twin, value.slot), if (value.parent) |parent| self.handle(twin, parent) else null, value.index),
             .destroy => |slot| try f.owner.sceneDestroyNode(self.handle(twin, slot)),
@@ -304,9 +336,16 @@ const Harness = struct {
             },
             .slider => |value| try f.owner.sceneSetSlider(self.handle(twin, value.slot), .{ .value = value.value, .orientation = value.orientation }),
             .text_options => |value| try f.owner.sceneSetTextOptions(self.handle(twin, value.slot), value.options),
+            .measure => |slot| try f.owner.sceneSetMeasure(self.handle(twin, slot), null),
             .hooks => |value| try f.owner.sceneSetHooks(self.handle(twin, value.slot), value.flags, self.model.hook_generation[value.slot] + 1, 1, 1),
             .viewport => |bound| try f.owner.sceneSetViewport(self.handle(twin, content_slot), if (bound) self.handle(twin, viewport_slot) else null),
             .resize => |value| try f.owner.resizeSessionRenderer(f.id, value.width, value.height),
+            .editor => |value| {
+                const lines = [_][]const u8{ "", "ab", "a\nbc", "\u{754c}x\n\n" };
+                try f.owner.editSetText(self.model.edits[value.slot][twin], lines[value.seed % lines.len], false);
+                try f.owner.sceneSetEditorOptions(self.handle(twin, value.slot), .{ .show_cursor = value.show_cursor, .style = value.style });
+            },
+            .host_cursor => |value| try f.owner.controlSession(f.id, .{ .cursor = .{ .position = .{ .x = value.x, .y = value.y, .visible = value.visible } } }),
         }
     }
 
@@ -330,9 +369,10 @@ const Harness = struct {
     fn generate(self: *Harness) ?Op {
         const random = self.random;
         const empty = random.intRangeLessThan(usize, scaffold_slots, node_count_max);
-        if (self.model.handles[empty] == null) return .{ .create = .{ .slot = empty, .kind = switch (random.uintLessThan(u32, 8)) {
+        if (self.model.handles[empty] == null) return .{ .create = .{ .slot = empty, .kind = switch (random.uintLessThan(u32, 9)) {
             0, 1 => .box,
             2 => .slider,
+            8 => .editor,
             else => .text,
         } } };
         const slot = self.liveSlot(scaffold_slots) orelse return null;
@@ -349,14 +389,18 @@ const Harness = struct {
                 break :blk .{ .move = .{ .slot = slot, .parent = parent, .index = random.uintLessThan(u32, @intCast(siblings + 2)) } };
             },
             8 => .{ .destroy = slot },
-            // Focus moves favor nodes with focusable borders, where focus changes the border color.
+            // Focus moves favor editors, which own the cursor, and nodes with focusable borders,
+            // where focus changes the border color.
             9 => .{ .focus = .{ .slot = for (scaffold_slots..node_count_max) |candidate_slot| {
-                if (self.model.handles[candidate_slot] != null and self.model.focusable[candidate_slot] and random.boolean()) break candidate_slot;
+                if (self.model.handles[candidate_slot] == null) continue;
+                if ((self.model.focusable[candidate_slot] or self.model.kind[candidate_slot] == .editor) and random.boolean()) break candidate_slot;
             } else slot, .focused = random.boolean() } },
             10 => self.generateHooks() orelse self.generateReply(slot),
             15 => self.generateHookedChange() orelse self.generateReply(slot),
             11 => if (random.boolean()) .{ .viewport = random.boolean() } else .{ .resize = .{ .width = random.intRangeAtMost(u32, 10, 20), .height = random.intRangeAtMost(u32, 4, 8) } },
             13, 14 => if (self.model.kind[slot] == .text) self.generateText(slot) else self.generateReply(slot),
+            16 => .{ .host_cursor = .{ .x = random.intRangeAtMost(i32, 0, 20), .y = random.intRangeAtMost(i32, 0, 8), .visible = random.boolean() } },
+            17 => if (self.model.kind[slot] == .editor) .{ .editor = .{ .slot = slot, .seed = random.int(u32), .show_cursor = random.uintLessThan(u32, 4) != 0, .style = random.uintLessThan(u32, 4) } } else self.generateReply(slot),
             12 => .{ .paint = .{ .slot = content_slot, .fields = c.OT_SCENE_PROPERTY_TRANSLATE_Y, .paint = .{ .translateY = @floatFromInt(-random.intRangeAtMost(i32, 0, 12)) } } },
             else => self.generateReply(slot),
         };
@@ -436,12 +480,16 @@ const Harness = struct {
         };
     }
 
-    /// A text replacement, or new text options: color, attributes, or layout options alone.
+    /// A text replacement, new text options (color, attributes, or layout options alone), or
+    /// the measure function's removal.
     fn generateText(self: *Harness, slot: usize) Op {
         const random = self.random;
         var options = self.model.text_options[slot];
-        switch (random.uintLessThan(u32, 6)) {
+        // Without a measure function, a replacement does not solve: the case B2 marks stale.
+        if (self.model.unmeasured[slot] and random.boolean()) return .{ .text = .{ .slot = slot, .seed = random.int(u32) } };
+        switch (random.uintLessThan(u32, 7)) {
             0 => return .{ .text = .{ .slot = slot, .seed = random.int(u32) } },
+            6 => return .{ .measure = slot },
             1 => options.foreground = .{ random.int(u8), 255, 255, 255 },
             2 => options.attributes = random.uintLessThan(u32, 16),
             3 => options.wrap_mode = random.enumValue(@import("../text-buffer-view.zig").WrapMode),
@@ -512,16 +560,37 @@ const Harness = struct {
                         else => self.stats.layout_changes += 1,
                     }
                     const requester = self.model.slotOf(reference, first.node).?;
-                    if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) self.stats.content_resizes += 1;
+                    if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) {
+                        self.stats.content_resizes += 1;
+                        // A text change on a content child in the middle of the refresh batch (B2 argon-2).
+                        const children = self.model.children[content_slot].items;
+                        const start = self.random.uintLessThan(usize, children.len);
+                        for (0..children.len) |offset| {
+                            const target = children[(start + offset) % children.len];
+                            if (self.model.kind[target] != .text) continue;
+                            // Truncation changes the view without a solve.
+                            var options = self.model.text_options[target];
+                            options.truncate = !options.truncate;
+                            try self.apply(.{ .text_options = .{ .slot = target, .options = options } });
+                            self.stats.content_reply_texts += 1;
+                            break;
+                        }
+                    }
                     for (0..self.random.uintLessThan(u32, 3)) |_| {
                         const slot = self.liveSlot(scaffold_slots) orelse break;
                         try self.apply(self.generateReply(slot));
                     }
                     // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
                     // ancestor of a node it already stamped (B2 invariant 7).
+                    // Detaching it instead makes the walk meet a node whose ancestry moved.
                     if (self.model.parent[requester]) |parent| if (parent != root_slot and self.random.uintLessThan(u32, 4) == 0) {
-                        try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
-                        self.stats.reply_hides += 1;
+                        if (requester >= scaffold_slots and self.random.boolean()) {
+                            try self.apply(.{ .move = .{ .slot = requester, .parent = null, .index = 0 } });
+                            self.stats.reply_detaches += 1;
+                        } else {
+                            try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
+                            self.stats.reply_hides += 1;
+                        }
                     };
                 },
             }
@@ -576,7 +645,12 @@ const Harness = struct {
         for (self.model.handles, 0..) |maybe, slot| {
             if (maybe != null and self.model.hooks[slot] != 0 and self.model.hiddenAbove(slot)) hidden_hooked = true;
         }
-        const drafted = cellHash(self.twins[candidate].cli.getNextBuffer(), self.twins[candidate].cli.nextHitGrid);
+        const drafted = cellHash(self.twins[candidate].cli.getNextBuffer());
+        // The draft's hit token per cell, as a grid that every member overwrote in paint order.
+        var drafted_hits: [max_cells]u32 = undefined;
+        const draft = self.twins[candidate];
+        const cells = draft.cli.width * draft.cli.height;
+        for (drafted_hits[0..cells], 0..) |*hit, index| hit.* = draft.draftHit(index);
         var statuses: [2]@import("../session.zig").RenderStatus = undefined;
         for (self.twins, 0..) |twin, index| {
             statuses[index] = try twin.owner.sceneFrameCommit(twin.id, twin.state.painted.?.ticket, spec.force);
@@ -590,7 +664,10 @@ const Harness = struct {
         try testing.expectEqual(statuses[0], statuses[1]);
         try testing.expectEqualSlices(u8, self.bytes[reference].items, self.bytes[candidate].items);
         // The encoder synced every drafted cell into the presented buffer, and the hits followed.
-        try testing.expectEqual(drafted, cellHash(self.twins[candidate].cli.currentRenderBuffer, self.twins[candidate].cli.currentHitGrid));
+        try testing.expectEqual(drafted, cellHash(self.twins[candidate].cli.currentRenderBuffer));
+        for (drafted_hits[0..cells], 0..) |hit, index| {
+            try testing.expectEqual(hit, draft.state.hitToken(draft.cli, @intCast(index % draft.cli.width), @intCast(index / draft.cli.width)));
+        }
         try self.expectSamePresentation();
         if (spec.force) self.decoder_synced = true;
         try self.expectDecoded();
@@ -601,6 +678,9 @@ const Harness = struct {
         self.stats.filtered += @intFromBool(work.overlap_tests != 0);
         self.stats.filtered_requests += @intFromBool(work.overlap_tests != 0 and work.host_requests != 0);
         self.stats.hidden_hooked += @intFromBool(hidden_hooked);
+        const cursor = try self.twins[candidate].owner.sceneGetCursorState(self.twins[candidate].id);
+        self.stats.editor_cursors += @intFromBool(self.twins[candidate].state.editor_cursor_owned);
+        self.stats.host_cursors += @intFromBool(cursor.visible and !self.twins[candidate].state.editor_cursor_owned);
         // Field by field: the struct's padding is unspecified.
         inline for (std.meta.fields(renderer.FrameWork)) |field| {
             self.stats.digest = std.hash.Wyhash.hash(self.stats.digest, std.mem.asBytes(&@field(work, field.name)));
@@ -627,15 +707,19 @@ const Harness = struct {
     fn expectSamePresentation(self: *Harness) !void {
         const expected = self.twins[reference].cli;
         const actual = self.twins[candidate].cli;
+        const owners = .{ self.twins[reference], self.twins[candidate] };
         const cells = .{ expected.currentRenderBuffer.buffer, actual.currentRenderBuffer.buffer };
         try testing.expectEqualSlices(u32, cells[0].char, cells[1].char);
         try testing.expectEqualSlices([4]u16, cells[0].fg, cells[1].fg);
         try testing.expectEqualSlices([4]u16, cells[0].bg, cells[1].bg);
         try testing.expectEqualSlices(u32, cells[0].attributes, cells[1].attributes);
-        try testing.expectEqualSlices(u32, expected.currentHitGrid, actual.currentHitGrid);
+        for (0..expected.height) |y| {
+            for (0..expected.width) |x| {
+                try testing.expectEqual(try owners[0].owner.sceneHitTest(owners[0].id, @intCast(x), @intCast(y)), try owners[1].owner.sceneHitTest(owners[1].id, @intCast(x), @intCast(y)));
+            }
+        }
         // The encoder cleared the next buffer; the presented one holds the frame.
         for (self.twins) |twin| try expectBufferInvariants(twin.cli.currentRenderBuffer);
-        const owners = .{ self.twins[reference], self.twins[candidate] };
         try testing.expectEqualDeep(try owners[0].owner.sceneGetCursorState(owners[0].id), try owners[1].owner.sceneGetCursorState(owners[1].id));
         for (0..4) |_| {
             const x = self.random.intRangeLessThan(i32, -1, @intCast(expected.width + 1));
@@ -709,7 +793,11 @@ const Harness = struct {
         try testing.expect(work.full_path_reasons & renderer.FrameWork.full_path_forced != 0);
         try testing.expect(work.candidate_visits != 0);
         try testing.expect(work.cells_cleared >= 2 * cells);
-        try testing.expect(work.hit_cells_cleared >= 2 * cells);
+        // Every round refreshes every child of a bound, visible content (B2 W3).
+        const content_shown = !self.model.hidden[content_slot] and !self.model.hiddenAbove(content_slot);
+        if (self.model.bound and content_shown) try testing.expect(work.viewport_child_refreshes >= self.model.children[content_slot].items.len);
+        // Every member that feedback visits walks to the root (B2 W4).
+        if (work.feedback_operations != 0) try testing.expect(work.visibility_steps != 0);
     }
 
     /// The tree each twin holds matches the model.
@@ -756,9 +844,9 @@ const Harness = struct {
     }
 };
 
-fn cellHash(target: *const @import("../buffer.zig").OptimizedBuffer, hits: []const u32) u64 {
+fn cellHash(target: *const @import("../buffer.zig").OptimizedBuffer) u64 {
     var hash = std.hash.Wyhash.init(0);
-    inline for (.{ target.buffer.char, target.buffer.fg, target.buffer.bg, target.buffer.attributes, hits }) |slice| hash.update(std.mem.sliceAsBytes(slice));
+    inline for (.{ target.buffer.char, target.buffer.fg, target.buffer.bg, target.buffer.attributes }) |slice| hash.update(std.mem.sliceAsBytes(slice));
     return hash.final();
 }
 
@@ -779,11 +867,12 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     }
     // Every frame kind B2 relies on is reached in quantity (about a quarter of today's counts;
     // decoded frames at about half), and each minimum fails if the draw that produces its kind
-    // is removed. Counts at 64 x 256: reused 359, filtered 556, filtered with a request 177,
-    // hooked under a hidden ancestor 8,236, reply hid the requester's parent 77, content-child
-    // RESIZE 67 (12 without the content-child hook draw), UPDATE 3,255, RESIZE 70,
-    // LAYOUT_CHANGED 2,234, recordings 514, decoded 15,753 (about 5,700 without the re-sync).
-    const minimums: Stats = .{ .reused = 85, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 20, .content_resizes = 35, .updates = 800, .resizes = 18, .layout_changes = 550, .records = 130, .decoded = 9000 };
+    // is removed. Counts at 64 x 256: reused 399, filtered 1,458, filtered with a request 547,
+    // hooked under a hidden ancestor 5,631, reply hid the requester's parent 43, reply detached
+    // the requester 58, content-child RESIZE 67, a truncation change in its reply 67, unmeasured
+    // content text replaced 16, UPDATE 3,407, RESIZE 85, LAYOUT_CHANGED 1,921, recordings 663,
+    // decoded 15,361, an editor's cursor 1,674, a host cursor 6,658.
+    const minimums: Stats = .{ .reused = 145, .filtered = 250, .filtered_requests = 45, .hidden_hooked = 2000, .reply_hides = 10, .reply_detaches = 10, .content_resizes = 30, .content_reply_texts = 15, .unmeasured_texts = 5, .updates = 650, .resizes = 18, .layout_changes = 460, .records = 130, .decoded = 9000, .editor_cursors = 400, .host_cursors = 1600 };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
         errdefer std.debug.print("{s}: {d}\n", .{ field.name, @field(total, field.name) });

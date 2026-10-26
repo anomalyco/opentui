@@ -104,7 +104,8 @@ test "Context reuse releases borrowed measurements styles and links before pooli
     const style_handle = try owner.createSyntaxStyle();
     const style = try owner.raw().getSyntaxStyle(style_handle);
     text.buffer.setSyntaxStyle(style);
-    try testing.expectEqual(@as(usize, 1), style.emitter.listeners.get(.Destroy).?.items.len);
+    try testing.expectEqual(&text.buffer.style_binding, style.borrowers.?);
+    try testing.expectEqual(null, style.borrowers.?.next);
     const borrower = try owner.sceneCreateNode(id, 1, 4);
     try (try owner.raw().getRenderable(borrower)).setMeasureTarget(.{ .text_buffer_view = text.view });
     failing.fail_index = failing.alloc_index;
@@ -112,7 +113,7 @@ test "Context reuse releases borrowed measurements styles and links before pooli
     try owner.destroy(handle);
     try testing.expect(!failing.has_induced_failure);
     try testing.expect((try owner.raw().getRenderable(borrower)).measure_target == .none);
-    try testing.expectEqual(@as(usize, 0), style.emitter.listeners.get(.Destroy).?.items.len);
+    try testing.expectEqual(null, style.borrowers);
     // Leave the borrower, borrowed style, and idle storage for Context teardown.
 }
 

@@ -7,6 +7,10 @@ const iter = @import("text-buffer-iterators.zig");
 const text_work = @import("text-work.zig");
 const Owner = abi.ContextHandle;
 
+comptime {
+    std.debug.assert(c.OT_STYLE_RUN_FLAG == @import("syntax-style.zig").id_limit);
+}
+
 /// Validates admission only; checked Context methods acquire their own mutation guard.
 pub fn admit(context: ?*Owner, read: bool) !*Owner {
     const owner = context orelse return error.InvalidOptions;
@@ -468,7 +472,7 @@ pub fn highlightFromC(operation: u32, argument: u32, highlight: ?*const c.ot_edi
         ((operation == c.OT_EDIT_HIGHLIGHT_ADD_RANGE or operation == c.OT_EDIT_HIGHLIGHT_CLEAR_ALL) and argument != 0) or
         ((operation <= c.OT_EDIT_HIGHLIGHT_ADD_RANGE) != (highlight != null)) or
         (operation == c.OT_EDIT_HIGHLIGHT_REMOVE_REF and argument > 65535)) return error.InvalidOptions;
-    if (highlight) |h| if (h.priority > 255 or h.ref > 65535) return error.InvalidOptions;
+    if (highlight) |h| if (h.priority > 255 or h.ref > 65535 or h.style_id & c.OT_STYLE_RUN_FLAG != 0) return error.InvalidOptions;
     const range: ctx.TextHighlight.Range = if (highlight) |h| .{
         .start = h.start,
         .end = h.end,
@@ -584,7 +588,7 @@ test "Context checked history matches ABI metadata cursor and observer order" {
             try std.testing.expectEqual(@as(usize, 0), count);
             try std.testing.expectEqual(@as(u8, 0xaa), bytes[0]);
         } else {
-            try std.testing.expectEqualSlices(ctx.EditEvent, &.{ .cursor_changed, .history_cursor_changed }, events[0..count]);
+            try std.testing.expectEqualSlices(ctx.EditEvent, &.{ .cursor_changed, .content_changed, .history_cursor_changed }, events[0..count]);
             try std.testing.expectEqual(error.ContextBusy, probe.rejection.?);
         }
         const first = (try owner.core.raw().getEditBuffer(direct)).buffer;

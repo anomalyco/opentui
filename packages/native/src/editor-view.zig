@@ -4,7 +4,6 @@ const tb = @import("text-buffer.zig");
 const tbv = @import("text-buffer-view.zig");
 const eb = @import("edit-buffer.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
-const ss = @import("syntax-style.zig");
 const event_emitter = @import("event-emitter.zig");
 const NativeRenderable = @import("native-renderable.zig").NativeRenderable;
 
@@ -53,7 +52,6 @@ pub const EditorView = struct {
     cursor_changed_listener: event_emitter.EventEmitter(eb.EditBufferEvent).Listener,
 
     placeholder_buffer: ?*UnifiedTextBuffer,
-    placeholder_syntax_style: ?*ss.SyntaxStyle,
     /// Preferred registry slot for the placeholder's owned input bytes.
     placeholder_mem_id: ?u8,
     placeholder_active: bool,
@@ -114,7 +112,6 @@ pub const EditorView = struct {
                 .handle = onCursorChanged,
             },
             .placeholder_buffer = null,
-            .placeholder_syntax_style = null,
             .placeholder_mem_id = null,
             .placeholder_active = false,
             .global_allocator = global_allocator,
@@ -141,10 +138,6 @@ pub const EditorView = struct {
         while (self.measure_dependents) |dependent| dependent.setMeasureTarget(.none) catch unreachable;
         self.edit_buffer.events.off(.cursorChanged, self.cursor_changed_listener);
         self.text_buffer_view.deinit();
-
-        if (self.placeholder_syntax_style) |style| {
-            style.deinit();
-        }
 
         if (self.placeholder_buffer) |placeholder| {
             placeholder.deinit();
@@ -922,10 +915,6 @@ pub const EditorView = struct {
             self.text_buffer_view.switchToOriginalBuffer();
             self.placeholder_active = false;
         }
-        if (self.placeholder_syntax_style) |style| {
-            style.deinit();
-            self.placeholder_syntax_style = null;
-        }
         if (self.placeholder_buffer) |placeholder| {
             placeholder.deinit();
             self.placeholder_buffer = null;
@@ -933,12 +922,11 @@ pub const EditorView = struct {
         self.placeholder_mem_id = null;
     }
 
-    /// Consume registry-allocator bytes and a fresh style only on success; move prepared links.
+    /// Consume registry-allocator bytes only on success; move prepared links.
     /// The caller validates UTF-8 and bounds, as for UnifiedTextBuffer.replaceOwnedStyledText.
     pub fn setPlaceholderOwnedStyledText(
         self: *EditorView,
         text: []const u8,
-        style: *ss.SyntaxStyle,
         chunks: []const tb.OwnedStyledChunk,
         prepared_links: ?*@import("link.zig").LinkTracker,
     ) !void {
@@ -953,15 +941,11 @@ pub const EditorView = struct {
         const mem_id = try placeholder.replaceOwnedStyledText(
             text,
             self.placeholder_mem_id,
-            style,
             chunks,
             prepared_links,
         );
-        const previous_style = self.placeholder_syntax_style;
         self.placeholder_buffer = placeholder;
-        self.placeholder_syntax_style = style;
         self.placeholder_mem_id = mem_id;
-        if (previous_style) |previous| previous.deinit();
 
         if (self.placeholder_active) {
             self.text_buffer_view.virtual_lines_dirty = true;

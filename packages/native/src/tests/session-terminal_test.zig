@@ -103,9 +103,8 @@ pub const Fixture = struct {
         return error.TestUnexpectedResult;
     }
 
-    fn paint(self: Fixture, text: []const u8, hit: u32) !void {
+    fn paint(self: Fixture, text: []const u8) !void {
         try self.cli.getNextBuffer().drawText(text, 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
-        self.cli.addToHitGrid(0, 0, self.cli.width, self.cli.height, hit);
     }
 };
 
@@ -354,7 +353,7 @@ test "Session terminal close interrupts setup frames and suspension without clos
             _ = try f.owner.pumpSession(f.id, now_ns, 1);
         } else {
             try f.drive(&now_ns, .active);
-            try f.paint("new", 22);
+            try f.paint("new");
             try testing.expectEqual(.pending, try f.owner.renderSession(f.id, true));
             if (phase == .suspension) try f.owner.suspendSession(f.id);
         }
@@ -374,7 +373,7 @@ test "Session terminal close interrupts setup frames and suspension without clos
         try testing.expectEqual(.closed, f.value.state);
         try testing.expect(f.value.output.closed);
         try testing.expect(now_ns >= 2 * session.cursor_settle_ns);
-        try testing.expectEqual(@as(u32, if (phase == .setup) 0 else 22), f.cli.checkHit(0, 0));
+        try testing.expectEqual(@as(u64, if (phase == .setup) 0 else 1), f.cli.getRenderStats().frameCount);
     }
 }
 
@@ -469,7 +468,7 @@ test "Session terminal random operation sequences preserve rejected state and al
                     // Rendering before setup forbids setup; keep most runs managed.
                     if (f.value.lifecycle.phase == .uninitialized and random.uintLessThan(u8, 8) != 0) break :blk;
                     // Raw renderer drawing is valid only between presentations.
-                    if (f.value.frame_end_offset == null) try f.paint("x", 1);
+                    if (f.value.frame_end_offset == null) try f.paint("x");
                     _ = f.owner.renderSession(f.id, random.boolean()) catch |err| break :blk err;
                 },
             };
@@ -491,7 +490,7 @@ test "Session terminal random operation sequences preserve rejected state and al
     }
 }
 
-test "Session terminal failed cleanup retains committed images and hit grid until explicit cancel" {
+test "Session terminal failed cleanup retains committed images and frame state until explicit cancel" {
     const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
     defer f.deinit();
     const pixels = try image.createFromRgba(testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
@@ -500,7 +499,7 @@ test "Session terminal failed cleanup retains committed images and hit grid unti
     var bytes: [4096]u8 = undefined;
     try f.owner.setupSessionTerminal(f.id, .{});
     try f.drive(&now_ns, .active);
-    try f.paint("old", 11);
+    try f.paint("old");
     try testing.expect(try f.cli.getNextBuffer().drawImage(pixels, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     try testing.expectEqual(.pending, try f.owner.renderSession(f.id, true));
     _ = try f.drain(&bytes);
@@ -519,7 +518,6 @@ test "Session terminal failed cleanup retains committed images and hit grid unti
     try testing.expectEqualDeep(image_state, f.cli.currentImages.items[0]);
     try testing.expect(buffer == f.cli.currentRenderBuffer);
     try testing.expectEqualDeep(stats, f.cli.getRenderStats());
-    try testing.expectEqual(@as(u32, 11), f.cli.checkHit(0, 0));
     try testing.expectError(error.SessionFailed, f.owner.pumpSession(f.id, now_ns, 32));
     try testing.expectError(error.SessionFailed, f.value.pumpExit());
     try testing.expectEqualDeep(retained, f.value.getStats());

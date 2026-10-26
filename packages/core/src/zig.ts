@@ -88,13 +88,7 @@ export type NativeAudioStreamFormat = NativeAudioStreamFormatType
 import { isBunfsPath } from "./lib/bunfs.js"
 import { resolveNativeLibraryPath } from "#opentui/runtime-assets"
 import { allocStruct } from "bun-ffi-structs"
-import {
-  nativeSymbols,
-  nativeCallbacks,
-  nativeLayouts,
-  nativeConstants,
-  nativeStyleEnumMaxima,
-} from "./native-abi.generated.js"
+import { nativeSymbols, nativeCallbacks, nativeLayouts, nativeConstants } from "./native-abi.generated.js"
 
 registerEnvVar({
   name: "OPENTUI_LIBC",
@@ -444,8 +438,6 @@ export interface NativeSceneFrameRequest {
   readonly height: number
   paintLayout?: NativeSceneLayout
   publicLayout?: NativeSceneLayout
-  /** Host observation revision; never part of native ticket authority. */
-  geometryRevision?: number
 }
 
 export interface NativeSplitSnapshot {
@@ -1633,12 +1625,9 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
     record[layout.fields.z_index.offset / 4] = toFFII32(zIndex, "Scene zIndex")
     fields |= nativeConstants.OT_SCENE_PROPERTY_Z_INDEX
   }
-  // Mirror scene.zig setPaint's range rules so staged paint cannot fail only at flush time.
-  const requestedOpacity = paint.opacity
-  if (requestedOpacity !== undefined) {
-    const opacity = toFFIF32(requestedOpacity, "Scene opacity")
-    if (opacity < 0 || opacity > 1) throw new RangeError("Scene opacity must be within 0..1")
-    floats[layout.fields.opacity.offset / 4] = opacity
+  const opacity = paint.opacity
+  if (opacity !== undefined) {
+    floats[layout.fields.opacity.offset / 4] = toFFIF32(opacity, "Scene opacity")
     fields |= nativeConstants.OT_SCENE_PROPERTY_OPACITY
   }
   const translateX = paint.translateX
@@ -1651,11 +1640,9 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
     doubles[layout.fields.translate_y.offset / 8] = toFFIF32(translateY, "Scene translateY")
     fields |= nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_Y
   }
-  const requestedBorder = paint.border
-  if (requestedBorder !== undefined) {
-    const borderSides = toSafeFFIU32Length(requestedBorder, "Scene border")
-    if (borderSides > 15) throw new RangeError("Scene border sides must use four edge bits")
-    record[layout.fields.border_sides.offset / 4] = borderSides
+  const border = paint.border
+  if (border !== undefined) {
+    record[layout.fields.border_sides.offset / 4] = toSafeFFIU32Length(border, "Scene border")
     fields |= nativeConstants.OT_SCENE_PROPERTY_BORDER
   }
   const shouldFill = paint.shouldFill
@@ -1697,51 +1684,6 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
     fields |= nativeConstants.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS
   }
   return fields
-}
-
-function validateSceneStyle(group: number, kind: number, edge: number, unit: number, value: number, flags: number) {
-  const c = nativeConstants
-  if (
-    group > c.OT_STYLE_DIMENSION ||
-    group === c.OT_STYLE_BORDER ||
-    (group !== c.OT_STYLE_DIMENSION && flags !== 0) ||
-    flags > c.OT_STYLE_DISABLE_FLEX_SHRINK
-  ) {
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  }
-  if (
-    (group === c.OT_STYLE_ENUM || group === c.OT_STYLE_FLOAT) &&
-    (edge !== c.OT_EDGE_NONE || unit !== c.OT_UNIT_UNDEFINED)
-  ) {
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  }
-  if (group === c.OT_STYLE_DIMENSION && edge !== c.OT_EDGE_NONE)
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  let valid = false
-  switch (group) {
-    case c.OT_STYLE_ENUM:
-      valid = kind < nativeStyleEnumMaxima.length && value <= nativeStyleEnumMaxima[kind]
-      break
-    case c.OT_STYLE_FLOAT:
-      valid = kind <= c.OT_STYLE_FLOAT_ASPECT_RATIO
-      break
-    case c.OT_STYLE_VALUE:
-      valid =
-        kind <= c.OT_STYLE_VALUE_GAP &&
-        unit <= c.OT_UNIT_AUTO &&
-        (kind < c.OT_STYLE_VALUE_MARGIN || edge <= (kind === c.OT_STYLE_VALUE_GAP ? c.OT_GUTTER_ALL : c.OT_EDGE_ALL)) &&
-        !(
-          unit === c.OT_UNIT_AUTO &&
-          ((kind >= c.OT_STYLE_VALUE_MIN_WIDTH && kind <= c.OT_STYLE_VALUE_MAX_HEIGHT) ||
-            kind === c.OT_STYLE_VALUE_PADDING ||
-            kind === c.OT_STYLE_VALUE_GAP)
-        )
-      break
-    case c.OT_STYLE_DIMENSION:
-      valid = kind <= c.OT_DIMENSION_HEIGHT && unit <= c.OT_UNIT_AUTO
-      break
-  }
-  if (!valid) throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
 }
 
 // Packed paint records hold fields in header bit order, and SceneStaging indexes these entries by bit position.
@@ -1912,7 +1854,9 @@ export class SceneStaging {
     unit = toSafeFFIU32Length(unit, "Scene style unit")
     value = SceneStaging.checkStyleValue(group, value)
     flags = toSafeFFIU32Length(flags, "Scene style flags")
-    validateSceneStyle(group, kind, edge, unit, value, flags)
+    // Each field packs into one header byte; native cannot see wider bits, which would select another property.
+    if (Math.max(group, kind, edge, unit) > 0xff)
+      throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
     // Size kinds (width through flex basis) have no edge; keep unused bits out of the packed record.
     if (group === nativeConstants.OT_STYLE_VALUE && kind < nativeConstants.OT_STYLE_VALUE_MARGIN) edge = 0
     const handle = encodedContextHandle(context, node)
@@ -7706,7 +7650,6 @@ export class FFIRenderLib {
             flags & nativeConstants.OT_SCENE_GEOMETRY_PUBLIC
               ? decodeSceneLayout(scratch.geometryValues, scratch.geometryCoordinates, fields.public_layout.offset)
               : undefined,
-          geometryRevision: undefined,
         }
       } catch (error) {
         const livePointer = this.nativeContexts.get(context)

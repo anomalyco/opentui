@@ -1,9 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const buffer = @import("buffer.zig");
-const events = @import("event-emitter.zig");
-const link = @import("link.zig");
-const ansi = @import("ansi.zig");
 const text_work = @import("text-work.zig");
 
 pub const RGBA = buffer.RGBA;
@@ -22,7 +19,36 @@ pub const SyntaxStyleError = error{
     StyleNotFound,
 };
 
-pub const Event = enum { Destroy };
+/// A text buffer's binding to the style it draws with. The style lists its borrowers, so a
+/// definition change visits only them. `dependent` is the Context object that owns the buffer.
+pub const Borrower = struct {
+    style: ?*SyntaxStyle = null,
+    previous: ?*Borrower = null,
+    next: ?*Borrower = null,
+    dependent: Dependent = .none,
+
+    pub const Dependent = union(enum) { none, text: *anyopaque, edit: *anyopaque };
+
+    /// Binding never allocates, so it cannot fail.
+    pub fn bind(self: *Borrower, style: ?*SyntaxStyle) void {
+        if (self.style == style) return;
+        self.unbind();
+        const next = style orelse return;
+        self.* = .{ .style = next, .next = next.borrowers, .dependent = self.dependent };
+        if (next.borrowers) |head| head.previous = self;
+        next.borrowers = self;
+    }
+
+    fn unbind(self: *Borrower) void {
+        const style = self.style orelse return;
+        if (self.previous) |previous| previous.next = self.next else style.borrowers = self.next;
+        if (self.next) |next| next.previous = self.previous;
+        self.* = .{ .dependent = self.dependent };
+    }
+};
+
+/// The first id that registration never returns (`OT_STYLE_RUN_FLAG`).
+pub const id_limit: u32 = 0x8000_0000;
 
 pub const SyntaxStyle = struct {
     allocator: Allocator,
@@ -33,8 +59,7 @@ pub const SyntaxStyle = struct {
     id_to_style: std.AutoHashMapUnmanaged(u32, StyleDefinition),
     next_id: u32,
 
-    emitter: events.EventEmitter(Event),
-    link_tracker: ?link.LinkTracker = null,
+    borrowers: ?*Borrower = null,
 
     pub fn init(global_allocator: Allocator) SyntaxStyleError!*SyntaxStyle {
         const self = global_allocator.create(SyntaxStyle) catch return SyntaxStyleError.OutOfMemory;
@@ -53,8 +78,6 @@ pub const SyntaxStyle = struct {
             .name_to_id = .empty,
             .id_to_style = .empty,
             .next_id = 1, // Start from 1, 0 can be used as "invalid"
-            // Subscriptions survive replacement of the definition arena.
-            .emitter = events.EventEmitter(Event).init(global_allocator),
         };
 
         return self;
@@ -64,52 +87,11 @@ pub const SyntaxStyle = struct {
         const global_allocator = self.global_allocator;
         defer global_allocator.destroy(self);
 
-        self.emitter.emit(.Destroy);
-        self.emitter.deinit();
-        if (self.link_tracker) |*tracker| tracker.deinit();
+        // Borrowers outlive the style: they draw without it from now on.
+        while (self.borrowers) |borrower| borrower.unbind();
         self.arena.deinit();
         global_allocator.destroy(self.arena);
         self.* = undefined;
-    }
-
-    /// A provisional copy without subscriptions; retain its links before publication.
-    pub fn prepareDefinitions(self: *const SyntaxStyle) SyntaxStyleError!*SyntaxStyle {
-        const prepared = try SyntaxStyle.init(self.global_allocator);
-        errdefer prepared.deinit();
-        try prepared.name_to_id.ensureTotalCapacity(prepared.allocator, self.name_to_id.count());
-        try prepared.id_to_style.ensureTotalCapacity(prepared.allocator, self.id_to_style.count());
-        text_work.add(.style_entries_copied, self.name_to_id.count());
-        var names = self.name_to_id.iterator();
-        while (names.next()) |entry| {
-            const name = try prepared.allocator.dupe(u8, entry.key_ptr.*);
-            prepared.name_to_id.putAssumeCapacity(name, entry.value_ptr.*);
-        }
-        var definitions = self.id_to_style.iterator();
-        while (definitions.next()) |entry| prepared.id_to_style.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
-        prepared.next_id = self.next_id;
-        return prepared;
-    }
-
-    /// Shared definitions can outlive the document that introduced their URLs.
-    pub fn retainLinks(self: *SyntaxStyle, pool: *link.LinkPool) !void {
-        std.debug.assert(self.link_tracker == null);
-        self.link_tracker = link.LinkTracker.init(self.global_allocator, pool);
-        var definitions = self.id_to_style.valueIterator();
-        while (definitions.next()) |definition| {
-            const id = ansi.TextAttributes.getLinkId(definition.attributes);
-            if (id == 0) continue;
-            const url = try pool.get(id);
-            const retained = try self.link_tracker.?.trackUrl(url);
-            std.debug.assert(retained == id);
-        }
-    }
-
-    /// Keep identity and destroy subscriptions; retire old definitions with prepared.
-    pub fn publishDefinitions(self: *SyntaxStyle, prepared: *SyntaxStyle) void {
-        std.debug.assert(self != prepared);
-        std.debug.assert(std.meta.eql(self.global_allocator, prepared.global_allocator));
-        std.mem.swap(SyntaxStyle, self, prepared);
-        std.mem.swap(events.EventEmitter(Event), &self.emitter, &prepared.emitter);
     }
 
     pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
@@ -120,7 +102,8 @@ pub const SyntaxStyle = struct {
         }
 
         const id = self.next_id;
-        if (id == 0) return SyntaxStyleError.InvalidId;
+        // Ids with bit 31 set name a text buffer's run styles.
+        if (id == 0 or id >= id_limit) return SyntaxStyleError.InvalidId;
 
         try self.name_to_id.ensureUnusedCapacity(self.allocator, 1);
         try self.id_to_style.ensureUnusedCapacity(self.allocator, 1);
@@ -129,7 +112,7 @@ pub const SyntaxStyle = struct {
 
         self.name_to_id.putAssumeCapacity(owned_name, id);
         self.id_to_style.putAssumeCapacity(id, definition);
-        self.next_id +%= 1;
+        self.next_id += 1;
 
         return id;
     }
@@ -157,13 +140,5 @@ pub const SyntaxStyle = struct {
 
     pub fn getStyleCount(self: *const SyntaxStyle) usize {
         return self.id_to_style.count();
-    }
-
-    pub fn onDestroy(self: *SyntaxStyle, ctx: *anyopaque, handle: *const fn (*anyopaque) void) SyntaxStyleError!void {
-        self.emitter.on(.Destroy, .{ .ctx = ctx, .handle = handle }) catch return SyntaxStyleError.OutOfMemory;
-    }
-
-    pub fn offDestroy(self: *SyntaxStyle, ctx: *anyopaque, handle: *const fn (*anyopaque) void) void {
-        self.emitter.off(.Destroy, .{ .ctx = ctx, .handle = handle });
     }
 };

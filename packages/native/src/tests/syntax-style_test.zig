@@ -49,9 +49,9 @@ test "SyntaxStyle rejection - allocation failures preserve registrations and IDs
 test "SyntaxStyle rejection - exhausted IDs preserve existing styles" {
     const style = try SyntaxStyle.init(std.testing.allocator);
     defer style.deinit();
-    style.next_id = std.math.maxInt(u32);
+    style.next_id = std.math.maxInt(i32);
     const id = try style.registerStyle("last", null, null, 1);
-    try std.testing.expectEqual(std.math.maxInt(u32), id);
+    try std.testing.expectEqual(std.math.maxInt(i32), id);
     try std.testing.expectError(error.InvalidId, style.registerStyle("overflow", null, null, 2));
     try std.testing.expect(style.resolveByName("overflow") == null);
     try std.testing.expectEqual(@as(usize, 1), style.getStyleCount());
@@ -93,12 +93,6 @@ test "SyntaxStyle - registrations match a name-to-definition model" {
         // A new name takes the next ID; a known name keeps its ID and replaces its definition.
         try std.testing.expectEqual(if (entry.found_existing) entry.value_ptr.id else @as(u32, @intCast(model.count())), id);
         entry.value_ptr.* = .{ .id = id, .definition = definition };
-        if (step % 40 == 0) {
-            // A prepared copy holds every definition and publishes under the same identity.
-            const prepared = try style.prepareDefinitions();
-            style.publishDefinitions(prepared);
-            prepared.deinit();
-        }
         try std.testing.expectEqual(model.count(), style.getStyleCount());
         for (model.keys(), model.values()) |key, value| {
             try std.testing.expectEqual(value.id, style.resolveByName(key).?);

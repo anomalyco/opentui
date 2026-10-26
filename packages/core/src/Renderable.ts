@@ -349,17 +349,11 @@ export abstract class Renderable extends BaseRenderable {
   protected _nativeSceneHookGeneration = 0n
   private _nativeSceneHooksRegistered = false
   private _nativeSceneResize = false
-  private _nativeSceneHookLayout?: {
-    revision: number
-    layout?: NativeSceneLayout
-    paintRevision?: number
-    paintLayout?: NativeSceneLayout
-  }
+  // The prepared paint geometry while one of this node's hooks runs.
+  private _paintLayout?: NativeSceneLayout
   // Layout reads between native layout passes and host writes return the same values.
   private _observedLayout?: NativeSceneLayout
   private _observedLayoutRevision = -1
-  private _computedLayout?: NativeSceneLayout
-  private _computedLayoutRevision = -1
   private _selectable = false
   private _mouseListener: ((event: MouseEvent) => void) | null = null
   private _mouseListeners: Partial<Record<MouseEventType, (event: MouseEvent) => void>> = {}
@@ -727,7 +721,7 @@ export abstract class Renderable extends BaseRenderable {
     return this._translateX
   }
 
-  // Translation during a paint hook also moves this node's buffered composition.
+  // A translation in a paint hook moves the node's buffered composition from the next frame on.
   public set translateX(value: number) {
     value ??= 0
     if (this._translateX === value) return
@@ -758,33 +752,20 @@ export abstract class Renderable extends BaseRenderable {
 
   // Host paint uses the prepared snapshot even after same-frame reparenting.
   protected get _screenX(): number {
-    return this.getNativeScenePaintLayout()?.screenX ?? this.screenX
+    return this._paintLayout?.screenX ?? this.screenX
   }
 
   protected get _screenY(): number {
-    return this.getNativeScenePaintLayout()?.screenY ?? this.screenY
+    return this._paintLayout?.screenY ?? this.screenY
   }
 
   // Paint geometry is clamped to the cell range that drawing accepts; public sizes are Yoga's.
   protected get _paintWidth(): number {
-    return this.getNativeScenePaintLayout()?.width ?? this.width
+    return this._paintLayout?.width ?? this.width
   }
 
   protected get _paintHeight(): number {
-    return this.getNativeScenePaintLayout()?.height ?? this.height
-  }
-
-  private getNativeScenePaintLayout(): NativeSceneLayout | undefined {
-    const cached = this._nativeSceneHookLayout
-    if (!cached) return undefined
-    const scene = this._ctx.nativeScene
-    const revision = scene.currentGeometryRevision
-    if (!this._isDestroyed && cached.paintRevision !== revision) {
-      // Native preserves prepared membership while accepting explicit translations.
-      cached.paintLayout = scene.getLayout(this, "paint")
-      cached.paintRevision = revision
-    }
-    return cached.paintLayout
+    return this._paintLayout?.height ?? this.height
   }
 
   public get x(): number {
@@ -885,22 +866,19 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   private getNativeSceneLayout(): NativeSceneLayout {
-    const scene = this._ctx.nativeScene
-    const cached = this._nativeSceneHookLayout
-    const revision = scene.currentGeometryRevision
-    if (cached?.layout && cached.revision === revision) return cached.layout
-    const layoutRevision = scene.observedLayoutRevision
-    if (layoutRevision !== undefined && this._observedLayoutRevision === layoutRevision) return this._observedLayout!
-    const layout = scene.getLayout(this)
-    if (cached) {
-      cached.revision = revision
-      cached.layout = layout
-    }
-    if (layoutRevision !== undefined) {
+    const revision = this._ctx.nativeScene.observedLayoutRevision
+    if (revision !== undefined && this._observedLayoutRevision === revision) return this._observedLayout!
+    return this.observeLayout(this._ctx.nativeScene.getLayout(this))
+  }
+
+  /** Caches a layout that native returned since the last frame, move, destroy, or translation. */
+  private observeLayout(layout: NativeSceneLayout | undefined): NativeSceneLayout {
+    const revision = this._ctx.nativeScene.observedLayoutRevision
+    if (layout && revision !== undefined) {
       this._observedLayout = layout
-      this._observedLayoutRevision = layoutRevision
+      this._observedLayoutRevision = revision
     }
-    return layout
+    return layout!
   }
 
   public set height(value: number | "auto" | `${number}%` | null | undefined) {
@@ -1166,22 +1144,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   getComputedLayout(): Layout {
-    const scene = this._ctx.nativeScene
-    const revision = scene.observedLayoutRevision
-    let layout = this._computedLayout
-    if (
-      revision === undefined ||
-      this._computedLayoutRevision !== revision ||
-      layout === undefined ||
-      this._yogaFreed
-    ) {
-      layout = scene.getLayout(this, true)
-      if (revision !== undefined) {
-        this._computedLayout = layout
-        this._computedLayoutRevision = revision
-      }
-    }
-    const { left, top, right, bottom, width, height } = layout
+    const { left, top, right, bottom, width, height } = this._ctx.nativeScene.getLayout(this, true)
     return { left, top, right, bottom, width, height }
   }
 
@@ -1977,10 +1940,8 @@ export abstract class Renderable extends BaseRenderable {
   /** @internal Refresh only requested host hooks, never walk wrappers to collect layout. */
   _runNativeSceneHook(request: NativeSceneFrameRequest, deltaTime: number): void {
     if (this._isDestroyed || request.hookGeneration !== this._nativeSceneHookGeneration) return
-    const previousLayout = this._nativeSceneHookLayout
-    const revision = this._ctx.nativeScene.currentGeometryRevision
-    const currentGeometry = request.geometryRevision === revision
-    this._nativeSceneHookLayout = { revision, layout: currentGeometry ? request.publicLayout : undefined }
+    this.observeLayout(request.publicLayout)
+    this._paintLayout = request.paintLayout
     try {
       switch (request.kind) {
         case NativeSceneFrame.Update:
@@ -1988,9 +1949,6 @@ export abstract class Renderable extends BaseRenderable {
           break
         case NativeSceneFrame.Resize:
           if (this._nativeSceneResize) {
-            this._nativeSceneHookLayout.paintLayout =
-              (currentGeometry && request.paintLayout) || this._ctx.nativeScene.getLayout(this, "paint")
-            this._nativeSceneHookLayout.paintRevision = revision
             this._hooks.onLayoutResize.call(this, request.width, request.height)
           } else {
             const resize = this.nativeIntegration.lifecycle?.resize
@@ -2006,7 +1964,7 @@ export abstract class Renderable extends BaseRenderable {
           break
       }
     } finally {
-      this._nativeSceneHookLayout = previousLayout
+      this._paintLayout = undefined
     }
   }
 
@@ -2018,19 +1976,13 @@ export abstract class Renderable extends BaseRenderable {
     deltaTime: number,
     frame: OptimizedBuffer,
     recorder: NativePaintRecorder,
-    geometryRevision: number | undefined,
+    publicLayout: NativeSceneLayout | undefined,
   ): void {
     // Native code paints the phases the slot requested even if an earlier hook changed this
     // node's hooks, so record them with the current methods instead of skipping the slot.
     if (this._isDestroyed) return
-    const previousLayout = this._nativeSceneHookLayout
-    const revision = this._ctx.nativeScene.currentGeometryRevision
-    this._nativeSceneHookLayout = {
-      revision,
-      layout: geometryRevision === revision ? slot.publicLayout : undefined,
-      paintLayout: slot.paintLayout,
-      paintRevision: revision,
-    }
+    this.observeLayout(publicLayout)
+    this._paintLayout = slot.paintLayout
     // Buffered bodies draw into their own buffer. When native code composes that buffer, it
     // plays the recording into it after clearing it, so those hooks record like the rest.
     const buffer =
@@ -2068,7 +2020,7 @@ export abstract class Renderable extends BaseRenderable {
           frame.drawFrameBuffer(Math.trunc(this._screenX), Math.trunc(this._screenY), this.frameBuffer)
       }
     } finally {
-      this._nativeSceneHookLayout = previousLayout
+      this._paintLayout = undefined
     }
   }
 

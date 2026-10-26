@@ -63,8 +63,6 @@ test "styled text renders through the public Zig module without JavaScript" {
 
     const text_buffer = try opentui.UnifiedTextBuffer.init(allocator, &graphemes, &links, .unicode);
     defer text_buffer.deinit();
-    const syntax_style = try opentui.text_buffer.SyntaxStyle.init(allocator);
-    defer syntax_style.deinit();
     const view = try opentui.UnifiedTextBufferView.init(allocator, text_buffer);
     defer view.deinit();
     view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 1 });
@@ -75,21 +73,14 @@ test "styled text renders through the public Zig module without JavaScript" {
     var link_tracker = opentui.LinkTracker.init(allocator, &links);
     defer link_tracker.deinit();
     const link_id = try link_tracker.trackUrl(link_url);
-    const open_id = try syntax_style.registerStyle("open", amber, null, opentui.TextAttributes.BOLD);
-    const tui_id = try syntax_style.registerStyle(
-        "tui",
-        cyan,
-        null,
-        opentui.TextAttributes.setLinkId(opentui.TextAttributes.UNDERLINE, link_id),
-    );
     const text = try allocator.dupe(u8, "OpenTUI");
     var transferred = false;
     errdefer if (!transferred) allocator.free(text);
     const chunks = [_]opentui.text_buffer.OwnedStyledChunk{
-        .{ .byte_count = 4, .style_id = open_id },
-        .{ .byte_count = 3, .style_id = tui_id },
+        .{ .byte_count = 4, .style = .{ .fg = amber, .bg = null, .attributes = opentui.TextAttributes.BOLD } },
+        .{ .byte_count = 3, .style = .{ .fg = cyan, .bg = null, .attributes = opentui.TextAttributes.setLinkId(opentui.TextAttributes.UNDERLINE, link_id) } },
     };
-    _ = try text_buffer.replaceOwnedStyledText(text, null, syntax_style, &chunks, &link_tracker);
+    _ = try text_buffer.replaceOwnedStyledText(text, null, &chunks, &link_tracker);
     transferred = true;
 
     renderer.getNextBuffer().drawTextBuffer(view, 0, 0);
@@ -206,7 +197,6 @@ test "Session terminal lifecycle renders and restores through the public Zig pum
                     try std.testing.expectEqual(@as(u32, 'p'), cells.buffer.char[0]);
                 }
                 try owner.destroy(source);
-                renderer.addToHitGrid(0, 0, 6, 1, 71);
                 try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
                 try owner.beginSessionClose(id);
                 try std.testing.expectError(error.ContextBusy, owner.destroy(id));
@@ -220,7 +210,6 @@ test "Session terminal lifecycle renders and restores through the public Zig pum
     try std.testing.expect(restored);
     try std.testing.expectEqual(.restored, (try owner.getSessionTerminalState(id)).phase);
     try std.testing.expectEqual(@as(u64, 1), renderer.getRenderStats().frameCount);
-    try std.testing.expectEqual(@as(u32, 71), renderer.checkHit(0, 0));
     try std.testing.expectEqual(2 * opentui.session.cursor_settle_ns, now_ns);
     try std.testing.expect(std.mem.startsWith(u8, output.slice(), "prefix"));
     try std.testing.expect(std.mem.find(u8, output.slice(), "pumped\u{754c}") != null);

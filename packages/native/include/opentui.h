@@ -419,9 +419,10 @@ typedef struct ot_scene_layout {
 #define OT_SCENE_FULL_PATH_IMAGES UINT32_C(4)
 
 /* Fields from work_frame_id on count the work of the last presented scene
- * frame: preparation, paint, encoding, and the hit-grid commit. They are
- * deterministic work counts, not times, and their values may change between
- * versions as the renderer does less work. Cancelled, failed, and skipped frames,
+ * frame: preparation, paint, and encoding. They are deterministic work
+ * counts, not times, and their values may change between versions as the
+ * renderer does less work. The three hit_cells fields are zero: paint records
+ * one hit rectangle per member, and a hit test walks them. Cancelled, failed, and skipped frames,
  * non-scene renders, and snapshot-only split renders leave them unchanged.
  * work_frame_id is the frame_id of the counted frame, or zero before the first.
  * full_path_reasons holds OT_SCENE_FULL_PATH_* bits: FORCED (debug flag),
@@ -751,7 +752,8 @@ ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot
     const uint8_t *title, uint32_t title_bytes, const uint8_t *bottom_title, uint32_t bottom_title_bytes);
 /* A box may filter its direct children against a root/box in the same Session.
  * The viewport handle is copied, not pinned. NULL disables filtering. A destroyed
- * viewport fails frame preparation until rebound or disabled. All direct children
+ * viewport fails frame preparation until rebound or disabled. After a layout
+ * change, or a change to a child's text, view, or hooks, all direct children
  * refresh before selection, including hidden/culled children; hidden nodes do not
  * update or resize. Fewer than 16 total children bypass overlap filtering.
  * Bounds use the full viewport, not its border-inset paint clip. Row/reverse-row
@@ -846,7 +848,7 @@ ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t obse
  * ot_scene_frame_commit, or cancel it before painting again. Frame-qualified
  * effects and capture may run before commit. Initialize out_frame's exact
  * size/version and zero reserved fields; rejection leaves it unchanged.
- * No output or hit-grid publication occurs until commit and output completion.
+ * No output or hit publication occurs until commit and output completion.
  * Pending presentation rejects painting; accepted scene mutations remain valid.
  * excluded_hit_num is the captured node's public number, or zero. It excludes
  * only that node from this frame's hits, not its painting or descendants.
@@ -1341,7 +1343,8 @@ typedef struct ot_editor_style {
  * Reset uses mask=7 and flags=0. */
 ot_status ot_edit_buffer_set_defaults(ot_context *, const ot_handle *, uint32_t mask, const ot_editor_style *);
 /* Names are copied UTF-8; registering an existing name replaces its definition.
- * Empty names are valid; name may be NULL only when byte_count is zero. */
+ * Empty names are valid; name may be NULL only when byte_count is zero. Ids are
+ * below OT_STYLE_RUN_FLAG. */
 ot_status ot_syntax_style_register(ot_context *, const ot_handle *, const uint8_t *name,
     uint32_t byte_count, const ot_editor_style *, uint32_t *out_id);
 /* Unknown names return id=0. Names are borrowed only for the query. */
@@ -1354,6 +1357,10 @@ ot_status ot_syntax_style_get_count(ot_context *, const ot_handle *, uint32_t *o
 #define OT_EDIT_HIGHLIGHT_REMOVE_REF UINT32_C(2)
 #define OT_EDIT_HIGHLIGHT_CLEAR_LINE UINT32_C(3)
 #define OT_EDIT_HIGHLIGHT_CLEAR_ALL UINT32_C(4)
+/* Highlight style ids with this bit name a text buffer's styled-text styles; styled
+ * text interns them by value in the buffer and never writes the attached SyntaxStyle.
+ * get_highlights reports them; equal styles share one id, unstyled text has id 0. */
+#define OT_STYLE_RUN_FLAG UINT32_C(0x80000000)
 typedef struct ot_edit_highlight {
     uint32_t start;
     uint32_t end;
@@ -1362,7 +1369,8 @@ typedef struct ot_edit_highlight {
     uint32_t ref;
 } ot_edit_highlight;
 /* highlight is required only for ADD operations. argument is line for ADD_LINE/
- * CLEAR_LINE, ref for REMOVE_REF, zero otherwise. priority<=255, ref<=65535.
+ * CLEAR_LINE, ref for REMOVE_REF, zero otherwise. priority<=255, ref<=65535, and
+ * style_id has no OT_STYLE_RUN_FLAG.
  * start/end are display columns: within line argument for ADD_LINE; for ADD_RANGE,
  * document offsets that skip line breaks, unlike cursor, selection, and get_range
  * offsets, which count one cell per line break. In "ab\ncd", range 3..4 is "d". */
@@ -1728,12 +1736,12 @@ ot_status ot_text_buffer_view_destroy(ot_context *, const ot_handle *);
 ot_status ot_text_buffer_set_text(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count);
 ot_status ot_text_buffer_append(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count);
 ot_status ot_text_buffer_clear(ot_context *, const ot_handle *, uint32_t reset);
-/* Empty chunks retain their ordinal for generated chunkN names, but register no
- * style or link. Unlike direct scene text, chunk_count can exceed byte_count. */
+/* Empty chunks register no style or link. Unlike direct scene text, chunk_count can
+ * exceed byte_count. clear without reset keeps styled highlights but drops their links. */
 ot_status ot_text_buffer_set_styled_text(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count,
     const ot_styled_text_chunk *, uint32_t chunk_count, const uint8_t *urls, uint32_t url_byte_count);
 /* Atomic replacement of buffer-owned styled text. Every buffer appears once and
- * view must be its dependent view. Borrowed SyntaxStyles are not supported.
+ * view must be its dependent view.
  * Success resets selection on each named view, retaining defaults and geometry.
  * Failure leaves every buffer, view and output unchanged. Inputs are borrowed
  * only for the call. Output has count entries; NULL spans require zero count.
@@ -2720,7 +2728,8 @@ ot_status ot_session_attach_renderer_with_env(
 /* Submit at most one frame. force is 0 or 1. OT_RENDER_PENDING also means that
  * an earlier accepted frame is still pending; no second frame was accepted.
  * SKIPPED and FAILED accept no output and require an explicit new submission.
- * Only output completion publishes frame_count and the pending hit grid.
+ * Only output completion publishes frame_count. A frame submitted here has no
+ * scene hits: after it, ot_scene_hit_test returns 0 until a scene frame presents.
  * A live scene preparation or painted draft returns OT_FRAME_BUSY; submit a
  * painted draft with ot_scene_frame_commit instead.
  * On an error return, out_result remains unchanged. */
@@ -2763,8 +2772,9 @@ ot_status ot_scene_frame_draw_buffer(ot_context *context, const ot_handle *sessi
  * or an idle frame. They emit no terminal output. enabled is 0 or 1; corner is
  * 0 top-left, 1 top-right, 2 bottom-left, or 3 bottom-right. Times must be finite
  * and nonnegative. Memory byte counts use the renderer's existing u32 range.
- * Hit-grid dumping retains the renderer's best-effort file I/O semantics and
- * uses Context I/O, writing hitgrid_<timestamp>.txt in the working directory. */
+ * Hit-grid dumping writes, per cell, the last digit of the presented hit token
+ * (or '.') with best-effort file I/O through Context I/O, to
+ * hitgrid_<timestamp>.txt in the working directory. */
 ot_status ot_session_set_debug_overlay(ot_context *, const ot_handle *session, uint32_t enabled, uint32_t corner);
 ot_status ot_session_update_stats(ot_context *, const ot_handle *session, double overall_ms, uint32_t fps, double callback_ms);
 ot_status ot_session_update_memory_stats(ot_context *, const ot_handle *session, uint32_t heap_used, uint32_t heap_total, uint32_t array_buffers);

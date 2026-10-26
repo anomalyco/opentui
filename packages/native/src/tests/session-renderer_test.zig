@@ -8,9 +8,8 @@ const ansi = @import("../ansi.zig");
 
 const transport: session.Options = .{ .chunk_size = 64, .chunk_count = 16, .span_capacity = 16 };
 
-fn paint(cli: *renderer.CliRenderer, text: []const u8, hit: u32) !void {
+fn paint(cli: *renderer.CliRenderer, text: []const u8) !void {
     try cli.getNextBuffer().drawText(text, 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
-    cli.addToHitGrid(0, 0, cli.width, cli.height, hit);
 }
 
 fn drain(owner: *context.Context, id: context.Handle, out: []u8) ![]const u8 {
@@ -98,10 +97,9 @@ fn runOutputModel(seed: u64, delivery: Delivery, trace: *OutputTrace) !void {
     const value = try owner.raw().getSession(id);
     var raw_writes: std.ArrayList(RawWrite) = .empty;
     defer raw_writes.deinit(testing.allocator);
-    var presented_hit: u32 = 0;
-    var pending_hit: u32 = 0;
+    var presented_frames: u64 = 0;
     var frame_start: u64 = 0;
-    for (0..160) |step| {
+    for (0..160) |_| {
         const before = value.getStats().bytes_written;
         const pending_before = value.frame_end_offset;
         var status: u64 = 4;
@@ -117,23 +115,21 @@ fn runOutputModel(seed: u64, delivery: Delivery, trace: *OutputTrace) !void {
                 }
             },
             1 => {
-                const hit: u32 = @intCast(step + 1);
                 // Two texts make repeated content, so unforced frames can encode no bytes.
-                // The pending frame owns the next hit grid until its presentation completes.
+                // A pending frame publishes its statistics only when its presentation completes.
                 const text: []const u8 = if (random.boolean()) "ab" else "cd";
-                if (pending_before == null) try paint(cli, text, hit);
+                if (pending_before == null) try paint(cli, text);
                 const result = try owner.renderSession(id, random.uintLessThan(u8, 4) == 0);
                 status = @intFromEnum(result);
                 const after = value.getStats().bytes_written;
                 switch (result) {
                     .pending => if (pending_before == null) {
-                        pending_hit = hit;
                         frame_start = before;
                         try testing.expectEqual(after, value.frame_end_offset.?);
                         try testing.expect(value.completed_bytes < after);
                     } else try testing.expectEqual(before, after),
                     .presented => {
-                        presented_hit = hit;
+                        presented_frames += 1;
                         try testing.expectEqual(before, after);
                         try testing.expect(value.isDrained());
                     },
@@ -150,7 +146,7 @@ fn runOutputModel(seed: u64, delivery: Delivery, trace: *OutputTrace) !void {
             },
         }
         if (pending_before) |end| if (value.frame_end_offset == null and value.completed_bytes >= end) {
-            presented_hit = pending_hit;
+            presented_frames += 1;
             // A no-byte frame waits only for earlier output.
             const frame = trace.bytes.items[frame_start..end];
             if (frame.len != 0) {
@@ -160,7 +156,7 @@ fn runOutputModel(seed: u64, delivery: Delivery, trace: *OutputTrace) !void {
         };
         try testing.expectEqual(@as(u64, trace.bytes.items.len), value.completed_bytes);
         try testing.expectEqual(value.frame_end_offset != null, cli.pendingPresentation != null);
-        try testing.expectEqual(presented_hit, cli.checkHit(0, 0));
+        try testing.expectEqual(presented_frames, cli.getRenderStats().frameCount);
         try expectRawWrites(&raw_writes, trace.bytes.items);
         const stats = value.getStats();
         try trace.events.append(testing.allocator, .{ status, cli.getRenderStats().frameCount, value.completed_bytes, stats.bytes_written });
@@ -169,14 +165,14 @@ fn runOutputModel(seed: u64, delivery: Delivery, trace: *OutputTrace) !void {
     if (seed % 2 == 1) {
         // A failed delivery keeps the published frame state, even with a frame pending.
         if (value.frame_end_offset == null) {
-            try paint(cli, "ef", 999);
+            try paint(cli, "ef");
             _ = try owner.renderSession(id, true);
         }
         const frames = cli.getRenderStats().frameCount;
         try testing.expectError(error.SessionFailed, deliverOutput(owner, id, delivery, 1, 1, true, &trace.bytes));
         try testing.expectEqual(.failed, value.state);
         try testing.expect(value.frame_end_offset == null and cli.pendingPresentation == null);
-        try testing.expectEqual(presented_hit, cli.checkHit(0, 0));
+        try testing.expectEqual(presented_frames, cli.getRenderStats().frameCount);
         try testing.expectEqual(frames, cli.getRenderStats().frameCount);
         try testing.expectError(error.SessionFailed, owner.renderSession(id, true));
         return;
@@ -224,7 +220,7 @@ test "Session renderer completes its byte endpoint between raw writes" {
     try testing.expect(value.output.callback == null);
     const published = cli.getRenderStats();
 
-    try paint(cli, "new", 22);
+    try paint(cli, "new");
     try testing.expectEqual(.pending, try owner.renderSession(id, true));
     const frame_end = value.getStats().bytes_written;
     try testing.expect(frame_end > "before".len);
@@ -246,7 +242,6 @@ test "Session renderer completes its byte endpoint between raw writes" {
         try testing.expect(len + 7 <= bytes.len);
         const ticket = (try owner.readOutput(id, bytes[len..][0..7])).?;
         len += ticket.len;
-        try testing.expectEqual(@as(u32, 0), cli.checkHit(0, 0));
         try testing.expectEqualDeep(published, cli.getRenderStats());
         try owner.completeOutput(id, ticket, .written);
     }
@@ -256,7 +251,6 @@ test "Session renderer completes its byte endpoint between raw writes" {
     try testing.expect(std.mem.startsWith(u8, frame, ansi.ANSI.syncSet));
     try testing.expect(std.mem.find(u8, frame, "new") != null);
     try testing.expect(std.mem.endsWith(u8, frame, ansi.ANSI.syncReset));
-    try testing.expectEqual(@as(u32, 22), cli.checkHit(0, 0));
     try testing.expectEqual(@as(u64, 1), cli.getRenderStats().frameCount);
     try testing.expectEqual(@as(u64, "after".len), value.getStats().outstanding_bytes);
     try testing.expect(value.frame_end_offset == null);
@@ -306,7 +300,7 @@ test "Session renderer skips frames under output pressure and fails frames that 
         if (case.queued != 0) try owner.writeSession(id, blocker[0..case.queued]);
         const queued = value.getStats();
         const published = cli.getRenderStats();
-        try paint(cli, "new", 22);
+        try paint(cli, "new");
         if (case.width != 4) {
             for (0..2) |y| try cli.getNextBuffer().drawText(&blocker, 0, @intCast(y), ansi.rgbColor(255, 255, 255, 255), null, 0);
         }
@@ -326,7 +320,6 @@ test "Session renderer skips frames under output pressure and fails frames that 
         try testing.expectEqual(file_state, cli.kittyTransport.file_state);
         try testing.expect(value.frame_end_offset == null);
         try testing.expectEqual(.open, value.state);
-        try testing.expectEqual(@as(u32, 0), cli.checkHit(0, 0));
         try testing.expectEqualDeep(published, cli.getRenderStats());
         var bytes: [512]u8 = undefined;
         try testing.expectEqualStrings(blocker[0..case.queued], try drain(owner, id, &bytes));
@@ -334,10 +327,9 @@ test "Session renderer skips frames under output pressure and fails frames that 
         if (case.width != 4) continue;
 
         // An unforced retry still repaints every cell: no rejected frame reached the terminal.
-        try paint(cli, "new", 22);
+        try paint(cli, "new");
         try testing.expectEqual(.pending, try owner.renderSession(id, false));
         try testing.expect(std.mem.find(u8, try drain(owner, id, &bytes), "new") != null);
-        try testing.expectEqual(@as(u32, 22), cli.checkHit(0, 0));
         try testing.expectEqual(@as(u64, 1), cli.getRenderStats().frameCount);
     }
 }

@@ -280,7 +280,7 @@ also returns a nearby character at some end-of-line and end-of-buffer positions.
 ## Renderable base classes
 
 The default `TextBufferRenderable` constructor uses the scene's private document/view aggregate.
-It does not create the protected TypeScript `textBuffer`, `textBufferView`, or `_textBufferSyntaxStyle` wrappers.
+It does not create the protected TypeScript `textBuffer` or `textBufferView` wrappers.
 Use `TextRenderable.content` for ordinary text updates.
 
 A resource-backed subclass must declare native kind `"text_view"` and pass `true` as the third base-constructor argument.

@@ -167,7 +167,7 @@ describe("native stdin parser: differential replay", () => {
     ["focus", "\x1b[O\x1b[I"],
     ["pastes", "\x1b[200~line 1\nline 2\x1b[A\x1b[201~x\x1b[200~\x1b[201~"],
     ["Kitty keys", "\x1b[97u\x1b[97;5u\x1b[97;1:3u\x1b[13;2u\x1b[57364u\x1b[1;1:1A\x1b[5;1:3~\x1b[57399u"],
-    ["modifyOtherKeys", "\x1b[27;2;13~\x1b[27;5;27~\x1b[27;5;32~\x1b[27;2;53~"],
+    ["modifyOtherKeys", "\x1b[27;2;13~\x1b[27;5;27~\x1b[27;5;32~\x1b[27;2;53~\x1b[27;2;65~\x1b[27;5;65~\x1b[27;3;65~"],
   ]
 
   for (const [label, text] of streams) {
@@ -248,8 +248,11 @@ describe("native stdin parser: adapter", () => {
   })
 
   test("reports Core's key fields", () => {
-    const [enter, linefeed, altA, kittyA, keypad, repeat, base, f5] = parse(native, [
-      "\r\n\x1bA\x1b[97;2u\x1bOp\x1b[97;1:2u\x1b[1089::99;5u\x1b[15;5~",
+    const [enter, linefeed, altA, kittyA, keypad, repeat, base, f5, altUp, altMok, altO, altBracket] = parse(native, [
+      Buffer.from(
+        "\r\n\x1bA\x1b[97;2u\x1bOp\x1b[97;1:2u\x1b[1089::99;5u\x1b[15;5~\x1b\x1b[A\x1b\x1b[27;5;65~\xcf\xdb",
+        "latin1",
+      ),
     ]).map((event) => (event.type === "key" ? event.key : null))
     expect(enter).toMatchObject({ name: "return", sequence: "\r", source: "raw" })
     expect(linefeed).toMatchObject({ name: "linefeed", sequence: "\n" })
@@ -259,8 +262,10 @@ describe("native stdin parser: adapter", () => {
     expect(repeat).toMatchObject({ name: "a", eventType: "press", repeated: true })
     expect(base).toMatchObject({ name: "с", ctrl: true, baseCode: 99 })
     expect(f5).toMatchObject({ name: "f5", ctrl: true, code: "[15~", option: false })
-    const [altUp] = parse(native, ["\x1b\x1b[A"]).map((event) => (event.type === "key" ? event.key : null))
     expect(altUp).toMatchObject({ name: "up", meta: true, option: true, raw: "\x1b\x1b[A" })
+    expect(altMok).toMatchObject({ name: "A", ctrl: true, meta: true, shift: false, option: true })
+    expect(altO).toMatchObject({ name: "O", meta: true, shift: true, option: false, raw: "\x1bO" })
+    expect(altBracket).toMatchObject({ name: "[", meta: true, shift: false, option: false, raw: "\x1b[" })
   })
 
   test("suspension stops input time so a reply split across it still completes", () => {

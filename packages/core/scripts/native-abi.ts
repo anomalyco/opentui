@@ -277,7 +277,6 @@ export async function generateNativeABI(
     nativeCallbacks: signatures.callbacks,
     nativeLayouts: abi.layouts,
     nativeConstants: abi.constants,
-    nativeStyleEnumMaxima: sceneStyleEnumMaxima(abi),
   }
   const source =
     "// Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.\n" +
@@ -290,17 +289,6 @@ export async function generateNativeABI(
   const formatted = await format(outputPath, source, { semi: false, printWidth: 120 })
   if (formatted.errors.length) throw new Error(`Cannot format generated ABI: ${JSON.stringify(formatted.errors)}`)
   return formatted.code
-}
-
-export function sceneStyleEnumMaxima(abi: HeaderABI): number[] {
-  const entries = Object.entries(abi.constants)
-    .filter(([name]) => name.startsWith("OT_STYLE_ENUM_") && !name.endsWith("_MAX"))
-    .sort((a, b) => a[1] - b[1])
-  return entries.map(([name, kind], index) => {
-    const maximum = abi.constants[`${name}_MAX`]
-    if (kind !== index || maximum === undefined) throw new Error(`Missing style enum constraint: ${name}`)
-    return maximum
-  })
 }
 
 export function verifyNativeABI(generated: string): void {

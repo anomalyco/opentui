@@ -80,7 +80,7 @@ Color and text changes that a paint hook makes appear in the same frame. Layout 
 A node that a hook destroys during the hook batch does not paint.
 
 Painting runs in one native call. It never yields and never pauses for JavaScript.
-While native code paints, it also fills the hit grid, which is the native grid for mouse hit testing. It does this only when mouse input is on.
+While native code paints, it also records the hit list, the node bounds used for mouse hit testing. It does this only when mouse input is on.
 
 A buffered custom renderable's hooks draw into its private `OptimizedBuffer` with direct native calls. Core records one draw of that buffer, and native code composes it into the next buffer.
 Buffering does not combine the renderable's child subtree into one surface.
@@ -112,7 +112,7 @@ The Session owns the ordered output queue. Core delivers the queued bytes in one
 
 On the native stdout path, native code records completion directly. On the copied path, each `Writable` write callback acknowledges one output ticket.
 Both paths use the same presentation endpoint: the end of the frame's bytes in the output queue.
-When completed output reaches that endpoint, native code publishes the frame's hit grid, image metadata, and frame statistics.
+When completed output reaches that endpoint, native code publishes the frame's hit list, image metadata, and frame statistics.
 
 Core then rechecks hover if mouse input is on, and emits its `frame` event.
 This endpoint does not prove that a remote terminal visibly displayed the bytes.

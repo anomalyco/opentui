@@ -34,10 +34,17 @@ pub const SyntaxStyle = ss.SyntaxStyle;
 
 pub const TextBuffer = UnifiedTextBuffer;
 
-/// Consecutive nonempty ranges of the copied text, with caller-prepared style IDs.
+pub const StyleDefinition = ss.StyleDefinition;
+pub const no_style: StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0 };
+/// Style ids with this bit index the buffer's run styles; the rest are SyntaxStyle ids.
+pub const run_style_flag = ss.id_limit;
+/// Run styles by value; a ref is `run_style_flag | (index + 1)`.
+pub const RunStyles = std.AutoArrayHashMapUnmanaged(StyleDefinition, void);
+
+/// Consecutive nonempty ranges of the copied text, with their style values.
 pub const OwnedStyledChunk = struct {
     byte_count: u32,
-    style_id: u32,
+    style: StyleDefinition = no_style,
 };
 
 // A static empty document, so releasing a rope never allocates. Every buffer shares
@@ -61,7 +68,7 @@ pub const UnifiedTextBuffer = struct {
     logger: *const logger.Logger,
 
     _rope: UnifiedRope,
-    syntax_style: ?*const SyntaxStyle,
+    style_binding: ss.Borrower,
 
     pool: *gp.GraphemePool,
     link_pool: *link.LinkPool,
@@ -84,6 +91,10 @@ pub const UnifiedTextBuffer = struct {
     line_highlights: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Highlight)),
     line_spans: std.ArrayListUnmanaged(std.ArrayListUnmanaged(StyleSpan)),
     internal_highlight_count: usize,
+    /// Styles of styled text, replaced with it; the attached SyntaxStyle is never written.
+    run_styles: RunStyles,
+    /// clear() released the run styles' link refs while their highlights stay.
+    run_links_retired: bool,
     highlight_batch_depth: u32,
     dirty_span_lines: std.AutoHashMap(usize, void),
 
@@ -297,7 +308,7 @@ pub const UnifiedTextBuffer = struct {
             .io = options.io,
             .logger = options.logger,
             ._rope = init_rope,
-            .syntax_style = null,
+            .style_binding = .{},
             .pool = pool,
             .link_pool = link_pool,
             .link_tracker = null,
@@ -310,6 +321,8 @@ pub const UnifiedTextBuffer = struct {
             .line_highlights = .empty,
             .line_spans = .empty,
             .internal_highlight_count = 0,
+            .run_styles = .empty,
+            .run_links_retired = false,
             .highlight_batch_depth = 0,
             .dirty_span_lines = dirty_span_lines,
             .tab_width = 2,
@@ -333,10 +346,7 @@ pub const UnifiedTextBuffer = struct {
     /// The caller has retired all views. Keep controls and empty registration
     /// tables; the dormant rope must not be read before reinitStorage.
     pub fn retireStorage(self: *Self) void {
-        if (self.syntax_style) |style| {
-            (@constCast(style)).offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-        }
-        self.syntax_style = null;
+        self.style_binding.bind(null);
 
         self.view_dirty_flags.clearRetainingCapacity();
         self.free_view_ids.clearRetainingCapacity();
@@ -363,6 +373,7 @@ pub const UnifiedTextBuffer = struct {
             tracker.deinit();
         }
         self.link_tracker = null;
+        self.dropRunStyles();
 
         self.layout_cache.clear();
         self.mem_registry.clear();
@@ -371,10 +382,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn reinitStorage(self: *Self, width_method: utf8.WidthMethod) TextBufferError!void {
-        std.debug.assert(self.next_view_id == 0 and self.syntax_style == null and self.link_tracker == null);
+        std.debug.assert(self.next_view_id == 0 and self.style_binding.style == null and self.link_tracker == null);
         // retireStorage left only capacity behind.
         std.debug.assert(self.mem_registry.buffers.items.len == 0 and self.view_dirty_flags.items.len == 0);
         std.debug.assert(self.line_highlights.items.len == 0 and self.line_spans.items.len == 0);
+        std.debug.assert(self.run_styles.count() == 0 and self.run_styles.capacity() == 0);
         const registry = self.mem_registry;
         const view_dirty_flags = self.view_dirty_flags;
         const free_view_ids = self.free_view_ids;
@@ -524,6 +536,7 @@ pub const UnifiedTextBuffer = struct {
         }
         self.line_highlights.clearRetainingCapacity();
         self.internal_highlight_count = 0;
+        self.dropRunStyles();
 
         for (self.line_spans.items) |*span_list| {
             span_list.deinit(self.global_allocator);
@@ -560,31 +573,39 @@ pub const UnifiedTextBuffer = struct {
         self.default_attributes = null;
     }
 
-    fn onSyntaxStyleDestroyed(ctx_ptr: *anyopaque) void {
-        const self = @as(*Self, @ptrCast(@alignCast(ctx_ptr)));
-        self.syntax_style = null;
-    }
-
-    pub fn setSyntaxStyle(self: *Self, syntax_style: ?*const SyntaxStyle) void {
-        if (self.syntax_style == syntax_style) return;
-
-        if (syntax_style) |style| {
-            (@constCast(style)).onDestroy(@ptrCast(self), onSyntaxStyleDestroyed) catch return;
-        }
-        if (self.syntax_style) |prev| {
-            (@constCast(prev)).offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-        }
-        self.syntax_style = syntax_style;
+    pub fn setSyntaxStyle(self: *Self, syntax_style: ?*SyntaxStyle) void {
+        self.style_binding.bind(syntax_style);
     }
 
     pub fn getSyntaxStyle(self: *const Self) ?*const SyntaxStyle {
-        return self.syntax_style;
+        return self.style_binding.style;
     }
 
     fn clearLinkRefs(self: *Self) void {
         if (self.link_tracker) |*tracker| {
             tracker.clear();
         }
+        // Map keys stay as they are: stripping links could make two keys equal.
+        self.run_links_retired = self.run_styles.count() > 0;
+    }
+
+    fn dropRunStyles(self: *Self) void {
+        self.run_styles.deinit(self.global_allocator);
+        self.run_styles = .empty;
+        self.run_links_retired = false;
+    }
+
+    /// Resolves a span or highlight style: run refs through the run styles, the rest through the
+    /// attached SyntaxStyle.
+    pub fn resolveStyle(self: *const Self, id: u32) ?StyleDefinition {
+        if (id == 0) return null;
+        if (id & run_style_flag == 0) return (self.style_binding.style orelse return null).resolveById(id);
+        const index = id & ~run_style_flag;
+        // Run refs come only from this buffer's styled text, which replaces them with the map.
+        std.debug.assert(index != 0 and index <= self.run_styles.count());
+        var definition = self.run_styles.keys()[index - 1];
+        if (self.run_links_retired) definition.attributes = ansi.TextAttributes.setLinkId(definition.attributes, 0);
+        return definition;
     }
 
     /// Set the text content using SIMD-optimized line break detection
@@ -628,25 +649,24 @@ pub const UnifiedTextBuffer = struct {
         return self.replaceTextInternal(text, mem_id, true, &replacement_arena);
     }
 
-    /// Consume registry-allocator bytes only on success, borrowing a fresh caller-owned style.
+    /// Consume registry-allocator bytes only on success.
     /// The caller validates UTF-8 and bounds, retaining all inputs on failure.
     /// Success moves prepared link ownership into the buffer and empties the input tracker.
     pub fn replaceOwnedStyledText(
         self: *Self,
         text: []const u8,
         mem_id: ?u8,
-        style: *SyntaxStyle,
         chunks: []const OwnedStyledChunk,
         prepared_links: ?*link.LinkTracker,
     ) TextBufferError!u8 {
         var prepared: PreparedOwnedStyledText = undefined;
-        try self.prepareOwnedStyledText(&prepared, text, mem_id, style, chunks, prepared_links, null);
+        try self.prepareOwnedStyledText(&prepared, text, mem_id, chunks, prepared_links);
         defer prepared.deinit();
         return prepared.commit();
     }
 
     /// The arena's address must remain stable from preparation through commit or abort.
-    /// Text, style and links remain caller-owned until commit; deinit also handles abort.
+    /// Text and links remain caller-owned until commit; deinit also handles abort.
     pub const PreparedOwnedStyledText = struct {
         buffer: *Self,
         arena: std.heap.ArenaAllocator,
@@ -658,16 +678,12 @@ pub const UnifiedTextBuffer = struct {
         mem_id: u8 = undefined,
         previous_buffer_count: usize,
         registration_pending: bool = false,
-        style: *SyntaxStyle,
+        run_styles: RunStyles = .empty,
         links: ?*link.LinkTracker,
-        retained_style: ?*SyntaxStyle,
-        listener_registered: bool = false,
 
         pub fn deinit(prepared: *PreparedOwnedStyledText) void {
             const self = prepared.buffer;
-            if (prepared.listener_registered) {
-                prepared.style.offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-            }
+            prepared.run_styles.deinit(self.global_allocator);
             if (prepared.registration_pending) {
                 self.mem_registry.cancelLastRegistration(prepared.mem_id, prepared.previous_buffer_count);
             }
@@ -680,14 +696,8 @@ pub const UnifiedTextBuffer = struct {
 
         pub fn commit(prepared: *PreparedOwnedStyledText) u8 {
             const self = prepared.buffer;
-            if (prepared.retained_style) |retained| {
-                retained.publishDefinitions(prepared.style);
-            } else {
-                std.debug.assert(prepared.listener_registered);
-                self.setSyntaxStyle(null);
-                self.syntax_style = prepared.style;
-                prepared.listener_registered = false;
-            }
+            std.mem.swap(RunStyles, &self.run_styles, &prepared.run_styles);
+            self.run_links_retired = false;
             self.layout_cache.clear();
             std.mem.swap(std.heap.ArenaAllocator, self.arena, &prepared.arena);
             self._rope = prepared.rope;
@@ -715,16 +725,10 @@ pub const UnifiedTextBuffer = struct {
         prepared: *PreparedOwnedStyledText,
         text: []const u8,
         mem_id: ?u8,
-        style: *SyntaxStyle,
         chunks: []const OwnedStyledChunk,
         prepared_links: ?*link.LinkTracker,
-        retained_style: ?*SyntaxStyle,
     ) TextBufferError!void {
-        if (self.syntax_style == style) return TextBufferError.InvalidId;
-        if (retained_style != null and self.syntax_style != retained_style) return TextBufferError.InvalidId;
-        const style_links: ?*link.LinkTracker = if (retained_style != null) if (style.link_tracker) |*tracker| tracker else null else null;
-        for ([_]?*link.LinkTracker{ prepared_links, style_links }) |maybe_tracker| {
-            const tracker = maybe_tracker orelse continue;
+        if (prepared_links) |tracker| {
             if (tracker.pool != self.link_pool) return TextBufferError.InvalidId;
             if (self.link_tracker) |*current| {
                 if (tracker == current) return TextBufferError.InvalidId;
@@ -737,19 +741,14 @@ pub const UnifiedTextBuffer = struct {
                 if (refs == 0) return TextBufferError.InvalidId;
             }
         }
-        var definitions = style.id_to_style.valueIterator();
-        while (definitions.next()) |definition| {
-            const id = ansi.TextAttributes.getLinkId(definition.attributes);
-            if (id == 0) continue;
-            const tracker = (if (retained_style != null) style_links else prepared_links) orelse return TextBufferError.InvalidId;
-            if (!tracker.used_ids.contains(id)) return TextBufferError.InvalidId;
-        }
         var byte_count: usize = 0;
         for (chunks) |chunk| {
             if (chunk.byte_count == 0 or chunk.byte_count > text.len - byte_count) {
                 return TextBufferError.InvalidIndex;
             }
-            if (chunk.style_id != 0 and style.resolveById(chunk.style_id) == null) {
+            // Every link a run style draws is held by the tracker that commit moves into the buffer.
+            const link_id = ansi.TextAttributes.getLinkId(chunk.style.attributes);
+            if (link_id != 0 and !(prepared_links orelse return TextBufferError.InvalidId).used_ids.contains(link_id)) {
                 return TextBufferError.InvalidId;
             }
             byte_count += chunk.byte_count;
@@ -761,9 +760,7 @@ pub const UnifiedTextBuffer = struct {
             .arena = std.heap.ArenaAllocator.init(self.global_allocator),
             .text = text,
             .previous_buffer_count = self.mem_registry.buffers.items.len,
-            .style = style,
             .links = prepared_links,
-            .retained_style = retained_style,
         };
         errdefer prepared.deinit();
         const reuse = if (mem_id) |id| self.mem_registry.get(id) != null else false;
@@ -852,7 +849,8 @@ pub const UnifiedTextBuffer = struct {
                     const byte_end = byte_offset + chunk.byte_count;
                     const char_pos = width_cursor.columns;
                     remaining_cols = width_cursor.advanceTo(byte_end) - char_pos;
-                    style_id = chunk.style_id;
+                    // A chunk without width draws nothing, so it interns no style.
+                    style_id = if (remaining_cols == 0) 0 else try internRunStyle(&prepared.run_styles, self.global_allocator, chunk.style);
                     byte_offset = byte_end;
                 }
                 if (remaining_cols == 0) break;
@@ -884,12 +882,15 @@ pub const UnifiedTextBuffer = struct {
         }
 
         prepared.internal_count = internal_count;
-        // Reserve the permanent listener without detaching the accepted style.
-        // Abort must unregister it before the candidate style emits Destroy.
-        if (prepared.retained_style == null) {
-            prepared.style.onDestroy(@ptrCast(self), onSyntaxStyleDestroyed) catch return TextBufferError.OutOfMemory;
-            prepared.listener_registered = true;
-        }
+    }
+
+    /// Equal values share one ref; a style that sets nothing is no style (0).
+    fn internRunStyle(run_styles: *RunStyles, allocator: Allocator, style: StyleDefinition) TextBufferError!u32 {
+        if (std.meta.eql(style, no_style)) return 0;
+        const entry = run_styles.getOrPut(allocator, style) catch return TextBufferError.OutOfMemory;
+        if (!entry.found_existing) text_work.add(.style_registrations, 1);
+        std.debug.assert(entry.index < run_style_flag - 1);
+        return run_style_flag | @as(u32, @intCast(entry.index + 1));
     }
 
     /// `text` starts at `byte_offset` in slot `mem_id`. A replacement publishes `text` as the
@@ -953,6 +954,7 @@ pub const UnifiedTextBuffer = struct {
             self._rope.root = candidate.root;
         }
         self.internal_highlight_count = 0;
+        self.dropRunStyles();
         std.mem.swap(@TypeOf(self.line_highlights), &self.line_highlights, &highlights);
         std.mem.swap(@TypeOf(self.line_spans), &self.line_spans, &spans);
         // Replacement flushes pending spans even inside a highlight transaction.

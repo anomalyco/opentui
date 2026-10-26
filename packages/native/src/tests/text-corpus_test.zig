@@ -8,6 +8,7 @@ const text_buffer_view = @import("../text-buffer-view.zig");
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
 const OptimizedBuffer = @import("../buffer.zig").OptimizedBuffer;
+const EncodedUnicode = @import("../encoded-unicode.zig").EncodedUnicode;
 const Value = std.json.Value;
 const gpa = std.testing.allocator;
 
@@ -257,6 +258,34 @@ fn runRow(run: Run) !void {
         v.setViewport(.{ .x = @intCast(case.array.items[0].integer), .y = 0, .width = run.int("cols", 80), .height = 1 });
         try run.check("draw_at", std.mem.eql(u8, try drawRows(run, v, run.int("cols", 80), 1), try joinRows(run.arena, case.array.items[1..])));
     };
+    if (row.get("draw_text") != null) {
+        const v = try run.view(tb, null);
+        defer v.deinit();
+        const encoded = try EncodedUnicode.init(gpa, &run.pools.graphemes, text, run.method);
+        defer encoded.deinit(gpa, &run.pools.graphemes);
+        // At cols too, so a glyph that does not fit at the right edge is left out by every drawer.
+        for ([_]u32{ 80, run.int("cols", 80) }) |width| {
+            const screen = try OptimizedBuffer.init(gpa, width, 1, .{ .pool = &run.pools.graphemes, .link_pool = &run.pools.links, .width_method = run.method });
+            defer screen.deinit();
+            // The rows keep their trailing blanks, so a glyph drawn in other columns shows.
+            var rows: [3][]const u8 = undefined;
+            for (&rows, 0..) |*drawn, i| {
+                screen.clear(.{ 0, 0, 0, 1 }, 32);
+                if (i == 0) screen.drawTextBuffer(v, 0, 0) else if (i == 1) try screen.drawText(text, 0, 0, .{ 1, 1, 1, 1 }, null, 0) else {
+                    // An encodeUnicode caller puts each glyph after the one before; one that does not fit is not drawn.
+                    var x: u32 = 0;
+                    for (encoded.chars) |char| {
+                        if (x + char.width <= width) screen.drawChar(char.char, x, 0, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 1 }, 0);
+                        x += char.width;
+                    }
+                }
+                const raw = try run.arena.alloc(u8, screen.getRealCharSize());
+                drawn.* = raw[0..try screen.writeResolvedChars(raw, false)];
+            }
+            try run.check("draw_text", std.mem.eql(u8, rows[0], rows[1]));
+            try run.check("encode", std.mem.eql(u8, rows[0], rows[2]));
+        }
+    }
     if (run.get("select")) |cases| for (cases.array.items) |case| {
         const v = try run.view(tb, null);
         defer v.deinit();

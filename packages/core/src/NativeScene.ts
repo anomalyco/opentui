@@ -124,7 +124,6 @@ export class NativeScene {
   private paintRecording?: { recorder: NativePaintRecorder; buffer: OptimizedBuffer }
   private destroyed = false
   private destroying = false
-  private geometryRevision = 0
   private layoutRevision = 0
   // Style and paint setters stage here; native sees them at the next flush boundary.
   private readonly staging = new SceneStaging()
@@ -143,11 +142,6 @@ export class NativeScene {
     return this.paintedFrame
   }
 
-  /** @internal Accepted geometry mutations invalidate hook-local layout observations. */
-  get currentGeometryRevision(): number {
-    return this.geometryRevision
-  }
-
   /** @internal Layout reads return the same values until this changes. Undefined while callbacks run inside
    * native layout, because that layout is still being computed. */
   get observedLayoutRevision(): number | undefined {
@@ -160,12 +154,8 @@ export class NativeScene {
     return this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed
   }
 
-  private changeGeometry(): void {
-    this.geometryRevision = this.geometryRevision === Number.MAX_SAFE_INTEGER ? 0 : this.geometryRevision + 1
-    this.changeLayout()
-  }
-
-  /** Native layout and frame calls can publish new observations without a host write. */
+  /** Frames, moves, destroys, and translations are the only changes a layout read can see. Measurement and cancels
+   * change none today; they bump so that a native solve or observation outside a frame step stays covered. */
   private changeLayout(): void {
     this.layoutRevision = this.layoutRevision === Number.MAX_SAFE_INTEGER ? 0 : this.layoutRevision + 1
   }
@@ -235,7 +225,7 @@ export class NativeScene {
     const handle = child._getSceneHandle(this)
     const parentHandle = parent?._getSceneHandle(this) ?? null
     this.driver.renderLib.sceneMoveNode(this.driver.context, handle, parentHandle, index)
-    this.changeGeometry()
+    this.changeLayout()
   }
 
   setViewport(content: Renderable, viewport: Renderable | null): void {
@@ -268,7 +258,7 @@ export class NativeScene {
       this.driver.renderLib.sceneDestroyNode(this.driver.context, handle)
       this.staging.discard(handle)
       if (!this.staging.pending) this.yogaHost.forgetScene(this)
-      this.changeGeometry()
+      this.changeLayout()
       renderable._releaseSceneHandle()
       this.nodes.delete(renderable.num)
       this.renderer.unregisterLifecyclePass(renderable)
@@ -316,7 +306,6 @@ export class NativeScene {
     if (this.staging.stageStyle(this.driver.context, handle, group, kind, edge, unit, value, flags)) {
       this.yogaHost.stageScene(this)
     }
-    this.changeGeometry()
   }
 
   /** @internal Accept this scene's staged prefix before reading native style.
@@ -386,7 +375,9 @@ export class NativeScene {
     const handle = renderable._getSceneHandle(this)
     if (this.staging.full) this.flushStaged()
     if (this.staging.stagePaint(this.driver.context, handle, paint, renderable)) this.yogaHost.stageScene(this)
-    this.changeGeometry()
+    // Of paint, only a translation moves layout reads. Constructors send the current values.
+    const { translateX = renderable.translateX, translateY = renderable.translateY } = paint
+    if (translateX !== renderable.translateX || translateY !== renderable.translateY) this.changeLayout()
   }
 
   setBackground(renderable: Renderable, color: RGBA): void {
@@ -612,7 +603,6 @@ export class NativeScene {
         if (this.stopped || this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
         // Lifecycle passes and hooks stage writes; native must accept them before it continues.
         this.flushStaged()
-        const geometryRevision = this.geometryRevision
         try {
           request = this.driver.renderLib.sceneFrameStep(
             this.driver.context,
@@ -627,7 +617,6 @@ export class NativeScene {
           this.paintRecording?.recorder.settle()
         }
         recording = null
-        request.geometryRevision = geometryRevision
         if (request.kind === NativeSceneFrame.Done) {
           this.paintedFrame = request
           return
@@ -671,6 +660,8 @@ export class NativeScene {
     const { renderLib: lib, context, session } = this.driver
     const slots = lib.sceneFrameGetPaintSlots(context, session, request)
     const paint = (this.paintRecording ??= this.createPaintRecording())
+    // A hook that moves or translates makes later slots' public layouts stale.
+    const revision = this.layoutRevision
     paint.recorder.begin(context)
     try {
       for (let index = 0; index < slots.length; index++) {
@@ -688,7 +679,7 @@ export class NativeScene {
           deltaTime,
           paint.buffer,
           paint.recorder,
-          request.geometryRevision,
+          this.layoutRevision === revision ? slot.publicLayout : undefined,
         )
         this.renderer.root._setCurrentRenderable(undefined)
       }

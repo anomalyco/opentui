@@ -8,7 +8,13 @@ pub const Counts = struct {
     layouts: u64 = 0,
     /// Logical lines laid out for render.
     lines_laid_out: u64 = 0,
-    /// `measureForDimensions` calls that miss the measure cache.
+    /// Rope nodes that a layout visits to find the leaves an edit changed.
+    rope_diff_nodes: u64 = 0,
+    /// Logical lines after an edited range whose stored offsets a layout moves.
+    lines_shifted: u64 = 0,
+    /// Partial layouts that reach the splice of their staged lines.
+    splices: u64 = 0,
+    /// Measures that walk lines, and the logical lines they measure.
     measure_passes: u64 = 0,
     measure_lines: u64 = 0,
     /// Line lookups by rope descent, and the branches they visit.
@@ -32,12 +38,11 @@ pub const Counts = struct {
     /// Styled-text replacements of one buffer and the bytes each copies.
     styled_text_sets: u64 = 0,
     styled_text_bytes: u64 = 0,
-    /// `registerStyleDefinition` calls, new names and overwrites alike.
+    /// `registerStyleDefinition` calls (new names and overwrites) and new run styles of a
+    /// styled replacement.
     style_registrations: u64 = 0,
-    /// Entries that `prepareDefinitions` copies into a provisional style table.
-    style_entries_copied: u64 = 0,
-    /// Object-table slots that the scans for buffers borrowing a shared style visit.
-    style_dependent_slots: u64 = 0,
+    /// Context text and edit buffers that borrow a style, checked before its definitions change.
+    style_dependent_visits: u64 = 0,
     /// `buildLineSpans` calls and the highlights they sort.
     line_span_builds: u64 = 0,
     line_span_highlights: u64 = 0,
