@@ -366,6 +366,10 @@ const Attempt = struct {
     frame_id: u64,
     options: FrameOptions,
     rounds: u32 = 0,
+    // A round of this attempt walked the candidates.
+    walked: bool = false,
+    // Advances per round; a node's feedback state from another round reads as unseen.
+    feedback_id: u64 = 0,
     filter_selected: bool = false,
     requests: u32 = 0,
     request_id: u64 = 0,
@@ -448,9 +452,12 @@ pub const Node = struct {
     update_frame: u64 = 0,
     observed_frame: u64 = 0,
     observed_round: u32 = 0,
-    prepared_frame: u64 = 0,
-    prepared_round: u32 = 0,
-    feedback_state: enum { unseen, queued, started } = .unseen,
+    // Scene.layout_epoch when node.layout took the solved geometry; a new node never did.
+    geometry_epoch: u64 = std.math.maxInt(u64),
+    // Scene.candidates_gen of the walk that listed the node.
+    prepared_gen: u64 = 0,
+    feedback_id: u64 = 0,
+    feedback_state: FeedbackState = .unseen,
     placement: u64 = 0,
     resize_width: f64 = 0,
     resize_height: f64 = 0,
@@ -467,7 +474,18 @@ pub const Node = struct {
     pub fn filtersChildren(self: *const Node) bool {
         return self.viewport != null or (self.scroll != null and self.scroll.?.options.culling);
     }
+
+    fn feedback(self: *const Node, active: *const Attempt) FeedbackState {
+        return if (self.feedback_id == active.feedback_id) self.feedback_state else .unseen;
+    }
+
+    fn setFeedback(self: *Node, active: *const Attempt, state: FeedbackState) void {
+        self.feedback_id = active.feedback_id;
+        self.feedback_state = state;
+    }
 };
+
+const FeedbackState = enum { unseen, queued, started };
 
 const Work = struct {
     node: *native.NativeRenderable,
@@ -571,7 +589,15 @@ pub const Scene = struct {
     // Each removal leaves a tombstone that inserts never reclaim; see removeToken.
     token_tombstones: u32 = 0,
     style_node: yoga.YGNodeRef,
-    work: std.ArrayListUnmanaged(Work) = .empty,
+    // The preparation list that feedback reads, and the paint list. Both outlive frames and
+    // host requests: every change to what they hold clears both, so a non-empty list is valid.
+    // Their node pointers stay valid because storage is released or reused only after remove,
+    // cancelFrame, or insert cleared them.
+    candidates: std.ArrayListUnmanaged(Work) = .empty,
+    members: std.ArrayListUnmanaged(Work) = .empty,
+    // Advances with each candidates walk, which clears both lists first.
+    candidates_gen: u64 = 0,
+    last_feedback_id: u64 = 0,
     feedback: std.ArrayListUnmanaged(Feedback) = .empty,
     paint_members: std.ArrayListUnmanaged(PaintMember) = .empty,
     paint_slots: std.ArrayListUnmanaged(PaintSlot) = .empty,
@@ -601,8 +627,6 @@ pub const Scene = struct {
     layout_epoch: u64 = 0,
     // Changes with any display or ancestry change, so stamped visibility goes stale mid-attempt.
     visibility_epoch: u64 = 0,
-    solve_frame: u64 = 0,
-    solve_round: u32 = 0,
     layout_pending: bool = false,
     layout_width: u32 = 0,
     layout_height: u32 = 0,
@@ -635,7 +659,8 @@ pub const Scene = struct {
         std.debug.assert(self.focus == null);
         yoga.yogaNodeFree(self.style_node);
         self.tokens.deinit(self.allocator);
-        self.work.deinit(self.allocator);
+        self.candidates.deinit(self.allocator);
+        self.members.deinit(self.allocator);
         self.feedback.deinit(self.allocator);
         self.paint_members.deinit(self.allocator);
         self.paint_slots.deinit(self.allocator);
@@ -681,7 +706,7 @@ pub const Scene = struct {
         self.tokens.putAssumeCapacity(self.last_token, handle);
         if (kind == api.OT_SCENE_ROOT) self.root = value;
         self.preparation_dirty = true;
-        self.work.clearRetainingCapacity();
+        self.clearPreparation();
     }
 
     /// Tokens only increase, so steady create/destroy churn fills the map with tombstones until
@@ -736,20 +761,18 @@ pub const Scene = struct {
             }
         }
         if (self.attempt) |active| {
-            if (reparented and node.prepared_frame == active.frame_id and
-                node.prepared_round == active.rounds and node.feedback_state == .queued)
-            {
+            if (reparented and node.feedback(&active) == .queued) {
                 // Unstarted work follows accepted parentage; an entered node keeps its continuation.
                 for (self.feedback.items, 0..) |operation, queued_index| {
                     if (operation.kind == .update and std.meta.eql(operation.node, node.handle)) {
                         _ = self.feedback.orderedRemove(queued_index);
-                        node.feedback_state = .unseen;
+                        node.setFeedback(&active, .unseen);
                         break;
                     }
                 } else unreachable;
             }
         }
-        // Work is transient; a pending RECORD request keeps only qualified handles.
+        // The lists hold node pointers; a pending RECORD request keeps only qualified handles.
         if (new_placement) {
             self.last_placement += 1;
             node.placement = self.last_placement;
@@ -757,7 +780,7 @@ pub const Scene = struct {
         node.layout_flags.needs_layout = true;
         self.visibility_epoch +%= 1;
         self.preparation_dirty = true;
-        self.work.clearRetainingCapacity();
+        self.clearPreparation();
     }
 
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
@@ -799,7 +822,7 @@ pub const Scene = struct {
         }
         self.visibility_epoch +%= 1;
         self.preparation_dirty = true;
-        self.work.clearRetainingCapacity();
+        self.clearPreparation();
         const storage: native.NodeStorage = .{
             .node = value,
             .scene_node = node,
@@ -877,7 +900,7 @@ pub const Scene = struct {
             node.paint.opacity != paint.opacity or node.paint.translateX != paint.translateX or
             node.paint.translateY != paint.translateY or node.paint.borderSides != paint.borderSides)
         {
-            self.work.clearRetainingCapacity();
+            self.clearPreparation();
         }
         if (!std.meta.eql(node.paint, paint)) node.paint_epoch = nextPaintEpoch();
         node.paint = paint;
@@ -1009,7 +1032,7 @@ pub const Scene = struct {
         if (options.text) |text| replacement.text = try self.allocator.dupe(u8, text);
         state.arrows[axis][end].deinit(self.allocator);
         state.arrows[axis][end] = replacement;
-        self.work.clearRetainingCapacity();
+        self.clearPreparation();
     }
 
     /// An explicit scroll: moves the offset in whole cells within the last solve's limits and
@@ -1033,7 +1056,7 @@ pub const Scene = struct {
         node.paint_epoch = nextPaintEpoch();
         // Children move; in an attempt the next round prepares and culls at the new offset.
         self.preparation_dirty = true;
-        self.work.clearRetainingCapacity();
+        self.clearPreparation();
     }
 
     /// After a solve: read the hidden nodes, follow the stuck edge, clamp, and toggle bars.
@@ -1094,19 +1117,28 @@ pub const Scene = struct {
 
     pub fn invalidateObservation(self: *Scene, value: *native.NativeRenderable) void {
         self.preparation_dirty = true;
-        self.work.clearRetainingCapacity();
+        self.clearPreparation();
         markObservationStale(value);
+    }
+
+    pub fn clearPreparation(self: *Scene) void {
+        self.candidates.clearRetainingCapacity();
+        self.members.clearRetainingCapacity();
     }
 
     pub fn cancelFrame(self: *Scene) void {
         if (self.painted != null) self.cancelled_paint = true;
+        self.endAttempt();
+        self.clearPreparation();
+    }
+
+    fn endAttempt(self: *Scene) void {
         self.painted = null;
         self.attempt = null;
         self.feedback.clearRetainingCapacity();
         self.paint_members.clearRetainingCapacity();
         self.paint_slots.clearRetainingCapacity();
         self.segments.clearRetainingCapacity();
-        self.work.clearRetainingCapacity();
     }
 
     pub fn checkPainted(self: *Scene, ticket: FrameRequest) error{ WrongContext, WrongSession, StaleFrame }!*Painted {
@@ -1143,7 +1175,7 @@ pub const Scene = struct {
     /// recording acknowledges a RECORD request and must be null for every other step.
     pub fn frameStep(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, previous: ?FrameRequest, options: FrameOptions, allow_host: bool, recording: ?[]const u8) !FrameRequest {
         const objects = &owner.objects;
-        errdefer self.work.clearRetainingCapacity();
+        errdefer self.clearPreparation();
         try buffer.validateColor(options.background);
         // Reject before solving: a rejected one-call paint must not consume layout notifications.
         if (!allow_host and self.hook_count != 0) return error.UnsupportedResource;
@@ -1183,16 +1215,14 @@ pub const Scene = struct {
             // A failed frame is never retained, and keeps the reasons it consumed.
             cli.taint(renderer.FrameWork.full_path_unretained);
         }
-        defer if (self.attempt != null) self.work.clearRetainingCapacity();
         const active = &self.attempt.?;
-        const reusable_work = active.request_id == 0 and self.hook_count == 0 and self.filter_count == 0 and !self.forcesFullFrame();
         const root = if (active.root.context_id != 0) blk: {
             const value = objects.get(active.root, .native_renderable, native.NativeRenderable) catch return error.StaleFrame;
             if (self.root != value or value.scene_node == null or value.scene_node.?.owner != self) return error.StaleFrame;
             break :blk value;
         } else null;
         if (recording) |bytes| return self.paintRecorded(owner, cli, root, bytes);
-        if (active.rounds == 0) try self.prepareRound(objects, cli, root, reusable_work);
+        if (active.rounds == 0) try self.prepareRound(objects, cli, root);
         while (true) {
             if (self.layout_pending) {
                 if (root) |value| {
@@ -1213,7 +1243,7 @@ pub const Scene = struct {
                 const value = objects.get(operation.node, .native_renderable, native.NativeRenderable) catch continue;
                 if (value.scene_node == null or value.scene_node.?.owner != self) continue;
                 const node = value.scene_node.?;
-                if (operation.kind == .update) node.feedback_state = .unseen;
+                if (operation.kind == .update) node.setFeedback(active, .unseen);
                 const member = if (operation.kind == .filtered_refresh) blk: {
                     const parent = node.parent orelse continue;
                     if (!std.meta.eql(parent.scene_node.?.handle, operation.parent.?)) continue;
@@ -1229,7 +1259,7 @@ pub const Scene = struct {
                 var result: ?FrameRequest = null;
                 switch (operation.kind) {
                     .update => {
-                        node.feedback_state = .started;
+                        node.setFeedback(active, .started);
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .children });
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .prepass });
                         if (node.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0) self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .scroll });
@@ -1261,7 +1291,7 @@ pub const Scene = struct {
                         const start = self.feedback.items.len;
                         for (node.children.items) |child| {
                             const state = child.scene_node.?;
-                            if (state.prepared_frame != active.frame_id or state.prepared_round != active.rounds) continue;
+                            if (state.prepared_gen != self.candidates_gen) continue;
                             if (state.placement != 0) self.feedback.appendAssumeCapacity(.{
                                 .node = state.handle,
                                 .kind = .placed,
@@ -1278,14 +1308,15 @@ pub const Scene = struct {
                     .children, .select => {
                         if (operation.kind == .children) {
                             // Capture child order after the parent's callbacks, never midway through siblings.
-                            sortChildren(node, active.frame_id);
+                            // The lists hold the old order, so the next frame prepares again.
+                            if (sortChildren(node, active.frame_id)) self.clearPreparation();
                             if (node.filtersChildren()) {
                                 self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
                                 // Refresh repeats its last result until a solve or a stale mark changes an input.
                                 if (node.children_observed == self.layout_epoch and !self.forcesFullFrame()) continue;
                                 for (node.paint_children.items, 0..) |child, index| {
                                     const state = child.scene_node.?;
-                                    if (state.prepared_frame != active.frame_id or state.prepared_round != active.rounds) continue;
+                                    if (state.prepared_gen != self.candidates_gen) continue;
                                     self.frame_work.viewport_child_refreshes += 1;
                                     if (try self.refresh(child, true)) |request_value| {
                                         // Snapshot the remaining batch before a host callback can change siblings.
@@ -1293,7 +1324,7 @@ pub const Scene = struct {
                                         while (remaining > index + 1) {
                                             remaining -= 1;
                                             const next = node.paint_children.items[remaining].scene_node.?;
-                                            if (next.prepared_frame != active.frame_id or next.prepared_round != active.rounds) continue;
+                                            if (next.prepared_gen != self.candidates_gen) continue;
                                             self.feedback.appendAssumeCapacity(.{ .node = next.handle, .kind = .filtered_refresh, .parent = node.handle });
                                         }
                                         return request_value;
@@ -1314,7 +1345,7 @@ pub const Scene = struct {
                         while (index != 0) {
                             index -= 1;
                             const state = node.paint_children.items[index].scene_node.?;
-                            if (state.prepared_frame != active.frame_id or state.prepared_round != active.rounds or state.feedback_state != .unseen) continue;
+                            if (state.prepared_gen != self.candidates_gen or state.feedback(active) != .unseen) continue;
                             if (filter) |bounds| {
                                 var layout = state.layout;
                                 layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
@@ -1323,29 +1354,19 @@ pub const Scene = struct {
                                 if (!overlaps(bounds, layout)) continue;
                             }
                             self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = .update });
-                            state.feedback_state = .queued;
+                            state.setFeedback(active, .queued);
                         }
                     },
                 }
                 if (result) |request_value| return request_value;
             }
             if (self.preparation_dirty or try self.needsSolve(cli, root)) {
-                try self.prepareRound(objects, cli, root, reusable_work);
+                try self.prepareRound(objects, cli, root);
                 continue;
             }
-            // Resumed calls rebuild transient paint pointers from current accepted topology.
-            if (self.work.items.len == 0 or self.hook_count != 0 or self.filter_count != 0) {
-                self.work.clearRetainingCapacity();
-                try self.work.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
-                if (root) |value| try self.prepare(objects, value, cli.width, cli.height, .paint);
-                // Paint layout reports where this frame paints, including transforms accepted after preparation.
-                for (self.work.items) |entry| {
-                    entry.node.scene_node.?.layout.screenX = entry.layout.screenX;
-                    entry.node.scene_node.?.layout.screenY = entry.layout.screenY;
-                }
-            }
+            if (self.members.items.len == 0) try self.prepareMembers(objects, cli, root);
             if (self.hook_count != 0) {
-                for (self.work.items) |entry| {
+                for (self.members.items) |entry| {
                     if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and !entry.bars and
                         entry.node.scene_node.?.hook_flags & scene_paint_hook_flags != 0) return self.requestRecord(cli, root.?);
                 }
@@ -1362,14 +1383,28 @@ pub const Scene = struct {
                 try self.paintFrame(owner, cli, active.options, null, false);
                 if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), true);
             }
-            return self.finishPaint(cli, reusable_work, damage);
+            return self.finishPaint(cli, damage);
         }
     }
 
-    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, retain_work: bool, damage: Damage) FrameRequest {
+    /// Builds the paint list from current accepted topology, including transforms accepted
+    /// after preparation. Without hooks or filters it is the candidates' visible entries.
+    fn prepareMembers(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root: ?*native.NativeRenderable) !void {
+        self.members.clearRetainingCapacity();
+        try self.members.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
+        if (self.hook_count == 0 and self.filter_count == 0 and self.candidates.items.len != 0) {
+            for (self.candidates.items) |entry| if (entry.visible) self.members.appendAssumeCapacity(entry);
+        } else if (root) |value| try self.prepare(objects, value, cli.width, cli.height, .paint, false, &self.members);
+        // Paint layout reports where this frame paints.
+        for (self.members.items) |entry| {
+            entry.node.scene_node.?.layout.screenX = entry.layout.screenX;
+            entry.node.scene_node.?.layout.screenY = entry.layout.screenY;
+        }
+    }
+
+    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, damage: Damage) FrameRequest {
         const active = self.attempt.?;
         std.debug.assert(self.painted == null);
-        std.debug.assert(!retain_work or active.request_id == 0);
         cli.retained_lost = 0;
         const done: FrameRequest = .{
             .session = self.session,
@@ -1384,11 +1419,9 @@ pub const Scene = struct {
             .width = 0,
             .height = 0,
         };
-        const work = if (retain_work) self.work.items else self.work.items[0..0];
-        // clearRetainingCapacity invalidates elements, so detach retained work during cleanup.
-        if (retain_work) self.work.items.len = 0;
-        self.cancelFrame();
-        self.work.items = work;
+        // Every change to what the lists hold cleared them, so they match the accepted scene.
+        if (active.walked) self.compactCandidates();
+        self.endAttempt();
         self.cancelled_paint = false;
         self.frame_work.host_requests = active.requests;
         self.frame_work.layout_rounds = active.rounds;
@@ -1399,6 +1432,20 @@ pub const Scene = struct {
             .damage = if (damage == .all) null else &self.damage,
         };
         return done;
+    }
+
+    /// Drops the hidden entries that a fresh walk no longer admits, so a kept list equals one.
+    fn compactCandidates(self: *Scene) void {
+        var kept: usize = 0;
+        for (self.candidates.items) |entry| {
+            const node = entry.node.scene_node.?;
+            const filtered_child = if (node.parent) |parent| parent.scene_node.?.filtersChildren() else false;
+            if (entry.visible or node.layout_flags.needs_layout or filtered_child) {
+                self.candidates.items[kept] = entry;
+                kept += 1;
+            } else node.prepared_gen = 0;
+        }
+        self.candidates.items.len = kept;
     }
 
     fn request(self: *Scene, node: *Node, kind: u32) !FrameRequest {
@@ -1457,8 +1504,8 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         const active = self.attempt.?;
         // Preparation enters only visible nodes, so its stamp answers until a display or ancestry change.
-        if (node.prepared_frame == active.frame_id and node.prepared_round == active.rounds and
-            active.visibility_epoch == self.visibility_epoch and !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
+        if (node.prepared_gen == self.candidates_gen and active.visibility_epoch == self.visibility_epoch and
+            !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
         var cursor: ?*native.NativeRenderable = value;
         var depth: u32 = 0;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
@@ -1487,9 +1534,8 @@ pub const Scene = struct {
         const node = root.scene_node orelse return error.WrongKind;
         if (node.owner != self) return error.WrongSession;
         if (self.root != root) return error.InvalidOptions;
-        const next_frame = std.math.add(u64, self.last_frame_id, 1) catch return error.RequestLimit;
         self.retryFailedMeasures();
-        try self.solveLayout(cli, root, next_frame, 0);
+        try self.solveLayout(cli, root);
     }
 
     /// Runs before each frame attempt or measurement-only solve, never between rounds.
@@ -1512,69 +1558,86 @@ pub const Scene = struct {
         }
     }
 
-    fn solveLayout(self: *Scene, cli: *renderer.CliRenderer, root: *native.NativeRenderable, frame_id: u64, round: u32) !void {
+    fn solveLayout(self: *Scene, cli: *renderer.CliRenderer, root: *native.NativeRenderable) !void {
         if (!try self.needsSolve(cli, root)) return;
         const epoch = std.math.add(u64, self.layout_epoch, 1) catch return error.RequestLimit;
         try yoga.check(yoga.yogaNodeCalculateLayoutChecked(root.yoga_node, @floatFromInt(cli.width), @floatFromInt(cli.height), 1));
         // A measurement outside a frame counts into work that the next attempt resets.
         self.frame_work.yoga_solves += 1;
+        // Every solve, a measurement-only one too, invalidates the geometry nodes hold.
         self.layout_epoch = epoch;
-        // A measurement-only solve must invalidate locals before the next prepared frame.
-        self.solve_frame = frame_id;
-        self.solve_round = round;
         self.layout_width = cli.width;
         self.layout_height = cli.height;
         self.layout_pending = true;
     }
 
-    fn prepareRound(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root: ?*native.NativeRenderable, reusable_work: bool) !void {
+    fn prepareRound(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root: ?*native.NativeRenderable) !void {
         const active = &self.attempt.?;
         const phases = self.layout_hook_count != 0 or self.filter_count != 0;
         const root_node = if (root) |value| value.scene_node.? else null;
-        const reuse = reusable_work and active.rounds == 0 and root_node != null and
-            self.work.items.len != 0 and !self.preparation_dirty and !try self.needsSolve(cli, root) and
-            (root_node.?.prepared_frame > self.solve_frame or
-                (root_node.?.prepared_frame == self.solve_frame and root_node.?.prepared_round >= self.solve_round));
+        // Kept candidates hold no node whose geometry a solve changed.
+        const reuse = !self.forcesFullFrame() and active.rounds == 0 and root_node != null and
+            self.candidates.items.len != 0 and !self.preparation_dirty and !try self.needsSolve(cli, root) and
+            root_node.?.geometry_epoch == self.layout_epoch;
         if (active.rounds == active.options.max_layout_rounds) return error.LayoutLimit;
-        if (!reuse) self.work.clearRetainingCapacity();
+        if (!reuse) self.clearPreparation();
         self.feedback.clearRetainingCapacity();
-        try self.work.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
-        if (root) |value| try self.solveLayout(cli, value, active.frame_id, active.rounds + 1);
+        try self.candidates.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
+        if (root) |value| try self.solveLayout(cli, value);
         active.rounds += 1;
+        self.last_feedback_id += 1;
+        active.feedback_id = self.last_feedback_id;
         active.filter_selected = false;
         self.preparation_dirty = false;
         if (root) |value| {
             self.scroll_toggled = false;
-            if (!reuse) try self.prepare(objects, value, cli.width, cli.height, .candidates);
+            if (reuse and self.verifiesRetained()) try self.verifyPreparation(objects, cli, value);
+            if (!reuse) try self.walkCandidates(objects, cli, value);
             // Hooks never see the layout a bar toggle replaces.
             while (self.scroll_toggled) {
                 self.scroll_toggled = false;
                 if (active.rounds == active.options.max_layout_rounds) return error.LayoutLimit;
-                self.work.clearRetainingCapacity();
-                try self.solveLayout(cli, value, active.frame_id, active.rounds + 1);
+                self.clearPreparation();
+                try self.solveLayout(cli, value);
                 active.rounds += 1;
-                try self.prepare(objects, value, cli.width, cli.height, .candidates);
+                try self.walkCandidates(objects, cli, value);
             }
         }
-        for (self.work.items) |entry| {
-            if ((reuse and !entry.visible) or entry.bars) continue;
+        for (self.candidates.items) |entry| {
+            if (entry.bars) continue;
             // Yoga measurement is observational; culled text keeps its last refreshed viewport.
             if (!entry.filtered) try prepareView(&self.frame_work, entry.node.scene_node.?, entry.layout);
         }
         if (phases) {
             // Prepass, filtered refresh, and selected updates never hold simultaneous batches for one parent.
-            const capacity = std.math.mul(usize, self.work.items.len, 5) catch return error.ObjectLimit;
+            const capacity = std.math.mul(usize, self.candidates.items.len, 5) catch return error.ObjectLimit;
             try self.feedback.ensureTotalCapacity(self.allocator, capacity);
         }
-        for (self.work.items) |entry| {
-            // Newly placed hidden nodes were observed by the producer, not subsequent frames.
-            if ((reuse and !entry.visible) or entry.bars) continue;
+        // Kept candidates keep their stamps: their generation is still current.
+        if (!reuse) self.stampCandidates(phases);
+        active.visibility_epoch = self.visibility_epoch;
+        if (phases and self.candidates.items.len != 0) {
+            const node = self.candidates.items[0].node.scene_node.?;
+            self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .update });
+            node.setFeedback(active, .queued);
+        }
+    }
+
+    fn walkCandidates(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root: *native.NativeRenderable) !void {
+        self.candidates_gen += 1;
+        self.attempt.?.walked = true;
+        try self.prepare(objects, root, cli.width, cli.height, .candidates, false, &self.candidates);
+    }
+
+    fn stampCandidates(self: *Scene, phases: bool) void {
+        const active = &self.attempt.?;
+        for (self.candidates.items) |entry| {
+            if (entry.bars) continue;
             if (builtin.is_test) self.test_stamp_steps += 1;
             const node = entry.node.scene_node.?;
             node.layout = entry.layout;
-            node.prepared_frame = active.frame_id;
-            node.prepared_round = active.rounds;
-            node.feedback_state = .unseen;
+            node.geometry_epoch = self.layout_epoch;
+            node.prepared_gen = self.candidates_gen;
             node.layout_flags.prepared_visible = entry.visible;
             if (!phases) {
                 if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
@@ -1589,12 +1652,23 @@ pub const Scene = struct {
                 node.layout_flags.needs_layout = false;
             }
         }
-        active.visibility_epoch = self.visibility_epoch;
-        if (phases and self.work.items.len != 0) {
-            const node = self.work.items[0].node.scene_node.?;
-            self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .update });
-            node.feedback_state = .queued;
-        }
+    }
+
+    /// OT_SCENE_DEBUG_VERIFY on a round that keeps its lists: fresh walks list the same
+    /// entries. They read no geometry and change no stamp, order, or counter. Stale caches are
+    /// the twin harness's to find.
+    fn verifyPreparation(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root: *native.NativeRenderable) !void {
+        const work = self.frame_work;
+        defer self.frame_work = work;
+        var fresh: std.ArrayListUnmanaged(Work) = .empty;
+        defer fresh.deinit(self.allocator);
+        try fresh.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
+        try self.prepare(objects, root, cli.width, cli.height, .candidates, true, &fresh);
+        if (!sameEntries(fresh.items, self.candidates.items)) return error.RetainedMismatch;
+        if (self.members.items.len == 0) return;
+        fresh.clearRetainingCapacity();
+        try self.prepare(objects, root, cli.width, cli.height, .paint, true, &fresh);
+        if (!sameEntries(fresh.items, self.members.items)) return error.RetainedMismatch;
     }
 
     fn releaseEditorCursor(self: *Scene, cli: *renderer.CliRenderer) void {
@@ -1709,8 +1783,8 @@ pub const Scene = struct {
         self.records.clearRetainingCapacity();
         self.records_frame = frame_id;
         self.records_options = options;
-        try self.records.ensureTotalCapacity(self.allocator, self.work.items.len);
-        for (self.work.items) |entry| {
+        try self.records.ensureTotalCapacity(self.allocator, self.members.items.len);
+        for (self.members.items) |entry| {
             // A scroll node's record covers its bars: their inputs change its paint epoch.
             if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible or entry.bars) continue;
             self.record(entry, &reasons);
@@ -1811,7 +1885,7 @@ pub const Scene = struct {
         self.hits_frame = self.attempt.?.frame_id;
         self.hits_generation = cli.hits_generation;
         var cursor: ?Work = null;
-        for (self.work.items) |entry| {
+        for (self.members.items) |entry| {
             if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and entry.visible and self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
         }
         self.maintainCursor(cli, cursor);
@@ -1851,12 +1925,12 @@ pub const Scene = struct {
             self.hits.deinit(self.allocator);
             self.hits = kept;
         }
-        try self.hits.ensureTotalCapacity(self.allocator, self.work.items.len + self.scroll_count);
+        try self.hits.ensureTotalCapacity(self.allocator, self.members.items.len + self.scroll_count);
         const work = self.frame_work;
         defer self.frame_work = work;
         self.verify_target = scratch;
         defer self.verify_target = null;
-        for (self.work.items) |entry| {
+        for (self.members.items) |entry| {
             if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
             try self.paintMember(owner, cli, entry, options, .{});
         }
@@ -1874,7 +1948,7 @@ pub const Scene = struct {
         std.debug.assert(self.paint_members.items.len == 0 and self.paint_slots.items.len == 0);
         var member_count: usize = 0;
         var slot_count: usize = 0;
-        for (self.work.items) |entry| {
+        for (self.members.items) |entry| {
             const node = entry.node.scene_node.?;
             // Paint-mode preparation never appends hidden members.
             std.debug.assert(entry.visible);
@@ -1886,7 +1960,7 @@ pub const Scene = struct {
         try self.paint_members.ensureTotalCapacityPrecise(self.allocator, member_count);
         try self.paint_slots.ensureTotalCapacityPrecise(self.allocator, slot_count);
         try self.segments.ensureTotalCapacityPrecise(self.allocator, slot_count);
-        for (self.work.items) |entry| {
+        for (self.members.items) |entry| {
             const node = entry.node.scene_node.?;
             if (node.kind == api.OT_SCENE_ROOT) continue;
             const hooks = if (entry.bars) 0 else node.hook_flags & scene_paint_hook_flags;
@@ -1928,7 +2002,7 @@ pub const Scene = struct {
         const refresh_views = self.preparation_dirty or try self.needsSolve(cli, root);
         _ = self.fullPathReasons(cli, self.attempt.?.options);
         try self.paintFrame(owner, cli, self.attempt.?.options, recording, refresh_views);
-        return self.finishPaint(cli, false, .all);
+        return self.finishPaint(cli, .all);
     }
 
     const Phases = struct {
@@ -1944,10 +2018,10 @@ pub const Scene = struct {
         errdefer target.clear(cli.backgroundColor, null);
         defer target.clearScissorRects();
         defer target.clearOpacity();
-        try self.beginPaint(cli, options, if (recording == null) self.work.items.len else self.paint_members.items.len);
+        try self.beginPaint(cli, options, if (recording == null) self.members.items.len else self.paint_members.items.len);
         // The focused editor among the painted members owns the cursor, wherever it paints.
         var cursor: ?Work = null;
-        if (recording == null) for (self.work.items) |entry| {
+        if (recording == null) for (self.members.items) |entry| {
             if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
             try self.paintMember(owner, cli, entry, options, .{});
             if (self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
@@ -2231,7 +2305,8 @@ pub const Scene = struct {
         return .{ .viewport = layout, .row = direction == api.OT_FLEX_DIRECTION_ROW or direction == api.OT_FLEX_DIRECTION_ROW_REVERSE };
     }
 
-    fn prepare(self: *Scene, objects: *const handles.Table, root: *native.NativeRenderable, width: u32, height: u32, mode: enum { candidates, paint }) !void {
+    /// A dry walk lists what a walk would without reading geometry or changing order.
+    fn prepare(self: *Scene, objects: *const handles.Table, root: *native.NativeRenderable, width: u32, height: u32, mode: enum { candidates, paint }, dry: bool, list: *std.ArrayListUnmanaged(Work)) !void {
         var stack: [yoga.depth_max]PreparationFrame = undefined;
         stack[0] = .{ .node = root, .parent = .{}, .clip = .{ .x = 0, .y = 0, .width = width, .height = height }, .opacity = 1 };
         var depth: usize = 1;
@@ -2245,8 +2320,7 @@ pub const Scene = struct {
                     .paint => self.frame_work.paint_visits += 1,
                 }
                 // Yoga style changes dirty layout; the completed preparation stamps qualify both caches.
-                const refresh_layout = mode == .candidates and (node.prepared_frame == 0 or node.prepared_frame < self.solve_frame or
-                    (node.prepared_frame == self.solve_frame and node.prepared_round < self.solve_round));
+                const refresh_layout = mode == .candidates and !dry and node.geometry_epoch != self.layout_epoch;
                 if (refresh_layout) {
                     var display: u32 = 0;
                     try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
@@ -2273,8 +2347,7 @@ pub const Scene = struct {
                     };
                 } else if (mode == .paint) {
                     // Final paint follows settled preparation, but transforms remain live.
-                    std.debug.assert(node.prepared_frame == self.attempt.?.frame_id);
-                    std.debug.assert(node.prepared_round == self.attempt.?.rounds);
+                    std.debug.assert(node.prepared_gen == self.candidates_gen);
                 }
                 // Image paint and hit geometry rely on at least one cell per dimension.
                 std.debug.assert(layout.width >= 1 and layout.height >= 1);
@@ -2297,8 +2370,8 @@ pub const Scene = struct {
                 }
                 if (node.kind == api.OT_SCENE_SLIDER) _ = try sliderThumb(node.control.slider, cells.width, cells.height);
                 frame.opacity *= node.paint.opacity;
-                frame.work_index = self.work.items.len;
-                self.work.appendAssumeCapacity(.{ .node = value, .layout = layout, .clip = frame.clip, .opacity = frame.opacity, .visible = visible, .filtered = frame.filtered });
+                frame.work_index = list.items.len;
+                list.appendAssumeCapacity(.{ .node = value, .layout = layout, .clip = frame.clip, .opacity = frame.opacity, .visible = visible, .filtered = frame.filtered });
                 if (node.viewport) |handle| _ = try self.viewportNode(objects, handle);
                 if (!visible or (node.paint_children.items.len == 0 and node.viewport == null and node.scroll == null)) {
                     depth -= 1;
@@ -2328,14 +2401,17 @@ pub const Scene = struct {
                     });
                 }
                 if (mode == .paint) frame.filter = try self.childFilter(objects, value);
-                if (mode == .paint or (self.hook_count == 0 and self.filter_count == 0)) sortChildren(node, self.attempt.?.frame_id);
+                if (!dry and (mode == .paint or (self.hook_count == 0 and self.filter_count == 0))) {
+                    // The candidates walked the old order, so the next frame walks again.
+                    if (sortChildren(node, self.attempt.?.frame_id) and mode == .paint) self.candidates.clearRetainingCapacity();
+                }
                 frame.entered = true;
             }
             if (frame.child == node.paint_children.items.len) {
                 if (node.scroll) |state| if (state.visible[0] or state.visible[1]) {
-                    var bars = self.work.items[frame.work_index];
+                    var bars = list.items[frame.work_index];
                     bars.bars = true;
-                    self.work.appendAssumeCapacity(bars);
+                    list.appendAssumeCapacity(bars);
                 };
                 depth -= 1;
                 continue;
@@ -2579,17 +2655,33 @@ fn paintLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeR
     return if (a.paint.zIndex == b.paint.zIndex) a.paint_rank < b.paint_rank else a.paint.zIndex < b.paint.zIndex;
 }
 
-fn sortChildren(node: *Node, frame_id: u64) void {
+/// Returns whether the order changed.
+fn sortChildren(node: *Node, frame_id: u64) bool {
     // Feedback reruns refresh geometry, not sibling order already selected for this frame.
-    if (node.child_order_frame == frame_id) return;
+    if (node.child_order_frame == frame_id) return false;
     node.child_order_frame = frame_id;
-    if (!node.sort_dirty) return;
+    if (!node.sort_dirty) return false;
     for (node.paint_children.items, 0..) |child, index| {
         if (builtin.is_test) node.owner.test_sort_steps += 1;
         child.scene_node.?.paint_rank = @intCast(index);
     }
     std.mem.sort(*native.NativeRenderable, node.paint_children.items, {}, paintLessThan);
     node.sort_dirty = false;
+    return true;
+}
+
+/// Every field counts; layouts compare bitwise, so NaN layouts are equal.
+fn sameEntries(first: []const Work, second: []const Work) bool {
+    comptime std.debug.assert(@sizeOf(Layout) == 6 * @sizeOf(f32) + 2 * @sizeOf(f64));
+    if (first.len != second.len) return false;
+    for (first, second) |a, b| {
+        if (!std.mem.eql(u8, std.mem.asBytes(&a.layout), std.mem.asBytes(&b.layout))) return false;
+        var rest = .{ a, b };
+        rest[0].layout = .{};
+        rest[1].layout = .{};
+        if (!std.meta.eql(rest[0], rest[1])) return false;
+    }
+    return true;
 }
 
 fn placementGreaterThan(_: void, left: Feedback, right: Feedback) bool {

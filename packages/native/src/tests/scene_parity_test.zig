@@ -879,6 +879,7 @@ const Harness = struct {
         if (spec.cancel_first and try self.drive(spec)) {
             for (self.twins) |twin| try twin.owner.sceneFrameCancel(twin.id, twin.state.painted.?.ticket.frame_id);
         }
+        const stamps = self.twins[candidate].state.test_stamp_steps;
         if (!try self.drive(spec)) return;
         // A write after paint must reach the terminal, on a skipped or partly diffed draft too.
         if (self.random.uintLessThan(u32, 8) == 0) {
@@ -930,6 +931,8 @@ const Harness = struct {
         const work = (try self.twins[candidate].owner.sceneGetStats(self.twins[candidate].id)).frameWork;
         self.stats.frames += 1;
         self.stats.reused += @intFromBool(work.candidate_visits == 0);
+        // A frame that keeps its candidates keeps their stamps too (B5a).
+        if (work.candidate_visits == 0) try testing.expectEqual(stamps, self.twins[candidate].state.test_stamp_steps);
         self.stats.skipped += @intFromBool(work.damage_rows == 0);
         self.stats.partial += @intFromBool(work.damage_rows != 0 and work.damage_rows < self.twins[candidate].cli.height);
         self.stats.filtered += @intFromBool(work.overlap_tests != 0);
@@ -975,15 +978,21 @@ const Harness = struct {
         return false;
     }
 
-    /// A candidate frame that retained its work list paints in the model's order. The model
-    /// sorts on every frame, as the scene does, so tie orders stay in step.
+    /// A paint list that the next frame may keep is in the model's order. The model sorts on
+    /// every frame, as the scene does, so tie orders stay in step; it does not cull.
     fn expectPaintOrder(self: *Harness) !void {
         const f = self.twins[candidate];
         var order: [node_count_max]usize = undefined;
         const count = self.model.paintOrder(&order, 0, root_slot);
-        if (f.state.work.items.len == 0) return;
+        if (f.state.candidates.items.len == 0 or f.state.members.items.len == 0 or f.state.filter_count != 0) return;
+        // A reply after paint changed layout or a view: the next frame prepares again.
+        var dirty: u32 = 0;
+        try yoga.check(yoga.yogaNodeIsDirtyChecked((try f.owner.raw().getRenderable(self.handle(candidate, root_slot))).yoga_node, &dirty));
+        if (dirty != 0 or f.state.preparation_dirty) return;
+        // A z-index change after its parent sorted in this frame sorts in the next one.
+        for (f.state.members.items) |entry| if (entry.node.scene_node.?.sort_dirty) return;
         var painted: usize = 0;
-        for (f.state.work.items) |entry| {
+        for (f.state.members.items) |entry| {
             if (entry.node.scene_node.?.kind == c.OT_SCENE_ROOT or !entry.visible or entry.bars) continue;
             try testing.expect(painted < count);
             try testing.expectEqual(self.handle(candidate, order[painted]), entry.node.scene_node.?.handle);
@@ -1079,7 +1088,9 @@ const Harness = struct {
         const work = (try f.owner.sceneGetStats(f.id)).frameWork;
         const cells = @as(u64, f.cli.width) * f.cli.height;
         try testing.expect(work.full_path_reasons & renderer.FrameWork.full_path_forced != 0);
-        try testing.expect(work.candidate_visits != 0);
+        // Every visible node, the root included, at least once (B5a).
+        var order: [node_count_max]usize = undefined;
+        try testing.expect(work.candidate_visits > self.model.paintOrder(&order, 0, root_slot));
         // Retained paint (B3): the reference clears and repaints every frame and diffs every row.
         try testing.expect(work.cells_cleared >= cells);
         try testing.expectEqual(f.cli.height, work.damage_rows);
@@ -1159,7 +1170,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     }
     // Every frame kind B2, B3, D2b, and B5 rely on is reached in quantity (about a quarter of
     // today's counts; decoded frames at about two thirds), and each minimum fails if the draw
-    // that produces its kind is removed. Counts at 64 x 256: reused 851, filtered 734, filtered
+    // that produces its kind is removed. Counts at 64 x 256: reused 8,971, filtered 734, filtered
     // with a request 51, hooked under a hidden ancestor 4,066, reply hid the requester's parent
     // 24, reply detached the requester 40, reply destroyed a node 627, a RECORD reply changed
     // the scene 317, content-child RESIZE 46, a truncation change in its reply 41, unmeasured
@@ -1170,7 +1181,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // selections 235, equal re-sends 439, palette changes 71, frames showing a scroll node with
     // children 1,170, scrolls and option changes 146, SCROLL requests 30.
     const minimums: Stats = .{
-        .reused = 145,
+        .reused = 2200,
         .filtered = 250,
         .filtered_requests = 45,
         .hidden_hooked = 2000,

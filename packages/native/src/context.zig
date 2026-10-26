@@ -2344,7 +2344,7 @@ pub const Context = struct {
         node.owner.filter_count += @intFromBool(viewport_handle != null);
         node.viewport = viewport_handle;
         node.owner.preparation_dirty = true;
-        node.owner.work.clearRetainingCapacity();
+        node.owner.clearPreparation();
     }
 
     pub fn sceneSetScroll(self: *Context, handle: Handle, options: scene.ScrollOptions) !void {
@@ -2391,7 +2391,7 @@ pub const Context = struct {
         } else if (owned.focus) |accepted| {
             if (std.meta.eql(accepted, handle)) owned.focus = null;
         }
-        owned.work.clearRetainingCapacity();
+        owned.clearPreparation();
     }
 
     pub fn sceneSetHooks(self: *Context, handle: Handle, flags: u32, generation: u64, initial_width: f64, initial_height: f64) !void {
@@ -2413,7 +2413,7 @@ pub const Context = struct {
         _ = try scene.sliderThumb(options, node.resize_width, node.resize_height);
         _ = try scene.sliderThumb(options, node.layout.width, node.layout.height);
         node.control = .{ .slider = options };
-        node.owner.work.clearRetainingCapacity();
+        node.owner.clearPreparation();
     }
 
     pub fn sceneGetSliderThumb(self: *Context, handle: Handle) !scene.SliderThumb {
@@ -2439,7 +2439,7 @@ pub const Context = struct {
         if (options.text) |text| replacement.text = try self.allocator.dupe(u8, text);
         node.control.arrow.deinit(self.allocator);
         node.control = .{ .arrow = replacement };
-        node.owner.work.clearRetainingCapacity();
+        node.owner.clearPreparation();
     }
 
     pub fn sceneSetText(self: *Context, handle: Handle, bytes: []const u8) !void {
@@ -2451,7 +2451,7 @@ pub const Context = struct {
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         if (try self.replaceTextContent(text, bytes)) textResourceChanged(text);
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        node.scene_node.?.owner.clearPreparation();
     }
 
     pub fn validateTextBytes(tab_width: u8, bytes: []const u8, retained_bytes: u32) !void {
@@ -2470,7 +2470,7 @@ pub const Context = struct {
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text);
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        node.scene_node.?.owner.clearPreparation();
     }
 
     /// Returns whether the bytes changed.
@@ -2622,7 +2622,7 @@ pub const Context = struct {
         }
         if (measure_changed) yoga.yogaNodeMarkDirty(node.yoga_node);
         if (prepare_changed) node.scene_node.?.owner.invalidateObservation(node);
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        node.scene_node.?.owner.clearPreparation();
     }
 
     pub fn sceneSetTextSelection(self: *Context, handle: Handle, options: SceneTextSelectionOptions) !bool {
@@ -2663,7 +2663,7 @@ pub const Context = struct {
             else
                 text.view.updateLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior);
         };
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        node.scene_node.?.owner.clearPreparation();
         return changed;
     }
 
