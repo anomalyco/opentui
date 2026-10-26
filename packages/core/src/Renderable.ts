@@ -345,6 +345,7 @@ export abstract class Renderable extends BaseRenderable {
   private _live: boolean = false
   private _animationFps: number | undefined
   private stopAnimationTick: (() => void) | undefined
+  private animationDrawnFrame = -1
   protected _liveCount: number = 0
 
   private _sizeChangeListener: (() => void) | undefined = undefined
@@ -695,19 +696,31 @@ export abstract class Renderable extends BaseRenderable {
 
   public set animationFps(value: number | undefined) {
     value ??= undefined // Frameworks clear a prop with null.
+    if (value !== undefined && !(value > 0 && value < Infinity)) {
+      throw new RangeError(`animationFps must be positive and finite, got ${value}`)
+    }
     if (this._animationFps === value) return
+    const toggled = (this._animationFps === undefined) !== (value === undefined)
     this._animationFps = value
+    // The update hook marks the frames that draw the node.
+    if (toggled) this.refreshNativeSceneHooks()
     this.updateAnimationTick()
   }
 
-  // Subscribed only while visible and alive, as a live node only counts while visible.
+  // Ticks only while the node is drawn. A hidden, culled or removed node gets no update, so the first tick after a
+  // frame without one stops the clock, and the node's next update starts it again.
   private updateAnimationTick(): void {
     this.stopAnimationTick?.()
     this.stopAnimationTick = undefined
     if (this._animationFps === undefined || !this._visible || this._isDestroyed) return
-    this.stopAnimationTick = this._ctx.onAnimationTick(this._animationFps, (deltaTime, ticks, time) =>
-      this.onAnimationTick(deltaTime, ticks, time),
-    )
+    this.stopAnimationTick = this._ctx.onAnimationTick(this._animationFps, (deltaTime, ticks, time) => {
+      if (this.animationDrawnFrame < this._ctx.frameId - 1) {
+        this.stopAnimationTick?.()
+        this.stopAnimationTick = undefined
+        return
+      }
+      this.onAnimationTick(deltaTime, ticks, time)
+    })
   }
 
   protected onAnimationTick(deltaTime: number, ticks: number, time: number): void {}
@@ -1880,6 +1893,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   private hostUpdateFlags(onUpdate: unknown): number {
+    if (this._animationFps !== undefined) return NativeSceneHook.Update
     const update = this.nativeIntegration.lifecycle?.update
     if (update && onUpdate === update.idle) {
       return update.active(this) ? NativeSceneHook.Update : NativeSceneHook.IdleUpdate
@@ -1941,6 +1955,10 @@ export abstract class Renderable extends BaseRenderable {
     try {
       switch (request.kind) {
         case NativeSceneFrame.Update:
+          if (this._animationFps !== undefined) {
+            this.animationDrawnFrame = this._ctx.frameId
+            if (!this.stopAnimationTick) this.updateAnimationTick()
+          }
           this._hooks.onUpdate.call(this, deltaTime)
           break
         case NativeSceneFrame.Resize:

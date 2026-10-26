@@ -925,10 +925,14 @@ export enum RendererControlState {
 
 const CLICK_REPEAT_INTERVAL_MS = 500
 
+// Timers can fire up to about 1 ms before clock.now() reaches their delay, so every tick window is at least this wide.
+const ANIMATION_TIMER_SLACK_MS = 1
+
 interface AnimationTicker {
-  interval: number
-  tolerance: number
-  /** The next due time is next * interval, so no rounding error accumulates. */
+  fps: number
+  /** The tick window in ms × fps. Due times are next × 1000 / fps; a frame at `time` covers every due index up to
+   * floor((time × fps + window) / 1000). Counting in these units keeps the default window (500) exact. */
+  window: number
   next: number
   last: number
   callback: AnimationTickCallback
@@ -4360,15 +4364,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    * whatever its cause, runs each tick that is due within its tolerance. Returns the unsubscribe function. */
   public onAnimationTick(fps: number, callback: AnimationTickCallback, options: AnimationTickOptions = {}): () => void {
     const interval = 1000 / fps
-    const tolerance = options.tolerance ?? interval / 2
+    const { tolerance } = options
     if (!(interval > 0 && interval < Infinity)) throw new RangeError(`fps must be positive and finite, got ${fps}`)
-    if (!(tolerance >= 0 && tolerance < interval)) {
+    if (tolerance !== undefined && !(tolerance >= 0 && tolerance < interval)) {
       throw new RangeError(`tolerance must be at least 0 and below the interval (${interval} ms), got ${tolerance}`)
     }
     if (this._isDestroyed) return () => {}
     const now = this.clock.now()
-    // The first due time is one that is not yet within the tolerance, so a new subscriber never ticks at once.
-    const ticker = { interval, tolerance, next: Math.floor((now + tolerance) / interval) + 1, last: now, callback }
+    // The default tolerance is half the interval: 500 in window units.
+    const window = Math.max(tolerance === undefined ? 500 : tolerance * fps, ANIMATION_TIMER_SLACK_MS * fps)
+    // The first due time is the first one out of reach, so a new subscriber never ticks in the frame it joins.
+    const ticker = { fps, window, next: Math.floor((now * fps + window) / 1000) + 1, last: now, callback }
     this.animationTickers.add(ticker)
     this.scheduleAnimationTick()
     return () => {
@@ -4376,12 +4382,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  // An app-level timer like any other, not scheduled work: idle() resolves between ticks.
+  // An app-level timer like any other, not scheduled work: idle() resolves between ticks. The fastest subscribers
+  // request frames at their due times; slower ones only at the end of their window, so they share those frames.
   private scheduleAnimationTick(): void {
     if (this.animationTimer !== null) this.clock.clearTimeout(this.animationTimer)
     this.animationTimer = null
+    let fastest = 0
+    for (const ticker of this.animationTickers) fastest = Math.max(fastest, ticker.fps)
     let due = Infinity
-    for (const ticker of this.animationTickers) due = Math.min(due, ticker.next * ticker.interval)
+    for (const ticker of this.animationTickers) {
+      const late = ticker.fps === fastest ? 0 : ticker.window
+      due = Math.min(due, (ticker.next * 1000 + late) / ticker.fps)
+    }
     if (due === Infinity) return
     this.animationTimer = this.clock.setTimeout(
       () => {
@@ -4395,11 +4407,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private runAnimationTicks(time: number): void {
     if (this.animationTickers.size === 0) return
     for (const ticker of this.animationTickers) {
-      if (ticker.next * ticker.interval - ticker.tolerance > time) continue
-      const next = Math.max(ticker.next + 1, Math.floor((time + ticker.tolerance) / ticker.interval) + 1)
-      const ticks = next - ticker.next
+      const reach = Math.floor((time * ticker.fps + ticker.window) / 1000)
+      if (reach < ticker.next) continue
+      const ticks = reach + 1 - ticker.next
       const deltaTime = Math.max(0, time - ticker.last)
-      ticker.next = next
+      ticker.next = reach + 1
       ticker.last = time
       try {
         ticker.callback(deltaTime, ticks, time)

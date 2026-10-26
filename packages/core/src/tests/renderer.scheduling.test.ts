@@ -26,13 +26,20 @@ test("destroy cancels queued animation and frame continuations, including reentr
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
 })
 
+// Fractional timers often fire before clock.now() reaches their delay; this clock fires every timer 1 ms early.
+class EarlyClock extends ManualClock {
+  override setTimeout(fn: () => void, delayMs: number) {
+    return super.setTimeout(fn, Math.max(0, delayMs - 1))
+  }
+}
+
 // Each subscriber requests a frame through its tick, as an animated component does.
 async function animate(
   rates: number[],
   offsets: number[],
-  options: { tick?: AnimationTickOptions; live?: boolean; content?: number[]; seconds?: number } = {},
+  options: { tick?: AnimationTickOptions; live?: boolean; content?: number[]; seconds?: number; early?: boolean } = {},
 ) {
-  const clock = new ManualClock()
+  const clock = options.early ? new EarlyClock() : new ManualClock()
   const { renderer } = await createTestRenderer({ width: 4, height: 1, clock, targetFps: 60, maxFps: 60 })
   const seconds = options.seconds ?? 5
   const content = options.content ?? []
@@ -79,6 +86,10 @@ const frameRows: [string, number[], number[], Parameters<typeof animate>[2], num
   ["equal rates mounted apart tick together", [12.5, 12.5], [0, 30], {}, 12.6, [12.6, 12.6]],
   ["OpenCode's spinners", [25, 12.5, 12.5], [0, 13, 57], {}, 25, [25, 12.4, 12.4]],
   ["tolerance 0 keeps exact due times", [20, 12.5, 10], [0, 17, 31], { tick: { tolerance: 0 } }, 30, [20, 12.6, 10]],
+  ["tolerance 0 with timers that fire 1 ms early", [20], [0], { tick: { tolerance: 0 }, early: true }, 20, [20]],
+  // Slower subscribers also tick up to their tolerance late, so close rates that never align share frames.
+  ["close rates 20, 19 and 18 fps", [20, 19, 18], [0, 7, 13], {}, 20, [20, 19, 18]],
+  ["close rates 25, 24 and 23 fps", [25, 24, 23], [0, 7, 13], {}, 25, [25, 24, 23]],
   ["above maxFps, ticks arrive as counts", [100], [0], {}, 62.6, [100.2]],
   ["a live loop adds no frames for ticks", [20], [0], { live: true }, 62.4, [20]],
 ]
@@ -97,7 +108,7 @@ test("animation ticks: frames never exceed the fastest rate plus content frames 
   for (let trial = 0; trial < 12; trial++) {
     const base = pick([50, 25, 20, 12.5])
     const rates = Array.from({ length: 1 + Math.floor(random() * 3) }, () =>
-      trial % 3 === 2 ? pick([60, 33, 25, 15, 13.3, 10, 4]) : base / pick([1, 2, 4]),
+      trial % 3 === 2 ? pick([60, 33, 25, 24, 23, 20, 19, 18, 15, 13.3, 12, 11.5, 10, 4]) : base / pick([1, 2, 4]),
     )
     const offsets = rates.map(() => Math.floor(random() * 200))
     const content = Array.from({ length: Math.floor(random() * 40) }, () => 1000 + Math.floor(random() * 2000)).sort(
@@ -106,11 +117,12 @@ test("animation ticks: frames never exceed the fastest rate plus content frames 
     const alone = await animate([], [], { content: [...content], seconds: 2 })
     const { frames, ticks, gaps } = await animate(rates, offsets, { content, seconds: 2 })
     const context = JSON.stringify({ trial, rates, offsets, frames, alone: alone.frames })
-    const harmonic = trial % 3 !== 2
-    expect(frames, context).toBeLessThanOrEqual(Math.min(60, Math.max(...rates)) + alone.frames + (harmonic ? 0 : 1))
+    const fastest = Math.max(...rates)
+    expect(frames, context).toBeLessThanOrEqual(Math.min(60, fastest) + alone.frames)
     rates.forEach((fps, i) => {
-      // A tick runs up to half an interval early, or up to one maxFps gap late.
-      const slack = 500 / fps + 1000 / 60 + 1
+      // A tick runs on the first frame from half an interval before its due time; the fastest rate's frames come
+      // at least every 1000 / fastest ms, a maxFps gap later at worst.
+      const slack = Math.min(1000 / fps, 1000 / fastest) + 1000 / 60 + 1
       expect(Math.abs(ticks[i] - fps), context).toBeLessThanOrEqual(1)
       for (const gap of gaps[i]) expect(Math.abs(gap - 1000 / fps), context).toBeLessThanOrEqual(slack)
     })
@@ -125,7 +137,7 @@ class Pulse extends Renderable {
   }
 }
 
-test("animation ticks: animationFps follows visibility and destroy, and unsubscribes inside a tick", async () => {
+test("animation ticks: animationFps ticks only while drawn, and unsubscribes inside a tick", async () => {
   const clock = new ManualClock()
   const { renderer } = await createTestRenderer({ width: 4, height: 1, clock, targetFps: 60, maxFps: 60 })
   let frames = 0
@@ -140,8 +152,10 @@ test("animation ticks: animationFps follows visibility and destroy, and unsubscr
   const stopThrowing = renderer.onAnimationTick(20, () => {
     throw new Error("tick")
   })
+  const parent = new Pulse(renderer, { width: 2, height: 1 })
   const pulse = new Pulse(renderer, { width: 1, height: 1, animationFps: 20 })
-  renderer.root.add(pulse)
+  renderer.root.add(parent)
+  parent.add(pulse)
   let late = 0
   const stopFirst = renderer.onAnimationTick(20, () => (stopFirst(), stopLate()))
   const stopLate = renderer.onAnimationTick(20, () => late++)
@@ -149,7 +163,14 @@ test("animation ticks: animationFps follows visibility and destroy, and unsubscr
     ["visible", () => {}, 21, 20],
     ["hidden", () => ((pulse.visible = false), stopThrowing()), 1, 0],
     ["shown again", () => (pulse.visible = true), 21, 20],
+    // Not drawn: the first tick after a frame without its update stops the clock; the next update resumes it.
+    ["parent hidden", () => (parent.visible = false), 2, 0],
+    ["parent shown", () => (parent.visible = true), 21, 20],
+    ["removed", () => parent.remove(pulse), 2, 0],
+    ["added again", () => parent.add(pulse), 21, 20],
     ["animationFps undefined", () => (pulse.animationFps = undefined), 0, 0],
+    ["animationFps 0 is rejected", () => expect(() => (pulse.animationFps = 0)).toThrow(RangeError), 0, 0],
+    ["animationFps 0 was not stored", () => expect(pulse.animationFps).toBeUndefined(), 0, 0],
     ["animationFps 10", () => (pulse.animationFps = 10), 10, 10],
     ["destroyed", () => pulse.destroy(), 1, 0],
   ]
@@ -180,15 +201,20 @@ test("animation ticks reject bad rates and tolerances, catch up after a late fra
   }
   // A new subscriber skips the frame it joins: at 50 ms its first due time is 160 ms, beyond the 40 ms tolerance.
   // A late frame at 360 ms covers the passed due times 160, 240 and 320 ms, and 400 ms, which is within reach.
-  const counts: number[] = []
+  // The next tick, at its due time of 480 ms, is ordinary: deltaTime is the time since the previous tick.
+  const counts: number[][] = []
   clock.advance(50)
-  const stop = renderer.onAnimationTick(12.5, (_deltaTime, ticks) => counts.push(ticks))
+  const stop = renderer.onAnimationTick(12.5, (deltaTime, ticks) => counts.push([deltaTime, ticks]))
   renderer.requestRender()
   await settle(4)
   clock.advance(310)
   await settle(4)
+  for (let ms = 0; ms < 120; ms++) (clock.advance(1), await settle(4))
   stop()
-  expect(counts).toEqual([4])
+  expect(counts).toEqual([
+    [310, 4],
+    [120, 1],
+  ])
   renderer.onAnimationTick(10, noop)
   expect(clock.pendingTimerCount).toBe(1)
   renderer.destroy()
@@ -197,3 +223,29 @@ test("animation ticks reject bad rates and tolerances, catch up after a late fra
   expect(clock.pendingTimerCount).toBe(0)
   await renderer.closed
 })
+
+// fps, the time of a late frame → the due times it covers (every one up to time + tolerance, counted exactly), and
+// whether a subscriber added in that frame, or just before it, ticks in it (it must not).
+const boundaryRows: [number, number, number][] = [
+  [18, 13_750, 248],
+  [23, 2_500, 58],
+  [33, 612_500, 20_213],
+]
+
+for (const [fps, time, due] of boundaryRows) {
+  test(`animation ticks: a late frame at ${time} ms covers ${due} due times at ${fps} fps`, async () => {
+    const clock = new ManualClock()
+    const { renderer } = await createTestRenderer({ width: 1, height: 1, clock })
+    const calls: string[] = []
+    renderer.onAnimationTick(fps, (_deltaTime, ticks) => {
+      calls.push(`first ${ticks}`)
+      renderer.onAnimationTick(fps, () => calls.push("added in the frame"))
+    })
+    clock.advance(time)
+    renderer.onAnimationTick(fps, () => calls.push("added before the frame"))
+    await settle(4)
+    expect(calls).toEqual([`first ${due}`])
+    renderer.destroy()
+    await renderer.closed
+  })
+}
