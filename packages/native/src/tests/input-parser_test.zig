@@ -980,7 +980,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     const cpr: ip.Expectations = .{ .replies = true, .cursor_position = true };
     for ([_]struct { ip.Expectations, []const u8, usize, []const u8, []const Expect }{
         // A fragment, and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
-        .{ plain, "\x1b[", 1, "q", &.{ frag("\x1b["), ch('q') } },
+        .{ plain, "\x1b\x1b[", 2, "<", &.{ k(K.escape, NONE), frag("\x1b["), ch('<') } },
         .{ plain, "\x1bP", 1, "q", &.{ frag("\x1bP"), ch('q') } },
         .{ plain, "\x1b]", 1, "q", &.{ frag("\x1b]"), ch('q') } },
         .{ plain, "\x1bO", 1, "a", &.{ frag("\x1bO"), ch('a') } },
@@ -1029,14 +1029,36 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ replies, "\x1b[8;600;80", 1, "t", &.{ frag("\x1b[8;600;80"), ch('t') } },
         .{ replies, "\x1b[1;2:3:4:5", 1, "R", &.{ frag("\x1b[1;2:3:4:5"), ch('R') } },
     }) |case| try checkTimed(case[0], case[1], case[2], case[3], case[4]);
+    // A timed-out bare `ESC [` continues only into a read that holds the rest of a mouse report.
+    // Keys typed after Alt+[ come one read each and stay keys, and so does any other byte.
+    for ([_]struct { []const []const u8, []const Expect }{
+        .{ &.{"<0;1;1M"}, &.{down(0, 0, 0)} },
+        .{ &.{"M !!"}, &.{Expect{ .kind = .mouse, .action = 1, .code = 0, .raw = "\x1b[M !!" }} },
+        .{ &.{ "<0", ";1;1M" }, &.{down(0, 0, 0)} },
+        .{ &.{ "<", "a" }, &.{ frag("\x1b["), ch('<'), ch('a') } },
+        .{ &.{ "M", "a" }, &.{ frag("\x1b["), ch('M'), ch('a') } },
+        .{ &.{ "<", "1", "2", ";", "3", "x" }, &.{ frag("\x1b["), ch('<'), ch('1'), ch('2'), ch(';'), ch('3'), ch('x') } },
+        .{ &.{ "M", "M", "M", "M" }, &.{ frag("\x1b["), ch('M'), ch('M'), ch('M'), ch('M') } },
+        .{ &.{ "M", " ", "!", "!" }, &.{ frag("\x1b["), ch('M'), ch(' '), ch('!'), ch('!') } },
+        .{ &.{"M !"}, &.{ frag("\x1b["), ch('M'), ch(' '), ch('!') } },
+        .{ &.{"1m"}, &.{ frag("\x1b["), ch('1'), ch('m') } },
+        .{ &.{"?m"}, &.{ frag("\x1b["), ch('?'), ch('m') } },
+        .{ &.{"m1"}, &.{ frag("\x1b["), ch('m'), ch('1') } },
+    }) |case| {
+        var bare = try Harness.create();
+        defer bare.deinit();
+        _ = try bare.feed("\x1b[");
+        try expectGot("\x1b[", &.{}, try bare.wait(20));
+        try expectGot(case[0][0], case[1], try split(&bare, case[0]));
+    }
     // A deferred unit has no deadline until a byte continues it.
     var harness = try Harness.create();
     defer harness.deinit();
-    _ = try harness.feed("\x1b[<0;1");
+    _ = try harness.feed("\x1b[");
     try expectGot("", &.{}, try harness.wait(20));
     try testing.expectEqual(null, harness.parser.deadlineNs());
     harness.now += std.time.ns_per_s;
-    _ = try harness.feed(";");
+    _ = try harness.feed("<0;1;");
     try testing.expectEqual(harness.now + ip.timeout_ns, harness.parser.deadlineNs().?);
     try expectGot("", &.{down(0, 0, 0)}, try harness.feed("1M"));
     // Clearing an expectation gives a deferred unit its deadline back; it emits on the next feed.

@@ -218,6 +218,8 @@ pub const InputParser = struct {
     since_ns: u64 = 0,
     x10_button: u8 = 0,
     discarded_count: u32 = 0,
+    /// Bytes left in the feed batch after the current byte. A typed key arrives in a read of its own.
+    batch_left: u32 = 0,
 
     /// Parses bytes that arrived at now_ns and returns how many it consumed; it
     /// stops when the sink cannot hold one more byte's events. Zero bytes only
@@ -238,6 +240,7 @@ pub const InputParser = struct {
             }
             const count_before = sink.count;
             const payload_before = sink.payload_len;
+            self.batch_left = @intCast(bytes.len - consumed - 1);
             self.step(bytes[consumed], sink);
             std.debug.assert(sink.count - count_before <= events_per_byte_max);
             std.debug.assert(sink.payload_len - payload_before <= payload_per_byte_max);
@@ -740,10 +743,10 @@ pub const InputParser = struct {
     }
 
     /// Whether a timed-out CSI may still be a mouse report, a Kitty key, or an awaited
-    /// reply, which slow links can split (docs §6.6).
+    /// reply, which slow links can split (docs §6.6). A bare `ESC ESC [` would hold an Escape key.
     fn deferrable(self: *const InputParser) bool {
         const params = self.unit[2..self.unit_len];
-        if (params.len == 0) return false;
+        if (params.len == 0) return !self.state.csi.alt;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
         return (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
@@ -766,7 +769,7 @@ pub const InputParser = struct {
     /// Whether `b` continues a deferred CSI. Final bytes count only where they complete it.
     fn continuesDeferred(self: *const InputParser, b: u8) bool {
         const params = self.unit[2..self.unit_len];
-        std.debug.assert(params.len > 0);
+        if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3);
         const digit = isDigit(b);
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
         const field = std.mem.trimEnd(u8, params, "$");
