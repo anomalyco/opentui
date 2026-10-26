@@ -1329,33 +1329,34 @@ test "Scene frame work counts viewport refresh and culling work" {
 
 // The bench's scenes at small sizes. Columns: every FrameWork field after work_frame_id, in
 // declaration order (candidate visits through damage rows), then the preparation entries
-// stamped. Track B steps change these rows.
+// stamped and the node lookups of paint planning, which no frame without a departure needs.
+// Track B steps change these rows.
 // Unchanged frames paint and diff nothing (B3) and keep both lists through hooks and filters
 // (B5a), so they walk and stamp nothing; the scroll scene's status text is as tall as
 // the screen, so its glyph damages every row. A recorded frame follows a recorded frame, so it
 // has no retained frame to compare with.
 test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const bench = @import("../bench/scene-frame_bench.zig");
-    const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [19]u64 }{
-        .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0 } },
-        .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 86, 9009, 10000, 1, 1, 0, 0, 1, 1, 87 } },
-        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 174, 0, 0, 348, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0 } },
-        .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 10000, 50, 0, 16, 1, 1, 50, 0 } },
-        .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0 } },
-        .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 6160, 1, 1, 0, 0, 1, 1, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 0, 0, 58, 0, 0, 217, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 104, 1, 217, 0, 100, 200, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104 } },
-        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 104 } },
-        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 0, 102, 204, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106 } },
-        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 0, 0, 80, 0, 0, 281, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0 } },
+    const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [20]u64 }{
+        .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0 } },
+        .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 86, 9009, 10000, 1, 1, 0, 0, 1, 1, 87, 0 } },
+        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 174, 0, 0, 348, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0 } },
+        .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 86, 9009, 10000, 50, 0, 16, 1, 1, 50, 0, 0 } },
+        .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0 } },
+        .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 6160, 1, 1, 0, 0, 1, 1, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 0, 0, 58, 0, 0, 217, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 104, 1, 217, 0, 100, 200, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 104, 53 } },
+        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 0, 102, 204, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106, 0 } },
+        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 0, 0, 80, 0, 0, 281, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0 } },
         // The scroll shape as one scroll node: one node fewer, two hidden Yoga nodes read per
         // solve, a scroll is an offset without a solve, and an append follows the bottom.
-        .{ .shape = .scroll_node, .size = 100, .change = .unchanged, .work = .{ 0, 0, 56, 0, 0, 213, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0 } },
-        .{ .shape = .scroll_node, .size = 100, .change = .scroll, .work = .{ 103, 103, 106, 0, 0, 213, 0, 0, 200, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 103 } },
-        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 105, 158, 107, 1, 215, 0, 102, 204, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105 } },
-        .{ .shape = .boxes, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 6160, 44, 0, 16, 1, 1, 44, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .update_hook, .work = .{ 0, 0, 58, 0, 0, 217, 0, 0, 100, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 108, 0, 0, 217, 0, 0, 100, 53, 10000, 10000, 50, 0, 16, 1, 1, 50, 0 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .unchanged, .work = .{ 0, 0, 56, 0, 0, 213, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .scroll, .work = .{ 103, 103, 106, 0, 0, 213, 0, 0, 200, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 103, 52 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 105, 158, 107, 1, 215, 0, 102, 204, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52 } },
+        .{ .shape = .boxes, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 6160, 44, 0, 16, 1, 1, 44, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .update_hook, .work = .{ 0, 0, 58, 0, 0, 217, 0, 0, 100, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 108, 0, 0, 217, 0, 0, 100, 53, 10000, 10000, 50, 0, 16, 1, 1, 50, 0, 0 } },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);
@@ -1367,10 +1368,12 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         const steady = row.change == .unchanged or row.change == .update_hook or row.change == .paint_hook;
         for (0..@as(usize, if (steady) 2 else 1)) |_| {
             const stamps = state.test_stamp_steps;
+            const lookups = state.test_record_lookups;
             const w = try target.frame(row.change);
-            var actual: [19]u64 = undefined;
+            var actual: [20]u64 = undefined;
             inline for (std.meta.fields(FrameWork)[1..], 0..) |field, index| actual[index] = @field(w, field.name);
             actual[18] = state.test_stamp_steps - stamps;
+            actual[19] = state.test_record_lookups - lookups;
             try testing.expectEqual(row.work, actual);
         }
     }

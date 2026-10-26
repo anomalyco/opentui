@@ -643,6 +643,8 @@ pub const Scene = struct {
     test_cursor_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     // Preparation entries stamped as this round's candidates.
     test_stamp_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    // Token lookups of recorded nodes while planning paint.
+    test_record_lookups: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator, config: *yoga.Config, session: handles.Handle) !*Scene {
         const self = try allocator.create(Scene);
@@ -1789,24 +1791,28 @@ pub const Scene = struct {
         self.records_frame = frame_id;
         self.records_options = options;
         try self.records.ensureTotalCapacity(self.allocator, self.members.items.len);
+        try self.damage.resize(self.allocator, cli.height, false);
+        self.damage.unsetAll();
+        var matched: usize = 0;
+        // Rows of every member whose inputs changed, before and after, and of every member that left.
         for (self.members.items) |entry| {
             // A scroll node's record covers its bars: their inputs change its paint epoch.
             if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible or entry.bars) continue;
             self.record(entry, &reasons);
+            if (reasons != 0) continue;
+            const current = self.records.items[self.records.items.len - 1];
+            const old = self.recordOf(entry.node.scene_node.?, self.presented_records_frame, self.presented_records.items);
+            matched += @intFromBool(old != null);
+            if (old != null and current.stable and old.?.stable and std.meta.eql(old.?.inputs, current.inputs)) continue;
+            self.damage.setRangeValue(.{ .start = current.top, .end = current.bottom }, true);
+            if (old) |previous| self.damageRows(previous);
         }
         self.frame_work.full_path_reasons |= reasons;
         if (reasons != 0) return .all;
-        try self.damage.resize(self.allocator, cli.height, false);
-        self.damage.unsetAll();
-        // Rows of every member whose inputs changed, before and after, and of every member that left.
-        for (self.records.items) |entry| {
-            const node = self.recordNode(objects, entry.token).?;
-            const old = self.recordOf(node, self.presented_records_frame, self.presented_records.items);
-            if (old != null and entry.stable and old.?.stable and std.meta.eql(old.?.inputs, entry.inputs)) continue;
-            self.damage.setRangeValue(.{ .start = entry.top, .end = entry.bottom }, true);
-            if (old) |previous| self.damageRows(previous);
-        }
-        for (self.presented_records.items) |previous| {
+        // Each member matches at most one presented record, so a full match means none left.
+        std.debug.assert(matched <= self.presented_records.items.len);
+        const departed: []const Record = if (matched == self.presented_records.items.len) &.{} else self.presented_records.items;
+        for (departed) |previous| {
             const node = self.recordNode(objects, previous.token) orelse {
                 self.damageRows(previous);
                 continue;
@@ -1823,7 +1829,8 @@ pub const Scene = struct {
         self.damage.setRangeValue(.{ .start = previous.top, .end = @min(previous.bottom, self.damage.bit_length) }, true);
     }
 
-    fn recordNode(self: *const Scene, objects: *const handles.Table, token: u32) ?*Node {
+    fn recordNode(self: *Scene, objects: *const handles.Table, token: u32) ?*Node {
+        if (builtin.is_test) self.test_record_lookups += 1;
         const handle = self.tokens.get(token) orelse return null;
         const value = objects.get(handle, .native_renderable, native.NativeRenderable) catch return null;
         return value.scene_node;
