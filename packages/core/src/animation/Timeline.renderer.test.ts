@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createTimeline, engine, getTimelineEngine } from "./Timeline.js"
+import { createTimeline, engine, getTimelineEngine, Timeline } from "./Timeline.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { settle } from "../testing/harness.js"
@@ -60,6 +60,7 @@ const rateRows: [string, number, number | undefined, (number | undefined)[], num
   ["a default timeline beside a slow one holds the loop", 60, undefined, [10, undefined], 63, true, 1],
   ["engine.defaults.frameRate applies to timelines without one", 60, 20, [undefined], 20, false, 0],
   ["targetFps above the default 60 now runs at 60", 120, undefined, [undefined], 60, false, 0],
+  ["frameRate Infinity holds the loop", 60, undefined, [Infinity], 63, true, 1],
 ]
 
 for (const [name, targetFps, defaultRate, rates, frames, live, after] of rateRows) {
@@ -71,7 +72,13 @@ for (const [name, targetFps, defaultRate, rates, frames, live, after] of rateRow
       if (defaultRate !== undefined) engine.defaults.frameRate = defaultRate
       let count = 0
       renderer.on("frame", () => count++)
-      const timelines = rates.map((frameRate) => createTimeline({ duration: 1000, frameRate }, renderer))
+      // Each timeline animates something, which requests a render on every update.
+      const timelines = rates.map((frameRate) =>
+        createTimeline({ duration: 1000, frameRate }, renderer).add(
+          { x: 0 },
+          { x: 1, duration: 1000, onUpdate: () => renderer.root.requestRender() },
+        ),
+      )
       const run = async (ms: number) => {
         count = 0
         for (let i = 0; i < ms; i++) (clock.advance(1), await settle(4))
@@ -112,4 +119,15 @@ test("timeline frameRate: the default engine moves its ticks to the renderer it 
     for (const { renderer } of setups) renderer.destroy()
     await Promise.all(setups.map(({ renderer }) => renderer.closed))
   }
+})
+
+test("timeline frameRate must be above 0", () => {
+  const timeline = new Timeline({ frameRate: Infinity })
+  for (const frameRate of [0, -5, NaN]) {
+    expect(() => new Timeline({ frameRate })).toThrow(RangeError)
+    expect(() => (timeline.frameRate = frameRate)).toThrow(RangeError)
+  }
+  timeline.frameRate = 10
+  timeline.frameRate = undefined
+  expect(timeline.frameRate).toBeUndefined()
 })

@@ -2,8 +2,8 @@ import type { CliRenderer } from "../renderer.js"
 
 export interface TimelineOptions {
   duration?: number
-  /** Updates per second while it plays. Below the renderer's targetFps it ticks on the shared animation clock
-   * instead of holding the render loop. Default: the engine's `defaults.frameRate` (60). */
+  /** Updates per second while it plays, above 0 (Infinity allowed). Below the renderer's targetFps it ticks on the
+   * shared animation clock instead of holding the render loop. Default: the engine's `defaults.frameRate` (60). */
   frameRate?: number
   loop?: boolean
   autoplay?: boolean
@@ -291,7 +291,7 @@ export class Timeline {
   public isPlaying: boolean = false
   public isComplete: boolean = false
   public duration: number
-  public frameRate: number | undefined
+  private _frameRate: number | undefined
   public loop: boolean
   public synced: boolean = false
   private autoplay: boolean
@@ -306,6 +306,15 @@ export class Timeline {
     this.autoplay = options.autoplay !== false
     this.onComplete = options.onComplete
     this.onPause = options.onPause
+  }
+
+  public get frameRate(): number | undefined {
+    return this._frameRate
+  }
+
+  public set frameRate(value: number | undefined) {
+    if (value !== undefined && !(value > 0)) throw new RangeError(`frameRate must be above 0, got ${value}`)
+    this._frameRate = value
   }
 
   public addStateChangeListener(listener: (timeline: Timeline) => void): void {
@@ -510,8 +519,9 @@ const timelineOwners = new WeakMap<Timeline, TimelineEngine>()
 class TimelineEngine {
   private timelines: Set<Timeline> = new Set()
   private renderer: CliRenderer | null = null
+  // While the engine ticks, the tick updates timelines instead, so their render requests share its frame.
   private frameCallback = async (deltaTime: number): Promise<void> => {
-    this.update(deltaTime)
+    if (this.tickFps === 0) this.update(deltaTime)
   }
   private isLive: boolean = false
   private tickFps = 0
@@ -552,7 +562,7 @@ class TimelineEngine {
   }
 
   // The fastest playing timeline sets the rate. At or above targetFps it holds the loop, as before frameRate was
-  // read; below it, ticks request the frames, and the frame callback still updates timelines on every frame.
+  // read, and the frame callback updates timelines; below it, the clock's ticks update them.
   private updateLiveState(): void {
     if (!this.renderer) return
 
@@ -576,7 +586,7 @@ class TimelineEngine {
   private setTickFps(fps: number): void {
     if (fps === this.tickFps) return
     this.stopTicks?.()
-    this.stopTicks = fps > 0 ? this.renderer?.onAnimationTick(fps, () => {}) : undefined
+    this.stopTicks = fps > 0 ? this.renderer?.onAnimationTick(fps, (deltaTime) => this.update(deltaTime)) : undefined
     this.tickFps = fps
   }
 
