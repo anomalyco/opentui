@@ -90,12 +90,15 @@ test("useAnimationTick commits state in the tick's own frame and pauses with an 
   testSetup = await testRender(<App />, { width: 4, height: 1, clock, targetFps: 60, maxFps: 60 })
   let frames = 0
   testSetup.renderer.on("frame", () => frames++)
+  // Ticks commit outside act(), as in an app; act() around them would hide what flushSync does.
   const run = async () => {
     frames = 0
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: false })
     for (let i = 0; i < 4000; i++) {
       if (i % 4 === 0) clock.advance(1)
       await new Promise((resolve) => setImmediate(resolve))
     }
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
     return [frames, testSetup!.captureCharFrame().trim()]
   }
   const playing = await run()
