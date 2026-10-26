@@ -3385,7 +3385,7 @@ pub const OptimizedBuffer = struct {
         var titleX = boxX + padding;
 
         if (alignment == 1) {
-            titleX = boxX + @max(padding, @divFloor(@as(i32, @intCast(width)) - titleLength, 2));
+            titleX = boxX + @divFloor(@as(i32, @intCast(width)) - titleLength, 2);
         } else if (alignment == 2) {
             titleX = boxX + @as(i32, @intCast(width)) - padding - titleLength;
         }
