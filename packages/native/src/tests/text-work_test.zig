@@ -338,54 +338,33 @@ test "text work: line lookups after an edit in a 10,000-line buffer" {
     try expectWork(.{ .line_seeks = 3, .line_seek_nodes = 53 });
 }
 
-test "text work: drawing rows of a wrapped CJK line rescans its clusters from the line start" {
-    const allocator = std.testing.allocator;
-    var pools = TestPools.init(allocator);
-    defer pools.deinit();
-    const text = try repeatText(allocator, "\u{754c}", 100_000 * 3);
-    defer allocator.free(text);
-    const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    const view = try TextBufferView.init(allocator, tb);
-    defer view.deinit();
-    try tb.setText(text);
-    view.setWrapMode(.char);
-    view.setViewport(.{ .x = 0, .y = 0, .width = 80, .height = 30 });
-    const rows = view.getVirtualLineCount();
-    try std.testing.expectEqual(2_500, rows);
-    const screen = try OptimizedBuffer.init(allocator, 80, 30, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
-    defer screen.deinit();
-    screen.drawTextBuffer(view, 0, 0);
-
-    _ = text_work.take();
-    screen.drawTextBuffer(view, 0, 0);
-    try expectWork(.{ .cluster_scan_steps = 17_400, .clusters_drawn = 1_200 });
-    view.setViewport(.{ .x = 0, .y = rows - 30, .width = 80, .height = 30 });
-    screen.drawTextBuffer(view, 0, 0);
-    _ = text_work.take();
-    screen.drawTextBuffer(view, 0, 0);
-    try expectWork(.{ .cluster_scan_steps = 2_981_400, .clusters_drawn = 1_200 });
-}
-
-test "text work: drawing a long unwrapped line scrolled right skips the text before the viewport by chunk and cluster" {
+test "text work: drawing a long line scrolled right or down searches for its first visible cluster" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
     // With `part`, the line is appended in chunks of that many bytes. `prefix` goes before the
-    // units. A truncated line puts the end of its chunk after the ellipsis.
-    const rows = [_]struct { unit: []const u8, part: usize = 0, prefix: []const u8 = "", control: ControlDisplay = .hidden, truncate: bool = false, xs: [3]u32 = .{ 1_000, 50_000, 130_000 }, scan: [3]u64 = .{ 0, 0, 0 }, reads: u64 = 0, steps: [3]u64, drawn: [3]u64 }{
+    // units. A truncated line puts the end of its chunk after the ellipsis. A wrapped line draws
+    // its top, middle, and bottom 30 rows; on the old linear scan the bottom rows of the CJK line
+    // took 3,913,800 search steps.
+    const rows = [_]struct { unit: []const u8, part: usize = 0, prefix: []const u8 = "", control: ControlDisplay = .hidden, truncate: bool = false, wrap: WrapMode = .none, xs: [3]u32 = .{ 1_000, 50_000, 130_000 }, scan: [3]u64 = .{ 0, 0, 0 }, reads: u64 = 0, steps: [3]u64, drawn: [3]u64 }{
         .{ .unit = "a", .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
         .{ .unit = "a", .prefix = "0123456789\x01", .reads = 1, .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
         .{ .unit = "a", .prefix = "0123456789\x01", .control = .notation, .reads = 1, .steps = .{ 1, 1, 1 }, .drawn = .{ 80, 80, 80 } },
         .{ .unit = "a", .prefix = "0123456789\u{200b}", .reads = 1, .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
         .{ .unit = "a", .prefix = "0123456789\u{200b}", .control = .notation, .reads = 1, .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
         .{ .unit = "a", .truncate = true, .xs = .{ 10, 40, 60 }, .steps = .{ 0, 1, 2 }, .drawn = .{ 70, 40, 20 } },
-        .{ .unit = "\u{754c}", .truncate = true, .xs = .{ 10, 40, 60 }, .scan = .{ 131_053, 131_053, 131_053 }, .steps = .{ 17, 1, 7 }, .drawn = .{ 36, 20, 9 } },
+        .{ .unit = "\u{754c}", .truncate = true, .xs = .{ 10, 40, 60 }, .scan = .{ 17, 17, 17 }, .steps = .{ 17, 1, 7 }, .drawn = .{ 36, 20, 9 } },
         .{ .unit = "\u{754c}", .part = 3 * 1024, .steps = .{ 10, 34, 73 }, .drawn = .{ 40, 40, 40 } },
         .{ .unit = "\u{754c}", .steps = .{ 17, 17, 17 }, .drawn = .{ 40, 40, 40 } },
         .{ .unit = "\u{1f600}", .steps = .{ 17, 17, 17 }, .drawn = .{ 40, 40, 40 } },
         .{ .unit = "ab\t", .steps = .{ 17, 17, 17 }, .drawn = .{ 60, 60, 60 } },
         .{ .unit = "e\u{301}", .steps = .{ 17, 17, 17 }, .drawn = .{ 80, 80, 80 } },
+        .{ .unit = "\u{754c}", .wrap = .char, .scan = .{ 308, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_200, 1_200, 1_192 } },
+        .{ .unit = "\u{754c}", .wrap = .word, .scan = .{ 308, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_200, 1_200, 1_192 } },
+        .{ .unit = "e\u{301}", .wrap = .char, .scan = .{ 337, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 2_400, 2_400, 2_352 } },
+        .{ .unit = "\tab", .wrap = .char, .scan = .{ 279, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_800, 1_800, 1_776 } },
+        .{ .unit = "\u{1f600}", .wrap = .word, .scan = .{ 301, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_200, 1_200, 1_192 } },
+        .{ .unit = "ab\u{754c}c\u{1f600}d e\u{301}f\tgh ", .wrap = .word, .scan = .{ 300, 570, 570 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_950, 1_950, 1_911 } },
     };
     for (rows) |row| {
         const units = try repeatText(allocator, row.unit, 131_072 * row.unit.len);
@@ -401,11 +380,14 @@ test "text work: drawing a long unwrapped line scrolled right skips the text bef
             while (start < text.len) : (start += row.part) try tb.append(text[start..@min(start + row.part, text.len)]);
         }
         view.setTruncate(row.truncate);
-        view.setWrapMode(.none);
-        const screen = try OptimizedBuffer.init(allocator, 80, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+        view.setWrapMode(row.wrap);
+        view.setViewport(.{ .x = 0, .y = 0, .width = 80, .height = 30 });
+        const count: u32 = view.getVirtualLineCount();
+        const screen = try OptimizedBuffer.init(allocator, 80, 30, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
         defer screen.deinit();
-        for (row.xs, row.scan, row.steps, row.drawn) |x, scan, steps, drawn| {
-            view.setViewport(.{ .x = x, .y = 0, .width = 80, .height = 1 });
+        const offsets: [3]u32 = if (row.wrap == .none) row.xs else .{ 0, count / 2, count - 30 };
+        for (offsets, row.scan, row.steps, row.drawn) |offset, scan, steps, drawn| {
+            if (row.wrap == .none) view.setViewport(.{ .x = offset, .y = 0, .width = 80, .height = 1 }) else view.setViewport(.{ .x = 0, .y = offset, .width = 80, .height = 30 });
             screen.drawTextBuffer(view, 0, 0);
             _ = text_work.take();
             screen.drawTextBuffer(view, 0, 0);

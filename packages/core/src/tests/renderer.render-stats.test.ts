@@ -93,7 +93,8 @@ describe("native renderer stats", () => {
         viewPreparations: 2,
         membersPainted: 1,
         memberCells: 3,
-        cellsCleared: 16,
+        cellsCleared: 8,
+        damageRows: 2,
         hitCellsWritten: 0,
         hitCellsCleared: 0,
         hitCellsCompared: 0,
@@ -107,17 +108,35 @@ describe("native renderer stats", () => {
         geometryReads: 2,
         yogaSolves: 1,
         rowsDiffed: 2,
-        fullPathReasons: 2 | forced,
+        fullPathReasons: 2 | 16 | forced,
       })
-      // An unchanged frame compares rows instead of diffing them, and reuses preparation unless forced.
+      // An unchanged frame keeps the presented frame: it paints and diffs nothing and reuses
+      // preparation. Forced, it repaints, compares every row, and prepares again.
       await result.renderOnce()
-      const unchanged = { workFrameId: 2, rowsCompared: 2, candidateVisits: 2 * forced, fullPathReasons: forced }
+      const unchanged = nativeSceneFullFrame
+        ? { workFrameId: 2, rowsCompared: 2, candidateVisits: 2, fullPathReasons: forced }
+        : { workFrameId: 2, membersPainted: 0, memberCells: 0, cellsCleared: 0, damageRows: 0 }
       expect(renderer.getNativeStats().frameWork).toEqual({ ...steady, ...unchanged })
       expect(renderer.getStats().frameWork).toEqual(renderer.getNativeStats().frameWork)
       renderer.destroy()
       await renderer.closed
       renderer = null
     }
+  })
+
+  test("a capture keeps the presented frame, so the next frame repaints only what changed", async () => {
+    const result = await createTestRenderer({ width: 6, height: 3 })
+    renderer = result.renderer
+    const text = new TextRenderable(renderer, { content: "x", width: 1, height: 1 })
+    renderer.root.add(text)
+    await result.renderOnce()
+    await result.renderOnce()
+    expect(result.captureCharFrame()).toContain("x")
+    result.captureSpans()
+    text.content = "y"
+    await result.renderOnce()
+    expect(renderer.getNativeStats().frameWork).toMatchObject({ damageRows: 1, fullPathReasons: 0 })
+    expect(result.captureCharFrame()).toContain("y")
   })
 
   test("a culled ScrollBox refreshes its rows only on frames that change layout", async () => {

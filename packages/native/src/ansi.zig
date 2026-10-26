@@ -300,8 +300,10 @@ pub const ANSI = struct {
         writer.print("\x1b]12;#{x:0>2}{x:0>2}{x:0>2}\x07", .{ r, g, b }) catch return AnsiError.WriteFailed;
     }
 
+    /// OSC 66 takes w up to 7 (kitty clamps larger values, foot ignores them); spaces fill the rest of the glyph.
     pub fn explicitWidthOutput(writer: anytype, width: u32, text: []const u8) AnsiError!void {
-        writer.print("\x1b]66;w={d};{s}\x1b\\", .{ width, text }) catch return AnsiError.WriteFailed;
+        writer.print("\x1b]66;w={d};{s}\x1b\\", .{ @min(width, 7), text }) catch return AnsiError.WriteFailed;
+        for (7..@max(width, 7)) |_| writer.writeByte(' ') catch return AnsiError.WriteFailed;
     }
 
     pub const resetCursorColor = "\x1b]112\x07";

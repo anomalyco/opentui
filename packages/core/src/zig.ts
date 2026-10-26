@@ -1024,7 +1024,6 @@ function readFrameWork(
   const result: Record<string, number> = {}
   let counting = false
   for (const [field, { offset, type }] of Object.entries(layout.fields)) {
-    if (field === "reserved") break
     counting ||= field === "work_frame_id"
     if (!counting) continue
     const name = field.replace(/_(.)/g, (_, letter: string) => letter.toUpperCase())

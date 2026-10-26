@@ -43,12 +43,13 @@ pub fn validateTextInput(text: []const u8) error{ TextLimit, InvalidUnicode }!vo
 /// The grapheme pool stores at most this many bytes per cluster.
 pub const grapheme_bytes_max = 128;
 
-/// Reports whether one cell may hold a cluster. The renderer prints cell text as is, so a
-/// control code point (C0, DEL, or C1) would move the terminal cursor, and the grapheme pool
-/// stores at most grapheme_bytes_max bytes. Checked draws write any other cluster as blank
-/// cells of its width instead of failing. Text layout gives a lone control zero width.
-pub fn isPrintableGlyph(bytes: []const u8) bool {
-    if (bytes.len > grapheme_bytes_max) return false;
+/// Reports whether one cell may hold a cluster `width` cells wide. The renderer prints cell text
+/// as is, so a control code point (C0, DEL, or C1) would move the terminal cursor, the grapheme
+/// pool stores at most grapheme_bytes_max bytes, and a cell spans at most gp.glyph_width_max cells.
+/// Checked draws write any other cluster as blank cells of its width instead of failing. Text
+/// layout gives a lone control zero width.
+pub fn isPrintableGlyph(bytes: []const u8, width: u32) bool {
+    if (bytes.len > grapheme_bytes_max or width > gp.glyph_width_max) return false;
     for (bytes, 0..) |byte, index| {
         if (byte < 0x20 or byte == 0x7f) return false;
         // U+0080..U+009F encode as C2 80..C2 9F.
@@ -531,7 +532,7 @@ const TextRow = struct {
             if (width == 0) continue;
             const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
             self.advance_cells += width;
-            const blank = !isPrintableGlyph(bytes);
+            const blank = !isPrintableGlyph(bytes, width);
             // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
             if (!blank and glyph_x < 0) continue;
             const first: u32 = @intCast(@max(glyph_x, 0));
@@ -568,6 +569,17 @@ pub const Cell = struct {
 
 inline fn isPrintableAscii(bytes: []const u8) bool {
     return bytes.len == 1 and bytes[0] >= 0x20 and bytes[0] < 0x7f;
+}
+
+/// Index of the first render cluster whose `key` is at least `value`; clusters are sorted by both keys.
+fn findRenderCluster(clusters: []const utf8.RenderClusterInfo, comptime key: enum { byte_start, col_start }, value: u32, comptime counter: std.meta.FieldEnum(text_work.Counts)) usize {
+    var lo: usize = 0;
+    var hi = clusters.len;
+    while (lo < hi) : (text_work.add(counter, 1)) {
+        const mid = lo + (hi - lo) / 2;
+        if (@field(clusters[mid], @tagName(key)) < value) lo = mid + 1 else hi = mid;
+    }
+    return lo;
 }
 
 inline fn makeCell(char: u32, fg: RGBA, bg: RGBA, attributes: u32) Cell {
@@ -1128,21 +1140,19 @@ pub const OptimizedBuffer = struct {
         } else if (gp.isClusterChar(prev_char) and prev_char != cell.char) {
             // If overwriting a grapheme span (start or continuation) with a different char, clear that span first
             const row_start: u32 = y * self.width;
-            const row_end: u32 = row_start + self.width - 1;
-            const left = gp.charLeftExtent(prev_char);
-            const right = gp.charRightExtent(prev_char);
             const id = gp.graphemeIdFromChar(prev_char);
 
             if (new_start_id) |new_id| self.grapheme_tracker.add(new_id);
             tracker_replaced = true;
 
-            const span_start = index - @min(left, index - row_start);
-            const span_end = index + @min(right, row_end - index);
+            // The span's cells hold its ID and their offset from its start.
+            const span_start = index - @min(gp.charLeftExtent(prev_char), index - row_start);
+            const span_end = @min(span_start + gp.glyph_width_max, row_start + self.width);
 
-            var span_i: u32 = span_start;
-            while (span_i <= span_end) : (span_i += 1) {
+            for (span_start..span_end) |span_i| {
                 const span_char = self.buffer.char[span_i];
                 if (!gp.isClusterChar(span_char) or gp.graphemeIdFromChar(span_char) != id) continue;
+                if (gp.charLeftExtent(span_char) != span_i - span_start) continue;
                 // Overlaps can leave continuations after their start was replaced.
                 if (gp.isGraphemeChar(span_char)) self.grapheme_tracker.remove(id);
                 const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
@@ -1206,6 +1216,7 @@ pub const OptimizedBuffer = struct {
                             while (tail_i <= tail_end) : (tail_i += 1) {
                                 const tail_char = self.buffer.char[tail_i];
                                 if (!gp.isContinuationChar(tail_char) or gp.graphemeIdFromChar(tail_char) != old_id) continue;
+                                if (gp.charLeftExtent(tail_char) != tail_i - cont_index) continue;
                                 const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
                                 if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
                                 self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
@@ -1222,7 +1233,7 @@ pub const OptimizedBuffer = struct {
                 @memset(self.buffer.attributes[index + 1 .. index + 1 + right], cell.attributes);
                 var k: u32 = 1;
                 while (k <= right) : (k += 1) {
-                    self.buffer.char[index + k] = gp.packContinuation(k, right - k, id);
+                    self.buffer.char[index + k] = gp.packContinuation(k, id);
                     if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
                 }
             }
@@ -1880,7 +1891,7 @@ pub const OptimizedBuffer = struct {
         attributes: u32,
     ) BufferError!void {
         if (grapheme_bytes.len == 0 or cell_width == 0 or x >= self.width or y >= self.height) return;
-        if (x + cell_width > self.width) return;
+        if (x + cell_width > self.width or cell_width > gp.glyph_width_max) return;
         for (0..cell_width) |offset| {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
@@ -1920,7 +1931,7 @@ pub const OptimizedBuffer = struct {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
         if (!std.unicode.utf8ValidateSlice(grapheme_bytes)) return error.InvalidUnicode;
-        if (!isPrintableGlyph(grapheme_bytes)) {
+        if (!isPrintableGlyph(grapheme_bytes, cell_width)) {
             for (0..cell_width) |offset| {
                 self.set(x + @as(u32, @intCast(offset)), y, makeCell(DEFAULT_SPACE_CHAR, fg, bg, attributes));
             }
@@ -2396,14 +2407,11 @@ pub const OptimizedBuffer = struct {
                 }
                 const col_end = vchunk.col_start_in_chunk + vchunk.width_cols;
                 var col = vchunk.col_start_in_chunk;
-                var special_idx: usize = 0;
                 var byte_offset = vchunk.byte_start_in_chunk;
                 const byte_end = vchunk.byte_start_in_chunk + vchunk.byte_len;
 
-                while (special_idx < render_clusters.len and render_clusters[special_idx].byte_start + render_clusters[special_idx].byte_len <= byte_offset) {
-                    special_idx += 1;
-                    text_work.add(.cluster_scan_steps, 1);
-                }
+                // Cluster k starts at byte k or later, so the first one at `byte_offset` has an index of at most `byte_offset`.
+                var special_idx = findRenderCluster(render_clusters[0..@min(render_clusters.len, byte_offset)], .byte_start, byte_offset, .cluster_scan_steps);
 
                 // Left of the viewport nothing draws and marks have no base, so skip whole chunks by
                 // width and resume after the last cluster that starts left of the viewport. The loop
@@ -2416,12 +2424,7 @@ pub const OptimizedBuffer = struct {
                         continue;
                     }
                     const target_col = col + (horizontal_offset - rendered_col_in_vline);
-                    var lo = special_idx;
-                    var hi = render_clusters.len;
-                    while (lo < hi) : (text_work.add(.left_skip_steps, 1)) {
-                        const mid = lo + (hi - lo) / 2;
-                        if (render_clusters[mid].col_start < target_col) lo = mid + 1 else hi = mid;
-                    }
+                    const lo = special_idx + findRenderCluster(render_clusters[special_idx..], .col_start, target_col, .left_skip_steps);
                     if (lo > special_idx and render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len <= byte_end) {
                         byte_offset = render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len;
                         col = render_clusters[lo - 1].col_start + render_clusters[lo - 1].width_cols;
@@ -2507,7 +2510,7 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes);
+                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes, cluster_width_cols);
                     if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));

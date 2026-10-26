@@ -1614,20 +1614,27 @@ test "loadFile - registered file content survives text replacement" {
     try std.testing.expectEqualStrings(test_content, out_buffer[0..tb.getPlainTextIntoBuffer(&out_buffer)]);
 }
 
-test "drawTextBuffer - an unwrapped line at every horizontal offset draws as a fresh draw of its visible slice" {
+test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as a fresh draw of its visible slice" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
     const width = 10;
+    const height = 3;
     const mixed = "ab\u{754c}c\u{1f600}d\te\u{301}f\u{1}g\u{200b}h";
-    const rows = [_]struct { parts: []const []const u8, method: utf8.WidthMethod = .unicode, control: utf8.ControlDisplay = .hidden, at_5: ?[]const u8 = null }{
+    const words = "\u{754c}\u{754c}e\u{301} ab\tc \u{1f600}d xyz\u{1}w \u{1f468}\u{200d}\u{1f469} ";
+    const rows = [_]struct { parts: []const []const u8, method: utf8.WidthMethod = .unicode, control: utf8.ControlDisplay = .hidden, wrap: WrapMode = .none, at_5: ?[]const u8 = null }{
         .{ .parts = &.{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"}, .at_5 = "56789ABCDE   " },
         .{ .parts = &.{mixed ** 3} },
         .{ .parts = &.{mixed ** 3}, .control = .notation },
         .{ .parts = &.{mixed ** 3}, .method = .wcwidth },
         .{ .parts = &.{ "\u{754c}\u{754c}a", "\tbcdefghijk", "e\u{301}xyz\u{754c}", "0123456789" } },
+        .{ .parts = &.{"\t\t\t\t\t\u{1f468}\u{200d}\u{1f469}" ++ (mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char },
+        .{ .parts = &.{"abcdefghij\u{200b}k\u{1f468}\u{200d}\u{1f469}xyz" ** 4}, .wrap = .char, .method = .wcwidth },
+        .{ .parts = &.{(mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char, .control = .notation },
+        .{ .parts = &.{words ** 6}, .wrap = .word },
+        .{ .parts = &.{words ** 6}, .wrap = .word, .method = .wcwidth },
     };
-    var drawn: [2][64]u8 = undefined;
+    var drawn: [2][256]u8 = undefined;
     for (rows) |row| {
         const text = try std.mem.concat(allocator, u8, row.parts);
         defer allocator.free(text);
@@ -1635,31 +1642,41 @@ test "drawTextBuffer - an unwrapped line at every horizontal offset draws as a f
         defer tb.deinit();
         for (row.parts) |part| try tb.append(part);
         const screens = [2]*OptimizedBuffer{
-            try OptimizedBuffer.init(allocator, width + 3, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
-            try OptimizedBuffer.init(allocator, width + 3, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
+            try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
+            try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
         };
         defer for (screens) |screen| screen.deinit();
-        for (0..tb.lineWidthAt(0) + 1) |x| {
-            // A grapheme cut by the left edge is dropped and the cells after it move left
+        var views = [2]*TextBufferView{ try TextBufferView.init(allocator, tb), undefined };
+        defer views[0].deinit();
+        views[0].setWrapMode(row.wrap);
+        views[0].setWrapWidth(if (row.wrap == .none) null else width);
+        views[0].setViewport(.{ .x = 0, .y = 0, .width = width, .height = height });
+        const offsets = if (row.wrap == .none) tb.lineWidthAt(0) + 1 else views[0].getVirtualLineCount();
+        for (0..offsets) |offset| {
+            const o: u32 = @intCast(offset);
+            views[0].setViewport(if (row.wrap == .none) .{ .x = o, .y = 0, .width = width, .height = 1 } else .{ .x = 0, .y = o, .width = width, .height = height });
+            // Unwrapped, a grapheme cut by the left edge is dropped and the cells after it move left
             // (corpus bug draw-offset-inside-wide-grapheme); the slice starts after it.
-            const cut = utf8.findPosByWidth(text, @intCast(x), tb.tabWidth(), row.control, false, true, row.method);
+            const pos = utf8.findPosByWidth(text, o, tb.tabWidth(), row.control, false, true, row.method);
+            const first = views[0].getVirtualLines()[0];
+            const cut, const shift = if (row.wrap == .none) .{ pos.byte_offset, pos.columns_used } else .{ first.chunks.items[0].byte_start_in_chunk, first.document_cell_offset };
             const slice_tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
             defer slice_tb.deinit();
-            try slice_tb.setText(text[cut.byte_offset..]);
-            const views = [2]*TextBufferView{ try TextBufferView.init(allocator, tb), try TextBufferView.init(allocator, slice_tb) };
-            defer for (views) |view| view.deinit();
-            views[0].setViewport(.{ .x = @intCast(x), .y = 0, .width = width, .height = 1 });
-            views[1].setViewport(.{ .x = 0, .y = 0, .width = width - (cut.columns_used - @as(u32, @intCast(x))), .height = 1 });
-            for (views, screens, &drawn, [2]u32{ 0, cut.columns_used }) |view, screen, *chars, shift| {
-                view.setWrapMode(.none);
+            try slice_tb.setText(text[cut..]);
+            views[1] = try TextBufferView.init(allocator, slice_tb);
+            defer views[1].deinit();
+            views[1].setViewport(if (row.wrap == .none) .{ .x = 0, .y = 0, .width = width - (shift - o), .height = 1 } else .{ .x = 0, .y = 0, .width = width, .height = height });
+            for (views, screens, &drawn, [2]u32{ 0, shift }) |view, screen, *chars, from| {
+                view.setWrapMode(row.wrap);
+                view.setWrapWidth(if (row.wrap == .none) null else width);
                 view.setTabIndicator('>');
-                view.setSelection(7 -| shift, 19 -| shift, .{ 1, 2, 3, 4 }, null);
+                view.setSelection(7 -| from, 19 -| from, .{ 1, 2, 3, 4 }, null);
                 screen.clear(.{ 0, 0, 0, 1 }, 32);
                 screen.drawTextBuffer(view, 0, 0);
                 @memset(chars, 0);
                 _ = try screen.writeResolvedChars(chars, false);
             }
-            if (x == 5) if (row.at_5) |expected| try std.testing.expectEqualStrings(expected, drawn[0][0..expected.len]);
+            if (o == 5) if (row.at_5) |expected| try std.testing.expectEqualStrings(expected, drawn[0][0..expected.len]);
             try std.testing.expectEqualSlices(u8, &drawn[1], &drawn[0]);
             try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.fg), std.mem.sliceAsBytes(screens[0].buffer.fg));
             try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.bg), std.mem.sliceAsBytes(screens[0].buffer.bg));

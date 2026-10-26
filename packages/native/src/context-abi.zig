@@ -71,7 +71,7 @@ fn createContext(
         .owner_thread = std.Thread.getCurrentId(),
     };
     handle.gpa.backing_allocator = backing_allocator;
-    handle.core = Context.init(handle.gpa.allocator(), handle.io_threaded.io(), .{
+    handle.core = Context.init(contextAllocator(handle.gpa.allocator(), builtin.mode, builtin.is_test, build_options.gpa_safe_stats), handle.io_threaded.io(), .{
         .object_capacity = options.object_capacity,
         .render_cells_max = options.render_cells_max,
     }) catch |err| {
@@ -85,6 +85,11 @@ fn createContext(
     };
     out_context.* = handle;
     return c.OT_OK;
+}
+
+/// DebugAllocator never reuses a freed slot, so release builds use libc; tests keep its leak checks.
+fn contextAllocator(gpa: std.mem.Allocator, mode: std.builtin.OptimizeMode, is_test: bool, safe_stats: bool) std.mem.Allocator {
+    return if (is_test or safe_stats or mode == .Debug) gpa else std.heap.c_allocator;
 }
 
 pub fn ot_context_destroy(context: ?*ContextHandle) callconv(.c) c.ot_status {
@@ -2355,7 +2360,6 @@ pub fn ot_scene_get_stats(context: ?*ContextHandle, session_ptr: ?*const c.ot_ha
         .average_cells_updated = result.averageCellsUpdated,
         .render_time_valid = @intFromBool(result.renderTime != null),
         .stdout_write_time_valid = @intFromBool(result.outputWriteTime != null),
-        .reserved = 0,
     };
     // The header names each work field after its FrameWork field.
     inline for (std.meta.fields(@TypeOf(result.frameWork))) |field| @field(out, field.name) = @field(result.frameWork, field.name);
@@ -4001,20 +4005,20 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(@as(u32, 0), cursor.blinking);
     try std.testing.expectEqual(@as(u32, 0), cursor.reserved);
     var stats: c.ot_scene_stats = std.mem.zeroes(c.ot_scene_stats);
-    stats.reserved = 7;
+    stats.damage_rows = 7;
     for ([_][2]u32{ .{ @sizeOf(c.ot_scene_stats) - 8, c.OT_CONTEXT_ABI_VERSION }, .{ @sizeOf(c.ot_scene_stats), c.OT_CONTEXT_ABI_VERSION - 1 } }, [_]c.ot_status{ c.OT_INVALID_ARGUMENT, c.OT_UNSUPPORTED_VERSION }) |header, status| {
         stats.struct_size = header[0];
         stats.abi_version = header[1];
         try std.testing.expectEqual(status, ot_scene_get_stats(handle, &session_c, &stats));
-        try std.testing.expectEqual(@as(u32, 7), stats.reserved);
+        try std.testing.expectEqual(@as(u32, 7), stats.damage_rows);
     }
     stats.struct_size = @sizeOf(c.ot_scene_stats);
     stats.abi_version = c.OT_CONTEXT_ABI_VERSION;
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_stats(handle, &session_c, &stats));
     // Painted drafts publish no work; only presented scene frames do.
     try std.testing.expectEqual(@as(u64, 0), stats.work_frame_id);
-    try std.testing.expectEqual(@as(u32, 0), stats.reserved);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_debug_flags(handle, &session_c, 2));
+    try std.testing.expectEqual(@as(u32, 0), stats.damage_rows);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_debug_flags(handle, &session_c, 4));
     try std.testing.expectEqual(c.OT_FRAME_BUSY, ot_scene_set_debug_flags(handle, &session_c, c.OT_SCENE_DEBUG_FULL_FRAME));
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_debug_flags(handle, &session_c, c.OT_SCENE_DEBUG_FULL_FRAME));
@@ -4510,6 +4514,13 @@ test "Context ABI creation clears failed Yoga output and retries without retaini
     try std.testing.expectEqual(c.OT_OK, createContext(&options, &handle, backing.allocator()));
     try std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle));
     try std.testing.expectEqual(backing.allocated_bytes, backing.freed_bytes);
+}
+
+test "Context ABI uses libc in release builds and DebugAllocator in tests and Debug builds" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectEqual(std.heap.c_allocator.vtable, contextAllocator(gpa, .ReleaseFast, false, false).vtable);
+    try std.testing.expectEqual(gpa.vtable, contextAllocator(gpa, .ReleaseFast, true, false).vtable);
+    try std.testing.expectEqual(gpa.vtable, contextAllocator(gpa, .Debug, false, false).vtable);
 }
 
 test "Context ABI creation releases backing storage at every allocation failure" {

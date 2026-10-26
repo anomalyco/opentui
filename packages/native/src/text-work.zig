@@ -24,7 +24,7 @@ pub const Counts = struct {
     highlight_leaves: u64 = 0,
     /// Rope nodes whose metrics a tab-width change recomputes.
     remeasure_nodes: u64 = 0,
-    /// Linear steps over render-cluster records before each drawn virtual chunk.
+    /// Search steps for the first render cluster of each drawn virtual chunk.
     cluster_scan_steps: u64 = 0,
     left_skip_steps: u64 = 0,
     clusters_drawn: u64 = 0,

@@ -58,7 +58,7 @@
     "@types/babel__core": "7.20.5",
     "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
-    "solid-js": "1.9.12",
+    "solid-js": "1.9.16",
     "typescript": "^5"
   },
   "dependencies": {
@@ -66,11 +66,11 @@
     "@babel/preset-typescript": "7.27.1",
     "@opentui/core": "workspace:*",
     "babel-plugin-module-resolver": "5.0.2",
-    "babel-preset-solid": "1.9.12",
+    "babel-preset-solid": "1.9.16",
     "entities": "7.0.1",
     "s-js": "^0.4.9"
   },
   "peerDependencies": {
-    "solid-js": "1.9.12"
+    "solid-js": "^1.9.12"
   }
 }

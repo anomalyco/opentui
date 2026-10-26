@@ -18,7 +18,7 @@ surfaces:
 distributions:
   - type: npm
     identifier: "@opentui/solid"
-    install: bun add @opentui/solid solid-js@1.9.12
+    install: bun add @opentui/solid solid-js@^1.9
 links:
   docs: /docs/bindings/solid
 categories:
@@ -26,7 +26,8 @@ categories:
   - rendering
 ---
 
-`@opentui/solid` is a Solid renderer for OpenTUI. It requires `solid-js` 1.9.12 exactly.
+`@opentui/solid` is a Solid renderer for OpenTUI. It supports Solid 1.x from `solid-js` 1.9.12 (`^1.9.12`).
+Use the latest 1.9.x release.
 
 Solid components run once. Signals update renderable properties without a virtual DOM.
 

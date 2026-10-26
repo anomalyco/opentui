@@ -127,10 +127,15 @@ pub const FrameWork = struct {
     full_path_reasons: u32 = 0,
     host_requests: u32 = 0,
     layout_rounds: u32 = 0,
+    // Rows the encoder may find changed: all rows on the full path, none on a skipped frame.
+    damage_rows: u32 = 0,
 
     pub const full_path_forced: u32 = 1;
     pub const full_path_screen: u32 = 2;
     pub const full_path_images: u32 = 4;
+    pub const full_path_tainted: u32 = 8;
+    pub const full_path_unretained: u32 = 16;
+    pub const full_path_options: u32 = 32;
 
     /// Adds the encoder's counts to a scene frame's counts.
     fn merge(self: FrameWork, encode: FrameWork) FrameWork {
@@ -320,10 +325,26 @@ pub const CliRenderer = struct {
         split_state: ?SplitFrameState = null,
         snapshot_only: bool = false,
         work: ?FrameWork = null,
+        // The next buffer still equals the frame at completion: nothing wrote it after paint.
+        retain: bool = false,
     } = null,
     presentationFailed: bool = false,
     /// Set by a Session only while it commits a scene draft.
     scene_work: ?FrameWork = null,
+    /// The draft's rows that can differ from the presented frame, or null for all rows.
+    scene_damage: ?*const std.DynamicBitSetUnmanaged = null,
+    /// The scene frame that the next buffer still holds after its presentation, or 0.
+    /// Retained paint compares against it; any other write to the buffers resets it.
+    retained_frame_id: u64 = 0,
+    /// OT_SCENE_FULL_PATH_* reasons why retention was lost, for the next scene frame.
+    retained_lost: u32 = 0,
+    /// Something wrote the next buffer after paint: encode every row and retain nothing.
+    encode_all_rows: bool = false,
+    /// A `.current` lease may have written the presented cells: the next encode diffs every
+    /// row. Next still holds the presented frame, so retention holds.
+    current_written: bool = false,
+    /// The last encode was a scene frame's, so the next buffer still holds its cells.
+    next_scene_retained: bool = false,
     /// Written by each encode.
     encode_work: FrameWork = .{},
     /// The last presented scene frame.
@@ -855,6 +876,8 @@ pub const CliRenderer = struct {
         self.nextRenderBuffer.clear(self.backgroundColor, null);
         self.presented_hits_frame = 0;
         self.hits_generation += 1;
+        self.next_scene_retained = false;
+        self.taint(FrameWork.full_path_unretained);
 
         const cursor = self.terminal.getCursorPosition();
         self.terminal.setCursorPosition(@min(cursor.x, width), @min(cursor.y, height), cursor.visible);
@@ -986,8 +1009,27 @@ pub const CliRenderer = struct {
         };
     }
 
-    fn clearSkippedFrameState(self: *CliRenderer) void {
+    /// Also discards a failed scene draft.
+    pub fn clearSkippedFrameState(self: *CliRenderer) void {
         self.nextRenderBuffer.clear(self.backgroundColor, null);
+        self.next_scene_retained = false;
+        self.taint(FrameWork.full_path_unretained);
+    }
+
+    /// The next buffer no longer equals the presented frame.
+    pub fn taint(self: *CliRenderer, reason: u32) void {
+        self.retained_frame_id = 0;
+        self.retained_lost |= reason;
+        self.encode_all_rows = true;
+    }
+
+    /// Non-scene drawing and rendering start from a cleared next buffer, as before scene
+    /// frames retained it.
+    pub fn leaveRetained(self: *CliRenderer) void {
+        self.taint(FrameWork.full_path_tainted);
+        if (!self.next_scene_retained) return;
+        self.nextRenderBuffer.clear(self.backgroundColor, null);
+        self.next_scene_retained = false;
     }
 
     fn finishSkippedFrame(self: *CliRenderer) RenderStatus {
@@ -1122,7 +1164,10 @@ pub const CliRenderer = struct {
         self.renderStats.renderTime = pending.render_time;
         if (pending.split_state) |state| self.restoreSplitFrameState(state);
         if (!pending.snapshot_only) {
-            if (pending.work) |work| self.last_frame_work = work;
+            if (pending.work) |work| {
+                self.last_frame_work = work;
+                if (pending.retain) self.retained_frame_id = work.work_frame_id;
+            }
             self.publishHits(pending.work);
             self.commitPendingImageState();
         } else {
@@ -1220,6 +1265,7 @@ pub const CliRenderer = struct {
                 .split_state = if (split != null) self.splitFrameState() else null,
                 .snapshot_only = !paint_footer,
                 .work = if (self.scene_work) |work| work.merge(self.encode_work) else null,
+                .retain = self.next_scene_retained,
             };
             if (split != null) self.restoreSplitFrameState(start_split_state);
             self.renderStats = previous_stats;
@@ -2847,6 +2893,10 @@ pub const CliRenderer = struct {
         const palette_force = self.last_rendered_palette_epoch == null or self.last_rendered_palette_epoch.? != self.palette_epoch;
         const should_force = force or self.force_full_repaint or palette_force;
         const has_image_state = self.nextRenderBuffer.image_placements.items.len != 0 or self.currentImages.items.len != 0;
+        const tainted = self.encode_all_rows;
+        self.encode_all_rows = false;
+        const current_written = self.current_written;
+        self.current_written = false;
         self.encode_work = .{
             .full_path_reasons = (if (should_force) FrameWork.full_path_screen else 0) | (if (has_image_state) FrameWork.full_path_images else 0),
         };
@@ -2922,10 +2972,16 @@ pub const CliRenderer = struct {
 
         const hyperlinksEnabled = self.terminal.getCapabilities().hyperlinks;
         var use_row_equality = !should_force and !clears_pending;
+        // Rows outside a scene draft's damage equal the presented frame (retained paint).
+        const damage = if (clears_pending or has_image_state or tainted or current_written) null else self.scene_damage;
+        std.debug.assert(damage == null or damage.?.bit_length == self.height);
 
         for (0..self.height) |uy| {
             const y = @as(u32, @intCast(uy));
 
+            if (damage) |rows| {
+                if (!rows.isSet(y)) continue;
+            }
             if (use_row_equality) {
                 self.encode_work.rows_compared += 1;
                 const row_start = @as(usize, y) * self.width;
@@ -3323,6 +3379,11 @@ pub const CliRenderer = struct {
             }
         }
 
+        // A scene frame keeps its cells for retained paint; other frames start blank, and so
+        // do frames written after paint and frames with images, whose placements hold image
+        // references. None of them is retained.
+        self.next_scene_retained = self.scene_work != null and !has_image_state and !tainted;
+        if (self.next_scene_retained) return;
         self.nextRenderBuffer.clear(self.backgroundColor, null);
         self.encode_work.cells_cleared += @as(u64, self.width) * self.height;
     }
@@ -3414,6 +3475,7 @@ pub const CliRenderer = struct {
 
     pub fn syncWidthMethod(self: *CliRenderer) void {
         const width_method = if (self.terminal.caps.unicode == .no_zwj) .unicode else self.terminal.caps.unicode;
+        if (width_method != self.nextRenderBuffer.width_method) self.taint(FrameWork.full_path_unretained);
         self.currentRenderBuffer.width_method = width_method;
         self.nextRenderBuffer.width_method = width_method;
     }
@@ -3568,6 +3630,7 @@ pub const CliRenderer = struct {
         var y: u32 = 0;
 
         if (self.width < width + 2 or self.height < height + 2) return;
+        self.taint(FrameWork.full_path_tainted);
 
         switch (self.debugOverlay.corner) {
             .topLeft => {

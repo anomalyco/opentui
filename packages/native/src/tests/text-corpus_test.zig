@@ -9,6 +9,9 @@ const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
 const OptimizedBuffer = @import("../buffer.zig").OptimizedBuffer;
 const EncodedUnicode = @import("../encoded-unicode.zig").EncodedUnicode;
+const TestRenderer = @import("test-renderer.zig").TestRenderer;
+const ansi = @import("../ansi.zig");
+const ghostty_vt = @import("../ghostty-vt.zig");
 const Value = std.json.Value;
 const gpa = std.testing.allocator;
 
@@ -286,6 +289,37 @@ fn runRow(run: Run) !void {
             try run.check("encode", std.mem.eql(u8, rows[0], rows[2]));
         }
     }
+    if (row.get("overdraw") != null) {
+        const v = try run.view(tb, null);
+        defer v.deinit();
+        const encoded = try EncodedUnicode.init(gpa, &run.pools.graphemes, text, run.method);
+        defer encoded.deinit(gpa, &run.pools.graphemes);
+        const screen = try OptimizedBuffer.init(gpa, 80, 1, .{ .pool = &run.pools.graphemes, .link_pool = &run.pools.links, .width_method = run.method });
+        defer screen.deinit();
+        var same = true;
+        // A mark (X or the two-cell 中) clears each glyph it covers: the row equals the other glyphs, then the mark.
+        for (0..utf8.calculateTextWidth(text, 4, .hidden, false, run.method)) |x| for ([_]struct { []const u8, u32 }{ .{ "X", 1 }, .{ "\u{4e2d}", 2 } }) |mark| {
+            var rows: [2][]const u8 = undefined;
+            for (&rows, 0..) |*drawn, i| {
+                screen.clear(.{ 0, 0, 0, 1 }, 32);
+                if (i == 0) screen.drawTextBuffer(v, 0, 0) else {
+                    var glyph_x: u32 = 0;
+                    for (encoded.chars) |char| {
+                        if (glyph_x + char.width <= x or glyph_x >= x + mark[1]) screen.drawChar(char.char, glyph_x, 0, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 1 }, 0);
+                        glyph_x += char.width;
+                    }
+                }
+                try screen.drawText(mark[0], @intCast(x), 0, .{ 1, 1, 1, 1 }, null, 0);
+                const raw = try run.arena.alloc(u8, screen.getRealCharSize());
+                drawn.* = raw[0..try screen.writeResolvedChars(raw, false)];
+            }
+            same = same and std.mem.eql(u8, rows[0], rows[1]);
+        };
+        try run.check("overdraw", same);
+        if (run.method == .wcwidth or run.method == .unicode) for ([_]bool{ false, true }) |explicit| {
+            try run.check("terminal", try terminalShowsFrames(run, text, explicit));
+        };
+    }
     if (run.get("select")) |cases| for (cases.array.items) |case| {
         const v = try run.view(tb, null);
         defer v.deinit();
@@ -316,6 +350,39 @@ fn runRow(run: Run) !void {
         try run.check("stops", std.mem.eql(u8, seen.items, want.items));
     }
     if (row.get("split") != null) try splitChecks(run, joined);
+}
+
+/// For each cell x of the text, renders a forced frame of the text, then diff frames with X over x, in other
+/// colors, and empty. libghostty-vt reads the output (mode 2027 off for wcwidth, on for unicode) and must show
+/// each frame as drawn.
+fn terminalShowsFrames(run: Run, text: []const u8, explicit_cursor_positioning: bool) !bool {
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    var test_renderer = try TestRenderer.create(gpa, 80, 1, &run.pools.graphemes, &run.pools.links);
+    defer test_renderer.deinit();
+    const cli = test_renderer.renderer;
+    cli.terminal.caps.unicode = run.method;
+    cli.terminal.caps.explicit_cursor_positioning = explicit_cursor_positioning;
+    cli.syncWidthMethod();
+    var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, gpa, .{ .cols = 80, .rows = 1 });
+    defer terminal.deinit(gpa);
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    stream.nextSlice(if (run.method == .wcwidth) "\x1b[?2027l" else "\x1b[?2027h");
+    var shown = true;
+    for (0..utf8.calculateTextWidth(text, 4, .hidden, false, run.method)) |x| for (0..4) |frame| {
+        const next = cli.getNextBuffer();
+        if (frame < 3) try next.drawText(text, 0, 0, if (frame == 2) black else white, if (frame == 2) white else black, 0);
+        if (frame == 1) try next.drawText("X", @intCast(x), 0, white, black, 0);
+        const written = test_renderer.memory.bytes.items.len;
+        _ = cli.render(frame == 0);
+        stream.nextSlice(test_renderer.memory.bytes.items[written..]);
+        const screen = try terminal.plainString(run.arena);
+        const raw = try run.arena.alloc(u8, cli.currentRenderBuffer.getRealCharSize());
+        const drawn = raw[0..try cli.currentRenderBuffer.writeResolvedChars(raw, false)];
+        shown = shown and std.mem.eql(u8, std.mem.trimEnd(u8, screen, " "), std.mem.trimEnd(u8, drawn, " "));
+    };
+    return shown;
 }
 
 fn applyOp(e: *EditBuffer, op: []const Value) !void {

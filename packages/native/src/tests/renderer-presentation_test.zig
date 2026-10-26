@@ -44,7 +44,9 @@ const Fixture = struct {
         self.pool.deinit();
     }
 
+    /// Paints a frame as a scene draft would: from a cleared buffer, with work that names its hits.
     fn paint(self: *Fixture, text: []const u8, hit: u32) !void {
+        self.cli.getNextBuffer().clear(self.cli.backgroundColor, null);
         try self.cli.getNextBuffer().drawText(text, 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
         self.cli.scene_work = .{ .work_frame_id = hit };
     }
@@ -74,6 +76,9 @@ test "renderer batches frame encoding before feed admission" {
     try std.testing.expectEqual(@as(usize, 0), fixture.cli.backend.feed.frameWriteCount);
     try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
 
+    // Raw frames from here on: they start from a cleared next buffer.
+    fixture.cli.scene_work = null;
+    fixture.cli.getNextBuffer().clear(fixture.cli.backgroundColor, null);
     const cleared_char = fixture.cli.getNextBuffer().buffer.char[0];
     try fixture.cli.resize(140, 44);
     for (0..44) |y| {
