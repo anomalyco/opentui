@@ -588,7 +588,7 @@ test "Context checked history matches ABI metadata cursor and observer order" {
             try std.testing.expectEqual(@as(usize, 0), count);
             try std.testing.expectEqual(@as(u8, 0xaa), bytes[0]);
         } else {
-            try std.testing.expectEqualSlices(ctx.EditEvent, &.{ .cursor_changed, .history_cursor_changed }, events[0..count]);
+            try std.testing.expectEqualSlices(ctx.EditEvent, &.{ .cursor_changed, .content_changed, .history_cursor_changed }, events[0..count]);
             try std.testing.expectEqual(error.ContextBusy, probe.rejection.?);
         }
         const first = (try owner.core.raw().getEditBuffer(direct)).buffer;

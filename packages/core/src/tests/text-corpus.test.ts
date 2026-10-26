@@ -181,6 +181,33 @@ function runRow(row: Row, method: string, failures: string[]): void {
       check("encode", drawn(place) === layout)
       target.freeUnicode(encoded)
     }
+    if (row.overdraw) {
+      const target = own(OptimizedBuffer.create(80, 1, methods[method], { owner: context }))
+      const white = RGBA.fromValues(1, 1, 1, 1)
+      const drawn = (draw: () => void): string => (target.clear(), draw(), decoder.decode(target.getRealCharBytes()))
+      const encoded = target.encodeUnicode(text)
+      // A mark (X or the two-cell 中) clears each glyph it covers: the row equals the other glyphs, then the mark.
+      let ok = true
+      const width = encoded.data.reduce((sum, glyph) => sum + glyph.width, 0)
+      for (let x = 0; x < width; x++) {
+        for (const [mark, cells] of [
+          ["X", 1],
+          ["中", 2],
+        ] as const) {
+          const over = drawn(() => (target.drawTextBuffer(unwrapped, 0, 0), target.drawText(mark, x, 0, white)))
+          const without = drawn(() => {
+            encoded.data.reduce((at, glyph) => {
+              if (at + glyph.width <= x || at >= x + cells) target.drawChar(glyph.char, at, 0, white, white)
+              return at + glyph.width
+            }, 0)
+            target.drawText(mark, x, 0, white)
+          })
+          ok &&= over === without
+        }
+      }
+      target.freeUnicode(encoded)
+      check("overdraw", ok)
+    }
     for (const [start, end, expected] of want("select") ?? []) {
       const target = view(buffer, null)
       target.setSelection(start, end)

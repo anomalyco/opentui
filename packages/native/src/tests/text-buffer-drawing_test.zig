@@ -7,6 +7,7 @@ const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ss = @import("../syntax-style.zig");
+const utf8 = @import("../utf8.zig");
 
 const TextBuffer = text_buffer.TextBuffer;
 const TextBufferView = text_buffer_view.TextBufferView;
@@ -1613,38 +1614,75 @@ test "loadFile - registered file content survives text replacement" {
     try std.testing.expectEqualStrings(test_content, out_buffer[0..tb.getPlainTextIntoBuffer(&out_buffer)]);
 }
 
-test "drawTextBuffer - horizontal viewport offset renders correctly without wrapping" {
-    var pools = TestPools.init(std.testing.allocator);
+test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as a fresh draw of its visible slice" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
     defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789ABCDEFGHIJ");
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 5, .y = 0, .width = 10, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var out_buffer: [100]u8 = undefined;
-    const written = try opt_buffer.writeResolvedChars(&out_buffer, false);
-    const result = out_buffer[0..written];
-
-    try std.testing.expect(std.mem.startsWith(u8, result, "56789ABCDE"));
+    const width = 10;
+    const height = 3;
+    const mixed = "ab\u{754c}c\u{1f600}d\te\u{301}f\u{1}g\u{200b}h";
+    const words = "\u{754c}\u{754c}e\u{301} ab\tc \u{1f600}d xyz\u{1}w \u{1f468}\u{200d}\u{1f469} ";
+    const rows = [_]struct { parts: []const []const u8, method: utf8.WidthMethod = .unicode, control: utf8.ControlDisplay = .hidden, wrap: WrapMode = .none, at_5: ?[]const u8 = null }{
+        .{ .parts = &.{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"}, .at_5 = "56789ABCDE   " },
+        .{ .parts = &.{mixed ** 3} },
+        .{ .parts = &.{mixed ** 3}, .control = .notation },
+        .{ .parts = &.{mixed ** 3}, .method = .wcwidth },
+        .{ .parts = &.{ "\u{754c}\u{754c}a", "\tbcdefghijk", "e\u{301}xyz\u{754c}", "0123456789" } },
+        .{ .parts = &.{"\t\t\t\t\t\u{1f468}\u{200d}\u{1f469}" ++ (mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char },
+        .{ .parts = &.{"abcdefghij\u{200b}k\u{1f468}\u{200d}\u{1f469}xyz" ** 4}, .wrap = .char, .method = .wcwidth },
+        .{ .parts = &.{(mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char, .control = .notation },
+        .{ .parts = &.{words ** 6}, .wrap = .word },
+        .{ .parts = &.{words ** 6}, .wrap = .word, .method = .wcwidth },
+    };
+    var drawn: [2][256]u8 = undefined;
+    for (rows) |row| {
+        const text = try std.mem.concat(allocator, u8, row.parts);
+        defer allocator.free(text);
+        const tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
+        defer tb.deinit();
+        for (row.parts) |part| try tb.append(part);
+        const screens = [2]*OptimizedBuffer{
+            try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
+            try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
+        };
+        defer for (screens) |screen| screen.deinit();
+        var views = [2]*TextBufferView{ try TextBufferView.init(allocator, tb), undefined };
+        defer views[0].deinit();
+        views[0].setWrapMode(row.wrap);
+        views[0].setWrapWidth(if (row.wrap == .none) null else width);
+        views[0].setViewport(.{ .x = 0, .y = 0, .width = width, .height = height });
+        const offsets = if (row.wrap == .none) tb.lineWidthAt(0) + 1 else views[0].getVirtualLineCount();
+        for (0..offsets) |offset| {
+            const o: u32 = @intCast(offset);
+            views[0].setViewport(if (row.wrap == .none) .{ .x = o, .y = 0, .width = width, .height = 1 } else .{ .x = 0, .y = o, .width = width, .height = height });
+            // Unwrapped, a grapheme cut by the left edge is dropped and the cells after it move left
+            // (corpus bug draw-offset-inside-wide-grapheme); the slice starts after it.
+            const pos = utf8.findPosByWidth(text, o, tb.tabWidth(), row.control, false, true, row.method);
+            const first = views[0].getVirtualLines()[0];
+            const cut, const shift = if (row.wrap == .none) .{ pos.byte_offset, pos.columns_used } else .{ first.chunks.items[0].byte_start_in_chunk, first.document_cell_offset };
+            const slice_tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
+            defer slice_tb.deinit();
+            try slice_tb.setText(text[cut..]);
+            views[1] = try TextBufferView.init(allocator, slice_tb);
+            defer views[1].deinit();
+            views[1].setViewport(if (row.wrap == .none) .{ .x = 0, .y = 0, .width = width - (shift - o), .height = 1 } else .{ .x = 0, .y = 0, .width = width, .height = height });
+            for (views, screens, &drawn, [2]u32{ 0, shift }) |view, screen, *chars, from| {
+                view.setWrapMode(row.wrap);
+                view.setWrapWidth(if (row.wrap == .none) null else width);
+                view.setTabIndicator('>');
+                view.setSelection(7 -| from, 19 -| from, .{ 1, 2, 3, 4 }, null);
+                screen.clear(.{ 0, 0, 0, 1 }, 32);
+                screen.drawTextBuffer(view, 0, 0);
+                @memset(chars, 0);
+                _ = try screen.writeResolvedChars(chars, false);
+            }
+            if (o == 5) if (row.at_5) |expected| try std.testing.expectEqualStrings(expected, drawn[0][0..expected.len]);
+            try std.testing.expectEqualSlices(u8, &drawn[1], &drawn[0]);
+            try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.fg), std.mem.sliceAsBytes(screens[0].buffer.fg));
+            try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.bg), std.mem.sliceAsBytes(screens[0].buffer.bg));
+            try std.testing.expectEqualSlices(u32, screens[1].buffer.attributes, screens[0].buffer.attributes);
+        }
+    }
 }
 
 test "drawTextBuffer - horizontal viewport offset with multiple lines" {
@@ -1716,132 +1754,6 @@ test "drawTextBuffer - combined horizontal and vertical viewport offsets" {
 
     try std.testing.expect(std.mem.find(u8, result, "KLMNOPQRST") != null);
     try std.testing.expect(std.mem.find(u8, result, "UVWXYZ0123") != null);
-}
-
-test "drawTextBuffer - horizontal viewport stops rendering at viewport width" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 5, .y = 0, .width = 10, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var out_buffer: [100]u8 = undefined;
-    const written = try opt_buffer.writeResolvedChars(&out_buffer, false);
-    const result = out_buffer[0..written];
-
-    try std.testing.expectEqualStrings("56789ABCDE", result[0..10]);
-
-    const cell_9 = opt_buffer.get(9, 0);
-    try std.testing.expect(cell_9 != null);
-    try std.testing.expectEqual(@as(u32, 'E'), cell_9.?.char);
-}
-
-test "drawTextBuffer - horizontal viewport with small buffer renders only viewport width" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 10, .y = 0, .width = 5, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        20,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    const cell_0 = opt_buffer.get(0, 0);
-    try std.testing.expect(cell_0 != null);
-    try std.testing.expectEqual(@as(u32, 'K'), cell_0.?.char);
-
-    const cell_4 = opt_buffer.get(4, 0);
-    try std.testing.expect(cell_4 != null);
-    try std.testing.expectEqual(@as(u32, 'O'), cell_4.?.char);
-
-    const cell_5 = opt_buffer.get(5, 0);
-    try std.testing.expect(cell_5 != null);
-    try std.testing.expectEqual(@as(u32, 32), cell_5.?.char);
-
-    const cell_6 = opt_buffer.get(6, 0);
-    try std.testing.expect(cell_6 != null);
-    try std.testing.expectEqual(@as(u32, 32), cell_6.?.char);
-}
-
-test "drawTextBuffer - horizontal viewport width limits rendering (efficiency test)" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    var long_line: std.ArrayListUnmanaged(u8) = .empty;
-    defer long_line.deinit(std.testing.allocator);
-    try long_line.appendNTimes(std.testing.allocator, 'A', 1000);
-
-    try tb.setText(long_line.items);
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 100, .y = 0, .width = 10, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        50,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var non_space_count: u32 = 0;
-    var i: u32 = 0;
-    while (i < 50) : (i += 1) {
-        if (opt_buffer.get(i, 0)) |cell| {
-            if (cell.char == 'A') {
-                non_space_count += 1;
-            }
-        }
-    }
-
-    try std.testing.expectEqual(@as(u32, 10), non_space_count);
 }
 
 test "drawTextBuffer - overwriting wide grapheme with ASCII leaves no ghost chars" {
