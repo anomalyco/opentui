@@ -27,6 +27,8 @@ pub const Counts = struct {
     /// Search steps for the first render cluster of each drawn virtual chunk.
     cluster_scan_steps: u64 = 0,
     left_skip_steps: u64 = 0,
+    /// Search steps for the style span of each drawn line's first column and truncated suffix.
+    span_search_steps: u64 = 0,
     clusters_drawn: u64 = 0,
     /// Seeks that walk from the start of a slice to a width or to a previous grapheme.
     prefix_seeks: u64 = 0,

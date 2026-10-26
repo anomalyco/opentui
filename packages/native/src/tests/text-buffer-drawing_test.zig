@@ -1635,12 +1635,20 @@ test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as
         .{ .parts = &.{words ** 6}, .wrap = .word, .method = .wcwidth },
     };
     var drawn: [2][256]u8 = undefined;
+    // Columns 3k and 3k+1 of the first half of each line are highlighted, so offsets fall inside
+    // a span, on its edges, and past the last one.
+    const style = try ss.SyntaxStyle.init(allocator);
+    defer style.deinit();
+    const hl = try style.registerStyle("hl", ansi.rgbaFromFloats(1, 0, 0, 1), ansi.rgbaFromFloats(0, 0, 1, 1), 1);
     for (rows) |row| {
         const text = try std.mem.concat(allocator, u8, row.parts);
         defer allocator.free(text);
         const tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
         defer tb.deinit();
         for (row.parts) |part| try tb.append(part);
+        tb.setSyntaxStyle(style);
+        var col: u32 = 0;
+        while (col < tb.lineWidthAt(0) / 2) : (col += 3) try tb.addHighlight(0, col, col + 2, hl, 1, 0);
         const screens = [2]*OptimizedBuffer{
             try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
             try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
@@ -1663,6 +1671,9 @@ test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as
             const slice_tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
             defer slice_tb.deinit();
             try slice_tb.setText(text[cut..]);
+            slice_tb.setSyntaxStyle(style);
+            col = 0;
+            while (col < tb.lineWidthAt(0) / 2) : (col += 3) if (col + 2 > shift) try slice_tb.addHighlight(0, col -| shift, col + 2 - shift, hl, 1, 0);
             views[1] = try TextBufferView.init(allocator, slice_tb);
             defer views[1].deinit();
             views[1].setViewport(if (row.wrap == .none) .{ .x = 0, .y = 0, .width = width - (shift - o), .height = 1 } else .{ .x = 0, .y = 0, .width = width, .height = height });

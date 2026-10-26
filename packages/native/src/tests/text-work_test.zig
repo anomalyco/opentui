@@ -338,15 +338,16 @@ test "text work: line lookups after an edit in a 10,000-line buffer" {
     try expectWork(.{ .line_seeks = 3, .line_seek_nodes = 53 });
 }
 
-test "text work: drawing a long line scrolled right or down searches for its first visible cluster" {
+test "text work: drawing a long line scrolled right or down searches for its first visible cluster and span" {
     const allocator = std.testing.allocator;
     var pools = TestPools.init(allocator);
     defer pools.deinit();
     // With `part`, the line is appended in chunks of that many bytes. `prefix` goes before the
     // units. A truncated line puts the end of its chunk after the ellipsis. A wrapped line draws
     // its top, middle, and bottom 30 rows; on the old linear scan the bottom rows of the CJK line
-    // took 3,913,800 search steps.
-    const rows = [_]struct { unit: []const u8, part: usize = 0, prefix: []const u8 = "", control: ControlDisplay = .hidden, truncate: bool = false, wrap: WrapMode = .none, xs: [3]u32 = .{ 1_000, 50_000, 130_000 }, scan: [3]u64 = .{ 0, 0, 0 }, reads: u64 = 0, steps: [3]u64, drawn: [3]u64 }{
+    // took 3,913,800 search steps. With `highlight`, columns 4k and 4k+1 are highlighted; the old
+    // linear span scan took 1,948,200 steps for the bottom rows.
+    const rows = [_]struct { unit: []const u8, part: usize = 0, prefix: []const u8 = "", control: ControlDisplay = .hidden, truncate: bool = false, wrap: WrapMode = .none, highlight: bool = false, xs: [3]u32 = .{ 1_000, 50_000, 130_000 }, scan: [3]u64 = .{ 0, 0, 0 }, spans: [3]u64 = .{ 0, 0, 0 }, reads: u64 = 0, steps: [3]u64, drawn: [3]u64 }{
         .{ .unit = "a", .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
         .{ .unit = "a", .prefix = "0123456789\x01", .reads = 1, .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
         .{ .unit = "a", .prefix = "0123456789\x01", .control = .notation, .reads = 1, .steps = .{ 1, 1, 1 }, .drawn = .{ 80, 80, 80 } },
@@ -365,6 +366,9 @@ test "text work: drawing a long line scrolled right or down searches for its fir
         .{ .unit = "\tab", .wrap = .char, .scan = .{ 279, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_800, 1_800, 1_776 } },
         .{ .unit = "\u{1f600}", .wrap = .word, .scan = .{ 301, 510, 510 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_200, 1_200, 1_192 } },
         .{ .unit = "ab\u{754c}c\u{1f600}d e\u{301}f\tgh ", .wrap = .word, .scan = .{ 300, 570, 570 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 1_950, 1_950, 1_911 } },
+        .{ .unit = "a", .highlight = true, .spans = .{ 9, 15, 16 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 80, 80, 80 } },
+        .{ .unit = "a", .highlight = true, .truncate = true, .xs = .{ 10, 40, 60 }, .spans = .{ 627, 629, 325 }, .steps = .{ 0, 1, 2 }, .drawn = .{ 70, 40, 20 } },
+        .{ .unit = "a", .highlight = true, .wrap = .char, .spans = .{ 272, 479, 480 }, .steps = .{ 0, 0, 0 }, .drawn = .{ 2_400, 2_400, 2_352 } },
     };
     for (rows) |row| {
         const units = try repeatText(allocator, row.unit, 131_072 * row.unit.len);
@@ -379,6 +383,10 @@ test "text work: drawing a long line scrolled right or down searches for its fir
             var start: usize = 0;
             while (start < text.len) : (start += row.part) try tb.append(text[start..@min(start + row.part, text.len)]);
         }
+        tb.startHighlightsTransaction();
+        var col: u32 = 0;
+        while (row.highlight and col < text.len) : (col += 4) try tb.addHighlightByCharRange(col, col + 2, 1, 1, 0);
+        tb.endHighlightsTransaction();
         view.setTruncate(row.truncate);
         view.setWrapMode(row.wrap);
         view.setViewport(.{ .x = 0, .y = 0, .width = 80, .height = 30 });
@@ -386,12 +394,12 @@ test "text work: drawing a long line scrolled right or down searches for its fir
         const screen = try OptimizedBuffer.init(allocator, 80, 30, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
         defer screen.deinit();
         const offsets: [3]u32 = if (row.wrap == .none) row.xs else .{ 0, count / 2, count - 30 };
-        for (offsets, row.scan, row.steps, row.drawn) |offset, scan, steps, drawn| {
+        for (offsets, row.scan, row.spans, row.steps, row.drawn) |offset, scan, span_steps, steps, drawn| {
             if (row.wrap == .none) view.setViewport(.{ .x = offset, .y = 0, .width = 80, .height = 1 }) else view.setViewport(.{ .x = 0, .y = offset, .width = 80, .height = 30 });
             screen.drawTextBuffer(view, 0, 0);
             _ = text_work.take();
             screen.drawTextBuffer(view, 0, 0);
-            try expectWork(.{ .cluster_scan_steps = scan, .left_skip_steps = steps, .clusters_drawn = drawn, .grapheme_width_reads = row.reads });
+            try expectWork(.{ .cluster_scan_steps = scan, .left_skip_steps = steps, .span_search_steps = span_steps, .clusters_drawn = drawn, .grapheme_width_reads = row.reads });
         }
     }
 }
