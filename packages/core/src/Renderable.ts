@@ -337,7 +337,6 @@ export abstract class Renderable extends BaseRenderable {
 
   protected _focusable: boolean = (this.constructor as typeof Renderable).defaultFocusable
   protected _focused: boolean = false
-  protected _hasFocusedDescendant: boolean = false
   protected keypressHandler: ((key: KeyEvent) => void) | null = null
   protected pasteHandler: ((event: PasteEvent) => void) | null = null
 
@@ -620,22 +619,9 @@ export abstract class Renderable extends BaseRenderable {
     })
   }
 
-  protected propagateFocusChange(hasFocus: boolean): void {
-    let parent = this.parent
-    while (parent) {
-      if (!hasFocus) {
-        hasFocus = parent._childrenInLayoutOrder.some(
-          (child) => !child._isDestroyed && (child._focused || child._hasFocusedDescendant),
-        )
-      }
-      if (parent._hasFocusedDescendant !== hasFocus) {
-        parent._hasFocusedDescendant = hasFocus
-        parent.markDirty()
-      }
-      hasFocus ||= parent._focused
-      parent = parent.parent
-    }
-
+  /** Ancestors can paint focus within, so a focus change marks them dirty. */
+  protected propagateFocusChange(_hasFocus: boolean): void {
+    for (let parent = this.parent; parent; parent = parent.parent) parent.markDirty()
     this.requestRender()
   }
 
@@ -663,7 +649,10 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get hasFocusedDescendant(): boolean {
-    return this._hasFocusedDescendant
+    const focused = this._ctx.currentFocusedRenderable
+    if (!focused?._focused || focused._isDestroyed) return false
+    for (let parent = focused.parent; parent; parent = parent.parent) if (parent === this) return true
+    return false
   }
 
   public get live(): boolean {
@@ -1567,21 +1556,7 @@ export abstract class Renderable extends BaseRenderable {
       const index = anchorIndex - (previous === target && previousIndex !== -1 && previousIndex < anchorIndex ? 1 : 0)
       let counts: Map<Renderable, { before: number; after: number }> | undefined
       let lifecycle: Map<Set<Renderable>, boolean> | undefined
-      let focus: Map<Renderable, boolean> | undefined
-      let focusPaths: Renderable[][] | undefined
       if (previous !== target) {
-        if (child._focused || child._hasFocusedDescendant) {
-          focus = new Map()
-          focusPaths = []
-          for (const start of [previous, target]) {
-            const path: Renderable[] = []
-            for (let parent = start; parent; parent = parent.parent) {
-              focus.set(parent, parent._hasFocusedDescendant)
-              path.push(parent)
-            }
-            focusPaths.push(path)
-          }
-        }
         if (child._liveCount > 0) {
           counts = new Map()
           for (const [start, delta] of [
@@ -1610,24 +1585,15 @@ export abstract class Renderable extends BaseRenderable {
       target._childrenInLayoutOrder.splice(index, 0, child)
       child.parent = target
       if (counts) for (const [parent, count] of counts) parent._liveCount = count.after
-      if (focusPaths)
-        for (const path of focusPaths) {
-          for (const parent of path) {
-            parent._hasFocusedDescendant = parent._childrenInLayoutOrder.some(
-              (node) => node._focused || node._hasFocusedDescendant,
-            )
-          }
-        }
       if (lifecycle)
         for (const [passes, active] of lifecycle) {
           if (active) passes.add(child)
           else passes.delete(child)
         }
       this.runCleanup((run) => {
-        if (focus)
-          for (const [parent, focused] of focus) {
-            if (parent._hasFocusedDescendant !== focused) parent.markDirty()
-          }
+        if (previous !== target && (child._focused || child.hasFocusedDescendant))
+          for (const start of [previous, target])
+            for (let parent = start; parent; parent = parent.parent) parent.markDirty()
         if (counts) for (const [parent, count] of counts) run(() => parent.onLiveCountChanged(count.before))
         if (previous && previous !== target) run(() => child.onRemove())
         if (previous && previous !== target) run(() => previous.requestRender())
@@ -1754,7 +1720,7 @@ export abstract class Renderable extends BaseRenderable {
       this._ctx.nativeScene.moveNode(renderable, null, 0)
       this.removeLayoutChildAt(index)
       this.runCleanup((run) => {
-        if (renderable._focused || renderable._hasFocusedDescendant) {
+        if (renderable._focused || renderable.hasFocusedDescendant) {
           run(() => renderable.propagateFocusChange(false))
         }
         if (renderable._liveCount > 0) run(() => this.propagateLiveCount(-renderable._liveCount))
@@ -2040,18 +2006,12 @@ export abstract class Renderable extends BaseRenderable {
     this.assertMutable()
     this.destroyLayoutBacking((run) => {
       run(() => this.destroyOwnedResources())
+      // Read before listeners run: one may move or clear the focus.
+      const heldFocus = this._focused || this.hasFocusedDescendant
       this._isDestroyed = true
       run(() => this.emit(RenderableEvents.DESTROYED))
 
-      if (this._focused || this._hasFocusedDescendant) {
-        run(() => {
-          // Listeners can move focus, or clear it before throwing during blur.
-          const current = this._ctx.currentFocusedRenderable
-          let focused = current
-          while (focused && focused !== this) focused = focused.parent
-          if (!current || focused === this) this.propagateFocusChange(false)
-        })
-      }
+      if (heldFocus) run(() => this.propagateFocusChange(false))
       if (this.parent) {
         const parent = this.parent
         run(() => parent.remove(this))

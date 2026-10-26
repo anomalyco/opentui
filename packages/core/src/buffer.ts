@@ -220,12 +220,12 @@ export class OptimizedBuffer {
     this.lib.contextDrawBuffer(this.checkedTarget(), options)
   }
 
-  /** @internal Scene text draws its native node without exposing its buffer. */
-  public _drawSceneText(scene: NativeScene, node: SceneNodeHandle, x: number, y: number): void {
+  /** @internal Scene text and boxes draw their native body without exposing its buffer. */
+  public _drawSceneBody(scene: NativeScene, node: SceneNodeHandle, x: number, y: number): void {
     this.guard()
     const recorder = this.recorder
     if (recorder) return recorder.view("scene", node, x, y)
-    this.lib.contextDrawSceneText(this._getSceneDrawTarget(scene), node, x, y)
+    this.lib.contextDrawSceneBody(this._getSceneDrawTarget(scene), node, x, y)
   }
 
   /** Raw planes are available only during a synchronous post-process scope. Prefer withBuffers(). */

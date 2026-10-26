@@ -2456,7 +2456,7 @@ export class NativePaintRecorder {
     })
   }
 
-  /** Draw a text-buffer view, editor view, or scene text node. */
+  /** Draw a text-buffer view, editor view, or scene node body. */
   view(operation: "text" | "editor" | "scene", source: ContextObjectHandle, x: number, y: number): void {
     this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_view
@@ -2465,7 +2465,7 @@ export class NativePaintRecorder {
           ? nativeConstants.OT_SCENE_RECORD_TEXT_VIEW
           : operation === "editor"
             ? nativeConstants.OT_SCENE_RECORD_EDITOR_VIEW
-            : nativeConstants.OT_SCENE_RECORD_SCENE_TEXT,
+            : nativeConstants.OT_SCENE_RECORD_SCENE_BODY,
         layout.size,
       )
       this.encodeHandle(source, base + layout.fields.source.offset)
@@ -4736,7 +4736,7 @@ export class FFIRenderLib {
     )
   }
 
-  public contextDrawSceneText(
+  public contextDrawSceneBody(
     { context, target, frame }: NativeDrawingTarget,
     node: SceneNodeHandle,
     x: number,
@@ -4746,12 +4746,12 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = toFFII32(x, "Scene text x")
-    const row = toFFII32(y, "Scene text y")
-    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
+    const column = toFFII32(x, "Scene body x")
+    const row = toFFII32(y, "Scene body y")
+    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_body")
     nativeResult(
-      "ot_buffer_draw_scene_text",
-      this.opentui.symbols.ot_buffer_draw_scene_text(pointer, destination, request, source, column, row),
+      "ot_buffer_draw_scene_body",
+      this.opentui.symbols.ot_buffer_draw_scene_body(pointer, destination, request, source, column, row),
     )
   }
 

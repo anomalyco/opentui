@@ -58,6 +58,156 @@ pub const ArrowOptions = struct {
     }
 };
 
+pub const ScrollBarOptions = struct {
+    policy: u32 = api.OT_SCENE_SCROLL_BAR_AUTO,
+    overlay: bool = false,
+    thickness: u32 = 1,
+    gap: u32 = 0,
+    arrows: bool = false,
+    foreground: ansi.RGBA = (SliderOptions{}).foreground,
+    background: ansi.RGBA = (SliderOptions{}).background,
+};
+
+pub const ScrollOptions = struct {
+    axes: u32 = api.OT_SCENE_SCROLL_Y,
+    follow: u32 = api.OT_SCENE_SCROLL_FOLLOW_NONE,
+    culling: bool = false,
+    // Viewport padding in cells: left, top, right, bottom.
+    padding: [4]f32 = @splat(0),
+    // Wrapper, viewport, and content fills.
+    fills: [3]?ansi.RGBA = @splat(null),
+    // Horizontal, vertical.
+    bars: [2]ScrollBarOptions = @splat(.{}),
+};
+
+/// A scroll node's state. Axis 0 is x, axis 1 is y. The two Yoga nodes are owned and are
+/// never scene nodes: the viewport node is the box's only Yoga child, and the content node,
+/// the viewport node's only child, holds the box's scene children.
+pub const ScrollState = struct {
+    viewport_node: yoga.YGNodeRef,
+    content_node: yoga.YGNodeRef,
+    options: ScrollOptions = .{},
+    arrows: [2][2]ArrowOptions = @splat(@splat(.{})),
+    stuck: bool = true,
+    offset: [2]f64 = @splat(0),
+    max: [2]f64 = @splat(0),
+    extent: [2]f32 = @splat(0),
+    // The hidden viewport node's rect, local to the box.
+    viewport: Layout = .{},
+    // The content node's origin, local to the box.
+    content_origin: [2]f32 = @splat(0),
+    visible: [2]bool = @splat(false),
+    toggle_frame: u64 = 0,
+    toggles: u32 = 0,
+    reported: [6]f64 = @splat(0),
+    // The box's screen position, which the reported geometry follows.
+    screen: [2]f64 = @splat(0),
+    generation: u64 = 0,
+
+    fn deinit(self: *ScrollState, allocator: std.mem.Allocator) void {
+        for (self.arrows) |pair| for (pair) |arrow| arrow.deinit(allocator);
+        yoga.yogaNodeFree(self.content_node);
+        yoga.yogaNodeFree(self.viewport_node);
+        allocator.destroy(self);
+    }
+
+    fn followAxis(self: *const ScrollState) ?usize {
+        return switch (self.options.follow) {
+            api.OT_SCENE_SCROLL_FOLLOW_TOP, api.OT_SCENE_SCROLL_FOLLOW_BOTTOM => 1,
+            api.OT_SCENE_SCROLL_FOLLOW_LEFT, api.OT_SCENE_SCROLL_FOLLOW_RIGHT => 0,
+            else => null,
+        };
+    }
+
+    fn followEdge(self: *const ScrollState, axis: usize) f64 {
+        const far = self.options.follow == api.OT_SCENE_SCROLL_FOLLOW_BOTTOM or self.options.follow == api.OT_SCENE_SCROLL_FOLLOW_RIGHT;
+        return if (far) self.max[axis] else 0;
+    }
+
+    /// An explicit scroll or a follow change: the view is stuck at the follow edge when it
+    /// reached it, or when the range is noise (at most one cell).
+    pub fn restick(self: *ScrollState) void {
+        const axis = self.followAxis() orelse return;
+        self.stuck = self.max[axis] <= 1 or self.offset[axis] == self.followEdge(axis);
+    }
+
+    /// What a SCROLL request reports: offset, content size, viewport size.
+    pub fn observed(self: *const ScrollState) [6]f64 {
+        return .{ self.offset[0], self.offset[1], self.extent[0], self.extent[1], self.viewport.width, self.viewport.height };
+    }
+
+    fn gutter(self: *const ScrollState, axis: usize) f32 {
+        const bar = self.options.bars[axis];
+        return if (self.visible[axis] and !bar.overlay) @floatFromInt(bar.gap + bar.thickness) else 0;
+    }
+
+    /// Writes the gutters of visible inset bars as the box's right and bottom padding.
+    /// Returns whether a gutter changed.
+    pub fn applyGutters(self: *const ScrollState, box: yoga.YGNodeRef) !bool {
+        var changed = false;
+        for ([_]u32{ api.OT_EDGE_BOTTOM, api.OT_EDGE_RIGHT }, 0..) |edge, axis| {
+            var encoded: u64 = 0;
+            try yoga.check(yoga.yogaNodeStyleGetValueChecked(box, api.OT_STYLE_VALUE_PADDING, edge, &encoded));
+            const value = self.gutter(axis);
+            if (@as(u32, @truncate(encoded)) == api.OT_UNIT_POINT and @as(f32, @bitCast(@as(u32, @truncate(encoded >> 32)))) == value) continue;
+            try yoga.check(yoga.yogaNodeStyleSetValueChecked(box, api.OT_STYLE_VALUE_PADDING, edge, api.OT_UNIT_POINT, value));
+            changed = true;
+        }
+        return changed;
+    }
+
+    /// A bar's track and arrow rects in screen cells, from the box's paint layout.
+    pub fn barRects(self: *const ScrollState, axis: usize, box: Layout, sides: u32) struct { bar: Layout, track: Layout, arrows: [2]Layout } {
+        const options = self.options.bars[axis];
+        const left: f32 = @floatFromInt(@intFromBool(sides & api.OT_BORDER_LEFT != 0));
+        const top: f32 = @floatFromInt(@intFromBool(sides & api.OT_BORDER_TOP != 0));
+        const right: f32 = @floatFromInt(@intFromBool(sides & api.OT_BORDER_RIGHT != 0));
+        const bottom: f32 = @floatFromInt(@intFromBool(sides & api.OT_BORDER_BOTTOM != 0));
+        const thickness: f32 = @floatFromInt(options.thickness);
+        var bar: Layout = .{ .screenX = box.screenX + left, .screenY = box.screenY + top, .width = @max(0, box.width - left - right), .height = @max(0, box.height - top - bottom) };
+        if (axis == 1) {
+            bar.screenX += @max(0, bar.width - thickness);
+            bar.width = @min(bar.width, thickness);
+        } else {
+            bar.width = @max(0, bar.width - self.gutter(1));
+            bar.screenY += @max(0, bar.height - thickness);
+            bar.height = @min(bar.height, thickness);
+        }
+        var track = bar;
+        var ends_at: [2]Layout = .{ .{}, .{} };
+        if (options.arrows) {
+            const along: [2]f32 = if (axis == 1) .{ 0, 1 } else .{ 1, 0 };
+            const length = if (axis == 1) bar.height else bar.width;
+            const ends = @min(2, length);
+            ends_at[0] = .{ .screenX = bar.screenX + @floor((bar.width - 1) / 2) * along[1], .screenY = bar.screenY + @floor((bar.height - 1) / 2) * along[0], .width = @min(1, bar.width), .height = @min(1, bar.height) };
+            ends_at[1] = ends_at[0];
+            ends_at[1].screenX += @max(0, length - 1) * along[0];
+            ends_at[1].screenY += @max(0, length - 1) * along[1];
+            if (axis == 1) {
+                track.screenY += @min(1, ends);
+                track.height -= ends;
+            } else {
+                track.screenX += @min(1, ends);
+                track.width -= ends;
+            }
+        }
+        return .{ .bar = bar, .track = track, .arrows = ends_at };
+    }
+
+    pub fn slider(self: *const ScrollState, axis: usize) SliderOptions {
+        const size = if (axis == 1) self.viewport.height else self.viewport.width;
+        const inner = size - self.options.padding[axis] - self.options.padding[axis + 2];
+        return .{
+            .max = self.max[axis],
+            .value = self.offset[axis],
+            .viewport_size = @max(1, inner),
+            .orientation = @intCast(axis),
+            .foreground = self.options.bars[axis].foreground,
+            .background = self.options.bars[axis].background,
+        };
+    }
+};
+
 pub const TextOptions = struct {
     foreground: ansi.RGBA = .{ 255, 255, 255, 255 },
     background: ansi.RGBA = .{ 0, 0, 0, 0 },
@@ -132,8 +282,8 @@ pub const Paint = struct {
 // Field order is the partial-property wire order; bool occupies a u32 on the wire.
 pub const paint_fields = .{ "zIndex", "opacity", "translateX", "translateY", "borderSides", "shouldFill", "background", "borderColor", "borderStyle", "focusable", "focusedBorderColor" };
 pub const paint_fields_all: u32 = (1 << paint_fields.len) - 1;
-const scene_hook_flags_all: u32 = api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_RESIZE | api.OT_SCENE_HOOK_LAYOUT_CHANGED | api.OT_SCENE_HOOK_RENDER_BEFORE | api.OT_SCENE_HOOK_RENDER_AFTER | api.OT_SCENE_HOOK_RENDER_SELF | api.OT_SCENE_HOOK_IDLE_UPDATE;
-const scene_layout_hook_flags: u32 = api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_RESIZE | api.OT_SCENE_HOOK_LAYOUT_CHANGED;
+const scene_hook_flags_all: u32 = api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_RESIZE | api.OT_SCENE_HOOK_LAYOUT_CHANGED | api.OT_SCENE_HOOK_RENDER_BEFORE | api.OT_SCENE_HOOK_RENDER_AFTER | api.OT_SCENE_HOOK_RENDER_SELF | api.OT_SCENE_HOOK_IDLE_UPDATE | api.OT_SCENE_HOOK_SCROLL;
+const scene_layout_hook_flags: u32 = api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_RESIZE | api.OT_SCENE_HOOK_LAYOUT_CHANGED | api.OT_SCENE_HOOK_SCROLL;
 const scene_paint_hook_flags: u32 = api.OT_SCENE_HOOK_RENDER_BEFORE | api.OT_SCENE_HOOK_RENDER_AFTER | api.OT_SCENE_HOOK_RENDER_SELF;
 
 pub const FrameOptions = struct {
@@ -281,6 +431,7 @@ pub const Node = struct {
     layout: Layout = .{},
     observed_layout: Layout = .{},
     viewport: ?handles.Handle = null,
+    scroll: ?*ScrollState = null,
     // A filtered parent's layout_epoch when every child last refreshed, refreshing while a batch runs, or 0.
     children_observed: u64 = 0,
     focus_frame: u64 = 0,
@@ -307,6 +458,15 @@ pub const Node = struct {
     paint_epoch: u64 = 0,
     // The node's record in a frame's records: two slots, for the presented and the draft frame.
     records: [2]struct { frame: u64 = 0, index: u32 = 0 } = .{ .{}, .{} },
+
+    /// The Yoga node that holds the scene children's Yoga nodes.
+    pub fn childYoga(self: *const Node, value: *const native.NativeRenderable) yoga.YGNodeRef {
+        return if (self.scroll) |state| state.content_node else value.yoga_node;
+    }
+
+    pub fn filtersChildren(self: *const Node) bool {
+        return self.viewport != null or (self.scroll != null and self.scroll.?.options.culling);
+    }
 };
 
 const Work = struct {
@@ -316,6 +476,8 @@ const Work = struct {
     opacity: f32,
     visible: bool,
     filtered: bool,
+    // A scroll node's bars, painted after its children.
+    bars: bool = false,
 };
 
 const PreparationFrame = struct {
@@ -327,6 +489,8 @@ const PreparationFrame = struct {
     entered: bool = false,
     filtered: bool = false,
     filter: ?Filter = null,
+    // The node's work entry, which a scroll node's bars repeat after its children.
+    work_index: usize = 0,
 };
 
 const no_slot = std.math.maxInt(u32);
@@ -340,6 +504,7 @@ const PaintMember = struct {
     clip: buffer.ClipRect,
     opacity: f32,
     filtered: bool,
+    bars: bool,
     slot: u32,
 };
 
@@ -377,7 +542,7 @@ const Filter = struct {
 
 const Feedback = struct {
     node: handles.Handle,
-    kind: enum { update, refresh, prepass, placed, children, filtered_refresh, select },
+    kind: enum { update, refresh, prepass, placed, children, filtered_refresh, select, scroll },
     placement: u64 = 0,
     parent: ?handles.Handle = null,
 };
@@ -393,6 +558,10 @@ pub const Scene = struct {
     hook_count: u32 = 0,
     layout_hook_count: u32 = 0,
     filter_count: u32 = 0,
+    // Scroll nodes: each may add a bars entry to the work list.
+    scroll_count: u32 = 0,
+    // A scroll node toggled a bar in this preparation: its round solves again before any hook.
+    scroll_toggled: bool = false,
     focus: ?handles.Handle = null,
     // Do not hide host-managed cursors in scenes that have not placed an editor cursor.
     editor_cursor_owned: bool = false,
@@ -542,7 +711,7 @@ pub const Scene = struct {
                 try target.children.ensureUnusedCapacity(self.allocator, 1);
                 try target.paint_children.ensureUnusedCapacity(self.allocator, 1);
             }
-            try yoga.check(yoga.yogaNodeMoveChildChecked(parent.yoga_node, value.yoga_node, index));
+            try yoga.check(yoga.yogaNodeMoveChildChecked(target.childYoga(parent), value.yoga_node, index));
             const previous = node.parent;
             if (previous) |old| removeChild(&old.scene_node.?.children, value);
             target.children.insertAssumeCapacity(index, value);
@@ -558,7 +727,7 @@ pub const Scene = struct {
         } else {
             if (index != 0) return error.YogaInvalidArgument;
             if (node.parent) |old| {
-                try yoga.check(yoga.yogaNodeRemoveChildChecked(old.yoga_node, value.yoga_node));
+                try yoga.check(yoga.yogaNodeRemoveChildChecked(old.scene_node.?.childYoga(old), value.yoga_node));
                 removeChild(&old.scene_node.?.children, value);
                 removeChild(&old.scene_node.?.paint_children, value);
                 node.parent = null;
@@ -592,13 +761,20 @@ pub const Scene = struct {
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
         const node = value.scene_node.?;
         node.control.deinit(node.kind, self.allocator);
+        self.filter_count -= @intFromBool(node.filtersChildren());
         if (node.parent) |parent| {
-            yoga.yogaNodeRemoveChild(parent.yoga_node, value.yoga_node);
+            yoga.yogaNodeRemoveChild(parent.scene_node.?.childYoga(parent), value.yoga_node);
             removeChild(&parent.scene_node.?.children, value);
             removeChild(&parent.scene_node.?.paint_children, value);
         }
         // Bulk detachment avoids repeated shifting of a wide Yoga child vector.
-        yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.yoga_node)) catch unreachable;
+        yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node.childYoga(value))) catch unreachable;
+        if (node.scroll) |state| {
+            yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.yoga_node)) catch unreachable;
+            state.deinit(self.allocator);
+            node.scroll = null;
+            self.scroll_count -= 1;
+        }
         for (node.children.items) |child| {
             child.scene_node.?.parent = null;
             child.scene_node.?.placement = 0;
@@ -616,7 +792,6 @@ pub const Scene = struct {
         self.count -= 1;
         self.hook_count -= @intFromBool(node.hook_flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.layout_hook_count -= @intFromBool(node.hook_flags & scene_layout_hook_flags != 0);
-        self.filter_count -= @intFromBool(node.viewport != null);
         if (self.focus) |focused| {
             if (std.meta.eql(focused, node.handle)) self.focus = null;
         }
@@ -640,7 +815,7 @@ pub const Scene = struct {
         self.cancelFrame();
         var cursor = self.head;
         while (cursor) |value| : (cursor = value.scene_node.?.next) {
-            yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.yoga_node)) catch unreachable;
+            yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.scene_node.?.childYoga(value))) catch unreachable;
             value.scene_node.?.parent = null;
             value.scene_node.?.placement = 0;
             value.scene_node.?.children.clearRetainingCapacity();
@@ -743,7 +918,8 @@ pub const Scene = struct {
         if (flags & ~scene_hook_flags_all != 0 or generation == 0 or
             flags & (api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_IDLE_UPDATE) == api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_IDLE_UPDATE or
             (flags & scene_paint_hook_flags != 0 and node.kind == api.OT_SCENE_ROOT) or
-            (flags & api.OT_SCENE_HOOK_LAYOUT_CHANGED != 0 and node.kind != api.OT_SCENE_ROOT)) return error.InvalidOptions;
+            (flags & api.OT_SCENE_HOOK_LAYOUT_CHANGED != 0 and node.kind != api.OT_SCENE_ROOT) or
+            (flags & api.OT_SCENE_HOOK_SCROLL != 0 and node.scroll == null)) return error.InvalidOptions;
         for ([_]f64{ initial_width, initial_height }) |dimension| {
             if (!std.math.isFinite(dimension) or dimension < 0 or dimension > std.math.maxInt(i32)) return error.InvalidDimensions;
         }
@@ -760,6 +936,151 @@ pub const Scene = struct {
         node.hook_flags = flags;
         node.hook_generation = generation;
         self.invalidateObservation(value);
+    }
+
+    pub fn setScroll(self: *Scene, config: *yoga.Config, value: *native.NativeRenderable, options: ScrollOptions) !void {
+        const node = value.scene_node.?;
+        if (node.kind != api.OT_SCENE_BOX) return error.WrongKind;
+        if (options.axes > api.OT_SCENE_SCROLL_X | api.OT_SCENE_SCROLL_Y or options.follow > api.OT_SCENE_SCROLL_FOLLOW_RIGHT) return error.InvalidOptions;
+        for (options.padding) |padding| {
+            if (!(padding >= 0 and padding <= 65535) or @trunc(padding) != padding) return error.InvalidOptions;
+        }
+        for (options.fills) |fill| if (fill) |rgba| try buffer.validateColor(rgba);
+        for (options.bars) |bar| {
+            if (bar.policy > api.OT_SCENE_SCROLL_BAR_NEVER or bar.thickness == 0 or bar.thickness > 255 or bar.gap > 255) return error.InvalidOptions;
+            try buffer.validateColor(bar.foreground);
+            try buffer.validateColor(bar.background);
+        }
+        try checkWritable(value);
+        if (node.viewport != null or (node.scroll == null and node.children.items.len != 0)) return error.InvalidOptions;
+        const state = node.scroll orelse blk: {
+            const created = try self.allocator.create(ScrollState);
+            errdefer self.allocator.destroy(created);
+            const viewport_node = try config.createNode();
+            errdefer yoga.yogaNodeFree(viewport_node);
+            const content_node = try config.createNode();
+            errdefer yoga.yogaNodeFree(content_node);
+            for ([_]struct { yoga.YGNodeRef, u32, u32 }{
+                .{ viewport_node, api.OT_STYLE_ENUM_OVERFLOW, api.OT_OVERFLOW_HIDDEN },
+                .{ content_node, api.OT_STYLE_ENUM_ALIGN_SELF, api.OT_ALIGN_FLEX_START },
+            }) |entry| try yoga.check(yoga.yogaNodeStyleSetEnumChecked(entry[0], entry[1], entry[2]));
+            try yoga.check(yoga.yogaNodeStyleSetFloatChecked(viewport_node, api.OT_STYLE_FLOAT_FLEX_GROW, 1));
+            try yoga.check(yoga.yogaNodeStyleSetFloatChecked(viewport_node, api.OT_STYLE_FLOAT_FLEX_SHRINK, 1));
+            for ([_]u32{ api.OT_STYLE_VALUE_MIN_WIDTH, api.OT_STYLE_VALUE_MIN_HEIGHT }) |kind| {
+                try yoga.check(yoga.yogaNodeStyleSetValueChecked(content_node, kind, api.OT_EDGE_NONE, api.OT_UNIT_PERCENT, 100));
+            }
+            try yoga.check(yoga.yogaNodeInsertChildChecked(viewport_node, content_node, 0));
+            try yoga.check(yoga.yogaNodeInsertChildChecked(value.yoga_node, viewport_node, 0));
+            // Inverted axes write both content size limits below.
+            created.* = .{ .viewport_node = viewport_node, .content_node = content_node, .options = .{ .axes = ~options.axes } };
+            node.scroll = created;
+            self.scroll_count += 1;
+            break :blk created;
+        };
+        const previous = state.options;
+        for ([_]u32{ api.OT_SCENE_SCROLL_X, api.OT_SCENE_SCROLL_Y }, [_]u32{ api.OT_STYLE_VALUE_MAX_WIDTH, api.OT_STYLE_VALUE_MAX_HEIGHT }) |axis, kind| {
+            if ((previous.axes ^ options.axes) & axis == 0) continue;
+            const scrolls = options.axes & axis != 0;
+            try yoga.check(yoga.yogaNodeStyleSetValueChecked(state.content_node, kind, api.OT_EDGE_NONE, if (scrolls) api.OT_UNIT_UNDEFINED else api.OT_UNIT_PERCENT, if (scrolls) std.math.nan(f32) else 100));
+        }
+        for (options.padding, api.OT_EDGE_LEFT..) |padding, edge| {
+            try yoga.check(yoga.yogaNodeStyleSetValueChecked(state.viewport_node, api.OT_STYLE_VALUE_PADDING, @intCast(edge), api.OT_UNIT_POINT, padding));
+        }
+        self.filter_count -= @intFromBool(node.filtersChildren());
+        state.options = options;
+        self.filter_count += @intFromBool(node.filtersChildren());
+        // A changed policy applies now; the next solve corrects an auto bar's visibility.
+        for (options.bars, previous.bars, &state.visible, state.max) |bar, old, *visible, max| {
+            if (bar.policy != old.policy) visible.* = if (bar.policy == api.OT_SCENE_SCROLL_BAR_AUTO) max > 0 else bar.policy == api.OT_SCENE_SCROLL_BAR_ALWAYS;
+        }
+        _ = try state.applyGutters(value.yoga_node);
+        if (previous.follow != options.follow) state.restick();
+        state.generation += 1;
+        self.invalidateObservation(value);
+    }
+
+    pub fn setScrollArrow(self: *Scene, value: *native.NativeRenderable, axis: u32, end: u32, options: ArrowOptions) !void {
+        const state = value.scene_node.?.scroll orelse return error.WrongKind;
+        if (axis > 1 or end > 1 or options.direction != 0) return error.InvalidOptions;
+        try checkWritable(value);
+        var replacement = options;
+        if (options.text) |text| replacement.text = try self.allocator.dupe(u8, text);
+        state.arrows[axis][end].deinit(self.allocator);
+        state.arrows[axis][end] = replacement;
+        self.work.clearRetainingCapacity();
+    }
+
+    /// An explicit scroll: moves the offset in whole cells within the last solve's limits and
+    /// recomputes stuck.
+    pub fn scrollTo(self: *Scene, value: *native.NativeRenderable, target: [2]f64, relative: [2]bool) !void {
+        const node = value.scene_node.?;
+        const state = node.scroll orelse return error.WrongKind;
+        for (target) |coordinate| if (std.math.isNan(coordinate)) return error.InvalidOptions;
+        try checkWritable(value);
+        const before = .{ state.offset, state.stuck };
+        for (0..2) |axis| {
+            const position = if (relative[axis]) state.offset[axis] + target[axis] else target[axis];
+            state.offset[axis] = std.math.clamp(@floor(position + 0.5), 0, state.max[axis]);
+        }
+        state.restick();
+        // The host knows the offset it wrote, not a size change it has not been told of.
+        @memcpy(state.reported[0..2], &state.offset);
+        if (std.meta.eql(before, .{ state.offset, state.stuck })) return;
+        state.generation += 1;
+        if (std.meta.eql(before[0], state.offset)) return;
+        node.paint_epoch = nextPaintEpoch();
+        // Children move; in an attempt the next round prepares and culls at the new offset.
+        self.preparation_dirty = true;
+        self.work.clearRetainingCapacity();
+    }
+
+    /// After a solve: read the hidden nodes, follow the stuck edge, clamp, and toggle bars.
+    fn resolveScroll(self: *Scene, value: *native.NativeRenderable, state: *ScrollState) !void {
+        var viewport: yoga.ExternalYogaLayout = undefined;
+        var content: yoga.ExternalYogaLayout = undefined;
+        self.frame_work.geometry_reads += 2;
+        try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(state.viewport_node, &viewport));
+        try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(state.content_node, &content));
+        const before = .{ state.offset, state.max, state.extent, state.viewport, state.content_origin, state.visible };
+        state.viewport = .{ .left = viewport.left, .top = viewport.top, .width = viewport.width, .height = viewport.height };
+        state.content_origin = .{ viewport.left + content.left, viewport.top + content.top };
+        state.extent = .{ content.width, content.height };
+        const sizes = [2]f32{ viewport.width, viewport.height };
+        for (0..2) |axis| {
+            const range = @as(f64, state.extent[axis]) - (sizes[axis] - state.options.padding[axis] - state.options.padding[axis + 2]);
+            // NaN and negative ranges have nothing to scroll; huge ones stay within exact integers.
+            state.max[axis] = if (state.options.axes & (@as(u32, 1) << @intCast(axis)) != 0 and range > 0) @min(@ceil(range), std.math.maxInt(i32)) else 0;
+        }
+        // A stuck view moves only when its range changed, so a solve elsewhere keeps a reader
+        // who scrolled within a noise range where they are.
+        const moved = !std.meta.eql(.{ before[1], before[2], before[3] }, .{ state.max, state.extent, state.viewport });
+        if (state.followAxis()) |axis| {
+            if (state.stuck and moved) state.offset[axis] = state.followEdge(axis);
+        }
+        for (0..2) |axis| state.offset[axis] = std.math.clamp(state.offset[axis], 0, state.max[axis]);
+        const frame_id = self.attempt.?.frame_id;
+        if (state.toggle_frame != frame_id) {
+            state.toggle_frame = frame_id;
+            state.toggles = 0;
+        }
+        var toggled = false;
+        for (state.options.bars, &state.visible, state.max) |bar, *visible, max| {
+            const wanted = switch (bar.policy) {
+                api.OT_SCENE_SCROLL_BAR_AUTO => max > 0,
+                else => bar.policy == api.OT_SCENE_SCROLL_BAR_ALWAYS,
+            };
+            // Past two toggles a bar may still appear but not hide, so wrapping content cannot oscillate.
+            if (wanted == visible.* or (state.toggles >= 2 and !wanted)) continue;
+            visible.* = wanted;
+            state.toggles += 1;
+            toggled = true;
+        }
+        // An overlay bar's toggle changes no layout.
+        if (toggled and try state.applyGutters(value.yoga_node)) self.scroll_toggled = true;
+        if (!std.meta.eql(before, .{ state.offset, state.max, state.extent, state.viewport, state.content_origin, state.visible })) {
+            state.generation += 1;
+            value.scene_node.?.paint_epoch = nextPaintEpoch();
+        }
     }
 
     /// The node's next refresh may differ although its layout did not change: its filtered
@@ -909,6 +1230,7 @@ pub const Scene = struct {
                         node.feedback_state = .started;
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .children });
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .prepass });
+                        if (node.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0) self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .scroll });
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .refresh });
                         if (node.hook_flags & (api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_IDLE_UPDATE) != 0 and node.update_frame != active.frame_id) {
                             if (node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0) result = try self.request(node, api.OT_SCENE_FRAME_UPDATE);
@@ -919,9 +1241,18 @@ pub const Scene = struct {
                         result = try self.refresh(value, member != value);
                         if (operation.kind == .placed) node.placement = 0;
                     },
+                    .scroll => {
+                        // After the node's own refresh, so a reply reads this round's layout.
+                        const state = node.scroll.?;
+                        const current = state.observed();
+                        if (!std.meta.eql(current, state.reported)) {
+                            state.reported = current;
+                            result = try self.request(node, api.OT_SCENE_FRAME_SCROLL);
+                        }
+                    },
                     .prepass => {
                         // The batch starts before placed children refresh, so their replies' stale marks survive it.
-                        if (operation.placement == 0 and node.viewport != null and
+                        if (operation.placement == 0 and node.filtersChildren() and
                             (node.children_observed != self.layout_epoch or self.forcesFullFrame())) node.children_observed = children_refreshing;
                         // A resize callback can append to the live placement Set.
                         self.feedback.appendAssumeCapacity(.{ .node = operation.node, .kind = .prepass, .placement = 1 });
@@ -946,7 +1277,7 @@ pub const Scene = struct {
                         if (operation.kind == .children) {
                             // Capture child order after the parent's callbacks, never midway through siblings.
                             sortChildren(node, active.frame_id);
-                            if (node.viewport != null) {
+                            if (node.filtersChildren()) {
                                 self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
                                 // Refresh repeats its last result until a solve or a stale mark changes an input.
                                 if (node.children_observed == self.layout_epoch and !self.forcesFullFrame()) continue;
@@ -971,8 +1302,8 @@ pub const Scene = struct {
                         }
                         // Drain every direct refresh before selecting a fixed update batch.
                         const filter = try self.childFilter(objects, value);
-                        const parent_layout = if (filter != null) try composedLayout(value, false) else Layout{};
-                        if (node.viewport != null) {
+                        const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
+                        if (node.filtersChildren()) {
                             active.filter_selected = true;
                             // A stale mark during the batch keeps it unobserved for the next round.
                             if (node.children_observed == children_refreshing) node.children_observed = self.layout_epoch;
@@ -984,8 +1315,8 @@ pub const Scene = struct {
                             if (state.prepared_frame != active.frame_id or state.prepared_round != active.rounds or state.feedback_state != .unseen) continue;
                             if (filter) |bounds| {
                                 var layout = state.layout;
-                                layout.screenX = parent_layout.screenX + @as(f64, layout.left) + state.paint.translateX;
-                                layout.screenY = parent_layout.screenY + @as(f64, layout.top) + state.paint.translateY;
+                                layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
+                                layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
                                 self.frame_work.overlap_tests += 1;
                                 if (!overlaps(bounds, layout)) continue;
                             }
@@ -1003,7 +1334,7 @@ pub const Scene = struct {
             // Resumed calls rebuild transient paint pointers from current accepted topology.
             if (self.work.items.len == 0 or self.hook_count != 0 or self.filter_count != 0) {
                 self.work.clearRetainingCapacity();
-                try self.work.ensureTotalCapacity(self.allocator, self.count);
+                try self.work.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
                 if (root) |value| try self.prepare(objects, value, cli.width, cli.height, .paint);
                 // Paint layout reports where this frame paints, including transforms accepted after preparation.
                 for (self.work.items) |entry| {
@@ -1013,7 +1344,7 @@ pub const Scene = struct {
             }
             if (self.hook_count != 0) {
                 for (self.work.items) |entry| {
-                    if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and
+                    if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and !entry.bars and
                         entry.node.scene_node.?.hook_flags & scene_paint_hook_flags != 0) return self.requestRecord(cli, root.?);
                 }
             }
@@ -1071,7 +1402,7 @@ pub const Scene = struct {
     fn request(self: *Scene, node: *Node, kind: u32) !FrameRequest {
         const active = &self.attempt.?;
         std.debug.assert(active.pending == null);
-        std.debug.assert(kind >= api.OT_SCENE_FRAME_UPDATE and kind <= api.OT_SCENE_FRAME_RECORD);
+        std.debug.assert(kind >= api.OT_SCENE_FRAME_UPDATE and kind <= api.OT_SCENE_FRAME_SCROLL);
         // RECORD names the root without describing it.
         const whole_frame = kind == api.OT_SCENE_FRAME_RECORD;
         if (active.requests == active.options.max_host_requests) return error.FrameRequestLimit;
@@ -1205,27 +1536,37 @@ pub const Scene = struct {
         if (active.rounds == active.options.max_layout_rounds) return error.LayoutLimit;
         if (!reuse) self.work.clearRetainingCapacity();
         self.feedback.clearRetainingCapacity();
-        try self.work.ensureTotalCapacity(self.allocator, self.count);
+        try self.work.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
         if (root) |value| try self.solveLayout(cli, value, active.frame_id, active.rounds + 1);
         active.rounds += 1;
         active.filter_selected = false;
         self.preparation_dirty = false;
         if (root) |value| {
+            self.scroll_toggled = false;
             if (!reuse) try self.prepare(objects, value, cli.width, cli.height, .candidates);
+            // Hooks never see the layout a bar toggle replaces.
+            while (self.scroll_toggled) {
+                self.scroll_toggled = false;
+                if (active.rounds == active.options.max_layout_rounds) return error.LayoutLimit;
+                self.work.clearRetainingCapacity();
+                try self.solveLayout(cli, value, active.frame_id, active.rounds + 1);
+                active.rounds += 1;
+                try self.prepare(objects, value, cli.width, cli.height, .candidates);
+            }
         }
         for (self.work.items) |entry| {
-            if (reuse and !entry.visible) continue;
+            if ((reuse and !entry.visible) or entry.bars) continue;
             // Yoga measurement is observational; culled text keeps its last refreshed viewport.
             if (!entry.filtered) try prepareView(&self.frame_work, entry.node.scene_node.?, entry.layout);
         }
         if (phases) {
             // Prepass, filtered refresh, and selected updates never hold simultaneous batches for one parent.
-            const capacity = std.math.mul(usize, self.work.items.len, 4) catch return error.ObjectLimit;
+            const capacity = std.math.mul(usize, self.work.items.len, 5) catch return error.ObjectLimit;
             try self.feedback.ensureTotalCapacity(self.allocator, capacity);
         }
         for (self.work.items) |entry| {
             // Newly placed hidden nodes were observed by the producer, not subsequent frames.
-            if (reuse and !entry.visible) continue;
+            if ((reuse and !entry.visible) or entry.bars) continue;
             const node = entry.node.scene_node.?;
             node.layout = entry.layout;
             node.prepared_frame = active.frame_id;
@@ -1275,7 +1616,8 @@ pub const Scene = struct {
         self.frame_work.cells_cleared += @as(u64, target.width) * target.height;
         self.settleHits(cli);
         self.hits.clearRetainingCapacity();
-        try self.hits.ensureTotalCapacity(self.allocator, members);
+        // A bars entry adds a second hit.
+        try self.hits.ensureTotalCapacity(self.allocator, members + self.scroll_count);
         self.hits_frame = self.attempt.?.frame_id;
         self.hits_generation = cli.hits_generation;
     }
@@ -1297,6 +1639,26 @@ pub const Scene = struct {
         const index = topmostHit(hits, x, y);
         if (builtin.is_test) self.test_hit_steps += hits.len - (index orelse 0);
         return if (index) |found| hits[found].token else 0;
+    }
+
+    /// Paint a box body at a host-chosen cell with the node's paint size and the current focus.
+    /// A node no frame has prepared has no cells and draws nothing.
+    pub fn paintBody(self: *const Scene, objects: *const handles.Table, target: *buffer.OptimizedBuffer, value: *const native.NativeRenderable, x: i32, y: i32) !void {
+        const node = value.scene_node.?;
+        std.debug.assert(node.kind == api.OT_SCENE_BOX);
+        var layout = try getPaintLayout(value);
+        layout.screenX = @floatFromInt(x);
+        layout.screenY = @floatFromInt(y);
+        layout = cellLayout(layout);
+        if (layout.width < 1 or layout.height < 1) return;
+        var focused = if (self.focus) |handle| try objects.get(handle, .native_renderable, native.NativeRenderable) else null;
+        var depth: u32 = 0;
+        const within = while (focused) |cursor| : (focused = cursor.scene_node.?.parent) {
+            if (cursor == value) break true;
+            if (depth == yoga.depth_max) return error.YogaDepthLimit;
+            depth += 1;
+        } else false;
+        try paintBox(target, node.paint, layout, within, node.control.box);
     }
 
     fn markFocus(self: *Scene, objects: *const handles.Table) !void {
@@ -1346,7 +1708,8 @@ pub const Scene = struct {
         self.records_options = options;
         try self.records.ensureTotalCapacity(self.allocator, self.work.items.len);
         for (self.work.items) |entry| {
-            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
+            // A scroll node's record covers its bars: their inputs change its paint epoch.
+            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible or entry.bars) continue;
             self.record(entry, &reasons);
         }
         self.frame_work.full_path_reasons |= reasons;
@@ -1485,7 +1848,7 @@ pub const Scene = struct {
             self.hits.deinit(self.allocator);
             self.hits = kept;
         }
-        try self.hits.ensureTotalCapacity(self.allocator, self.work.items.len);
+        try self.hits.ensureTotalCapacity(self.allocator, self.work.items.len + self.scroll_count);
         const work = self.frame_work;
         defer self.frame_work = work;
         self.verify_target = scratch;
@@ -1514,7 +1877,7 @@ pub const Scene = struct {
             std.debug.assert(entry.visible);
             if (node.kind == api.OT_SCENE_ROOT) continue;
             member_count += 1;
-            slot_count += @intFromBool(node.hook_flags & scene_paint_hook_flags != 0);
+            slot_count += @intFromBool(!entry.bars and node.hook_flags & scene_paint_hook_flags != 0);
         }
         std.debug.assert(slot_count != 0);
         try self.paint_members.ensureTotalCapacityPrecise(self.allocator, member_count);
@@ -1523,7 +1886,7 @@ pub const Scene = struct {
         for (self.work.items) |entry| {
             const node = entry.node.scene_node.?;
             if (node.kind == api.OT_SCENE_ROOT) continue;
-            const hooks = node.hook_flags & scene_paint_hook_flags;
+            const hooks = if (entry.bars) 0 else node.hook_flags & scene_paint_hook_flags;
             var slot: u32 = no_slot;
             if (hooks != 0) {
                 slot = @intCast(self.paint_slots.items.len);
@@ -1544,6 +1907,7 @@ pub const Scene = struct {
                 .clip = entry.clip,
                 .opacity = entry.opacity,
                 .filtered = entry.filtered,
+                .bars = entry.bars,
                 .slot = slot,
             });
         }
@@ -1588,7 +1952,7 @@ pub const Scene = struct {
         if (recording) |bytes| for (self.paint_members.items) |member| {
             const value = owner.objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
             std.debug.assert(value.scene_node.?.owner == self);
-            const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or refresh_views };
+            const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or refresh_views, .bars = member.bars };
             const phases: Phases = if (member.slot == no_slot) .{} else .{
                 .recording = bytes,
                 .segments = self.segments.items[member.slot],
@@ -1606,6 +1970,7 @@ pub const Scene = struct {
 
     fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
         const node = entry.node.scene_node.?;
+        if (entry.bars) return self.paintBars(cli, entry, options);
         const cells = cellLayout(entry.layout);
         const painted = intersection(.{
             .x = @intFromFloat(cells.screenX),
@@ -1613,7 +1978,7 @@ pub const Scene = struct {
             .width = @intFromFloat(cells.width),
             .height = @intFromFloat(cells.height),
         }, entry.clip);
-        if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
+        if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint) or hasFills(node)) {
             self.frame_work.member_cells += @as(u64, painted.width) * painted.height;
             const target = self.paintTarget(cli);
             // A natively composed image buffer receives its node's hook drawing, like its body.
@@ -1684,6 +2049,47 @@ pub const Scene = struct {
             try Context.drawContextBuffer(target, source, x, y, .{});
         } else {
             try paintControl(target, node.kind, node.control, node.paint, cells, entry.clip, node.focus_frame == self.attempt.?.frame_id);
+            if (node.scroll != null) paintScrollFills(target, node, cells);
+        }
+    }
+
+    /// The wrapper, viewport, and content fills, in that order, under the children.
+    fn paintScrollFills(target: *buffer.OptimizedBuffer, node: *const Node, box: Layout) void {
+        const state = node.scroll.?;
+        const sides = node.paint.borderSides;
+        const viewport = cellClip(scrollViewport(state, box));
+        // The inner rect minus the vertical gutter: the horizontal bar's columns, the vertical bar's rows.
+        const columns = state.barRects(0, box, sides).bar;
+        const rows = state.barRects(1, box, sides).bar;
+        const wrapper: Layout = .{ .screenX = columns.screenX, .screenY = rows.screenY, .width = columns.width, .height = rows.height };
+        const origin = childOrigin(node, box);
+        const content = intersection(viewport, cellClip(.{ .screenX = origin[0], .screenY = origin[1], .width = state.extent[0], .height = state.extent[1] }));
+        for (state.options.fills, [_]buffer.ClipRect{ cellClip(wrapper), viewport, content }) |fill, area| {
+            if (fill) |rgba| target.fillRectClipped(area.x, area.y, area.width, area.height, rgba);
+        }
+    }
+
+    /// A scroll node's visible bars and arrows, after its children; their cells hit the node.
+    fn paintBars(self: *Scene, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions) !void {
+        const node = entry.node.scene_node.?;
+        const state = node.scroll.?;
+        const target = self.paintTarget(cli);
+        const box = cellLayout(entry.layout);
+        try enterMember(target, entry);
+        for (0..2) |axis| {
+            if (!state.visible[axis]) continue;
+            const rects = state.barRects(axis, box, node.paint.borderSides);
+            if (rects.track.width >= 1 and rects.track.height >= 1) try paintSlider(target, state.slider(axis), rects.track, entry.clip);
+            if (state.options.bars[axis].arrows) for (rects.arrows, 0..) |arrow, end| {
+                if (arrow.width < 1 or arrow.height < 1) continue;
+                const glyph = state.arrows[axis][end];
+                const direction = if (axis == 1) end else 2 + end;
+                try target.drawTextChecked(glyph.text orelse arrows[direction], @intFromFloat(arrow.screenX), @intFromFloat(arrow.screenY), glyph.foreground, glyph.background, glyph.attributes);
+            };
+            const hit = intersection(cellClip(rects.bar), entry.clip);
+            if (options.use_mouse and node.num != options.excluded_hit_num and hit.width != 0 and hit.height != 0) {
+                self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token });
+            }
         }
     }
 
@@ -1777,6 +2183,11 @@ pub const Scene = struct {
         }
     }
 
+    fn hasFills(node: *const Node) bool {
+        const state = node.scroll orelse return false;
+        return state.options.fills[0] != null or state.options.fills[1] != null or state.options.fills[2] != null;
+    }
+
     fn hasBoxPaint(paint_options: *const Paint) bool {
         return paint_options.borderSides != api.OT_BORDER_NONE or (paint_options.shouldFill != 0 and paint_options.background[3] != 0);
     }
@@ -1805,12 +2216,15 @@ pub const Scene = struct {
 
     fn childFilter(self: *Scene, objects: *const handles.Table, value: *native.NativeRenderable) !?Filter {
         const node = value.scene_node.?;
-        const viewport = try self.viewportNode(objects, node.viewport orelse return null);
-        const layout = try composedLayout(viewport, false);
+        if (!node.filtersChildren()) return null;
+        const layout = if (node.scroll) |state|
+            scrollViewport(state, try composedLayout(value, false))
+        else
+            try composedLayout(try self.viewportNode(objects, node.viewport.?), false);
         // The cutoff includes hidden children and changes selection, not refresh ordering.
         if (node.children.items.len < 16 and layout.width > 0 and layout.height > 0) return null;
         var direction: u32 = 0;
-        try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_FLEX_DIRECTION, &direction));
+        try yoga.check(yoga.yogaNodeStyleGetEnumChecked(node.childYoga(value), api.OT_STYLE_ENUM_FLEX_DIRECTION, &direction));
         return .{ .viewport = layout, .row = direction == api.OT_FLEX_DIRECTION_ROW or direction == api.OT_FLEX_DIRECTION_ROW_REVERSE };
     }
 
@@ -1836,7 +2250,7 @@ pub const Scene = struct {
                     node.layout_flags.display_none = display == api.OT_DISPLAY_NONE;
                 }
                 const visible = !node.layout_flags.display_none;
-                const filtered_child = if (node.parent) |parent| parent.scene_node.?.viewport != null else false;
+                const filtered_child = if (node.parent) |parent| parent.scene_node.?.filtersChildren() else false;
                 if (!visible and (mode == .paint or (!node.layout_flags.needs_layout and !filtered_child))) {
                     depth -= 1;
                     continue;
@@ -1861,8 +2275,15 @@ pub const Scene = struct {
                 }
                 // Image paint and hit geometry rely on at least one cell per dimension.
                 std.debug.assert(layout.width >= 1 and layout.height >= 1);
+                if (node.scroll) |state| {
+                    if (refresh_layout and visible) try self.resolveScroll(value, state);
+                }
                 layout.screenX = frame.parent.screenX + @as(f64, layout.left) + node.paint.translateX;
                 layout.screenY = frame.parent.screenY + @as(f64, layout.top) + node.paint.translateY;
+                if (node.scroll) |state| if (!std.meta.eql(state.screen, .{ layout.screenX, layout.screenY })) {
+                    state.screen = .{ layout.screenX, layout.screenY };
+                    state.generation += 1;
+                };
                 const cells = cellLayout(layout);
                 if (frame.filter) |filter| {
                     self.frame_work.overlap_tests += 1;
@@ -1873,9 +2294,10 @@ pub const Scene = struct {
                 }
                 if (node.kind == api.OT_SCENE_SLIDER) _ = try sliderThumb(node.control.slider, cells.width, cells.height);
                 frame.opacity *= node.paint.opacity;
+                frame.work_index = self.work.items.len;
                 self.work.appendAssumeCapacity(.{ .node = value, .layout = layout, .clip = frame.clip, .opacity = frame.opacity, .visible = visible, .filtered = frame.filtered });
                 if (node.viewport) |handle| _ = try self.viewportNode(objects, handle);
-                if (!visible or (node.paint_children.items.len == 0 and node.viewport == null)) {
+                if (!visible or (node.paint_children.items.len == 0 and node.viewport == null and node.scroll == null)) {
                     depth -= 1;
                     continue;
                 }
@@ -1885,7 +2307,12 @@ pub const Scene = struct {
                     try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_OVERFLOW, &overflow));
                     node.layout_flags.clips_children = overflow != api.OT_OVERFLOW_VISIBLE;
                 }
-                if (node.layout_flags.clips_children) {
+                if (node.scroll) |state| {
+                    const origin = childOrigin(node, layout);
+                    frame.parent.screenX = origin[0];
+                    frame.parent.screenY = origin[1];
+                    frame.clip = intersection(frame.clip, cellClip(scrollViewport(state, layout)));
+                } else if (node.layout_flags.clips_children) {
                     const left: u32 = @intFromBool(node.paint.borderSides & api.OT_BORDER_LEFT != 0);
                     const top: u32 = @intFromBool(node.paint.borderSides & api.OT_BORDER_TOP != 0);
                     const horizontal = left + @as(u32, @intFromBool(node.paint.borderSides & api.OT_BORDER_RIGHT != 0));
@@ -1902,13 +2329,18 @@ pub const Scene = struct {
                 frame.entered = true;
             }
             if (frame.child == node.paint_children.items.len) {
+                if (node.scroll) |state| if (state.visible[0] or state.visible[1]) {
+                    var bars = self.work.items[frame.work_index];
+                    bars.bars = true;
+                    self.work.appendAssumeCapacity(bars);
+                };
                 depth -= 1;
                 continue;
             }
             if (depth == stack.len) return error.YogaDepthLimit;
             const child = node.paint_children.items[frame.child];
             frame.child += 1;
-            stack[depth] = .{ .node = child, .parent = frame.parent, .clip = frame.clip, .opacity = frame.opacity, .filtered = frame.filtered or node.viewport != null, .filter = frame.filter };
+            stack[depth] = .{ .node = child, .parent = frame.parent, .clip = frame.clip, .opacity = frame.opacity, .filtered = frame.filtered or node.filtersChildren(), .filter = frame.filter };
             depth += 1;
         }
     }
@@ -1996,6 +2428,35 @@ fn paintSlider(target: *buffer.OptimizedBuffer, options: SliderOptions, layout: 
     }
 }
 
+fn rect(layout: Layout) [4]f64 {
+    return .{ layout.screenX, layout.screenY, layout.width, layout.height };
+}
+
+/// A copy of a scroll node's state, with screen geometry from its last prepared frame.
+pub fn scrollReport(value: *const native.NativeRenderable) !api.ot_scene_scroll_state {
+    const node = value.scene_node.?;
+    const state = node.scroll orelse return error.WrongKind;
+    const box = cellLayout(node.layout);
+    var report: api.ot_scene_scroll_state = .{
+        .struct_size = @sizeOf(api.ot_scene_scroll_state),
+        .abi_version = api.OT_CONTEXT_ABI_VERSION,
+        .stuck = @intFromBool(state.stuck),
+        .reserved = 0,
+        .generation = state.generation,
+        .offset = state.offset,
+        .max = state.max,
+        .content = .{ state.content_origin[0], state.content_origin[1], state.extent[0], state.extent[1] },
+        .viewport = rect(scrollViewport(state, box)),
+        .bars = undefined,
+    };
+    for (&report.bars, 0..) |*bar, axis| {
+        const rects = state.barRects(axis, box, node.paint.borderSides);
+        const thumb = sliderThumb(state.slider(axis), rects.track.width, rects.track.height) catch SliderThumb{ .size = 0, .start = 0 };
+        bar.* = .{ .visible = @intFromBool(state.visible[axis]), .reserved = 0, .track = rect(rects.track), .start_arrow = rect(rects.arrows[0]), .end_arrow = rect(rects.arrows[1]), .thumb_start = thumb.start, .thumb_size = thumb.size };
+    }
+    return report;
+}
+
 /// Public geometry advances at legacy preparation points, separately from completed
 /// paint layout. Accepted transforms and ancestry still compose immediately.
 pub fn getLayout(value: *const native.NativeRenderable) !Layout {
@@ -2024,8 +2485,33 @@ fn composedLayout(value: *const native.NativeRenderable, comptime observed: bool
         const layout = if (observed) node.observed_layout else node.layout;
         result.screenX = result.screenX + @as(f64, layout.left) + node.paint.translateX;
         result.screenY = result.screenY + @as(f64, layout.top) + node.paint.translateY;
+        if (count != 0) {
+            const origin = childOrigin(node, .{});
+            result.screenX += origin[0];
+            result.screenY += origin[1];
+        }
     }
     return result;
+}
+
+/// Where a parent's children compose from: its screen position, plus a scroll node's viewport
+/// and content origins minus its offset.
+fn childOrigin(node: *const Node, parent: Layout) [2]f64 {
+    const state = node.scroll orelse return .{ parent.screenX, parent.screenY };
+    return .{ parent.screenX + state.content_origin[0] - state.offset[0], parent.screenY + state.content_origin[1] - state.offset[1] };
+}
+
+/// A scroll node's viewport rect in screen cells, from the node's prepared layout.
+fn scrollViewport(state: *const ScrollState, box: Layout) Layout {
+    var viewport = state.viewport;
+    viewport.screenX = box.screenX + viewport.left;
+    viewport.screenY = box.screenY + viewport.top;
+    return viewport;
+}
+
+fn cellClip(layout: Layout) buffer.ClipRect {
+    const cells = cellLayout(layout);
+    return .{ .x = @intFromFloat(cells.screenX), .y = @intFromFloat(cells.screenY), .width = @intFromFloat(@max(0, cells.width)), .height = @intFromFloat(@max(0, cells.height)) };
 }
 
 fn prepareView(work: *renderer.FrameWork, node: *Node, layout: Layout) !void {

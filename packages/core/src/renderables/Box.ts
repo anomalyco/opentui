@@ -314,36 +314,16 @@ export class BoxRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    const hasBorder = this.borderSides.top || this.borderSides.right || this.borderSides.bottom || this.borderSides.left
-    const hasVisibleFill = this.shouldFill && this._backgroundColor.a > 0
-    // Many boxes are used only for layout. Skip drawBox entirely when a box
-    // would not draw pixels so wrapper nodes do not pay the FFI/native cost.
-    if (!hasBorder && !hasVisibleFill) {
-      return
-    }
-
-    const hasFocusWithin = this._focusable && (this._focused || this._hasFocusedDescendant)
-    const currentBorderColor = hasFocusWithin ? this._focusedBorderColor : this._borderColor
-    const screenX = Math.trunc(this._screenX)
-    const screenY = Math.trunc(this._screenY)
-
-    buffer.drawBox({
-      x: screenX,
-      y: screenY,
-      width: this._paintWidth,
-      height: this._paintHeight,
-      borderStyle: this._borderStyle,
-      customBorderChars: this._customBorderChars,
-      border: this._border,
-      borderColor: currentBorderColor,
-      backgroundColor: this._backgroundColor,
-      shouldFill: this.shouldFill,
-      title: this._title,
-      titleColor: this._titleColor ?? currentBorderColor,
-      titleAlignment: this._titleAlignment,
-      bottomTitle: this._bottomTitle,
-      bottomTitleAlignment: this._bottomTitleAlignment,
-    })
+    // A layout-only box records nothing; native would draw nothing for it either.
+    if (borderMask(this.borderSides) === 0 && !(this._shouldFill && this._backgroundColor.a > 0)) return
+    // A buffered box draws at its own buffer's origin; the buffer is composed at the box's position.
+    const own = buffer === this.frameBuffer
+    this._ctx.nativeScene.drawBody(
+      this,
+      buffer,
+      own ? 0 : Math.trunc(this._screenX),
+      own ? 0 : Math.trunc(this._screenY),
+    )
   }
 
   public get shouldFill(): boolean {

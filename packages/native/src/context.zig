@@ -1861,16 +1861,18 @@ pub const Context = struct {
         try target.drawEditorViewChecked(editor.view, x, y);
     }
 
-    pub fn drawSceneText(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
+    pub fn drawSceneBody(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        try self.drawSceneTextOn(try self.bufferDrawTarget(handle, frame), node_handle, x, y);
+        try self.drawSceneBodyOn(try self.bufferDrawTarget(handle, frame), node_handle, x, y);
     }
 
-    pub fn drawSceneTextOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
+    pub fn drawSceneBodyOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
         const node = try self.sceneNode(node_handle);
-        const text = node.scene_node.?.text orelse return error.WrongKind;
+        const owned = node.scene_node.?;
+        if (owned.text == null and owned.kind != api.OT_SCENE_BOX) return error.WrongKind;
         if (x >= target.width or y >= target.height) return;
+        const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
         try text.prepareView();
         try target.drawTextBufferChecked(text.view, x, y);
     }
@@ -2214,10 +2216,13 @@ pub const Context = struct {
         flags: u32,
     ) !void {
         std.debug.assert(self.mutating);
+        const content = flags & api.OT_STYLE_CONTENT != 0;
+        const yoga_flags = flags & ~@as(u32, api.OT_STYLE_CONTENT);
         if (group > api.OT_STYLE_DIMENSION or
             group == api.OT_STYLE_BORDER or
-            (group != api.OT_STYLE_DIMENSION and flags != api.OT_STYLE_FLAGS_NONE) or
-            flags > api.OT_STYLE_DISABLE_FLEX_SHRINK)
+            (group != api.OT_STYLE_DIMENSION and yoga_flags != api.OT_STYLE_FLAGS_NONE) or
+            yoga_flags > api.OT_STYLE_DISABLE_FLEX_SHRINK or
+            (content and group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY))
         {
             return error.InvalidOptions;
         }
@@ -2235,15 +2240,24 @@ pub const Context = struct {
         if (group == api.OT_STYLE_ENUM and
             (kind >= scene_style_enum_maxima.len or value > @as(f32, @floatFromInt(scene_style_enum_maxima[kind])))) return error.InvalidOptions;
         const node = try self.sceneMutableNode(handle);
+        const scroll = node.scene_node.?.scroll;
+        if (content and scroll == null) return error.WrongKind;
+        // A scroll node's own padding holds its bar gutters.
+        if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
+        const target = if (content) scroll.?.content_node else node.yoga_node;
         try yoga.check(switch (group) {
-            api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(node.yoga_node, kind, @intFromFloat(value)),
-            api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(node.yoga_node, kind, value),
+            api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, @intFromFloat(value)),
+            api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(target, kind, value),
             // Finite summed edges and gaps saturate so Yoga's f32 sums stay finite; NaN still unsets.
-            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(node.yoga_node, kind, edge, unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
-            api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(node.yoga_node, kind, unit, value, flags),
+            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(target, kind, edge, unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
+            api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
-        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) node.scene_node.?.owner.visibility_epoch +%= 1;
+        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
+            node.scene_node.?.owner.visibility_epoch +%= 1;
+            // A shown child's refresh prepares its view although its layout did not change.
+            scene.Scene.markObservationStale(node);
+        }
     }
 
     pub fn sceneGetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32) !scene.StyleValue {
@@ -2318,6 +2332,7 @@ pub const Context = struct {
         const value = try self.sceneMutableNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_BOX) return error.WrongKind;
+        if (node.scroll != null) return error.InvalidOptions;
         if (viewport_handle) |id| {
             const viewport = try self.sceneNode(id);
             if (viewport.scene_node.?.owner != node.owner) return error.WrongSession;
@@ -2330,6 +2345,38 @@ pub const Context = struct {
         node.viewport = viewport_handle;
         node.owner.preparation_dirty = true;
         node.owner.work.clearRetainingCapacity();
+    }
+
+    pub fn sceneSetScroll(self: *Context, handle: Handle, options: scene.ScrollOptions) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.scenePaintNode(handle);
+        try value.scene_node.?.owner.setScroll(&self.yoga_config, value, options);
+    }
+
+    pub fn sceneSetScrollArrow(self: *Context, handle: Handle, axis: u32, end: u32, options: scene.ArrowOptions) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.scenePaintNode(handle);
+        if (options.attributes & ~@import("ansi.zig").TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
+        try buf.validateColor(options.foreground);
+        try buf.validateColor(options.background);
+        if (options.text) |text| try buf.validateTextInput(text);
+        try value.scene_node.?.owner.setScrollArrow(value, axis, end, options);
+    }
+
+    /// An explicit scroll; returns the state after it.
+    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool) !api.ot_scene_scroll_state {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.sceneMutableNode(handle);
+        try value.scene_node.?.owner.scrollTo(value, target, relative);
+        return scene.scrollReport(value);
+    }
+
+    pub fn sceneGetScroll(self: *Context, handle: Handle) !api.ot_scene_scroll_state {
+        try self.checkSceneRead();
+        return scene.scrollReport(try self.sceneNode(handle));
     }
 
     pub fn sceneSetFocus(self: *Context, handle: Handle, focused: bool) !void {

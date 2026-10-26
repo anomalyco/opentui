@@ -18,7 +18,7 @@ const options: scene.FrameOptions = .{
     .max_host_requests = 1 << 20,
 };
 
-pub const Shape = enum { ui, boxes, scroll, wrapped_scroll };
+pub const Shape = enum { ui, boxes, scroll, wrapped_scroll, scroll_node };
 
 /// A frame kind: what changes before the frame.
 pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook };
@@ -30,8 +30,9 @@ pub const Scene = struct {
     root: context.Handle,
     /// The node whose glyph, background, or hook changes.
     target: context.Handle,
-    /// The scroll content, or the root.
+    /// The scroll content, the scroll node, or the root.
     content: context.Handle,
+    scroll_node: bool = false,
     next_num: u32,
     frames: u32 = 0,
 
@@ -49,6 +50,7 @@ pub const Scene = struct {
             .boxes => try self.buildBoxes(size),
             .scroll => try self.buildScroll(size, 0, 0),
             .wrapped_scroll => try self.buildScroll(size, 6, 2),
+            .scroll_node => try self.buildScrollNode(size),
         }
         // The first frame lays out and paints everything; frame kinds measure the next ones.
         _ = try self.frame(.unchanged);
@@ -137,6 +139,17 @@ pub const Scene = struct {
         for (0..size) |_| try self.addRow(depth);
     }
 
+    /// The scroll shape as one culled scroll node that follows its bottom.
+    fn buildScrollNode(self: *Scene, size: u32) !void {
+        try self.owner.sceneSetStyle(self.root, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, c.OT_FLEX_DIRECTION_ROW, 0);
+        self.content = try self.node(c.OT_SCENE_BOX, self.root);
+        self.scroll_node = true;
+        try self.float(self.content, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
+        try self.owner.sceneSetScroll(self.content, .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_BOTTOM, .culling = true });
+        self.target = try self.text(self.root, "*");
+        for (0..size) |_| try self.addRow(0);
+    }
+
     fn addRow(self: *Scene, depth: u32) !void {
         var parent = self.content;
         for (0..depth) |_| parent = try self.node(c.OT_SCENE_BOX, parent);
@@ -153,7 +166,9 @@ pub const Scene = struct {
             .unchanged => {},
             .glyph => try self.owner.sceneSetText(self.target, if (odd) "/" else "|"),
             .background => try self.owner.scenePatchPaint(self.target, c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ if (odd) 100 else 200, 0, 0, 255 } }),
-            .scroll => try self.owner.scenePatchPaint(self.content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (odd) -1 else 0 }),
+            .scroll => if (self.scroll_node) {
+                _ = try self.owner.sceneScrollTo(self.content, .{ 0, if (odd) -1 else 1 }, .{ true, true });
+            } else try self.owner.scenePatchPaint(self.content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (odd) -1 else 0 }),
             .append => try self.addRow(0),
             .update_hook, .paint_hook => if (self.frames == 2) {
                 const flags: u32 = if (change == .update_hook) c.OT_SCENE_HOOK_UPDATE else c.OT_SCENE_HOOK_RENDER_AFTER;
@@ -187,6 +202,9 @@ const scenarios = [_]Scenario{
     .{ .name = "scroll-10000 scroll by one row", .shape = .scroll, .size = 10_000, .change = .scroll },
     .{ .name = "scroll-10000 append", .shape = .scroll, .size = 10_000, .change = .append },
     .{ .name = "scroll-1000-w6d2 unchanged", .shape = .wrapped_scroll, .size = 1000, .change = .unchanged },
+    .{ .name = "scroll-node-10000 unchanged", .shape = .scroll_node, .size = 10_000, .change = .unchanged },
+    .{ .name = "scroll-node-10000 scroll by one row", .shape = .scroll_node, .size = 10_000, .change = .scroll },
+    .{ .name = "scroll-node-10000 append", .shape = .scroll_node, .size = 10_000, .change = .append },
 };
 
 const SAMPLES: usize = 40;

@@ -350,12 +350,103 @@ test "Scene record reads referenced resources at playback and skips destroyed on
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
-const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, image, unicode };
+const BodyCase = struct { paint: scene.Paint, details: scene.BoxDetails = .{}, focus: enum { none, child, self } = .none };
+
+fn bodyScene(f: Fixture, case: BodyCase) !context.Handle {
+    const parent = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try f.owner.sceneSetStyle(parent, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 10, 1);
+    try f.owner.sceneSetStyle(parent, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_POINT, 4, 1);
+    try f.owner.sceneMoveNode(parent, f.root, 0);
+    const box = try placedIn(f, parent, c.OT_SCENE_BOX, 3, 6, 3);
+    var paint = case.paint;
+    paint.translateX = 1;
+    try f.owner.sceneSetPaint(box, paint);
+    try f.owner.sceneSetBoxDetails(box, case.details);
+    const child = try placedIn(f, box, c.OT_SCENE_BOX, 4, 1, 1);
+    try f.owner.sceneSetPaint(child, .{ .focusable = true });
+    if (case.focus != .none) try f.owner.sceneSetFocus(if (case.focus == .child) child else box, true);
+    return box;
+}
+
+fn placedIn(f: Fixture, parent: context.Handle, kind: u32, num: u32, width: f32, height: f32) !context.Handle {
+    const child = try f.owner.sceneCreateNode(f.id, kind, num);
+    try f.owner.sceneSetStyle(child, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, width, 1);
+    try f.owner.sceneSetStyle(child, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_POINT, height, 1);
+    try f.owner.sceneMoveNode(child, parent, 0);
+    return child;
+}
+
+test "Scene record box body paints like the native box" {
+    const all = c.OT_BORDER_ALL;
+    const red: [4]u16 = .{ 200, 0, 0, 255 };
+    const cases = [_]BodyCase{
+        .{ .paint = .{ .borderSides = all, .background = .{ 0, 0, 90, 255 } } },
+        .{ .paint = .{ .borderSides = c.OT_BORDER_TOP | c.OT_BORDER_LEFT, .borderStyle = 1, .shouldFill = 0 }, .details = .{ .title = "ab", .bottom_title = "cd", .title_alignment = 1, .bottom_title_alignment = 2, .title_color = red } },
+        .{ .paint = .{ .borderSides = all }, .details = .{ .custom_border_chars = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' } } },
+        // Focus within: the focusable box or its child holds focus.
+        .{ .paint = .{ .borderSides = all, .focusable = true }, .details = .{ .title = "f" }, .focus = .child },
+        .{ .paint = .{ .borderSides = all, .focusable = true }, .focus = .self },
+        .{ .paint = .{ .shouldFill = 0 } },
+    };
+    for (cases) |case| {
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 10, 4, .{ .output = transport }), try Fixture.init(testing.allocator, 10, 4, .{ .output = transport }) };
+        defer for (twins) |twin| twin.deinit();
+        _ = try bodyScene(twins[0], case);
+        const box = try bodyScene(twins[1], case);
+        try twins[1].owner.sceneSetHooks(box, c.OT_SCENE_HOOK_RENDER_SELF, 1, 6, 3);
+        const native = try twins[0].step(null, options, c.OT_SCENE_FRAME_DONE, null);
+        const request = try twins[1].step(null, options, c.OT_SCENE_FRAME_RECORD, null);
+        const slot = (try twins[1].owner.sceneFramePaintSlots(twins[1].id, request))[0];
+        var recording: Recording = .{};
+        recording.slot(0, c.OT_SCENE_RECORD_PHASE_SELF);
+        recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(box), .x = @intFromFloat(slot.layout.screenX), .y = @intFromFloat(slot.layout.screenY) }, &.{});
+        const done = try submit(twins[1], request, &recording);
+        try twins[0].expectSameCells(twins[1]);
+        try twins[0].owner.sceneFrameCancel(twins[0].id, native.frame_id);
+        try twins[1].owner.sceneFrameCancel(twins[1].id, done.frame_id);
+    }
+}
+
+test "Scene box body draws nothing for an unprepared box at any position and rejects other kinds" {
+    const f = try Fixture.init(testing.allocator, 4, 2, .{ .output = transport });
+    defer f.deinit();
+    const target = try f.owner.createBuffer(200, 2, .{});
+    const unprepared = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try f.owner.sceneSetPaint(unprepared, .{ .borderSides = c.OT_BORDER_ALL, .background = .{ 0, 0, 90, 255 } });
+    const blank = (try f.owner.raw().getBuffer(target)).buffer.char[0];
+    const min = std.math.minInt(i32);
+    const max = std.math.maxInt(i32);
+    for ([_][2]i32{ .{ min, min }, .{ min, 0 }, .{ 0, min }, .{ max, 0 }, .{ 0, 0 }, .{ 3, 1 } }) |at| {
+        try f.owner.drawSceneBody(target, null, unprepared, at[0], at[1]);
+    }
+    for ((try f.owner.raw().getBuffer(target)).buffer.char) |char| try testing.expectEqual(blank, char);
+    // A prepared box far beyond the cell range keeps the cells its edges cover.
+    const wide = try placedIn(f, f.root, c.OT_SCENE_BOX, 3, 3e9, 2);
+    try f.owner.sceneSetPaint(wide, .{ .borderSides = c.OT_BORDER_ALL });
+    // A one-column gutter laid out at column 5 draws where the host asks.
+    const gutter = try placedIn(f, f.root, c.OT_SCENE_BOX, 6, 1, 2);
+    try f.owner.sceneSetPaint(gutter, .{ .borderSides = c.OT_BORDER_LEFT, .translateX = 5 });
+    try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, false, 0);
+    try f.owner.drawSceneBody(target, null, gutter, 0, 0);
+    try testing.expectEqual(@as(u32, 0x2502), (try f.owner.raw().getBuffer(target)).get(0, 0).?.char);
+    // Within the cell range where it is laid out, but not where the host draws it.
+    const long = try placedIn(f, f.root, c.OT_SCENE_BOX, 5, 2147483520, 2);
+    try f.owner.sceneSetPaint(long, .{ .borderSides = c.OT_BORDER_ALL, .translateX = -100 });
+    try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, false, 0);
+    try f.owner.drawSceneBody(target, null, long, 150, 0);
+    for ([_]i32{ min, -1 }) |x| try f.owner.drawSceneBody(target, null, wide, x, 0);
+    try testing.expectEqual(@as(u32, 0x2500), (try f.owner.raw().getBuffer(target)).get(0, 0).?.char);
+    const slider = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_SLIDER, 4);
+    try testing.expectError(error.WrongKind, f.owner.drawSceneBody(target, null, slider, 0, 0));
+}
+
+const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, scene_box, image, unicode };
 
 const Resources = struct {
     text_view: context.Handle,
     editor_view: context.Handle,
     scene_text: context.Handle,
+    scene_box: context.Handle,
     image: context.Handle,
     unicode: context.Handle,
 
@@ -366,11 +457,15 @@ const Resources = struct {
         try f.owner.editSetText(edit, "edit", false);
         const scene_text = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 9);
         try f.owner.sceneSetText(scene_text, "node");
+        // Never placed, so never prepared: corrupted coordinates must still draw nothing.
+        const scene_box = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 10);
+        try f.owner.sceneSetPaint(scene_box, .{ .borderSides = c.OT_BORDER_ALL });
         const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
         return .{
             .text_view = try f.owner.createTextBufferView(text),
             .editor_view = try f.owner.createEditorView(edit, 4, 1),
             .scene_text = scene_text,
+            .scene_box = scene_box,
             .image = try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 }),
             .unicode = try f.owner.createUnicode("uZ", .unicode),
         };
@@ -411,7 +506,8 @@ fn appendCommand(recording: *Recording, command: Command, resources: Resources) 
         },
         .text_view => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_TEXT_VIEW), .source = cHandle(resources.text_view), .x = 2, .y = 1 }, &.{}),
         .editor_view => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_EDITOR_VIEW), .source = cHandle(resources.editor_view), .x = 2, .y = 1 }, &.{}),
-        .scene_text => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_TEXT), .source = cHandle(resources.scene_text), .x = 2, .y = 1 }, &.{}),
+        .scene_text => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(resources.scene_text), .x = 2, .y = 1 }, &.{}),
+        .scene_box => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(resources.scene_box), .x = 2, .y = 1 }, &.{}),
         .image => recording.append(c.ot_scene_record_image{ .header = recordHeader(c.OT_SCENE_RECORD_IMAGE), .image = cHandle(resources.image), .options = .{ .struct_size = @sizeOf(c.ot_image_draw_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 0, .protocol = c.OT_IMAGE_PROTOCOL_BLOCKS, .x = 8, .y = 2, .width = 2, .height = 1, .pixel_width = 0, .pixel_height = 0, .source_x = 0, .source_y = 0, .source_width = 0, .source_height = 0, .reserved = .{ 0, 0 } } }, &.{}),
         .unicode => recording.append(c.ot_scene_record_unicode{ .header = recordHeader(c.OT_SCENE_RECORD_UNICODE), .unicode = cHandle(resources.unicode), .index = 1, .x = 11, .y = 3, .attributes = 1, .foreground = white, .background = blue }, &.{}),
     }

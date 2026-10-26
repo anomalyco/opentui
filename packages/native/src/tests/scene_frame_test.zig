@@ -541,7 +541,7 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     (try f.owner.raw().getSession(f.id)).cancel();
 }
 
-const Retained = enum { unchanged, focus, blur, register, destroy_style, unbind, rebind, select, reset, styled_text, text_options, view_paint_off, view_paint_on, box_details, arrow, editor_select, editor_rebind, editor_unbind, z_order, surface_write, resend, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, preserve, recorded, image };
+const Retained = enum { unchanged, scroll, scroll_same, scroll_grow, scroll_colors, scroll_arrow, focus, blur, register, destroy_style, unbind, rebind, select, reset, styled_text, text_options, view_paint_off, view_paint_on, box_details, arrow, editor_select, editor_rebind, editor_unbind, z_order, surface_write, resend, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, preserve, recorded, image };
 
 /// A node at a fixed place, painted after its earlier siblings.
 fn placedAt(f: Fixture, parent: context.Handle, kind: u32, num: u32, left: f32, top: f32, width: f32, height: f32) !context.Handle {
@@ -556,8 +556,8 @@ fn placedAt(f: Fixture, parent: context.Handle, kind: u32, num: u32, left: f32, 
 
 // Retained paint (B3) on a 10 x 9 screen: a box (rows 0-2), a text (row 3), a text view of a
 // styled shared buffer (row 4), an editor (row 5), a surface taller than its node (rows 6-7),
-// an arrow (row 8), and at column 8 a parent (row 0) whose child (rows 2-3) paints under a
-// later sibling. Each row changes one input and expects the rows it damages and the full-path
+// an arrow (row 8), at column 8 a parent (row 0) whose child (rows 2-3) paints under a
+// later sibling, and below them a scroll node (rows 4-7) of six rows. Each row changes one input and expects the rows it damages and the full-path
 // reasons. The table runs without VERIFY, then with it: VERIFY must pass and change no count.
 test "Scene frame retained paint damages the rows of changed inputs only" {
     var results: [2][std.meta.fields(Retained).len + 6]FrameWork = undefined;
@@ -578,6 +578,13 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
     _ = try placedAt(f, parent, c.OT_SCENE_BOX, 8, 0, 2, 2, 2);
     const above = try placedAt(f, f.root, c.OT_SCENE_BOX, 9, 8, 2, 2, 2);
     const arrow = try placedAt(f, f.root, c.OT_SCENE_ARROW, 11, 0, 8, 1, 1);
+    const scroll = try placedAt(f, f.root, c.OT_SCENE_BOX, 12, 8, 4, 2, 4);
+    try f.owner.sceneSetScroll(scroll, .{});
+    for (0..6) |index| {
+        const row = try placedAt(f, scroll, c.OT_SCENE_BOX, @intCast(13 + index), 0, 0, 1, 1);
+        try f.owner.sceneSetStyle(row, 0, 6, 0, 0, 0, 0);
+        try f.owner.sceneSetPaint(row, .{ .background = .{ 0, 0, @intCast(40 * index), 255 } });
+    }
     try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_ALL, .focusable = true });
     try f.owner.sceneSetPaint(above, .{ .background = .{ 0, 90, 0, 255 } });
     try f.owner.sceneSetPaint((try f.owner.raw().getRenderable(parent)).scene_node.?.children.items[0].scene_node.?.handle, .{ .background = .{ 90, 0, 0, 255 } });
@@ -605,6 +612,14 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
     const rows = [_]struct { change: Retained, damage: u32, reasons: u32 = 0 }{
         // The surface's rows repaint on every frame: its cells are not fingerprinted.
         .{ .change = .unchanged, .damage = 2 },
+        // A scroll repaints the scroll node's rows; a scroll that moves nothing repaints none.
+        .{ .change = .scroll, .damage = 4 },
+        .{ .change = .scroll_same, .damage = 2 },
+        // A row added below the viewport paints nothing but moves the thumb.
+        .{ .change = .scroll_grow, .damage = 4 },
+        // Later options and arrows repaint the scroll node.
+        .{ .change = .scroll_colors, .damage = 4 },
+        .{ .change = .scroll_arrow, .damage = 4 },
         .{ .change = .focus, .damage = 5 },
         .{ .change = .blur, .damage = 5 },
         // Both borrowers of the style repaint.
@@ -627,8 +642,8 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .editor_rebind, .damage = 3 },
         .{ .change = .editor_unbind, .damage = 3 },
         // Paint order is an input: the reordered child, the sibling it now covers, and the
-        // arrow after them repaint.
-        .{ .change = .z_order, .damage = 6 },
+        // arrow and the scroll node after them repaint.
+        .{ .change = .z_order, .damage = 8 },
         .{ .change = .surface_write, .damage = 2 },
         // Equal values and layout-only setters that keep the layout change nothing.
         .{ .change = .resend, .damage = 2 },
@@ -659,6 +674,13 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
         switch (row.change) {
             .unchanged => {},
+            .scroll, .scroll_same => _ = try f.owner.sceneScrollTo(scroll, .{ 0, 1 }, .{ false, false }),
+            .scroll_colors => try f.owner.sceneSetScroll(scroll, .{ .bars = .{ .{}, .{ .background = .{ 0, 60, 0, 255 } } } }),
+            .scroll_arrow => try f.owner.sceneSetScrollArrow(scroll, 1, 0, .{ .text = "^" }),
+            .scroll_grow => {
+                const added = try placedAt(f, scroll, c.OT_SCENE_BOX, 19, 0, 0, 1, 1);
+                try f.owner.sceneSetStyle(added, 0, 6, 0, 0, 0, 0);
+            },
             .focus => try f.owner.sceneSetFocus(box, true),
             .blur => try f.owner.sceneSetFocus(box, false),
             .register => _ = try f.owner.syntaxStyleRegister(style.?, "name", .{ .fg = ansi.rgbColor(0, 255, 0, 255), .bg = null, .attributes = 0 }),
@@ -739,11 +761,11 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
                 } else unreachable;
                 var recording: Recording = .{};
                 recording.slot(@intCast(index), c.OT_SCENE_RECORD_PHASE_AFTER);
-                recording.text("h", 9, 7);
+                recording.text("h", 9, 8);
                 const done = try f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view());
                 _ = try f.owner.sceneFrameCommit(f.id, done, false);
                 try drain(f.owner, f.id);
-                try testing.expectEqual(@as(u32, 'h'), f.cli.currentRenderBuffer.get(9, 7).?.char);
+                try testing.expectEqual(@as(u32, 'h'), f.cli.currentRenderBuffer.get(9, 8).?.char);
                 try f.owner.sceneSetHooks(text, 0, 2, 6, 1);
             },
             .image => {
@@ -758,7 +780,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         try testing.expectEqual(row.reasons, result.full_path_reasons);
         switch (row.change) {
             .draft_write => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(4, 7).?.char),
-            .recorded => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(9, 7).?.char),
+            .recorded => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(9, 8).?.char),
             .unbind => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 4).?.char),
             .editor_unbind => try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 5).?.char),
             .lease_current => {
@@ -1228,6 +1250,11 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 10000, 50, 50, 0, 0, 1, 50 } },
         .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 0, 102, 204, 53, 10000, 10000, 50, 0, 0, 0, 1, 50 } },
         .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 70, 70, 80, 0, 0, 281, 0, 0, 40, 0, 0, 0, 0, 0, 0, 0, 1, 0 } },
+        // The scroll shape as one scroll node: one node fewer, two hidden Yoga nodes read per
+        // solve, a scroll is an offset without a solve, and an append follows the bottom.
+        .{ .shape = .scroll_node, .size = 100, .change = .unchanged, .work = .{ 103, 103, 56, 0, 0, 213, 0, 0, 200, 0, 0, 0, 0, 0, 0, 0, 1, 0 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .scroll, .work = .{ 103, 103, 106, 0, 0, 213, 0, 0, 200, 52, 9950, 10000, 50, 50, 0, 0, 1, 50 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 105, 158, 107, 1, 215, 0, 102, 204, 52, 9950, 10000, 50, 50, 0, 0, 1, 50 } },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);
@@ -1239,4 +1266,62 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         inline for (std.meta.fields(FrameWork)[1..], 0..) |field, index| actual[index] = @field(w, field.name);
         try testing.expectEqual(row.work, actual);
     }
+}
+
+test "Scene scroll node frames ask the host nothing and toggle bars a bounded number of times" {
+    const bench = @import("../bench/scene-frame_bench.zig");
+    for ([_]u32{ 16, 256, 4096 }) |size| for ([_]bench.Change{ .unchanged, .scroll, .append }) |change| {
+        var target = try bench.Scene.init(testing.allocator, testing.io, .scroll_node, size);
+        defer target.deinit();
+        _ = try target.frame(change);
+        const w = try target.frame(change);
+        try testing.expectEqual(@as(u32, 0), w.host_requests);
+        try testing.expectEqual(@as(u32, 1), w.layout_rounds);
+        try testing.expectEqual(@as(u64, @intFromBool(change == .append)), w.yoga_solves);
+        try testing.expectEqual(if (change == .append) size + 7 else 0, w.geometry_reads);
+    };
+    // A 4x3 scroll node whose child is as tall as it is wide: the bar narrows the child until it
+    // fits, which hides the bar. The third toggle shows it again, and it may not hide after that.
+    const f = try Fixture.init(testing.allocator, 4, 3, .{});
+    defer f.deinit();
+    const box = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try f.owner.sceneMoveNode(box, f.root, 0);
+    for (0..2) |kind| try f.owner.sceneSetStyle(box, 4, @intCast(kind), 0, 1, @floatFromInt(4 - kind), 1);
+    try f.owner.sceneSetScroll(box, .{});
+    const child = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    try f.owner.sceneMoveNode(child, box, 0);
+    try f.owner.sceneSetStyle(child, 4, 0, 0, c.OT_UNIT_PERCENT, 100, 0);
+    try f.owner.sceneSetStyle(child, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_ASPECT_RATIO, 0, 0, 1, 0);
+    try f.owner.sceneSetStyle(child, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+    const first = try presentWork(f, .{});
+    try testing.expectEqual(@as(u32, 4), first.layout_rounds);
+    try testing.expectEqual(@as(u64, 4), first.yoga_solves);
+    try testing.expect((try f.owner.sceneGetScroll(box)).bars[1].visible != 0);
+    // From the held bar, a new frame's count starts over: it hides the bar, shows it, and holds.
+    try f.owner.sceneSetStyle(child, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_MIN_WIDTH, 0, c.OT_UNIT_POINT, 0, 0);
+    try testing.expectEqual(@as(u32, 3), (try presentWork(f, .{})).layout_rounds);
+    // Content that first overflows solves once more, for the bar's gutter, before any hook.
+    try f.owner.sceneDestroyNode(child);
+    _ = try presentWork(f, .{});
+    for (0..4) |index| {
+        const row = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(4 + index));
+        try f.owner.sceneSetStyle(row, 4, 1, 0, 1, 1, 1);
+        try f.owner.sceneMoveNode(row, box, @intCast(index));
+        const work_done = try presentWork(f, .{});
+        try testing.expectEqual(@as(u64, if (index == 3) 2 else 1), work_done.yoga_solves);
+        try testing.expectEqual(index == 3, (try f.owner.sceneGetScroll(box)).bars[1].visible != 0);
+    }
+    // An overlay bar takes no gutter, so its toggle neither solves nor walks again.
+    try f.owner.sceneSetScroll(box, .{ .bars = .{ .{}, .{ .overlay = true } } });
+    _ = try presentWork(f, .{});
+    try f.owner.sceneDestroyNode((try f.owner.raw().getRenderable(box)).scene_node.?.children.items[3].scene_node.?.handle);
+    const hidden = try presentWork(f, .{});
+    try testing.expectEqual(@as(u32, 1), hidden.layout_rounds);
+    try testing.expect((try f.owner.sceneGetScroll(box)).bars[1].visible == 0);
+    // Without culling or a SCROLL hook a scroll node adds no hook or filter: idle frames reuse
+    // their work and skip paint.
+    try testing.expectEqual(@as(u32, 0), f.state.hook_count + f.state.filter_count);
+    const idle = try presentWork(f, .{});
+    try testing.expectEqual(@as(u64, 0), idle.candidate_visits);
+    try testing.expectEqual(@as(u32, 0), idle.damage_rows);
 }
