@@ -940,8 +940,7 @@ pub const CliRenderer = struct {
     }
 
     fn renderFrame(self: *CliRenderer, force: bool, split: ?SplitRender) RenderStatus {
-        if (self.pendingPresentation != null) return .skipped;
-        if (self.presentationFailed) return .failed;
+        std.debug.assert(self.pendingPresentation == null and !self.presentationFailed);
         // Backpressure: skipping must NOT update lastRenderTime so the next
         // successful render sees the full accumulated delta (catch-up).
         if (self.backend.prepareFrame() != .ok) {
@@ -3070,9 +3069,5 @@ pub const CliRenderer = struct {
             self.nextRenderBuffer.drawText(memoryLen, x + 1, y + row, fg, bg, 0) catch {};
             row += 1;
         }
-
-        // Output is never threaded; the row keeps the overlay's layout.
-        self.nextRenderBuffer.drawText("Threaded: No", x + 1, y + row, fg, bg, 0) catch {};
-        row += 1;
     }
 };

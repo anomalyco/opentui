@@ -22,6 +22,8 @@ const OptimizedBuffer = buffer.OptimizedBuffer;
 const RGBA = text_buffer.RGBA;
 const TestRenderer = test_renderer_mod.TestRenderer;
 const renderPresented = test_renderer_mod.renderPresented;
+const FixedSink = test_renderer_mod.FixedSink;
+const discard = test_renderer_mod.discard;
 
 test "standalone renderer pools survive either owner teardown order" {
     const allocator = std.testing.allocator;
@@ -2774,7 +2776,7 @@ test "renderer - explicit_cursor_positioning with CJK characters" {
     try std.testing.expect(std.mem.find(u8, output, "\x1b[1;3H") != null);
 }
 
-test "renderer - commitSplitFooterSnapshot writes append before footer repaint in one output" {
+test "renderer - split commit writes append before footer repaint in one output" {
     // Terminals ignore a scroll region of fewer than two rows, so a pane of one row or none sets 1;2r too.
     for ([_]u32{ 2, 1, 0 }) |pinned| {
         var pools = TestPools.init(std.testing.allocator);
@@ -3042,7 +3044,7 @@ test "renderer - split scrollback emits native Sixel images when placement geome
     try std.testing.expect(std.mem.findScalar(u8, test_renderer.memory.lastWrite(), 'X') != null);
 }
 
-test "renderer - commitSplitFooterSnapshot settling phase moves footer downward" {
+test "renderer - split commit settling phase moves footer downward" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3102,7 +3104,7 @@ test "renderer - commitSplitFooterSnapshot settling phase moves footer downward"
     try std.testing.expect(stale_footer_clear_top_index.? < append_index.?);
 }
 
-test "renderer - commitSplitFooterSnapshot multiline settling enables bounded scroll at pin" {
+test "renderer - split commit multiline settling enables bounded scroll at pin" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3147,7 +3149,7 @@ test "renderer - commitSplitFooterSnapshot multiline settling enables bounded sc
     try std.testing.expect(expanded_region_index.? < collapsed_region_index.?);
 }
 
-test "renderer - commitSplitFooterSnapshot multiline short final row keeps continuation column" {
+test "renderer - split commit multiline short final row keeps continuation column" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3207,7 +3209,7 @@ test "renderer - commitSplitFooterSnapshot multiline short final row keeps conti
     try std.testing.expect(std.mem.find(u8, output, "\x1b[2;17H") == null);
 }
 
-test "renderer - commitSplitFooterSnapshot exact-width continuation preserves autowrap" {
+test "renderer - split commit exact-width continuation preserves autowrap" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3264,7 +3266,7 @@ test "renderer - commitSplitFooterSnapshot exact-width continuation preserves au
     try std.testing.expect(wrap_index.? < text_index.?);
 }
 
-test "renderer - commitSplitFooterSnapshot does not emit continuation spaces for wide graphemes" {
+test "renderer - split commit does not emit continuation spaces for wide graphemes" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3311,7 +3313,7 @@ test "renderer - commitSplitFooterSnapshot does not emit continuation spaces for
     try std.testing.expect(std.mem.find(u8, output, "🧪 ") == null);
 }
 
-test "renderer - repaintSplitFooter repaints footer without append payload" {
+test "renderer - split repaint repaints footer without append payload" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3347,7 +3349,7 @@ test "renderer - repaintSplitFooter repaints footer without append payload" {
     try std.testing.expect(sync_index.? < footer_text_index.?);
 }
 
-test "renderer - repaintSplitFooter applies pending viewport scroll transition in one frame" {
+test "renderer - split repaint applies pending viewport scroll transition in one frame" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3389,7 +3391,7 @@ test "renderer - repaintSplitFooter applies pending viewport scroll transition i
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
 }
 
-test "renderer - repaintSplitFooter viewport scroll uses explicit split scroll delta when gap already exists" {
+test "renderer - split repaint viewport scroll uses explicit split scroll delta when gap already exists" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3421,7 +3423,7 @@ test "renderer - repaintSplitFooter viewport scroll uses explicit split scroll d
     try std.testing.expectEqual(@as(u32, 2), cli_renderer.getSplitOutputOffset(2));
 }
 
-test "renderer - repaintSplitFooter applies pending stale row clear transition in one frame" {
+test "renderer - split repaint applies pending stale row clear transition in one frame" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3459,7 +3461,7 @@ test "renderer - repaintSplitFooter applies pending stale row clear transition i
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
 }
 
-test "renderer - commitSplitFooterSnapshot appends styled snapshot with snapshot links before footer repaint" {
+test "renderer - split commit appends styled snapshot with snapshot links before footer repaint" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     var snapshot_links = link.LinkPool.init(std.testing.allocator);
@@ -3522,7 +3524,7 @@ test "renderer - commitSplitFooterSnapshot appends styled snapshot with snapshot
     try std.testing.expect(std.mem.find(u8, output, "https://renderer.invalid") == null);
 }
 
-test "renderer - commitSplitFooterSnapshot preserves indexed and default color tags" {
+test "renderer - split commit preserves indexed and default color tags" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3574,7 +3576,7 @@ test "renderer - commitSplitFooterSnapshot preserves indexed and default color t
     try std.testing.expect(std.mem.find(u8, output, "\x1b[38;2;51;102;153m") == null);
 }
 
-test "renderer - commitSplitFooterSnapshot does not emit NUL padding for short rows" {
+test "renderer - split commit does not emit NUL padding for short rows" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3713,24 +3715,26 @@ test "FeedBackend - shouldSkipFrame when span queue saturated" {
     defer feed.destroy();
     defer cli_renderer.destroyStorage();
 
-    // Render a few frames to build up pending spans. Each render commits one
-    // span, so after 2 renders without draining we should be at capacity.
+    // Present two frames, then let two raw writes the host has not consumed
+    // fill the span queue.
     const fg = RGBA{ 1.0, 1.0, 1.0, 1.0 };
     const bg = RGBA{ 0.0, 0.0, 0.0, 1.0 };
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, fg, bg, 0);
-    _ = try renderPresented(cli_renderer, false);
+    _ = try renderPresented(cli_renderer, false, discard);
 
     try next_buffer.drawText("B", 0, 0, fg, bg, 0);
-    _ = try renderPresented(cli_renderer, false);
+    _ = try renderPresented(cli_renderer, false, discard);
 
+    try feed.writeAtomic("raw");
+    try feed.writeAtomic("raw");
     try std.testing.expect(cli_renderer.backend.shouldSkipFrame());
 
     // Catch-up semantics: a skipped render must NOT advance lastRenderTime,
     // so the next non-skipped frame sees the full accumulated delta.
     const before = cli_renderer.lastRenderTime;
     try next_buffer.drawText("C", 0, 0, fg, bg, 0);
-    const status = try renderPresented(cli_renderer, false);
+    const status = try cli_renderer.renderDeferred(false);
     try std.testing.expectEqual(before, cli_renderer.lastRenderTime);
     try std.testing.expectEqual(renderer.RenderStatus.skipped, status);
 
@@ -3973,10 +3977,7 @@ test "FeedBackend - skipped frame keeps the published hit grid and clears its pa
     defer cli_renderer.destroyStorage();
 
     cli_renderer.scene_work = .{ .work_frame_id = 11 };
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, true));
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    var count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, true, discard));
     try std.testing.expectEqual(@as(u64, 11), cli_renderer.presented_hits_frame);
     const cleared_char = cli_renderer.getNextBuffer().buffer.char[0];
 
@@ -3984,14 +3985,12 @@ test "FeedBackend - skipped frame keeps the published hit grid and clears its pa
     try cli_renderer.getNextBuffer().drawText("X", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
     const blocker = [_]u8{'x'} ** 193;
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.skipped, try renderPresented(cli_renderer, true));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, try renderPresented(cli_renderer, true, discard));
     try std.testing.expectEqual(@as(u64, 11), cli_renderer.presented_hits_frame);
     try std.testing.expectEqual(cleared_char, cli_renderer.getNextBuffer().buffer.char[0]);
 
-    count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
     cli_renderer.scene_work = .{ .work_frame_id = 22 };
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, true, discard));
     try std.testing.expectEqual(@as(u64, 22), cli_renderer.presented_hits_frame);
 }
 
@@ -4015,10 +4014,7 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
     defer cli_renderer.destroyStorage();
 
     cli_renderer.terminal.setCursorPosition(1, 1, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, false));
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    var count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, false, discard));
 
     cli_renderer.terminal.setCursorColor(ansi.rgbColor(0x12, 0x34, 0x56, 255));
     cli_renderer.terminal.setCursorStyle(.line, false);
@@ -4026,25 +4022,15 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
 
     const blocker = [_]u8{'x'} ** 65;
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.skipped, try renderPresented(cli_renderer, false));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, try renderPresented(cli_renderer, false, discard));
 
-    count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
-
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, false));
-    count = feed.drainSpans(&spans);
-    var output: [256]u8 = undefined;
-    var output_len: usize = 0;
-    for (spans[0..count]) |span| {
-        const bytes = span.slice();
-        @memcpy(output[output_len .. output_len + bytes.len], bytes);
-        output_len += bytes.len;
-        feed.markSpanConsumed(span);
-    }
-
-    try std.testing.expect(std.mem.find(u8, output[0..output_len], "\x1b]12;#123456\x07") != null);
-    try std.testing.expect(std.mem.find(u8, output[0..output_len], ansi.ANSI.cursorLine) != null);
-    try std.testing.expect(std.mem.find(u8, output[0..output_len], "\x1b]22;pointer\x1b\\") != null);
+    var storage: [256]u8 = undefined;
+    var sink = FixedSink.init(&storage);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, false, &sink));
+    const output = sink.bytes();
+    try std.testing.expect(std.mem.find(u8, output, "\x1b]12;#123456\x07") != null);
+    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.cursorLine) != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b]22;pointer\x1b\\") != null);
 }
 
 test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
@@ -4094,11 +4080,10 @@ test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
         16,
         .sixel,
     ));
-    try std.testing.expectEqual(renderer.RenderStatus.failed, try renderPresented(cli_renderer, true));
-
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    const count = feed.drainSpans(&spans);
-    try std.testing.expectEqual(@as(u32, 0), count);
+    var storage: [256]u8 = undefined;
+    var sink = FixedSink.init(&storage);
+    try std.testing.expectEqual(renderer.RenderStatus.failed, try renderPresented(cli_renderer, true, &sink));
+    try std.testing.expectEqual(@as(usize, 0), sink.bytes().len);
 }
 
 test "FeedBackend - writeOut publishes nothing when the queue is blocked" {

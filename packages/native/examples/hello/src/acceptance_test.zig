@@ -25,8 +25,7 @@ const MemorySink = struct {
     bytes: [capacity]u8 = undefined,
     length: usize = 0,
 
-    fn write(context: *anyopaque, bytes: []const u8) void {
-        const self: *MemorySink = @ptrCast(@alignCast(context));
+    fn write(self: *MemorySink, bytes: []const u8) void {
         std.debug.assert(bytes.len <= capacity - self.length);
         @memcpy(self.bytes[self.length..][0..bytes.len], bytes);
         self.length += bytes.len;
@@ -81,7 +80,7 @@ test "styled text renders through the public Zig module without JavaScript" {
     try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
     var bytes: [4096]u8 = undefined;
     while (try owner.readOutput(id, &bytes)) |ticket| {
-        MemorySink.write(&sink, bytes[0..ticket.len]);
+        sink.write(bytes[0..ticket.len]);
         try owner.completeOutput(id, ticket, .written);
     }
 
@@ -178,7 +177,7 @@ test "Session terminal lifecycle renders and restores through the public Zig pum
         switch (result.status) {
             .output_pending => while (try owner.readOutput(id, &bytes)) |ticket| {
                 try std.testing.expectEqualDeep(id, ticket.session);
-                MemorySink.write(&output, bytes[0..ticket.len]);
+                output.write(bytes[0..ticket.len]);
                 try owner.completeOutput(id, ticket, .written);
             },
             .again => {},

@@ -989,7 +989,7 @@ pub fn setMouseMode(self: *Terminal, tty: anytype, enable: bool, enable_movement
     if (enable) {
         self.state.mouse = true;
         self.state.mouse_movement = enable_movement;
-        // Arms the shutdown cleanup path so resetState() will still emit mouse
+        // Arms the shutdown cleanup path so resetInputModes() will still emit mouse
         // disable sequences even if a later best-effort disable silently fails.
         self.state.mouse_was_enabled = true;
         if (!enable_movement) {

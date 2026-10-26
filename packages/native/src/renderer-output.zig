@@ -506,14 +506,9 @@ pub const FeedBackend = struct {
         return status;
     }
 
+    /// A control write between frames. A rejected write publishes nothing.
     pub fn writeOut(self: *FeedBackend, data: []const u8) void {
-        if (data.len == 0 or self.feed.producing) return;
-        if (self.frameActive) {
-            if (self.feed.bounded()) return;
-            // Interrupt an unpublished frame rather than dropping an unbounded
-            // control write. endFrame reports failure so its state is retried.
-            self.failFrame();
-        }
+        std.debug.assert(!self.frameActive);
         self.feed.writeAtomic(data) catch {};
     }
 };

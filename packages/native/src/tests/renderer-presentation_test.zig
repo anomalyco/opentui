@@ -5,7 +5,7 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ansi = @import("../ansi.zig");
 const image = @import("../image.zig");
-const renderPresented = @import("test-renderer.zig").renderPresented;
+const test_renderer = @import("test-renderer.zig");
 
 const Fixture = struct {
     pool: gp.GraphemePool,
@@ -13,8 +13,11 @@ const Fixture = struct {
     env: std.process.Environ.Map,
     feed: *feed_mod.Stream,
     cli: *renderer.CliRenderer,
+    out: [4096]u8,
+    delivered: []const u8,
 
     fn init(self: *Fixture) !void {
+        self.delivered = &.{};
         self.pool = gp.GraphemePool.init(std.testing.allocator);
         errdefer self.pool.deinit();
         self.links = link.LinkPool.init(std.testing.allocator);
@@ -52,6 +55,14 @@ const Fixture = struct {
         self.cli.scene_work = .{ .work_frame_id = hit };
     }
 
+    /// Render as a Session does: deliver the bytes to `delivered`, then acknowledge.
+    fn render(self: *Fixture, force: bool) !renderer.RenderStatus {
+        var sink = test_renderer.FixedSink.init(&self.out);
+        const status = try test_renderer.renderPresented(self.cli, force, &sink);
+        self.delivered = sink.bytes();
+        return status;
+    }
+
     fn drain(self: *Fixture, bytes: []u8) ![]const u8 {
         var spans: [64]feed_mod.SpanInfo = undefined;
         const count = self.feed.drainSpans(&spans);
@@ -67,13 +78,12 @@ test "renderer batches frame encoding before feed admission" {
     try fixture.init();
     defer fixture.deinit();
     try fixture.paint("text", 11);
-    try std.testing.expectEqual(.rendered, try renderPresented(fixture.cli, true));
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
     try std.testing.expectEqual(@as(usize, 1), fixture.cli.backend.frameWriteCount);
-    var bytes: [4096]u8 = undefined;
-    try std.testing.expect(std.mem.find(u8, try fixture.drain(&bytes), "text") != null);
+    try std.testing.expect(std.mem.find(u8, fixture.delivered, "text") != null);
 
     try fixture.paint("text", 11);
-    try std.testing.expectEqual(.rendered, try renderPresented(fixture.cli, false));
+    try std.testing.expectEqual(.rendered, try fixture.render(false));
     try std.testing.expectEqual(@as(usize, 0), fixture.cli.backend.frameWriteCount);
     try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
 
@@ -87,7 +97,7 @@ test "renderer batches frame encoding before feed admission" {
             try fixture.cli.getNextBuffer().drawText("X", @intCast(x), @intCast(y), ansi.rgbColor(@intCast(x), @intCast(y), 0, 255), null, 0);
         }
     }
-    try std.testing.expectEqual(.failed, try renderPresented(fixture.cli, true));
+    try std.testing.expectEqual(.failed, try fixture.render(true));
     try std.testing.expect(fixture.cli.backend.frameWriteCount > 1);
     try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
     try std.testing.expectEqual(@as(usize, 0), fixture.feed.staged_bytes);
@@ -95,8 +105,8 @@ test "renderer batches frame encoding before feed admission" {
 
     try fixture.cli.resize(4, 2);
     try fixture.paint("text", 11);
-    try std.testing.expectEqual(.rendered, try renderPresented(fixture.cli, true));
-    try std.testing.expect(std.mem.find(u8, try fixture.drain(&bytes), "text") != null);
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
+    try std.testing.expect(std.mem.find(u8, fixture.delivered, "text") != null);
 }
 
 test "renderer presentation publishes only on completion" {
@@ -106,11 +116,11 @@ test "renderer presentation publishes only on completion" {
     const cli = fixture.cli;
     var bytes: [4096]u8 = undefined;
     try fixture.paint("old", 11);
-    try std.testing.expectEqual(.rendered, try renderPresented(cli, true));
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
     try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
     try std.testing.expectEqual(@as(u64, 1), cli.getRenderStats().frameCount);
-    try std.testing.expect(fixture.feed.getStats().outstanding_bytes > 0);
-    _ = try fixture.drain(&bytes);
+    try std.testing.expect(std.mem.find(u8, fixture.delivered, "old") != null);
+    try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
     const previous_stats = cli.getRenderStats();
 
     const value = try image.createFromRgba(std.testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
@@ -168,9 +178,8 @@ test "renderer shutdown image serialization is checked and does not publish" {
     inline for (.{ .kitty, .blocks, .sixel, .kitty }, 0..) |protocol, index| {
         try std.testing.expect(try cli.getNextBuffer().drawImage(value, 1, index, 0, 1, 1, 1, 1, 0, 0, 1, 1, protocol));
     }
-    try std.testing.expectEqual(.rendered, try renderPresented(cli, true));
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
     var bytes: [4096]u8 = undefined;
-    _ = try fixture.drain(&bytes);
     try std.testing.expectEqual(@as(usize, 4), cli.currentImages.items.len);
     const previous_images = cli.currentImages.items[0..4].*;
     const previous_stats = cli.getRenderStats();
@@ -214,8 +223,7 @@ test "renderer presentation failure retains published state and forbids implicit
         if (restore_image) {
             try std.testing.expect(try cli.getNextBuffer().drawImage(old_image, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
         }
-        try std.testing.expectEqual(.rendered, try renderPresented(cli, true));
-        _ = try fixture.drain(&bytes);
+        try std.testing.expectEqual(.rendered, try fixture.render(true));
         const previous_stats = cli.getRenderStats();
 
         try fixture.paint("BAD", 22);
@@ -294,8 +302,7 @@ test "renderer presentation skipped admission has no completion" {
     const cli = fixture.cli;
     var bytes: [4096]u8 = undefined;
     try fixture.paint("old", 11);
-    try std.testing.expectEqual(.rendered, try renderPresented(cli, true));
-    _ = try fixture.drain(&bytes);
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
     const previous_stats = cli.getRenderStats();
     const blocker = [_]u8{'x'} ** 4096;
     // A full queue skips before encoding; one free chunk skips after encoding.
@@ -321,10 +328,8 @@ test "renderer presentation cancellation and storage destruction release pending
         try fixture.init();
         defer fixture.deinit();
         const cli = fixture.cli;
-        var bytes: [4096]u8 = undefined;
         try fixture.paint("old", 11);
-        try std.testing.expectEqual(.rendered, try renderPresented(cli, true));
-        _ = try fixture.drain(&bytes);
+        try std.testing.expectEqual(.rendered, try fixture.render(true));
         const previous_stats = cli.getRenderStats();
         const value = try image.createFromRgba(std.testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
         defer value.deinit();

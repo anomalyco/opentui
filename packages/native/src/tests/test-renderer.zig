@@ -17,15 +17,51 @@ pub const TestMemoryOutput = struct {
         self.bytes.deinit(self.allocator);
     }
 
+    pub fn write(self: *TestMemoryOutput, data: []const u8) void {
+        self.bytes.appendSlice(self.allocator, data) catch @panic("memory output write failed");
+    }
+
     /// The bytes that the last render or write delivered.
     pub fn lastWrite(self: *const TestMemoryOutput) []const u8 {
         return self.bytes.items[self.last_write_start..];
     }
 };
 
-/// Render as a Session does and acknowledge the frame at once; the caller drains the feed.
-pub fn renderPresented(cli: *renderer.CliRenderer, force: bool) !renderer.RenderStatus {
+/// Collects delivered bytes in caller storage.
+pub const FixedSink = struct {
+    writer: std.Io.Writer,
+
+    pub fn init(storage: []u8) FixedSink {
+        return .{ .writer = .fixed(storage) };
+    }
+
+    pub fn write(self: *FixedSink, data: []const u8) void {
+        self.writer.writeAll(data) catch @panic("sink storage full");
+    }
+
+    pub fn bytes(self: *FixedSink) []const u8 {
+        return self.writer.buffered();
+    }
+};
+
+pub const discard = struct {
+    pub fn write(_: @This(), _: []const u8) void {}
+}{};
+
+/// Hand every queued byte to `sink.write` in order, releasing each span.
+pub fn deliverFeed(feed: *feed_mod.Stream, sink: anytype) void {
+    var spans: [1]feed_mod.SpanInfo = undefined;
+    while (feed.drainSpans(&spans) != 0) {
+        sink.write(spans[0].slice());
+        feed.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
+    }
+}
+
+/// Render as a Session does: deliver every queued byte to `sink`, then
+/// acknowledge a rendered frame.
+pub fn renderPresented(cli: *renderer.CliRenderer, force: bool, sink: anytype) !renderer.RenderStatus {
     const status = try cli.renderDeferred(force);
+    deliverFeed(cli.backend.feed, sink);
     if (status == .rendered) try cli.completePresentation(.presented);
     return status;
 }
@@ -123,11 +159,7 @@ pub const TestRenderer = struct {
     /// Append the queued bytes to memory; they are the last write.
     pub fn deliver(self: *TestRenderer) void {
         self.memory.last_write_start = self.memory.bytes.items.len;
-        var spans: [1]feed_mod.SpanInfo = undefined;
-        while (self.feed.drainSpans(&spans) != 0) {
-            self.memory.bytes.appendSlice(self.allocator, spans[0].slice()) catch @panic("memory output write failed");
-            self.feed.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
-        }
+        deliverFeed(self.feed, self.memory);
     }
 
     fn present(self: *TestRenderer, result: anyerror!renderer.RenderStatus) renderer.RenderStatus {
