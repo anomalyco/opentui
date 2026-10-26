@@ -2362,7 +2362,7 @@ pub const Context = struct {
     }
 
     /// An explicit scroll; returns the state after it.
-    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool) !scene.ScrollReport {
+    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool) !api.ot_scene_scroll_state {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.sceneMutableNode(handle);
@@ -2370,7 +2370,7 @@ pub const Context = struct {
         return scene.scrollReport(value);
     }
 
-    pub fn sceneGetScroll(self: *Context, handle: Handle) !scene.ScrollReport {
+    pub fn sceneGetScroll(self: *Context, handle: Handle) !api.ot_scene_scroll_state {
         try self.checkSceneRead();
         return scene.scrollReport(try self.sceneNode(handle));
     }

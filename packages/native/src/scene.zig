@@ -100,6 +100,8 @@ pub const ScrollState = struct {
     toggle_frame: u64 = 0,
     toggles: u32 = 0,
     reported: [6]f64 = @splat(0),
+    // The box's screen position, which the reported geometry follows.
+    screen: [2]f64 = @splat(0),
     generation: u64 = 0,
 
     fn deinit(self: *ScrollState, allocator: std.mem.Allocator) void {
@@ -107,11 +109,6 @@ pub const ScrollState = struct {
         yoga.yogaNodeFree(self.content_node);
         yoga.yogaNodeFree(self.viewport_node);
         allocator.destroy(self);
-    }
-
-    /// The box offset of the children's origin.
-    pub fn childOrigin(self: *const ScrollState) [2]f64 {
-        return .{ @as(f64, self.content_origin[0]) - self.offset[0], @as(f64, self.content_origin[1]) - self.offset[1] };
     }
 
     fn followAxis(self: *const ScrollState) ?usize {
@@ -145,14 +142,18 @@ pub const ScrollState = struct {
     }
 
     /// Writes the gutters of visible inset bars as the box's right and bottom padding.
-    pub fn applyGutters(self: *const ScrollState, box: yoga.YGNodeRef) !void {
+    /// Returns whether a gutter changed.
+    pub fn applyGutters(self: *const ScrollState, box: yoga.YGNodeRef) !bool {
+        var changed = false;
         for ([_]u32{ api.OT_EDGE_BOTTOM, api.OT_EDGE_RIGHT }, 0..) |edge, axis| {
             var encoded: u64 = 0;
             try yoga.check(yoga.yogaNodeStyleGetValueChecked(box, api.OT_STYLE_VALUE_PADDING, edge, &encoded));
             const value = self.gutter(axis);
             if (@as(u32, @truncate(encoded)) == api.OT_UNIT_POINT and @as(f32, @bitCast(@as(u32, @truncate(encoded >> 32)))) == value) continue;
             try yoga.check(yoga.yogaNodeStyleSetValueChecked(box, api.OT_STYLE_VALUE_PADDING, edge, api.OT_UNIT_POINT, value));
+            changed = true;
         }
+        return changed;
     }
 
     /// A bar's track and arrow rects in screen cells, from the box's paint layout.
@@ -988,10 +989,11 @@ pub const Scene = struct {
         self.filter_count -= @intFromBool(node.filtersChildren());
         state.options = options;
         self.filter_count += @intFromBool(node.filtersChildren());
-        for (options.bars, &state.visible) |bar, *visible| {
-            if (bar.policy != api.OT_SCENE_SCROLL_BAR_AUTO) visible.* = bar.policy == api.OT_SCENE_SCROLL_BAR_ALWAYS;
+        // A changed policy applies now; the next solve corrects an auto bar's visibility.
+        for (options.bars, previous.bars, &state.visible, state.max) |bar, old, *visible, max| {
+            if (bar.policy != old.policy) visible.* = if (bar.policy == api.OT_SCENE_SCROLL_BAR_AUTO) max > 0 else bar.policy == api.OT_SCENE_SCROLL_BAR_ALWAYS;
         }
-        try state.applyGutters(value.yoga_node);
+        _ = try state.applyGutters(value.yoga_node);
         if (previous.follow != options.follow) state.restick();
         state.generation += 1;
         self.invalidateObservation(value);
@@ -1021,7 +1023,8 @@ pub const Scene = struct {
             state.offset[axis] = std.math.clamp(@floor(position + 0.5), 0, state.max[axis]);
         }
         state.restick();
-        state.reported = state.observed();
+        // The host knows the offset it wrote, not a size change it has not been told of.
+        @memcpy(state.reported[0..2], &state.offset);
         if (std.meta.eql(before, .{ state.offset, state.stuck })) return;
         state.generation += 1;
         if (std.meta.eql(before[0], state.offset)) return;
@@ -1048,8 +1051,11 @@ pub const Scene = struct {
             // NaN and negative ranges have nothing to scroll; huge ones stay within exact integers.
             state.max[axis] = if (state.options.axes & (@as(u32, 1) << @intCast(axis)) != 0 and range > 0) @min(@ceil(range), std.math.maxInt(i32)) else 0;
         }
+        // A stuck view moves only when its range changed, so a solve elsewhere keeps a reader
+        // who scrolled within a noise range where they are.
+        const moved = !std.meta.eql(.{ before[1], before[2], before[3] }, .{ state.max, state.extent, state.viewport });
         if (state.followAxis()) |axis| {
-            if (state.stuck) state.offset[axis] = state.followEdge(axis);
+            if (state.stuck and moved) state.offset[axis] = state.followEdge(axis);
         }
         for (0..2) |axis| state.offset[axis] = std.math.clamp(state.offset[axis], 0, state.max[axis]);
         const frame_id = self.attempt.?.frame_id;
@@ -1069,10 +1075,8 @@ pub const Scene = struct {
             state.toggles += 1;
             toggled = true;
         }
-        if (toggled) {
-            try state.applyGutters(value.yoga_node);
-            self.scroll_toggled = true;
-        }
+        // An overlay bar's toggle changes no layout.
+        if (toggled and try state.applyGutters(value.yoga_node)) self.scroll_toggled = true;
         if (!std.meta.eql(before, .{ state.offset, state.max, state.extent, state.viewport, state.content_origin, state.visible })) {
             state.generation += 1;
             value.scene_node.?.paint_epoch = nextPaintEpoch();
@@ -2045,19 +2049,21 @@ pub const Scene = struct {
             try Context.drawContextBuffer(target, source, x, y, .{});
         } else {
             try paintControl(target, node.kind, node.control, node.paint, cells, entry.clip, node.focus_frame == self.attempt.?.frame_id);
-            if (node.scroll) |state| paintScrollFills(target, state, cells, node.paint.borderSides);
+            if (node.scroll != null) paintScrollFills(target, node, cells);
         }
     }
 
     /// The wrapper, viewport, and content fills, in that order, under the children.
-    fn paintScrollFills(target: *buffer.OptimizedBuffer, state: *const ScrollState, box: Layout, sides: u32) void {
+    fn paintScrollFills(target: *buffer.OptimizedBuffer, node: *const Node, box: Layout) void {
+        const state = node.scroll.?;
+        const sides = node.paint.borderSides;
         const viewport = cellClip(scrollViewport(state, box));
         // The inner rect minus the vertical gutter: the horizontal bar's columns, the vertical bar's rows.
         const columns = state.barRects(0, box, sides).bar;
         const rows = state.barRects(1, box, sides).bar;
         const wrapper: Layout = .{ .screenX = columns.screenX, .screenY = rows.screenY, .width = columns.width, .height = rows.height };
-        const origin = state.childOrigin();
-        const content = intersection(viewport, cellClip(.{ .screenX = box.screenX + origin[0], .screenY = box.screenY + origin[1], .width = state.extent[0], .height = state.extent[1] }));
+        const origin = childOrigin(node, box);
+        const content = intersection(viewport, cellClip(.{ .screenX = origin[0], .screenY = origin[1], .width = state.extent[0], .height = state.extent[1] }));
         for (state.options.fills, [_]buffer.ClipRect{ cellClip(wrapper), viewport, content }) |fill, area| {
             if (fill) |rgba| target.fillRectClipped(area.x, area.y, area.width, area.height, rgba);
         }
@@ -2274,6 +2280,10 @@ pub const Scene = struct {
                 }
                 layout.screenX = frame.parent.screenX + @as(f64, layout.left) + node.paint.translateX;
                 layout.screenY = frame.parent.screenY + @as(f64, layout.top) + node.paint.translateY;
+                if (node.scroll) |state| if (!std.meta.eql(state.screen, .{ layout.screenX, layout.screenY })) {
+                    state.screen = .{ layout.screenX, layout.screenY };
+                    state.generation += 1;
+                };
                 const cells = cellLayout(layout);
                 if (frame.filter) |filter| {
                     self.frame_work.overlap_tests += 1;
@@ -2418,42 +2428,33 @@ fn paintSlider(target: *buffer.OptimizedBuffer, options: SliderOptions, layout: 
     }
 }
 
-pub const ScrollBarReport = struct { visible: bool, track: [4]f64, arrows: [2][4]f64, thumb: SliderThumb };
-
-pub const ScrollReport = struct {
-    stuck: bool,
-    generation: u64,
-    offset: [2]f64,
-    max: [2]f64,
-    content: [4]f64,
-    viewport: [4]f64,
-    bars: [2]ScrollBarReport,
-};
-
 fn rect(layout: Layout) [4]f64 {
     return .{ layout.screenX, layout.screenY, layout.width, layout.height };
 }
 
 /// A copy of a scroll node's state, with screen geometry from its last prepared frame.
-pub fn scrollReport(value: *const native.NativeRenderable) !ScrollReport {
+pub fn scrollReport(value: *const native.NativeRenderable) !api.ot_scene_scroll_state {
     const node = value.scene_node.?;
     const state = node.scroll orelse return error.WrongKind;
     const box = cellLayout(node.layout);
-    var bars: [2]ScrollBarReport = undefined;
-    for (&bars, 0..) |*bar, axis| {
-        const rects = state.barRects(axis, box, node.paint.borderSides);
-        const thumb = sliderThumb(state.slider(axis), rects.track.width, rects.track.height) catch SliderThumb{ .size = 0, .start = 0 };
-        bar.* = .{ .visible = state.visible[axis], .track = rect(rects.track), .arrows = .{ rect(rects.arrows[0]), rect(rects.arrows[1]) }, .thumb = thumb };
-    }
-    return .{
-        .stuck = state.stuck,
+    var report: api.ot_scene_scroll_state = .{
+        .struct_size = @sizeOf(api.ot_scene_scroll_state),
+        .abi_version = api.OT_CONTEXT_ABI_VERSION,
+        .stuck = @intFromBool(state.stuck),
+        .reserved = 0,
         .generation = state.generation,
         .offset = state.offset,
         .max = state.max,
         .content = .{ state.content_origin[0], state.content_origin[1], state.extent[0], state.extent[1] },
         .viewport = rect(scrollViewport(state, box)),
-        .bars = bars,
+        .bars = undefined,
     };
+    for (&report.bars, 0..) |*bar, axis| {
+        const rects = state.barRects(axis, box, node.paint.borderSides);
+        const thumb = sliderThumb(state.slider(axis), rects.track.width, rects.track.height) catch SliderThumb{ .size = 0, .start = 0 };
+        bar.* = .{ .visible = @intFromBool(state.visible[axis]), .reserved = 0, .track = rect(rects.track), .start_arrow = rect(rects.arrows[0]), .end_arrow = rect(rects.arrows[1]), .thumb_start = thumb.start, .thumb_size = thumb.size };
+    }
+    return report;
 }
 
 /// Public geometry advances at legacy preparation points, separately from completed
@@ -2496,8 +2497,8 @@ fn composedLayout(value: *const native.NativeRenderable, comptime observed: bool
 /// Where a parent's children compose from: its screen position, plus a scroll node's viewport
 /// and content origins minus its offset.
 fn childOrigin(node: *const Node, parent: Layout) [2]f64 {
-    const origin = if (node.scroll) |state| state.childOrigin() else [2]f64{ 0, 0 };
-    return .{ parent.screenX + origin[0], parent.screenY + origin[1] };
+    const state = node.scroll orelse return .{ parent.screenX, parent.screenY };
+    return .{ parent.screenX + state.content_origin[0] - state.offset[0], parent.screenY + state.content_origin[1] - state.offset[1] };
 }
 
 /// A scroll node's viewport rect in screen cells, from the node's prepared layout.

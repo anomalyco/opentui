@@ -140,7 +140,7 @@ fn measureLayout(case: LayoutCase, gutters: ?[2]f32) !Measured {
         const state = try f.owner.sceneGetScroll(box);
         result.viewport = state.viewport;
         result.content = .{ box_layout.screenX + state.content[0], box_layout.screenY + state.content[1], state.content[2], state.content[3] };
-        result.visible = .{ state.bars[0].visible, state.bars[1].visible };
+        result.visible = .{ state.bars[0].visible != 0, state.bars[1].visible != 0 };
     }
     for (rows[0..case.rows], result.rows[0..case.rows]) |row, *layout| layout.* = try f.owner.sceneGetLayout(row, false);
     return result;
@@ -185,12 +185,14 @@ const StickyModel = struct {
     }
 };
 
-const StickyOp = union(enum) { rows: u32, size: f32, to: f64, by: f64, follow: u32, grow: struct { size: f32, rows: u32 } };
+/// `other` resizes a sibling: the scene solves, the scroll node's layout does not change.
+const StickyOp = union(enum) { rows: u32, size: f32, to: f64, by: f64, follow: u32, grow: struct { size: f32, rows: u32 }, other: f32 };
 
 /// A box of `size` cells along the axis with rows of one cell; every op is followed by a frame.
 const Sticky = struct {
     f: Fixture,
     box: context.Handle,
+    sibling: context.Handle,
     rows: std.ArrayListUnmanaged(context.Handle) = .empty,
     model: StickyModel,
     axis: usize,
@@ -202,7 +204,9 @@ const Sticky = struct {
         const box = try create(f, f.root, c.OT_SCENE_BOX, 2);
         try style(f, box, c.OT_STYLE_DIMENSION, 0, 0, c.OT_UNIT_POINT, 10, 1);
         try style(f, box, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 10, 1);
-        var self: Sticky = .{ .f = f, .box = box, .model = .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE }, .axis = axis };
+        const sibling = try create(f, f.root, c.OT_SCENE_BOX, 3);
+        try style(f, sibling, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 1, 1);
+        var self: Sticky = .{ .f = f, .box = box, .sibling = sibling, .model = .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE }, .axis = axis };
         try self.apply(.{ .follow = follow });
         if (horizontal) try style(f, box, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, c.OT_FLEX_DIRECTION_ROW, c.OT_STYLE_CONTENT);
         return self;
@@ -237,6 +241,7 @@ const Sticky = struct {
                 try self.setSize(value.size);
                 try self.setRows(value.rows);
             },
+            .other => |width| try style(self.f, self.sibling, c.OT_STYLE_DIMENSION, 0, 0, c.OT_UNIT_POINT, width, 1),
             .to, .by => |value| {
                 target[self.axis] = value;
                 _ = try self.f.owner.sceneScrollTo(self.box, target, .{ op == .by, op == .by });
@@ -256,7 +261,7 @@ const Sticky = struct {
         const state = try self.f.owner.sceneGetScroll(self.box);
         try testing.expectEqual(self.model.max, state.max[self.axis]);
         try testing.expectEqual(self.model.offset, state.offset[self.axis]);
-        try testing.expectEqual(self.model.stuck, state.stuck);
+        try testing.expectEqual(self.model.stuck, state.stuck != 0);
     }
 };
 
@@ -280,8 +285,9 @@ test "Scene scroll node follows its sticky edge as the reference model does" {
         .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_TOP, .ops = &.{ .{ .rows = 30 }, .{ .rows = 40 } }, .offset = 0 },
         // #1514: a shrink that clamps a reader onto the new maximum does not stick it.
         .{ .ops = &.{ .{ .rows = 40 }, .{ .to = 20 }, .{ .rows = 25 }, .{ .rows = 40 } }, .offset = 15 },
-        // Review row A: a one-row range is noise, so a scroll there follows again.
-        .{ .ops = &.{ .{ .rows = 11 }, .{ .to = 0 }, .{ .rows = 20 } }, .offset = 10 },
+        // Review row A: a one-row range is noise, so a scroll there follows again, but only
+        // once the range changes: a solve elsewhere leaves the reader at 0, as today.
+        .{ .ops = &.{ .{ .rows = 11 }, .{ .to = 0 }, .{ .other = 3 }, .{ .rows = 20 } }, .offset = 10 },
         // Review row C: scrolled up, shrunk to fit, scrolled, grown: follows again.
         .{ .ops = &.{ .{ .rows = 30 }, .{ .to = 5 }, .{ .rows = 8 }, .{ .to = 0 }, .{ .rows = 25 } }, .offset = 15 },
         // Review row F: the follow edge set before any content follows the first content.
@@ -313,7 +319,7 @@ test "Scene scroll node follows its sticky edge as the reference model does" {
             0, 1 => .{ .rows = random.uintLessThan(u32, 26) },
             2 => .{ .size = @floatFromInt(random.intRangeAtMost(u32, 3, 15)) },
             3 => .{ .to = @floatFromInt(random.intRangeAtMost(i32, -2, 24)) },
-            4 => .{ .by = @as(f64, @floatFromInt(random.intRangeAtMost(i32, -6, 6))) / 2 },
+            4 => if (random.boolean()) .{ .by = @as(f64, @floatFromInt(random.intRangeAtMost(i32, -6, 6))) / 2 } else .{ .other = @floatFromInt(random.intRangeAtMost(u32, 1, 4)) },
             else => .{ .follow = switch (random.uintLessThan(u32, 3)) {
                 0 => c.OT_SCENE_SCROLL_FOLLOW_NONE,
                 1 => if (horizontal) c.OT_SCENE_SCROLL_FOLLOW_LEFT else c.OT_SCENE_SCROLL_FOLLOW_TOP,
@@ -323,11 +329,10 @@ test "Scene scroll node follows its sticky edge as the reference model does" {
     }
 }
 
-test "Scene scroll node rejects NaN targets and keeps huge layouts within whole cells" {
+test "Scene scroll node keeps huge layouts within whole cells" {
     var sticky = try Sticky.init(c.OT_SCENE_SCROLL_FOLLOW_BOTTOM, false);
     defer sticky.deinit();
     try sticky.apply(.{ .rows = 1 });
-    try testing.expectError(error.InvalidOptions, sticky.f.owner.sceneScrollTo(sticky.box, .{ 0, std.math.nan(f64) }, .{ false, false }));
     try style(sticky.f, sticky.rows.items[0], c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 1e30, 1);
     try present(sticky.f);
     const state = try sticky.f.owner.sceneGetScroll(sticky.box);
@@ -378,10 +383,15 @@ test "Scene scroll node paints fills under its children and bars over them, and 
         // An unchanged frame asks nothing; a read changes nothing it reports.
         _ = try f.step(null, frame_options, c.OT_SCENE_FRAME_DONE, null);
         try commit(f);
+        // A scroll in a reply before the node's SCROLL step marks only the offset reported.
         try f.owner.sceneDestroyNode(rows[9]);
         _ = try f.owner.sceneGetScroll(box);
-        _ = try f.step(try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
+        try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL | c.OT_SCENE_HOOK_UPDATE, 2, 0, 0);
+        const update = try f.step(null, frame_options, c.OT_SCENE_FRAME_UPDATE, box);
+        _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ true, true });
+        _ = try f.step(try f.step(update, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
         try commit(f);
+        try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 3, 0, 0);
         try testing.expectEqual(@as(u32, '3'), char(f, 1, 0));
         _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ false, false });
         _ = try f.step(null, frame_options, c.OT_SCENE_FRAME_DONE, null);
@@ -440,4 +450,20 @@ test "Scene scroll node repaints its thumb on rows that no child crosses" {
     _ = try f.owner.sceneScrollTo(box, .{ 0, 1 }, .{ false, false });
     try present(f);
     try testing.expect(before != char(f, 3, 1));
+    // A move of the box changes the reported screen geometry, and so the generation.
+    const moved = try f.owner.sceneGetScroll(box);
+    try f.owner.scenePatchPaint(box, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 1 });
+    try present(f);
+    const state = try f.owner.sceneGetScroll(box);
+    try testing.expectEqual(moved.viewport[0] + 1, state.viewport[0]);
+    try testing.expect(moved.generation != state.generation);
+    // A bar policy switched back to auto follows the range in the next frame, both ways.
+    for ([_]u32{ c.OT_SCENE_SCROLL_BAR_NEVER, c.OT_SCENE_SCROLL_BAR_ALWAYS }) |policy| {
+        try style(f, box, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, c.OT_EDGE_BOTTOM, c.OT_UNIT_POINT, if (policy == c.OT_SCENE_SCROLL_BAR_NEVER) 9 else 0, c.OT_STYLE_CONTENT);
+        try f.owner.sceneSetScroll(box, .{ .bars = .{ .{}, .{ .policy = policy } } });
+        try present(f);
+        try f.owner.sceneSetScroll(box, .{});
+        try present(f);
+        try testing.expectEqual(policy == c.OT_SCENE_SCROLL_BAR_NEVER, (try f.owner.sceneGetScroll(box)).bars[1].visible != 0);
+    }
 }

@@ -788,8 +788,9 @@ ot_status ot_scene_set_viewport(ot_context *, const ot_handle *node, const ot_ha
  * an axis that does not scroll). The box's scene children lay out in the
  * content node, and the box's own padding holds the gutters of visible inset
  * bars. After each layout solve, max = max(0, content - viewport inner) on a
- * scrolling axis (0 otherwise); a stuck view moves to its follow edge; the
- * offset clamps to [0, max] in whole cells. Children compose at the box origin
+ * scrolling axis (0 otherwise); if max, the content size, or the viewport
+ * changed, a stuck view moves to its follow edge; the offset clamps to
+ * [0, max] in whole cells. Children compose at the box origin
  * plus the viewport and content origins minus the offset, clip to the viewport
  * rect, and with culling filter against it like ot_scene_set_viewport. Auto
  * bars show while max > 0; a box toggles its bars at most twice per frame,
@@ -886,15 +887,16 @@ ot_status ot_scene_set_scroll_arrow(ot_context *, const ot_handle *node, uint32_
 /* An explicit scroll. Without RELATIVE_X/Y the values are absolute offsets; a
  * relative delta of 0 keeps an axis. Values round to whole cells and clamp to
  * the limits of the last solve; ±Infinity clamp, NaN returns
- * OT_INVALID_ARGUMENT. It recomputes stuck, marks the state as reported to the
- * host, and copies the new state to out_state unless it is NULL. During a frame
+ * OT_INVALID_ARGUMENT. It recomputes stuck, marks the offset (not the sizes) as
+ * reported to the host, and copies the new state to out_state unless it is NULL. During a frame
  * attempt the next round prepares at the new offset. */
 ot_status ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, double y, uint32_t flags,
     ot_scene_scroll_state *out_state);
 /* Pure: it never changes what an OT_SCENE_FRAME_SCROLL request reports. With
  * OT_SCENE_HOOK_SCROLL (scroll nodes only) a frame returns one SCROLL request,
- * after the node's refresh and before paint, when the offset, content size, or
- * viewport size differ from the state last reported or written by scroll_to. */
+ * after the node's refresh and before paint, when the offset differs from the last
+ * reported or written offset, or the content or viewport size from the last
+ * reported size. */
 ot_status ot_scene_get_scroll(ot_context *, const ot_handle *node, ot_scene_scroll_state *out_state);
 /* focused is 0 or 1. Stores one accepted target without host focus/input policy.
  * Focusable boxes on its current ancestor path use focused_border_color. Zero

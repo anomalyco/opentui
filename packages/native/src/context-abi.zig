@@ -1868,31 +1868,6 @@ pub fn ot_scene_set_scroll_arrow(context: ?*ContextHandle, node_ptr: ?*const c.o
     return c.OT_OK;
 }
 
-fn scrollStateToC(report: scene.ScrollReport) c.ot_scene_scroll_state {
-    var bars: [2]c.ot_scene_scroll_bar_state = undefined;
-    for (&bars, report.bars) |*bar, value| bar.* = .{
-        .visible = @intFromBool(value.visible),
-        .reserved = 0,
-        .track = value.track,
-        .start_arrow = value.arrows[0],
-        .end_arrow = value.arrows[1],
-        .thumb_start = value.thumb.start,
-        .thumb_size = value.thumb.size,
-    };
-    return .{
-        .struct_size = @sizeOf(c.ot_scene_scroll_state),
-        .abi_version = c.OT_CONTEXT_ABI_VERSION,
-        .stuck = @intFromBool(report.stuck),
-        .reserved = 0,
-        .generation = report.generation,
-        .offset = report.offset,
-        .max = report.max,
-        .content = report.content,
-        .viewport = report.viewport,
-        .bars = bars,
-    };
-}
-
 fn checkScrollOutput(owner: *ContextHandle, out: *const c.ot_scene_scroll_state) ?c.ot_status {
     if (out.struct_size != @sizeOf(c.ot_scene_scroll_state)) return sessionError(owner, error.InvalidOptions);
     if (out.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
@@ -1907,7 +1882,7 @@ pub fn ot_scene_scroll_to(context: ?*ContextHandle, node_ptr: ?*const c.ot_handl
     if (flags > c.OT_SCENE_SCROLL_RELATIVE_X | c.OT_SCENE_SCROLL_RELATIVE_Y) return sessionError(owner, error.InvalidOptions);
     if (out_ptr) |out| if (checkScrollOutput(owner, out)) |rejected| return rejected;
     const report = owner.core.sceneScrollTo(handleFromC(node.*), .{ x, y }, .{ flags & c.OT_SCENE_SCROLL_RELATIVE_X != 0, flags & c.OT_SCENE_SCROLL_RELATIVE_Y != 0 }) catch |err| return sessionError(owner, err);
-    if (out_ptr) |out| out.* = scrollStateToC(report);
+    if (out_ptr) |out| out.* = report;
     return c.OT_OK;
 }
 
@@ -1918,7 +1893,7 @@ pub fn ot_scene_get_scroll(context: ?*ContextHandle, node_ptr: ?*const c.ot_hand
     const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
     const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
     if (checkScrollOutput(owner, out)) |rejected| return rejected;
-    out.* = scrollStateToC(owner.core.sceneGetScroll(handleFromC(node.*)) catch |err| return sessionError(owner, err));
+    out.* = owner.core.sceneGetScroll(handleFromC(node.*)) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -3708,6 +3683,13 @@ test "Scene scroll ABI validates options, targets, and the scroll node's style a
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_scroll(handle, &box, &invalid));
     }
     try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_get_scroll(handle, &box, &state));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_scroll_to(handle, &box, 0, 0, 0, &state));
+    var stale = box;
+    stale.generation += 1;
+    var foreign = box;
+    foreign.context_id += 1;
+    try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_scene_scroll_to(handle, &stale, 0, 0, 0, null));
+    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_scene_scroll_to(handle, &foreign, 0, 0, 0, null));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll(handle, &box, &options));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll(handle, &box, &options));
     // NaN and unknown flags reject; NULL output is allowed; a short output record rejects.
