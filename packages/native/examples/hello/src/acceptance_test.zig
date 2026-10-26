@@ -25,10 +25,6 @@ const MemorySink = struct {
     bytes: [capacity]u8 = undefined,
     length: usize = 0,
 
-    fn output(self: *MemorySink) opentui.BufferedOutput {
-        return .{ .ctx = self, .write_fn = write };
-    }
-
     fn write(context: *anyopaque, bytes: []const u8) void {
         const self: *MemorySink = @ptrCast(@alignCast(context));
         std.debug.assert(bytes.len <= capacity - self.length);
@@ -43,25 +39,23 @@ const MemorySink = struct {
 
 test "styled text renders through the public Zig module without JavaScript" {
     const allocator = std.testing.allocator;
-    var graphemes = opentui.GraphemePool.init(allocator);
-    defer graphemes.deinit();
-    var links = opentui.LinkPool.init(allocator);
-    defer links.deinit();
     var environment = std.process.Environ.Map.init(allocator);
     defer environment.deinit();
     var sink: MemorySink = .{};
 
-    const renderer = try opentui.CliRenderer.createWithOptions(allocator, 8, 1, &graphemes, .{
-        .output = .{ .buffered = sink.output() },
-        .clearOnShutdown = false,
-        .link_pool = &links,
-        .env_map = &environment,
+    const owner = try opentui.Context.init(allocator, std.testing.io, .{
+        .object_capacity = 1,
+        .render_cells_max = 8,
     });
-    defer renderer.destroy();
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createSession(.{ .chunk_size = 4096 });
+    defer owner.destroy(id) catch unreachable;
+    try owner.attachSessionRenderer(id, 8, 1, .{ .env_map = &environment });
+    const renderer = try owner.raw().getSessionRenderer(id);
     renderer.terminal.caps.hyperlinks = true;
     renderer.terminal.caps.rgb = true;
 
-    const text_buffer = try opentui.UnifiedTextBuffer.init(allocator, &graphemes, &links, .unicode);
+    const text_buffer = try opentui.UnifiedTextBuffer.init(allocator, &owner.graphemes, &owner.links, .unicode);
     defer text_buffer.deinit();
     const view = try opentui.UnifiedTextBufferView.init(allocator, text_buffer);
     defer view.deinit();
@@ -70,7 +64,7 @@ test "styled text renders through the public Zig module without JavaScript" {
     const amber = opentui.rgbColor(255, 180, 40, 255);
     const cyan = opentui.rgbColor(80, 220, 255, 255);
     const link_url = "https://opentui.com/native";
-    var link_tracker = opentui.LinkTracker.init(allocator, &links);
+    var link_tracker = opentui.LinkTracker.init(allocator, &owner.links);
     defer link_tracker.deinit();
     const link_id = try link_tracker.trackUrl(link_url);
     const text = try allocator.dupe(u8, "OpenTUI");
@@ -84,7 +78,12 @@ test "styled text renders through the public Zig module without JavaScript" {
     transferred = true;
 
     renderer.getNextBuffer().drawTextBuffer(view, 0, 0);
-    try std.testing.expectEqual(opentui.renderer.RenderStatus.rendered, renderer.render(true));
+    try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
+    var bytes: [4096]u8 = undefined;
+    while (try owner.readOutput(id, &bytes)) |ticket| {
+        MemorySink.write(&sink, bytes[0..ticket.len]);
+        try owner.completeOutput(id, ticket, .written);
+    }
 
     const output = sink.slice();
     const amber_index = std.mem.find(u8, output, "\x1b[38;2;255;180;40m") orelse return error.TestUnexpectedResult;

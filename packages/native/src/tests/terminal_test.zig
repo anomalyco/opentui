@@ -2017,7 +2017,7 @@ test "restoreTerminalModes - respects mouse movement setting" {
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.enableAnyEventTracking) == null);
 }
 
-test "resetState - force-disables mouse when cleanup is pending and state drifted false" {
+test "resetInputModes - force-disables mouse when cleanup is pending and state drifted false" {
     var term = Terminal.init(.{});
     term.state.mouse = false;
     term.state.mouse_movement = false;
@@ -2026,7 +2026,7 @@ test "resetState - force-disables mouse when cleanup is pending and state drifte
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
 
-    try term.resetState(&writer);
+    try term.resetInputModes(&writer);
 
     const output = writer.getWritten();
     const idx_disable_any = std.mem.find(u8, output, ansi.ANSI.disableAnyEventTracking).?;
@@ -2039,13 +2039,13 @@ test "resetState - force-disables mouse when cleanup is pending and state drifte
     try testing.expect(!term.state.mouse);
 }
 
-test "resetState - skips mouse disable when mouse was never enabled" {
+test "resetInputModes - skips mouse disable when mouse was never enabled" {
     var term = Terminal.init(.{});
 
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
 
-    try term.resetState(&writer);
+    try term.resetInputModes(&writer);
 
     const output = writer.getWritten();
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.disableAnyEventTracking) == null);

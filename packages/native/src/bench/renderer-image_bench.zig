@@ -103,7 +103,7 @@ fn runPlacementScenario(
             const next = test_renderer.renderer.getNextBuffer();
             drawTextBackdrop(next);
             _ = try next.drawImage(value, image_handle, 5, 5, 40, 20, 320, 200, 0, 0, image_width, image_height, .auto);
-            _ = test_renderer.renderer.render(true);
+            _ = test_renderer.render(true);
         }
     }
     var frame: usize = 0;
@@ -124,9 +124,8 @@ fn runPlacementScenario(
 
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        _ = test_renderer.renderer.render(false);
+        _ = test_renderer.render(false);
         cost.stats.record(timer.read());
         // Skip the first frame: it pays the initial full paint for every scenario.
         if (frame == 0) {
@@ -160,9 +159,8 @@ fn runLargeStillTransmit(io: std.Io, allocator: std.mem.Allocator, pool: *gp.Gra
         _ = try next.drawImage(stills[index], image_handle, 5, 5, 40, 20, 320, 200, 0, 0, 1600, 1200, .auto);
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        _ = test_renderer.renderer.render(false);
+        _ = test_renderer.render(false);
         cost.stats.record(timer.read());
         // Match the other renderer scenarios by excluding initial full paint.
         if (frame == 0) {
@@ -226,7 +224,7 @@ fn runStaticKittyPlacementCount(
     const image_handle: u32 = 1;
 
     try drawStaticKittyPlacements(test_renderer.renderer.getNextBuffer(), value, image_handle, count);
-    if (test_renderer.renderer.render(true) != .rendered) return error.RenderFailed;
+    if (test_renderer.render(true) != .rendered) return error.RenderFailed;
 
     const iterations: usize = if (count <= 128) 100 else if (count <= 512) 50 else if (count <= 2048) 20 else 30;
     var cost = FrameCost{};
@@ -234,9 +232,8 @@ fn runStaticKittyPlacementCount(
         try drawStaticKittyPlacements(test_renderer.renderer.getNextBuffer(), value, image_handle, count);
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        if (test_renderer.renderer.render(false) == .failed) return error.RenderFailed;
+        if (test_renderer.render(false) == .failed) return error.RenderFailed;
         cost.stats.record(timer.read());
         cost.total_bytes += test_renderer.memory.bytes.items.len;
         cost.frames += 1;
@@ -288,7 +285,7 @@ fn runDirtySixelOverlapCount(
         false,
         count,
     );
-    if (test_renderer.renderer.render(true) != .rendered) return error.RenderFailed;
+    if (test_renderer.render(true) != .rendered) return error.RenderFailed;
     try drawOverlappingSixelPlacements(
         test_renderer.renderer.getNextBuffer(),
         base,
@@ -298,7 +295,7 @@ fn runDirtySixelOverlapCount(
         true,
         count,
     );
-    if (test_renderer.renderer.render(false) == .failed) return error.RenderFailed;
+    if (test_renderer.render(false) == .failed) return error.RenderFailed;
 
     const iterations: usize = if (count <= 128) 100 else if (count <= 512) 50 else if (count <= 2048) 20 else 30;
     var cost = FrameCost{};
@@ -314,9 +311,8 @@ fn runDirtySixelOverlapCount(
         );
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        if (test_renderer.renderer.render(false) == .failed) return error.RenderFailed;
+        if (test_renderer.render(false) == .failed) return error.RenderFailed;
         cost.stats.record(timer.read());
         cost.total_bytes += test_renderer.memory.bytes.items.len;
         cost.frames += 1;
@@ -389,20 +385,10 @@ fn runSplitImageCommit(
         _ = test_renderer.renderer.resetSplitScrollback(TERM_HEIGHT, TERM_HEIGHT);
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(
-            snapshot,
-            snapshot.width,
-            false,
-            true,
-            TERM_HEIGHT,
-            false,
-            true,
-            true,
-        );
+        const status = test_renderer.commitSplit(snapshot, snapshot.width, false, true, TERM_HEIGHT, false);
         const elapsed = timer.read();
-        if (result.status == .failed) return error.RenderFailed;
+        if (status == .failed) return error.RenderFailed;
         const output = test_renderer.memory.bytes.items;
         switch (protocol) {
             .kitty => if (std.mem.find(u8, output, "\x1b_Ga=t") == null) return error.MissingKittyImageOutput,
