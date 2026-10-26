@@ -3,6 +3,7 @@ const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ansi = @import("../ansi.zig");
+const expectBufferInvariants = @import("buffer-invariants.zig").expectBufferInvariants;
 
 fn expectTrackedStarts(target: *const buffer.OptimizedBuffer) !void {
     for (target.buffer.char) |char| {
@@ -100,5 +101,47 @@ test "grapheme accounting - overlapping continuations remove only overwritten st
         try std.testing.expectError(error.InvalidId, pool.getRefcount(second_id));
         try std.testing.expectEqual(@as(u32, 0), try links.getRefcount(old_link));
         try std.testing.expectEqual(@as(u32, 0), try links.getRefcount(new_link));
+    }
+}
+
+test "grapheme accounting - clearRows releases the references of the rows it clears" {
+    // Each row of a 4x3 buffer holds a linked wide grapheme and a linked 'x': one start and
+    // three linked cells per row.
+    const cases = [_]struct { top: u32, bottom: u32, starts: u32, links: u32 }{
+        .{ .top = 1, .bottom = 1, .starts = 3, .links = 9 },
+        .{ .top = 0, .bottom = 1, .starts = 2, .links = 6 },
+        .{ .top = 1, .bottom = 3, .starts = 1, .links = 3 },
+        .{ .top = 0, .bottom = 3, .starts = 0, .links = 0 },
+    };
+    for (cases) |case| {
+        var pool = gp.GraphemePool.init(std.testing.allocator);
+        defer pool.deinit();
+        var links = link.LinkPool.init(std.testing.allocator);
+        defer links.deinit();
+        const target = try buffer.OptimizedBuffer.init(std.testing.allocator, 4, 3, .{ .pool = &pool, .link_pool = &links });
+        defer target.deinit();
+        const id = try pool.acquire("\xf0\x9f\x98\x80");
+        const url = try links.acquire("https://band.invalid");
+        const attributes = ansi.TextAttributes.setLinkId(0, url);
+        const white = ansi.rgbColor(255, 255, 255, 255);
+        for (0..3) |row| {
+            target.set(0, @intCast(row), .{ .char = gp.packGraphemeStart(id, 2), .fg = white, .bg = white, .attributes = attributes });
+            target.set(3, @intCast(row), .{ .char = 'x', .fg = white, .bg = white, .attributes = attributes });
+        }
+        try pool.decref(id);
+        try links.decref(url);
+        const bg = ansi.rgbColor(0, 0, 9, 255);
+        target.clearRows(case.top, case.bottom, bg, 0);
+        try expectBufferInvariants(target);
+        try std.testing.expectEqual(case.starts, target.grapheme_tracker.used_ids.get(id) orelse 0);
+        try std.testing.expectEqual(case.links, target.link_tracker.used_ids.get(url) orelse 0);
+        // The last reference released frees the pooled entries.
+        if (case.starts == 0) try std.testing.expectError(error.InvalidId, pool.getRefcount(id));
+        if (case.links == 0) try std.testing.expectEqual(@as(u32, 0), try links.getRefcount(url));
+        for (0..3) |row| {
+            const cleared = row >= case.top and row < case.bottom;
+            const cell = target.get(0, @intCast(row)).?;
+            try std.testing.expectEqual(cleared, cell.char == 0 and cell.bg[2] == 9 and cell.attributes == 0);
+        }
     }
 }

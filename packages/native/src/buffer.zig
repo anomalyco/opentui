@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ansi = @import("ansi.zig");
 const tb = @import("text-buffer.zig");
@@ -697,6 +698,8 @@ pub const OptimizedBuffer = struct {
     scissor_stack: std.ArrayListUnmanaged(ClipRect),
     opacity_stack: std.ArrayListUnmanaged(f32),
     image_placements: *std.ArrayListUnmanaged(ImagePlacement),
+    // Text lines that draws visited.
+    test_text_lines: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     const InitOptions = struct {
         respectAlpha: bool = false,
@@ -1011,6 +1014,24 @@ pub const OptimizedBuffer = struct {
         fillU32(self.buffer.attributes, 0);
         @memset(self.buffer.fg, ansi.rgbColor(255, 255, 255, 255));
         @memset(self.buffer.bg, bg);
+    }
+
+    /// Clear rows [top, bottom) as clear does, releasing the grapheme and link references of
+    /// their cells. Wide graphemes stay within their row, so no span crosses the edge.
+    /// Placements stay; a buffer with placements is cleared whole.
+    pub fn clearRows(self: *OptimizedBuffer, top: u32, bottom: u32, bg: RGBA, char: ?u32) void {
+        assert(top <= bottom and bottom <= self.height);
+        const start = top * self.width;
+        const end = bottom * self.width;
+        for (self.buffer.char[start..end], self.buffer.attributes[start..end]) |cell, attributes| {
+            if (gp.isGraphemeChar(cell)) self.grapheme_tracker.remove(gp.graphemeIdFromChar(cell));
+            const link_id = ansi.TextAttributes.getLinkId(attributes);
+            if (link_id != 0) self.link_tracker.removeCellRef(link_id);
+        }
+        fillU32(self.buffer.char[start..end], char orelse DEFAULT_SPACE_CHAR);
+        fillU32(self.buffer.attributes[start..end], 0);
+        @memset(self.buffer.fg[start..end], ansi.rgbColor(255, 255, 255, 255));
+        @memset(self.buffer.bg[start..end], bg);
     }
 
     fn clearImagePlacements(self: *OptimizedBuffer) void {
@@ -2313,17 +2334,16 @@ pub const OptimizedBuffer = struct {
 
         if (virtual_lines.len == 0) return;
 
-        const firstVisibleLine: u32 = if (y < 0) @intCast(-@as(i64, y)) else 0;
         const bufferBottomY = self.height;
-        const lastPossibleLine = if (y >= @as(i32, @intCast(bufferBottomY)))
-            0
-        else if (y < 0)
-            @min(virtual_lines.len, firstVisibleLine + bufferBottomY)
-        else
-            @min(virtual_lines.len, bufferBottomY - @as(u32, @intCast(y)));
-
-        if (firstVisibleLine >= virtual_lines.len or lastPossibleLine == 0) return;
+        // Only lines on the buffer's and the scissor's rows can write a cell.
+        const scissor = self.getCurrentScissorRect() orelse ClipRect{ .x = 0, .y = 0, .width = 0, .height = bufferBottomY };
+        const rows_top: i64 = @max(0, scissor.y);
+        const rows_bottom = @min(@as(i64, bufferBottomY), @as(i64, scissor.y) + scissor.height);
+        const line_count: i64 = @intCast(virtual_lines.len);
+        const firstVisibleLine: u32 = @intCast(std.math.clamp(rows_top - @as(i64, y), 0, line_count));
+        const lastPossibleLine: u32 = @intCast(std.math.clamp(rows_bottom - @as(i64, y), 0, line_count));
         if (firstVisibleLine >= lastPossibleLine) return;
+        if (builtin.is_test) self.test_text_lines += lastPossibleLine - firstVisibleLine;
 
         const horizontal_offset: u32 = if (viewport) |vp| vp.x else 0;
         const viewport_width: u32 = if (viewport) |vp| vp.width else std.math.maxInt(u32);

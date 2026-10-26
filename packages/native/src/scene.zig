@@ -363,6 +363,18 @@ const Record = struct {
 
 const Damage = enum { all, rows, none };
 
+/// Rows [top, bottom) that a band frame clears and repaints.
+const Band = struct {
+    top: u32,
+    bottom: u32,
+
+    fn meets(self: Band, rows: Band) bool {
+        return self.top < rows.bottom and rows.top < self.bottom;
+    }
+};
+const bands_max = 16;
+const whole_screen = [1]Band{.{ .top = 0, .bottom = std.math.maxInt(u32) }};
+
 const Attempt = struct {
     root: handles.Handle,
     frame_id: u64,
@@ -659,6 +671,10 @@ pub const Scene = struct {
     records_options: FrameOptions = undefined,
     presented_options: FrameOptions = undefined,
     damage: std.DynamicBitSetUnmanaged = .{},
+    // Runs of damaged rows, closer runs merged: a frame with damage clears and paints only these,
+    // or every row without a band.
+    bands: [bands_max]Band = undefined,
+    band_count: usize = 0,
     // The scratch buffer of a verified skip while it paints (OT_SCENE_DEBUG_VERIFY).
     verify_target: ?*buffer.OptimizedBuffer = null,
     attempt: ?Attempt = null,
@@ -1674,10 +1690,11 @@ pub const Scene = struct {
         if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), false);
         if (damage == .none) {
             try self.skipPaint(cli);
-            if (verify) try self.verifySkip(owner, cli, options, recording, refresh_views);
+            if (verify) try self.verifyRepaint(owner, cli, options, recording, refresh_views);
         } else {
-            try self.paintFrame(owner, cli, options, recording, refresh_views);
+            try self.paintFrame(owner, cli, options, recording, refresh_views, self.band_count != 0);
             if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), true);
+            if (verify) try self.verifyRepaint(owner, cli, options, recording, refresh_views);
         }
         // The focused editor among the members owns the cursor, wherever it paints.
         self.maintainCursor(cli, cursor);
@@ -2101,19 +2118,29 @@ pub const Scene = struct {
         self.editor_cursor_owned = false;
     }
 
-    fn beginPaint(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions, members: usize) !void {
+    fn beginPaint(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions, members: usize, banded: bool) !void {
         const target = cli.getNextBuffer();
         target.clearScissorRects();
         target.clearOpacity();
         try target.scissor_stack.ensureTotalCapacity(self.allocator, 1);
         try target.opacity_stack.ensureTotalCapacity(self.allocator, 1);
         cli.setBackgroundColor(options.background);
-        target.clear(options.background, if (options.preserve_unwritten) 0 else null);
+        const char: ?u32 = if (options.preserve_unwritten) 0 else null;
+        if (banded) {
+            // Placements take the full path.
+            std.debug.assert(target.image_placements.items.len == 0);
+            for (self.bands[0..self.band_count]) |band| {
+                target.clearRows(band.top, band.bottom, options.background, char);
+                self.frame_work.cells_cleared += @as(u64, target.width) * (band.bottom - band.top);
+            }
+        } else {
+            target.clear(options.background, char);
+            self.frame_work.cells_cleared += @as(u64, target.width) * target.height;
+        }
         // The draft replaces the retained frame until its presentation; raw users then see the
         // draft's cells, as before.
         cli.next_scene_retained = false;
         cli.retained_frame_id = 0;
-        self.frame_work.cells_cleared += @as(u64, target.width) * target.height;
         self.settleHits(cli);
         self.hits.clearRetainingCapacity();
         // A bars entry adds a second hit.
@@ -2209,6 +2236,7 @@ pub const Scene = struct {
         const objects = &owner.objects;
         const frame_id = self.attempt.?.frame_id;
         var reasons = self.fullPathReasons(cli, options);
+        self.band_count = 0;
         self.records.clearRetainingCapacity();
         self.records_frame = frame_id;
         self.records_options = options;
@@ -2216,6 +2244,7 @@ pub const Scene = struct {
         try self.damage.resize(self.allocator, cli.height, false);
         self.damage.unsetAll();
         var matched: usize = 0;
+        var composites = false;
         var cursor: ?Work = null;
         // Rows of every member whose inputs changed, before and after, and of every member that left.
         var list: PaintList = .{ .scene = self, .objects = objects, .recording = recording, .refresh_views = refresh_views };
@@ -2227,6 +2256,7 @@ pub const Scene = struct {
             self.record(owner, cli, entry, phases, &reasons);
             if (reasons != 0) continue;
             const current = self.records.items[self.records.items.len - 1];
+            composites = composites or !current.stable;
             const old = self.recordOf(entry.node.scene_node.?, self.presented_records_frame, self.presented_records.items);
             matched += @intFromBool(old != null);
             if (old != null and current.stable and old.?.stable and std.meta.eql(old.?.inputs, current.inputs)) continue;
@@ -2247,7 +2277,27 @@ pub const Scene = struct {
         }
         const rows = self.damage.count();
         self.frame_work.damage_rows = @intCast(rows);
+        self.planBands(composites);
         return .{ if (rows == 0) .none else .rows, cursor };
+    }
+
+    /// Bands are the runs of damaged rows; runs one row apart merge, and the last band takes
+    /// every run past the limit. No band means a full repaint: every row is damaged, or the
+    /// frame composites a buffer, whose draw takes another path when the target holds
+    /// graphemes or links in any row.
+    fn planBands(self: *Scene, composites: bool) void {
+        if (composites) return;
+        var rows = self.damage.iterator(.{});
+        while (rows.next()) |index| {
+            const row: u32 = @intCast(index);
+            if (self.band_count != 0 and (row <= self.bands[self.band_count - 1].bottom + 1 or self.band_count == bands_max)) {
+                self.bands[self.band_count - 1].bottom = row + 1;
+            } else {
+                self.bands[self.band_count] = .{ .top = row, .bottom = row + 1 };
+                self.band_count += 1;
+            }
+        }
+        if (self.band_count == 1 and self.bands[0].top == 0 and self.bands[0].bottom == self.damage.bit_length) self.band_count = 0;
     }
 
     fn damageRows(self: *Scene, previous: Record) void {
@@ -2354,10 +2404,10 @@ pub const Scene = struct {
         }
     }
 
-    /// OT_SCENE_DEBUG_VERIFY on a skipped frame: a full repaint into a scratch buffer equals the
-    /// kept cells, and its hits the kept hits. It changes no view, cursor, counter, hit, or
+    /// OT_SCENE_DEBUG_VERIFY on a skipped or band frame: a full repaint into a scratch buffer
+    /// equals next, and its hits the draft's. It changes no view, cursor, counter, hit, or
     /// buffer the frame keeps.
-    fn verifySkip(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
+    fn verifyRepaint(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
         const next = cli.getNextBuffer();
         const scratch = try buffer.OptimizedBuffer.init(self.allocator, next.width, next.height, .{ .pool = next.pool, .link_pool = next.link_pool, .logger = next.logger, .width_method = next.width_method, .id = "verify buffer" });
         defer scratch.deinit();
@@ -2377,7 +2427,7 @@ pub const Scene = struct {
         defer self.frame_work = work;
         self.verify_target = scratch;
         defer self.verify_target = null;
-        try self.paintMembers(owner, cli, options, recording, refresh_views);
+        try self.paintMembers(owner, cli, options, recording, refresh_views, false);
         try self.verifyRows(scratch, next, false);
         if (!std.mem.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(kept.items))) return error.RetainedMismatch;
     }
@@ -2491,27 +2541,43 @@ pub const Scene = struct {
 
     /// Paint prepared membership in one pass: the RECORD snapshot with its recording, or
     /// the visible paint list with native bodies only.
-    fn paintFrame(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
+    fn paintFrame(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool, banded: bool) !void {
         const target = cli.getNextBuffer();
         errdefer target.clear(cli.backgroundColor, null);
         defer target.clearScissorRects();
         defer target.clearOpacity();
-        try self.beginPaint(cli, options, if (recording == null) self.members.items.len else self.paint_members.items.len);
-        try self.paintMembers(owner, cli, options, recording, refresh_views);
+        try self.beginPaint(cli, options, if (recording == null) self.members.items.len else self.paint_members.items.len, banded);
+        try self.paintMembers(owner, cli, options, recording, refresh_views, banded);
     }
 
-    fn paintMembers(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
+    /// Paints every member, or on a band frame each member on the bands its record's rows meet.
+    fn paintMembers(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool, banded: bool) !void {
         var list: PaintList = .{ .scene = self, .objects = &owner.objects, .recording = recording, .refresh_views = refresh_views };
-        while (list.next()) |item| try self.paintMember(owner, cli, item[0], options, item[1]);
+        const bands: []const Band = if (banded) self.bands[0..self.band_count] else &whole_screen;
+        var index: usize = 0;
+        while (list.next()) |item| {
+            const entry, const phases = item;
+            var rows = whole_screen[0];
+            if (banded) {
+                // Records follow the paint list; a bars entry paints inside its scroll node's record.
+                const found = if (entry.bars) self.recordOf(entry.node.scene_node.?, self.records_frame, self.records.items).? else self.records.items[index];
+                std.debug.assert(found.token == entry.node.scene_node.?.token);
+                rows = .{ .top = found.top, .bottom = found.bottom };
+            }
+            index += @intFromBool(!entry.bars);
+            try self.paintMember(owner, cli, entry, options, phases, bands, rows);
+        }
     }
 
     fn focusedEditor(self: *const Scene, node: *const Node) bool {
         return node.editor != null and self.focus != null and std.meta.eql(self.focus.?, node.handle);
     }
 
-    fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
+    /// Paints a member on each band that meets its rows, scissored to the band, and adds its
+    /// hits once, so a band frame's hits equal a full frame's.
+    fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases, bands: []const Band, rows: Band) !void {
         const node = entry.node.scene_node.?;
-        if (entry.bars) return self.paintBars(cli, entry, options);
+        if (entry.bars) return self.paintBars(cli, entry, options, bands, rows);
         const cells = cellLayout(entry.layout);
         const painted = intersection(.{
             .x = @intFromFloat(cells.screenX),
@@ -2519,41 +2585,55 @@ pub const Scene = struct {
             .width = @intFromFloat(cells.width),
             .height = @intFromFloat(cells.height),
         }, entry.clip);
-        if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint) or hasFills(node)) {
-            self.frame_work.member_cells += @as(u64, painted.width) * painted.height;
-            const target = self.paintTarget(cli);
-            // A natively composed image buffer receives its node's hook drawing, like its body.
-            const surface = if (node.kind == api.OT_SCENE_IMAGE) node.control.image.buffer else null;
-            try enterMember(target, entry);
-            if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, cells);
-            try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_BEFORE);
-            if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
-                try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_SELF);
-            } else try self.paintNode(cli, entry, cells);
-            try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_AFTER);
-            if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, cells);
+        for (bands) |band| {
+            if (!band.meets(rows)) continue;
+            self.frame_work.members_painted += 1;
+            break;
         }
-        self.frame_work.members_painted += 1;
+        if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint) or hasFills(node)) for (bands) |band| {
+            if (!band.meets(rows)) continue;
+            const scissor = bandClip(entry.clip, band);
+            const drawn = intersection(painted, scissor);
+            self.frame_work.member_cells += @as(u64, drawn.width) * drawn.height;
+            try self.drawMember(owner, cli, entry, phases, cells, scissor);
+        };
         if (!options.use_mouse or node.num == options.excluded_hit_num) return;
         // The clip lies inside the screen, so hit coordinates are never negative.
         if (painted.width != 0 and painted.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(painted.x), .y = @intCast(painted.y), .width = painted.width, .height = painted.height, .token = node.token });
     }
 
-    /// Each phase starts with only the member's inherited clip and opacity.
-    fn enterMember(target: *buffer.OptimizedBuffer, entry: Work) !void {
+    /// One member's phases and body inside a scissor. A member on several bands prepares its
+    /// views on each; only the first preparation can change a view.
+    fn drawMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, phases: Phases, cells: Layout, scissor: buffer.ClipRect) !void {
+        const node = entry.node.scene_node.?;
+        const target = self.paintTarget(cli);
+        // A natively composed image buffer receives its node's hook drawing, like its body.
+        const surface = if (node.kind == api.OT_SCENE_IMAGE) node.control.image.buffer else null;
+        try enterMember(target, scissor, entry.opacity);
+        if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, cells);
+        try playPhase(owner, target, surface, scissor, entry.opacity, phases, api.OT_SCENE_RECORD_PHASE_BEFORE);
+        if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
+            try playPhase(owner, target, surface, scissor, entry.opacity, phases, api.OT_SCENE_RECORD_PHASE_SELF);
+        } else try self.paintNode(cli, entry, cells);
+        try playPhase(owner, target, surface, scissor, entry.opacity, phases, api.OT_SCENE_RECORD_PHASE_AFTER);
+        if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, cells);
+    }
+
+    /// Each phase starts with only the member's inherited clip, narrowed to its band, and opacity.
+    fn enterMember(target: *buffer.OptimizedBuffer, scissor: buffer.ClipRect, opacity: f32) !void {
         target.clearScissorRects();
         target.clearOpacity();
-        try target.pushScissorRect(entry.clip.x, entry.clip.y, entry.clip.width, entry.clip.height);
-        try target.pushOpacity(entry.opacity);
+        try target.pushScissorRect(scissor.x, scissor.y, scissor.width, scissor.height);
+        try target.pushOpacity(opacity);
     }
 
     /// Play one phase into the frame, or into the node's own buffer with empty stacks.
-    fn playPhase(owner: *Context, target: *buffer.OptimizedBuffer, surface: ?*buffer.OptimizedBuffer, entry: Work, phases: Phases, phase: u32) !void {
+    fn playPhase(owner: *Context, target: *buffer.OptimizedBuffer, surface: ?*buffer.OptimizedBuffer, scissor: buffer.ClipRect, opacity: f32, phases: Phases, phase: u32) !void {
         const segment = phases.segments[phase];
         if (segment.start == segment.end) return;
         const local = surface orelse {
             try scene_record.play(owner, target, 1, phases.recording, segment);
-            return enterMember(target, entry);
+            return enterMember(target, scissor, opacity);
         };
         defer local.clearScissorRects();
         defer local.clearOpacity();
@@ -2612,27 +2692,33 @@ pub const Scene = struct {
         }
     }
 
-    /// A scroll node's visible bars and arrows, after its children; their cells hit the node.
-    fn paintBars(self: *Scene, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions) !void {
+    /// A scroll node's visible bars and arrows on each band that meets its node's rows, after its
+    /// children; their cells hit the node.
+    fn paintBars(self: *Scene, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, bands: []const Band, rows: Band) !void {
         const node = entry.node.scene_node.?;
         const state = node.scroll.?;
         const target = self.paintTarget(cli);
         const box = cellLayout(entry.layout);
-        try enterMember(target, entry);
+        for (bands) |band| {
+            if (!band.meets(rows)) continue;
+            try enterMember(target, bandClip(entry.clip, band), entry.opacity);
+            for (0..2) |axis| {
+                if (!state.visible[axis]) continue;
+                const rects = state.barRects(axis, box, node.paint.borderSides);
+                if (rects.track.width >= 1 and rects.track.height >= 1) try paintSlider(target, state.slider(axis), rects.track, entry.clip);
+                if (state.options.bars[axis].arrows) for (rects.arrows, 0..) |arrow, end| {
+                    if (arrow.width < 1 or arrow.height < 1) continue;
+                    const glyph = state.arrows[axis][end];
+                    const direction = if (axis == 1) end else 2 + end;
+                    try target.drawTextChecked(glyph.text orelse arrows[direction], @intFromFloat(arrow.screenX), @intFromFloat(arrow.screenY), glyph.foreground, glyph.background, glyph.attributes);
+                };
+            }
+        }
+        if (!options.use_mouse or node.num == options.excluded_hit_num) return;
         for (0..2) |axis| {
             if (!state.visible[axis]) continue;
-            const rects = state.barRects(axis, box, node.paint.borderSides);
-            if (rects.track.width >= 1 and rects.track.height >= 1) try paintSlider(target, state.slider(axis), rects.track, entry.clip);
-            if (state.options.bars[axis].arrows) for (rects.arrows, 0..) |arrow, end| {
-                if (arrow.width < 1 or arrow.height < 1) continue;
-                const glyph = state.arrows[axis][end];
-                const direction = if (axis == 1) end else 2 + end;
-                try target.drawTextChecked(glyph.text orelse arrows[direction], @intFromFloat(arrow.screenX), @intFromFloat(arrow.screenY), glyph.foreground, glyph.background, glyph.attributes);
-            };
-            const hit = intersection(cellClip(rects.bar), entry.clip);
-            if (options.use_mouse and node.num != options.excluded_hit_num and hit.width != 0 and hit.height != 0) {
-                self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token });
-            }
+            const hit = intersection(cellClip(state.barRects(axis, box, node.paint.borderSides).bar), entry.clip);
+            if (hit.width != 0 and hit.height != 0) self.hits.appendAssumeCapacity(.{ .x = @intCast(hit.x), .y = @intCast(hit.y), .width = hit.width, .height = hit.height, .token = node.token });
         }
     }
 
@@ -3212,6 +3298,13 @@ fn cellAxis(start: *f64, size: *f32) void {
 /// A view or request size in cells; Yoga sizes can exceed u32.
 fn cellSize(size: f32) u32 {
     return @intFromFloat(@min(size, 0x7fff_ff80));
+}
+
+/// A clip's part on a band's rows; a band past the clip leaves no rows.
+fn bandClip(clip: buffer.ClipRect, band: Band) buffer.ClipRect {
+    const top = @max(@as(i64, clip.y), band.top);
+    const bottom = @min(@as(i64, clip.y) + clip.height, band.bottom);
+    return .{ .x = clip.x, .y = @intCast(top), .width = clip.width, .height = @intCast(@max(0, bottom - top)) };
 }
 
 fn intersection(a: buffer.ClipRect, b: buffer.ClipRect) buffer.ClipRect {

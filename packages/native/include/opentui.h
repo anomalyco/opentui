@@ -439,9 +439,9 @@ typedef struct ot_scene_layout {
  * preserve_unwritten changed), NON_LOCAL (a recording clears or color-matrixes
  * the frame). IMAGES also counts recorded image draws. Otherwise, without a
  * reason, a frame repaints only when a painted member's inputs changed, its
- * recording included, and the encoder
- * diffs only the damage_rows rows they cover; an unchanged frame has
- * damage_rows 0 and paints nothing. After a current-buffer session lease the
+ * recording included: it clears and repaints only the damage_rows rows they
+ * cover (all rows while a member composites a buffer), and the encoder diffs
+ * only those rows; an unchanged frame has damage_rows 0 and paints nothing. After a current-buffer session lease the
  * encoder diffs every row, without repainting. */
 typedef struct ot_scene_stats {
     uint32_t struct_size;
@@ -1010,9 +1010,10 @@ ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_st
  * OT_INVALID_ARGUMENT, a Session without a scene OT_INVALID_PHASE, and an active
  * frame attempt, draft, or frame lease OT_FRAME_BUSY. Rejection keeps the flags.
  * Flags persist for the Session. VERIFY checks frames that retained paint skips
- * or diffs partly: next must still hold the presented frame, a partly diffed
- * frame's other rows must match it, and a skipped frame's repaint into a
- * scratch buffer must match its cells and hits. A mismatch fails the frame step
+ * or repaints partly: next must still hold the presented frame, a partly
+ * repainted frame's other rows must match it, and a full repaint into a
+ * scratch buffer must match the cells and hits of a skipped or partly
+ * repainted frame. A mismatch fails the frame step
  * with OT_INTERNAL_ERROR; VERIFY changes no other state or count. */
 ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
 /* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
