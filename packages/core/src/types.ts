@@ -177,6 +177,15 @@ export interface RendererEvents {
   theme_mode: (mode: ThemeMode) => void
 }
 
+/** `deltaTime` is the time since this subscriber's previous tick, `ticks` the due times the frame covers (1 unless
+ * frames stalled), and `time` the frame's clock time. A tick may run up to its tolerance before its due time. */
+export type AnimationTickCallback = (deltaTime: number, ticks: number, time: number) => void
+
+export interface AnimationTickOptions {
+  /** How early a tick may run to share a frame, in ms, below the interval. Default: half the interval. */
+  tolerance?: number
+}
+
 export interface RenderContext extends EventEmitter {
   readonly nativeScene: NativeScene
   width: number
@@ -197,6 +206,7 @@ export interface RenderContext extends EventEmitter {
   capabilities: TerminalCapabilities | null
   requestLive: () => void
   dropLive: () => void
+  onAnimationTick: (fps: number, callback: AnimationTickCallback, options?: AnimationTickOptions) => () => void
   hasSelection: boolean
   getSelection: () => Selection | null
   requestSelectionUpdate: () => void

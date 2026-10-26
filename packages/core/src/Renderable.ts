@@ -170,6 +170,8 @@ export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> ex
   visible?: boolean
   buffered?: boolean
   live?: boolean
+  /** Ticks `onAnimationTick` at this rate on the renderer's shared animation clock while the node is visible. */
+  animationFps?: number
   opacity?: number
 
   // Draw-only hooks for custom decorations. They run after layout and viewport
@@ -341,6 +343,8 @@ export abstract class Renderable extends BaseRenderable {
   protected pasteHandler: ((event: PasteEvent) => void) | null = null
 
   private _live: boolean = false
+  private _animationFps: number | undefined
+  private stopAnimationTick: (() => void) | undefined
   protected _liveCount: number = 0
 
   private _sizeChangeListener: (() => void) | undefined = undefined
@@ -429,6 +433,7 @@ export abstract class Renderable extends BaseRenderable {
       if (this.buffered) {
         this.createFrameBuffer()
       }
+      this.animationFps = options.animationFps
     } catch (error) {
       try {
         this.destroyLayoutBacking()
@@ -444,6 +449,7 @@ export abstract class Renderable extends BaseRenderable {
     try {
       this.destroyLayoutBacking((run) => {
         this._isDestroyed = true
+        this.updateAnimationTick()
         Renderable.renderablesByNumber.delete(this.num)
         if (cleanup) run(() => cleanup(run))
         if (this.frameBuffer) {
@@ -541,6 +547,7 @@ export abstract class Renderable extends BaseRenderable {
           this.propagateLiveCount(-1)
         }
       }
+      this.updateAnimationTick()
 
       if (this._focused) {
         this.blur()
@@ -681,6 +688,29 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   protected onLiveCountChanged(previous: number): void {}
+
+  public get animationFps(): number | undefined {
+    return this._animationFps
+  }
+
+  public set animationFps(value: number | undefined) {
+    value ??= undefined // Frameworks clear a prop with null.
+    if (this._animationFps === value) return
+    this._animationFps = value
+    this.updateAnimationTick()
+  }
+
+  // Subscribed only while visible and alive, as a live node only counts while visible.
+  private updateAnimationTick(): void {
+    this.stopAnimationTick?.()
+    this.stopAnimationTick = undefined
+    if (this._animationFps === undefined || !this._visible || this._isDestroyed) return
+    this.stopAnimationTick = this._ctx.onAnimationTick(this._animationFps, (deltaTime, ticks, time) =>
+      this.onAnimationTick(deltaTime, ticks, time),
+    )
+  }
+
+  protected onAnimationTick(deltaTime: number, ticks: number, time: number): void {}
 
   public handleKeyPress?(key: KeyEvent): boolean
   public handlePaste?(event: PasteEvent): void
@@ -2009,6 +2039,7 @@ export abstract class Renderable extends BaseRenderable {
       // Read before listeners run: one may move or clear the focus.
       const heldFocus = this._focused || this.hasFocusedDescendant
       this._isDestroyed = true
+      this.updateAnimationTick()
       run(() => this.emit(RenderableEvents.DESTROYED))
 
       if (heldFocus) run(() => this.propagateFocusChange(false))

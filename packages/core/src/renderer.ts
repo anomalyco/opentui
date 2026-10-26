@@ -9,6 +9,8 @@ import { ImageRenderable } from "./renderables/Image.js"
 import { TextRenderable } from "./renderables/Text.js"
 import {
   DebugOverlayCorner,
+  type AnimationTickCallback,
+  type AnimationTickOptions,
   type CursorStyleOptions,
   type MousePointerStyle,
   type ProgramStatus,
@@ -650,6 +652,9 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
   public setMousePointer(_shape: MousePointerStyle): void {}
   public requestLive(): void {}
   public dropLive(): void {}
+  public onAnimationTick(): () => void {
+    return () => {}
+  }
   public getSelection(): Selection | null {
     return null
   }
@@ -920,6 +925,15 @@ export enum RendererControlState {
 
 const CLICK_REPEAT_INTERVAL_MS = 500
 
+interface AnimationTicker {
+  interval: number
+  tolerance: number
+  /** The next due time is next * interval, so no rounding error accumulates. */
+  next: number
+  last: number
+  callback: AnimationTickCallback
+}
+
 export class CliRenderer extends EventEmitter implements RenderContext {
   private static animationFrameId = 0
   private lib: RenderLib
@@ -1002,6 +1016,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private immediateRerenderRequested: boolean = false
 
   private liveRequestCounter: number = 0
+  private animationTickers = new Set<AnimationTicker>()
+  private animationTimer: TimerHandle | null = null
   private _controlState: RendererControlState = RendererControlState.IDLE
 
   private frameCallbacks: ((deltaTime: number) => Promise<void>)[] = []
@@ -4339,6 +4355,61 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this.animationRequest.delete(handle)) this.dropLive()
   }
 
+  /** Calls `callback` `fps` times a second on a clock that all subscribers share. Due times are multiples of
+   * 1000 / fps, so equal rates tick together; one timer requests a frame at the earliest due time, and every frame,
+   * whatever its cause, runs each tick that is due within its tolerance. Returns the unsubscribe function. */
+  public onAnimationTick(fps: number, callback: AnimationTickCallback, options: AnimationTickOptions = {}): () => void {
+    const interval = 1000 / fps
+    const tolerance = options.tolerance ?? interval / 2
+    if (!(interval > 0 && interval < Infinity)) throw new RangeError(`fps must be positive and finite, got ${fps}`)
+    if (!(tolerance >= 0 && tolerance < interval)) {
+      throw new RangeError(`tolerance must be at least 0 and below the interval (${interval} ms), got ${tolerance}`)
+    }
+    if (this._isDestroyed) return () => {}
+    const now = this.clock.now()
+    // The first due time is one that is not yet within the tolerance, so a new subscriber never ticks at once.
+    const ticker = { interval, tolerance, next: Math.floor((now + tolerance) / interval) + 1, last: now, callback }
+    this.animationTickers.add(ticker)
+    this.scheduleAnimationTick()
+    return () => {
+      if (this.animationTickers.delete(ticker)) this.scheduleAnimationTick()
+    }
+  }
+
+  // An app-level timer like any other, not scheduled work: idle() resolves between ticks.
+  private scheduleAnimationTick(): void {
+    if (this.animationTimer !== null) this.clock.clearTimeout(this.animationTimer)
+    this.animationTimer = null
+    let due = Infinity
+    for (const ticker of this.animationTickers) due = Math.min(due, ticker.next * ticker.interval)
+    if (due === Infinity) return
+    this.animationTimer = this.clock.setTimeout(
+      () => {
+        this.animationTimer = null
+        this.requestRender()
+      },
+      Math.max(0, due - this.clock.now()),
+    )
+  }
+
+  private runAnimationTicks(time: number): void {
+    if (this.animationTickers.size === 0) return
+    for (const ticker of this.animationTickers) {
+      if (ticker.next * ticker.interval - ticker.tolerance > time) continue
+      const next = Math.max(ticker.next + 1, Math.floor((time + ticker.tolerance) / ticker.interval) + 1)
+      const ticks = next - ticker.next
+      const deltaTime = Math.max(0, time - ticker.last)
+      ticker.next = next
+      ticker.last = time
+      try {
+        ticker.callback(deltaTime, ticks, time)
+      } catch (error) {
+        console.error("Error in animation tick callback:", error)
+      }
+    }
+    this.scheduleAnimationTick()
+  }
+
   private yieldFrame(): Promise<void> {
     if (!this.canRender) return Promise.resolve()
     return new Promise((resolve) => {
@@ -4639,6 +4710,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.animationRequest.clear()
     this.frameCallbacks = []
     this.liveRequestCounter = 0
+    this.animationTickers.clear()
+    this.scheduleAnimationTick()
     this.immediateRerenderRequested = false
 
     if (this._usesProcessStdout) {
@@ -4870,6 +4943,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       this.renderStats.frameCount++
       const overallStart = performance.now()
+
+      // The paint below draws what tick callbacks change, so their requests need no extra frame.
+      const requestedBeforeTicks = this.immediateRerenderRequested
+      this.runAnimationTicks(now)
+      this.immediateRerenderRequested = requestedBeforeTicks
 
       const animationFrameEnd = CliRenderer.animationFrameId
       const animationRequestStart = performance.now()
