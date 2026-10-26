@@ -111,11 +111,11 @@ describe("native renderer stats", () => {
         fullPathReasons: 2 | 16 | forced,
       })
       // An unchanged frame keeps the presented frame: it paints and diffs nothing and reuses
-      // preparation. Forced, it repaints, compares every row, and prepares again.
+      // preparation, views included. Forced, it repaints, compares every row, and prepares again.
       await result.renderOnce()
       const unchanged = nativeSceneFullFrame
         ? { workFrameId: 2, rowsCompared: 2, candidateVisits: 2, fullPathReasons: forced }
-        : { workFrameId: 2, membersPainted: 0, memberCells: 0, cellsCleared: 0, damageRows: 0 }
+        : { workFrameId: 2, viewPreparations: 0, membersPainted: 0, memberCells: 0, cellsCleared: 0, damageRows: 0 }
       expect(renderer.getNativeStats().frameWork).toEqual({ ...steady, ...unchanged })
       expect(renderer.getStats().frameWork).toEqual(renderer.getNativeStats().frameWork)
       renderer.destroy()
@@ -149,12 +149,15 @@ describe("native renderer stats", () => {
       await result.renderOnce()
       return renderer!.getNativeStats().frameWork.viewportChildRefreshes
     }
-    // The first frame lays out and refreshes every row, once per layout round.
-    expect(await refreshes()).toBeGreaterThanOrEqual(1_000)
+    // New rows refresh as placed children; then only rows whose layout, text, or view changed
+    // refresh before selection, culled ones too.
+    expect(await refreshes()).toBe(0)
     expect(await refreshes()).toBe(0)
     scrollbox.scrollTo(500)
     expect(await refreshes()).toBe(0)
     scrollbox.add(new TextRenderable(renderer, { content: "appended" }))
+    expect(await refreshes()).toBe(0)
+    scrollbox.width = 30
     expect(await refreshes()).toBe(1_001)
   })
 

@@ -422,7 +422,8 @@ pub const Node = struct {
     parent: ?*native.NativeRenderable = null,
     children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     paint_children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
-    paint_rank: u32 = 0,
+    // Strictly increasing along paint_children, so a sorted batch of children is in paint order.
+    paint_rank: u64 = 0,
     sort_dirty: bool = false,
     child_order_frame: u64 = 0,
     layout_flags: packed struct {
@@ -432,14 +433,33 @@ pub const Node = struct {
         clips_children: bool = false,
         // Visible with every ancestor when this round prepared the node.
         prepared_visible: bool = false,
+        // The node's next refresh may differ from its last one.
+        self_stale: bool = true,
+        view_queued: bool = false,
     } = .{},
+    // Whether feedback needs to visit the subtree. Clean means every node feedback would visit
+    // in it needs nothing, for the selection of clean_selection; culled and hidden nodes keep
+    // their own state until feedback reaches them.
+    subtree: enum { clean, running, stale } = .stale,
+    clean_selection: u64 = 0,
+    // The round whose host reply last marked the node; it may have popped already.
+    stale_id: u64 = 0,
+    // Nodes with an UPDATE hook, and filtering parents, in the subtree, the node included.
+    update_below: u32 = 0,
+    filters_below: u32 = 0,
+    // Direct children that may need feedback; see needsFeedback. Unordered, a superset.
+    attention: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
+    attention_index: u32 = no_slot,
+    // A filtering parent's selection_epoch at its last overlap scan, and the scan's epoch of
+    // a child that overlapped.
+    selected_epoch: u64 = 0,
+    selected_at: u64 = 0,
+    segment: Segment = .{},
     paint: Paint = .{},
     layout: Layout = .{},
     observed_layout: Layout = .{},
     viewport: ?handles.Handle = null,
     scroll: ?*ScrollState = null,
-    // A filtered parent's layout_epoch when every child last refreshed, refreshing while a batch runs, or 0.
-    children_observed: u64 = 0,
     focus_frame: u64 = 0,
     text: ?*Text = null,
     editor: ?*Editor = null,
@@ -489,6 +509,21 @@ pub const Node = struct {
 
 const FeedbackState = enum { unseen, queued, started };
 
+/// The children a visited parent queued in this round, in paint order: the refresh batch of a
+/// filtering parent, then its selected updates.
+const Segment = struct {
+    feedback_id: u64 = 0,
+    kind: enum { none, refresh, select } = .none,
+    // The rank of the last entry popped, and of the last child when the segment started.
+    cursor: ?u64 = null,
+    end: u64 = 0,
+    // The selection culled children.
+    filtered: bool = false,
+    // Stack entries that insertions scanned; past the child count the segment queues every child.
+    work: usize = 0,
+    full: bool = false,
+};
+
 const Work = struct {
     node: *native.NativeRenderable,
     layout: Layout,
@@ -514,8 +549,6 @@ const PreparationFrame = struct {
 };
 
 const no_slot = std.math.maxInt(u32);
-// A filtered parent's children_observed while its refresh batch runs; no layout_epoch reaches it.
-const children_refreshing = std.math.maxInt(u64);
 
 /// A prepared member of a recorded frame. Handles survive the host's record batch.
 const PaintMember = struct {
@@ -562,9 +595,11 @@ const Filter = struct {
 
 const Feedback = struct {
     node: handles.Handle,
-    kind: enum { update, refresh, prepass, placed, children, filtered_refresh, select, scroll },
+    kind: enum { update, refresh, prepass, placed, children, filtered_refresh, select, scroll, done },
     placement: u64 = 0,
+    // A segment entry's parent and paint rank.
     parent: ?handles.Handle = null,
+    rank: u64 = 0,
 };
 
 /// Session-owned storage. Tokens never recycle, and only live nodes remain in the
@@ -629,6 +664,10 @@ pub const Scene = struct {
     layout_epoch: u64 = 0,
     // Changes with any display or ancestry change, so stamped visibility goes stale mid-attempt.
     visibility_epoch: u64 = 0,
+    // Changes with anything that can change which children a filtering parent selects.
+    selection_epoch: u64 = 1,
+    // Nodes whose view changed outside an attempt; a round that keeps its lists prepares them.
+    view_dirty: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     layout_pending: bool = false,
     layout_width: u32 = 0,
     layout_height: u32 = 0,
@@ -668,6 +707,7 @@ pub const Scene = struct {
         self.candidates.deinit(self.allocator);
         self.members.deinit(self.allocator);
         self.feedback.deinit(self.allocator);
+        self.view_dirty.deinit(self.allocator);
         self.paint_members.deinit(self.allocator);
         self.paint_slots.deinit(self.allocator);
         self.segments.deinit(self.allocator);
@@ -684,6 +724,7 @@ pub const Scene = struct {
         if (kind == api.OT_SCENE_ROOT and self.root != null) return error.SceneAlreadyAttached;
         if (self.last_token == std.math.maxInt(u32)) return error.ObjectLimit;
         try self.tokens.ensureUnusedCapacity(self.allocator, 1);
+        try self.view_dirty.ensureTotalCapacity(self.allocator, self.count + 1);
     }
 
     pub fn insert(self: *Scene, storage: native.NodeStorage, handle: handles.Handle, kind: u32, num: u32) void {
@@ -699,6 +740,7 @@ pub const Scene = struct {
             .next = self.head,
             .children = storage.children,
             .paint_children = storage.paint_children,
+            .attention = storage.attention,
         };
         value.scene_node = node_ptr;
         if (kind == api.OT_SCENE_BOX) value.scene_node.?.control = .{ .box = null };
@@ -743,27 +785,29 @@ pub const Scene = struct {
             if (node.parent != parent) {
                 try target.children.ensureUnusedCapacity(self.allocator, 1);
                 try target.paint_children.ensureUnusedCapacity(self.allocator, 1);
+                try target.attention.ensureTotalCapacity(self.allocator, target.children.items.len + 1);
             }
             try yoga.check(yoga.yogaNodeMoveChildChecked(target.childYoga(parent), value.yoga_node, index));
             const previous = node.parent;
             if (previous) |old| removeChild(&old.scene_node.?.children, value);
             target.children.insertAssumeCapacity(index, value);
             if (previous != parent) {
-                if (previous) |old| removeChild(&old.scene_node.?.paint_children, value);
+                if (previous) |old| self.detach(value, old);
                 const siblings = target.paint_children.items;
                 if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) {
                     target.sort_dirty = true;
                 }
+                node.paint_rank = if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
                 target.paint_children.appendAssumeCapacity(value);
+                node.parent = parent;
+                countBelow(parent, node.update_below, node.filters_below, true);
             }
-            node.parent = parent;
         } else {
             if (index != 0) return error.YogaInvalidArgument;
             if (node.parent) |old| {
                 try yoga.check(yoga.yogaNodeRemoveChildChecked(old.scene_node.?.childYoga(old), value.yoga_node));
                 removeChild(&old.scene_node.?.children, value);
-                removeChild(&old.scene_node.?.paint_children, value);
-                node.parent = null;
+                self.detach(value, old);
             }
         }
         if (self.attempt) |active| {
@@ -785,8 +829,158 @@ pub const Scene = struct {
         } else if (destination == null) node.placement = 0;
         node.layout_flags.needs_layout = true;
         self.visibility_epoch +%= 1;
+        self.selection_epoch +%= 1;
         self.preparation_dirty = true;
         self.clearPreparation();
+        markObservationStale(value);
+    }
+
+    /// Takes a node out of its parent's paint children, attention, and counts; the old parent's
+    /// selection changes.
+    fn detach(self: *Scene, value: *native.NativeRenderable, parent: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        removeChild(&parent.scene_node.?.paint_children, value);
+        if (node.attention_index != no_slot) dropAttention(parent.scene_node.?, node.attention_index);
+        countBelow(parent, node.update_below, node.filters_below, false);
+        node.parent = null;
+        self.markSubtree(parent, false);
+    }
+
+    /// Adds to or subtracts from the UPDATE and filter counts of a node and its ancestors.
+    fn countBelow(start: *native.NativeRenderable, updates: u32, filters: u32, comptime add: bool) void {
+        var cursor: ?*native.NativeRenderable = start;
+        while (cursor) |value| : (cursor = value.scene_node.?.parent) {
+            const node = value.scene_node.?;
+            if (add) {
+                node.update_below += updates;
+                node.filters_below += filters;
+                attend(value);
+            } else {
+                node.update_below -= updates;
+                node.filters_below -= filters;
+            }
+        }
+    }
+
+    /// Whether feedback may need to visit a child: a hook can request, its subtree changed, or
+    /// a selection change can reveal changed nodes in it.
+    fn needsFeedback(node: *const Node) bool {
+        return node.update_below != 0 or node.subtree != .clean or node.filters_below != 0;
+    }
+
+    fn dropAttention(node: *Node, index: usize) void {
+        node.attention.items[index].scene_node.?.attention_index = no_slot;
+        _ = node.attention.swapRemove(index);
+        if (index < node.attention.items.len) node.attention.items[index].scene_node.?.attention_index = @intCast(index);
+    }
+
+    /// Lists a child that may need feedback with its parent, which reserved room for every child.
+    fn attend(value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        const parent = node.parent orelse return;
+        if (node.attention_index != no_slot or !needsFeedback(node)) return;
+        const list = &parent.scene_node.?.attention;
+        node.attention_index = @intCast(list.items.len);
+        list.appendAssumeCapacity(value);
+    }
+
+    /// Marks a subtree and its ancestors for feedback. During an attempt, the first node whose
+    /// parent is running a batch joins it, as today's walk would still pop it there.
+    fn markSubtree(self: *Scene, value: *native.NativeRenderable, newly_stale: bool) void {
+        var staging = self.attempt != null;
+        var cursor: ?*native.NativeRenderable = value;
+        while (cursor) |current| : (cursor = current.scene_node.?.parent) {
+            current.scene_node.?.subtree = .stale;
+            attend(current);
+            if (staging) staging = self.stage(current, newly_stale and current == value);
+        }
+    }
+
+    /// Inserts a node that became needy into its parent's active segment, if the segment has
+    /// not passed its rank and today's walk would have queued it. Returns whether the
+    /// grandparent decides instead.
+    fn stage(self: *Scene, value: *native.NativeRenderable, newly_stale: bool) bool {
+        const node = value.scene_node.?;
+        const parent = node.parent orelse return false;
+        const target = parent.scene_node.?;
+        const active = &self.attempt.?;
+        const segment = &target.segment;
+        // A parent that popped in this round passed its children, or selects them later.
+        if (segment.feedback_id != active.feedback_id or segment.kind == .none) return target.feedback(active) != .started;
+        // A child that joined after the segment started is not in today's batch.
+        if (segment.full or node.paint_rank > segment.end or node.prepared_gen != self.candidates_gen) return false;
+        if (segment.cursor) |cursor| if (node.paint_rank <= cursor) return false;
+        switch (segment.kind) {
+            .none => unreachable,
+            .refresh => if (newly_stale) self.insertFeedback(parent, value, .filtered_refresh),
+            .select => {
+                if (node.feedback(active) != .unseen or (segment.filtered and node.selected_at != target.selected_epoch)) return false;
+                self.insertFeedback(parent, value, .update);
+            },
+        }
+        return false;
+    }
+
+    /// Inserts a segment entry at its rank, between the parent's boundary entry and its
+    /// nested work. Past a child count of scanned entries, queues every child instead.
+    fn insertFeedback(self: *Scene, parent: *native.NativeRenderable, value: *native.NativeRenderable, kind: @FieldType(Feedback, "kind")) void {
+        const target = parent.scene_node.?;
+        const node = value.scene_node.?;
+        const items = self.feedback.items;
+        var index = items.len;
+        while (index != 0) {
+            index -= 1;
+            if (isBoundary(items[index], target) or (isSegmentEntry(items[index], target, kind) and items[index].rank > node.paint_rank)) break;
+        } else unreachable;
+        const scanned = items.len - index;
+        if (builtin.is_test) self.test_feedback_child_steps += scanned;
+        target.segment.work += scanned;
+        if (target.segment.work > target.paint_children.items.len) return self.queueSegment(parent);
+        self.feedback.insertAssumeCapacity(index + 1, .{ .node = node.handle, .kind = kind, .parent = target.handle, .rank = node.paint_rank });
+        if (kind == .update) node.setFeedback(&self.attempt.?, .queued);
+    }
+
+    /// Replaces a segment's remaining entries with every child today's walk still pops. The
+    /// segment then takes no insertion: the pop-time skip passes the children that need nothing.
+    fn queueSegment(self: *Scene, parent: *native.NativeRenderable) void {
+        const target = parent.scene_node.?;
+        const active = &self.attempt.?;
+        const segment = &target.segment;
+        const kind: @FieldType(Feedback, "kind") = if (segment.kind == .select) .update else .filtered_refresh;
+        segment.full = true;
+        var boundary = self.feedback.items.len;
+        while (!isBoundary(self.feedback.items[boundary - 1], target)) boundary -= 1;
+        var kept = boundary;
+        for (self.feedback.items[boundary..]) |entry| {
+            if (isSegmentEntry(entry, target, kind)) continue;
+            self.feedback.items[kept] = entry;
+            kept += 1;
+        }
+        const nested = kept - boundary;
+        self.feedback.items.len = kept;
+        var index = target.paint_children.items.len;
+        while (index != 0) {
+            index -= 1;
+            if (builtin.is_test) self.test_feedback_child_steps += 1;
+            const state = target.paint_children.items[index].scene_node.?;
+            if (segment.cursor) |cursor| if (state.paint_rank <= cursor) break;
+            if (state.paint_rank > segment.end or state.prepared_gen != self.candidates_gen) continue;
+            if (kind == .update and segment.filtered and state.selected_at != target.selected_epoch) continue;
+            self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = kind, .parent = target.handle, .rank = state.paint_rank });
+            if (kind == .update) state.setFeedback(active, .queued);
+        }
+        // The new entries pop after the nested work above them.
+        std.mem.rotate(Feedback, self.feedback.items[boundary..], nested);
+    }
+
+    /// The entry below a parent's segment: its done for selected updates, its select for refreshes.
+    fn isBoundary(entry: Feedback, target: *const Node) bool {
+        const kind: @FieldType(Feedback, "kind") = if (target.segment.kind == .select) .done else .select;
+        return entry.kind == kind and std.meta.eql(entry.node, target.handle);
+    }
+
+    fn isSegmentEntry(entry: Feedback, target: *const Node, kind: @FieldType(Feedback, "kind")) bool {
+        return entry.kind == kind and entry.parent != null and std.meta.eql(entry.parent.?, target.handle);
     }
 
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
@@ -796,7 +990,11 @@ pub const Scene = struct {
         if (node.parent) |parent| {
             yoga.yogaNodeRemoveChild(parent.scene_node.?.childYoga(parent), value.yoga_node);
             removeChild(&parent.scene_node.?.children, value);
-            removeChild(&parent.scene_node.?.paint_children, value);
+            self.detach(value, parent);
+        }
+        if (node.layout_flags.view_queued) {
+            const index = std.mem.indexOfScalar(*native.NativeRenderable, self.view_dirty.items, value).?;
+            _ = self.view_dirty.swapRemove(index);
         }
         // Bulk detachment avoids repeated shifting of a wide Yoga child vector.
         yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node.childYoga(value))) catch unreachable;
@@ -809,9 +1007,11 @@ pub const Scene = struct {
         for (node.children.items) |child| {
             child.scene_node.?.parent = null;
             child.scene_node.?.placement = 0;
+            child.scene_node.?.attention_index = no_slot;
         }
         node.children.clearRetainingCapacity();
         node.paint_children.clearRetainingCapacity();
+        node.attention.clearRetainingCapacity();
         if (node.previous) |previous| previous.scene_node.?.next = node.next else self.head = node.next;
         if (node.next) |next| next.scene_node.?.previous = node.previous;
         if (self.root == value) {
@@ -834,6 +1034,7 @@ pub const Scene = struct {
             .scene_node = node,
             .children = node.children,
             .paint_children = node.paint_children,
+            .attention = node.attention,
         };
         value.scene_node = null;
         node.* = undefined;
@@ -851,7 +1052,11 @@ pub const Scene = struct {
             value.scene_node.?.placement = 0;
             value.scene_node.?.children.clearRetainingCapacity();
             value.scene_node.?.paint_children.clearRetainingCapacity();
+            value.scene_node.?.attention.clearRetainingCapacity();
+            value.scene_node.?.attention_index = no_slot;
+            value.scene_node.?.layout_flags.view_queued = false;
         }
+        self.view_dirty.clearRetainingCapacity();
     }
 
     /// Even paint-only setters reject a node whose Yoga tree is laying out or poisoned.
@@ -896,11 +1101,12 @@ pub const Scene = struct {
         if (node.paint.zIndex != paint.zIndex) {
             if (node.parent) |parent| parent.scene_node.?.sort_dirty = true;
         }
-        if (self.attempt) |active| {
-            if (active.filter_selected and (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY)) {
-                // Refresh newly revealed descendants before paint.
+        if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
+            self.selection_epoch +%= 1;
+            // Refresh newly revealed descendants before paint.
+            if (self.attempt) |active| if (active.filter_selected) {
                 self.preparation_dirty = true;
-            }
+            };
         }
         if (self.attempt != null or node.paint.zIndex != paint.zIndex or
             node.paint.opacity != paint.opacity or node.paint.translateX != paint.translateX or
@@ -964,6 +1170,9 @@ pub const Scene = struct {
         self.hook_count += @intFromBool(flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.layout_hook_count -= @intFromBool(node.hook_flags & scene_layout_hook_flags != 0);
         self.layout_hook_count += @intFromBool(flags & scene_layout_hook_flags != 0);
+        const updates = [2]bool{ node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0, flags & api.OT_SCENE_HOOK_UPDATE != 0 };
+        if (updates[0] and !updates[1]) countBelow(value, 1, 0, false);
+        if (updates[1] and !updates[0]) countBelow(value, 1, 0, true);
         node.hook_flags = flags;
         node.hook_generation = generation;
         self.invalidateObservation(value);
@@ -1017,9 +1226,9 @@ pub const Scene = struct {
         for (options.padding, api.OT_EDGE_LEFT..) |padding, edge| {
             try yoga.check(yoga.yogaNodeStyleSetValueChecked(state.viewport_node, api.OT_STYLE_VALUE_PADDING, @intCast(edge), api.OT_UNIT_POINT, padding));
         }
-        self.filter_count -= @intFromBool(node.filtersChildren());
+        const filtered = node.filtersChildren();
         state.options = options;
-        self.filter_count += @intFromBool(node.filtersChildren());
+        self.setFilters(value, filtered);
         // A changed policy applies now; the next solve corrects an auto bar's visibility.
         for (options.bars, previous.bars, &state.visible, state.max) |bar, old, *visible, max| {
             if (bar.policy != old.policy) visible.* = if (bar.policy == api.OT_SCENE_SCROLL_BAR_AUTO) max > 0 else bar.policy == api.OT_SCENE_SCROLL_BAR_ALWAYS;
@@ -1028,6 +1237,31 @@ pub const Scene = struct {
         if (previous.follow != options.follow) state.restick();
         state.generation += 1;
         self.invalidateObservation(value);
+    }
+
+    /// Binds or unbinds the viewport a box filters its children against.
+    pub fn setViewport(self: *Scene, value: *native.NativeRenderable, viewport: ?handles.Handle) void {
+        const node = value.scene_node.?;
+        if (std.meta.eql(node.viewport, viewport)) return;
+        const filtered = node.filtersChildren();
+        node.viewport = viewport;
+        self.setFilters(value, filtered);
+        self.preparation_dirty = true;
+        self.clearPreparation();
+    }
+
+    /// After a culling change: children the selection skipped may show, so feedback visits the
+    /// parent again.
+    fn setFilters(self: *Scene, value: *native.NativeRenderable, filtered: bool) void {
+        const filters = value.scene_node.?.filtersChildren();
+        if (filters != filtered) {
+            self.filter_count = self.filter_count + @intFromBool(filters) - @intFromBool(filtered);
+            if (filters) countBelow(value, 0, 1, true) else countBelow(value, 0, 1, false);
+            // Culled children the selection set aside need the list again.
+            if (!filters) for (value.scene_node.?.children.items) |child| attend(child);
+        }
+        self.selection_epoch +%= 1;
+        self.markSubtree(value, false);
     }
 
     pub fn setScrollArrow(self: *Scene, value: *native.NativeRenderable, axis: u32, end: u32, options: ArrowOptions) !void {
@@ -1060,6 +1294,7 @@ pub const Scene = struct {
         state.generation += 1;
         if (std.meta.eql(before[0], state.offset)) return;
         node.paint_epoch = nextPaintEpoch();
+        self.selection_epoch +%= 1;
         // Children move; in an attempt the next round prepares and culls at the new offset.
         self.preparation_dirty = true;
         self.clearPreparation();
@@ -1112,13 +1347,22 @@ pub const Scene = struct {
             state.generation += 1;
             value.scene_node.?.paint_epoch = nextPaintEpoch();
         }
+        // An owed SCROLL request keeps the node's feedback due.
+        if (value.scene_node.?.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0 and !std.meta.eql(state.observed(), state.reported)) markObservationStale(value);
     }
 
-    /// The node's next refresh may differ although its layout did not change: its filtered
-    /// parent refreshes every child in the next round.
+    /// The node's next refresh may differ although its layout did not change, so feedback
+    /// visits it again. Outside an attempt, a frame that keeps its lists prepares its view.
     pub fn markObservationStale(value: *native.NativeRenderable) void {
-        const parent = (value.scene_node orelse return).parent orelse return;
-        parent.scene_node.?.children_observed = 0;
+        const node = value.scene_node orelse return;
+        const owner = node.owner;
+        const newly_stale = !node.layout_flags.self_stale;
+        node.layout_flags.self_stale = true;
+        node.stale_id = if (owner.attempt) |active| (if (active.pending != null) active.feedback_id else 0) else 0;
+        owner.markSubtree(value, newly_stale);
+        if (owner.attempt != null or node.layout_flags.view_queued) return;
+        node.layout_flags.view_queued = true;
+        owner.view_dirty.appendAssumeCapacity(value);
     }
 
     pub fn invalidateObservation(self: *Scene, value: *native.NativeRenderable) void {
@@ -1242,6 +1486,7 @@ pub const Scene = struct {
             }
             // No host call or scene mutation intervenes while this proof is reused.
             var visible_member: ?*native.NativeRenderable = null;
+            const full = self.forcesFullFrame();
             while (self.feedback.items.len != 0) {
                 const operation = self.feedback.pop().?;
                 self.frame_work.feedback_operations += 1;
@@ -1250,6 +1495,7 @@ pub const Scene = struct {
                 if (value.scene_node == null or value.scene_node.?.owner != self) continue;
                 const node = value.scene_node.?;
                 if (operation.kind == .update) node.setFeedback(active, .unseen);
+                if (operation.kind == .done) node.segment.kind = .none;
                 const member = if (operation.kind == .filtered_refresh) blk: {
                     const parent = node.parent orelse continue;
                     if (!std.meta.eql(parent.scene_node.?.handle, operation.parent.?)) continue;
@@ -1258,6 +1504,12 @@ pub const Scene = struct {
                     if (node.placement != operation.placement) continue;
                     break :blk node.parent orelse continue;
                 } else value;
+                // A dropped entry issues no request, so the next pop moves the cursor before any reply.
+                if (operation.parent != null) {
+                    const segment = &node.parent.?.scene_node.?.segment;
+                    std.debug.assert(segment.cursor == null or operation.rank > segment.cursor.?);
+                    segment.cursor = operation.rank;
+                }
                 if (member != visible_member) {
                     if (!try self.isVisibleMember(member)) continue;
                     visible_member = member;
@@ -1266,6 +1518,12 @@ pub const Scene = struct {
                 switch (operation.kind) {
                     .update => {
                         node.setFeedback(active, .started);
+                        // Nothing below can request or changed: today's walk would issue no request there.
+                        if (!full and node.update_below == 0 and node.subtree == .clean and
+                            (node.filters_below == 0 or node.clean_selection == self.selection_epoch)) continue;
+                        node.subtree = .running;
+                        node.clean_selection = self.selection_epoch;
+                        self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .done });
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .children });
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .prepass });
                         if (node.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0) self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .scroll });
@@ -1275,7 +1533,12 @@ pub const Scene = struct {
                             node.update_frame = active.frame_id;
                         }
                     },
+                    // A mark during the visit keeps the subtree stale for the next round.
+                    .done => if (node.subtree == .running and !node.layout_flags.self_stale) {
+                        node.subtree = .clean;
+                    },
                     .refresh, .placed, .filtered_refresh => {
+                        if (operation.kind != .placed and !node.layout_flags.self_stale and !full) continue;
                         result = try self.refresh(value, member != value);
                         if (operation.kind == .placed) node.placement = 0;
                     },
@@ -1289,15 +1552,22 @@ pub const Scene = struct {
                         }
                     },
                     .prepass => {
-                        // The batch starts before placed children refresh, so their replies' stale marks survive it.
-                        if (operation.placement == 0 and node.filtersChildren() and
-                            (node.children_observed != self.layout_epoch or self.forcesFullFrame())) node.children_observed = children_refreshing;
                         // A resize callback can append to the live placement Set.
                         self.feedback.appendAssumeCapacity(.{ .node = operation.node, .kind = .prepass, .placement = 1 });
                         const start = self.feedback.items.len;
-                        for (node.children.items) |child| {
+                        // Placed children are marked, so the attention list holds them. Children
+                        // that no longer need feedback leave it here; none regains need before
+                        // the parent selects.
+                        const children = if (full) &node.children else &node.attention;
+                        var index: usize = 0;
+                        while (index < children.items.len) {
                             if (builtin.is_test) self.test_feedback_child_steps += 1;
-                            const state = child.scene_node.?;
+                            const state = children.items[index].scene_node.?;
+                            if (!full and !needsFeedback(state)) {
+                                dropAttention(node, index);
+                                continue;
+                            }
+                            index += 1;
                             if (state.prepared_gen != self.candidates_gen) continue;
                             if (state.placement != 0) self.feedback.appendAssumeCapacity(.{
                                 .node = state.handle,
@@ -1312,60 +1582,29 @@ pub const Scene = struct {
                             std.mem.sort(Feedback, self.feedback.items[start..], {}, placementGreaterThan);
                         }
                     },
-                    .children, .select => {
-                        if (operation.kind == .children) {
-                            // Capture child order after the parent's callbacks, never midway through siblings.
-                            // The lists hold the old order, so the next frame prepares again.
-                            if (sortChildren(node, active.frame_id)) self.clearPreparation();
-                            if (node.filtersChildren()) {
-                                self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
-                                // Refresh repeats its last result until a solve or a stale mark changes an input.
-                                if (node.children_observed == self.layout_epoch and !self.forcesFullFrame()) continue;
-                                for (node.paint_children.items, 0..) |child, index| {
-                                    if (builtin.is_test) self.test_feedback_child_steps += 1;
-                                    const state = child.scene_node.?;
-                                    if (state.prepared_gen != self.candidates_gen) continue;
-                                    self.frame_work.viewport_child_refreshes += 1;
-                                    if (try self.refresh(child, true)) |request_value| {
-                                        // Snapshot the remaining batch before a host callback can change siblings.
-                                        var remaining = node.paint_children.items.len;
-                                        while (remaining > index + 1) {
-                                            remaining -= 1;
-                                            if (builtin.is_test) self.test_feedback_child_steps += 1;
-                                            const next = node.paint_children.items[remaining].scene_node.?;
-                                            if (next.prepared_gen != self.candidates_gen) continue;
-                                            self.feedback.appendAssumeCapacity(.{ .node = next.handle, .kind = .filtered_refresh, .parent = node.handle });
-                                        }
-                                        return request_value;
-                                    }
-                                }
-                                continue;
-                            }
+                    .children => {
+                        // Capture child order after the parent's callbacks, never midway through siblings.
+                        // The lists hold the old order, so the next frame prepares again.
+                        if (sortChildren(node, active.frame_id)) self.clearPreparation();
+                        if (!node.filtersChildren()) {
+                            try self.selectChildren(objects, value);
+                            continue;
                         }
-                        // Drain every direct refresh before selecting a fixed update batch.
-                        const filter = try self.childFilter(objects, value);
-                        const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
-                        if (node.filtersChildren()) {
-                            active.filter_selected = true;
-                            // A stale mark during the batch keeps it unobserved for the next round.
-                            if (node.children_observed == children_refreshing) node.children_observed = self.layout_epoch;
-                        }
-                        var index = node.paint_children.items.len;
-                        while (index != 0) {
-                            index -= 1;
+                        // Refresh every stale child, culled ones too, before selecting a fixed update batch.
+                        self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
+                        self.startSegment(node, .refresh);
+                        const start = self.feedback.items.len;
+                        for (if (full) node.paint_children.items else node.attention.items) |child| {
                             if (builtin.is_test) self.test_feedback_child_steps += 1;
-                            const state = node.paint_children.items[index].scene_node.?;
-                            if (state.prepared_gen != self.candidates_gen or state.feedback(active) != .unseen) continue;
-                            if (filter) |bounds| {
-                                var layout = state.layout;
-                                layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
-                                layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
-                                self.frame_work.overlap_tests += 1;
-                                if (!overlaps(bounds, layout)) continue;
-                            }
-                            self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = .update });
-                            state.setFeedback(active, .queued);
+                            const state = child.scene_node.?;
+                            if (state.prepared_gen != self.candidates_gen or !(full or state.layout_flags.self_stale)) continue;
+                            self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = .filtered_refresh, .parent = node.handle, .rank = state.paint_rank });
                         }
+                        std.mem.sort(Feedback, self.feedback.items[start..], {}, rankGreaterThan);
+                    },
+                    .select => {
+                        active.filter_selected = true;
+                        try self.selectChildren(objects, value);
                     },
                 }
                 if (result) |request_value| return request_value;
@@ -1375,6 +1614,7 @@ pub const Scene = struct {
                 continue;
             }
             if (self.members.items.len == 0) try self.prepareMembers(objects, cli, root);
+            if (self.verifiesRetained()) try self.verifyObservations();
             if (self.hook_count != 0) {
                 for (self.members.items) |entry| {
                     if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and !entry.bars and
@@ -1403,6 +1643,90 @@ pub const Scene = struct {
         // The focused editor among the members owns the cursor, wherever it paints.
         self.maintainCursor(cli, cursor);
         return self.finishPaint(cli, damage);
+    }
+
+    fn startSegment(self: *Scene, node: *Node, kind: @FieldType(Segment, "kind")) void {
+        const children = node.paint_children.items;
+        // FULL_FRAME queues every child, so nothing can join the segment.
+        node.segment = .{
+            .feedback_id = self.attempt.?.feedback_id,
+            .kind = kind,
+            .end = if (children.len == 0) 0 else children[children.len - 1].scene_node.?.paint_rank,
+            .full = self.forcesFullFrame(),
+        };
+    }
+
+    /// Queues the updates of a parent's children in paint order: those that need feedback,
+    /// or every child under FULL_FRAME. A filtering parent tests overlap again only after the
+    /// selection changed; until then the children that overlapped at its last test do. That
+    /// test also sets aside culled children that only a stale subtree keeps in the attention
+    /// list, so later scans pass over them.
+    fn selectChildren(self: *Scene, objects: *const handles.Table, value: *native.NativeRenderable) !void {
+        const node = value.scene_node.?;
+        const active = &self.attempt.?;
+        const full = self.forcesFullFrame();
+        const filter = try self.childFilter(objects, value);
+        self.startSegment(node, .select);
+        node.segment.filtered = filter != null;
+        if (full or (node.filtersChildren() and node.selected_epoch != self.selection_epoch)) {
+            const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
+            node.selected_epoch = self.selection_epoch;
+            var index = node.paint_children.items.len;
+            while (index != 0) {
+                index -= 1;
+                if (builtin.is_test) self.test_feedback_child_steps += 1;
+                const child = node.paint_children.items[index];
+                const state = child.scene_node.?;
+                if (state.prepared_gen != self.candidates_gen) {
+                    try self.deferChild(value, child);
+                    continue;
+                }
+                if (filter) |bounds| {
+                    var layout = state.layout;
+                    layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
+                    layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
+                    self.frame_work.overlap_tests += 1;
+                    if (!overlaps(bounds, layout)) {
+                        // Only its subtree's state keeps it listed; any change lists it again.
+                        if (!full and state.attention_index != no_slot and state.update_below == 0 and state.filters_below == 0 and
+                            !state.layout_flags.self_stale and state.placement == 0) dropAttention(node, state.attention_index);
+                        continue;
+                    }
+                }
+                state.selected_at = node.selected_epoch;
+                if (state.feedback(active) != .unseen or !(full or needsFeedback(state))) continue;
+                self.queueUpdate(node, state);
+            }
+            return;
+        }
+        const start = self.feedback.items.len;
+        for (node.attention.items) |child| {
+            if (builtin.is_test) self.test_feedback_child_steps += 1;
+            const state = child.scene_node.?;
+            if (!needsFeedback(state)) continue;
+            if (state.prepared_gen != self.candidates_gen) {
+                try self.deferChild(value, child);
+                continue;
+            }
+            if (state.feedback(active) != .unseen) continue;
+            if (filter != null and state.selected_at != node.selected_epoch) continue;
+            self.queueUpdate(node, state);
+        }
+        std.mem.sort(Feedback, self.feedback.items[start..], {}, rankGreaterThan);
+    }
+
+    /// A shown child that the next round's walk lists keeps its parent's subtree from cleaning,
+    /// so that round visits it. A hidden one waits for the display change that shows it.
+    fn deferChild(self: *Scene, parent: *native.NativeRenderable, child: *native.NativeRenderable) !void {
+        if (!needsFeedback(child.scene_node.?)) return;
+        var display: u32 = 0;
+        try yoga.check(yoga.yogaNodeStyleGetEnumChecked(child.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
+        if (display != api.OT_DISPLAY_NONE) self.markSubtree(parent, false);
+    }
+
+    fn queueUpdate(self: *Scene, parent: *const Node, state: *Node) void {
+        self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = .update, .parent = parent.handle, .rank = state.paint_rank });
+        state.setFeedback(&self.attempt.?, .queued);
     }
 
     /// Builds the paint list from current accepted topology, including transforms accepted
@@ -1515,6 +1839,7 @@ pub const Scene = struct {
         node.observed_frame = active.frame_id;
         node.observed_round = active.rounds;
         node.layout_flags.needs_layout = false;
+        node.layout_flags.self_stale = false;
         return result;
     }
 
@@ -1584,6 +1909,7 @@ pub const Scene = struct {
         self.frame_work.yoga_solves += 1;
         // Every solve, a measurement-only one too, invalidates the geometry nodes hold.
         self.layout_epoch = epoch;
+        self.selection_epoch +%= 1;
         self.layout_width = cli.width;
         self.layout_height = cli.height;
         self.layout_pending = true;
@@ -1621,10 +1947,19 @@ pub const Scene = struct {
                 try self.walkCandidates(objects, cli, value);
             }
         }
-        for (self.candidates.items) |entry| {
-            if (entry.bars) continue;
-            // Yoga measurement is observational; culled text keeps its last refreshed viewport.
-            if (!entry.filtered) try prepareView(&self.frame_work, entry.node.scene_node.?, entry.layout);
+        // Yoga measurement is observational; culled text keeps its last refreshed viewport.
+        if (reuse) {
+            while (self.view_dirty.pop()) |queued| {
+                const node = queued.scene_node.?;
+                node.layout_flags.view_queued = false;
+                if (node.prepared_gen == self.candidates_gen and !filteredAncestry(node)) try prepareView(&self.frame_work, node, node.layout);
+            }
+        } else {
+            for (self.candidates.items) |entry| {
+                if (!entry.bars and !entry.filtered) try prepareView(&self.frame_work, entry.node.scene_node.?, entry.layout);
+            }
+            for (self.view_dirty.items) |queued| queued.scene_node.?.layout_flags.view_queued = false;
+            self.view_dirty.clearRetainingCapacity();
         }
         if (phases) {
             // Prepass, filtered refresh, and selected updates never hold simultaneous batches for one parent.
@@ -1657,6 +1992,10 @@ pub const Scene = struct {
             node.geometry_epoch = self.layout_epoch;
             node.prepared_gen = self.candidates_gen;
             node.layout_flags.prepared_visible = entry.visible;
+            // Feedback refreshes a node whose box or size moved off what it last observed.
+            if (phases and (!sameBox(entry.layout, node.observed_layout) or entry.layout.width != node.resize_width or entry.layout.height != node.resize_height)) {
+                markObservationStale(entry.node);
+            }
             if (!phases) {
                 if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
                 // With hooks, hidden roots never enter refresh; placed hidden children still do.
@@ -1668,6 +2007,7 @@ pub const Scene = struct {
                 node.observed_round = active.rounds;
                 node.placement = 0;
                 node.layout_flags.needs_layout = false;
+                node.layout_flags.self_stale = false;
             }
         }
     }
@@ -1687,6 +2027,21 @@ pub const Scene = struct {
         fresh.clearRetainingCapacity();
         try self.prepare(objects, root, cli.width, cli.height, .paint, true, &fresh);
         if (!sameEntries(fresh.items, self.members.items)) return error.RetainedMismatch;
+    }
+
+    /// OT_SCENE_DEBUG_VERIFY before paint: feedback refreshed every painted member that changed,
+    /// unless a reply in this round changed it, and every unchanged view is prepared.
+    fn verifyObservations(self: *const Scene) !void {
+        const active = self.attempt.?;
+        const phases = self.layout_hook_count != 0 or self.filter_count != 0;
+        for (self.members.items) |entry| {
+            const node = entry.node.scene_node.?;
+            if (entry.bars) continue;
+            if (node.layout_flags.self_stale) {
+                const refreshed = node.observed_frame == active.frame_id and node.observed_round == active.rounds;
+                if (phases and !refreshed and node.stale_id != active.feedback_id) return error.RetainedMismatch;
+            } else if (!entry.filtered and viewNeedsPrepare(node, entry.layout)) return error.RetainedMismatch;
+        }
     }
 
     fn releaseEditorCursor(self: *Scene, cli: *renderer.CliRenderer) void {
@@ -2164,19 +2519,21 @@ pub const Scene = struct {
         const y: i32 = @intFromFloat(cells.screenY);
         const width: u32 = @intFromFloat(cells.width);
         const height: u32 = @intFromFloat(cells.height);
+        // Culled views prepare when they show; an editor's preparation also follows its cursor.
+        const prepares = (entry.filtered or self.preparation_dirty) and self.verify_target == null;
         if (node.text) |text| {
-            if (entry.filtered and self.verify_target == null) try prepareView(&self.frame_work, node, entry.layout);
+            if (prepares and viewNeedsPrepare(node, entry.layout)) try prepareView(&self.frame_work, node, entry.layout);
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(text.view, x, y);
         } else if (node.kind == api.OT_SCENE_TEXT_VIEW) {
             const view = node.control.text_view.view orelse return;
-            if ((entry.filtered or self.preparation_dirty) and self.verify_target == null) try prepareView(&self.frame_work, node, entry.layout);
+            if (prepares and viewNeedsPrepare(node, entry.layout)) try prepareView(&self.frame_work, node, entry.layout);
             if (!node.control.text_view.paint) return;
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(view.view, x, y);
         } else if (node.kind == api.OT_SCENE_EDITOR) {
             const editor = node.editor orelse return;
-            if ((entry.filtered or self.preparation_dirty) and self.verify_target == null) try prepareView(&self.frame_work, node, entry.layout);
+            if (prepares) try prepareView(&self.frame_work, node, entry.layout);
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawEditorViewChecked(editor.view, x, y);
         } else if (node.kind == api.OT_SCENE_IMAGE) {
@@ -2566,6 +2923,22 @@ fn paintSlider(target: *buffer.OptimizedBuffer, options: SliderOptions, layout: 
     }
 }
 
+/// Whether a filtering ancestor's selection decides when the node's view is prepared.
+fn filteredAncestry(node: *const Node) bool {
+    var cursor = node.parent;
+    while (cursor) |value| : (cursor = value.scene_node.?.parent) {
+        if (value.scene_node.?.filtersChildren()) return true;
+    }
+    return false;
+}
+
+fn sameBox(a: Layout, b: Layout) bool {
+    inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
+        if (@as(u32, @bitCast(@field(a, name))) != @as(u32, @bitCast(@field(b, name)))) return false;
+    }
+    return true;
+}
+
 fn rect(layout: Layout) [4]f64 {
     return .{ layout.screenX, layout.screenY, layout.width, layout.height };
 }
@@ -2686,6 +3059,13 @@ fn prepareView(work: *renderer.FrameWork, node: *Node, layout: Layout) !void {
     text.initial_viewport = null;
 }
 
+/// Whether preparing a text or text view node's view at this layout would change it.
+fn viewNeedsPrepare(node: *const Node, layout: Layout) bool {
+    const view = if (node.kind == api.OT_SCENE_TEXT_VIEW) (node.control.text_view.view orelse return false).view else (node.text orelse return false).view;
+    const viewport = view.getViewport() orelse return true;
+    return viewport.width != cellSize(layout.width) or viewport.height != cellSize(layout.height) or view.needsPrepare();
+}
+
 fn overlaps(filter: Filter, layout: Layout) bool {
     const viewport = filter.viewport;
     if (viewport.width <= 0 or viewport.height <= 0) return false;
@@ -2720,11 +3100,12 @@ fn sortChildren(node: *Node, frame_id: u64) bool {
     if (node.child_order_frame == frame_id) return false;
     node.child_order_frame = frame_id;
     if (!node.sort_dirty) return false;
+    // Ranks increase along the children, so equal z keeps their order.
+    std.mem.sort(*native.NativeRenderable, node.paint_children.items, {}, paintLessThan);
     for (node.paint_children.items, 0..) |child, index| {
         if (builtin.is_test) node.owner.test_sort_steps += 1;
-        child.scene_node.?.paint_rank = @intCast(index);
+        child.scene_node.?.paint_rank = index;
     }
-    std.mem.sort(*native.NativeRenderable, node.paint_children.items, {}, paintLessThan);
     node.sort_dirty = false;
     return true;
 }
@@ -2745,6 +3126,10 @@ fn sameEntries(first: []const Work, second: []const Work) bool {
 
 fn placementGreaterThan(_: void, left: Feedback, right: Feedback) bool {
     return left.placement > right.placement;
+}
+
+fn rankGreaterThan(_: void, left: Feedback, right: Feedback) bool {
+    return left.rank > right.rank;
 }
 
 /// Paint, clip, and hit geometry use i32 cells. An axis outside them keeps the truncated cells that paint covers

@@ -215,6 +215,8 @@ const Stats = struct {
     content_resizes: u32 = 0,
     /// Replies to those requests that changed text on a content child, mid-batch.
     content_reply_texts: u32 = 0,
+    /// Replies that gave a sibling of the requester, or its child, a hook or a text change (B5b).
+    sibling_marks: u32 = 0,
     /// Text replaced on a filtered content child without a measure function, so without a solve.
     unmeasured_texts: u32 = 0,
     updates: u32 = 0,
@@ -258,6 +260,8 @@ const Harness = struct {
     twins: [2]Fixture,
     model: Model = .{},
     random: std.Random,
+    /// Draws for sibling marks, apart from `random`, so the script keeps its mix of frames.
+    side: std.Random,
     stats: Stats = .{},
     bytes: [2]std.ArrayListUnmanaged(u8) = .{ .empty, .empty },
     /// Decodes the candidate's bytes independently of the encoder.
@@ -282,7 +286,7 @@ const Harness = struct {
     hook_tick: usize = 0,
     recorded: bool = false,
 
-    fn init(random: std.Random, verify: bool) !Harness {
+    fn init(random: std.Random, side: std.Random, verify: bool) !Harness {
         var twins: [2]Fixture = undefined;
         for (&twins, 0..) |*twin, index| {
             twin.* = try Fixture.init(testing.allocator, 16, 6, .{ .output = .{ .chunk_size = 8192, .chunk_count = 2, .span_capacity = 2 } });
@@ -296,7 +300,7 @@ const Harness = struct {
                 try twin.owner.sceneSetDebugFlags(twin.id, c.OT_SCENE_DEBUG_VERIFY);
             }
         }
-        var self: Harness = .{ .twins = twins, .random = random, .terminal = try newTerminal(16, 6), .read_base = random.uintLessThan(usize, 16) };
+        var self: Harness = .{ .twins = twins, .random = random, .side = side, .terminal = try newTerminal(16, 6), .read_base = random.uintLessThan(usize, 16) };
         for (twins, 0..) |twin, index| {
             self.shared[index] = try twin.owner.createTextBuffer(.unicode);
             try twin.owner.textBufferSetText(self.shared[index], "shared text");
@@ -841,6 +845,7 @@ const Harness = struct {
                         }
                     }
                     try self.reply();
+                    if (self.side.uintLessThan(u32, 3) == 0) try self.markSibling(requester);
                     // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
                     // ancestor of a node it already stamped (B2 invariant 7).
                     // Detaching it instead makes the walk meet a node whose ancestry moved.
@@ -870,6 +875,27 @@ const Harness = struct {
         if (self.model.parent[slot] == content_slot) return;
         try self.apply(.{ .destroy = slot });
         self.stats.reply_destroys += 1;
+    }
+
+    /// A sibling of the requester, before or after it in paint order, or the sibling's first
+    /// child, gets or loses UPDATE, or a text change, while their parent's batch runs.
+    fn markSibling(self: *Harness, requester: usize) !void {
+        const parent = self.model.parent[requester] orelse return;
+        const siblings = self.model.paint[parent].items;
+        var target = siblings[self.side.uintLessThan(usize, siblings.len)];
+        if (target == requester) return;
+        if (self.model.children[target].items.len != 0 and self.side.boolean()) target = self.model.children[target].items[0];
+        if (target < scaffold_slots) return;
+        self.stats.sibling_marks += 1;
+        if (self.model.kind[target] == .text and self.side.boolean()) {
+            var text_options = self.model.text_options[target];
+            text_options.truncate = !text_options.truncate;
+            return self.apply(.{ .text_options = .{ .slot = target, .options = text_options } });
+        }
+        // Half the changes clear the hooks they set, so hooked siblings do not pile up.
+        const kept = self.model.hooks[target] & ~@as(u32, c.OT_SCENE_HOOK_IDLE_UPDATE | c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
+        const flags: u32 = if (self.side.boolean()) c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE else 0;
+        try self.apply(.{ .hooks = .{ .slot = target, .flags = kept | flags } });
     }
 
     fn expectSameRequest(self: *const Harness, first: scene.FrameRequest, second: scene.FrameRequest) !void {
@@ -1039,9 +1065,12 @@ const Harness = struct {
         self.stats.skipped += @intFromBool(work.damage_rows == 0);
         self.stats.partial += @intFromBool(work.damage_rows != 0 and work.damage_rows < self.twins[candidate].cli.height);
         self.stats.retained_records += @intFromBool(self.recorded and work.damage_rows < self.twins[candidate].cli.height);
-        self.stats.filtered += @intFromBool(work.overlap_tests != 0);
-        self.stats.filtered_requests += @intFromBool(work.overlap_tests != 0 and work.host_requests != 0);
-        self.stats.reused_filtered_requests += @intFromBool(work.candidate_visits == 0 and work.overlap_tests != 0 and work.host_requests != 0);
+        // The content culls; a frame whose selection did not change tests no overlap (B5b).
+        const culling = work.overlap_tests != 0 or (self.model.bound and !self.model.hidden[content_slot] and
+            !self.model.hiddenAbove(content_slot) and self.model.children[content_slot].items.len >= 16);
+        self.stats.filtered += @intFromBool(culling);
+        self.stats.filtered_requests += @intFromBool(culling and work.host_requests != 0);
+        self.stats.reused_filtered_requests += @intFromBool(work.candidate_visits == 0 and culling and work.host_requests != 0);
         self.stats.hidden_hooked += @intFromBool(hidden_hooked);
         for (self.model.handles, 0..) |maybe, slot| {
             if (maybe == null or self.model.kind[slot] != .scroll or self.model.children[slot].items.len == 0) continue;
@@ -1271,7 +1300,8 @@ fn cellHash(target: *const @import("../buffer.zig").OptimizedBuffer) u64 {
 
 fn runParity(seed: u64, steps: usize) !Stats {
     var prng = std.Random.DefaultPrng.init(seed);
-    var harness = try Harness.init(prng.random(), seed % 2 == 0);
+    var side = std.Random.DefaultPrng.init(~seed);
+    var harness = try Harness.init(prng.random(), side.random(), seed % 2 == 0);
     defer harness.deinit();
     for (0..steps) |_| try harness.step();
     return harness.stats;
@@ -1288,18 +1318,18 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // fails if the draw that produces its kind is removed. Minimums are about a quarter of the
     // counts at 64 x 256 (decoded frames about two thirds), derived again after replies began to
     // destroy nodes: those must spare content rows, or viewport scenes fall below the culling
-    // cutoff (filtered frames with a request fell from 441 to 51). Counts: reused 8,802,
-    // filtered 1,199, filtered with a request 359, kept lists in such a frame 57, hooked under
-    // a hidden ancestor 5,393, reply hid the requester's parent 41, reply detached the
-    // requester 25, reply destroyed a node 504, a RECORD reply changed the scene 95,
-    // content-child RESIZE 39, a truncation change in its reply 38, unmeasured content text
-    // replaced 21, UPDATE 4,044, RESIZE 47, LAYOUT_CHANGED 2,143, recordings 395, box bodies 81,
-    // decoded 12,947, an editor's cursor 1,667, a host cursor 8,313, skipped paint 8,209, partly
-    // diffed 1,289, recorded frames that kept rows 117, non-local or image recordings 21, steady
-    // reads 291, draft writes after paint 2,825, raw writes between frames 402, shared text
-    // changes shown 439, style changes shown 234, view binds 369, selections 238, equal
-    // re-sends 465, palette changes 91, frames showing a scroll node with children 967, scrolls
-    // and option changes 164, SCROLL requests 8.
+    // cutoff (filtered frames with a request fell from 441 to 51). Sibling marks draw from their
+    // own stream, so they keep the script's mix. Counts: reused 8,976, culling 671, culling with
+    // a request 360, kept lists in such a frame 71, hooked under a hidden ancestor 5,887, reply
+    // hid the requester's parent 39, reply detached the requester 54, reply destroyed a node
+    // 349, a RECORD reply changed the scene 244, content-child RESIZE 47, a truncation change in
+    // its reply 43, a sibling marked mid-batch 154, unmeasured content text replaced 15, UPDATE
+    // 3,128, RESIZE 62, LAYOUT_CHANGED 1,785, recordings 937, box bodies 160, decoded 12,535, an
+    // editor's cursor 2,447, a host cursor 7,328, skipped paint 8,201, partly diffed 1,169, draft
+    // writes after paint 2,909, raw writes between frames 384, shared text changes shown 362,
+    // style changes shown 187, view binds 364, selections 227, equal re-sends 426, palette
+    // changes 81, frames showing a scroll node with children 1,120, scrolls and option changes
+    // 170, SCROLL requests 29.
     const minimums: Stats = .{
         .reused = 2200,
         .filtered = 260,
@@ -1312,6 +1342,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .record_replies = 23,
         .content_resizes = 11,
         .content_reply_texts = 10,
+        .sibling_marks = 38,
         .unmeasured_texts = 3,
         .updates = 680,
         .resizes = 13,
