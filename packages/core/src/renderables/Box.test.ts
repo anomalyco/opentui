@@ -214,16 +214,24 @@ describe("BoxRenderable - border titles (top and bottom)", () => {
     expect(lines[4].slice(0, 16)).toBe("└──────────Bot─┘")
   })
 
+  // A box left of the frame keeps its titles in place; the cells left of column 0 are not drawn.
   test.each([
-    ["left", "└─Bot────────────┘"],
-    ["center", "└──────Bot───────┘"],
-    ["right", "└────────────Bot─┘"],
-  ] as const)("renders bottom title with %s alignment", async (alignment, expectedBorder) => {
+    ["left", 0, "└─Bot────────────┘"],
+    ["center", 0, "└──────Bot───────┘"],
+    ["right", 0, "└────────────Bot─┘"],
+    ["left", -4, "t────────────┘    "],
+    ["center", -4, "───Bot───────┘    "],
+    ["right", -4, "─────────Bot─┘    "],
+  ] as const)("renders titles with %s alignment at left %d", async (alignment, left, expectedBorder) => {
     const box = new BoxRenderable(testRenderer, {
       id: `bottom-title-${alignment}`,
+      position: "absolute",
+      left,
       border: true,
       width: 18,
       height: 5,
+      title: "Bot",
+      titleAlignment: alignment,
       bottomTitle: "Bot",
       bottomTitleAlignment: alignment,
     })
@@ -232,7 +240,10 @@ describe("BoxRenderable - border titles (top and bottom)", () => {
     await renderOnce()
 
     const lines = captureFrame().split("\n")
-    expect(lines[4].slice(0, 18)).toBe(expectedBorder)
+    expect([lines[0].slice(0, 18), lines[4].slice(0, 18)]).toEqual([
+      expectedBorder.replace("└", "┌").replace("┘", "┐"),
+      expectedBorder,
+    ])
   })
 
   test("sets titleColor and triggers render on change", () => {

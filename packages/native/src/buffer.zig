@@ -710,7 +710,6 @@ pub const OptimizedBuffer = struct {
 
     const BoxTitleLayout = struct {
         shouldDraw: bool = false,
-        x: i32 = 0,
         startX: i32 = 0,
         endX: i32 = 0,
     };
@@ -3176,8 +3175,8 @@ pub const OptimizedBuffer = struct {
         const isAtActualTop = startY == y;
         const isAtActualBottom = endY == y + @as(i32, @intCast(height)) - 1;
 
-        const titleLayout = self.computeBoxTitleLayout(title, borderSides.top, isAtActualTop, startX, endX, width, titleAlignment);
-        const bottomTitleLayout = self.computeBoxTitleLayout(bottomTitle, borderSides.bottom, isAtActualBottom, startX, endX, width, bottomTitleAlignment);
+        const titleLayout = self.computeBoxTitleLayout(title, borderSides.top, isAtActualTop, x, width, titleAlignment);
+        const bottomTitleLayout = self.computeBoxTitleLayout(bottomTitle, borderSides.bottom, isAtActualBottom, x, width, bottomTitleAlignment);
 
         if (shouldFill) {
             if (!borderSides.top and !borderSides.right and !borderSides.bottom and !borderSides.left) {
@@ -3341,9 +3340,9 @@ pub const OptimizedBuffer = struct {
         if (titleLayout.shouldDraw) {
             if (title) |titleText| {
                 if (checked_titles) {
-                    try self.drawTextChecked(titleText, titleLayout.x, startY, titleColor, backgroundColor, 0);
+                    try self.drawTextChecked(titleText, titleLayout.startX, startY, titleColor, backgroundColor, 0);
                 } else {
-                    try self.drawText(titleText, @intCast(titleLayout.x), @intCast(startY), titleColor, backgroundColor, 0);
+                    try self.drawTextClipped(titleText, titleLayout.startX, startY, titleColor, backgroundColor, 0);
                 }
             }
         }
@@ -3351,9 +3350,9 @@ pub const OptimizedBuffer = struct {
         if (bottomTitleLayout.shouldDraw) {
             if (bottomTitle) |titleText| {
                 if (checked_titles) {
-                    try self.drawTextChecked(titleText, bottomTitleLayout.x, endY, titleColor, backgroundColor, 0);
+                    try self.drawTextChecked(titleText, bottomTitleLayout.startX, endY, titleColor, backgroundColor, 0);
                 } else {
-                    try self.drawText(titleText, @intCast(bottomTitleLayout.x), @intCast(endY), titleColor, backgroundColor, 0);
+                    try self.drawTextClipped(titleText, bottomTitleLayout.startX, endY, titleColor, backgroundColor, 0);
                 }
             }
         }
@@ -3364,15 +3363,14 @@ pub const OptimizedBuffer = struct {
         titleText: ?[]const u8,
         borderSide: bool,
         isAtActualSide: bool,
-        startX: i32,
-        endX: i32,
+        boxX: i32,
         width: u32,
         alignment: u8,
     ) BoxTitleLayout {
-        const text = titleText orelse return .{ .x = startX };
+        const text = titleText orelse return .{};
 
         if (text.len == 0 or !borderSide or !isAtActualSide) {
-            return .{ .x = startX };
+            return .{};
         }
 
         const is_ascii = utf8.isAsciiOnly(text);
@@ -3380,23 +3378,22 @@ pub const OptimizedBuffer = struct {
         const minTitleSpace = 4;
 
         if (@as(i32, @intCast(width)) < titleLength + minTitleSpace) {
-            return .{ .x = startX };
+            return .{};
         }
 
         const padding = 2;
-        var titleX = startX + padding;
+        var titleX = boxX + padding;
 
         if (alignment == 1) {
-            titleX = startX + @max(padding, @divFloor(@as(i32, @intCast(width)) - titleLength, 2));
+            titleX = boxX + @max(padding, @divFloor(@as(i32, @intCast(width)) - titleLength, 2));
         } else if (alignment == 2) {
-            titleX = startX + @as(i32, @intCast(width)) - padding - titleLength;
+            titleX = boxX + @as(i32, @intCast(width)) - padding - titleLength;
         }
-
-        titleX = @max(startX + padding, @min(titleX, endX - titleLength));
+        assert(titleX >= boxX + padding);
+        assert(titleX + titleLength < boxX + @as(i32, @intCast(width)));
 
         return .{
             .shouldDraw = true,
-            .x = titleX,
             .startX = titleX,
             .endX = titleX + titleLength - 1,
         };

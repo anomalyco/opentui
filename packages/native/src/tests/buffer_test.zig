@@ -2227,6 +2227,52 @@ test "OptimizedBuffer - fillRect transparent path is a no-op without trackers" {
     try std.testing.expectEqual(ansi.TextAttributes.UNDERLINE, unchangedSpace.attributes);
 }
 
+test "OptimizedBuffer - drawBox places titles against the whole box when the buffer or a scissor clips it" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const buf = try OptimizedBuffer.init(std.testing.allocator, 12, 3, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer buf.deinit();
+    // Equal corners make the top and the bottom title rows read the same.
+    const border_chars = [_]u32{ '+', '+', '+', '+', '-', '|', 0, 0, 0, 0, 0 };
+    const sides: buffer_mod.BorderSides = .{ .top = true, .right = true, .bottom = true, .left = true };
+    const fg = ansi.rgbColor(250, 240, 230, 255);
+    const bg = ansi.rgbColor(10, 20, 30, 255);
+    const Case = struct { x: i32, y: i32 = 0, alignment: u8 = 0, title: []const u8 = "ab", clip: ?buffer_mod.ClipRect = null, row: []const u8 };
+    // A 10-cell box: a 2-cell title starts at x + 2 (left), x + 4 (center), or x + 6 (right).
+    const cases = [_]Case{
+        .{ .x = 0, .row = "+-ab-----+  " },
+        .{ .x = -2, .row = "ab-----+    " },
+        .{ .x = -3, .row = "b-----+     " },
+        .{ .x = -2, .alignment = 1, .row = "--ab---+    " },
+        .{ .x = -2, .alignment = 2, .row = "----ab-+    " },
+        .{ .x = 6, .alignment = 1, .row = "      +---ab" },
+        .{ .x = 5, .alignment = 2, .row = "     +-----a" },
+        .{ .x = -2, .title = "世界", .row = "世界---+    " },
+        // The wide glyph covers columns -1 and 0, so column 0 keeps its cell.
+        .{ .x = -3, .title = "世界", .row = " 界---+     " },
+        .{ .x = -2, .alignment = 2, .title = "e\u{301}x", .row = "----e\u{301}x-+    " },
+        .{ .x = -2, .alignment = 2, .title = "abcdef", .row = "abcdef-+    " },
+        .{ .x = -2, .title = "abcdefg", .row = "-------+    " },
+        .{ .x = 0, .y = -1, .row = "+-ab-----+  " },
+        .{ .x = 0, .clip = .{ .x = 3, .y = 0, .width = 9, .height = 3 }, .row = "   b-----+  " },
+        .{ .x = 2, .alignment = 2, .clip = .{ .x = 0, .y = 0, .width = 8, .height = 3 }, .row = "  +-----    " },
+    };
+    var text: [256]u8 = undefined;
+    for ([_]bool{ false, true }) |checked| for (cases) |case| {
+        errdefer std.debug.print("checked={} case={any}\n", .{ checked, case });
+        buf.clear(bg, null);
+        if (case.clip) |rect| try buf.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
+        defer buf.clearScissorRects();
+        const args = .{ buf, case.x, case.y, 10, 3, &border_chars, sides, fg, bg, fg, false, case.title, case.alignment, case.title, case.alignment };
+        try if (checked) @call(.auto, OptimizedBuffer.drawBoxChecked, args) else @call(.auto, OptimizedBuffer.drawBox, args);
+        var rows = std.mem.splitScalar(u8, text[0..try buf.writeResolvedChars(&text, true)], '\n');
+        var y: i32 = 0;
+        while (rows.next()) |row| : (y += 1) {
+            if (y == case.y or y == case.y + 2) try std.testing.expectEqualStrings(case.row, row);
+        }
+    };
+}
+
 test "OptimizedBuffer - drawBox transparent border preserves destination background metadata without trackers" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
