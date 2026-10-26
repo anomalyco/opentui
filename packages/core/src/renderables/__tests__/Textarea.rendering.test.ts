@@ -95,6 +95,33 @@ describe("Textarea - Rendering Tests", () => {
       expect(frame.lines[1].spans[0].bg.slot).toBe(254)
     })
 
+    it("preserves overflowing whitespace on the continuation line (word wrap)", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "",
+        width: 5,
+        height: 4,
+        wrapMode: "word",
+      })
+
+      editor.focus()
+      await renderOnce()
+
+      await currentMockInput.typeText("hello  ")
+      await renderOnce()
+
+      expect(editor.plainText).toBe("hello  ")
+      expect(editor.editorView.getVirtualLineCount()).toBe(2)
+      expect(editor.visualCursor.visualRow).toBe(1)
+      expect(editor.visualCursor.visualCol).toBe(2)
+
+      await currentMockInput.typeText("X")
+      await renderOnce()
+
+      expect(editor.plainText).toBe("hello  X")
+      expect(editor.visualCursor.visualRow).toBe(1)
+      expect(editor.visualCursor.visualCol).toBe(3)
+    })
+
     it("should move cursor down through all wrapped visual lines at column 0", async () => {
       // Create a long line that will wrap into multiple visual lines
       const longText =
@@ -1066,6 +1093,36 @@ describe("Textarea - Rendering Tests", () => {
   })
 
   describe("Placeholder Support", () => {
+    it("wraps placeholders as prose and preserves whitespace when editing", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "",
+        width: 5,
+        wrapMode: "word",
+        placeholder: "hello world",
+      })
+      editor.focus()
+      for (const placeholder of ["hello world", "hello there", null]) {
+        editor.clear()
+        editor.placeholder = placeholder
+        await renderOnce()
+        const lines = placeholder?.split(" ") ?? [""]
+        expect(editor.height).toBe(lines.length)
+        expect(editor.editorView.getVirtualLineCount()).toBe(lines.length)
+        expect(
+          captureFrame()
+            .split("\n")
+            .slice(0, lines.length)
+            .map((line) => line.trimEnd()),
+        ).toEqual(lines)
+
+        await currentMockInput.typeText("hello  ")
+        await renderOnce()
+        expect(editor.plainText).toBe("hello  ")
+        expect(editor.editorView.getVirtualLineCount()).toBe(2)
+        expect(editor.visualCursor).toMatchObject({ visualRow: 1, visualCol: 2 })
+      }
+    })
+
     it("should display placeholder when empty", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "",

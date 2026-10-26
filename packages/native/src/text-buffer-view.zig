@@ -365,6 +365,9 @@ pub const UnifiedTextBufferView = struct {
     tab_indicator: ?u32,
     tab_indicator_color: ?RGBA,
     truncate: bool,
+    /// Editable views preserve overflowing whitespace
+    /// on the continuation line so a caret can move through trailing spaces
+    preserve_wrapped_whitespace: bool = false,
     ellipsis_chunk: TextChunk,
 
     // Retain intrinsic and two constrained widths in most-recent-first order.
@@ -746,8 +749,8 @@ pub const UnifiedTextBufferView = struct {
             calculateUnwrappedVirtualLines(allocator, self.text_buffer, range, output)
         else switch (self.wrap_mode) {
             .none => unreachable,
-            .char => calculateVirtualLinesGeneric(.render, .char, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, output, null),
-            .word => calculateVirtualLinesGeneric(.render, .word, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, output, word_layout),
+            .char => calculateVirtualLinesGeneric(.render, .char, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, self.preserve_wrapped_whitespace, output, null),
+            .word => calculateVirtualLinesGeneric(.render, .word, allocator, self.text_buffer, range, self.wrap_width.?, self.first_line_offset, self.preserve_wrapped_whitespace, output, word_layout),
         };
     }
 
@@ -1617,6 +1620,19 @@ pub const UnifiedTextBufferView = struct {
         return self.truncate;
     }
 
+    pub fn setPreserveWrappedWhitespace(self: *Self, preserve: bool) void {
+        if (self.preserve_wrapped_whitespace == preserve) return;
+        self.preserve_wrapped_whitespace = preserve;
+        self.virtual_lines_dirty = true;
+        self.truncation_applied = false;
+        self.cached_measure_count = 0;
+        self.dropLedger();
+    }
+
+    pub fn getPreserveWrappedWhitespace(self: *const Self) bool {
+        return self.preserve_wrapped_whitespace;
+    }
+
     fn ensureTruncation(self: *Self) void {
         if (!self.truncate or self.viewport == null) return;
 
@@ -1883,8 +1899,8 @@ pub const UnifiedTextBufferView = struct {
             };
             if (!switch (self.wrap_mode) {
                 .none => unreachable,
-                .char => calculateVirtualLinesGeneric(.measure, .char, allocator, self.text_buffer, range, width, self.first_line_offset, &out, null),
-                .word => calculateVirtualLinesGeneric(.measure, .word, allocator, self.text_buffer, range, width, self.first_line_offset, &out, null),
+                .char => calculateVirtualLinesGeneric(.measure, .char, allocator, self.text_buffer, range, width, self.first_line_offset, self.preserve_wrapped_whitespace, &out, null),
+                .word => calculateVirtualLinesGeneric(.measure, .word, allocator, self.text_buffer, range, width, self.first_line_offset, self.preserve_wrapped_whitespace, &out, null),
             }) return TextBufferViewError.OutOfMemory;
         }
         // The other lines keep their measurements. If the ledger cannot take the new ones it goes,
@@ -2006,6 +2022,7 @@ pub const UnifiedTextBufferView = struct {
         range: LineRange,
         wrap_w: u32,
         first_line_offset: u32,
+        preserve_wrapped_whitespace: bool,
         result: if (calculation == .render) VirtualLineOutput else *MeasureOutput,
         word_layout: ?*WordLayoutStorage,
     ) bool {
@@ -2019,6 +2036,7 @@ pub const UnifiedTextBufferView = struct {
             word_chunk_index: u32 = 0,
             wrap_w: u32,
             current_wrap_width: u32,
+            preserve_wrapped_whitespace: bool,
             document_cell_offset: u32 = 0,
             line_idx: u32 = 0,
             source_line_col_offset: u32 = 0,
@@ -2371,15 +2389,18 @@ pub const UnifiedTextBufferView = struct {
                 // Logical-line indentation is content; only later separators may be elided.
                 const preserve_leading = !wctx.source_line_has_non_whitespace;
                 const wrap_limit_cols = wctx.wordWrapWidth();
-                if (!preserve_leading and wctx.current_vline_width_cols + wrap_break.width_cols > wrap_limit_cols) {
-                    if (wctx.current_vline_width_cols > 0 and !commitVirtualLineSticky(wctx)) return;
-                    consumeDroppedWhitespace(wctx, wrap_break.width_cols);
-                    return;
-                }
+                // Editable views preserve trailing whitespace on the continuation line so the caret can move through it.
+                if (!wctx.preserve_wrapped_whitespace) {
+                    if (!preserve_leading and wctx.current_vline_width_cols + wrap_break.width_cols > wrap_limit_cols) {
+                        if (wctx.current_vline_width_cols > 0 and !commitVirtualLineSticky(wctx)) return;
+                        consumeDroppedWhitespace(wctx, wrap_break.width_cols);
+                        return;
+                    }
 
-                if (!preserve_leading and wctx.current_vline_width_cols == 0) {
-                    consumeDroppedWhitespace(wctx, wrap_break.width_cols);
-                    return;
+                    if (!preserve_leading and wctx.current_vline_width_cols == 0) {
+                        consumeDroppedWhitespace(wctx, wrap_break.width_cols);
+                        return;
+                    }
                 }
 
                 placeCompleteWordPiece(
@@ -2799,6 +2820,7 @@ pub const UnifiedTextBufferView = struct {
             .word_layout = word_layout,
             .word_line_preflight = if (comptime wrap_mode == .word) !text_buffer.rope().root.metrics().custom.ascii_only else {},
             .wrap_w = wrap_w,
+            .preserve_wrapped_whitespace = preserve_wrapped_whitespace,
             .current_wrap_width = if (range.first == 0 and first_line_offset > 0 and first_line_offset < wrap_w)
                 wrap_w - first_line_offset
             else
