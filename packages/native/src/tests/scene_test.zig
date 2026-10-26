@@ -8,9 +8,11 @@ const yoga = @import("../yoga.zig");
 const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const scene = @import("../scene.zig");
+const c = @import("context_abi_c");
 
 test {
     _ = @import("scene_editor_test.zig");
+    _ = @import("scene_scroll_test.zig");
 }
 
 const frame_options: scene.FrameOptions = .{
@@ -300,11 +302,18 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
 }
 
 fn viewportAllocationFailures(allocator: std.mem.Allocator) !void {
-    const f = try Fixture.init(allocator, 8, 4, .{ .limits = .{ .object_capacity = 20 } });
+    const f = try Fixture.init(allocator, 8, 4, .{ .limits = .{ .object_capacity = 24 } });
     defer f.deinit();
+    // A scroll node owns two Yoga nodes and its state; a child moves into its content node.
+    const scroll = try f.owner.sceneCreateNode(f.id, 1, 4);
+    try f.owner.sceneSetScroll(scroll, .{ .culling = true });
+    try f.owner.sceneSetScrollArrow(scroll, 1, 0, .{ .text = "^" });
+    try f.owner.sceneMoveNode(scroll, f.root, 0);
+    try f.owner.sceneMoveNode(try f.owner.sceneCreateNode(f.id, 2, 5), scroll, 0);
+    try f.owner.sceneSetHooks(scroll, c.OT_SCENE_HOOK_SCROLL, 1, 0, 0);
     const content = try f.owner.sceneCreateNode(f.id, 1, 2);
     try dimensions(f.owner, content, 8, 32);
-    try f.owner.sceneMoveNode(content, f.root, 0);
+    try f.owner.sceneMoveNode(content, f.root, 1);
     var children: [16]context.Handle = undefined;
     try filterChildren(f.owner, f.id, content, &children);
     const text = try f.owner.sceneCreateNode(f.id, 2, 3);
@@ -314,7 +323,7 @@ fn viewportAllocationFailures(allocator: std.mem.Allocator) !void {
     try f.owner.sceneSetFocus(text, true);
     try f.owner.sceneSetHooks(children[0], 3, 1, 0, 0);
     var request: ?scene.FrameRequest = null;
-    for (0..3) |_| {
+    for (0..4) |_| {
         request = try f.owner.sceneFrameStep(f.id, request, frame_options);
         if (request.?.kind == 0) break;
     } else return error.TestUnexpectedResult;
