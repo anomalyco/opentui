@@ -4120,9 +4120,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.capturedRenderable = undefined
     for (const parser of this.legacyStdinParsers()) parser.resetMouseState()
 
-    if (splitFooterActive) {
-      this.forceFullRepaintRequested = true
-    }
+    // Resize only reshapes the native buffers here; the next paint is normally
+    // an incremental diff that skips cells matching the tracked buffer, while
+    // the terminal grid can still hold pre-resize content on reflowed rows and
+    // exposed columns. Split-footer has the clearStart scrub above; other
+    // screen modes have no scrub, so request one full repaint per size change
+    // to resync the terminal with the renderer buffer (#1110).
+    this.forceFullRepaintRequested = true
 
     this.clearPendingSplitFooterTransition()
 
