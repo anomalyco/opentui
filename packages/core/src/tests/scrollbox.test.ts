@@ -229,26 +229,48 @@ describe("ScrollBoxRenderable - facade", () => {
     ])
   })
 
-  // OpenCode's holdAnchor: a "resize" listener on the content keeps a row on its viewport line when a row above it
-  // grows. The listener reads the computed layout (local to the content) and scrolls; the frame shows the result.
-  test("a scroll from a content resize listener lands in the same frame", async () => {
-    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 20, height: 6 })
-    const rows = Array.from({ length: 20 }, (_, i) => new TextRenderable(testRenderer, { content: `row ${i}` }))
+  // A backfill prepends rows above a reader at row 4. Each row lists the top line of the next three frames and, in
+  // parentheses, the frame's host requests: a shifted frame shows a prepended row.
+  test.each([
+    {
+      // OpenCode's afterLayout: two animation frames, then a scroll by the growth.
+      name: "two animation frames",
+      hold: (scrollbox: ScrollBoxRenderable) => {
+        const before = scrollbox.scrollHeight
+        testRenderer.requestAnimationFrame(() =>
+          testRenderer.requestAnimationFrame(() => scrollbox.scrollBy(scrollbox.scrollHeight - before)),
+        )
+      },
+      frames: ["prepended 4 (0)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
+      // OpenCode's holdAnchor: a content "resize" listener reads the computed layout and scrolls in the same frame.
+      name: "content resize listener",
+      hold: (scrollbox: ScrollBoxRenderable, row: TextRenderable) => {
+        const top = row.getComputedLayout().top - scrollbox.scrollTop
+        scrollbox.content.on("resize", () => scrollbox.scrollTo(row.getComputedLayout().top - top))
+      },
+      frames: ["row 4 (1)", "row 4 (0)", "row 4 (0)"],
+    },
+  ])("a backfill above the reader: $name", async ({ hold, frames }) => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 20, height: 4, viewportCulling: false })
+    const rows = Array.from({ length: 10 }, (_, i) => new TextRenderable(testRenderer, { content: `row ${i}` }))
     for (const row of rows) scrollbox.add(row)
     testRenderer.root.add(scrollbox)
     await renderOnce()
-    scrollbox.scrollTo(10)
+    scrollbox.scrollTo(4)
     await renderOnce()
-    const line = () =>
-      captureCharFrame()
-        .split("\n")
-        .findIndex((text) => text.startsWith("row 12"))
-    const before = line()
-    const top = rows[12].getComputedLayout().top - scrollbox.scrollTop
-    scrollbox.content.on("resize", () => scrollbox.scrollTo(rows[12].getComputedLayout().top - top))
-    rows[0].content = "row 0\nmore\nmore"
-    await renderOnce()
-    expect([before, scrollbox.scrollTop, line()]).toEqual([2, 12, 2])
+    hold(scrollbox, rows[4])
+    for (let i = 0; i < 6; i++)
+      scrollbox.insertBefore(new TextRenderable(testRenderer, { content: `prepended ${i}` }), rows[0])
+    const tops: string[] = []
+    for (let i = 0; i < 3; i++) {
+      await renderOnce()
+      tops.push(
+        `${captureCharFrame().split("\n")[0].slice(0, 15).trim()} (${testRenderer.getNativeStats().frameWork.hostRequests})`,
+      )
+    }
+    expect(tops).toEqual(frames)
   })
 
   // Bar cells hit the ScrollBox: a click on the track jumps there, and a drag from the thumb moves it.
