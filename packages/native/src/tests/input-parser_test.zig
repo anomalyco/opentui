@@ -1096,7 +1096,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ "\x1b_", &.{frag("\x1b_")} },
         .{ "\x1b[", &.{frag("\x1b[")} },
         .{ "\x1b[24", &.{frag("\x1b[24")} },
-        .{ "\x1b_G" ++ [_]u8{'9'} ** ip.unit_bytes_max, &.{} },
+        .{ "\x1b_Gi=" ++ [_]u8{'9'} ** ip.unit_bytes_max, &.{} },
     }) |case| {
         harness.parser.setExpectations(sentinel);
         _ = try harness.feed(case[0]);
@@ -1106,7 +1106,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     }
     // An overlong reply is discarded up to its terminator, however long it takes.
     harness.parser.setExpectations(sentinel);
-    _ = try harness.feed("\x1b_G" ++ [_]u8{'9'} ** ip.unit_bytes_max);
+    _ = try harness.feed("\x1b_Gi=" ++ [_]u8{'9'} ** ip.unit_bytes_max);
     try expectGot("", &.{}, try harness.wait(60_000));
     try expectGot("", &.{ch('q')}, try harness.feed("9\x1b\\q"));
     // A discarded string that begins like no reply, and a discarded CSI, still time out.
@@ -1191,6 +1191,13 @@ test "input parser keeps typed text typed after a held or recovered prefix while
         .{ "P2", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" }, .{ .feed = da1 }, .clear, .{ .wait = 60_000 }, .{ .feed = "later\r" } }, &([_]Expect{ frag("\x1b[200"), ch('~') } ++ typed("abc") ++ [_]Expect{reply(da1)} ++ typed("later\r")) },
         .{ "C11", &.{ .{ .feed = "\x1b" }, .{ .wait = 30 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "2" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1b[200"), ch('~') } ++ typed("abc")) },
         .{ "R7", &.{ .{ .feed = "\x1b" }, .{ .wait = 20 }, .{ .feed = "[1x" } }, &.{ esc, frag("\x1b[1"), ch('x') } },
+        // The check covers a string whose first byte came within 20 ms, or in the same read.
+        .{ "W1", &.{ .{ .feed = "\x1b]" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "hello\r" } }, &([_]Expect{frag("\x1b]1")} ++ typed("hello\r")) },
+        .{ "W2", &.{ .{ .feed = "\x1bP" }, .{ .wait = 5 }, .{ .feed = ">" }, .{ .wait = 100 }, .{ .feed = "abc" } }, &([_]Expect{frag("\x1bP>")} ++ typed("abc")) },
+        .{ "W3", &.{ .{ .feed = "\x1b_" }, .{ .wait = 5 }, .{ .feed = "G" }, .{ .wait = 100 }, .{ .feed = "abc" } }, &([_]Expect{frag("\x1b_Ga")} ++ typed("bc")) },
+        .{ "W4", &.{.{ .feed = "\x1b]1hello\r" }}, &([_]Expect{frag("\x1b]1")} ++ typed("hello\r")) },
+        .{ "W5", &.{.{ .feed = "\x1bP>abc" }}, &([_]Expect{frag("\x1bP>")} ++ typed("abc")) },
+        .{ "W6", &.{.{ .feed = "\x1b_Gabc" }}, &([_]Expect{frag("\x1b_Ga")} ++ typed("bc")) },
         // Two pauses, after the Escape and after the introducer, still leave the reply whole.
         .{ "K1[", &.{ .{ .feed = "\x1b" }, .{ .wait = 25 }, .{ .feed = "[" }, .{ .wait = 25 }, .{ .feed = "?62cj" } }, &.{ esc, reply(da1), ch('j') } },
         .{ "K1]", &.{ .{ .feed = "\x1b" }, .{ .wait = 25 }, .{ .feed = "]" }, .{ .wait = 25 }, .{ .feed = "11;rgb:0/0/0\x07j" } }, &.{ esc, reply("\x1b]11;rgb:0/0/0\x07"), ch('j') } },

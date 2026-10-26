@@ -205,8 +205,9 @@ const State = union(enum) {
     ss3: struct { alt: bool },
     /// `recovered`: the unit's ESC was reinstated after a timed-out Escape key.
     x10: struct { alt: bool, recovered: bool },
-    /// `kind` is `.osc`, `.dcs`, or `.apc`. `deferred`: a bare introducer that timed out, or a
-    /// recovered one, while `sentinel` is set; it continues only while it matches a reply prefix.
+    /// `kind` is `.osc`, `.dcs`, or `.apc`. `deferred`: while `sentinel` is set, a string that
+    /// begins like a reply, or a bare introducer that timed out or was recovered; it continues
+    /// only while it matches a reply prefix.
     string: struct { kind: Protocol, escaped: bool, deferred: bool = false },
     /// `osc`: BEL also ends the discarded string, as it ends only OSC.
     discard: struct { string: bool, escaped: bool, osc: bool },
@@ -418,7 +419,9 @@ pub const InputParser = struct {
                         self.dispatchX10(x10.alt, sink);
                     }
                 },
-                .string => |string| if (string.deferred) {
+                // With `sentinel`, a string whose first byte begins a reply is held, so it is checked
+                // against a reply prefix however soon that byte came.
+                .string => |string| if (string.deferred or (self.expect.sentinel and self.unit_len == 2 and beginsReply(self.unit[1], b))) {
                     if (continuesPrefix(self.unit[1], self.unit[2..self.unit_len], b)) |complete| {
                         self.append(b);
                         self.state.string.deferred = !complete;
