@@ -647,6 +647,8 @@ pub const Scene = struct {
     test_stamp_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     // Token lookups of recorded nodes while planning paint.
     test_record_lookups: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    // Child entries that feedback scans to pick the children it queues.
+    test_feedback_child_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator, config: *yoga.Config, session: handles.Handle) !*Scene {
         const self = try allocator.create(Scene);
@@ -1294,6 +1296,7 @@ pub const Scene = struct {
                         self.feedback.appendAssumeCapacity(.{ .node = operation.node, .kind = .prepass, .placement = 1 });
                         const start = self.feedback.items.len;
                         for (node.children.items) |child| {
+                            if (builtin.is_test) self.test_feedback_child_steps += 1;
                             const state = child.scene_node.?;
                             if (state.prepared_gen != self.candidates_gen) continue;
                             if (state.placement != 0) self.feedback.appendAssumeCapacity(.{
@@ -1319,6 +1322,7 @@ pub const Scene = struct {
                                 // Refresh repeats its last result until a solve or a stale mark changes an input.
                                 if (node.children_observed == self.layout_epoch and !self.forcesFullFrame()) continue;
                                 for (node.paint_children.items, 0..) |child, index| {
+                                    if (builtin.is_test) self.test_feedback_child_steps += 1;
                                     const state = child.scene_node.?;
                                     if (state.prepared_gen != self.candidates_gen) continue;
                                     self.frame_work.viewport_child_refreshes += 1;
@@ -1327,6 +1331,7 @@ pub const Scene = struct {
                                         var remaining = node.paint_children.items.len;
                                         while (remaining > index + 1) {
                                             remaining -= 1;
+                                            if (builtin.is_test) self.test_feedback_child_steps += 1;
                                             const next = node.paint_children.items[remaining].scene_node.?;
                                             if (next.prepared_gen != self.candidates_gen) continue;
                                             self.feedback.appendAssumeCapacity(.{ .node = next.handle, .kind = .filtered_refresh, .parent = node.handle });
@@ -1348,6 +1353,7 @@ pub const Scene = struct {
                         var index = node.paint_children.items.len;
                         while (index != 0) {
                             index -= 1;
+                            if (builtin.is_test) self.test_feedback_child_steps += 1;
                             const state = node.paint_children.items[index].scene_node.?;
                             if (state.prepared_gen != self.candidates_gen or state.feedback(active) != .unseen) continue;
                             if (filter) |bounds| {

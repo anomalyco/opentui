@@ -197,6 +197,7 @@ const scenarios = [_]Scenario{
     .{ .name = "ui-90 unchanged with paint hook", .shape = .ui, .size = 0, .change = .paint_hook },
     .{ .name = "boxes-10000 unchanged", .shape = .boxes, .size = 10_000, .change = .unchanged },
     .{ .name = "boxes-10000 one background", .shape = .boxes, .size = 10_000, .change = .background },
+    .{ .name = "boxes-10000 unchanged with UPDATE hook", .shape = .boxes, .size = 10_000, .change = .update_hook },
     .{ .name = "scroll-10000 unchanged", .shape = .scroll, .size = 10_000, .change = .unchanged },
     .{ .name = "scroll-10000 status glyph", .shape = .scroll, .size = 10_000, .change = .glyph },
     .{ .name = "scroll-10000 scroll by one row", .shape = .scroll, .size = 10_000, .change = .scroll },
