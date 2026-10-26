@@ -194,6 +194,8 @@ const Stats = struct {
     filtered: u32 = 0,
     /// Filtered frames that also sent a host request.
     filtered_requests: u32 = 0,
+    /// Filtered frames with a request that kept the last frame's lists (B5a).
+    reused_filtered_requests: u32 = 0,
     /// Frames with a hooked node under a hidden ancestor.
     hidden_hooked: u32 = 0,
     /// Host replies that hid an ancestor of the requesting node mid-frame.
@@ -822,6 +824,8 @@ const Harness = struct {
         }
         if (self.random.uintLessThan(u32, 8) != 0) return;
         const slot = self.liveSlot(scaffold_slots) orelse return;
+        // Content rows stay, so viewport scenes keep enough children to cull.
+        if (self.model.parent[slot] == content_slot) return;
         try self.apply(.{ .destroy = slot });
         self.stats.reply_destroys += 1;
     }
@@ -937,6 +941,7 @@ const Harness = struct {
         self.stats.partial += @intFromBool(work.damage_rows != 0 and work.damage_rows < self.twins[candidate].cli.height);
         self.stats.filtered += @intFromBool(work.overlap_tests != 0);
         self.stats.filtered_requests += @intFromBool(work.overlap_tests != 0 and work.host_requests != 0);
+        self.stats.reused_filtered_requests += @intFromBool(work.candidate_visits == 0 and work.overlap_tests != 0 and work.host_requests != 0);
         self.stats.hidden_hooked += @intFromBool(hidden_hooked);
         for (self.model.handles, 0..) |maybe, slot| {
             if (maybe == null or self.model.kind[slot] != .scroll or self.model.children[slot].items.len == 0) continue;
@@ -1168,50 +1173,54 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         const stats = try runParity(seed, 256);
         inline for (std.meta.fields(Stats)) |field| @field(total, field.name) +%= @field(stats, field.name);
     }
-    // Every frame kind B2, B3, D2b, and B5 rely on is reached in quantity (about a quarter of
-    // today's counts; decoded frames at about two thirds), and each minimum fails if the draw
-    // that produces its kind is removed. Counts at 64 x 256: reused 8,971, filtered 734, filtered
-    // with a request 51, hooked under a hidden ancestor 4,066, reply hid the requester's parent
-    // 24, reply detached the requester 40, reply destroyed a node 627, a RECORD reply changed
-    // the scene 317, content-child RESIZE 46, a truncation change in its reply 41, unmeasured
-    // content text replaced 9, UPDATE 3,014, RESIZE 54, LAYOUT_CHANGED 1,597, recordings 1,196,
-    // box bodies 233, decoded 12,423, an editor's cursor 2,501, a host cursor 7,778, skipped
-    // paint 8,065, partly diffed 1,187, draft writes after paint 2,886, raw writes between
-    // frames 373, shared text changes shown 361, style changes shown 190, view binds 382,
-    // selections 235, equal re-sends 439, palette changes 71, frames showing a scroll node with
-    // children 1,170, scrolls and option changes 146, SCROLL requests 30.
+    // Every frame kind B2, B3, D2b, and B5 rely on is reached in quantity, and each minimum
+    // fails if the draw that produces its kind is removed. Minimums are about a quarter of the
+    // counts at 64 x 256 (decoded frames about two thirds), derived again after replies began to
+    // destroy nodes: those must spare content rows, or viewport scenes fall below the culling
+    // cutoff (filtered frames with a request fell from 441 to 51). Counts: reused 8,988,
+    // filtered 1,074, filtered with a request 422, kept lists in such a frame 77, hooked under
+    // a hidden ancestor 4,686, reply hid the requester's parent 30, reply detached the
+    // requester 37, reply destroyed a node 326, a RECORD reply changed the scene 254,
+    // content-child RESIZE 46, a truncation change in its reply 42, unmeasured content text
+    // replaced 14, UPDATE 2,756, RESIZE 55, LAYOUT_CHANGED 1,733, recordings 962, box bodies 162,
+    // decoded 12,522, an editor's cursor 2,358, a host cursor 7,604, skipped paint 8,116, partly
+    // diffed 1,228, draft writes after paint 2,916, raw writes between frames 384, shared text
+    // changes shown 391, style changes shown 198, view binds 359, selections 243, equal re-sends
+    // 421, palette changes 79, frames showing a scroll node with children 1,200, scrolls and
+    // option changes 168, SCROLL requests 31.
     const minimums: Stats = .{
         .reused = 2200,
-        .filtered = 250,
-        .filtered_requests = 45,
-        .hidden_hooked = 2000,
-        .reply_hides = 8,
-        .reply_detaches = 6,
-        .reply_destroys = 150,
-        .record_replies = 80,
-        .content_resizes = 12,
-        .content_reply_texts = 12,
-        .unmeasured_texts = 4,
-        .updates = 650,
-        .resizes = 14,
-        .layout_changes = 350,
-        .records = 60,
-        .bodies = 10,
-        .decoded = 8000,
-        .editor_cursors = 400,
-        .host_cursors = 1600,
+        .filtered = 260,
+        .filtered_requests = 100,
+        .reused_filtered_requests = 18,
+        .hidden_hooked = 1150,
+        .reply_hides = 7,
+        .reply_detaches = 9,
+        .reply_destroys = 80,
+        .record_replies = 60,
+        .content_resizes = 11,
+        .content_reply_texts = 10,
+        .unmeasured_texts = 3,
+        .updates = 680,
+        .resizes = 13,
+        .layout_changes = 430,
+        .records = 240,
+        .bodies = 40,
+        .decoded = 8300,
+        .editor_cursors = 580,
+        .host_cursors = 1900,
         .skipped = 2000,
         .partial = 300,
-        .draft_writes = 700,
-        .raw_writes = 90,
-        .shared_changes = 100,
-        .style_changes = 50,
-        .rebinds = 70,
-        .selections = 55,
-        .resends = 190,
-        .palettes = 20,
-        .scroll_frames = 330,
-        .scroll_changes = 40,
+        .draft_writes = 720,
+        .raw_writes = 95,
+        .shared_changes = 95,
+        .style_changes = 49,
+        .rebinds = 89,
+        .selections = 60,
+        .resends = 105,
+        .palettes = 19,
+        .scroll_frames = 300,
+        .scroll_changes = 42,
         .scroll_requests = 7,
     };
     inline for (std.meta.fields(Stats)) |field| {
