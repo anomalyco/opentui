@@ -495,8 +495,7 @@ export class ArrowRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    const char = this.getArrowChar()
-    buffer.drawText(char, this.x, this.y, this._foregroundColor, this._backgroundColor, this._attributes)
+    this._drawNativeBody(buffer)
   }
 
   protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {

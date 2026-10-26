@@ -1303,12 +1303,17 @@ pub const Scene = struct {
     /// A node no frame has prepared has no cells and draws nothing.
     pub fn paintBody(self: *const Scene, objects: *const handles.Table, target: *buffer.OptimizedBuffer, value: *const native.NativeRenderable, x: i32, y: i32) !void {
         const node = value.scene_node.?;
-        std.debug.assert(node.kind == api.OT_SCENE_BOX);
         var layout = try getPaintLayout(value);
-        layout.screenX = @floatFromInt(x);
-        layout.screenY = @floatFromInt(y);
-        layout = cellLayout(layout);
+        // At its own cell a body keeps the fractional position, so slider thumbs land where paintNode puts them.
+        if (x != @as(i32, @intFromFloat(layout.screenX)) or y != @as(i32, @intFromFloat(layout.screenY))) {
+            layout.screenX = @floatFromInt(x);
+            layout.screenY = @floatFromInt(y);
+            layout = cellLayout(layout);
+        }
         if (layout.width < 1 or layout.height < 1) return;
+        // A host scissor can start outside the target; the slider casts its clip to cells.
+        const bounds: buffer.ClipRect = .{ .x = 0, .y = 0, .width = target.width, .height = target.height };
+        const clip = if (target.getCurrentScissorRect()) |scissor| intersection(bounds, scissor) else bounds;
         var focused = if (self.focus) |handle| try objects.get(handle, .native_renderable, native.NativeRenderable) else null;
         var depth: u32 = 0;
         const within = while (focused) |cursor| : (focused = cursor.scene_node.?.parent) {
@@ -1316,7 +1321,7 @@ pub const Scene = struct {
             if (depth == yoga.depth_max) return error.YogaDepthLimit;
             depth += 1;
         } else false;
-        try paintBox(target, node.paint, layout, within, node.control.box);
+        try paintControl(target, node.kind, node.control, node.paint, layout, clip, within);
     }
 
     fn markFocus(self: *Scene, objects: *const handles.Table) !void {

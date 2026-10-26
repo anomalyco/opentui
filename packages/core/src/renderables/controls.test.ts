@@ -409,9 +409,8 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
       super.renderSelf(buffer)
     }
   }
-  // Slider thumbs differ at a negative fractional origin until PR 3; boxes must match there too.
-  const translations = [[0, 0], [0.5, 0.5], [-1.5, -0.5], ...(name.startsWith("Box") ? [[-2.5, -1.5]] : [])]
-  for (const [translateX, translateY] of translations) {
+  for (const translateX of [0, 0.5, -1.5, -2.5]) {
+    const translateY = translateX < 0 ? translateX + 1 : translateX
     const frames: CapturedFrame[] = []
     for (const Control of [Js, Native]) {
       const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
@@ -435,21 +434,16 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
       // A failed frame must not leave the previous control's cells for the next capture.
       await setup.renderOnce()
     }
-    // 329: the host arrow painter throws at fractional positions.
-    if (name === "Arrow" && translateX % 1 !== 0) {
-      expect(errors.splice(0).map((message) => message.includes("Buffer x"))).toEqual([true])
-    } else {
-      expect(errors.splice(0)).toEqual([])
-      expect(frames[0]).toEqual(frames[1])
-      if ("focusWithin" in options) {
-        const corner = frames[1].lines.flatMap((line) => line.spans).find((span) => span.text.includes("f"))
-        expect(corner?.fg.toInts()).toEqual([0, 170, 255, 255])
-      }
+    expect(errors.splice(0)).toEqual([])
+    expect(frames[0]).toEqual(frames[1])
+    if ("focusWithin" in options) {
+      const corner = frames[1].lines.flatMap((line) => line.spans).find((span) => span.text.includes("f"))
+      expect(corner?.fg.toInts()).toEqual([0, 170, 255, 255])
     }
   }
   renderer.off(CliRenderEvents.RENDER_ERROR, onError)
   NativePaintRecorder.prototype.end = end
-  expect(jsPaints).toBe(translations.length)
+  expect(jsPaints).toBe(4)
   if (name === "Box layout-only") expect(recorded).toBe(0)
 })
 

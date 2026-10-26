@@ -748,6 +748,13 @@ export abstract class Renderable extends BaseRenderable {
     return this._paintLayout?.screenY ?? this.screenY
   }
 
+  /** @internal Record or draw the native body: at the buffer's origin when the node paints its own buffer. */
+  protected _drawNativeBody(buffer: OptimizedBuffer): void {
+    const own = buffer === this.frameBuffer
+    const [x, y] = own ? [0, 0] : [Math.trunc(this._screenX), Math.trunc(this._screenY)]
+    this._ctx.nativeScene.drawBody(this, buffer, x, y)
+  }
+
   // Paint geometry is clamped to the cell range that drawing accepts; public sizes are Yoga's.
   protected get _paintWidth(): number {
     return this._paintLayout?.width ?? this.width

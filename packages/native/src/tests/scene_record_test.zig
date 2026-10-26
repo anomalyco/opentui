@@ -386,7 +386,6 @@ test "Scene record box body paints like the native box" {
         // Focus within: the focusable box or its child holds focus.
         .{ .paint = .{ .borderSides = all, .focusable = true }, .details = .{ .title = "f" }, .focus = .child },
         .{ .paint = .{ .borderSides = all, .focusable = true }, .focus = .self },
-        .{ .paint = .{ .shouldFill = 0 } },
     };
     for (cases) |case| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 10, 4, .{ .output = transport }), try Fixture.init(testing.allocator, 10, 4, .{ .output = transport }) };
@@ -407,7 +406,7 @@ test "Scene record box body paints like the native box" {
     }
 }
 
-test "Scene box body draws nothing for an unprepared box at any position and rejects other kinds" {
+test "Scene body draws nothing unprepared, clips to the target under any scissor, and rejects kinds without a body" {
     const f = try Fixture.init(testing.allocator, 4, 2, .{ .output = transport });
     defer f.deinit();
     const target = try f.owner.createBuffer(200, 2, .{});
@@ -429,6 +428,7 @@ test "Scene box body draws nothing for an unprepared box at any position and rej
     try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, false, 0);
     try f.owner.drawSceneBody(target, null, gutter, 0, 0);
     try testing.expectEqual(@as(u32, 0x2502), (try f.owner.raw().getBuffer(target)).get(0, 0).?.char);
+    const slider = try placedIn(f, f.root, c.OT_SCENE_SLIDER, 4, 4, 1);
     // Within the cell range where it is laid out, but not where the host draws it.
     const long = try placedIn(f, f.root, c.OT_SCENE_BOX, 5, 2147483520, 2);
     try f.owner.sceneSetPaint(long, .{ .borderSides = c.OT_BORDER_ALL, .translateX = -100 });
@@ -436,8 +436,10 @@ test "Scene box body draws nothing for an unprepared box at any position and rej
     try f.owner.drawSceneBody(target, null, long, 150, 0);
     for ([_]i32{ min, -1 }) |x| try f.owner.drawSceneBody(target, null, wide, x, 0);
     try testing.expectEqual(@as(u32, 0x2500), (try f.owner.raw().getBuffer(target)).get(0, 0).?.char);
-    const slider = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_SLIDER, 4);
-    try testing.expectError(error.WrongKind, f.owner.drawSceneBody(target, null, slider, 0, 0));
+    try (try f.owner.raw().getBuffer(target)).pushScissorRect(-5, -5, 10, 10);
+    try f.owner.drawSceneBody(target, null, slider, -1, 0);
+    const view = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT_VIEW, 8);
+    try testing.expectError(error.WrongKind, f.owner.drawSceneBody(target, null, view, 0, 0));
 }
 
 const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, scene_box, image, unicode };

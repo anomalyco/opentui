@@ -1830,8 +1830,9 @@ ot_status ot_buffer_draw_text_view(ot_context *, const ot_handle *target, const 
     const ot_handle *view, int32_t x, int32_t y);
 /* Same destination rules as ot_buffer_draw_text_view. Paints synchronously with
  * the destination's current clipping and opacity, without publishing cursor state.
- * The scene-body source is a Text or Box scene node, drawn as its built-in painting
- * would draw it at x, y with the node's paint size and the current focus. */
+ * The scene-body source is a Text, Box, Slider or Arrow scene node, drawn as its
+ * built-in painting would draw it at x, y with the node's paint size and the
+ * current focus. */
 ot_status ot_buffer_draw_editor_view(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
     const ot_handle *view, int32_t x, int32_t y);
 ot_status ot_buffer_draw_scene_body(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
