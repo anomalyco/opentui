@@ -267,6 +267,7 @@ export const nativePointerPolicies = {
   ot_scene_set_scroll: { 0: context, 1: buffer, 2: buffer },
   ot_scene_set_scroll_arrow: { 0: context, 1: buffer, 4: buffer, 5: optional },
   ot_scene_scroll_to: { 0: context, 1: buffer, 5: optional },
+  ot_scene_scroll_request: { 0: context, 1: buffer, 3: optional, 6: optional },
   ot_scene_get_scroll: { 0: context, 1: buffer, 2: buffer },
   ot_scene_set_editor_view: { 0: context, 1: buffer, 2: optional },
   ot_scene_set_editor_options: { 0: context, 1: buffer, 2: buffer },

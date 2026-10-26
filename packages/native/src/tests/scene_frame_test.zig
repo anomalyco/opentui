@@ -676,7 +676,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
         switch (row.change) {
             .unchanged => {},
-            .scroll, .scroll_same => _ = try f.owner.sceneScrollTo(scroll, .{ 0, 1 }, .{ false, false }),
+            .scroll, .scroll_same => _ = try f.owner.sceneScrollTo(scroll, .{ 0, 1 }, .{ false, false }, false),
             .scroll_colors => try f.owner.sceneSetScroll(scroll, .{ .bars = .{ .{}, .{ .background = .{ 0, 60, 0, 255 } } } }),
             .scroll_arrow => try f.owner.sceneSetScrollArrow(scroll, 1, 0, .{ .text = "^" }),
             .scroll_grow => {

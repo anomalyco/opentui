@@ -167,7 +167,7 @@ pub const Scene = struct {
             .glyph => try self.owner.sceneSetText(self.target, if (odd) "/" else "|"),
             .background => try self.owner.scenePatchPaint(self.target, c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ if (odd) 100 else 200, 0, 0, 255 } }),
             .scroll => if (self.scroll_node) {
-                _ = try self.owner.sceneScrollTo(self.content, .{ 0, if (odd) -1 else 1 }, .{ true, true });
+                _ = try self.owner.sceneScrollTo(self.content, .{ 0, if (odd) -1 else 1 }, .{ true, true }, false);
             } else try self.owner.scenePatchPaint(self.content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (odd) -1 else 0 }),
             .append => try self.addRow(0),
             .update_hook, .paint_hook => if (self.frames == 2) {

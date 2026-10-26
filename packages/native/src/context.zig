@@ -2366,11 +2366,22 @@ pub const Context = struct {
     }
 
     /// An explicit scroll; returns the state after it.
-    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool) !api.ot_scene_scroll_state {
+    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool, reapply: bool) !api.ot_scene_scroll_state {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.sceneMutableNode(handle);
-        try value.scene_node.?.owner.scrollTo(value, target, relative);
+        try value.scene_node.?.owner.scrollTo(value, target, relative, reapply);
+        return scene.scrollReport(value);
+    }
+
+    /// An INTO_VIEW, ANCHOR, or LAYOUT request; returns the state after it.
+    pub fn sceneScrollRequest(self: *Context, handle: Handle, kind: u32, target_handle: ?Handle, alignment: u32, inset: u32) !api.ot_scene_scroll_state {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.sceneMutableNode(handle);
+        const target = if (target_handle) |id| try self.sceneNode(id) else null;
+        if (target) |node| if (node.scene_node.?.owner != value.scene_node.?.owner) return error.WrongSession;
+        try value.scene_node.?.owner.requestScroll(value, kind, target, alignment, inset);
         return scene.scrollReport(value);
     }
 

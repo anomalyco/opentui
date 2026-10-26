@@ -797,9 +797,10 @@ ot_status ot_scene_set_viewport(ot_context *, const ot_handle *node, const ot_ha
  * after which a bar may still appear but not hide. Bars paint after the box's
  * children and hit the box. Options are complete and copied. A later call
  * updates options; a changed follow recomputes stuck. stuck starts true and
- * changes only on explicit scrolls (ot_scene_scroll_to) and follow changes: it
- * is true when the offset reached the follow edge or max on that axis is at
- * most 1. Rejection preserves accepted state. */
+ * changes only on explicit scrolls (ot_scene_scroll_to, ot_scene_scroll_request),
+ * follow changes, and the solves that apply a request or an anchor: it is true
+ * when the offset reached the follow edge or max on that axis is at most 1.
+ * Rejection preserves accepted state. */
 #define OT_SCENE_SCROLL_X UINT32_C(1)
 #define OT_SCENE_SCROLL_Y UINT32_C(2)
 #define OT_SCENE_SCROLL_FOLLOW_NONE UINT32_C(0)
@@ -817,6 +818,13 @@ ot_status ot_scene_set_viewport(ot_context *, const ot_handle *node, const ot_ha
 #define OT_SCENE_SCROLL_BAR_OVERLAY UINT32_C(1)
 #define OT_SCENE_SCROLL_RELATIVE_X UINT32_C(1)
 #define OT_SCENE_SCROLL_RELATIVE_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_REAPPLY UINT32_C(4)
+#define OT_SCENE_SCROLL_REQUEST_INTO_VIEW UINT32_C(0)
+#define OT_SCENE_SCROLL_REQUEST_ANCHOR UINT32_C(1)
+#define OT_SCENE_SCROLL_REQUEST_LAYOUT UINT32_C(2)
+#define OT_SCENE_SCROLL_ALIGN_NEAREST UINT32_C(0)
+#define OT_SCENE_SCROLL_ALIGN_START UINT32_C(1)
+#define OT_SCENE_SCROLL_ALIGN_END UINT32_C(2)
 
 /* thickness is 1..255 cells and gap 0..255 cells (between content and track);
  * an inset bar's gutter is gap + thickness, an overlay bar takes none. arrows
@@ -872,6 +880,8 @@ typedef struct ot_scene_scroll_bar_state {
 #define OT_SCENE_SCROLL_CHANGED_OFFSET_Y UINT32_C(2)
 #define OT_SCENE_SCROLL_CHANGED_CONTENT UINT32_C(4)
 #define OT_SCENE_SCROLL_CHANGED_VIEWPORT UINT32_C(8)
+/* Set on the request that delivers an OT_SCENE_SCROLL_REQUEST_LAYOUT callback. */
+#define OT_SCENE_SCROLL_CHANGED_LAYOUT UINT32_C(16)
 typedef struct ot_scene_scroll_state {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -894,11 +904,36 @@ ot_status ot_scene_set_scroll_arrow(ot_context *, const ot_handle *node, uint32_
 /* An explicit scroll. Without RELATIVE_X/Y the values are absolute offsets; a
  * relative delta of 0 keeps an axis. Values round to whole cells and clamp to
  * the limits of the last solve; ±Infinity clamp, NaN returns
- * OT_INVALID_ARGUMENT. It recomputes stuck, marks the offset (not the sizes) as
- * reported to the host, and copies the new state to out_state unless it is NULL. During a frame
- * attempt the next round prepares at the new offset. */
+ * OT_INVALID_ARGUMENT. It recomputes stuck, moves a held anchor's row with the
+ * offset, marks the offset (not the sizes) as reported to the host, and copies
+ * the new state to out_state unless it is NULL. During a frame attempt the next
+ * round prepares at the new offset.
+ * With REAPPLY each axis it sets also keeps its target, and every solve of the
+ * next frame (the current one during an attempt) moves the offset to the target
+ * again, clamped to the new limits, and recomputes stuck. A relative delta adds
+ * to a pending target. A target of +Infinity, or one at or past a positive max
+ * of a laid-out node, is the end and lands at the new max. A later scroll
+ * without REAPPLY drops pending targets. */
 ot_status ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, double y, uint32_t flags,
     ot_scene_scroll_state *out_state);
+/* Requests about a node in the scroll node's subtree, read from the last solve
+ * (OT_INVALID_ARGUMENT for a node outside it):
+ * - INTO_VIEW scrolls now so the target's rect is inside the viewport inset by
+ *   inset cells (align NEAREST moves the least, as a browser does; START puts its
+ *   start at the inset edge; END its end), and again after each solve of the next
+ *   frame, as a REAPPLY scroll does; it replaces pending targets.
+ * - ANCHOR holds the target's position in the viewport: after each solve the
+ *   offset moves with the target, clamped, and stuck is recomputed; while held,
+ *   the anchor decides the offset over sticky follow and pending requests. An
+ *   explicit scroll moves the held row. A NULL target releases it; so does
+ *   destroying the target or moving it out of the subtree. align and inset are 0.
+ * - LAYOUT asks for one SCROLL request (OT_SCENE_SCROLL_CHANGED_LAYOUT in
+ *   changes) in the next frame, after its layout settles and before it paints,
+ *   while OT_SCENE_HOOK_SCROLL is set and the node is visible. target is NULL,
+ *   align and inset are 0.
+ * out_state follows ot_scene_scroll_to. */
+ot_status ot_scene_scroll_request(ot_context *, const ot_handle *node, uint32_t kind, const ot_handle *target,
+    uint32_t align, uint32_t inset, ot_scene_scroll_state *out_state);
 /* Pure: it never changes what an OT_SCENE_FRAME_SCROLL request reports. With
  * OT_SCENE_HOOK_SCROLL (scroll nodes only) a frame returns one SCROLL request,
  * after the node's refresh and before paint, when the offset differs from the last

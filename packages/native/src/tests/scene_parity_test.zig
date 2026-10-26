@@ -83,7 +83,8 @@ const Op = union(enum) {
     /// through a lease of next or current, 3 draws and renders without the scene.
     raw: struct { kind: u32, x: i32, y: i32 },
     /// An explicit scroll of a scroll node, or its new options.
-    scroll_to: struct { slot: usize, target: [2]f64, relative: bool },
+    scroll_to: struct { slot: usize, target: [2]f64, relative: bool, reapply: bool },
+    scroll_request: struct { slot: usize, kind: u32, target: ?usize, alignment: u32, inset: u32 },
     scroll_options: struct { slot: usize, options: scene.ScrollOptions },
 };
 
@@ -238,6 +239,7 @@ const Stats = struct {
     scroll_frames: u32 = 0,
     scroll_changes: u32 = 0,
     scroll_requests: u32 = 0,
+    scroll_layouts: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -341,7 +343,7 @@ const Harness = struct {
             .selection => self.stats.selections += 1,
             .resend => self.stats.resends += 1,
             .palette => self.stats.palettes += 1,
-            .scroll_to, .scroll_options => self.stats.scroll_changes += 1,
+            .scroll_to, .scroll_options, .scroll_request => self.stats.scroll_changes += 1,
             .raw => |value| {
                 self.stats.raw_writes += 1;
                 // A written current buffer no longer matches the terminal.
@@ -486,7 +488,8 @@ const Harness = struct {
                 try f.owner.sceneSetEditorOptions(self.handle(twin, value.slot), .{ .show_cursor = value.show_cursor, .style = value.style });
             },
             .host_cursor => |value| try f.owner.controlSession(f.id, .{ .cursor = .{ .position = .{ .x = value.x, .y = value.y, .visible = value.visible } } }),
-            .scroll_to => |value| _ = try f.owner.sceneScrollTo(self.handle(twin, value.slot), value.target, .{ value.relative, value.relative }),
+            .scroll_to => |value| _ = try f.owner.sceneScrollTo(self.handle(twin, value.slot), value.target, .{ value.relative, value.relative }, value.reapply),
+            .scroll_request => |value| _ = try f.owner.sceneScrollRequest(self.handle(twin, value.slot), value.kind, if (value.target) |target| self.handle(twin, target) else null, value.alignment, value.inset),
             .scroll_options => |value| try f.owner.sceneSetScroll(self.handle(twin, value.slot), value.options),
         }
     }
@@ -579,7 +582,19 @@ const Harness = struct {
             // A move into the node itself or its subtree is rejected by both twins.
             5 => return .{ .move = .{ .slot = self.liveSlot(scaffold_slots) orelse slot, .parent = slot, .index = @intCast(self.model.children[slot].items.len) } },
             4 => return .{ .hooks = .{ .slot = slot, .flags = if (random.boolean()) c.OT_SCENE_HOOK_SCROLL else 0 } },
-            0, 1 => return .{ .scroll_to = .{ .slot = slot, .target = .{ @floatFromInt(random.intRangeAtMost(i32, -3, 12)), @floatFromInt(random.intRangeAtMost(i32, -3, 12)) }, .relative = random.boolean() } },
+            0 => return .{ .scroll_to = .{ .slot = slot, .target = .{ @floatFromInt(random.intRangeAtMost(i32, -3, 12)), @floatFromInt(random.intRangeAtMost(i32, -3, 12)) }, .relative = random.boolean(), .reapply = random.boolean() } },
+            // A node to reveal or anchor, from anywhere: one outside the subtree is rejected by both twins.
+            1 => {
+                const kind = random.uintLessThan(u32, 3);
+                // A LAYOUT request arrives only with the SCROLL hook.
+                if (kind == c.OT_SCENE_SCROLL_REQUEST_LAYOUT and self.model.hooks[slot] & c.OT_SCENE_HOOK_SCROLL == 0) return .{ .hooks = .{ .slot = slot, .flags = self.model.hooks[slot] | c.OT_SCENE_HOOK_SCROLL } };
+                const children = self.model.children[slot].items;
+                const target = if (kind == c.OT_SCENE_SCROLL_REQUEST_LAYOUT or (kind == c.OT_SCENE_SCROLL_REQUEST_ANCHOR and random.uintLessThan(u32, 4) == 0))
+                    null
+                else if (children.len != 0 and random.uintLessThan(u32, 4) != 0) children[random.uintLessThan(usize, children.len)] else self.liveSlot(scaffold_slots);
+                const into_view = kind == c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW;
+                return .{ .scroll_request = .{ .slot = slot, .kind = kind, .target = target, .alignment = if (into_view) random.uintLessThan(u32, 3) else 0, .inset = if (into_view) random.uintLessThan(u32, 2) else 0 } };
+            },
             2 => {
                 var bars: [2]scene.ScrollBarOptions = undefined;
                 for (&bars) |*bar| bar.* = .{
@@ -776,12 +791,18 @@ const Harness = struct {
                     switch (first.kind) {
                         c.OT_SCENE_FRAME_UPDATE => self.stats.updates += 1,
                         c.OT_SCENE_FRAME_RESIZE => self.stats.resizes += 1,
-                        c.OT_SCENE_FRAME_SCROLL => self.stats.scroll_requests += 1,
+                        c.OT_SCENE_FRAME_SCROLL => {
+                            self.stats.scroll_requests += 1;
+                            const changes = (try self.twins[reference].owner.sceneGetScroll(first.node)).changes;
+                            self.stats.scroll_layouts += @intFromBool(changes & c.OT_SCENE_SCROLL_CHANGED_LAYOUT != 0);
+                        },
                         else => self.stats.layout_changes += 1,
                     }
                     const requester = self.model.slotOf(reference, first.node).?;
                     // A scroll in the reply paints at the new offset in the same frame.
                     if (first.kind == c.OT_SCENE_FRAME_SCROLL and self.random.boolean()) try self.apply(self.generateScroll(requester));
+                    // A LAYOUT request from a reply arrives in the next frame.
+                    if (first.kind == c.OT_SCENE_FRAME_SCROLL and self.random.boolean()) try self.apply(.{ .scroll_request = .{ .slot = requester, .kind = c.OT_SCENE_SCROLL_REQUEST_LAYOUT, .target = null, .alignment = 0, .inset = 0 } });
                     if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) {
                         self.stats.content_resizes += 1;
                         // A text change on a content child in the middle of the refresh batch (B2 argon-2).
@@ -1189,6 +1210,8 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // 421, palette changes 79, frames showing a scroll node with children 1,200, scrolls and
     // option changes 168, SCROLL requests 31.
     const minimums: Stats = .{
+        // SCROLL requests that deliver a LAYOUT request: 13 in one run.
+        .scroll_layouts = 3,
         .reused = 2200,
         .filtered = 260,
         .filtered_requests = 100,

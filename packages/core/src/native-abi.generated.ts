@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 74b5d296e45245c3894a7a3bc54c900c9d42636c469180b8ee4e07d8475d23fa
+// ABI audit SHA-256: 18c3d5f58ed67422031ad7064e4502f35afde9fa04bf0d791023d9e140e53863
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -27,6 +27,7 @@ export const nativeSymbols = {
   ot_scene_set_scroll: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_set_scroll_arrow: { args: ["ptr", "buffer", "u32", "u32", "buffer", "ptr", "u32"], returns: "i32" },
   ot_scene_scroll_to: { args: ["ptr", "buffer", "f64", "f64", "u32", "ptr"], returns: "i32" },
+  ot_scene_scroll_request: { args: ["ptr", "buffer", "u32", "ptr", "u32", "u32", "ptr"], returns: "i32" },
   ot_scene_get_scroll: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_set_focus: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_scene_set_slider: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1756,10 +1757,18 @@ export const nativeConstants = {
   OT_SCENE_SCROLL_BAR_OVERLAY: 1,
   OT_SCENE_SCROLL_RELATIVE_X: 1,
   OT_SCENE_SCROLL_RELATIVE_Y: 2,
+  OT_SCENE_SCROLL_REAPPLY: 4,
+  OT_SCENE_SCROLL_REQUEST_INTO_VIEW: 0,
+  OT_SCENE_SCROLL_REQUEST_ANCHOR: 1,
+  OT_SCENE_SCROLL_REQUEST_LAYOUT: 2,
+  OT_SCENE_SCROLL_ALIGN_NEAREST: 0,
+  OT_SCENE_SCROLL_ALIGN_START: 1,
+  OT_SCENE_SCROLL_ALIGN_END: 2,
   OT_SCENE_SCROLL_CHANGED_OFFSET_X: 1,
   OT_SCENE_SCROLL_CHANGED_OFFSET_Y: 2,
   OT_SCENE_SCROLL_CHANGED_CONTENT: 4,
   OT_SCENE_SCROLL_CHANGED_VIEWPORT: 8,
+  OT_SCENE_SCROLL_CHANGED_LAYOUT: 16,
   OT_SCENE_DEBUG_FULL_FRAME: 1,
   OT_SCENE_DEBUG_VERIFY: 2,
   OT_SESSION_OPEN: 0,

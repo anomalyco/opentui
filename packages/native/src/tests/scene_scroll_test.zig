@@ -183,10 +183,21 @@ const StickyModel = struct {
         self.offset = std.math.clamp(@floor(value + 0.5), 0, self.max);
         self.restick();
     }
+    /// A REAPPLY scroll, then a layout of `max` that applies it again: a target at or past a
+    /// positive max is the end. A scroll that leaves a following view stuck keeps no target.
+    fn reapply(self: *StickyModel, value: f64, max: f64, solves: bool) void {
+        const end = value > 0 and value >= self.max;
+        self.scroll(value);
+        if (!solves) return;
+        if (self.follow != c.OT_SCENE_SCROLL_FOLLOW_NONE and self.stuck) return self.layout(max);
+        self.max = max;
+        self.scroll(if (end) max else value);
+    }
 };
 
 /// `other` resizes a sibling: the scene solves, the scroll node's layout does not change.
-const StickyOp = union(enum) { rows: u32, size: f32, to: f64, by: f64, follow: u32, grow: struct { size: f32, rows: u32 }, other: f32 };
+/// `ask` is a REAPPLY scroll followed by a row count change in the same frame.
+const StickyOp = union(enum) { rows: u32, size: f32, to: f64, by: f64, follow: u32, grow: struct { size: f32, rows: u32 }, other: f32, ask: struct { to: f64, by: bool = false, rows: u32 } };
 
 /// A box of `size` cells along the axis with rows of one cell; every op is followed by a frame.
 const Sticky = struct {
@@ -244,8 +255,21 @@ const Sticky = struct {
             .other => |width| try style(self.f, self.sibling, c.OT_STYLE_DIMENSION, 0, 0, c.OT_UNIT_POINT, width, 1),
             .to, .by => |value| {
                 target[self.axis] = value;
-                _ = try self.f.owner.sceneScrollTo(self.box, target, .{ op == .by, op == .by });
+                _ = try self.f.owner.sceneScrollTo(self.box, target, .{ op == .by, op == .by }, false);
                 self.model.scroll(if (op == .by) self.model.offset + value else value);
+            },
+            .ask => |value| {
+                const solves = value.rows != self.rows.items.len;
+                target[self.axis] = value.to;
+                _ = try self.f.owner.sceneScrollTo(self.box, target, .{ value.by, value.by }, true);
+                try self.setRows(value.rows);
+                try present(self.f);
+                const max = @max(0, @as(f64, @floatFromInt(value.rows)) - self.size);
+                // A relative 0 keeps the axis: no target.
+                if (value.by and value.to == 0) {
+                    if (solves) self.model.layout(max);
+                } else self.model.reapply(if (value.by) self.model.offset + value.to else value.to, max, solves);
+                return self.expectModel();
             },
             .follow => |follow| {
                 try self.f.owner.sceneSetScroll(self.box, .{ .axes = @as(u32, 1) << @intCast(self.axis), .follow = follow });
@@ -258,6 +282,10 @@ const Sticky = struct {
         try present(self.f);
         // Only a solve moves a stuck view, so a scroll in a noise range stays until one.
         if (!std.meta.eql(before, .{ self.rows.items.len, self.size })) self.model.layout(@max(0, @as(f64, @floatFromInt(self.rows.items.len)) - self.size));
+        try self.expectModel();
+    }
+
+    fn expectModel(self: *Sticky) !void {
         const state = try self.f.owner.sceneGetScroll(self.box);
         try testing.expectEqual(self.model.max, state.max[self.axis]);
         try testing.expectEqual(self.model.offset, state.offset[self.axis]);
@@ -298,6 +326,21 @@ test "Scene scroll node follows its sticky edge as the reference model does" {
         // Infinite targets clamp.
         .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE, .ops = &.{ .{ .rows = 30 }, .{ .to = std.math.inf(f64) } }, .offset = 20 },
         .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE, .ops = &.{ .{ .rows = 30 }, .{ .to = 7 }, .{ .by = -std.math.inf(f64) } }, .offset = 0 },
+        // REAPPLY: a target past the old max lands where it asked after growth in the same frame,
+        // and at the end when it was at or past that max, even after growth beyond a viewport.
+        .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE, .ops = &.{ .{ .rows = 20 }, .{ .ask = .{ .to = 7, .rows = 40 } } }, .offset = 7 },
+        .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE, .ops = &.{ .{ .rows = 20 }, .{ .ask = .{ .to = 20, .rows = 60 } } }, .offset = 50 },
+        .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE, .ops = &.{ .{ .rows = 20 }, .{ .ask = .{ .to = std.math.inf(f64), .rows = 60 } }, .{ .rows = 70 } }, .offset = 50 },
+        .{ .ops = &.{ .{ .rows = 20 }, .{ .ask = .{ .to = 10, .rows = 60 } }, .{ .rows = 70 } }, .offset = 60 },
+        .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE, .ops = &.{ .{ .rows = 20 }, .{ .to = 4 }, .{ .ask = .{ .to = 3, .by = true, .rows = 5 } }, .{ .rows = 30 } }, .offset = 0 },
+        .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_NONE, .ops = &.{ .{ .rows = 20 }, .{ .ask = .{ .to = -std.math.inf(f64), .rows = 30 } } }, .offset = 0 },
+        // A target that leaves the view stuck follows the sticky rule: as row A, a scroll to 0 in
+        // a noise range keeps following through growth in the same frame.
+        .{ .ops = &.{ .{ .rows = 11 }, .{ .ask = .{ .to = 0, .rows = 20 } }, .{ .rows = 25 } }, .offset = 15 },
+        // A target away from the edge lands against the grown range and leaves the view there.
+        .{ .ops = &.{ .{ .rows = 20 }, .{ .ask = .{ .to = 3, .rows = 30 } }, .{ .rows = 35 } }, .offset = 3 },
+        // The target lasts one frame: the next growth follows the sticky rule alone.
+        .{ .ops = &.{ .{ .rows = 30 }, .{ .ask = .{ .to = 4, .rows = 30 } }, .{ .rows = 40 }, .{ .to = 30 }, .{ .rows = 45 } }, .offset = 35 },
     };
     for (rows, 0..) |row, index| {
         errdefer std.debug.print("sticky row {d}\n", .{index});
@@ -315,7 +358,8 @@ test "Scene scroll node follows its sticky edge as the reference model does" {
         const horizontal = seed % 4 == 3;
         var sticky = try Sticky.init(if (horizontal) c.OT_SCENE_SCROLL_FOLLOW_RIGHT else B, horizontal);
         defer sticky.deinit();
-        for (0..48) |_| try sticky.apply(switch (random.uintLessThan(u32, 6)) {
+        for (0..48) |_| try sticky.apply(switch (random.uintLessThan(u32, 7)) {
+            6 => .{ .ask = .{ .to = @floatFromInt(random.intRangeAtMost(i32, -2, 24)), .by = random.boolean(), .rows = random.uintLessThan(u32, 26) } },
             0, 1 => .{ .rows = random.uintLessThan(u32, 26) },
             2 => .{ .size = @floatFromInt(random.intRangeAtMost(u32, 3, 15)) },
             3 => .{ .to = @floatFromInt(random.intRangeAtMost(i32, -2, 24)) },
@@ -367,7 +411,7 @@ test "Scene scroll node paints fills under its children and bars over them, and 
         try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 1, 0, 0);
         // The first frame reports the new extent; a scroll in the reply paints in the same frame.
         var request = try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box);
-        try testing.expectEqual(@as(f64, 6), (try f.owner.sceneScrollTo(box, .{ 0, 3 }, .{ false, false })).max[1]);
+        try testing.expectEqual(@as(f64, 6), (try f.owner.sceneScrollTo(box, .{ 0, 3 }, .{ false, false }, false)).max[1]);
         request = try f.step(request, frame_options, c.OT_SCENE_FRAME_DONE, null);
         try commit(f);
         try testing.expectEqual(@as(u32, '3'), char(f, 1, 0));
@@ -388,12 +432,12 @@ test "Scene scroll node paints fills under its children and bars over them, and 
         _ = try f.owner.sceneGetScroll(box);
         try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL | c.OT_SCENE_HOOK_UPDATE, 2, 0, 0);
         const update = try f.step(null, frame_options, c.OT_SCENE_FRAME_UPDATE, box);
-        _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ true, true });
+        _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ true, true }, false);
         _ = try f.step(try f.step(update, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
         try commit(f);
         try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 3, 0, 0);
         try testing.expectEqual(@as(u32, '3'), char(f, 1, 0));
-        _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ false, false });
+        _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ false, false }, false);
         _ = try f.step(null, frame_options, c.OT_SCENE_FRAME_DONE, null);
         try commit(f);
         try testing.expect(thumb != char(f, 5, 1));
@@ -416,7 +460,7 @@ test "Scene scroll node paints fills under its children and bars over them, and 
         _ = try f.step(try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
         try commit(f);
         try testing.expectEqual(@as(u32, c.OT_SCENE_SCROLL_CHANGED_CONTENT), (try f.owner.sceneGetScroll(box)).changes);
-        _ = try f.owner.sceneScrollTo(box, .{ 0, 1 }, .{ false, false });
+        _ = try f.owner.sceneScrollTo(box, .{ 0, 1 }, .{ false, false }, false);
         try f.owner.sceneSetStyle(box, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 3, 0);
         _ = try f.step(try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
         try commit(f);
@@ -437,18 +481,18 @@ test "Scene scroll node range excludes viewport padding, and a scroll in a later
         for (0..2) |kind| try style(f, row.*, c.OT_STYLE_DIMENSION, @intCast(kind), 0, c.OT_UNIT_POINT, 1, 1);
     }
     try present(f);
-    _ = try f.owner.sceneScrollTo(box, .{ 0, std.math.inf(f64) }, .{ false, false });
+    _ = try f.owner.sceneScrollTo(box, .{ 0, std.math.inf(f64) }, .{ false, false }, false);
     try present(f);
     try testing.expectEqual(@as(f64, 13), (try f.owner.sceneGetScroll(box)).max[1]);
     try testing.expectEqual(@as(f64, 8), (try f.owner.sceneGetLayout(rows[19], false)).screenY);
     // A row with an UPDATE hook below the viewport is culled. A later sibling's reply scrolls
     // after the box selected its rows; the row is revealed and updates before the frame paints.
-    _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ false, false });
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ false, false }, false);
     const later = try create(f, f.root, c.OT_SCENE_BOX, 40);
     try f.owner.sceneSetHooks(rows[15], c.OT_SCENE_HOOK_UPDATE, 1, 1, 1);
     try f.owner.sceneSetHooks(later, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
     const request = try f.step(null, frame_options, c.OT_SCENE_FRAME_UPDATE, later);
-    _ = try f.owner.sceneScrollTo(box, .{ 0, 10 }, .{ false, false });
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 10 }, .{ false, false }, false);
     _ = try f.step(try f.step(request, frame_options, c.OT_SCENE_FRAME_UPDATE, rows[15]), frame_options, c.OT_SCENE_FRAME_DONE, null);
     try commit(f);
 }
@@ -465,7 +509,7 @@ test "Scene scroll node repaints its thumb on rows that no child crosses" {
     try f.owner.sceneSetText(row, "r");
     try present(f);
     const before = char(f, 3, 1);
-    _ = try f.owner.sceneScrollTo(box, .{ 0, 1 }, .{ false, false });
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 1 }, .{ false, false }, false);
     try present(f);
     try testing.expect(before != char(f, 3, 1));
     // A move of the box changes the reported screen geometry, and so the generation.
@@ -484,4 +528,185 @@ test "Scene scroll node repaints its thumb on rows that no child crosses" {
         try present(f);
         try testing.expectEqual(policy == c.OT_SCENE_SCROLL_BAR_NEVER, (try f.owner.sceneGetScroll(box)).bars[1].visible != 0);
     }
+}
+
+/// A 10x4 scroll node with `count` rows of one cell, the first numbered 10.
+fn rowBox(f: Fixture, follow: u32, rows: []context.Handle) !context.Handle {
+    const box = try create(f, f.root, c.OT_SCENE_BOX, 2);
+    try style(f, box, c.OT_STYLE_DIMENSION, 0, 0, c.OT_UNIT_POINT, 10, 1);
+    try style(f, box, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 4, 1);
+    try f.owner.sceneSetScroll(box, .{ .follow = follow, .bars = .{ .{}, .{ .policy = c.OT_SCENE_SCROLL_BAR_NEVER } } });
+    for (rows, 0..) |*row, index| row.* = try oneCell(f, box, @intCast(10 + index), index);
+    return box;
+}
+
+fn oneCell(f: Fixture, parent: context.Handle, num: u32, index: usize) !context.Handle {
+    const row = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, num);
+    try f.owner.sceneMoveNode(row, parent, @intCast(index));
+    for (0..2) |kind| try style(f, row, c.OT_STYLE_DIMENSION, @intCast(kind), 0, c.OT_UNIT_POINT, 1, 1);
+    return row;
+}
+
+/// Prepends `count` rows numbered from `num`.
+fn prepend(f: Fixture, box: context.Handle, num: u32, count: u32) !void {
+    for (0..count) |index| _ = try oneCell(f, box, num + @as(u32, @intCast(index)), 0);
+}
+
+fn line(f: Fixture, row: context.Handle) !f64 {
+    return (try f.owner.sceneGetLayout(row, false)).screenY;
+}
+
+fn offset(f: Fixture, box: context.Handle) !f64 {
+    return (try f.owner.sceneGetScroll(box)).offset[1];
+}
+
+test "Scene scroll requests resolve against the layout of the next frame" {
+    const f = try Fixture.init(testing.allocator, 12, 6, .{});
+    defer f.deinit();
+    var rows: [20]context.Handle = undefined;
+    const box = try rowBox(f, c.OT_SCENE_SCROLL_FOLLOW_NONE, &rows);
+    // A target set before the first layout lands after it, and a delta adds to it.
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 5 }, .{ false, false }, true);
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 3 }, .{ true, true }, true);
+    try present(f);
+    try testing.expectEqual(@as(f64, 8), try offset(f, box));
+    // INTO_VIEW scrolls at once and again after the frame's layout: rows prepended in the
+    // same frame keep the target at the inset edge (START), the far edge (END), or the
+    // nearest edge (NEAREST, from below and from above), and a visible row stays.
+    const cases = [_]struct { alignment: u32, inset: u32, row: usize, now: f64, line: f64 }{
+        .{ .alignment = c.OT_SCENE_SCROLL_ALIGN_START, .inset = 1, .row = 12, .now = 11, .line = 1 },
+        .{ .alignment = c.OT_SCENE_SCROLL_ALIGN_END, .inset = 0, .row = 12, .now = 11, .line = 3 },
+        .{ .alignment = c.OT_SCENE_SCROLL_ALIGN_NEAREST, .inset = 0, .row = 19, .now = 20, .line = 3 },
+        // Visible, but not inside the inset: after the prepend it is below the inset edge.
+        .{ .alignment = c.OT_SCENE_SCROLL_ALIGN_NEAREST, .inset = 1, .row = 0, .now = 5, .line = 2 },
+        .{ .alignment = c.OT_SCENE_SCROLL_ALIGN_NEAREST, .inset = 0, .row = 1, .now = 6, .line = 3 },
+    };
+    var num: u32 = 100;
+    for (cases, 0..) |case, index| {
+        errdefer std.debug.print("into view case {d}\n", .{index});
+        const state = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, rows[case.row], case.alignment, case.inset);
+        try testing.expectEqual(case.now, state.offset[1]);
+        try prepend(f, box, num, 2);
+        num += 2;
+        try present(f);
+        try testing.expectEqual(case.line, try line(f, rows[case.row]));
+    }
+    // The request lasts one frame: a later prepend moves the row.
+    try prepend(f, box, num, 1);
+    num += 1;
+    try present(f);
+    try testing.expectEqual(@as(f64, 4), try line(f, rows[1]));
+    // A row destroyed before the frame leaves the offset the request set.
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, rows[2], c.OT_SCENE_SCROLL_ALIGN_START, 0);
+    try f.owner.sceneDestroyNode(rows[2]);
+    try present(f);
+    try testing.expectEqual(@as(f64, 13), try offset(f, box));
+
+    // An anchored row keeps its line through prepends and through growth of a row above it,
+    // an explicit scroll moves the line it holds, and the limits clamp it.
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 20 }, .{ false, false }, false);
+    try present(f);
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, rows[10], 0, 0);
+    const held = try line(f, rows[10]);
+    try prepend(f, box, num, 3);
+    num += 3;
+    try style(f, rows[0], c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 3, 1);
+    try present(f);
+    try testing.expectEqual(held, try line(f, rows[10]));
+    try testing.expectEqual(@as(f64, 25), try offset(f, box));
+    _ = try f.owner.sceneScrollTo(box, .{ 0, -1 }, .{ true, true }, false);
+    try prepend(f, box, num, 1);
+    num += 1;
+    try present(f);
+    try testing.expectEqual(held + 1, try line(f, rows[10]));
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 0 }, .{ false, false }, false);
+    try present(f);
+    try f.owner.sceneDestroyNode(rows[0]);
+    try present(f);
+    try testing.expectEqual(@as(f64, 0), try offset(f, box));
+    // Released, or with its row moved out of the box, a prepend moves the view's rows again.
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 10 }, .{ false, false }, false);
+    try present(f);
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, null, 0, 0);
+    try prepend(f, box, num, 1);
+    num += 1;
+    try present(f);
+    try testing.expectEqual(@as(f64, 10), try offset(f, box));
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, rows[12], 0, 0);
+    try f.owner.sceneMoveNode(rows[12], f.root, 0);
+    try prepend(f, box, num, 1);
+    try present(f);
+    try testing.expectEqual(@as(f64, 10), try offset(f, box));
+}
+
+test "Scene scroll anchor wins over sticky follow, inside nested boxes too" {
+    const f = try Fixture.init(testing.allocator, 12, 6, .{});
+    defer f.deinit();
+    var rows: [20]context.Handle = undefined;
+    const box = try rowBox(f, c.OT_SCENE_SCROLL_FOLLOW_BOTTOM, &rows);
+    // A node inside a nested scroll node (viewport padding 1 above) in row 17.
+    const outer = try oneCell(f, rows[17], 60, 0);
+    try f.owner.sceneSetScroll(outer, .{ .padding = .{ 0, 1, 0, 0 } });
+    const inner = try oneCell(f, outer, 61, 0);
+    _ = try oneCell(f, outer, 62, 1);
+    try style(f, rows[17], c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 2, 1);
+    try style(f, outer, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 2, 1);
+    try present(f);
+    try testing.expectEqual(@as(f64, 17), try offset(f, box));
+    // Revealing the last row from the bottom leaves the view stuck, so it follows an append.
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, rows[19], c.OT_SCENE_SCROLL_ALIGN_NEAREST, 0);
+    _ = try oneCell(f, box, 90, 20);
+    try present(f);
+    try testing.expectEqual(@as(f64, 18), try offset(f, box));
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, inner, 0, 0);
+    const held = try line(f, inner);
+    // Rows above and below it, and the nested node's own scroll, move it in the content.
+    _ = try oneCell(f, box, 70, 21);
+    try prepend(f, box, 80, 2);
+    _ = try f.owner.sceneScrollTo(outer, .{ 0, 1 }, .{ false, false }, false);
+    try present(f);
+    try testing.expectEqual(held, try line(f, inner));
+    const state = try f.owner.sceneGetScroll(box);
+    try testing.expectEqual(@as(f64, 19), state.offset[1]);
+    try testing.expectEqual(@as(u32, 0), state.stuck);
+    // Released, the view stays where the anchor left it.
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, null, 0, 0);
+    _ = try oneCell(f, box, 71, 24);
+    try present(f);
+    try testing.expectEqual(@as(f64, 19), try offset(f, box));
+}
+
+test "Scene scroll LAYOUT request arrives once the frame's layout settles, before paint" {
+    const f = try Fixture.init(testing.allocator, 12, 6, .{});
+    defer f.deinit();
+    var rows: [20]context.Handle = undefined;
+    const box = try rowBox(f, c.OT_SCENE_SCROLL_FOLLOW_NONE, &rows);
+    try present(f);
+    // Without the SCROLL hook the request waits.
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0);
+    try present(f);
+    try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 1, 0, 0);
+    // A row added before the frame is laid out when the request arrives; a scroll in the
+    // reply paints in this frame, and a request made in the reply waits for the next frame.
+    // The size change comes first, in its own request.
+    const added = try oneCell(f, box, 40, 0);
+    var request = try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box);
+    try testing.expectEqual(@as(u32, c.OT_SCENE_SCROLL_CHANGED_CONTENT), (try f.owner.sceneGetScroll(box)).changes);
+    request = try f.step(request, frame_options, c.OT_SCENE_FRAME_SCROLL, box);
+    var state = try f.owner.sceneGetScroll(box);
+    try testing.expectEqual(@as(u32, c.OT_SCENE_SCROLL_CHANGED_LAYOUT), state.changes);
+    try testing.expectEqual(@as(f64, 21), state.content[3]);
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, added, c.OT_SCENE_SCROLL_ALIGN_START, 0);
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0);
+    _ = try f.step(request, frame_options, c.OT_SCENE_FRAME_DONE, null);
+    try commit(f);
+    try testing.expectEqual(@as(f64, 0), try line(f, added));
+    _ = try f.step(try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
+    try commit(f);
+    state = try f.owner.sceneGetScroll(box);
+    try testing.expectEqual(@as(u32, c.OT_SCENE_SCROLL_CHANGED_LAYOUT), state.changes);
+    // A pending request goes with its node.
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0);
+    try f.owner.sceneDestroyNode(box);
+    try testing.expectEqual(@as(u32, 0), f.state.layout_callbacks);
 }
