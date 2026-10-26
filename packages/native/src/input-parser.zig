@@ -227,6 +227,8 @@ pub const InputParser = struct {
     since_ns: u64 = 0,
     x10_button: u8 = 0,
     discarded_count: u32 = 0,
+    /// Bytes left in the feed batch after the current byte. A typed key arrives in a read of its own.
+    batch_left: u32 = 0,
 
     /// Parses bytes that arrived at now_ns and returns how many it consumed; it
     /// stops when the sink cannot hold one more byte's events. Zero bytes only
@@ -247,6 +249,7 @@ pub const InputParser = struct {
             }
             const count_before = sink.count;
             const payload_before = sink.payload_len;
+            self.batch_left = @intCast(bytes.len - consumed - 1);
             self.step(bytes[consumed], sink);
             std.debug.assert(sink.count - count_before <= events_per_byte_max);
             std.debug.assert(sink.payload_len - payload_before <= payload_per_byte_max);
@@ -260,7 +263,10 @@ pub const InputParser = struct {
     /// When the host should call feed with zero bytes, or null.
     pub fn deadlineNs(self: *const InputParser) ?u64 {
         const waits = switch (self.state) {
-            .ground, .expired, .paste => false,
+            // A UTF-8 lead byte's continuation bytes must follow, so no pause cuts a scalar short.
+            // Opt-in 8-bit Meta (urxvt meta8, rxvt --meta8, Eterm -8, iTerm2 Option as Meta) is read
+            // as UTF-8; an explicit "input is not UTF-8" mode could restore it without a timer.
+            .ground, .expired, .paste, .utf8 => false,
             .csi => |csi| !csi.deferred or !self.deferrable(),
             .string => |string| !self.expect.sentinel or !(string.deferred or self.awaitedString()),
             .discard => |discard| !self.expect.sentinel or !(discard.string and self.awaitedString()),
@@ -339,7 +345,6 @@ pub const InputParser = struct {
                 self.state = .ground;
                 emitReply(sink, self.unit[1..self.unit_len], .csi, flags.reply_fragment);
             },
-            .utf8 => |utf8| self.utf8Fallback(utf8.alt, sink),
             .csi => |csi| {
                 if (!csi.deferred and self.deferrable()) {
                     self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true, .held = self.sentinelHeld() } };
@@ -355,7 +360,7 @@ pub const InputParser = struct {
             },
             // After 20 ms of silence the rest of the garbage is more likely typing.
             .discard => self.state = .ground,
-            .ground, .expired, .paste => unreachable,
+            .ground, .expired, .utf8, .paste => unreachable,
         }
     }
 
@@ -374,7 +379,7 @@ pub const InputParser = struct {
                     self.state = .ground;
                     pending = b;
                 },
-                .utf8 => |utf8| if (b & 0xc0 == 0x80) {
+                .utf8 => |utf8| if (utf8Continues(self.unit[0], self.unit_len, b)) {
                     self.append(b);
                     if (self.unit_len == utf8.expected) self.utf8Complete(utf8.alt, sink);
                 } else {
@@ -397,8 +402,9 @@ pub const InputParser = struct {
                 } else if (!self.continuesDeferred(b, csi.held)) {
                     self.cutShort(csi.alt, .csi, 0, sink);
                     pending = b;
-                } else if (!csi.held) {
-                    self.state.csi.deferred = false;
+                } else if (!csi.held or b == '<' or b == 'M') {
+                    // A mouse report continues only a bare unit, which then is no longer held.
+                    self.state.csi = .{ .alt = csi.alt, .deferred = false };
                     pending = b;
                 } else if (b >= 0x40) {
                     // The only final bytes that continue a held unit are reply finals.
@@ -477,7 +483,7 @@ pub const InputParser = struct {
     fn utf8Complete(self: *InputParser, alt: bool, sink: *Sink) void {
         self.state = .ground;
         const bytes = self.unit[0..self.unit_len];
-        const scalar: u21 = std.unicode.utf8Decode(bytes) catch std.unicode.replacement_character;
+        const scalar: u21 = std.unicode.utf8Decode(bytes) catch unreachable;
         var buffer: [4]u8 = undefined;
         const text = if (alt) "" else utf8Encode(scalar, &buffer);
         emitKey(sink, if (alt) &.{ "\x1b", bytes } else &.{bytes}, scalar, .{ .alt = alt }, .{ .text = text });
@@ -773,11 +779,11 @@ pub const InputParser = struct {
     }
 
     /// Whether a timed-out CSI may still be a mouse report, a Kitty key, or an awaited
-    /// reply, which slow links can split (docs §6.6).
+    /// reply, which slow links can split (docs §6.6). A bare `ESC ESC [` would hold an Escape key.
     fn deferrable(self: *const InputParser) bool {
         const params = self.unit[2..self.unit_len];
         if (self.sentinelHeld()) return true;
-        if (params.len == 0) return false;
+        if (params.len == 0) return !self.state.csi.alt;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
         return (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
@@ -821,8 +827,10 @@ pub const InputParser = struct {
     fn continuesDeferred(self: *const InputParser, b: u8, reply_only: bool) bool {
         const params = self.unit[2..self.unit_len];
         const digit = isDigit(b);
+        // A reply prefix continues a bare unit only while the host awaits the sentinel.
+        if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
+            (self.expect.sentinel and beginsReply('[', b));
         // Only `sentinel` defers these; a number continues toward a cursor or pixel size reply.
-        if (params.len == 0) return beginsReply('[', b);
         if (allDigits(params)) return digit or b == ';';
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
         const field = std.mem.trimEnd(u8, params, "$");
@@ -1117,6 +1125,20 @@ fn parseDigits(bytes: []const u8) u32 {
     var value: u32 = 0;
     for (bytes) |b| value = value *| 10 +| (b - '0');
     return value;
+}
+
+/// Whether `b` can follow the `count` bytes of a scalar that starts with `lead`. The second byte's
+/// range excludes overlongs, surrogates, and scalars above U+10FFFF (Unicode Table 3-7), so a
+/// prefix that no byte can complete ends at once instead of waiting.
+fn utf8Continues(lead: u8, count: u16, b: u8) bool {
+    const low: u8, const high: u8 = if (count > 1) .{ 0x80, 0xbf } else switch (lead) {
+        0xe0 => .{ 0xa0, 0xbf },
+        0xed => .{ 0x80, 0x9f },
+        0xf0 => .{ 0x90, 0xbf },
+        0xf4 => .{ 0x80, 0x8f },
+        else => .{ 0x80, 0xbf },
+    };
+    return b >= low and b <= high;
 }
 
 fn utf8Encode(scalar: u21, buffer: *[4]u8) []const u8 {

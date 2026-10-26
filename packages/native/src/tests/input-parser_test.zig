@@ -360,31 +360,36 @@ test "input parser text, controls, and Alt prefixes" {
 test "input parser bytes that are not UTF-8 are eight-bit Alt keys" {
     try check("\xffa", &.{ k(K.backspace, ALT), ch('a') });
     try check("\xe4a", &.{ kr('d', ALT, "\xe4"), ch('a') });
-    try check("\xe4\xb8a", &.{ k('d', ALT), k('8', ALT), ch('a') });
     try check("\xc0A", &.{ k('@', ALT), ch('A') });
-    // The ESC of an Alt prefix stays in the first fallback key.
-    try check("\x1b\xe4a", &.{ kr('d', ALT, "\x1b\xe4"), ch('a') });
-    // Valid framing that decodes to no scalar still yields one key.
-    try check("\xed\xa0\x80", &.{kt(0xfffd, NONE, "\u{fffd}")});
-    try check("\xe0\x80\x80", &.{ch(0xfffd)});
-    try check("\xf4\x90\x80\x80", &.{ch(0xfffd)});
-    // A UTF-8 scalar split across feeds, and one cut short by the timeout.
-    for ([_][]const u8{ "é", "中", "👍" }) |text| {
-        for (1..text.len) |index| {
+    try check("\x9c\x93", &.{ k('\\', mods(&.{ CTRL, ALT })), k('s', mods(&.{ CTRL, ALT })) });
+    try check("\xe0\x80\x80", &.{ k('`', ALT), k(' ', mods(&.{ CTRL, ALT })), k(' ', mods(&.{ CTRL, ALT })) });
+    // A scalar of each lead range waits for its rest without a deadline (issue 344).
+    for ([_][]const u8{ "\u{80}", "\u{7ff}", "\u{800}", "\u{d7ff}", "\u{ff5e}", "\u{10000}", "\u{10ffff}" }) |text| {
+        for (1..text.len) |index| for ([_]u64{ 0, 25, std.time.ms_per_s, std.time.ms_per_min }) |pause| {
             var harness = try Harness.create();
             defer harness.deinit();
             try expectGot(text, &.{}, try harness.feed(text[0..index]));
+            try testing.expectEqual(null, harness.parser.deadlineNs());
+            try expectGot(text, &.{}, try harness.wait(pause));
             const scalar = try std.unicode.utf8Decode(text);
             try expectGot(text, &.{ch(scalar)}, try harness.feed(text[index..]));
-        }
+        };
     }
-    var harness = try Harness.create();
-    defer harness.deinit();
-    try expectGot("", &.{}, try harness.feed("\xe4\xb8"));
-    try expectGot("", &.{}, try harness.wait(19));
-    try expectGot("", &.{ k('d', ALT), k('8', ALT) }, try harness.wait(1));
-    try expectGot("", &.{}, try harness.feed("\x1b\xe4"));
-    try expectGot("", &.{kr('d', ALT, "\x1b\xe4")}, try harness.wait(20));
+    // A byte that cannot continue the scalar ends the wait: the buffered bytes are eight-bit Alt
+    // keys, the first with the ESC of an Alt prefix, and the byte parses as usual. A second byte
+    // outside its lead's range (overlong, surrogate, above U+10FFFF) cannot continue it either.
+    for ([_]struct { []const u8, []const u8, []const Expect }{
+        .{ "\xe0", "\x9f", &.{ k('`', ALT), k('_', mods(&.{ CTRL, ALT })) } },
+        .{ "\xed", "\xa0", &.{ k('m', ALT), k(' ', ALT) } },
+        .{ "\xf0", "\x8f", &.{ k('p', ALT), k('o', mods(&.{ CTRL, ALT })) } },
+        .{ "\xf4", "\x90", &.{ k('t', ALT), k('p', mods(&.{ CTRL, ALT })) } },
+        .{ "\xe2", "\xc3\xa9", &.{ k('b', ALT), ch(0xe9) } },
+        .{ "\xe4\xb8", "a", &.{ k('d', ALT), k('8', ALT), ch('a') } },
+        .{ "\xe4", "\x1b[A", &.{ k('d', ALT), k(K.up, NONE) } },
+        .{ "\xe4\xb8", "\x1bq", &.{ k('d', ALT), k('8', ALT), k('q', ALT) } },
+        .{ "\x1b\xe4", "a", &.{ kr('d', ALT, "\x1b\xe4"), ch('a') } },
+        .{ "\x1b\xe2", "\x9c\x93", &.{kr(0x2713, ALT, "\x1b\u{2713}")} },
+    }) |case| try checkTimed(.{}, case[0], 0, case[1], case[2]);
 }
 
 test "input parser Escape forms resolve by timeout" {
@@ -982,7 +987,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     const sentinel_kitty: ip.Expectations = .{ .replies = true, .kitty_keyboard = true, .sentinel = true };
     for ([_]struct { ip.Expectations, []const u8, usize, []const u8, []const Expect }{
         // A fragment, and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
-        .{ plain, "\x1b[", 1, "q", &.{ frag("\x1b["), ch('q') } },
+        .{ plain, "\x1b\x1b[", 2, "<", &.{ k(K.escape, NONE), frag("\x1b["), ch('<') } },
         .{ plain, "\x1bP", 1, "q", &.{ frag("\x1bP"), ch('q') } },
         .{ plain, "\x1b]", 1, "q", &.{ frag("\x1b]"), ch('q') } },
         .{ plain, "\x1bO", 1, "a", &.{ frag("\x1bO"), ch('a') } },
@@ -1030,9 +1035,9 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         // Only the shapes the host waits for defer: `CSI 8 ; h ; w t` is not a pixel reply.
         .{ replies, "\x1b[8;600;80", 1, "t", &.{ frag("\x1b[8;600;80"), ch('t') } },
         .{ replies, "\x1b[1;2:3:4:5", 1, "R", &.{ frag("\x1b[1;2:3:4:5"), ch('R') } },
-        // Without SENTINEL a pause still cuts a string, a bare introducer, or a number short (issue 342).
+        // Without SENTINEL a pause still cuts a string or a number short, and no reply byte continues a bare `ESC [` (issue 342).
         .{ replies, "\x1b]11;rg", 1, "b\x07", &.{ frag("\x1b]11;rg"), ch('b'), k('g', CTRL) } },
-        .{ replies, "\x1b[", 1, "?c", &.{ frag("\x1b["), ch('?'), ch('c') } },
+        .{ replies, "\x1b[", 0, "?c", &.{ frag("\x1b["), ch('?'), ch('c') } },
         .{ replies, "\x1b[24", 1, ";", &.{ frag("\x1b[24"), ch(';') } },
         // With SENTINEL a string that begins like a reply waits however long the pause.
         .{ sentinel, "\x1b]1", 0, "1;rgb:0/0/0\x07", &.{reply("\x1b]11;rgb:0/0/0\x07")} },
@@ -1048,6 +1053,10 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ sentinel, "\x1bP", 0, ">|kitty\x1b\\", &.{reply("\x1bP>|kitty\x1b\\")} },
         .{ sentinel, "\x1b_", 0, "Gi=1;OK\x1b\\", &.{reply("\x1b_Gi=1;OK\x1b\\")} },
         .{ sentinel, "\x1b[", 0, "j", &.{ frag("\x1b["), ch('j') } },
+        .{ sentinel, "\x1b[", 0, "M !!", &.{Expect{ .kind = .mouse, .action = 1, .code = 0, .raw = "\x1b[M !!" }} },
+        .{ sentinel, "\x1b[", 0, "<0;1;1M", &.{down(0, 0, 0)} },
+        .{ sentinel, "\x1b[", 0, "M", &.{ frag("\x1b["), ch('M') } },
+        .{ sentinel, "\x1b[", 0, "<", &.{ frag("\x1b["), ch('<') } },
         .{ sentinel, "\x1b[", 0, "\x1b[A", &.{ frag("\x1b["), k(K.up, NONE) } },
         .{ sentinel, "\x1b\x1b[", 0, "j", &.{ k(K.escape, NONE), frag("\x1b["), ch('j') } },
         .{ sentinel, "\x1b[24", 0, "j", &.{ frag("\x1b[24"), ch('j') } },
@@ -1067,14 +1076,36 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ sentinel, "\x1bP+", 1, "q", &.{ frag("\x1bP+"), ch('q') } },
         .{ sentinel, "\x1b_g", 1, "q", &.{ frag("\x1b_g"), ch('q') } },
     }) |case| try checkTimed(case[0], case[1], case[2], case[3], case[4]);
+    // A timed-out bare `ESC [` continues only into a read that holds the rest of a mouse report.
+    // Keys typed after Alt+[ come one read each and stay keys, and so does any other byte.
+    for ([_]struct { []const []const u8, []const Expect }{
+        .{ &.{"<0;1;1M"}, &.{down(0, 0, 0)} },
+        .{ &.{"M !!"}, &.{Expect{ .kind = .mouse, .action = 1, .code = 0, .raw = "\x1b[M !!" }} },
+        .{ &.{ "<0", ";1;1M" }, &.{down(0, 0, 0)} },
+        .{ &.{ "<", "a" }, &.{ frag("\x1b["), ch('<'), ch('a') } },
+        .{ &.{ "M", "a" }, &.{ frag("\x1b["), ch('M'), ch('a') } },
+        .{ &.{ "<", "1", "2", ";", "3", "x" }, &.{ frag("\x1b["), ch('<'), ch('1'), ch('2'), ch(';'), ch('3'), ch('x') } },
+        .{ &.{ "M", "M", "M", "M" }, &.{ frag("\x1b["), ch('M'), ch('M'), ch('M'), ch('M') } },
+        .{ &.{ "M", " ", "!", "!" }, &.{ frag("\x1b["), ch('M'), ch(' '), ch('!'), ch('!') } },
+        .{ &.{"M !"}, &.{ frag("\x1b["), ch('M'), ch(' '), ch('!') } },
+        .{ &.{"1m"}, &.{ frag("\x1b["), ch('1'), ch('m') } },
+        .{ &.{"?m"}, &.{ frag("\x1b["), ch('?'), ch('m') } },
+        .{ &.{"m1"}, &.{ frag("\x1b["), ch('m'), ch('1') } },
+    }) |case| {
+        var bare = try Harness.create();
+        defer bare.deinit();
+        _ = try bare.feed("\x1b[");
+        try expectGot("\x1b[", &.{}, try bare.wait(20));
+        try expectGot(case[0][0], case[1], try split(&bare, case[0]));
+    }
     // A deferred unit has no deadline until a byte continues it.
     var harness = try Harness.create();
     defer harness.deinit();
-    _ = try harness.feed("\x1b[<0;1");
+    _ = try harness.feed("\x1b[");
     try expectGot("", &.{}, try harness.wait(20));
     try testing.expectEqual(null, harness.parser.deadlineNs());
     harness.now += std.time.ns_per_s;
-    _ = try harness.feed(";");
+    _ = try harness.feed("<0;1;");
     try testing.expectEqual(harness.now + ip.timeout_ns, harness.parser.deadlineNs().?);
     try expectGot("", &.{down(0, 0, 0)}, try harness.feed("1M"));
     // Clearing an expectation gives a deferred unit its deadline back; it emits on the next feed.
@@ -1094,7 +1125,6 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     for ([_]struct { []const u8, []const Expect }{
         .{ "\x1b]11;rg", &.{frag("\x1b]11;rg")} },
         .{ "\x1b_", &.{frag("\x1b_")} },
-        .{ "\x1b[", &.{frag("\x1b[")} },
         .{ "\x1b[24", &.{frag("\x1b[24")} },
         .{ "\x1b_Gi=" ++ [_]u8{'9'} ** ip.unit_bytes_max, &.{} },
     }) |case| {
@@ -1104,6 +1134,13 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         harness.parser.setExpectations(.{ .replies = true });
         try expectGot(case[0], case[1], try harness.wait(0));
     }
+    // A held bare `ESC [` then waits as without SENTINEL, and a reply byte no longer continues it.
+    harness.parser.setExpectations(sentinel);
+    _ = try harness.feed("\x1b[");
+    try expectGot("", &.{}, try harness.wait(60_000));
+    harness.parser.setExpectations(.{ .replies = true });
+    try expectGot("", &.{}, try harness.wait(0));
+    try expectGot("", &.{ frag("\x1b["), ch('?') }, try harness.feed("?"));
     // An overlong reply is discarded up to its terminator, however long it takes.
     harness.parser.setExpectations(sentinel);
     _ = try harness.feed("\x1b_Gi=" ++ [_]u8{'9'} ** ip.unit_bytes_max);
