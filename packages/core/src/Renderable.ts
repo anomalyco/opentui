@@ -214,6 +214,11 @@ export interface NativeRenderableIntegration {
       readonly idle: (deltaTime: number) => void
       readonly active: (renderable: Renderable) => boolean
     }
+    /** A scroll node's SCROLL request, asked for only while `active` holds. */
+    readonly scroll?: {
+      readonly active: (renderable: Renderable) => boolean
+      readonly notify: (renderable: Renderable) => void
+    }
   }
   readonly beforeAfter?: boolean
   readonly paintBuffer?: "destination"
@@ -954,7 +959,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public getChildrenSortedByPrimaryAxis(): Renderable[] {
-    const axis = isRowFlexDirection(this.getFlexDirection()) ? "screenX" : "screenY"
+    const axis = this.primaryAxis === "row" ? "screenX" : "screenY"
     if (this._childrenInLayoutOrder.length < 2) return [...this._childrenInLayoutOrder]
     // Selection traverses children in screen order, including ancestor translations.
     const children = this._childrenInLayoutOrder.map((child) => ({ child, coordinate: child[axis] }))
@@ -1933,6 +1938,7 @@ export abstract class Renderable extends BaseRenderable {
         (hooks.renderAfter ? NativeSceneHook.RenderAfter : 0) |
         (this.usesNativeDrawing(hooks.renderSelf) ? 0 : NativeSceneHook.RenderSelf) |
         this.hostUpdateFlags(hooks.onUpdate) |
+        (integration.lifecycle?.scroll?.active(this) ? NativeSceneHook.Scroll : 0) |
         (resize || sizeChange || (pending.resize ?? this.listenerCount("resize")) > 0 ? NativeSceneHook.Resize : 0) |
         ((pending.layout ?? this.listenerCount(LayoutEvents.LAYOUT_CHANGED)) > 0 ? NativeSceneHook.LayoutChanged : 0)
       const generation = this._nativeSceneHookGeneration + 1n
@@ -1982,6 +1988,9 @@ export abstract class Renderable extends BaseRenderable {
           break
         case NativeSceneFrame.LayoutChanged:
           this.emit(LayoutEvents.LAYOUT_CHANGED)
+          break
+        case NativeSceneFrame.Scroll:
+          this.nativeIntegration.lifecycle?.scroll?.notify(this)
           break
       }
     } finally {

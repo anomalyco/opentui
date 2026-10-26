@@ -28,6 +28,7 @@ const excludedProps: Record<string, string> = {
   "SelectRenderable.font": "font lookup without a default",
   "SliderRenderable.orientation": "required option (setter new on this branch)",
   "ArrowRenderable.direction": "required option without a default; main stored it raw, this branch rejects it",
+  "ScrollBoxRenderable.overflow": "always hidden: the box clips like its viewport",
   "TimeToFirstDrawRenderable.fg": "frame fails at paint (file has no owner unit)",
   "TimeToFirstDrawRenderable.color": "frame fails at paint (file has no owner unit)",
   "EmbeddedTerminalRenderable.focusable": "accepted, but the constructor sets focus, not the class default (U24)",
