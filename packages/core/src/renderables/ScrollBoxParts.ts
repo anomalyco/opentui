@@ -1,9 +1,16 @@
 import { EventEmitter } from "events"
 import type { KeyEvent } from "../lib/KeyHandler.js"
 import { parseColor, RGBA, type ColorInput } from "../lib/RGBA.js"
-import { parseAlign, parseAlignItems, parseFlexDirection, parseJustify, parseWrap } from "../lib/yoga.options.js"
+import {
+  parseAlign,
+  parseAlignItems,
+  parseFlexDirection,
+  parseJustify,
+  parseWrap,
+  type FlexDirectionString,
+} from "../lib/yoga.options.js"
 import type { BaseRenderable, Renderable } from "../Renderable.js"
-import { Edge, Gutter } from "../yoga.js"
+import { Edge, FlexDirection, Gutter } from "../yoga.js"
 import {
   sceneSetEnum,
   sceneSetFloat,
@@ -18,7 +25,6 @@ import {
   NativeStyleFlags,
   type NativeSceneRect,
   type NativeSceneScrollBarOptions,
-  type NativeSceneScrollState,
   type SceneNodeHandle,
 } from "../zig.js"
 import type { BoxOptions } from "./Box.js"
@@ -26,33 +32,20 @@ import type { VNode } from "./composition/vnode.js"
 import { ScrollBarRenderable, type ArrowOptions, type ScrollUnit } from "./ScrollBar.js"
 import type { ScrollBoxRenderable } from "./ScrollBox.js"
 
-/** What the parts need from their ScrollBox. */
-export interface ScrollBoxHost {
-  readonly isDestroyed: boolean
-  readonly screenX: number
-  readonly screenY: number
-  readonly width: number
-  readonly height: number
-  _scrollState(): NativeSceneScrollState
-  _wrapperRect(): NativeSceneRect
-  _scrollAxis(axis: number, value: number, relative: boolean): void
-  _applyScrollOptions(): void
-  _applyScrollArrows(axis: number): void
-  _refreshScrollHook(adding?: boolean): void
-  _setContentStyle(apply: (scene: NativeScene, node: SceneStyleNode) => void): void
-}
-
 export type SceneStyleNode = { _getSceneHandle(owner: NativeScene): SceneNodeHandle }
-
-const notificationEvents = new Set<string | symbol>(["resize", "change"])
 
 /** A ScrollBox part: plain geometry and events over the box's native scroll state, not a renderable. */
 abstract class ScrollBoxPart extends EventEmitter {
-  constructor(protected readonly box: ScrollBoxHost) {
+  /** `event` is the notification this part emits, if any. */
+  constructor(
+    protected readonly box: ScrollBoxRenderable,
+    event?: string,
+  ) {
     super()
-    // Listener changes decide whether the box asks native for SCROLL requests. A new listener is not counted yet.
-    this.on("newListener", (event) => notificationEvents.has(event) && box._refreshScrollHook(true))
-    this.on("removeListener", (event) => notificationEvents.has(event) && box._refreshScrollHook())
+    // Listeners of the part's event decide whether the box asks native for SCROLL requests. A new listener is not
+    // counted yet.
+    this.on("newListener", (name) => name === event && box._refreshScrollHook(true))
+    this.on("removeListener", (name) => name === event && box._refreshScrollHook())
   }
 
   protected abstract rect(): NativeSceneRect
@@ -91,7 +84,9 @@ abstract class ScrollBoxPart extends EventEmitter {
 
   // Keep the two listeners above, which a removal of every listener would drop.
   override removeAllListeners(event?: string | symbol): this {
-    for (const name of event === undefined ? notificationEvents : [event]) super.removeAllListeners(name)
+    for (const name of event === undefined ? this.eventNames() : [event]) {
+      if (name !== "newListener" && name !== "removeListener") super.removeAllListeners(name)
+    }
     return this
   }
 
@@ -129,6 +124,10 @@ abstract class ScrollBoxFilledPart extends ScrollBoxPart {
 /** A part whose size changes reach `"resize"` listeners and `onSizeChange`. */
 abstract class ScrollBoxSizedPart extends ScrollBoxFilledPart {
   private _onSizeChange?: () => void
+
+  constructor(box: ScrollBoxRenderable) {
+    super(box, "resize")
+  }
 
   get onSizeChange(): (() => void) | undefined {
     return this._onSizeChange
@@ -170,7 +169,7 @@ export class ScrollBoxViewport extends ScrollBoxSizedPart {
   static readonly keys = ["backgroundColor", "onSizeChange", ...paddingKeys]
   private readonly paddings: Partial<Record<string, number>> = {}
 
-  constructor(box: ScrollBoxHost) {
+  constructor(box: ScrollBoxRenderable) {
     super(box)
     // Each edge reads back resolved; the shorthands are write-only.
     paddingKeys.forEach((key, index) =>
@@ -277,10 +276,7 @@ export class ScrollBoxContent extends ScrollBoxSizedPart {
   static readonly keys = ["backgroundColor", "onSizeChange", "viewportCulling", ...Object.keys(contentStyles)]
   private readonly styles = new Map<string, unknown>()
 
-  constructor(
-    private readonly owner: ScrollBoxRenderable,
-    box: ScrollBoxHost,
-  ) {
+  constructor(box: ScrollBoxRenderable) {
     super(box)
     for (const key of Object.keys(contentStyles)) {
       // Reads of width and height stay the content's size; writes set its style.
@@ -304,52 +300,53 @@ export class ScrollBoxContent extends ScrollBoxSizedPart {
     }
   }
 
+  // The value is kept only once its write was accepted.
   private setStyle(key: string, input: unknown): void {
+    this.box._setContentStyle((scene, node) => contentStyles[key](scene, node, input))
     if (input == null) this.styles.delete(key)
     else this.styles.set(key, input)
-    this.box._setContentStyle((scene, node) => contentStyles[key](scene, node, input))
   }
 
-  /** @internal Whether children lay out in a row. */
+  /** @internal Whether children lay out in a row, by the direction native was given. */
   get _row(): boolean {
-    const direction = this.styles.get("flexDirection")
-    return direction === "row" || direction === "row-reverse"
+    const direction = parseFlexDirection(this.styles.get("flexDirection") as FlexDirectionString | undefined)
+    return direction === FlexDirection.Row || direction === FlexDirection.RowReverse
   }
 
   get viewportCulling(): boolean {
-    return this.owner.viewportCulling
+    return this.box.viewportCulling
   }
 
   set viewportCulling(value: boolean) {
-    this.owner.viewportCulling = value
+    this.box.viewportCulling = value
   }
 
   add(obj: Renderable | VNode<any, any[]>, index?: number): number {
-    return this.owner.add(obj, index)
+    return this.box.add(obj, index)
   }
 
   insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number {
-    return this.owner.insertBefore(obj, anchor)
+    return this.box.insertBefore(obj, anchor)
   }
 
   remove(child: BaseRenderable): void {
-    this.owner.remove(child)
+    this.box.remove(child)
   }
 
   getChildren(): Renderable[] {
-    return this.owner.getChildren()
+    return this.box.getChildren()
   }
 
   getChildrenCount(): number {
-    return this.owner.getChildrenCount()
+    return this.box.getChildrenCount()
   }
 
   getRenderable(id: string): Renderable | undefined {
-    return this.owner.getRenderable(id)
+    return this.box.getRenderable(id)
   }
 
   findDescendantById(id: string): Renderable | undefined {
-    return this.owner.findDescendantById(id)
+    return this.box.findDescendantById(id)
   }
 }
 
@@ -386,8 +383,8 @@ export class ScrollBoxBar extends ScrollBoxPart {
   private overlay = false
   private _onChange?: (position: number) => void
 
-  constructor(box: ScrollBoxHost, orientation: "vertical" | "horizontal") {
-    super(box)
+  constructor(box: ScrollBoxRenderable, orientation: "vertical" | "horizontal") {
+    super(box, "change")
     this.orientation = orientation
     this.axis = orientation === "vertical" ? 1 : 0
   }

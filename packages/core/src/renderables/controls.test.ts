@@ -276,7 +276,8 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
 
 // Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling, and the
 // SCROLL request comes only while a part has a listener (`listen` adds a content "resize" and a bar "change" listener;
-// its first frame reports the state nobody heard, without events). The counts of those events follow the trace.
+// it hears changes from then on). Listeners of events a part does not emit ask for nothing. The counts of the events
+// follow the trace.
 test("ScrollBox host requests per frame", async () => {
   const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
   for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
@@ -295,6 +296,8 @@ test("ScrollBox host requests per frame", async () => {
     "scroll+listeners": () => scroll.scrollBy(3),
     unlisten: () => (scroll.content.off("resize", resized), scroll.verticalScrollBar.off("change", changed)),
     "append again": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    unsupported: () => (scroll.content.on("change", changed), scroll.verticalScrollBar.on("resize", resized)),
+    "append unsupported": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
   }
   let events = ""
   const resized = () => (events += "r")
@@ -308,8 +311,8 @@ test("ScrollBox host requests per frame", async () => {
     events = ""
   }
   expect(trace.join(" ")).toBe(
-    "idle:0 scroll:0 wheel:0 append:0 auto:1 stop:0 listen:1 append+listeners:1r idle+listeners:0 " +
-      "scroll+listeners:0c unlisten:0 append again:0",
+    "idle:0 scroll:0 wheel:0 append:0 auto:1 stop:0 listen:0 append+listeners:1r idle+listeners:0 " +
+      "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0",
   )
 })
 

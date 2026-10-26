@@ -284,6 +284,189 @@ describe("ScrollBoxRenderable - facade", () => {
   })
 })
 
+// Facade state after edge writes. Each row builds a 20×10 box with 30 rows (`wide`: 3 boxes 100 cells wide, scrollX,
+// height 5) after `options`, renders, runs its steps, and returns a trace.
+type FacadeRow = [string, ScrollBoxOptions & { wide?: boolean }, (box: ScrollBoxRenderable) => Promise<unknown>, string]
+const attempt = (write: () => void) => {
+  try {
+    write()
+    return "ok"
+  } catch (error) {
+    return (error as Error).name
+  }
+}
+const facadeRows: FacadeRow[] = [
+  [
+    "destroy keeps the last presented state",
+    { stickyScroll: true, stickyStart: "bottom" },
+    async (box) => {
+      const before = box.scrollTop
+      box.add(new TextRenderable(testRenderer, { content: "late" }))
+      await renderOnce()
+      box.destroy()
+      return [before, box.scrollTop, box.scrollHeight, box.verticalScrollBar.scrollPosition]
+    },
+    "20,21,31,21",
+  ],
+  [
+    "an uppercase content direction is a row",
+    { contentOptions: { flexDirection: "row" } },
+    async (box) => {
+      box.content.flexDirection = "ROW" as "row"
+      await renderOnce()
+      const [a, b] = box.getChildren()
+      return [box.primaryAxis, a.y === b.y]
+    },
+    "row,true",
+  ],
+  [
+    "a rejected content direction keeps the accepted one",
+    { contentOptions: { flexDirection: "row" } },
+    async (box) => [
+      attempt(() => (box.content.flexDirection = 1 as unknown as "row")),
+      box.content.flexDirection,
+      box.primaryAxis,
+    ],
+    "TypeError,row,row",
+  ],
+  [
+    "a rejected sticky edge keeps the accepted one",
+    { stickyScroll: true, stickyStart: "bottom" },
+    async (box) => {
+      const rejected = attempt(() => (box.stickyStart = "bogus" as "top"))
+      const valid = attempt(() => (box.stickyScroll = true))
+      box.add(new TextRenderable(testRenderer, { content: "late" }))
+      await renderOnce()
+      return [rejected, valid, box.stickyStart, box.scrollTop]
+    },
+    "TypeError,ok,bottom,21",
+  ],
+  [
+    "removing every listener keeps notifications for later ones",
+    {},
+    async (box) => {
+      let heard = 0
+      box.content.on("resize", () => heard--)
+      box.content.removeAllListeners()
+      box.add(new TextRenderable(testRenderer, { content: "late" }))
+      await renderOnce()
+      const requests = testRenderer.getNativeStats().frameWork.hostRequests
+      box.content.on("resize", () => heard++)
+      box.add(new TextRenderable(testRenderer, { content: "later" }))
+      await renderOnce()
+      return [requests, heard]
+    },
+    "0,1",
+  ],
+  [
+    "a width-only change reaches content resize",
+    {},
+    async (box) => {
+      let heard = 0
+      box.content.on("resize", () => heard++)
+      box.width = 18
+      await renderOnce()
+      return [heard, box.content.width]
+    },
+    "1,17",
+  ],
+  [
+    "a bar with a gap covers the gap",
+    { width: 30, verticalScrollbarOptions: { paddingLeft: 2 } },
+    async (box) => [box.verticalScrollBar.x, box.verticalScrollBar.width, box.viewport.width],
+    "27,3,27",
+  ],
+  [
+    "horizontal track press jumps, a thumb press does not, and a drag moves the thumb",
+    { wide: true },
+    async (box) => {
+      const trace = []
+      await mockMouse.pressDown(10, 4)
+      trace.push(box.scrollLeft)
+      await mockMouse.release(10, 4)
+      await renderOnce()
+      await mockMouse.pressDown(9, 4)
+      trace.push(box.scrollLeft)
+      await mockMouse.moveTo(11, 4)
+      trace.push(box.scrollLeft)
+      await mockMouse.release(11, 4)
+      return trace
+    },
+    "40,40,50",
+  ],
+  [
+    "a held arrow repeats until released",
+    { scrollbarOptions: { showArrows: true } },
+    async (box) => {
+      // The repeat's 500 ms delay and 200 ms interval run by hand; other timers run as usual.
+      const timers: (() => void)[] = []
+      const [realTimeout, realInterval] = [globalThis.setTimeout, globalThis.setInterval]
+      const capture =
+        (real: Function) =>
+        (callback: () => void, delay?: number, ...args: unknown[]) =>
+          delay === 500 || delay === 200 ? (timers.push(callback), 0) : real(callback, delay, ...args)
+      const timeout = spyOn(globalThis, "setTimeout").mockImplementation(capture(realTimeout) as typeof setTimeout)
+      const interval = spyOn(globalThis, "setInterval").mockImplementation(capture(realInterval) as typeof setInterval)
+      try {
+        const trace = []
+        await mockMouse.pressDown(19, 9)
+        trace.push(box.scrollTop)
+        timers.shift()!()
+        trace.push(box.scrollTop)
+        const repeat = timers.shift()!
+        repeat()
+        trace.push(box.scrollTop)
+        await mockMouse.release(19, 9)
+        repeat()
+        trace.push(box.scrollTop)
+        return trace
+      } finally {
+        timeout.mockRestore()
+        interval.mockRestore()
+      }
+    },
+    "5,10,12,12",
+  ],
+  [
+    "viewport padding writes",
+    {},
+    async (box) => {
+      const max = async () => (await renderOnce(), box.scrollHeight - box.viewport.height + box.viewport.paddingTop)
+      const trace: unknown[] = []
+      box.viewport.paddingTop = 2
+      trace.push(await max())
+      box.viewport.paddingTop = null
+      trace.push(await max())
+      trace.push(
+        attempt(() => (box.viewport.paddingTop = 1.5)),
+        await max(),
+      )
+      return trace
+    },
+    "22,20,RangeError,20",
+  ],
+]
+
+test.each(facadeRows)("ScrollBox facade: %s", async (_, options, steps, expected) => {
+  const { wide, ...rest } = options
+  const box = new ScrollBoxRenderable(testRenderer, {
+    width: 20,
+    height: wide ? 5 : 10,
+    ...(wide ? { scrollX: true } : {}),
+    ...rest,
+  })
+  for (let i = 0; i < (wide ? 3 : 30); i++) {
+    box.add(
+      wide
+        ? new BoxRenderable(testRenderer, { width: 100, height: 1, flexShrink: 0 })
+        : new TextRenderable(testRenderer, { content: `row ${i}` }),
+    )
+  }
+  testRenderer.root.add(box)
+  await renderOnce()
+  expect(String(await steps(box))).toBe(expected)
+})
+
 describe("ScrollBoxRenderable - culled content layout freshness", () => {
   // Each case changes the layout of 40 culled rows (each 1 tall), renders, and checks the frame. `lines` maps a
   // screen row to the row label it shows, or to null for a row without one.

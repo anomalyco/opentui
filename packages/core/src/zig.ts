@@ -628,10 +628,10 @@ export interface NativeSceneScrollBarState {
   thumbSize: number
 }
 
-/** Axis 0 is x, axis 1 is y. `content` is local to the box; the other rects are screen cells. */
+/** Axis 0 is x, axis 1 is y. `content` is local to the box; the other rects are screen cells. `changes` holds the
+ * OT_SCENE_SCROLL_CHANGED_* bits of the last SCROLL request. */
 export interface NativeSceneScrollState {
-  stuck: boolean
-  generation: bigint
+  changes: number
   offset: [number, number]
   max: [number, number]
   content: NativeSceneRect
@@ -644,6 +644,11 @@ const SCENE_SCROLL_BAR_POLICY = ["auto", "always", "never"] as const
 
 function readSceneRect(values: Float64Array, index: number): NativeSceneRect {
   return { x: values[index], y: values[index + 1], width: values[index + 2], height: values[index + 3] }
+}
+
+/** The state of a scroll node before its first frame. */
+export function emptySceneScrollState(): NativeSceneScrollState {
+  return readSceneScrollState(new Uint32Array(nativeLayouts.ot_scene_scroll_state.size / 4))
 }
 
 function readSceneScrollState(record: Uint32Array): NativeSceneScrollState {
@@ -664,8 +669,7 @@ function readSceneScrollState(record: Uint32Array): NativeSceneScrollState {
   const offset = fields.offset.offset / 8
   const max = fields.max.offset / 8
   return {
-    stuck: record[fields.stuck.offset / 4] !== 0,
-    generation: new BigUint64Array(record.buffer)[fields.generation.offset / 8],
+    changes: record[fields.changes.offset / 4],
     offset: [values[offset], values[offset + 1]],
     max: [values[max], values[max + 1]],
     content: readSceneRect(values, fields.content.offset / 8),

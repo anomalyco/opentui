@@ -5,7 +5,7 @@ import type { NativeRenderableIntegration } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
 import type { RenderContext, Timeout } from "../types.js"
 import type { NativeScene } from "../NativeScene.js"
-import type { NativeSceneRect, NativeSceneScrollState } from "../zig.js"
+import { emptySceneScrollState, type NativeSceneRect, type NativeSceneScrollState } from "../zig.js"
 import { BoxRenderable, type BoxOptions } from "./Box.js"
 import type { ScrollBarOptions, ScrollUnit } from "./ScrollBar.js"
 import {
@@ -13,7 +13,6 @@ import {
   ScrollBoxContent,
   ScrollBoxViewport,
   ScrollBoxWrapper,
-  type ScrollBoxHost,
   type SceneStyleNode,
 } from "./ScrollBoxParts.js"
 
@@ -70,31 +69,12 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
   return sanitized as Omit<T, ScrollBoxPaddingKey>
 }
 
-const emptyRect: NativeSceneRect = { x: 0, y: 0, width: 0, height: 0 }
-const emptyBar = {
-  visible: false,
-  track: emptyRect,
-  startArrow: emptyRect,
-  endArrow: emptyRect,
-  thumbStart: 0,
-  thumbSize: 0,
-}
-const emptyState: NativeSceneScrollState = {
-  stuck: false,
-  generation: 0n,
-  offset: [0, 0],
-  max: [0, 0],
-  content: emptyRect,
-  viewport: emptyRect,
-  bars: [emptyBar, emptyBar],
-}
-
 type BarPress = { axis: number; offset: number } | { axis: number; arrow: -1 | 1; timer: Timeout }
 
 /** A box whose scroll offset, range, sticky edge and scrollbars are native state of its scene node. The
  * `wrapper`, `viewport`, `content` and scrollbar fields are facades over that state, not renderables; the
  * box's children are the scrolled content. */
-export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost {
+export class ScrollBoxRenderable extends BoxRenderable {
   static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...BoxRenderable.nativeIntegration,
     lifecycle: {
@@ -138,10 +118,8 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
   private readonly axes: { x: boolean; y: boolean }
   private _viewportCulling: boolean
   // The state native last reported and its layout revision; reads in one revision share one FFI call.
-  private state: NativeSceneScrollState = emptyState
+  private state = emptySceneScrollState()
   private stateRevision?: number
-  // What listeners last heard: offsets, then content size, then viewport size.
-  private notified = [0, 0, 0, 0, 0, 0]
   private scrollHook = false
   private configured = false
   private barPress?: BarPress
@@ -151,8 +129,7 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
   }
 
   set stickyScroll(value: boolean) {
-    this._stickyScroll = value
-    this._applyScrollOptions()
+    this.setScrollOption(() => (this._stickyScroll = value))
   }
 
   get stickyStart(): "bottom" | "top" | "left" | "right" | undefined {
@@ -160,8 +137,19 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
   }
 
   set stickyStart(value: "bottom" | "top" | "left" | "right" | undefined) {
-    this._stickyStart = value
-    this._applyScrollOptions()
+    this.setScrollOption(() => (this._stickyStart = value))
+  }
+
+  /** Native validates the options; a rejected write keeps the accepted values. */
+  private setScrollOption(change: () => void): void {
+    const previous = [this._stickyScroll, this._stickyStart, this._viewportCulling] as const
+    change()
+    try {
+      this._applyScrollOptions()
+    } catch (error) {
+      ;[this._stickyScroll, this._stickyStart, this._viewportCulling] = previous
+      throw error
+    }
   }
 
   /** Whether the box scrolls sideways; on an axis that does not scroll, the content is at most as wide as the viewport. */
@@ -249,7 +237,7 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
       this._viewportCulling = viewportCulling
       this.wrapper = new ScrollBoxWrapper(this)
       this.viewport = new ScrollBoxViewport(this)
-      this.content = new ScrollBoxContent(this, this)
+      this.content = new ScrollBoxContent(this)
       this.verticalScrollBar = new ScrollBoxBar(this, "vertical")
       this.horizontalScrollBar = new ScrollBoxBar(this, "horizontal")
       this.wrapper._assign(wrapperOptions, ScrollBoxWrapper.keys)
@@ -346,16 +334,16 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
     const state = this._ctx.nativeScene.scrollTo(this, x, y, axis !== 0 || relative, axis !== 1 || relative)
     this.state = state
     this.stateRevision = this._ctx.nativeScene.observedLayoutRevision
-    if (state.offset[0] !== before[0] || state.offset[1] !== before[1]) this.requestRender()
-    this.notifyOffsets(state)
+    const moved = (state.offset[0] !== before[0] ? 1 : 0) | (state.offset[1] !== before[1] ? 2 : 0)
+    if (moved) this.requestRender()
+    this.notifyOffsets(state, moved)
   }
 
-  private notifyOffsets(state: NativeSceneScrollState): void {
+  /** `moved` holds bit 1 for x and bit 2 for y, as native's change bits. */
+  private notifyOffsets(state: NativeSceneScrollState, moved: number): void {
     for (const axis of [1, 0]) {
-      const position = state.offset[axis]
-      if (this.notified[axis] === position) continue
-      this.notified[axis] = position
-      ;(axis === 1 ? this.verticalScrollBar : this.horizontalScrollBar)._emitChange(position)
+      if ((moved & (axis + 1)) === 0) continue
+      ;(axis === 1 ? this.verticalScrollBar : this.horizontalScrollBar)._emitChange(state.offset[axis])
       if (this.isDestroyed) return
     }
   }
@@ -370,29 +358,22 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
     )
   }
 
-  /** @internal Ask for SCROLL requests only while a part has a listener; `adding` counts one about to be added. */
+  /** @internal Ask for SCROLL requests only while a part has a listener; `adding` counts one about to be added.
+   * Native reports changes from the moment the request is turned on. */
   _refreshScrollHook(adding = false): void {
     if (!this.configured || this.isFreed()) return
     const listening = adding || this.listening()
     if (listening === this.scrollHook) return
     this.scrollHook = listening
-    // Listeners hear changes from now on, not the ones nobody heard.
-    const { offset, content, viewport } = this._scrollState()
-    this.notified = [offset[0], offset[1], content.width, content.height, viewport.width, viewport.height]
     this.refreshNativeSceneHooks()
   }
 
   /** A SCROLL request: offsets first, as a sticky follow inside a resize hook did, then sizes. */
   private notifyScroll(): void {
     const state = this._scrollState()
-    this.notifyOffsets(state)
-    if (this.isDestroyed) return
-    const sizes = [state.content.width, state.content.height, state.viewport.width, state.viewport.height]
-    const viewportChanged = sizes[2] !== this.notified[4] || sizes[3] !== this.notified[5]
-    const contentChanged = sizes[0] !== this.notified[2] || sizes[1] !== this.notified[3]
-    this.notified.splice(2, 4, ...sizes)
-    if (viewportChanged) this.viewport._emitResize()
-    if (contentChanged && !this.isDestroyed) this.content._emitResize()
+    this.notifyOffsets(state, state.changes)
+    if (!this.isDestroyed && state.changes & 8) this.viewport._emitResize()
+    if (!this.isDestroyed && state.changes & 4) this.content._emitResize()
   }
 
   public override get primaryAxis(): "row" | "column" {
@@ -732,35 +713,6 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
     }
   }
 
-  // Setters for reactive properties
-  public set padding(value: number | `${number}%` | null | undefined) {
-    this.content.padding = value
-  }
-
-  public set paddingX(value: number | `${number}%` | null | undefined) {
-    this.content.paddingX = value
-  }
-
-  public set paddingY(value: number | `${number}%` | null | undefined) {
-    this.content.paddingY = value
-  }
-
-  public set paddingTop(value: number | `${number}%` | null | undefined) {
-    this.content.paddingTop = value
-  }
-
-  public set paddingRight(value: number | `${number}%` | null | undefined) {
-    this.content.paddingRight = value
-  }
-
-  public set paddingBottom(value: number | `${number}%` | null | undefined) {
-    this.content.paddingBottom = value
-  }
-
-  public set paddingLeft(value: number | `${number}%` | null | undefined) {
-    this.content.paddingLeft = value
-  }
-
   public set rootOptions(options: ScrollBoxOptions["rootOptions"]) {
     this.assignOptions(this, options && stripScrollBoxPadding(options))
     if (options) this.content._assign(pickScrollBoxPadding(options), ScrollBoxContent.keys)
@@ -806,8 +758,7 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
   }
 
   set viewportCulling(value: boolean) {
-    this._viewportCulling = value ?? true
-    this._applyScrollOptions()
+    this.setScrollOption(() => (this._viewportCulling = value ?? true))
   }
 
   public override get overflow(): "hidden" {
@@ -818,6 +769,8 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
   public override set overflow(_value: unknown) {}
 
   protected destroySelf(): void {
+    // Getters keep answering after the handle is gone, with the last presented state.
+    if (!this.isFreed()) this._scrollState()
     const selectionListener = this.selectionListener
     this.selectionListener = undefined
     this.endBarPress()
@@ -826,4 +779,14 @@ export class ScrollBoxRenderable extends BoxRenderable implements ScrollBoxHost 
       run(() => super.destroySelf())
     })
   }
+}
+
+// Root padding goes to the content, as the constructor's padding options do.
+for (const key of SCROLLBOX_PADDING_KEYS) {
+  Object.defineProperty(ScrollBoxRenderable.prototype, key, {
+    configurable: true,
+    set(this: ScrollBoxRenderable, value: number | `${number}%` | null | undefined) {
+      this.content[key] = value
+    },
+  })
 }
