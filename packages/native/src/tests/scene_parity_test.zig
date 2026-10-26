@@ -200,6 +200,9 @@ const Stats = struct {
     reply_hides: u32 = 0,
     /// Host replies that detached the requesting node mid-frame.
     reply_detaches: u32 = 0,
+    /// Host replies that destroyed a node mid-frame, and RECORD replies that changed the scene.
+    reply_destroys: u32 = 0,
+    record_replies: u32 = 0,
     /// RESIZE requests from children of the viewport content.
     content_resizes: u32 = 0,
     /// Replies to those requests that changed text on a content child, mid-batch.
@@ -761,6 +764,11 @@ const Harness = struct {
                     recordings = .{ .{}, .{} };
                     try self.expectSameSlots(first, second, &recordings);
                     records = .{ recordings[reference].view(), recordings[candidate].view() };
+                    // Paint hooks may change the scene while they record.
+                    if (self.random.uintLessThan(u32, 4) == 0) {
+                        try self.reply();
+                        self.stats.record_replies += 1;
+                    }
                 },
                 else => {
                     switch (first.kind) {
@@ -788,10 +796,7 @@ const Harness = struct {
                             break;
                         }
                     }
-                    for (0..self.random.uintLessThan(u32, 3)) |_| {
-                        const slot = self.liveSlot(scaffold_slots) orelse break;
-                        try self.apply(self.generateReply(slot));
-                    }
+                    try self.reply();
                     // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
                     // ancestor of a node it already stamped (B2 invariant 7).
                     // Detaching it instead makes the walk meet a node whose ancestry moved.
@@ -807,6 +812,18 @@ const Harness = struct {
                 },
             }
         }
+    }
+
+    /// Zero to two changes, and sometimes a destroyed node, from a host reply.
+    fn reply(self: *Harness) !void {
+        for (0..self.random.uintLessThan(u32, 3)) |_| {
+            const slot = self.liveSlot(scaffold_slots) orelse break;
+            try self.apply(self.generateReply(slot));
+        }
+        if (self.random.uintLessThan(u32, 8) != 0) return;
+        const slot = self.liveSlot(scaffold_slots) orelse return;
+        try self.apply(.{ .destroy = slot });
+        self.stats.reply_destroys += 1;
     }
 
     fn expectSameRequest(self: *const Harness, first: scene.FrameRequest, second: scene.FrameRequest) !void {
@@ -832,6 +849,10 @@ const Harness = struct {
         for (slots[0], slots[1], 0..) |a, b, index| {
             try testing.expectEqual(a.num, b.num);
             try testing.expectEqual(a.hooks, b.hooks);
+            try testing.expectEqual(a.hook_generation, b.hook_generation);
+            try testing.expectEqual(a.public_layout == null, b.public_layout == null);
+            // Bitwise, as below: NaN layouts compare equal.
+            if (a.public_layout) |layout| try testing.expectEqualSlices(u8, std.mem.asBytes(&layout), std.mem.asBytes(&b.public_layout.?));
             try testing.expectEqual(a.layout, b.layout);
             try testing.expectEqual(a.clip, b.clip);
             try testing.expectEqual(a.opacity, b.opacity);
@@ -1136,18 +1157,18 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         const stats = try runParity(seed, 256);
         inline for (std.meta.fields(Stats)) |field| @field(total, field.name) +%= @field(stats, field.name);
     }
-    // Every frame kind B2, B3, and D2b rely on is reached in quantity (about a quarter of
+    // Every frame kind B2, B3, D2b, and B5 rely on is reached in quantity (about a quarter of
     // today's counts; decoded frames at about two thirds), and each minimum fails if the draw
-    // that produces its kind is removed. Counts at 64 x 256: reused 853, filtered 1,646,
-    // filtered with a request 441, hooked under a hidden ancestor 4,672, reply hid the
-    // requester's parent 28, reply detached the requester 37, content-child RESIZE 45, a
-    // truncation change in its reply 44, unmeasured content text replaced 12, UPDATE 2,766,
-    // RESIZE 52, LAYOUT_CHANGED 1,990, recordings 982, box bodies 222, decoded 12,267, an
-    // editor's cursor 2,086, a host cursor 7,481, skipped paint 7,933, partly diffed 1,258,
-    // draft writes after paint 2,888, raw writes between frames 416, shared text changes shown
-    // 439, style changes shown 214, view binds 327, selections 253, equal re-sends 416, palette
-    // changes 66, frames showing a scroll node with children 1,355, scrolls and option changes
-    // 159, SCROLL requests 27.
+    // that produces its kind is removed. Counts at 64 x 256: reused 851, filtered 734, filtered
+    // with a request 51, hooked under a hidden ancestor 4,066, reply hid the requester's parent
+    // 24, reply detached the requester 40, reply destroyed a node 627, a RECORD reply changed
+    // the scene 317, content-child RESIZE 46, a truncation change in its reply 41, unmeasured
+    // content text replaced 9, UPDATE 3,014, RESIZE 54, LAYOUT_CHANGED 1,597, recordings 1,196,
+    // box bodies 233, decoded 12,423, an editor's cursor 2,501, a host cursor 7,778, skipped
+    // paint 8,065, partly diffed 1,187, draft writes after paint 2,886, raw writes between
+    // frames 373, shared text changes shown 361, style changes shown 190, view binds 382,
+    // selections 235, equal re-sends 439, palette changes 71, frames showing a scroll node with
+    // children 1,170, scrolls and option changes 146, SCROLL requests 30.
     const minimums: Stats = .{
         .reused = 145,
         .filtered = 250,
@@ -1155,6 +1176,8 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .hidden_hooked = 2000,
         .reply_hides = 8,
         .reply_detaches = 6,
+        .reply_destroys = 150,
+        .record_replies = 80,
         .content_resizes = 12,
         .content_reply_texts = 12,
         .unmeasured_texts = 4,

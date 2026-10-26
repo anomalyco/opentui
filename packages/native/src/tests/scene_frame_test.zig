@@ -1046,6 +1046,41 @@ const StaleReply = struct {
     }
 };
 
+// Frames that keep their preparation hold node pointers across host replies. A reply that
+// destroys the hooked node, or its parent, must leave no pointer to its storage, which the
+// node pool gives to the next node; a list entry left behind fails on the null scene node.
+test "Scene preparation drops destroyed nodes from UPDATE and RECORD replies" {
+    for ([_]u32{ c.OT_SCENE_HOOK_UPDATE, c.OT_SCENE_HOOK_RENDER_AFTER }) |hook| for ([_]bool{ false, true }) |parent_destroyed| {
+        const f = try Fixture.init(testing.allocator, 4, 2, .{});
+        defer f.deinit();
+        try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+        const parent = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+        try f.owner.sceneMoveNode(parent, f.root, 0);
+        const target = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 3);
+        try f.owner.sceneSetText(target, "ab");
+        try f.owner.sceneMoveNode(target, parent, 0);
+        try f.owner.sceneSetHooks(target, hook, 1, 2, 1);
+        const kind: u32 = if (hook == c.OT_SCENE_HOOK_UPDATE) c.OT_SCENE_FRAME_UPDATE else c.OT_SCENE_FRAME_RECORD;
+        for (0..4) |index| {
+            var request = try f.owner.sceneFrameStep(f.id, null, options);
+            while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                if (index == 2 and request.kind == kind) try f.owner.sceneDestroyNode(if (parent_destroyed) parent else target);
+                const record: ?[]const u8 = if (request.kind == c.OT_SCENE_FRAME_RECORD) &.{} else null;
+                request = try f.owner.sceneFrameStepWithRecording(f.id, request, options, record);
+            }
+            _ = try f.owner.sceneFrameCommit(f.id, request, false);
+            try drain(f.owner, f.id);
+            if (index != 2) continue;
+            // The released storage returns as a new node in the same place.
+            const next = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 4);
+            try f.owner.sceneSetText(next, "cd");
+            try f.owner.sceneMoveNode(next, f.root, 0);
+        }
+        try testing.expectEqual('c', f.cli.currentRenderBuffer.get(0, 0).?.char);
+        if (parent_destroyed) try f.owner.sceneDestroyNode(target);
+    };
+}
+
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame. Frames that change no painted row skip paint,
