@@ -2968,9 +2968,10 @@ ot_status ot_session_input_feed(
  * outstanding queries; clear it when that reply arrives. While it is set, a
  * partial reply waits without a deadline: an OSC, DCS, or APC string that begins
  * like one (OSC and a digit, DCS and > or a digit, APC and G), a bare CSI, OSC,
- * DCS, or APC introducer, and a CSI of digits. A bare introducer that timed out
- * continues only with a byte that begins a reply. A lone Escape still times out,
- * and a reply that follows it is not typed.
+ * DCS, or APC introducer, and a CSI of digits. Once such an introducer or CSI
+ * times out, it continues only while it matches a reply prefix and completes
+ * only as a reply; another byte ends it and is typed. A lone Escape still times
+ * out, and a reply that follows it is not typed. KEEP_REPLY also keeps such a CSI.
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 

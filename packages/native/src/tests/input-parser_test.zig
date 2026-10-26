@@ -979,6 +979,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     const replies: ip.Expectations = .{ .replies = true };
     const cpr: ip.Expectations = .{ .replies = true, .cursor_position = true };
     const sentinel: ip.Expectations = .{ .replies = true, .sentinel = true };
+    const sentinel_kitty: ip.Expectations = .{ .replies = true, .kitty_keyboard = true, .sentinel = true };
     for ([_]struct { ip.Expectations, []const u8, usize, []const u8, []const Expect }{
         // A fragment, and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
         .{ plain, "\x1b[", 1, "q", &.{ frag("\x1b["), ch('q') } },
@@ -1050,6 +1051,11 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         .{ sentinel, "\x1b[", 0, "\x1b[A", &.{ frag("\x1b["), k(K.up, NONE) } },
         .{ sentinel, "\x1b\x1b[", 0, "j", &.{ k(K.escape, NONE), frag("\x1b["), ch('j') } },
         .{ sentinel, "\x1b[24", 0, "j", &.{ frag("\x1b[24"), ch('j') } },
+        .{ sentinel, "\x1b[24", 0, "R", &.{ frag("\x1b[24"), ch('R') } },
+        .{ sentinel_kitty, "\x1b[13", 0, ";2u", &.{ frag("\x1b[13;2"), ch('u') } },
+        .{ sentinel, "\x1bP", 0, "1$r0m\x1b\\", &.{reply("\x1bP1$r0m\x1b\\")} },
+        .{ sentinel, "\x1b]", 0, ";x", &.{ frag("\x1b]"), ch(';'), ch('x') } },
+        .{ sentinel, "\x1b]", 0, "12345678", &([_]Expect{frag("\x1b]1234567")} ++ typed("8")) },
         .{ sentinel, "\x1b]", 0, "j", &.{ frag("\x1b]"), ch('j') } },
         .{ sentinel, "\x1bP", 0, "+q", &.{ frag("\x1bP"), ch('+'), ch('q') } },
         .{ sentinel, "\x1b_", 0, "g", &.{ frag("\x1b_"), ch('g') } },
@@ -1103,7 +1109,10 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     _ = try harness.feed("\x1b_G" ++ [_]u8{'9'} ** ip.unit_bytes_max);
     try expectGot("", &.{}, try harness.wait(60_000));
     try expectGot("", &.{ch('q')}, try harness.feed("9\x1b\\q"));
-    // A discarded CSI is no string: it still times out.
+    // A discarded string that begins like no reply, and a discarded CSI, still time out.
+    _ = try harness.feed("\x1b]x" ++ [_]u8{'9'} ** ip.unit_bytes_max);
+    try expectGot("", &.{}, try harness.wait(20));
+    try expectGot("", &.{ch('q')}, try harness.feed("q"));
     _ = try harness.feed("\x1b[" ++ [_]u8{'9'} ** ip.sequence_bytes_max);
     try expectGot("", &.{}, try harness.wait(20));
     try expectGot("", &.{ ch('1'), ch('q') }, try harness.feed("1q"));
@@ -1138,6 +1147,71 @@ test "input parser types no reply byte at any cut or pause while a sentinel is o
             }
         };
     }
+}
+
+/// Typed keys: Enter for `\r`, otherwise the byte.
+fn typed(comptime text: []const u8) [text.len]Expect {
+    var keys: [text.len]Expect = undefined;
+    for (text, &keys) |byte, *key| key.* = if (byte == '\r') k(K.enter, NONE) else ch(byte);
+    return keys;
+}
+
+test "input parser keeps typed text typed after a held or recovered prefix while a sentinel is out" {
+    const Step = union(enum) { feed: []const u8, wait: u64, clear };
+    const esc = k(K.escape, NONE);
+    const da1 = "\x1b[?62c";
+    var failed: u32 = 0;
+    // A continued string keeps only a reply's prefix: OSC digits and `;`, DCS `>|` or digits and
+    // `+r` or `$r`, APC `G`, a key, and `=`. A held or recovered CSI completes only as a reply.
+    for ([_]struct { []const u8, []const Step, []const Expect }{
+        .{ "A10", &.{ .{ .feed = "\x1b]" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "hello\r" } }, &([_]Expect{frag("\x1b]1")} ++ typed("hello\r")) },
+        .{ "A13", &.{ .{ .feed = "\x1b]" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "hello\r" }, .{ .wait = 100 }, .{ .feed = da1 } }, &([_]Expect{frag("\x1b]1")} ++ typed("hello\r") ++ [_]Expect{reply(da1)}) },
+        .{ "A11", &.{ .{ .feed = "\x1bP" }, .{ .wait = 100 }, .{ .feed = ">" }, .{ .wait = 100 }, .{ .feed = "abc" } }, &([_]Expect{frag("\x1bP>")} ++ typed("abc")) },
+        .{ "A12", &.{ .{ .feed = "\x1b_" }, .{ .wait = 100 }, .{ .feed = "G" }, .{ .wait = 100 }, .{ .feed = "abc" } }, &([_]Expect{frag("\x1b_Ga")} ++ typed("bc")) },
+        .{ "C3", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "]" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 50 }, .{ .feed = "hello\r" } }, &([_]Expect{ esc, frag("\x1b]1") } ++ typed("hello\r")) },
+        .{ "C4", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P" }, .{ .wait = 5 }, .{ .feed = ">" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1bP>") } ++ typed("abc")) },
+        .{ "C9", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1bP1") } ++ typed("abc")) },
+        .{ "E1", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P2 bug\r" } }, &([_]Expect{ esc, frag("\x1bP2") } ++ typed(" bug\r")) },
+        .{ "E3", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "_Go" } }, &.{ esc, frag("\x1b_Go") } },
+        .{ "E5", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P2 bug\r" }, .{ .wait = 200 }, .{ .feed = "more" }, .{ .wait = 100 }, .{ .feed = da1 } }, &([_]Expect{ esc, frag("\x1bP2") } ++ typed(" bug\r") ++ typed("more") ++ [_]Expect{reply(da1)}) },
+        .{ "A1", &.{ .{ .feed = "\x1b[" }, .{ .wait = 200 }, .{ .feed = "1" }, .{ .wait = 200 }, .{ .feed = "2" }, .{ .wait = 200 }, .{ .feed = "x" } }, &.{ frag("\x1b[12"), ch('x') } },
+        .{ "A2", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "4" }, .{ .wait = 100 }, .{ .feed = "\r" } }, &.{ frag("\x1b[2024"), k(K.enter, NONE) } },
+        .{ "A3", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "5" }, .{ .wait = 100 }, .{ .feed = "~" } }, &.{ frag("\x1b[15"), ch('~') } },
+        .{ "A4", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 5 }, .{ .feed = "5" }, .{ .wait = 5 }, .{ .feed = "~" } }, &.{ frag("\x1b[15"), ch('~') } },
+        .{ "A5", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "3" }, .{ .wait = 5 }, .{ .feed = "~" } }, &.{ frag("\x1b[3"), ch('~') } },
+        .{ "A6", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "?" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "h" } }, &.{ frag("\x1b[?1"), ch('h') } },
+        .{ "A7", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = ";" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "R" } }, &.{report("\x1b[1;2R")} },
+        .{ "A8", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "1" } }, &.{frag("\x1b[1")} },
+        .{ "C1", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 200 }, .{ .feed = "2" }, .{ .wait = 200 }, .{ .feed = "x" } }, &.{ esc, frag("\x1b[12"), ch('x') } },
+        .{ "C2", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "3" }, .{ .wait = 5 }, .{ .feed = "~" } }, &.{ esc, frag("\x1b[3"), ch('~') } },
+        .{ "C6", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "?" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1b[?") } ++ typed("abc")) },
+        .{ "C8", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[1;5A" } }, &.{ esc, frag("\x1b[1;5"), ch('A') } },
+        .{ "E2", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[1] item" } }, &([_]Expect{ esc, frag("\x1b[1") } ++ typed("] item")) },
+        .{ "E4", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[2024\r" } }, &.{ esc, frag("\x1b[2024"), k(K.enter, NONE) } },
+        .{ "P2", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" }, .{ .feed = da1 }, .clear, .{ .wait = 60_000 }, .{ .feed = "later\r" } }, &([_]Expect{ frag("\x1b[200"), ch('~') } ++ typed("abc") ++ [_]Expect{reply(da1)} ++ typed("later\r")) },
+        .{ "C11", &.{ .{ .feed = "\x1b" }, .{ .wait = 30 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "2" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1b[200"), ch('~') } ++ typed("abc")) },
+        .{ "R7", &.{ .{ .feed = "\x1b" }, .{ .wait = 20 }, .{ .feed = "[1x" } }, &.{ esc, frag("\x1b[1"), ch('x') } },
+        // Two pauses, after the Escape and after the introducer, still leave the reply whole.
+        .{ "K1[", &.{ .{ .feed = "\x1b" }, .{ .wait = 25 }, .{ .feed = "[" }, .{ .wait = 25 }, .{ .feed = "?62cj" } }, &.{ esc, reply(da1), ch('j') } },
+        .{ "K1]", &.{ .{ .feed = "\x1b" }, .{ .wait = 25 }, .{ .feed = "]" }, .{ .wait = 25 }, .{ .feed = "11;rgb:0/0/0\x07j" } }, &.{ esc, reply("\x1b]11;rgb:0/0/0\x07"), ch('j') } },
+        .{ "K1P", &.{ .{ .feed = "\x1b" }, .{ .wait = 25 }, .{ .feed = "P" }, .{ .wait = 25 }, .{ .feed = ">|k\x1b\\j" } }, &.{ esc, reply("\x1bP>|k\x1b\\"), ch('j') } },
+        .{ "K1_", &.{ .{ .feed = "\x1b" }, .{ .wait = 25 }, .{ .feed = "_" }, .{ .wait = 25 }, .{ .feed = "Gi=1;OK\x1b\\j" } }, &.{ esc, reply("\x1b_Gi=1;OK\x1b\\"), ch('j') } },
+    }) |case| {
+        var harness = try Harness.create();
+        defer harness.deinit();
+        harness.parser.setExpectations(.{ .replies = true, .sentinel = true });
+        for (case[1]) |step| _ = switch (step) {
+            .feed => |bytes| try harness.feed(bytes),
+            .wait => |milliseconds| try harness.wait(milliseconds),
+            .clear => harness.parser.setExpectations(.{ .replies = true }),
+        };
+        harness.parser.setExpectations(.{ .replies = true });
+        _ = try harness.wait(20);
+        expectGot(case[0], case[2], harness.out.items) catch {
+            failed += 1;
+        };
+    }
+    try testing.expectEqual(@as(u32, 0), failed);
 }
 
 test "input parser recovers mouse reports after a timed-out Escape" {
@@ -1184,7 +1258,7 @@ test "input parser recovers mouse reports after a timed-out Escape" {
     // Without a timed-out Escape, `[<` is text.
     try check("[<35;20;5m", &.{ ch('['), ch('<'), ch('3'), ch('5'), ch(';'), ch('2'), ch('0'), ch(';'), ch('5'), ch('m') });
     // With SENTINEL an introducer and a byte that begin a reply resume it; other bytes are typed,
-    // and a lone introducer times out.
+    // and a lone introducer is held like a bare one.
     const sentinel: ip.Expectations = .{ .replies = true, .sentinel = true };
     for ([_]struct { ip.Expectations, []const u8, []const Expect }{
         .{ sentinel, "]11;rgb:0/0/0\x07", &.{reply("\x1b]11;rgb:0/0/0\x07")} },
@@ -1195,6 +1269,9 @@ test "input parser recovers mouse reports after a timed-out Escape" {
         .{ sentinel, "P+", &.{ kt('P', NONE, "P"), ch('+') } },
         .{ sentinel, "_g", &.{ kt('_', NONE, "_"), ch('g') } },
         .{ .{ .replies = true }, "[?", &.{ kt('[', NONE, "["), ch('?') } },
+        .{ .{ .replies = true }, "]", &.{kt(']', NONE, "]")} },
+        .{ .{ .replies = true }, "P", &.{kt('P', NONE, "P")} },
+        .{ .{ .replies = true }, "_", &.{kt('_', NONE, "_")} },
         .{ .{ .replies = true }, "]1", &.{ kt(']', NONE, "]"), ch('1') } },
         .{ .{ .replies = true }, "P>", &.{ kt('P', NONE, "P"), ch('>') } },
     }) |case| {
@@ -1207,7 +1284,8 @@ test "input parser recovers mouse reports after a timed-out Escape" {
     _ = try harness.feed("\x1b");
     _ = try harness.wait(20);
     try expectGot("", &.{}, try harness.feed("_"));
-    try expectGot("", &.{kr('_', NONE, "_")}, try harness.wait(20));
+    try expectGot("", &.{}, try harness.wait(60_000));
+    try expectGot("", &.{ frag("\x1b_"), ch('x') }, try harness.feed("x"));
 }
 
 test "input parser stays split invariant" {
@@ -1403,6 +1481,21 @@ test "input parser reset drops the pending unit and X10 button, or keeps a reply
         try testing.expectEqual(null, kept.parser.deadlineNs());
         try expectGot(case[0], case[2], try kept.feed(case[1]));
     }
+    // With SENTINEL a bare or numeric prefix is kept too, before and after it defers.
+    for ([_]struct { []const u8, []const u8, []const Expect }{
+        .{ "\x1b[", "?62c", &.{reply("\x1b[?62c")} },
+        .{ "\x1b[24", ";80R", &.{report("\x1b[24;80R")} },
+        .{ "\x1b[1", "5~", &.{ frag("\x1b[15"), ch('~') } },
+    }) |case| for ([_]u64{ 0, 60_000 }) |pause| {
+        var kept = try Harness.create();
+        defer kept.deinit();
+        kept.parser.setExpectations(.{ .replies = true, .sentinel = true });
+        _ = try kept.feed(case[0]);
+        _ = try kept.wait(pause);
+        kept.parser.reset(true);
+        try testing.expectEqual(null, kept.parser.deadlineNs());
+        try expectGot(case[0], case[2], try kept.feed(case[1]));
+    };
 }
 
 test "input parser sink stays within its per-byte bounds" {

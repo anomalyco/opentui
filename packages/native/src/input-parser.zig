@@ -8,6 +8,8 @@ pub const timeout_ns: u64 = 20 * std.time.ns_per_ms;
 pub const unit_bytes_max: u16 = 4096;
 pub const sequence_bytes_max: u16 = 256;
 pub const key_text_bytes_max: u8 = 32;
+/// The longest reply prefix a held string checks: OSC `7501;`.
+pub const reply_prefix_bytes_max: u8 = 8;
 pub const params_max: u8 = 16;
 pub const subparams_max: u8 = 8;
 pub const events_per_byte_max: u32 = 4;
@@ -197,13 +199,14 @@ const State = union(enum) {
     recover: u8,
     recover_sgr,
     /// `deferred`: timed out on a prefix that may still be a mouse report, a Kitty
-    /// key, or an awaited reply. It waits without a deadline (docs §6.6).
-    csi: struct { alt: bool, deferred: bool },
+    /// key, or an awaited reply. It waits without a deadline (docs §6.6). `held`: deferred or
+    /// recovered by `sentinel`; every byte must continue it, and it completes only as a reply.
+    csi: struct { alt: bool, deferred: bool, held: bool = false },
     ss3: struct { alt: bool },
     /// `recovered`: the unit's ESC was reinstated after a timed-out Escape key.
     x10: struct { alt: bool, recovered: bool },
-    /// `kind` is `.osc`, `.dcs`, or `.apc`. `deferred`: a bare introducer that timed out
-    /// while `sentinel` is set; it waits without a deadline for a byte that begins a reply.
+    /// `kind` is `.osc`, `.dcs`, or `.apc`. `deferred`: a bare introducer that timed out, or a
+    /// recovered one, while `sentinel` is set; it continues only while it matches a reply prefix.
     string: struct { kind: Protocol, escaped: bool, deferred: bool = false },
     /// `osc`: BEL also ends the discarded string, as it ends only OSC.
     discard: struct { string: bool, escaped: bool, osc: bool },
@@ -277,9 +280,10 @@ pub const InputParser = struct {
     /// instead, deferred: it waits for its rest without a deadline (docs §11.5).
     pub fn reset(self: *InputParser, keep_reply: bool) void {
         self.x10_button = 0;
-        if (keep_reply and self.state == .csi and self.replyShaped()) {
+        if (keep_reply and self.state == .csi and (self.replyShaped() or self.sentinelHeld())) {
             // An ESC before the unit was a key pressed before the interruption.
-            self.state.csi = .{ .alt = false, .deferred = true };
+            const held = self.state.csi.held or self.sentinelHeld();
+            self.state.csi = .{ .alt = false, .deferred = true, .held = held };
             return;
         }
         self.state = .ground;
@@ -294,7 +298,7 @@ pub const InputParser = struct {
             .x10 => std.debug.assert(self.unit_len >= 3 and self.unit_len < 6),
             .recover_sgr => std.debug.assert(self.unit_len >= 3 and self.unit_len <= sequence_bytes_max),
             .string => |string| std.debug.assert(self.unit_len >= @as(u16, 2) + @intFromBool(string.escaped) and
-                (!string.deferred or self.unit_len == 2)),
+                (!string.deferred or self.unit_len - 2 < reply_prefix_bytes_max)),
             .paste => |paste| std.debug.assert(paste.matched < paste_end_marker.len),
             .ground, .expired, .escape, .recover, .discard => {},
         }
@@ -324,7 +328,9 @@ pub const InputParser = struct {
                     self.state = .expired;
                 }
             },
-            .recover => |introducer| {
+            .recover => |introducer| if (self.expect.sentinel) {
+                self.begin(heldUnit(introducer), introducer);
+            } else {
                 self.state = .ground;
                 emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .text = &.{introducer} });
             },
@@ -335,7 +341,7 @@ pub const InputParser = struct {
             .utf8 => |utf8| self.utf8Fallback(utf8.alt, sink),
             .csi => |csi| {
                 if (!csi.deferred and self.deferrable()) {
-                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true } };
+                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true, .held = self.sentinelHeld() } };
                 } else self.cutShort(csi.alt, .csi, 0, sink);
             },
             .ss3 => |ss3| self.cutShort(ss3.alt, .ss3, 0, sink),
@@ -385,11 +391,19 @@ pub const InputParser = struct {
                     pending = b;
                 },
                 .recover_sgr => pending = self.recoverSgrByte(b, sink),
-                .csi => |csi| if (csi.deferred) {
-                    if (self.continuesDeferred(b)) {
-                        self.state = .{ .csi = .{ .alt = csi.alt, .deferred = false } };
-                    } else self.cutShort(csi.alt, .csi, 0, sink);
+                .csi => |csi| if (!csi.deferred) {
+                    self.sequenceByte(b, csi.alt, true, sink);
+                } else if (!self.continuesDeferred(b, csi.held)) {
+                    self.cutShort(csi.alt, .csi, 0, sink);
                     pending = b;
+                } else if (!csi.held) {
+                    self.state.csi.deferred = false;
+                    pending = b;
+                } else if (b >= 0x40) {
+                    // The only final bytes that continue a held unit are reply finals.
+                    self.append(b);
+                    self.state = .ground;
+                    self.dispatchCsi(csi.alt, true, sink);
                 } else self.sequenceByte(b, csi.alt, true, sink),
                 .ss3 => |ss3| self.sequenceByte(b, ss3.alt, false, sink),
                 .x10 => |x10| if (b >= 0x01 and b <= 0x1f) {
@@ -405,10 +419,13 @@ pub const InputParser = struct {
                     }
                 },
                 .string => |string| if (string.deferred) {
-                    if (beginsReply(self.unit[1], b)) {
-                        self.state.string.deferred = false;
-                    } else self.cutShort(false, string.kind, 0, sink);
-                    pending = b;
+                    if (continuesPrefix(self.unit[1], self.unit[2..self.unit_len], b)) |complete| {
+                        self.append(b);
+                        self.state.string.deferred = !complete;
+                    } else {
+                        self.cutShort(false, string.kind, 0, sink);
+                        pending = b;
+                    }
                 } else {
                     pending = self.stringByte(b, string.kind, string.escaped, sink);
                 },
@@ -550,7 +567,7 @@ pub const InputParser = struct {
             // rxvt ends Shift+Insert and similar keys with `$`, which is otherwise an intermediate.
             self.append(b);
             self.state = .ground;
-            if (csi) self.dispatchCsi(alt, sink) else self.dispatchSs3(alt, sink);
+            if (csi) self.dispatchCsi(alt, false, sink) else self.dispatchSs3(alt, sink);
         } else if (self.unit_len >= sequence_bytes_max) {
             self.state = .{ .discard = .{ .string = false, .escaped = false, .osc = false } };
             self.discarded_count +|= 1;
@@ -661,7 +678,8 @@ pub const InputParser = struct {
         emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
     }
 
-    fn dispatchCsi(self: *InputParser, alt: bool, sink: *Sink) void {
+    /// `reply_only`: a held unit, which never decodes as a key.
+    fn dispatchCsi(self: *InputParser, alt: bool, reply_only: bool, sink: *Sink) void {
         const unit = self.unit[0..self.unit_len];
         const params = unit[2 .. unit.len - 1];
         const final = unit[unit.len - 1];
@@ -689,7 +707,7 @@ pub const InputParser = struct {
             // Private-prefixed and intermediate-bearing sequences are never keys.
             const fields = Fields.parse(params) orelse break :decoded null;
             cursor_report = final == 'R' and fields.count == 2 and fields.single(0) != null and fields.single(1) != null;
-            break :decoded self.csiKey(&fields, final);
+            break :decoded if (reply_only) null else self.csiKey(&fields, final);
         };
         if (decoded) |value| return emitDecodedKey(sink, alt, unit, value);
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
@@ -755,8 +773,7 @@ pub const InputParser = struct {
     /// reply, which slow links can split (docs §6.6).
     fn deferrable(self: *const InputParser) bool {
         const params = self.unit[2..self.unit_len];
-        // A bare `ESC [` or a number may still begin a reply while the host awaits its sentinel.
-        if (self.expect.sentinel and allDigits(params)) return true;
+        if (self.sentinelHeld()) return true;
         if (params.len == 0) return false;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
         return (self.expect.replies and self.replyShaped()) or
@@ -783,22 +800,22 @@ pub const InputParser = struct {
         return self.unit_len >= 3 and beginsReply(self.unit[1], self.unit[2]);
     }
 
+    /// Whether a bare `ESC [` or a number may still begin a reply while the host awaits its sentinel.
+    fn sentinelHeld(self: *const InputParser) bool {
+        return self.expect.sentinel and allDigits(self.unit[2..self.unit_len]);
+    }
+
     /// The unit that a timed-out Escape, `introducer`, and `b` resume, if they may begin one.
     fn recovered(self: *const InputParser, introducer: u8, b: u8) ?State {
         if (introducer == '[' and b == '<') return .recover_sgr;
         if (introducer == '[' and b == 'M') return .{ .x10 = .{ .alt = false, .recovered = true } };
         if (!self.expect.sentinel or !beginsReply(introducer, b)) return null;
-        return switch (introducer) {
-            '[' => .{ .csi = .{ .alt = false, .deferred = false } },
-            ']' => .{ .string = .{ .kind = .osc, .escaped = false } },
-            'P' => .{ .string = .{ .kind = .dcs, .escaped = false } },
-            '_' => .{ .string = .{ .kind = .apc, .escaped = false } },
-            else => unreachable,
-        };
+        return heldUnit(introducer);
     }
 
-    /// Whether `b` continues a deferred CSI. Final bytes count only where they complete it.
-    fn continuesDeferred(self: *const InputParser, b: u8) bool {
+    /// Whether `b` continues a deferred CSI. Final bytes count only where they complete it, and
+    /// with `reply_only` only reply finals do.
+    fn continuesDeferred(self: *const InputParser, b: u8, reply_only: bool) bool {
         const params = self.unit[2..self.unit_len];
         const digit = isDigit(b);
         // Only `sentinel` defers these; a number continues toward a cursor or pixel size reply.
@@ -819,7 +836,7 @@ pub const InputParser = struct {
                 };
             },
             else => {
-                const kitty = self.expect.kitty_keyboard;
+                const kitty = self.expect.kitty_keyboard and !reply_only;
                 const shape = Shape.of(params, kitty) orelse return false;
                 if (digit or b == ':' or b == ';') return true;
                 if (!has_digit) return false;
@@ -1044,6 +1061,43 @@ fn beginsReply(introducer: u8, b: u8) bool {
         '_' => b == 'G',
         else => unreachable,
     };
+}
+
+/// The unit that `sentinel` holds for a bare introducer after a timed-out Escape.
+fn heldUnit(introducer: u8) State {
+    return switch (introducer) {
+        '[' => .{ .csi = .{ .alt = false, .deferred = true, .held = true } },
+        ']' => .{ .string = .{ .kind = .osc, .escaped = false, .deferred = true } },
+        'P' => .{ .string = .{ .kind = .dcs, .escaped = false, .deferred = true } },
+        '_' => .{ .string = .{ .kind = .apc, .escaped = false, .deferred = true } },
+        else => unreachable,
+    };
+}
+
+/// Whether `b` extends a held string's `payload` toward a reply prefix: OSC digits and `;`, DCS
+/// `>|` or a digit and `+r` or `$r`, APC `G`, a key letter, and `=`. Null if it cannot; true
+/// once the prefix is complete.
+fn continuesPrefix(introducer: u8, payload: []const u8, b: u8) ?bool {
+    if (payload.len + 1 >= reply_prefix_bytes_max) return null;
+    switch (introducer) {
+        ']' => if (allDigits(payload)) {
+            if (isDigit(b)) return false;
+            if (b == ';' and payload.len > 0) return true;
+        },
+        'P' => {
+            if (payload.len == 0 and (b == '>' or isDigit(b))) return false;
+            if (std.mem.eql(u8, payload, ">") and b == '|') return true;
+            if (payload.len == 1 and isDigit(payload[0]) and (b == '+' or b == '$')) return false;
+            if (payload.len == 2 and isDigit(payload[0]) and (payload[1] == '+' or payload[1] == '$') and b == 'r') return true;
+        },
+        '_' => {
+            if (payload.len == 0 and b == 'G') return false;
+            if (payload.len == 1 and std.ascii.isAlphabetic(b)) return false;
+            if (payload.len == 2 and b == '=') return true;
+        },
+        else => unreachable,
+    }
+    return null;
 }
 
 fn allDigits(bytes: []const u8) bool {
