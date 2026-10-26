@@ -107,6 +107,7 @@ typedef struct ot_handle {
 #define OT_STYLE_BORDER_WIDTH UINT32_C(0)
 #define OT_STYLE_FLAGS_NONE UINT32_C(0)
 #define OT_STYLE_DISABLE_FLEX_SHRINK UINT32_C(1)
+#define OT_STYLE_CONTENT UINT32_C(2)
 #define OT_STYLE_ENUM_DIRECTION UINT32_C(0)
 #define OT_STYLE_ENUM_FLEX_DIRECTION UINT32_C(1)
 #define OT_STYLE_ENUM_JUSTIFY_CONTENT UINT32_C(2)
@@ -498,11 +499,13 @@ typedef struct ot_scene_cursor_state {
 #define OT_SCENE_HOOK_RENDER_AFTER UINT32_C(16)
 #define OT_SCENE_HOOK_RENDER_SELF UINT32_C(32)
 #define OT_SCENE_HOOK_IDLE_UPDATE UINT32_C(64)
+#define OT_SCENE_HOOK_SCROLL UINT32_C(128)
 #define OT_SCENE_FRAME_DONE UINT32_C(0)
 #define OT_SCENE_FRAME_UPDATE UINT32_C(1)
 #define OT_SCENE_FRAME_RESIZE UINT32_C(2)
 #define OT_SCENE_FRAME_LAYOUT_CHANGED UINT32_C(3)
 #define OT_SCENE_FRAME_RECORD UINT32_C(4)
+#define OT_SCENE_FRAME_SCROLL UINT32_C(5)
 
 typedef struct ot_scene_hooks {
     uint32_t struct_size;
@@ -686,7 +689,9 @@ ot_status ot_scene_has_measure(ot_context *, const ot_handle *node, uint32_t *ou
 ot_status ot_scene_mark_dirty(ot_context *, const ot_handle *node);
 /* Use OT_STYLE_* groups/kinds, OT_EDGE_* (or OT_GUTTER_* for GAP), and OT_UNIT_*.
  * Only OT_STYLE_DIMENSION accepts OT_STYLE_DISABLE_FLEX_SHRINK, which disables
- * flex shrink atomically with the dimension update. Other flags must be zero.
+ * flex shrink atomically with the dimension update. OT_STYLE_CONTENT writes the
+ * content layout node of a scroll node (see ot_scene_set_scroll) instead of the
+ * node, and rejects DISPLAY; PADDING on a scroll node requires it. Other flags must be zero.
  * Finite MARGIN, PADDING, POSITION, and GAP values beyond ±1e30 are stored as ±1e30, so
  * get_style reads the stored value; Yoga clamps resolved percentages the same way. */
 ot_status ot_scene_set_style(ot_context *, const ot_handle *node, uint32_t group,
@@ -770,8 +775,129 @@ ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot
  * update or resize. Fewer than 16 total children bypass overlap filtering.
  * Bounds use the full viewport, not its border-inset paint clip. Row/reverse-row
  * use horizontal overlap; column/reverse-column use vertical overlap. Primary
- * overlap is strict, cross-axis touching is included, and padding is zero. */
+ * overlap is strict, cross-axis touching is included, and padding is zero.
+ * A scroll node rejects a viewport with OT_INVALID_ARGUMENT; as another node's
+ * viewport it bounds by its full box. */
 ot_status ot_scene_set_viewport(ot_context *, const ot_handle *node, const ot_handle *viewport);
+
+/* --- Scroll nodes ---
+ * ot_scene_set_scroll makes a box with no children a scroll node. It owns two
+ * hidden layout nodes: a viewport node, the box's only layout child (column,
+ * grow 1, overflow hidden, the viewport padding), and a content node inside it
+ * (align-self flex-start, shrink 0, min width and height 100%, and max 100% on
+ * an axis that does not scroll). The box's scene children lay out in the
+ * content node, and the box's own padding holds the gutters of visible inset
+ * bars. After each layout solve, max = max(0, content - viewport inner) on a
+ * scrolling axis (0 otherwise); if max, the content size, or the viewport
+ * changed, a stuck view moves to its follow edge; the offset clamps to
+ * [0, max] in whole cells. Children compose at the box origin
+ * plus the viewport and content origins minus the offset, clip to the viewport
+ * rect, and with culling filter against it like ot_scene_set_viewport. Auto
+ * bars show while max > 0; a box toggles its bars at most twice per frame,
+ * after which a bar may still appear but not hide. Bars paint after the box's
+ * children and hit the box. Options are complete and copied. A later call
+ * updates options; a changed follow recomputes stuck. stuck starts true and
+ * changes only on explicit scrolls (ot_scene_scroll_to) and follow changes: it
+ * is true when the offset reached the follow edge or max on that axis is at
+ * most 1. Rejection preserves accepted state. */
+#define OT_SCENE_SCROLL_X UINT32_C(1)
+#define OT_SCENE_SCROLL_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_FOLLOW_NONE UINT32_C(0)
+#define OT_SCENE_SCROLL_FOLLOW_TOP UINT32_C(1)
+#define OT_SCENE_SCROLL_FOLLOW_BOTTOM UINT32_C(2)
+#define OT_SCENE_SCROLL_FOLLOW_LEFT UINT32_C(3)
+#define OT_SCENE_SCROLL_FOLLOW_RIGHT UINT32_C(4)
+#define OT_SCENE_SCROLL_FILL_WRAPPER UINT32_C(1)
+#define OT_SCENE_SCROLL_FILL_VIEWPORT UINT32_C(2)
+#define OT_SCENE_SCROLL_FILL_CONTENT UINT32_C(4)
+#define OT_SCENE_SCROLL_BAR_AUTO UINT32_C(0)
+#define OT_SCENE_SCROLL_BAR_ALWAYS UINT32_C(1)
+#define OT_SCENE_SCROLL_BAR_NEVER UINT32_C(2)
+#define OT_SCENE_SCROLL_BAR_INSET UINT32_C(0)
+#define OT_SCENE_SCROLL_BAR_OVERLAY UINT32_C(1)
+#define OT_SCENE_SCROLL_RELATIVE_X UINT32_C(1)
+#define OT_SCENE_SCROLL_RELATIVE_Y UINT32_C(2)
+
+/* thickness is 1..255 cells and gap 0..255 cells (between content and track);
+ * an inset bar's gutter is gap + thickness, an overlay bar takes none. arrows
+ * is 0 or 1. Track colors retain terminal color intent. reserved must be zero. */
+typedef struct ot_scene_scroll_bar_options {
+    uint32_t policy;
+    uint32_t placement;
+    uint32_t thickness;
+    uint32_t gap;
+    uint32_t arrows;
+    uint32_t reserved;
+    uint16_t track_foreground[4];
+    uint16_t track_background[4];
+} ot_scene_scroll_bar_options;
+
+/* axes holds OT_SCENE_SCROLL_X/Y. culling is 0 or 1. padding is the viewport
+ * padding in whole cells, left, top, right, bottom, each 0..65535. fills selects
+ * which of the wrapper (box inner rect minus the vertical gutter), viewport, and
+ * content (moving with the offset) backgrounds paint, in that order, before the
+ * children. bars[0] is the horizontal bar, bars[1] the vertical bar. */
+typedef struct ot_scene_scroll_options {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t axes;
+    uint32_t follow;
+    uint32_t culling;
+    uint32_t fills;
+    float padding[4];
+    uint16_t wrapper_background[4];
+    uint16_t viewport_background[4];
+    uint16_t content_background[4];
+    ot_scene_scroll_bar_options bars[2];
+} ot_scene_scroll_options;
+
+/* Rects are x, y, width, height in cells. track, arrows, and viewport are screen
+ * cells of the last prepared frame; content is local to the node. thumb_start
+ * and thumb_size are half cells along the track, as ot_scene_slider_thumb. */
+typedef struct ot_scene_scroll_bar_state {
+    uint32_t visible;
+    uint32_t reserved;
+    double track[4];
+    double start_arrow[4];
+    double end_arrow[4];
+    double thumb_start;
+    double thumb_size;
+} ot_scene_scroll_bar_state;
+
+/* generation changes with every change of the other fields. */
+typedef struct ot_scene_scroll_state {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t stuck;
+    uint32_t reserved;
+    uint64_t generation;
+    double offset[2];
+    double max[2];
+    double content[4];
+    double viewport[4];
+    ot_scene_scroll_bar_state bars[2];
+} ot_scene_scroll_state;
+
+ot_status ot_scene_set_scroll(ot_context *, const ot_handle *node, const ot_scene_scroll_options *);
+/* axis is 0 (horizontal bar) or 1 (vertical bar); end is 0 (start) or 1 (end).
+ * Options and text follow ot_scene_set_arrow; direction must be zero and the
+ * axis and end choose the glyph unless text is given. */
+ot_status ot_scene_set_scroll_arrow(ot_context *, const ot_handle *node, uint32_t axis, uint32_t end,
+    const ot_scene_arrow_options *, const uint8_t *text, uint32_t byte_count);
+/* An explicit scroll. Without RELATIVE_X/Y the values are absolute offsets; a
+ * relative delta of 0 keeps an axis. Values round to whole cells and clamp to
+ * the limits of the last solve; ±Infinity clamp, NaN returns
+ * OT_INVALID_ARGUMENT. It recomputes stuck, marks the offset (not the sizes) as
+ * reported to the host, and copies the new state to out_state unless it is NULL. During a frame
+ * attempt the next round prepares at the new offset. */
+ot_status ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, double y, uint32_t flags,
+    ot_scene_scroll_state *out_state);
+/* Pure: it never changes what an OT_SCENE_FRAME_SCROLL request reports. With
+ * OT_SCENE_HOOK_SCROLL (scroll nodes only) a frame returns one SCROLL request,
+ * after the node's refresh and before paint, when the offset differs from the last
+ * reported or written offset, or the content or viewport size from the last
+ * reported size. */
+ot_status ot_scene_get_scroll(ot_context *, const ot_handle *node, ot_scene_scroll_state *out_state);
 /* focused is 0 or 1. Stores one accepted target without host focus/input policy.
  * Focusable boxes on its current ancestor path use focused_border_color. Zero
  * clears only a matching target and remains valid after Session cancellation. */
@@ -854,7 +980,9 @@ ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t 
  * screen_x/y, with each axis that leaves the signed 32-bit cell range clamped to the
  * whole cells it paints within 2^22 of the origin, at least one; PUBLIC and YOGA keep
  * the unclamped values. During a RECORD request, mutations do not change those coordinates.
- * These reads do not run layout. Other selectors reject without changing output. */
+ * These reads do not run layout. Other selectors reject without changing output.
+ * A scroll node's children report YOGA values local to its content node, and their
+ * screen_x/y compose through the viewport and content origins and the offset. */
 ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t observation, ot_scene_layout *out_layout);
 /* Paint a hook-free scene and retain its DONE draft in out_frame. Commit it with
  * ot_scene_frame_commit, or cancel it before painting again. Frame-qualified

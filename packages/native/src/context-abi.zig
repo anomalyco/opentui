@@ -1812,6 +1812,91 @@ pub fn ot_scene_set_viewport(context: ?*ContextHandle, node_ptr: ?*const c.ot_ha
     return c.OT_OK;
 }
 
+pub fn ot_scene_set_scroll(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, options_ptr: ?*const c.ot_scene_scroll_options) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (options.struct_size != @sizeOf(c.ot_scene_scroll_options) or options.culling > 1 or
+        options.fills > c.OT_SCENE_SCROLL_FILL_WRAPPER | c.OT_SCENE_SCROLL_FILL_VIEWPORT | c.OT_SCENE_SCROLL_FILL_CONTENT) return sessionError(owner, error.InvalidOptions);
+    if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    var bars: [2]scene.ScrollBarOptions = undefined;
+    for (&bars, options.bars) |*bar, record| {
+        if (record.reserved != 0 or record.placement > c.OT_SCENE_SCROLL_BAR_OVERLAY or record.arrows > 1) return sessionError(owner, error.InvalidOptions);
+        bar.* = .{
+            .policy = record.policy,
+            .overlay = record.placement == c.OT_SCENE_SCROLL_BAR_OVERLAY,
+            .thickness = record.thickness,
+            .gap = record.gap,
+            .arrows = record.arrows == 1,
+            .foreground = record.track_foreground,
+            .background = record.track_background,
+        };
+    }
+    var fills: [3]?@import("ansi.zig").RGBA = undefined;
+    for (&fills, [_][4]u16{ options.wrapper_background, options.viewport_background, options.content_background }, 0..) |*fill, rgba, index| {
+        fill.* = if (options.fills & (@as(u32, 1) << @intCast(index)) != 0) rgba else null;
+    }
+    owner.core.sceneSetScroll(handleFromC(node.*), .{
+        .axes = options.axes,
+        .follow = options.follow,
+        .culling = options.culling == 1,
+        .padding = options.padding,
+        .fills = fills,
+        .bars = bars,
+    }) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_scene_set_scroll_arrow(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, axis: u32, end: u32, options_ptr: ?*const c.ot_scene_arrow_options, text_ptr: ?[*]const u8, byte_count: u32) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (options.struct_size != @sizeOf(c.ot_scene_arrow_options)) return sessionError(owner, error.InvalidOptions);
+    if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    if (text_ptr == null and byte_count != 0) return sessionError(owner, error.InvalidOptions);
+    owner.core.sceneSetScrollArrow(handleFromC(node.*), axis, end, .{
+        .direction = options.direction,
+        .attributes = options.attributes,
+        .foreground = options.foreground,
+        .background = options.background,
+        .text = if (text_ptr) |bytes| bytes[0..byte_count] else null,
+    }) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+fn checkScrollOutput(owner: *ContextHandle, out: *const c.ot_scene_scroll_state) ?c.ot_status {
+    if (out.struct_size != @sizeOf(c.ot_scene_scroll_state)) return sessionError(owner, error.InvalidOptions);
+    if (out.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    return null;
+}
+
+pub fn ot_scene_scroll_to(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, x: f64, y: f64, flags: u32, out_ptr: ?*c.ot_scene_scroll_state) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (flags > c.OT_SCENE_SCROLL_RELATIVE_X | c.OT_SCENE_SCROLL_RELATIVE_Y) return sessionError(owner, error.InvalidOptions);
+    if (out_ptr) |out| if (checkScrollOutput(owner, out)) |rejected| return rejected;
+    const report = owner.core.sceneScrollTo(handleFromC(node.*), .{ x, y }, .{ flags & c.OT_SCENE_SCROLL_RELATIVE_X != 0, flags & c.OT_SCENE_SCROLL_RELATIVE_Y != 0 }) catch |err| return sessionError(owner, err);
+    if (out_ptr) |out| out.* = report;
+    return c.OT_OK;
+}
+
+pub fn ot_scene_get_scroll(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, out_ptr: ?*c.ot_scene_scroll_state) callconv(.c) c.ot_status {
+    const status = sceneReadStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (checkScrollOutput(owner, out)) |rejected| return rejected;
+    out.* = owner.core.sceneGetScroll(handleFromC(node.*)) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_scene_set_focus(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, focused: u32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -3467,7 +3552,7 @@ fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, conte
     const params = @typeInfo(@TypeOf(wrapper)).@"fn".params;
     for (0..8 + 4 * params.len) |row| {
         var args: std.meta.ArgsTuple(@TypeOf(wrapper)) = undefined;
-        var storage: [params.len][128]u8 align(8) = @splat(@splat(0));
+        var storage: [params.len][256]u8 align(8) = @splat(@splat(0));
         args[0] = if (row == 0) null else context;
         args[1] = if (row == 4) null else &handles[if (row > 4 and row < 8) row - 4 else 0];
         var expected: ?c.ot_status = switch (row) {
@@ -3482,7 +3567,7 @@ fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, conte
         };
         inline for (params[2..], 2..) |param, index| {
             if (comptime ScenePointee(param.type.?)) |T| {
-                comptime std.debug.assert(@sizeOf(T) <= 128);
+                comptime std.debug.assert(@sizeOf(T) <= 256);
                 const record: *T = @ptrCast(@alignCast(&storage[index]));
                 if (!@typeInfo(@typeInfo(param.type.?).optional.child).pointer.is_const) @memset(&storage[index], 0xa5);
                 const is_record = comptime isSceneRecord(T);
@@ -3545,12 +3630,12 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     nodes[3].context_id += 1;
     sessions[3].context_id += 1;
     inline for (.{
-        ot_scene_destroy_node,       ot_scene_move_node, ot_scene_set_measure,     ot_scene_mark_dirty,
-        ot_scene_set_style,          ot_scene_set_paint, ot_scene_set_surface,     ot_scene_set_box_details,
-        ot_scene_set_viewport,       ot_scene_set_focus, ot_scene_set_slider,      ot_scene_get_slider_thumb,
-        ot_scene_set_arrow,          ot_scene_set_text,  ot_scene_set_styled_text, ot_scene_set_text_options,
-        ot_scene_set_text_selection, ot_scene_set_hooks, ot_scene_set_editor_view, ot_scene_set_editor_options,
-        ot_scene_set_image,
+        ot_scene_destroy_node,       ot_scene_move_node,  ot_scene_set_measure,      ot_scene_mark_dirty,
+        ot_scene_set_style,          ot_scene_set_paint,  ot_scene_set_surface,      ot_scene_set_box_details,
+        ot_scene_set_viewport,       ot_scene_set_focus,  ot_scene_set_slider,       ot_scene_get_slider_thumb,
+        ot_scene_set_arrow,          ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
+        ot_scene_set_text_selection, ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
+        ot_scene_set_image,          ot_scene_set_scroll, ot_scene_set_scroll_arrow,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }
@@ -3562,6 +3647,74 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     }
     // Creation takes the Session handle; kind and number 1 are valid.
     try expectSceneWrapperRules(ot_scene_create_node, false, handle, &sessions, 1);
+}
+
+test "Scene scroll ABI validates options, targets, and the scroll node's style and binding rules" {
+    const handle: ?*ContextHandle = try createTestContext(.{ .object_capacity = 8, .render_cells_max = 8 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    const owner = handle.?.core;
+    const session = try owner.createSession(.{});
+    try owner.attachSessionRenderer(session, 4, 2, .{ .remote_mode = .remote });
+    const root = handleToC(try owner.sceneCreateNode(session, 0, 1));
+    const box = handleToC(try owner.sceneCreateNode(session, 1, 2));
+    const parent = handleToC(try owner.sceneCreateNode(session, 1, 3));
+    try owner.sceneMoveNode(handleFromC(box), handleFromC(parent), 0);
+    var options = std.mem.zeroes(c.ot_scene_scroll_options);
+    options.struct_size = @sizeOf(c.ot_scene_scroll_options);
+    options.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    options.axes = c.OT_SCENE_SCROLL_Y;
+    for (&options.bars) |*bar| bar.thickness = 1;
+    var state = std.mem.zeroes(c.ot_scene_scroll_state);
+    state.struct_size = @sizeOf(c.ot_scene_scroll_state);
+    state.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    // Only a box without children takes the first options, and every field is checked.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_scroll(handle, &parent, &options));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_scroll(handle, &root, &options));
+    for (0..6) |field| {
+        var invalid = options;
+        switch (field) {
+            0 => invalid.culling = 2,
+            1 => invalid.fills = 8,
+            2 => invalid.follow = 5,
+            3 => invalid.padding[1] = 0.5,
+            4 => invalid.bars[0].thickness = 0,
+            else => invalid.bars[1].reserved = 1,
+        }
+        try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_scroll(handle, &box, &invalid));
+    }
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_get_scroll(handle, &box, &state));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_scroll_to(handle, &box, 0, 0, 0, &state));
+    var stale = box;
+    stale.generation += 1;
+    var foreign = box;
+    foreign.context_id += 1;
+    try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_scene_scroll_to(handle, &stale, 0, 0, 0, null));
+    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_scene_scroll_to(handle, &foreign, 0, 0, 0, null));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll(handle, &box, &options));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll(handle, &box, &options));
+    // NaN and unknown flags reject; NULL output is allowed; a short output record rejects.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_scroll_to(handle, &box, std.math.nan(f64), 0, 0, &state));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_scroll_to(handle, &box, 0, 0, 4, &state));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_scroll_to(handle, &box, std.math.inf(f64), 0, c.OT_SCENE_SCROLL_RELATIVE_X, null));
+    state.struct_size -= 8;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_scroll(handle, &box, &state));
+    state.struct_size += 8;
+    try std.testing.expectEqual(c.OT_OK, ot_scene_scroll_to(handle, &box, 3, -1, 0, &state));
+    try std.testing.expectEqual(@as(u32, 1), state.stuck);
+    try std.testing.expectEqual([2]f64{ 0, 0 }, state.offset);
+    // The box's padding holds the gutters; content styles need a scroll node.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_style(handle, &box, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, 0, 1, 1, 0));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &box, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, 0, 1, 1, c.OT_STYLE_CONTENT));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_style(handle, &box, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, 1, c.OT_STYLE_CONTENT));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_style(handle, &parent, c.OT_STYLE_DIMENSION, 0, 0, 1, 1, c.OT_STYLE_CONTENT | c.OT_STYLE_DISABLE_FLEX_SHRINK));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_viewport(handle, &box, &root));
+    try std.testing.expectError(error.InvalidOptions, owner.sceneSetHooks(handleFromC(parent), c.OT_SCENE_HOOK_SCROLL, 1, 0, 0));
+    var arrow = std.mem.zeroes(c.ot_scene_arrow_options);
+    arrow.struct_size = @sizeOf(c.ot_scene_arrow_options);
+    arrow.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_scroll_arrow(handle, &box, 2, 0, &arrow, null, 0));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_scroll_arrow(handle, &parent, 0, 0, &arrow, null, 0));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll_arrow(handle, &box, 0, 1, &arrow, "+", 1));
 }
 
 test "Scene viewport and focus ABI validate copied bindings and expanded paint records" {
