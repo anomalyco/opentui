@@ -19,6 +19,8 @@ export interface TestRendererOptions extends CliRendererConfig {
   otherModifiersMode?: boolean
   /** Every frame rebuilds its native preparation and paint lists instead of reusing the last frame's (`OT_SCENE_DEBUG_FULL_FRAME`). Output is unchanged. */
   nativeSceneFullFrame?: boolean
+  /** Each frame that retained paint skips or diffs partly is checked against the presented frame and, when skipped, against a repaint into a scratch buffer (`OT_SCENE_DEBUG_VERIFY`); a mismatch throws. Captures do not disturb retention. On by default. */
+  nativeSceneVerify?: boolean
 }
 export type TestRenderer = CliRenderer
 export type MockInput = ReturnType<typeof createMockKeys>
@@ -201,7 +203,7 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
   // Convert legacy kittyKeyboard boolean to new format
   const useKittyKeyboard = options.kittyKeyboard ? { events: true } : options.useKittyKeyboard
 
-  const { nativeSceneFullFrame, ...rendererOptions } = options
+  const { nativeSceneFullFrame, nativeSceneVerify = true, ...rendererOptions } = options
   const renderer = await setupTestRenderer({
     ...rendererOptions,
     useKittyKeyboard,
@@ -210,9 +212,12 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
     consoleMode: options.consoleMode ?? "disabled",
     externalOutputMode: options.externalOutputMode ?? "passthrough",
   })
-  if (nativeSceneFullFrame) {
+  const debugFlags =
+    (nativeSceneFullFrame ? nativeConstants.OT_SCENE_DEBUG_FULL_FRAME : 0) |
+    (nativeSceneVerify ? nativeConstants.OT_SCENE_DEBUG_VERIFY : 0)
+  if (debugFlags !== 0) {
     const session = renderer["nativeSession"]
-    renderer["lib"].sceneSetDebugFlags(session.context, session.session, nativeConstants.OT_SCENE_DEBUG_FULL_FRAME)
+    renderer["lib"].sceneSetDebugFlags(session.context, session.session, debugFlags)
   }
   const externalOutput = new TestExternalOutputRecorder(renderer)
 

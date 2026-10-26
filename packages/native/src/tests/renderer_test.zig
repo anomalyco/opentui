@@ -697,6 +697,30 @@ test "renderer preserves terminal semantics when replaying cells over Sixel" {
     try std.testing.expect(std.mem.find(u8, replay, "\x1b[0m\x1b[1;3H") != null);
 }
 
+test "renderer explicit width gives OSC 66 at most 7 cells and pads a wider glyph with spaces" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    const men = "\u{1f468}" ++ "\u{200d}\u{1f468}" ** 7;
+    // Kitty clamps w to 7 and foot ignores a larger w, so the spaces keep | at the glyph's last cell + 1.
+    const rows = [_]struct { []const u8, []const u8 }{
+        .{ family, "\x1b]66;w=6;" ++ family ++ "\x1b\\|" },
+        .{ family ++ "\u{200d}\u{1f466}", "\x1b]66;w=7;" ++ family ++ "\u{200d}\u{1f466}\x1b\\ |" },
+        .{ men, "\x1b]66;w=7;" ++ men ++ "\x1b\\" ++ " " ** 9 ++ "|" },
+    };
+    for (rows) |row| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 20, 1, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        test_renderer.renderer.terminal.caps.unicode = .wcwidth;
+        test_renderer.renderer.terminal.caps.explicit_width = true;
+        test_renderer.renderer.syncWidthMethod();
+        var line: [64]u8 = undefined;
+        try test_renderer.renderer.getNextBuffer().drawText(try std.fmt.bufPrint(&line, "{s}|", .{row[0]}), 0, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(0, 0, 0, 255), 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+        try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), row[1]) != null);
+    }
+}
+
 test "renderer preserves Malayalam report after Ghostty probe replies" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

@@ -119,6 +119,11 @@ jobs:
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
 
+      - name: Build solid
+        run: |
+          cd packages/solid
+          bun run build --ci
+
       - name: Build keymap
         run: |
           cd packages/keymap

@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 17f402557267e7cd4621577ec5ef59697140103236861ebdfd7138b0436bce5e
+// ABI audit SHA-256: 10eee368320a1427c6ddda36ea4e053c5e98767805ea8db707ed1b1271b9923d
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -512,7 +512,7 @@ export const nativeLayouts = {
       full_path_reasons: { offset: 208, size: 4, alignment: 4, type: "u32" },
       host_requests: { offset: 212, size: 4, alignment: 4, type: "u32" },
       layout_rounds: { offset: 216, size: 4, alignment: 4, type: "u32" },
-      reserved: { offset: 220, size: 4, alignment: 4, type: "u32" },
+      damage_rows: { offset: 220, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_scene_cursor_state: {
@@ -1640,6 +1640,9 @@ export const nativeConstants = {
   OT_SCENE_FULL_PATH_FORCED: 1,
   OT_SCENE_FULL_PATH_SCREEN: 2,
   OT_SCENE_FULL_PATH_IMAGES: 4,
+  OT_SCENE_FULL_PATH_TAINTED: 8,
+  OT_SCENE_FULL_PATH_UNRETAINED: 16,
+  OT_SCENE_FULL_PATH_OPTIONS: 32,
   OT_SCENE_HOOK_UPDATE: 1,
   OT_SCENE_HOOK_RESIZE: 2,
   OT_SCENE_HOOK_LAYOUT_CHANGED: 4,
@@ -1670,6 +1673,7 @@ export const nativeConstants = {
   OT_SCENE_PROPERTY_RECORD_MAX: 88,
   OT_SCENE_PROPERTY_BYTES_MAX: 360448,
   OT_SCENE_DEBUG_FULL_FRAME: 1,
+  OT_SCENE_DEBUG_VERIFY: 2,
   OT_SESSION_OPEN: 0,
   OT_SESSION_CLOSING: 1,
   OT_SESSION_CLOSED_STATE: 2,
