@@ -617,6 +617,8 @@ pub const Scene = struct {
     test_hit_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     // Editor cursor work: placements tried and releases written.
     test_cursor_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    // Preparation entries stamped as this round's candidates.
+    test_stamp_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator, config: *yoga.Config, session: handles.Handle) !*Scene {
         const self = try allocator.create(Scene);
@@ -1567,6 +1569,7 @@ pub const Scene = struct {
         for (self.work.items) |entry| {
             // Newly placed hidden nodes were observed by the producer, not subsequent frames.
             if ((reuse and !entry.visible) or entry.bars) continue;
+            if (builtin.is_test) self.test_stamp_steps += 1;
             const node = entry.node.scene_node.?;
             node.layout = entry.layout;
             node.prepared_frame = active.frame_id;
