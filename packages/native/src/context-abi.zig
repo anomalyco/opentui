@@ -71,7 +71,7 @@ fn createContext(
         .owner_thread = std.Thread.getCurrentId(),
     };
     handle.gpa.backing_allocator = backing_allocator;
-    handle.core = Context.init(handle.gpa.allocator(), handle.io_threaded.io(), .{
+    handle.core = Context.init(contextAllocator(handle.gpa.allocator(), builtin.mode, builtin.is_test, build_options.gpa_safe_stats), handle.io_threaded.io(), .{
         .object_capacity = options.object_capacity,
         .render_cells_max = options.render_cells_max,
     }) catch |err| {
@@ -85,6 +85,11 @@ fn createContext(
     };
     out_context.* = handle;
     return c.OT_OK;
+}
+
+/// DebugAllocator never reuses a freed slot, so release builds use libc; tests keep its leak checks.
+fn contextAllocator(gpa: std.mem.Allocator, mode: std.builtin.OptimizeMode, is_test: bool, safe_stats: bool) std.mem.Allocator {
+    return if (is_test or safe_stats or mode == .Debug) gpa else std.heap.c_allocator;
 }
 
 pub fn ot_context_destroy(context: ?*ContextHandle) callconv(.c) c.ot_status {
@@ -4510,6 +4515,13 @@ test "Context ABI creation clears failed Yoga output and retries without retaini
     try std.testing.expectEqual(c.OT_OK, createContext(&options, &handle, backing.allocator()));
     try std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle));
     try std.testing.expectEqual(backing.allocated_bytes, backing.freed_bytes);
+}
+
+test "Context ABI uses libc in release builds and DebugAllocator in tests and Debug builds" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectEqual(std.heap.c_allocator.vtable, contextAllocator(gpa, .ReleaseFast, false, false).vtable);
+    try std.testing.expectEqual(gpa.vtable, contextAllocator(gpa, .ReleaseFast, true, false).vtable);
+    try std.testing.expectEqual(gpa.vtable, contextAllocator(gpa, .Debug, false, false).vtable);
 }
 
 test "Context ABI creation releases backing storage at every allocation failure" {
