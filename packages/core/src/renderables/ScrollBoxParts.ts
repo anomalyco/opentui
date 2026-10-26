@@ -544,9 +544,17 @@ export class ScrollBoxBar extends ScrollBoxPart {
     this.box._scrollAxis(this.axis, value, false)
   }
 
-  // Units and keys are the standalone scrollbar's; both scroll through `scrollPosition`.
+  // Units and keys are the standalone scrollbar's. A delta adds to a pending target and applies again after layout.
   scrollBy(delta: number, unit: ScrollUnit = "absolute"): void {
-    ScrollBarRenderable.prototype.scrollBy.call(this as unknown as ScrollBarRenderable, delta, unit)
+    const size =
+      unit === "viewport"
+        ? this.viewportSize
+        : unit === "content"
+          ? this.scrollSize
+          : unit === "step"
+            ? (this.scrollStep ?? 1)
+            : 1
+    this.box._scrollAxis(this.axis, size * delta, true, true)
   }
 
   handleKeyPress(key: KeyEvent): boolean {

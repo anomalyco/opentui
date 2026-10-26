@@ -229,13 +229,25 @@ describe("ScrollBoxRenderable - facade", () => {
     ])
   })
 
-  // A backfill prepends rows above a reader at row 4. Each row lists the top line of the next three frames and, in
-  // parentheses, the frame's host requests: a shifted frame shows a prepended row.
-  test.each([
+  // A backfill prepends six rows above a reader at row 4 (or `change` changes the rows). Each row lists the top line of
+  // the next three frames and, in parentheses, the frame's host requests: a shifted frame shows a prepended row. The
+  // anchor rows are #1357's cases; there a scroll cancelled the anchor, here it moves the line the anchor holds.
+  type Backfill = {
+    name: string
+    hold: (scrollbox: ScrollBoxRenderable, rows: TextRenderable[]) => unknown
+    change?: (scrollbox: ScrollBoxRenderable, rows: TextRenderable[]) => void
+    culling?: boolean
+    frames: string[]
+  }
+  const prependRows = (scrollbox: ScrollBoxRenderable, rows: TextRenderable[]) => {
+    for (let i = 0; i < 6; i++)
+      scrollbox.insertBefore(new TextRenderable(testRenderer, { content: `prepended ${i}` }), rows[0])
+  }
+  test.each<Backfill>([
     {
       // OpenCode's afterLayout: two animation frames, then a scroll by the growth.
       name: "two animation frames",
-      hold: (scrollbox: ScrollBoxRenderable) => {
+      hold: (scrollbox) => {
         const before = scrollbox.scrollHeight
         testRenderer.requestAnimationFrame(() =>
           testRenderer.requestAnimationFrame(() => scrollbox.scrollBy(scrollbox.scrollHeight - before)),
@@ -246,23 +258,85 @@ describe("ScrollBoxRenderable - facade", () => {
     {
       // OpenCode's holdAnchor: a content "resize" listener reads the computed layout and scrolls in the same frame.
       name: "content resize listener",
-      hold: (scrollbox: ScrollBoxRenderable, row: TextRenderable) => {
-        const top = row.getComputedLayout().top - scrollbox.scrollTop
-        scrollbox.content.on("resize", () => scrollbox.scrollTo(row.getComputedLayout().top - top))
+      hold: (scrollbox, rows) => {
+        const top = rows[4].getComputedLayout().top - scrollbox.scrollTop
+        scrollbox.content.on("resize", () => scrollbox.scrollTo(rows[4].getComputedLayout().top - top))
       },
       frames: ["row 4 (1)", "row 4 (0)", "row 4 (0)"],
     },
-  ])("a backfill above the reader: $name", async ({ hold, frames }) => {
-    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 20, height: 4, viewportCulling: false })
+    {
+      name: "afterLayout",
+      hold: (scrollbox) => {
+        const before = scrollbox.scrollHeight
+        scrollbox.afterLayout(() => scrollbox.scrollBy(scrollbox.scrollHeight - before))
+      },
+      frames: ["row 4 (2)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
+      name: "anchor",
+      hold: (scrollbox, rows) => scrollbox.anchor(rows[4]),
+      frames: ["row 4 (0)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
+      name: "anchor with culling",
+      culling: true,
+      hold: (scrollbox, rows) => scrollbox.anchor(rows[4]),
+      frames: ["row 4 (0)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
+      name: "anchor held through a frame without changes",
+      hold: async (scrollbox, rows) => {
+        scrollbox.anchor(rows[4])
+        await renderOnce()
+      },
+      frames: ["row 4 (0)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
+      name: "anchor released",
+      hold: (scrollbox, rows) => scrollbox.anchor(rows[4])(),
+      frames: ["prepended 4 (0)", "prepended 4 (0)", "prepended 4 (0)"],
+    },
+    {
+      name: "a later anchor replaces it, and the first release does nothing",
+      hold: (scrollbox, rows) => {
+        const release = scrollbox.anchor(rows[2])
+        scrollbox.anchor(rows[4])
+        release()
+      },
+      frames: ["row 4 (0)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
+      name: "anchored row removed",
+      hold: (scrollbox, rows) => {
+        scrollbox.anchor(rows[4])
+        rows[4].destroy()
+      },
+      frames: ["prepended 4 (0)", "prepended 4 (0)", "prepended 4 (0)"],
+    },
+    {
+      name: "anchor below the top, a row above it grows",
+      hold: (scrollbox, rows) => scrollbox.anchor(rows[6]),
+      change: (_, rows) => (rows[0].content = "row 0\nmore\nmore"),
+      frames: ["row 4 (0)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
+      name: "a scroll moves the anchored line",
+      hold: (scrollbox, rows) => {
+        scrollbox.anchor(rows[4])
+        scrollbox.scrollBy(1)
+      },
+      frames: ["row 5 (0)", "row 5 (0)", "row 5 (0)"],
+    },
+  ])("a backfill above the reader: $name", async ({ hold, change = prependRows, culling = false, frames }) => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 20, height: 4, viewportCulling: culling })
     const rows = Array.from({ length: 10 }, (_, i) => new TextRenderable(testRenderer, { content: `row ${i}` }))
     for (const row of rows) scrollbox.add(row)
     testRenderer.root.add(scrollbox)
     await renderOnce()
     scrollbox.scrollTo(4)
     await renderOnce()
-    hold(scrollbox, rows[4])
-    for (let i = 0; i < 6; i++)
-      scrollbox.insertBefore(new TextRenderable(testRenderer, { content: `prepended ${i}` }), rows[0])
+    await hold(scrollbox, rows)
+    change(scrollbox, rows)
     const tops: string[] = []
     for (let i = 0; i < 3; i++) {
       await renderOnce()
@@ -271,6 +345,50 @@ describe("ScrollBoxRenderable - facade", () => {
       )
     }
     expect(tops).toEqual(frames)
+  })
+
+  // scrollTo and scrollBy before the first layout land after it: the delta adds to the pending target. afterLayout runs in the
+  // next frame once its layout is known (here, with a row added before it), and its scroll shows in that frame; one
+  // asked from it runs a frame later, a hidden box keeps it, and one that destroys the box drops the rest.
+  test("scroll targets and afterLayout use the next frame's layout", async () => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 20, height: 4 })
+    testRenderer.root.add(scrollbox)
+    let count = 0
+    const add = (rows: number) => {
+      for (let i = 0; i < rows; i++) scrollbox.add(new TextRenderable(testRenderer, { content: `row ${count++}` }))
+    }
+    const trace: unknown[] = []
+    add(30)
+    scrollbox.scrollTo(5)
+    scrollbox.scrollBy(3)
+    expect(() => scrollbox.scrollTo(NaN)).toThrow(RangeError)
+    await renderOnce()
+    trace.push(scrollbox.scrollTop)
+    add(200)
+    scrollbox.afterLayout(() => {
+      trace.push(`a ${scrollbox.scrollHeight}`)
+      scrollbox.scrollChildIntoView(scrollbox.getChildren().at(-1)!, { align: "end" })
+      scrollbox.afterLayout(() => trace.push("b"))
+    })
+    add(1)
+    await renderOnce()
+    trace.push(captureCharFrame().split("\n")[3].slice(0, 8))
+    await renderOnce()
+    scrollbox.visible = false
+    const requested = spyOn(testRenderer, "requestRender")
+    scrollbox.afterLayout(() => trace.push("hidden"))
+    expect(requested).toHaveBeenCalled()
+    requested.mockRestore()
+    await renderOnce()
+    trace.push("shown")
+    scrollbox.visible = true
+    await renderOnce()
+    const other = new BoxRenderable(testRenderer, {})
+    expect(() => scrollbox.anchor(other)).toThrow()
+    scrollbox.afterLayout(() => scrollbox.destroy())
+    scrollbox.afterLayout(() => trace.push("dropped"))
+    await renderOnce()
+    expect(trace).toEqual([8, "a 231", "row 230 ", "b", "shown", "hidden"])
   })
 
   // Bar cells hit the ScrollBox: a click on the track jumps there, and a drag from the thumb moves it.
@@ -1781,7 +1899,8 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
 
   // Sticky edges, by public state only. Steps after the first frame: `+n` adds n rows (`+n/` one per frame), `-n`
   // removes the first n rows, `#v` scrolls to v (`#max` to the current maximum), `w:n` sets the box width, and
-  // `sib` resizes a sibling (a solve elsewhere). Each step records offset/max on the sticky axis after its frame.
+  // `sib` resizes a sibling (a solve elsewhere), and `>t+n` calls scrollTo(t) (`h` the content size, `inf`, `-inf`)
+  // and adds n rows before the frame. Each step records offset/max on the sticky axis after its frame.
   // Rows: the tests for #530, #709, #1087, the #1088 guard, the re-engage loop, #1514 (PR #1515), and the design's
   // rows A (noise range), C (re-stick while the content fits) and F (Solid's setter path).
   type StickyRow = [string, ScrollBoxOptions & { setters?: boolean }, number, string, string]
@@ -1821,6 +1940,24 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
       10,
       "#5 #max +1",
       "5/80 80/80 90/90",
+    ],
+    // scrollTo applies again after the frame's layout: a position past the range lands once the content grows, and
+    // one at or past the end stays at the end, even after growth beyond a viewport (D3).
+    ["scrollTo past the range lands after growth", { stickyStart: undefined }, 20, ">15+10 +5", "20/20 20/25"],
+    ["scrollTo below the range keeps its row", { stickyStart: undefined }, 20, ">7+10", "7/20"],
+    ["scrollTo the content size stays at the end", { stickyStart: undefined }, 20, ">h+30", "40/40"],
+    ["scrollTo Infinity stays at the end", { stickyStart: undefined }, 20, ">inf+30", "40/40"],
+    ["scrollTo -Infinity lands at 0", { stickyStart: undefined }, 20, "#5 >-inf+5", "5/10 0/15"],
+    ["a sticky scrollTo the end follows", { stickyStart: "bottom" }, 20, "#3 >h+30 +5", "3/10 40/40 45/45"],
+    // As row A, a scroll in a one-row range keeps following: a scroll that leaves the view stuck keeps no target.
+    ["a scrollTo in a one-row range keeps following", { stickyStart: "bottom" }, 11, ">0+9 +5", "10/10 15/15"],
+    ["a sticky scrollTo away from the edge stays", { stickyStart: "bottom" }, 20, ">3+10 +5", "3/20 3/25"],
+    [
+      "a left-sticky scrollTo the end leaves the edge",
+      { stickyStart: "left", scrollX: true },
+      10,
+      ">h+5 +1",
+      "130/130 130/140",
     ],
   ]
 
@@ -1871,7 +2008,14 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
       else if (step.startsWith("-")) for (const child of scrollBox.getChildren().slice(0, count)) child.destroy()
       else if (step === "sib") sibling.height = sibling.height + 1
       else if (step.startsWith("w:")) scrollBox.width = Number(step.slice(2))
-      else if (step.endsWith("/")) {
+      else if (step.startsWith(">")) {
+        const [target, added] = step.slice(1).split("+")
+        const size = horizontal ? scrollBox.scrollWidth : scrollBox.scrollHeight
+        const value =
+          target === "h" ? size : target === "inf" ? Infinity : target === "-inf" ? -Infinity : Number(target)
+        scrollBox.scrollTo(horizontal ? { x: value, y: 0 } : value)
+        for (let i = 0; i < Number(added); i++) add()
+      } else if (step.endsWith("/")) {
         for (let i = 0; i < count; i++) {
           add()
           await renderOnce()
@@ -1884,154 +2028,62 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
     expect(trace.join(" ")).toBe(expected)
   })
 
-  test("scrollChildIntoView does nothing when child is already visible", async () => {
+  // scrollChildIntoView: `rows` one-cell rows `child-i` (wrapped in `wrapper-i` when nested; 10x2 in a row when
+  // horizontal) after a `tall` row "oversized", in a 40x10 box at offset `at`. The call scrolls now and again after the frame's layout, which here
+  // also gets `prepend` rows inserted first. `node` passes the renderable instead of its id.
+  type IntoView = {
+    rows: number
+    at?: number
+    id: string
+    options?: { align?: "nearest" | "start" | "end"; inset?: number }
+    nested?: boolean
+    horizontal?: boolean
+    tall?: number
+    node?: boolean
+    prepend?: number
+    expected: number
+  }
+  test.each<[string, IntoView]>([
+    ["a visible row stays", { rows: 10, id: "child-2", expected: 0 }],
+    ["a row below aligns its end", { rows: 30, id: "child-25", expected: 16 }],
+    ["a row above aligns its start", { rows: 30, at: 20, id: "child-15", expected: 15 }],
+    ["nested descendants by id", { rows: 30, nested: true, id: "nested-25", expected: 16 }],
+    ["an unknown id does nothing", { rows: 20, at: 5, id: "missing", expected: 5 }],
+    ["horizontal", { rows: 6, horizontal: true, at: 30, id: "child-0", expected: 0 }],
+    ["an oversized row covering the viewport stays", { rows: 0, tall: 30, at: 10, id: "oversized", expected: 10 }],
+    ["a row as tall as the viewport, partly shown, stays", { rows: 20, tall: 10, at: 5, id: "oversized", expected: 5 }],
+    ["start with an inset", { rows: 30, id: "child-15", options: { align: "start", inset: 1 }, expected: 14 }],
+    ["end with an inset", { rows: 30, id: "child-25", options: { align: "end", inset: 1 }, expected: 17 }],
+    ["by node", { rows: 30, id: "child-12", node: true, options: { align: "start" }, expected: 12 }],
+    ["after rows prepended in the same frame", { rows: 30, prepend: 3, id: "child-20", expected: 14 }],
+    ["start after rows prepended", { rows: 30, prepend: 3, id: "child-5", options: { align: "start" }, expected: 8 }],
+  ])("scrollChildIntoView: %s", async (_, row) => {
     const scrollBox = new ScrollBoxRenderable(testRenderer, {
-      width: 40,
+      width: row.horizontal ? 20 : 40,
       height: 10,
+      scrollX: row.horizontal,
+      contentOptions: row.horizontal ? { flexDirection: "row" } : undefined,
     })
-
-    for (let i = 0; i < 10; i++) {
-      scrollBox.add(new BoxRenderable(testRenderer, { id: `child-${i}`, height: 1 }))
+    const size = row.horizontal ? { width: 10, height: 2 } : { height: 1 }
+    if (row.tall) scrollBox.add(new BoxRenderable(testRenderer, { id: "oversized", height: row.tall, flexShrink: 0 }))
+    for (let i = 0; i < row.rows; i++) {
+      const child = new BoxRenderable(testRenderer, { id: `child-${i}`, ...size })
+      if (!row.nested) scrollBox.add(child)
+      else {
+        const wrapper = new BoxRenderable(testRenderer, { id: `wrapper-${i}`, height: 1 })
+        wrapper.add(new BoxRenderable(testRenderer, { id: `nested-${i}`, height: 1 }))
+        scrollBox.add(wrapper)
+      }
     }
     testRenderer.root.add(scrollBox)
     await renderOnce()
-
-    expect(scrollBox.scrollTop).toBe(0)
-
-    scrollBox.scrollChildIntoView("child-2")
-    expect(scrollBox.scrollTop).toBe(0)
-  })
-
-  test("scrollChildIntoView scrolls down to reveal child below viewport", async () => {
-    const scrollBox = new ScrollBoxRenderable(testRenderer, {
-      width: 40,
-      height: 10,
-    })
-
-    for (let i = 0; i < 30; i++) {
-      scrollBox.add(new BoxRenderable(testRenderer, { id: `child-${i}`, height: 1 }))
-    }
-    testRenderer.root.add(scrollBox)
+    const axis = row.horizontal ? "scrollLeft" : "scrollTop"
+    scrollBox[axis] = row.at ?? 0
     await renderOnce()
-
-    scrollBox.scrollChildIntoView("child-25")
+    const first = scrollBox.getChildren()[0]
+    for (let i = 0; i < (row.prepend ?? 0); i++) scrollBox.insertBefore(new BoxRenderable(testRenderer, size), first)
+    scrollBox.scrollChildIntoView(row.node ? scrollBox.findDescendantById(row.id)! : row.id, row.options)
     await renderOnce()
-
-    const child = scrollBox.content.findDescendantById("child-25")!
-    expect(child.y).toBeGreaterThanOrEqual(scrollBox.viewport.y)
-    expect(child.y + child.height).toBe(scrollBox.viewport.y + scrollBox.viewport.height)
-  })
-
-  test("scrollChildIntoView scrolls up to reveal child above viewport", async () => {
-    const scrollBox = new ScrollBoxRenderable(testRenderer, {
-      width: 40,
-      height: 10,
-    })
-
-    for (let i = 0; i < 30; i++) {
-      scrollBox.add(new BoxRenderable(testRenderer, { id: `child-${i}`, height: 1 }))
-    }
-    testRenderer.root.add(scrollBox)
-    await renderOnce()
-
-    scrollBox.scrollTo(20)
-    await renderOnce()
-
-    scrollBox.scrollChildIntoView("child-15")
-    await renderOnce()
-
-    const child = scrollBox.content.findDescendantById("child-15")!
-    expect(child.y).toBe(scrollBox.viewport.y)
-    expect(child.y + child.height).toBeLessThanOrEqual(scrollBox.viewport.y + scrollBox.viewport.height)
-  })
-
-  test("scrollChildIntoView finds nested descendants by id", async () => {
-    const scrollBox = new ScrollBoxRenderable(testRenderer, {
-      width: 40,
-      height: 10,
-    })
-
-    for (let i = 0; i < 30; i++) {
-      const wrapper = new BoxRenderable(testRenderer, { id: `wrapper-${i}`, height: 1 })
-      wrapper.add(new BoxRenderable(testRenderer, { id: `nested-${i}`, height: 1 }))
-      scrollBox.add(wrapper)
-    }
-    testRenderer.root.add(scrollBox)
-    await renderOnce()
-
-    scrollBox.scrollChildIntoView("nested-25")
-    await renderOnce()
-
-    const child = scrollBox.content.findDescendantById("nested-25")!
-    expect(child.y).toBeGreaterThanOrEqual(scrollBox.viewport.y)
-    expect(child.y + child.height).toBeLessThanOrEqual(scrollBox.viewport.y + scrollBox.viewport.height)
-  })
-
-  test("scrollChildIntoView does nothing for nonexistent child", async () => {
-    const scrollBox = new ScrollBoxRenderable(testRenderer, {
-      width: 40,
-      height: 10,
-    })
-
-    for (let i = 0; i < 20; i++) {
-      scrollBox.add(new BoxRenderable(testRenderer, { id: `child-${i}`, height: 1 }))
-    }
-    testRenderer.root.add(scrollBox)
-    await renderOnce()
-
-    scrollBox.scrollTo(5)
-    await renderOnce()
-
-    const scrollTopBefore = scrollBox.scrollTop
-    scrollBox.scrollChildIntoView("does-not-exist")
-    expect(scrollBox.scrollTop).toBe(scrollTopBefore)
-  })
-
-  test("scrollChildIntoView handles horizontal scrolling", async () => {
-    const scrollBox = new ScrollBoxRenderable(testRenderer, {
-      width: 20,
-      height: 10,
-      scrollX: true,
-      contentOptions: {
-        flexDirection: "row",
-      },
-    })
-
-    for (let i = 0; i < 6; i++) {
-      scrollBox.add(new BoxRenderable(testRenderer, { id: `child-${i}`, width: 10, height: 2 }))
-    }
-
-    testRenderer.root.add(scrollBox)
-    await renderOnce()
-
-    scrollBox.scrollLeft = 30
-    await renderOnce()
-
-    scrollBox.scrollChildIntoView("child-0")
-    await renderOnce()
-
-    const child = scrollBox.content.findDescendantById("child-0")!
-    expect(child.x).toBe(scrollBox.viewport.x)
-    expect(child.x + child.width).toBeLessThanOrEqual(scrollBox.viewport.x + scrollBox.viewport.width)
-  })
-
-  test("scrollChildIntoView follows nearest behavior for oversized children", async () => {
-    const scrollBox = new ScrollBoxRenderable(testRenderer, {
-      width: 40,
-      height: 10,
-    })
-
-    scrollBox.add(new BoxRenderable(testRenderer, { id: "oversized", height: 30 }))
-    testRenderer.root.add(scrollBox)
-    await renderOnce()
-
-    scrollBox.scrollChildIntoView("oversized")
-    expect(scrollBox.scrollTop).toBe(0)
-
-    scrollBox.scrollTo(10)
-    await renderOnce()
-
-    scrollBox.scrollChildIntoView("oversized")
-    expect(scrollBox.scrollTop).toBe(10)
+    expect(scrollBox[axis]).toBe(row.expected)
   })
 })

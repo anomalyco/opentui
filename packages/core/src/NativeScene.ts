@@ -476,10 +476,26 @@ export class NativeScene {
     y: number,
     relativeX: boolean,
     relativeY: boolean,
+    reapply = false,
   ): NativeSceneScrollState {
     this.flushStaged()
     const handle = renderable._getSceneHandle(this)
-    const state = this.driver.renderLib.sceneScrollTo(this.driver.context, handle, x, y, relativeX, relativeY)
+    const state = this.driver.renderLib.sceneScrollTo(this.driver.context, handle, x, y, relativeX, relativeY, reapply)
+    this.changeLayout()
+    return state
+  }
+
+  scrollRequest(
+    renderable: Renderable,
+    kind: "into-view" | "anchor" | "layout",
+    target: Renderable | null,
+    align?: "nearest" | "start" | "end",
+    inset?: number,
+  ): NativeSceneScrollState {
+    this.flushStaged()
+    const { renderLib: lib, context } = this.driver
+    const handle = renderable._getSceneHandle(this)
+    const state = lib.sceneScrollRequest(context, handle, kind, target?._getSceneHandle(this) ?? null, align, inset)
     this.changeLayout()
     return state
   }

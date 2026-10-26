@@ -183,6 +183,10 @@ scrollbox.scrollBy({ x: 10, y: 5 })
 scrollbox.scrollBy(1, "viewport")
 ```
 
+`scrollBy` and `scrollTo` scroll at once against the current layout and apply again after the next frame's layout, so
+a scroll made in the same tick as a content change lands against the new content. A delta adds to a target that is
+still waiting for that layout.
+
 ### scrollTo
 
 Scroll to an absolute position:
@@ -194,6 +198,9 @@ scrollbox.scrollTo(0)
 // Scroll to specific position
 scrollbox.scrollTo({ x: 0, y: 100 })
 ```
+
+A position at or past the end, such as `scrollTo(scrollbox.scrollHeight)` or `scrollTo(Infinity)`, stays at the end
+after the content grows. `NaN` throws a `RangeError`.
 
 The same list after `scrollTo(5)`:
 
@@ -218,7 +225,38 @@ both edges of an axis. Otherwise, the method scrolls to reveal the nearest edge.
 scrollbox.scrollChildIntoView("table-row-42")
 ```
 
-Use it when you focus an offscreen element, such as a search result or a new form field.
+Use it when you focus an offscreen element, such as a search result or a new form field. Pass the renderable instead of
+an id, and an `align` of `"start"` or `"end"` to put that edge of the child at the viewport's edge, `inset` cells inside:
+
+```typescript
+scrollbox.scrollChildIntoView(message, { align: "start", inset: 1 })
+```
+
+Like `scrollTo`, the call applies again after the next frame's layout, so a child that moves in that frame still ends
+up in view.
+
+### anchor
+
+Keep a child at its place in the viewport while content above it changes, for example while older messages load above
+the reader. The anchor holds through every layout until you release it or the child leaves the ScrollBox. It takes
+precedence over sticky scrolling; a scroll moves the place it keeps.
+
+```typescript
+const release = scrollbox.anchor(firstVisibleRow)
+await loadOlderMessages()
+release()
+```
+
+### afterLayout
+
+Run a callback once in the next frame, after its layout and before it paints. Layout reads in the callback are current,
+and a scroll it makes shows in that frame, so no frame shows the content at the old position.
+
+```typescript
+scrollbox.afterLayout(() => scrollbox.scrollChildIntoView(newRow, { align: "end" }))
+```
+
+The callback waits while the ScrollBox is hidden. Destroying the ScrollBox drops it.
 
 ## Keyboard navigation
 

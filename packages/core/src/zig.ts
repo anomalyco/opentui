@@ -641,6 +641,8 @@ export interface NativeSceneScrollState {
 
 const SCENE_SCROLL_FOLLOW = ["none", "top", "bottom", "left", "right"] as const
 const SCENE_SCROLL_BAR_POLICY = ["auto", "always", "never"] as const
+const SCENE_SCROLL_REQUESTS = ["into-view", "anchor", "layout"] as const
+const SCENE_SCROLL_ALIGNS = ["nearest", "start", "end"] as const
 
 function readSceneRect(values: Float64Array, index: number): NativeSceneRect {
   return { x: values[index], y: values[index + 1], width: values[index + 2], height: values[index + 3] }
@@ -7483,7 +7485,8 @@ export class FFIRenderLib {
     )
   }
 
-  /** An explicit scroll; a relative axis adds its value to the offset. Returns the state after it. */
+  /** An explicit scroll; a relative axis adds its value to the offset, and `reapply` applies the targets again after
+   * the next frame's layout. Returns the state after it. */
   public sceneScrollTo(
     context: NativeContextHandle,
     node: SceneNodeHandle,
@@ -7491,15 +7494,46 @@ export class FFIRenderLib {
     y: number,
     relativeX: boolean,
     relativeY: boolean,
+    reapply = false,
   ): NativeSceneScrollState {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, node)
     const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
     const flags =
       (relativeX ? nativeConstants.OT_SCENE_SCROLL_RELATIVE_X : 0) |
-      (relativeY ? nativeConstants.OT_SCENE_SCROLL_RELATIVE_Y : 0)
+      (relativeY ? nativeConstants.OT_SCENE_SCROLL_RELATIVE_Y : 0) |
+      (reapply ? nativeConstants.OT_SCENE_SCROLL_REAPPLY : 0)
     const pointer = this.nativeContextPointer(context, "ot_scene_scroll_to")
     nativeResult("ot_scene_scroll_to", this.opentui.symbols.ot_scene_scroll_to(pointer, handle, x, y, flags, output))
+    return readSceneScrollState(output)
+  }
+
+  /** An into-view, anchor, or layout request (see `ot_scene_scroll_request`). Returns the state after it. */
+  public sceneScrollRequest(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    kind: "into-view" | "anchor" | "layout",
+    target: SceneNodeHandle | null,
+    align: "nearest" | "start" | "end" = "nearest",
+    inset = 0,
+  ): NativeSceneScrollState {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const encodedTarget = target === null ? null : encodeContextHandle(context, target)
+    const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
+    const pointer = this.nativeContextPointer(context, "ot_scene_scroll_request")
+    nativeResult(
+      "ot_scene_scroll_request",
+      this.opentui.symbols.ot_scene_scroll_request(
+        pointer,
+        handle,
+        SCENE_SCROLL_REQUESTS.indexOf(kind),
+        encodedTarget,
+        SCENE_SCROLL_ALIGNS.indexOf(align),
+        toSafeFFIU32Length(inset, "Scene scroll inset"),
+        output,
+      ),
+    )
     return readSceneScrollState(output)
   }
 
