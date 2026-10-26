@@ -2253,7 +2253,11 @@ pub const Context = struct {
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
-        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) node.scene_node.?.owner.visibility_epoch +%= 1;
+        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
+            node.scene_node.?.owner.visibility_epoch +%= 1;
+            // A shown child's refresh prepares its view although its layout did not change.
+            scene.Scene.markObservationStale(node);
+        }
     }
 
     pub fn sceneGetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32) !scene.StyleValue {

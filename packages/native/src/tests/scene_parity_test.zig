@@ -498,7 +498,7 @@ const Harness = struct {
     fn boxSlot(self: *const Harness) usize {
         while (true) {
             const slot = self.random.uintLessThan(usize, node_count_max);
-            if (self.model.handles[slot] != null and (self.model.kind[slot] == .box or self.model.kind[slot] == .scroll)) return slot;
+            if (self.model.handles[slot] != null and self.model.kind[slot] == .box) return slot;
         }
     }
 
@@ -506,16 +506,22 @@ const Harness = struct {
     fn generate(self: *Harness) ?Op {
         const random = self.random;
         const empty = random.intRangeLessThan(usize, scaffold_slots, node_count_max);
-        if (self.model.handles[empty] == null) return .{ .create = .{ .slot = empty, .kind = switch (random.uintLessThan(u32, 11)) {
-            0, 1 => .box,
-            10 => .scroll,
-            2 => .slider,
-            8 => .editor,
-            9 => .text_view,
-            else => .text,
-        } } };
+        if (self.model.handles[empty] == null) return .{
+            .create = .{
+                .slot = empty,
+                .kind = switch (random.uintLessThan(u32, 10)) {
+                    0 => .box,
+                    // Half the boxes are scroll nodes, so the mix of the other kinds stays as before.
+                    1 => if (random.boolean()) .box else .scroll,
+                    2 => .slider,
+                    8 => .editor,
+                    9 => .text_view,
+                    else => .text,
+                },
+            },
+        };
         const slot = self.liveSlot(scaffold_slots) orelse return null;
-        return switch (random.uintLessThan(u32, 29)) {
+        return switch (random.uintLessThan(u32, 27)) {
             // Moves favor the content so its children pass the filter cutoff.
             0...7 => blk: {
                 const parent: ?usize = switch (random.uintLessThan(u32, 8)) {
@@ -545,8 +551,7 @@ const Harness = struct {
             22 => if (random.boolean()) .{ .shared_text = random.int(u32) } else .{ .highlight = .{ .start = random.uintLessThan(u32, 8), .end = random.uintLessThan(u32, 16) } },
             23 => .{ .register = .{ .foreground = random.int(u8), .destroy = random.uintLessThan(u32, 6) == 0 } },
             24 => if (self.model.kind[slot] == .text) .{ .selection = .{ .slot = slot, .set = random.boolean(), .focus = random.intRangeAtMost(i32, 0, 8) } } else .{ .resend = slot },
-            25 => .{ .resend = slot },
-            27, 28 => if (self.scrollSlot()) |scroll| self.generateScroll(scroll) else self.generateReply(slot),
+            25 => if (self.scrollSlot()) |scroll| (if (random.uintLessThan(u32, 4) != 0) self.generateScroll(scroll) else .{ .resend = slot }) else .{ .resend = slot },
             26 => if (random.uintLessThan(u32, 6) == 0) .{ .palette = random.uintLessThan(u32, 4) } else .{ .raw = .{ .kind = random.uintLessThan(u32, 4), .x = random.intRangeAtMost(i32, -1, 20), .y = random.intRangeAtMost(i32, -1, 8) } },
             else => self.generateReply(slot),
         };
@@ -562,10 +567,12 @@ const Harness = struct {
     }
 
     /// A scroll, new scroll options (follow edge, culling, bars, fills, viewport padding), a
-    /// style of the scroll node's content, or its SCROLL hook set or cleared.
+    /// style of the scroll node's content, its SCROLL hook set or cleared, or a node moved in.
     fn generateScroll(self: *Harness, slot: usize) Op {
         const random = self.random;
-        switch (random.uintLessThan(u32, 5)) {
+        switch (random.uintLessThan(u32, 6)) {
+            // A move into the node itself or its subtree is rejected by both twins.
+            5 => return .{ .move = .{ .slot = self.liveSlot(scaffold_slots) orelse slot, .parent = slot, .index = @intCast(self.model.children[slot].items.len) } },
             4 => return .{ .hooks = .{ .slot = slot, .flags = if (random.boolean()) c.OT_SCENE_HOOK_SCROLL else 0 } },
             0, 1 => return .{ .scroll_to = .{ .slot = slot, .target = .{ @floatFromInt(random.intRangeAtMost(i32, -3, 12)), @floatFromInt(random.intRangeAtMost(i32, -3, 12)) }, .relative = random.boolean() } },
             2 => {
@@ -583,7 +590,7 @@ const Harness = struct {
                 return .{ .scroll_options = .{ .slot = slot, .options = .{
                     .axes = random.intRangeAtMost(u32, 1, 3),
                     .follow = random.uintLessThan(u32, 5),
-                    .culling = random.boolean(),
+                    .culling = random.uintLessThan(u32, 4) == 0,
                     .padding = .{ @floatFromInt(random.uintLessThan(u32, 2)), @floatFromInt(random.uintLessThan(u32, 2)), 0, @floatFromInt(random.uintLessThan(u32, 2)) },
                     .fills = fills,
                     .bars = bars,
@@ -1130,16 +1137,17 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         inline for (std.meta.fields(Stats)) |field| @field(total, field.name) +%= @field(stats, field.name);
     }
     // Every frame kind B2, B3, and D2b rely on is reached in quantity (about a quarter of
-    // today's counts; decoded frames at about two thirds, unmeasured texts at most), and each
-    // minimum fails if the draw that produces its kind is removed. Counts at 64 x 256: reused
-    // 360, filtered 896, filtered with a request 305, hooked under a hidden ancestor 5,780,
-    // reply hid the requester's parent 44, reply detached the requester 39, content-child RESIZE
-    // 45, a truncation change in its reply 45, unmeasured content text replaced 5, UPDATE 3,718,
-    // RESIZE 49, LAYOUT_CHANGED 1,642, recordings 651, box bodies 42, decoded 12,481, an editor's cursor 1,514,
-    // a host cursor 7,898, skipped paint 8,289, partly diffed 1,095, draft writes after paint
-    // 2,913, raw writes between frames 392, shared text changes shown 393, style changes shown
-    // 191, view binds 339, selections 207, equal re-sends 728, palette changes 82, frames showing
-    // a scroll node with children 721, scrolls and scroll option changes 541, SCROLL requests 63.
+    // today's counts; decoded frames at about two thirds), and each minimum fails if the draw
+    // that produces its kind is removed. Counts at 64 x 256: reused 853, filtered 1,646,
+    // filtered with a request 441, hooked under a hidden ancestor 4,672, reply hid the
+    // requester's parent 28, reply detached the requester 37, content-child RESIZE 45, a
+    // truncation change in its reply 44, unmeasured content text replaced 12, UPDATE 2,766,
+    // RESIZE 52, LAYOUT_CHANGED 1,990, recordings 982, box bodies 222, decoded 12,267, an
+    // editor's cursor 2,086, a host cursor 7,481, skipped paint 7,933, partly diffed 1,258,
+    // draft writes after paint 2,888, raw writes between frames 416, shared text changes shown
+    // 439, style changes shown 214, view binds 327, selections 253, equal re-sends 416, palette
+    // changes 66, frames showing a scroll node with children 1,355, scrolls and option changes
+    // 159, SCROLL requests 27.
     const minimums: Stats = .{
         .reused = 145,
         .filtered = 250,
@@ -1168,9 +1176,9 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .selections = 55,
         .resends = 190,
         .palettes = 20,
-        .scroll_frames = 180,
-        .scroll_changes = 130,
-        .scroll_requests = 15,
+        .scroll_frames = 330,
+        .scroll_changes = 40,
+        .scroll_requests = 7,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
