@@ -191,6 +191,12 @@ describe("renderer capabilities event", () => {
     const { renderer } = await createTestRenderer({ clock, experimental_nativeInput })
     const events: string[] = []
     const keys: string[] = []
+    let renders = 0
+    const requestRender = renderer.requestRender.bind(renderer)
+    renderer.requestRender = () => {
+      renders++
+      requestRender()
+    }
     renderer.on("capabilities", (caps) => events.push(JSON.stringify(caps)))
     renderer.keyInput.on("keypress", (key) => keys.push(key.sequence))
     await renderer.setupTerminal()
@@ -198,15 +204,24 @@ describe("renderer capabilities event", () => {
     clock.advance(lateMs)
     // Modified F3 is a key once no explicit-width report is expected (the legacy parser reads it as a report).
     if (lateMs > 0 && experimental_nativeInput) renderer.stdin.emit("data", Buffer.from("\x1b[1;2R\x1b[1;5R"))
-    let firstPass = 0
-    for (const [index, reply] of [...replies, ...replies].entries()) {
-      renderer.stdin.emit("data", Buffer.from(`${reply}a`))
-      clock.advance(20)
-      if (index === replies.length - 1) firstPass = events.length
+    const marks: number[][] = []
+    const send = (batch: string[]) => {
+      for (const reply of batch) {
+        renderer.stdin.emit("data", Buffer.from(`${reply}a`))
+        clock.advance(20)
+      }
+      marks.push([events.length, renders])
     }
+    send(replies)
+    send(replies)
+    // The handler outlives suspension, and a return to an earlier value is a change.
+    await renderer.suspend()
+    await renderer.resume()
+    send([])
+    send(["\x1bP>|beta(1)\x1b\\", replies[7]])
     const caps = renderer.capabilities!
     renderer.destroy()
-    return { firstPass, events, keys, caps }
+    return { marks, events, keys, caps }
   }
 
   for (const experimental_nativeInput of [false, true]) {
@@ -215,11 +230,16 @@ describe("renderer capabilities event", () => {
       const late = await run(experimental_nativeInput, 5000)
 
       expect(late.events).toEqual(inside.events)
-      expect(new Set(late.events).size).toBe(late.events.length)
-      expect(late.firstPass).toBe(late.events.length)
+      for (const { marks, events } of [inside, late]) {
+        expect(marks[0][0]).toBeGreaterThan(0)
+        expect(marks[1]).toEqual(marks[0])
+        expect([marks[3][0] - marks[2][0], marks[3][1] - marks[2][1]]).toEqual([2, 2])
+        expect(events.at(-1)).toBe(events.at(-3))
+        expect(events.filter((event, index) => event === events[index - 1])).toEqual([])
+      }
       expect(late.caps).toMatchObject({ kitty_keyboard: true, kitty_graphics: true, sgr_pixels: true, sync: true })
       expect(late.caps.terminal).toEqual({ name: "kitty", version: "0.42.2", from_xtversion: true })
-      const typed = Array(replies.length * 2).fill("a")
+      const typed = Array(replies.length * 2 + 2).fill("a")
       expect(inside.keys).toEqual(typed)
       expect(late.keys).toEqual(experimental_nativeInput ? ["\x1b[1;2R", "\x1b[1;5R", ...typed] : typed)
     })
