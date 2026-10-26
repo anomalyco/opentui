@@ -1502,6 +1502,7 @@ fn isHyperlinkHostEnv(env_map: *const std.process.Environ.Map) bool {
     if (env_map.get("TERM_PROGRAM")) |program| {
         if (std.mem.eql(u8, program, "vscode") or
             std.mem.eql(u8, program, "zed") or
+            std.mem.eql(u8, program, "herdr") or
             std.mem.eql(u8, program, "mintty")) return true;
     }
     // VTE releases before 0.52.2 include OSC 8 versions that can crash.

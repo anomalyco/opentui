@@ -628,6 +628,30 @@ test "remote detection - auto mode ignores forwarded terminal identity after SSH
     try testing.expectEqualStrings("", term.getTerminalName());
 }
 
+test "remote detection - Herdr hyperlinks follow remote mode and environment source" {
+    for ([_]Terminal.RemoteMode{ .local, .auto, .remote }) |mode| for ([_]bool{ false, true }) |forwarded| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
+        try env.put("TERM", "xterm-256color");
+        try env.put("TERM_PROGRAM", "herdr");
+
+        var term = Terminal.init(.{ .remote_mode = mode, .env_map = if (forwarded) null else &env });
+        defer term.deinit();
+        if (forwarded) {
+            try term.setHostEnvVar(testing.allocator, "SSH_CONNECTION", env.get("SSH_CONNECTION").?);
+            try term.setHostEnvVar(testing.allocator, "TERM", "xterm-256color");
+            try term.setHostEnvVar(testing.allocator, "TERM_PROGRAM", "herdr");
+        }
+
+        try testing.expectEqual(mode != .local, term.caps.remote);
+        try testing.expectEqual(!(mode == .auto and forwarded), term.caps.hyperlinks);
+
+        term.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
+        try testing.expect(term.caps.hyperlinks);
+    };
+}
+
 test "remote detection - TERM and COLORTERM set color depth in every remote mode" {
     const cases = [_]struct { term: []const u8, colorterm: ?[]const u8 = null, ansi256: bool, rgb: bool }{
         .{ .term = "screen-256color", .ansi256 = true, .rgb = false },
@@ -891,19 +915,22 @@ test "environment overrides - foot hyperlinks are revoked after forwarded multip
 }
 
 test "environment overrides - rgb does not imply hyperlinks after recheck for unknown truecolor terminals" {
-    var term = Terminal.init(.{});
-    defer term.deinit();
+    for ([_]?[]const u8{ null, "unknown", "herdr-wrapper", "Herdr" }) |program| {
+        var term = Terminal.init(.{});
+        defer term.deinit();
 
-    try term.setHostEnvVar(testing.allocator, "TERM", "xterm-256color");
-    try term.setHostEnvVar(testing.allocator, "COLORTERM", "truecolor");
+        try term.setHostEnvVar(testing.allocator, "TERM", "xterm-256color");
+        try term.setHostEnvVar(testing.allocator, "COLORTERM", "truecolor");
+        if (program) |value| try term.setHostEnvVar(testing.allocator, "TERM_PROGRAM", value);
 
-    try testing.expect(term.caps.rgb);
-    try testing.expect(!term.caps.hyperlinks);
+        try testing.expect(term.caps.rgb);
+        try testing.expect(!term.caps.hyperlinks);
 
-    try term.setHostEnvVar(testing.allocator, "OPENTUI_FORCE_UNICODE", "1");
+        try term.setHostEnvVar(testing.allocator, "OPENTUI_FORCE_UNICODE", "1");
 
-    try testing.expect(term.caps.rgb);
-    try testing.expect(!term.caps.hyperlinks);
+        try testing.expect(term.caps.rgb);
+        try testing.expect(!term.caps.hyperlinks);
+    }
 }
 
 test "environment overrides - rgb does not imply hyperlinks after recheck for inherited Windows Terminal screen" {
@@ -923,6 +950,24 @@ test "environment overrides - rgb does not imply hyperlinks after recheck for in
 
     try testing.expect(term.caps.rgb);
     try testing.expect(!term.caps.hyperlinks);
+}
+
+test "environment overrides - Herdr enables hyperlinks in the reported environment" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "xterm-256color");
+    try env.put("TERM_PROGRAM", "herdr");
+    try env.put("TERM_PROGRAM_VERSION", "0.9.5");
+    try env.put("COLORTERM", "truecolor");
+
+    const term = Terminal.init(.{ .env_map = &env });
+    try testing.expect(term.caps.hyperlinks);
+
+    try env.put("FORCE_HYPERLINK", "0");
+    var disabled = Terminal.init(.{ .env_map = &env });
+    try testing.expect(!disabled.caps.hyperlinks);
+    disabled.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
+    try testing.expect(!disabled.caps.hyperlinks);
 }
 
 test "environment overrides - TERM_PROGRAM and VTE_VERSION enable hyperlinks for OSC 8 terminals" {
@@ -957,17 +1002,27 @@ test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal"
         .{ .key = "ZELLIJ", .value = "0", .kind = .zellij },
     };
 
-    for (multiplexers) |multiplexer| {
+    for ([_][]const u8{ "vscode", "herdr" }) |program| for (multiplexers) |multiplexer| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("TERM_PROGRAM", program);
+        try env.put(multiplexer.key, multiplexer.value);
+        const inherited = Terminal.init(.{ .env_map = &env });
+        try testing.expectEqual(multiplexer.kind, inherited.multiplexer);
+        try testing.expect(!inherited.caps.hyperlinks);
+
         var term = Terminal.init(.{});
         defer term.deinit();
 
-        try term.setHostEnvVar(testing.allocator, "TERM_PROGRAM", "vscode");
+        try term.setHostEnvVar(testing.allocator, "TERM", "xterm-256color");
+        try term.setHostEnvVar(testing.allocator, "TERM_PROGRAM", program);
         try testing.expect(term.caps.hyperlinks);
 
         try term.setHostEnvVar(testing.allocator, multiplexer.key, multiplexer.value);
         try testing.expectEqual(multiplexer.kind, term.multiplexer);
         try testing.expect(!term.caps.hyperlinks);
-    }
+    };
 }
 
 test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
