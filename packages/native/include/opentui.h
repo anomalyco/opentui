@@ -864,12 +864,19 @@ typedef struct ot_scene_scroll_bar_state {
     double thumb_size;
 } ot_scene_scroll_bar_state;
 
-/* generation changes with every change of the other fields. */
+/* generation changes with every change of the other fields. changes holds the
+ * OT_SCENE_SCROLL_CHANGED_* bits that differed from the last report when the last
+ * SCROLL request was issued. Setting OT_SCENE_HOOK_SCROLL on a node that did not
+ * have it makes the current state the last report. */
+#define OT_SCENE_SCROLL_CHANGED_OFFSET_X UINT32_C(1)
+#define OT_SCENE_SCROLL_CHANGED_OFFSET_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_CHANGED_CONTENT UINT32_C(4)
+#define OT_SCENE_SCROLL_CHANGED_VIEWPORT UINT32_C(8)
 typedef struct ot_scene_scroll_state {
     uint32_t struct_size;
     uint32_t abi_version;
     uint32_t stuck;
-    uint32_t reserved;
+    uint32_t changes;
     uint64_t generation;
     double offset[2];
     double max[2];

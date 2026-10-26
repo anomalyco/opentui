@@ -100,6 +100,8 @@ pub const ScrollState = struct {
     toggle_frame: u64 = 0,
     toggles: u32 = 0,
     reported: [6]f64 = @splat(0),
+    // OT_SCENE_SCROLL_CHANGED_* bits of the last SCROLL request.
+    changes: u32 = 0,
     // The box's screen position, which the reported geometry follows.
     screen: [2]f64 = @splat(0),
     generation: u64 = 0,
@@ -958,6 +960,8 @@ pub const Scene = struct {
         self.hook_count += @intFromBool(flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.layout_hook_count -= @intFromBool(node.hook_flags & scene_layout_hook_flags != 0);
         self.layout_hook_count += @intFromBool(flags & scene_layout_hook_flags != 0);
+        // A new listener hears changes from now on, not the ones nobody heard.
+        if (flags & ~node.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0) node.scroll.?.reported = node.scroll.?.observed();
         node.hook_flags = flags;
         node.hook_generation = generation;
         self.invalidateObservation(value);
@@ -1278,6 +1282,10 @@ pub const Scene = struct {
                         const state = node.scroll.?;
                         const current = state.observed();
                         if (!std.meta.eql(current, state.reported)) {
+                            state.changes = 0;
+                            for (current, state.reported, [_]u32{ api.OT_SCENE_SCROLL_CHANGED_OFFSET_X, api.OT_SCENE_SCROLL_CHANGED_OFFSET_Y, api.OT_SCENE_SCROLL_CHANGED_CONTENT, api.OT_SCENE_SCROLL_CHANGED_CONTENT, api.OT_SCENE_SCROLL_CHANGED_VIEWPORT, api.OT_SCENE_SCROLL_CHANGED_VIEWPORT }) |now, was, bit| {
+                                if (now != was) state.changes |= bit;
+                            }
                             state.reported = current;
                             result = try self.request(node, api.OT_SCENE_FRAME_SCROLL);
                         }
@@ -2525,7 +2533,7 @@ pub fn scrollReport(value: *const native.NativeRenderable) !api.ot_scene_scroll_
         .struct_size = @sizeOf(api.ot_scene_scroll_state),
         .abi_version = api.OT_CONTEXT_ABI_VERSION,
         .stuck = @intFromBool(state.stuck),
-        .reserved = 0,
+        .changes = state.changes,
         .generation = state.generation,
         .offset = state.offset,
         .max = state.max,

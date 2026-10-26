@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 26573f3fafcde19ba79f59842b08fc4b3ed0f0f9d17a6c807999f12f565efa3b
+// ABI audit SHA-256: 74b5d296e45245c3894a7a3bc54c900c9d42636c469180b8ee4e07d8475d23fa
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -687,7 +687,7 @@ export const nativeLayouts = {
       struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
       abi_version: { offset: 4, size: 4, alignment: 4, type: "u32" },
       stuck: { offset: 8, size: 4, alignment: 4, type: "u32" },
-      reserved: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      changes: { offset: 12, size: 4, alignment: 4, type: "u32" },
       generation: { offset: 16, size: 8, alignment: 8, type: "u64" },
       offset: { offset: 24, size: 16, alignment: 8, type: "[2]f64" },
       max: { offset: 40, size: 16, alignment: 8, type: "[2]f64" },
@@ -1756,6 +1756,10 @@ export const nativeConstants = {
   OT_SCENE_SCROLL_BAR_OVERLAY: 1,
   OT_SCENE_SCROLL_RELATIVE_X: 1,
   OT_SCENE_SCROLL_RELATIVE_Y: 2,
+  OT_SCENE_SCROLL_CHANGED_OFFSET_X: 1,
+  OT_SCENE_SCROLL_CHANGED_OFFSET_Y: 2,
+  OT_SCENE_SCROLL_CHANGED_CONTENT: 4,
+  OT_SCENE_SCROLL_CHANGED_VIEWPORT: 8,
   OT_SCENE_DEBUG_FULL_FRAME: 1,
   OT_SCENE_DEBUG_VERIFY: 2,
   OT_SESSION_OPEN: 0,
