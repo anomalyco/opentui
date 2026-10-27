@@ -383,7 +383,7 @@ test "FeedBackend - retained bytes and spans skip a frame that fits after releas
         options.span_queue_capacity = case.spans;
         const stream = try raw.Stream.create(testing.allocator, options);
         defer stream.destroy();
-        var backend = FeedBackend.create(stream);
+        var backend = FeedBackend.createWithIo(testing.io, stream);
         defer backend.deinit();
         var spans: [1]raw.SpanInfo = undefined;
 
@@ -409,7 +409,7 @@ test "FeedBackend - formatted frame bounds and retry preserve atomic output" {
     const FeedBackend = @import("../renderer-output.zig").FeedBackend;
     const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 1, 64, true));
     defer stream.destroy();
-    var backend = FeedBackend.create(stream);
+    var backend = FeedBackend.createWithIo(testing.io, stream);
     defer backend.deinit();
 
     for ([_]usize{ 63, 64, 65, 1024 }) |size| {
@@ -447,7 +447,7 @@ test "FeedBackend - failed staging allocation releases admission for retry" {
         const options = if (reserve_sequence) testOptionsFull(8, 2, 16, true) else testOptionsFull(8, 1, 8, true);
         const stream = try raw.Stream.create(failing.allocator(), options);
         defer stream.destroy();
-        var backend = FeedBackend.create(stream);
+        var backend = FeedBackend.createWithIo(testing.io, stream);
         defer backend.deinit();
         if (reserve_sequence) {
             try stream.reserveControlCapacity(8);
@@ -478,45 +478,6 @@ test "FeedBackend - failed staging allocation releases admission for retry" {
     }
 }
 
-test "FeedBackend - raw controls cannot overtake a staged frame" {
-    const FeedBackend = @import("../renderer-output.zig").FeedBackend;
-    const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 2, 64, true));
-    defer stream.destroy();
-    var backend = FeedBackend.create(stream);
-    defer backend.deinit();
-
-    backend.beginFrame();
-    try backend.writer().writeAll("frame");
-    backend.writeOut("raw");
-    backend.writeOutMultiple(&.{ "raw", "control" });
-    try testing.expect(!stream.hasPendingSpans());
-    try testing.expectEqual(.ok, backend.endFrame());
-    var spans: [4]raw.SpanInfo = undefined;
-    const count = stream.drainSpans(&spans);
-    defer for (spans[0..count]) |span| stream.markSpanConsumed(span);
-    try testing.expectEqual(@as(u32, 1), count);
-    try testing.expectEqualStrings("frame", spans[0].slice());
-}
-
-test "FeedBackend - unbounded controls cancel an unfinished frame rather than disappearing" {
-    const FeedBackend = @import("../renderer-output.zig").FeedBackend;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(32, 1, true));
-    defer stream.destroy();
-    var backend = FeedBackend.create(stream);
-    defer backend.deinit();
-    backend.beginFrame();
-    try backend.writer().writeAll("unpublished");
-    backend.writeOut("first");
-    backend.writeOutMultiple(&.{ "sec", "ond" });
-    try testing.expectEqual(.failed, backend.endFrame());
-    var spans: [3]raw.SpanInfo = undefined;
-    const count = stream.drainSpans(&spans);
-    defer for (spans[0..count]) |span| stream.markSpanConsumed(span);
-    try testing.expectEqual(@as(u32, 2), count);
-    try testing.expectEqualStrings("first", spans[0].slice());
-    try testing.expectEqualStrings("second", spans[1].slice());
-}
-
 test "FeedBackend - published frame notification can enqueue ordered controls" {
     const FeedBackend = @import("../renderer-output.zig").FeedBackend;
     const Callback = struct {
@@ -526,13 +487,13 @@ test "FeedBackend - published frame notification can enqueue ordered controls" {
             const target = backend orelse return;
             backend = null;
             target.writeOut("shutdown");
-            target.writeOutMultiple(&.{ "raw", "control" });
+            target.writeOut("rawcontrol");
         }
     };
     for ([_]u64{ 128, 0 }) |max_bytes| {
         const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 1, max_bytes, true));
         defer stream.destroy();
-        var backend = FeedBackend.create(stream);
+        var backend = FeedBackend.createWithIo(testing.io, stream);
         defer backend.deinit();
         Callback.backend = &backend;
         defer Callback.backend = null;

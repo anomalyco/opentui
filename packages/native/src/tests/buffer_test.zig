@@ -2746,7 +2746,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/    ▪ file.ts                │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎ select  esc close   │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2756,7 +2756,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("                                         ", 0, 2, fg, bg, 0);
         try next.drawText("  Select Files                           ", 0, 3, fg, bg, 0);
         try next.drawText("  Enter file path...                     ", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2766,7 +2766,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/    ▪ file.ts                │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎ select  esc close   │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2776,7 +2776,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("                                         ", 0, 2, fg, bg, 0);
         try next.drawText("  Select Files                           ", 0, 3, fg, bg, 0);
         try next.drawText("  Enter file path...                     ", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2786,7 +2786,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/                             │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎/tab select          │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 }
 
@@ -2817,7 +2817,7 @@ test "renderer - CJK graphemes shifting left must preserve continuation cells (#
     {
         const next = cli_renderer.getNextBuffer();
         try next.drawText("abcd你好世          ", 0, 0, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     // Frame 2: "abc你好世" — backspace deleted 'd', CJK chars shift left by 1
@@ -2825,7 +2825,7 @@ test "renderer - CJK graphemes shifting left must preserve continuation cells (#
     {
         const next = cli_renderer.getNextBuffer();
         try next.drawText("abc你好世           ", 0, 0, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     // After frame 2, currentRenderBuffer should match the frame 2 layout exactly.

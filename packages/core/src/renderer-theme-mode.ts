@@ -44,9 +44,6 @@ export class RendererThemeMode {
   private static readonly QUERY_TIMEOUT_MS = 250
 
   private _themeMode: ThemeMode | null = null
-  private themeQueryPending = true
-  private themeOscForeground: string | null = null
-  private themeOscBackground: string | null = null
   private themeRefreshTimeoutId: TimerHandle | null = null
   private waiters = new Set<ThemeWaiter>()
 
@@ -82,16 +79,6 @@ export class RendererThemeMode {
     })
   }
 
-  public cancelRefresh(): void {
-    if (this.themeRefreshTimeoutId === null) {
-      return
-    }
-
-    this.clock.clearTimeout(this.themeRefreshTimeoutId)
-    this.themeRefreshTimeoutId = null
-    this.themeQueryPending = false
-  }
-
   public dispose(): void {
     this.cancelRefresh()
 
@@ -111,52 +98,33 @@ export class RendererThemeMode {
       return { handled: true, changedMode: null }
     }
 
-    let handledOscThemeResponse = false
+    // A reply is applied whenever it arrives: a late one still reports the terminal's current color. The mode
+    // follows the background; the foreground is consumed but unused.
+    let handled = false
+    let background: string | null = null
     let match: RegExpExecArray | null
 
     OSC_THEME_RESPONSE.lastIndex = 0
     while ((match = OSC_THEME_RESPONSE.exec(sequence))) {
-      handledOscThemeResponse = true
-      const color = oscThemeColorToHex(match[2], match[3], match[4], match[5])
-
-      if (match[1] === "10") {
-        this.themeOscForeground = color
-      } else {
-        this.themeOscBackground = color
-      }
+      handled = true
+      if (match[1] === "11") background = oscThemeColorToHex(match[2], match[3], match[4], match[5])
     }
 
-    if (!handledOscThemeResponse) {
-      return { handled: false, changedMode: null }
+    if (background === null) {
+      return { handled, changedMode: null }
     }
 
-    if (!this.themeQueryPending) {
-      return { handled: true, changedMode: null }
-    }
-
-    if (!this.themeOscForeground || !this.themeOscBackground) {
-      return { handled: true, changedMode: null }
-    }
-
-    const nextMode = inferThemeModeFromBackgroundColor(this.themeOscBackground)
-    const changedMode = this.applyThemeMode(nextMode)
-    this.completeThemeQuery()
-
-    return { handled: true, changedMode }
+    this.cancelRefresh()
+    return { handled, changedMode: this.applyThemeMode(inferThemeModeFromBackgroundColor(background)) }
   }
 
-  private clearThemeRefreshTimeout(): void {
+  public cancelRefresh(): void {
     if (this.themeRefreshTimeoutId === null) {
       return
     }
 
     this.clock.clearTimeout(this.themeRefreshTimeoutId)
     this.themeRefreshTimeoutId = null
-  }
-
-  private completeThemeQuery(): void {
-    this.clearThemeRefreshTimeout()
-    this.themeQueryPending = false
   }
 
   private requestThemeOscColors(): void {
@@ -166,15 +134,10 @@ export class RendererThemeMode {
       return
     }
 
-    this.themeQueryPending = true
-    this.themeOscForeground = null
-    this.themeOscBackground = null
-
     this.host.queryThemeColors()
 
-    this.clearThemeRefreshTimeout()
     this.themeRefreshTimeoutId = this.clock.setTimeout(() => {
-      this.completeThemeQuery()
+      this.themeRefreshTimeoutId = null
     }, RendererThemeMode.QUERY_TIMEOUT_MS)
   }
 

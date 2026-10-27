@@ -158,7 +158,8 @@ test("TabSelect paints the visible tabs, the underline, the description, and scr
 })
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
-// (updateAutoScroll, then a 100 ms frame), or `press|move|release:x,y` (left button, then a frame). Each step records
+// (updateAutoScroll, then a 100 ms frame), `press|move|release:x,y` (left button, then a frame), or `grow:h,ch`
+// (`growx:w,cw`) to set the box's height and its child's height (widths) in one frame. Each step records
 // scrollTop,scrollLeft and a "!" prefix when a key is not handled; an auto step adds "-" when auto-scroll stopped.
 // Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
 const scrolling: [string, object, string, string][] = [
@@ -166,7 +167,7 @@ const scrolling: [string, object, string, string][] = [
     "keys",
     { scrollX: true },
     "down j up k right l left h pagedown pageup end home a",
-    "2,0 4,0 2,0 0,0 0,4 0,8 0,4 0,0 5,0 0,0 90,0 0,0 !0,0",
+    "2,0 4,0 2,0 0,0 0,4 0,8 0,4 0,0 5,0 1,0 91,0 0,0 !0,0",
   ],
   ["keys without scrollX", {}, "right l end", "0,0 0,0 90,0"],
   [
@@ -196,14 +197,39 @@ const scrolling: [string, object, string, string][] = [
     `thumb drag, first report at column ${x}`,
     {},
     `press:19,0 move:${x},2 move:19,4 release:${x},4 press:5,5 move:19,5 move:19,8 release:19,8`,
-    "0,0 19,0 38,0 38,0 38,0 38,0 38,0 38,0",
+    "0,0 20,0 40,0 40,0 40,0 40,0 40,0 40,0",
   ]),
+  // The box and its content growing in one frame clamp against that frame's range, not a stale one (338).
+  ["same-frame growth keeps the position", { child: { width: 10, height: 15 } }, "#5 grow:20,25", "5,0 5,0"],
+  ["same-frame growth clamps to the new range", { child: { width: 10, height: 15 } }, "#5 grow:20,22", "5,0 2,0"],
+  [
+    "same-frame horizontal growth keeps the position",
+    { scrollX: true, child: { width: 25, height: 5 } },
+    "#5 growx:30,35",
+    "0,5 0,5",
+  ],
+  [
+    "same-frame growth keeps a sticky reader away from the edge",
+    { stickyScroll: true, stickyStart: "bottom", child: { width: 10, height: 15 } },
+    "#2 grow:20,25",
+    "2,0 2,0",
+  ],
+  // Vertical viewport padding leaves the whole content reachable (321).
+  ["viewport padding", { viewportOptions: { paddingTop: 2 }, child: { height: 20 } }, "end", "12,0"],
+  ["viewport padding on both edges", { viewportOptions: { paddingY: 2 }, child: { height: 20 } }, "end", "14,0"],
+  [
+    "viewport padding on both sides",
+    { scrollX: true, viewportOptions: { paddingX: 2 }, child: { width: 40, height: 5 } },
+    "#100",
+    "0,24",
+  ],
 ]
 
 test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
   const { child = { width: 100, height: 100 }, ...rest } = options as { child?: object }
   const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10, ...rest })
-  scroll.add(new BoxRenderable(renderer, child))
+  const content = new BoxRenderable(renderer, child)
+  scroll.add(content)
   renderer.root.add(scroll)
   await setup.renderOnce()
   const trace: string[] = []
@@ -214,8 +240,13 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
     else if (kind.endsWith("wheel"))
       await setup.mockMouse.scroll(5, 5, arg as "up", { modifiers: { shift: kind !== "wheel" } })
     else if (kind === "arrow") {
-      const arrow = arg === "end" ? scroll.verticalScrollBar.endArrow : scroll.verticalScrollBar.startArrow
-      await setup.mockMouse.click(arrow.x, arrow.y)
+      const bar = scroll.verticalScrollBar
+      await setup.mockMouse.click(bar.x, arg === "end" ? bar.y + bar.height - 1 : bar.y)
+    } else if (kind === "grow" || kind === "growx") {
+      const [size, child] = arg.split(",").map(Number)
+      if (kind === "grow") [scroll.height, content.height] = [size, child]
+      else [scroll.width, content.width] = [size, child]
+      await setup.renderOnce()
     } else if (kind === "auto") {
       scroll.updateAutoScroll(...(arg.split(",").map(Number) as [number, number]))
       clock.advance(100)
@@ -226,9 +257,16 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
       await setup.mockMouse[kind === "press" ? "pressDown" : kind === "move" ? "moveTo" : "release"](x, y)
       await setup.renderOnce()
     } else if (!scroll.handleKeyPress(key(step))) token = "!"
-    expect([scroll.content.translateX + scroll.scrollLeft, scroll.content.translateY + scroll.scrollTop]).toEqual([
-      0, 0,
-    ])
+    // One position: the bars and the content's origin agree with scrollTop and scrollLeft.
+    const { viewport, wrapper } = scroll
+    expect([
+      wrapper.height - scroll.height,
+      wrapper.width - viewport.width,
+      scroll.horizontalScrollBar.scrollPosition - scroll.scrollLeft,
+      scroll.verticalScrollBar.scrollPosition - scroll.scrollTop,
+      scroll.content.x + scroll.scrollLeft - viewport.x - viewport.paddingLeft,
+      scroll.content.y + scroll.scrollTop - viewport.y - viewport.paddingTop,
+    ]).toEqual([0, 0, 0, 0, 0, 0])
     trace.push(
       token === "!" ? `!${scroll.scrollTop},${scroll.scrollLeft}` : `${scroll.scrollTop},${scroll.scrollLeft}${token}`,
     )
@@ -236,7 +274,10 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
   expect(trace.join(" ")).toBe(expected)
 })
 
-// Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling.
+// Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling, and the
+// SCROLL request comes only while a part has a listener (`listen` adds a content "resize" and a bar "change" listener;
+// it hears changes from then on). Listeners of events a part does not emit ask for nothing. The counts of the events
+// follow the trace.
 test("ScrollBox host requests per frame", async () => {
   const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
   for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
@@ -249,15 +290,30 @@ test("ScrollBox host requests per frame", async () => {
     append: () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     auto: () => (scroll.updateAutoScroll(10, 9), clock.advance(100)),
     stop: () => scroll.stopAutoScroll(),
+    listen: () => (scroll.content.on("resize", resized), scroll.verticalScrollBar.on("change", changed)),
+    "append+listeners": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    "idle+listeners": () => {},
+    "scroll+listeners": () => scroll.scrollBy(3),
+    unlisten: () => (scroll.content.off("resize", resized), scroll.verticalScrollBar.off("change", changed)),
+    "append again": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    unsupported: () => (scroll.content.on("change", changed), scroll.verticalScrollBar.on("resize", resized)),
+    "append unsupported": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
   }
+  let events = ""
+  const resized = () => (events += "r")
+  const changed = () => (events += "c")
   const trace: string[] = []
   for (const [name, step] of Object.entries(steps)) {
     await step()
     renderer.requestRender()
     await setup.renderOnce()
-    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}`)
+    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}`)
+    events = ""
   }
-  expect(trace.join(" ")).toBe("idle:0 scroll:0 wheel:0 append:1 auto:1 stop:0")
+  expect(trace.join(" ")).toBe(
+    "idle:0 scroll:0 wheel:0 append:0 auto:1 stop:0 listen:0 append+listeners:1r idle+listeners:0 " +
+      "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0",
+  )
 })
 
 // Wheel steps over an inner scroller in an outer ScrollBox (scrolled to 5, rows 5..8 show the inner node). A step

@@ -241,7 +241,6 @@ pub const ANSI = struct {
     pub const reset = "\x1b[0m";
     pub const clear = "\x1b[2J";
     pub const home = "\x1b[H";
-    pub const clearAndHome = "\x1b[H\x1b[2J";
     pub const eraseToEndOfLine = "\x1b[K";
     pub const hideCursor = "\x1b[?25l";
     pub const showCursor = "\x1b[?25h";
@@ -416,15 +415,6 @@ pub const ANSI = struct {
 
     pub fn setTerminalTitleOutput(writer: anytype, title: []const u8) AnsiError!void {
         writer.print(setTerminalTitle, .{title}) catch return AnsiError.WriteFailed;
-    }
-
-    pub fn makeRoomForRendererOutput(writer: anytype, height: u32) AnsiError!void {
-        if (height > 1) {
-            var i: u32 = 0;
-            while (i < height - 1) : (i += 1) {
-                writer.writeByte('\n') catch return AnsiError.WriteFailed;
-            }
-        }
     }
 };
 

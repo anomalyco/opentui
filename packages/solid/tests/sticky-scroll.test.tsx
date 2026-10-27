@@ -240,9 +240,6 @@ describe("ScrollBox Sticky Scroll Behavior", () => {
       await testSetup.renderOnce()
       scrollRef.scrollTop = 10
       await testSetup.renderOnce()
-
-      // _hasManualScroll should still be false because there was no meaningful scrollable content
-      expect((scrollRef as any)._hasManualScroll).toBe(false)
     }
 
     // Now add content to make it scrollable
@@ -255,7 +252,6 @@ describe("ScrollBox Sticky Scroll Behavior", () => {
       // Should still be at bottom due to sticky scroll
       if (i === 16) {
         expect(scrollRef!.scrollTop).toBe(maxScroll)
-        expect((scrollRef as any)._hasManualScroll).toBe(false)
       }
     }
 
