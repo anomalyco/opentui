@@ -217,6 +217,8 @@ skip_explicit_width_query: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
+/// The host ends each query batch with DA1 and waits for its reply (sentinel mode).
+reply_sentinel: bool = false,
 unicode_wide_locked: ?bool = null,
 host_env_hyperlinks: bool = false,
 hyperlinks_override: ?bool = null,
@@ -374,7 +376,7 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
     if (!self.skip_graphics_query and !self.isInTmux()) {
         try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
-        try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
+        if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
     }
 
     if (!self.skip_explicit_width_query) {
@@ -390,6 +392,8 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     }
 
     try tty.writeAll(ansi.ANSI.restoreCursorState);
+    // Terminals answer in order: the DA1 reply follows every other reply of the batch.
+    if (self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
 }
 
 pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
@@ -1146,27 +1150,29 @@ fn parseKittyGraphicsResponse(self: *Terminal, response: []const u8) void {
     }
 }
 
-fn parseSixelDeviceAttributes(self: *Terminal, response: []const u8) void {
-    if (!self.graphics_enabled) return;
+/// Returns whether the response holds a DA1 reply.
+fn parseSixelDeviceAttributes(self: *Terminal, response: []const u8) bool {
+    // With the graphics query skipped, DA1 answers only the sentinel. Inside tmux the caller clears Sixel.
+    const graphics = self.graphics_enabled and !self.skip_graphics_query;
+    var found = false;
     var offset: usize = 0;
     while (std.mem.findPos(u8, response, offset, "\x1b[?")) |start| {
         var end = start + 3;
         while (end < response.len and (std.ascii.isDigit(response[end]) or response[end] == ';')) : (end += 1) {}
-        if (end >= response.len) return;
-        if (response[end] != 'c') {
-            offset = end + 1;
-            continue;
-        }
+        if (end >= response.len) return found;
+        offset = end + 1;
+        if (response[end] != 'c') continue;
+        found = true;
+        if (!graphics) continue;
         var params = std.mem.splitScalar(u8, response[start + 3 .. end], ';');
         while (params.next()) |param| {
             if (std.mem.eql(u8, param, "4")) {
                 self.sixel_queried = true;
                 self.caps.sixel = true;
-                return;
             }
         }
-        offset = end + 1;
     }
+    return found;
 }
 
 fn semanticVersionAtLeast(version: []const u8, required_major: u32, required_minor: u32) bool {
@@ -1277,7 +1283,7 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     self.parseProgramStatusReply(response);
     self.parseXtgettcapMs(response);
     self.parseKittyGraphicsResponse(response);
-    self.parseSixelDeviceAttributes(response);
+    const device_attributes = self.parseSixelDeviceAttributes(response);
 
     // DECRPM responses
     if (std.mem.find(u8, response, "1016;2$y")) |_| {
@@ -1349,6 +1355,11 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         }
 
         scan_pos = pos + 1;
+    }
+    // The sentinel's reply follows every startup cursor report, so none is still coming.
+    if (device_attributes and self.reply_sentinel) {
+        self.startup_cursor_query_pending = false;
+        self.explicit_width_probe_reports_pending = 0;
     }
 
     // Parse xtversion response: ESC P > | name version ESC \

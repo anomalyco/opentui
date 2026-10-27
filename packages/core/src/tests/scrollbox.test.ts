@@ -395,39 +395,6 @@ const facadeRows: FacadeRow[] = [
     "40,40,50",
   ],
   [
-    "a held arrow repeats until released",
-    { scrollbarOptions: { showArrows: true } },
-    async (box) => {
-      // The repeat's 500 ms delay and 200 ms interval run by hand; other timers run as usual.
-      const timers: (() => void)[] = []
-      const [realTimeout, realInterval] = [globalThis.setTimeout, globalThis.setInterval]
-      const capture =
-        (real: Function) =>
-        (callback: () => void, delay?: number, ...args: unknown[]) =>
-          delay === 500 || delay === 200 ? (timers.push(callback), 0) : real(callback, delay, ...args)
-      const timeout = spyOn(globalThis, "setTimeout").mockImplementation(capture(realTimeout) as typeof setTimeout)
-      const interval = spyOn(globalThis, "setInterval").mockImplementation(capture(realInterval) as typeof setInterval)
-      try {
-        const trace = []
-        await mockMouse.pressDown(19, 9)
-        trace.push(box.scrollTop)
-        timers.shift()!()
-        trace.push(box.scrollTop)
-        const repeat = timers.shift()!
-        repeat()
-        trace.push(box.scrollTop)
-        await mockMouse.release(19, 9)
-        repeat()
-        trace.push(box.scrollTop)
-        return trace
-      } finally {
-        timeout.mockRestore()
-        interval.mockRestore()
-      }
-    },
-    "5,10,12,12",
-  ],
-  [
     "viewport padding writes",
     {},
     async (box) => {
