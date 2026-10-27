@@ -1749,6 +1749,56 @@ test "Scene feedback scans a culled wide parent no more than today's walk" {
     }
 }
 
+// Today's walk stamps an idle-update node it passes, so UPDATE given to it by a later reply in
+// the frame waits for the next frame; feedback that skips the node keeps that timing. Rows: T
+// (idle update) before B (UPDATE); B's reply gives T UPDATE and RESIZE; or T is hidden and the
+// reply also shows it, before or after the hooks, so the walk never stamped it; or the reply
+// clears T's hooks, or gives T idle update after UPDATE. The twins send the same requests in every frame.
+test "Scene feedback keeps the update stamp of a passed idle-update node" {
+    const Change = enum { to_update, shown_to_update, show_then_update, to_none, update_to_idle };
+    for (std.enums.values(Change)) |change| {
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
+        defer for (twins) |f| f.deinit();
+        var nodes: [2][6]context.Handle = undefined;
+        var logs: [2]std.ArrayListUnmanaged(usize) = .{ .empty, .empty };
+        defer for (&logs) |*log| log.deinit(testing.allocator);
+        for (twins, &nodes, 0..) |f, *list, twin| {
+            try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+            try feedbackNode(f, list, 0, c.OT_SCENE_BOX, f.root, 0);
+            try feedbackHook(f, list[0], if (change == .update_to_idle) c.OT_SCENE_HOOK_UPDATE else c.OT_SCENE_HOOK_IDLE_UPDATE);
+            if (change == .shown_to_update or change == .show_then_update) try f.owner.sceneSetStyle(list[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+            try feedbackNode(f, list, 1, c.OT_SCENE_BOX, f.root, 1);
+            try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
+        }
+        for (0..3) |frame| {
+            for (twins, nodes, &logs) |f, list, *log| {
+                log.clearRetainingCapacity();
+                var request = try f.owner.sceneFrameStep(f.id, null, options);
+                while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                    try log.append(testing.allocator, request.num);
+                    if (frame == 1 and std.meta.eql(request.node, list[1])) switch (change) {
+                        .to_update => try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE),
+                        .shown_to_update => {
+                            try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
+                            try f.owner.sceneSetStyle(list[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                        },
+                        .show_then_update => {
+                            try f.owner.sceneSetStyle(list[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                            try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
+                        },
+                        .to_none => try feedbackHook(f, list[0], 0),
+                        .update_to_idle => try feedbackHook(f, list[0], c.OT_SCENE_HOOK_IDLE_UPDATE),
+                    };
+                    request = try f.owner.sceneFrameStep(f.id, request, options);
+                }
+                _ = try f.owner.sceneFrameCommit(f.id, request, false);
+                try drain(f.owner, f.id);
+            }
+            try testing.expectEqualSlices(usize, logs[0].items, logs[1].items);
+        }
+    }
+}
+
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame. Only rows whose layout, text, or view changed
