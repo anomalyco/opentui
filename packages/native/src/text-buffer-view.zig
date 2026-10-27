@@ -494,11 +494,7 @@ pub const UnifiedTextBufferView = struct {
 
     pub fn prepare(self: *Self) TextBufferViewError!void {
         _ = self.getVirtualLines();
-        if (self.virtual_lines_dirty or
-            (self.truncate and self.viewport != null and !self.truncation_applied))
-        {
-            return error.OutOfMemory;
-        }
+        if (self.needsPrepare()) return error.OutOfMemory;
     }
 
     /// Whether prepare would lay out the lines or truncate them again.

@@ -438,7 +438,6 @@ pub const Node = struct {
         clips_children: bool = false,
         // Visible with every ancestor when this round prepared the node.
         prepared_visible: bool = false,
-        // The node's next refresh may differ from its last one.
         self_stale: bool = true,
         view_queued: bool = false,
         // A child was marked since the node's last refresh batch.
@@ -449,16 +448,15 @@ pub const Node = struct {
     // their own state until feedback reaches them.
     subtree: enum { clean, running, stale } = .stale,
     clean_selection: u64 = 0,
-    // The round whose host reply last marked the node; it may have popped already.
+    // VERIFY only: the round whose host reply last marked the node.
     stale_id: u64 = 0,
-    // Nodes with an UPDATE hook, and filtering parents, in the subtree, the node included.
+    // Subtree counts, the node included.
     update_below: u32 = 0,
     filters_below: u32 = 0,
-    // Direct children that may need feedback; see needsFeedback. Unordered, a superset.
+    // Children that may need feedback (needsFeedback), unordered.
     attention: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     attention_index: u32 = no_slot,
-    // A filtering parent's selection_epoch at its last overlap scan, and the scan's epoch of
-    // a child that overlapped.
+    // A filtering parent's last overlap scan, and the scan a child last overlapped in.
     selected_epoch: u64 = 0,
     selected_at: u64 = 0,
     segment: Segment = .{},
@@ -524,7 +522,6 @@ const Segment = struct {
     // The rank of the last entry popped, and of the last child when the segment started.
     cursor: ?u64 = null,
     end: u64 = 0,
-    // The selection culled children.
     filtered: bool = false,
     // Stack entries that insertions scanned; past the child count the segment queues every child.
     work: usize = 0,
@@ -693,7 +690,7 @@ pub const Scene = struct {
     test_stamp_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     // Token lookups of recorded nodes while planning paint.
     test_record_lookups: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
-    // Child entries that feedback scans to pick the children it queues.
+    // Child entries that feedback scans.
     test_feedback_child_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator, config: *yoga.Config, session: handles.Handle) !*Scene {
@@ -842,8 +839,7 @@ pub const Scene = struct {
         markObservationStale(value);
     }
 
-    /// Takes a node out of its parent's paint children, attention, and counts; the old parent's
-    /// selection changes.
+    /// Takes a node out of its parent's paint children, attention, and counts.
     fn detach(self: *Scene, value: *native.NativeRenderable, parent: *native.NativeRenderable) void {
         const node = value.scene_node.?;
         removeChild(&parent.scene_node.?.paint_children, value);
@@ -883,7 +879,6 @@ pub const Scene = struct {
         }
     }
 
-    /// Adds to or subtracts from the UPDATE and filter counts of a node and its ancestors.
     fn countBelow(start: *native.NativeRenderable, updates: u32, filters: u32, comptime add: bool) void {
         var cursor: ?*native.NativeRenderable = start;
         while (cursor) |value| : (cursor = value.scene_node.?.parent) {
@@ -899,8 +894,6 @@ pub const Scene = struct {
         }
     }
 
-    /// Whether feedback may need to visit a child: a hook can request, its subtree changed, or
-    /// a selection change can reveal changed nodes in it.
     fn needsFeedback(node: *const Node) bool {
         return node.update_below != 0 or node.subtree != .clean or node.filters_below != 0;
     }
@@ -921,8 +914,7 @@ pub const Scene = struct {
         list.appendAssumeCapacity(value);
     }
 
-    /// Marks a subtree and its ancestors for feedback. During an attempt, the first node whose
-    /// parent is running a batch joins it, as today's walk would still pop it there.
+    /// Marks a node and its ancestors; during an attempt, stages the first that joins a batch.
     fn markSubtree(self: *Scene, value: *native.NativeRenderable, newly_stale: bool) void {
         var staging = self.attempt != null;
         var cursor: ?*native.NativeRenderable = value;
@@ -933,9 +925,7 @@ pub const Scene = struct {
         }
     }
 
-    /// Inserts a node that became needy into its parent's active segment, if the segment has
-    /// not passed its rank and today's walk would have queued it. Returns whether the
-    /// grandparent decides instead.
+    /// Inserts a newly needy node where today's walk still pops it; false stops the walk up.
     fn stage(self: *Scene, value: *native.NativeRenderable, newly_stale: bool) bool {
         const node = value.scene_node.?;
         const parent = node.parent orelse return false;
@@ -958,8 +948,7 @@ pub const Scene = struct {
         return false;
     }
 
-    /// Inserts a segment entry at its rank, between the parent's boundary entry and its
-    /// nested work. Past a child count of scanned entries, queues every child instead.
+    /// Inserts a segment entry at its rank; past a child count of scanned entries, queues all.
     fn insertFeedback(self: *Scene, parent: *native.NativeRenderable, value: *native.NativeRenderable, kind: @FieldType(Feedback, "kind")) void {
         const target = parent.scene_node.?;
         const node = value.scene_node.?;
@@ -977,8 +966,7 @@ pub const Scene = struct {
         if (kind == .update) node.setFeedback(&self.attempt.?, .queued);
     }
 
-    /// Replaces a segment's remaining entries with every child today's walk still pops. The
-    /// segment then takes no insertion: the pop-time skip passes the children that need nothing.
+    /// Replaces a segment's remaining entries with every child today's walk still pops.
     fn queueSegment(self: *Scene, parent: *native.NativeRenderable) void {
         const target = parent.scene_node.?;
         const active = &self.attempt.?;
@@ -1287,8 +1275,7 @@ pub const Scene = struct {
         self.clearPreparation();
     }
 
-    /// After a culling change: children the selection skipped may show, so feedback visits the
-    /// parent again.
+    /// After a culling change, culled children may show: feedback visits the parent again.
     fn setFilters(self: *Scene, value: *native.NativeRenderable, filtered: bool) void {
         const filters = value.scene_node.?.filtersChildren();
         if (filters != filtered) {
@@ -1629,7 +1616,7 @@ pub const Scene = struct {
                             _ = self.feedback.pop();
                         } else {
                             // LIFO preserves the legacy new-child Set's insertion order.
-                            std.mem.sort(Feedback, self.feedback.items[start..], {}, placementGreaterThan);
+                            self.orderBatch(self.feedback.items[start..], .placement);
                         }
                     },
                     .children => {
@@ -1652,7 +1639,7 @@ pub const Scene = struct {
                             if (state.prepared_gen != self.candidates_gen or !(full or state.layout_flags.self_stale)) continue;
                             self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = .filtered_refresh, .parent = node.handle, .rank = state.paint_rank });
                         }
-                        std.mem.sort(Feedback, self.feedback.items[start..], {}, rankGreaterThan);
+                        self.orderBatch(self.feedback.items[start..], .rank);
                     },
                     .select => {
                         active.filter_selected = true;
@@ -1708,11 +1695,8 @@ pub const Scene = struct {
         };
     }
 
-    /// Queues the updates of a parent's children in paint order: those that need feedback,
-    /// or every child under FULL_FRAME. A filtering parent tests overlap again only after the
-    /// selection changed; until then the children that overlapped at its last test do. That
-    /// test also sets aside culled children that only a stale subtree keeps in the attention
-    /// list, so later scans pass over them.
+    /// Queues the children that need feedback in paint order. A filtering parent tests overlap
+    /// only after the selection changed, and sets aside culled children only a stale subtree lists.
     fn selectChildren(self: *Scene, objects: *const handles.Table, value: *native.NativeRenderable) !void {
         const node = value.scene_node.?;
         const active = &self.attempt.?;
@@ -1764,7 +1748,7 @@ pub const Scene = struct {
             if (filter != null and state.selected_at != node.selected_epoch) continue;
             self.queueUpdate(node, state);
         }
-        std.mem.sort(Feedback, self.feedback.items[start..], {}, rankGreaterThan);
+        self.orderBatch(self.feedback.items[start..], .rank);
     }
 
     /// A shown child that the next round's walk lists keeps its parent's subtree from cleaning,
@@ -1774,6 +1758,16 @@ pub const Scene = struct {
         var display: u32 = 0;
         try yoga.check(yoga.yogaNodeStyleGetEnumChecked(child.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
         if (display != api.OT_DISPLAY_NONE) self.markSubtree(parent, false);
+    }
+
+    /// Orders a batch so its lowest key pops first (LIFO). A batch picked in key order, as an
+    /// unpruned attention list gives it, only reverses; sorting counts in test_sort_steps.
+    fn orderBatch(self: *Scene, batch: []Feedback, comptime key: BatchKey) void {
+        if (batch.len < 2) return;
+        for (batch[1..], batch[0 .. batch.len - 1]) |next, previous| {
+            if (batchKey(next, key) < batchKey(previous, key)) break;
+        } else return std.mem.reverse(Feedback, batch);
+        std.mem.sort(Feedback, batch, self, keyGreaterThan(key));
     }
 
     fn queueUpdate(self: *Scene, parent: *const Node, state: *Node) void {
@@ -2050,10 +2044,8 @@ pub const Scene = struct {
             node.geometry_epoch = self.layout_epoch;
             node.prepared_gen = self.candidates_gen;
             node.layout_flags.prepared_visible = entry.visible;
-            // Feedback refreshes a node whose box or size moved off what it last observed.
-            if (phases and (!sameBox(entry.layout, node.observed_layout) or entry.layout.width != node.resize_width or entry.layout.height != node.resize_height)) {
-                markObservationStale(entry.node);
-            }
+            // An observed node's resize size is its observed one; a new node is stale anyway.
+            if (phases and !sameBox(entry.layout, node.observed_layout)) markObservationStale(entry.node);
             if (!phases) {
                 if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
                 // With hooks, hidden roots never enter refresh; placed hidden children still do.
@@ -2577,10 +2569,10 @@ pub const Scene = struct {
         const y: i32 = @intFromFloat(cells.screenY);
         const width: u32 = @intFromFloat(cells.width);
         const height: u32 = @intFromFloat(cells.height);
-        // Culled views prepare when they show; an editor's preparation also follows its cursor.
+        // Refresh prepares a changed culled text, and drawing applies its layout. A text view can
+        // lose its viewport to a rebind in a RECORD reply; an editor's preparation follows its cursor.
         const prepares = (entry.filtered or self.preparation_dirty) and self.verify_target == null;
         if (node.text) |text| {
-            if (prepares and viewNeedsPrepare(node, entry.layout)) try prepareView(&self.frame_work, node, entry.layout);
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(text.view, x, y);
         } else if (node.kind == api.OT_SCENE_TEXT_VIEW) {
@@ -3182,12 +3174,19 @@ fn sameEntries(first: []const Work, second: []const Work) bool {
     return true;
 }
 
-fn placementGreaterThan(_: void, left: Feedback, right: Feedback) bool {
-    return left.placement > right.placement;
+const BatchKey = enum { rank, placement };
+
+fn batchKey(entry: Feedback, comptime key: BatchKey) u64 {
+    return if (key == .rank) entry.rank else entry.placement;
 }
 
-fn rankGreaterThan(_: void, left: Feedback, right: Feedback) bool {
-    return left.rank > right.rank;
+fn keyGreaterThan(comptime key: BatchKey) fn (*Scene, Feedback, Feedback) bool {
+    return struct {
+        fn greater(owner: *Scene, left: Feedback, right: Feedback) bool {
+            if (builtin.is_test) owner.test_sort_steps += 1;
+            return batchKey(left, key) > batchKey(right, key);
+        }
+    }.greater;
 }
 
 /// Paint, clip, and hit geometry use i32 cells. An axis outside them keeps the truncated cells that paint covers
