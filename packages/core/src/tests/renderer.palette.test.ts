@@ -895,6 +895,12 @@ describe("Palette detection while capabilities are unsettled", () => {
 
       expect(writes).toEqual([])
       expect(renderer.paletteDetectionStatus).toBe("idle")
+
+      // The startup batch end releases it: the DA1 reply in sentinel mode, otherwise the backstop.
+      if ((renderer as any).replySentinel) renderer.stdin.emit("data", Buffer.from("\x1b[?62c"))
+      else clock.advance(5000)
+      await flushAsync()
+      expect(writes.some((write) => write.includes("]4;0;?"))).toBe(true)
     } finally {
       renderer.destroy()
       if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)

@@ -1021,7 +1021,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private backgroundColor: RGBA = RGBA.fromInts(0, 0, 0, 0)
   private waitingForPixelResolution: boolean = false
   private pixelResolutionRequeryPending: boolean = false
-  // Each reply answers the oldest unanswered query; only the newest query's size is current.
+  // Pixel replies still owed; each consumes one.
   private unansweredPixelQueries = 0
   private replyBatches: ReplyBatch[] = []
   // Native parser and no missed DA1 reply yet. After a miss, batches carry no DA1 and end at their backstop.
@@ -3334,10 +3334,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   /** Call once the batch's output has drained, so output backpressure cannot cause a miss. */
   private armReplyBackstop(batch: ReplyBatch): void {
-    if (!this.replyBatches.includes(batch) || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) return
+    if (!this.replyBatches.includes(batch) || batch.backstop !== null) return
+    if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) return
     batch.backstop = this.clock.setTimeout(() => {
       batch.backstop = null
-      this.replySentinel &&= batch.excused
+      // A paste still open may hold the DA1 reply as payload.
+      const pasting = this.stdinParser instanceof NativeStdinParser && this.stdinParser.pasting
+      this.replySentinel &&= batch.excused || pasting
       this.endReplyBatch(batch)
     }, REPLY_BACKSTOP_MS)
   }
@@ -3660,7 +3663,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.addInputHandler((sequence: string) => {
       if (!isPixelResolutionResponse(sequence) || this.unansweredPixelQueries === 0) return false
-      if (--this.unansweredPixelQueries > 0) return true
+      // Applied in arrival order, so an unanswered query never holds back a later reply.
+      this.unansweredPixelQueries--
       this.waitingForPixelResolution = false
       if (this.pixelResolutionRequeryPending) {
         this.syncReplyContext(false)

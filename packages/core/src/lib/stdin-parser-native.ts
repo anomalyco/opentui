@@ -184,6 +184,11 @@ export class NativeStdinParser {
     this.reconcileTimeout(this.events.length > 0)
   }
 
+  /** A bracketed paste has started and not yet ended. */
+  public get pasting(): boolean {
+    return this.paste !== null
+  }
+
   public push(data: Uint8Array): void {
     this.ensureAlive()
     this.native(() => this.feed(data, this.nowNs()))

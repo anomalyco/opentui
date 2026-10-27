@@ -2187,8 +2187,10 @@ async function createBatchRenderer(experimental_nativeInput: boolean) {
   r.nativeSession.setupTerminal = (options: any) => (
     sentinels.push(options.replySentinel), setupTerminal.call(r.nativeSession, options)
   )
+  let capabilityCalls = 0
   r.nativeSession.control = (request: any) => {
     if (request.kind === "query-pixel-resolution") sentinels.push(request.sentinel)
+    if (request.kind === "capability-response") capabilityCalls++
     return control.call(r.nativeSession, request)
   }
   const keys: string[] = []
@@ -2200,38 +2202,67 @@ async function createBatchRenderer(experimental_nativeInput: boolean) {
   const send = (bytes: string) => renderer.stdin.emit("data", Buffer.from(bytes))
   const batches = () => r.replyBatches.map((batch: { kind: string }) => batch.kind)
   const context = () => r.stdinParser.protocolContext
-  return { renderer, r, clock, sentinels, keys, drained, send, batches, context }
+  return {
+    renderer,
+    r,
+    clock,
+    sentinels,
+    keys,
+    drained,
+    send,
+    batches,
+    context,
+    capabilityCalls: () => capabilityCalls,
+  }
 }
 
-test("pixel queries end at their DA1 reply or backstop, and each reply answers the oldest query (issue 346)", async () => {
+test("pixel queries end at their DA1 reply or backstop, and replies apply in arrival order (issue 346)", async () => {
   for (const native of [false, true]) {
     const t = await createBatchRenderer(native)
+    // In clock mode the backstop ends every batch admitted so far.
+    const end = () => (native ? t.send(DA1_REPLY) : t.clock.advance(5000))
     try {
       expect(t.sentinels).toEqual([native, native])
       expect(t.batches()).toEqual(["startup", "pixel"])
       expect(t.context().pixelResolutionQueryActive).toBe(true)
-      // The terminal ignores CSI 14 t: the DA1 replies, or in clock mode the backstop, end both batches.
-      if (native) t.send(DA1_REPLY + DA1_REPLY)
-      else t.clock.advance(5000)
+      // The terminal ignores this CSI 14 t. The batch ends anyway, and its cancelled backstop never fires.
+      end()
+      if (native) end()
+      t.clock.advance(5000)
       expect([t.batches(), t.context().pixelResolutionQueryActive, t.r.replySentinel]).toEqual([[], false, native])
 
+      // The lost reply holds back no later one.
       t.renderer.resize(100, 30)
       await t.drained()
-      expect(t.sentinels).toEqual([native, native, native])
       t.send("\x1b[4;80;100t")
-      expect(t.renderer.resolution).toBeNull()
-      t.send("\x1b[4;80;200t")
-      expect(t.renderer.resolution).toEqual({ width: 200, height: 80 })
-      expect(t.context().pixelResolutionQueryActive).toBe(false)
+      expect([t.renderer.resolution, t.context().pixelResolutionQueryActive]).toEqual([
+        { width: 100, height: 80 },
+        false,
+      ])
 
-      // At most four queries stay unanswered.
-      for (let width = 90; width > 80; width -= 2) {
+      // Overlapping batches: when the older one ends, the newer query keeps the guard. A pixel DA1 reply is
+      // consumed without a capability call.
+      t.renderer.resize(90, 30)
+      await t.drained()
+      if (native) {
+        expect(t.batches()).toEqual(["pixel", "pixel"])
+        const calls = t.capabilityCalls()
+        end()
+        expect([t.batches(), t.context().pixelResolutionQueryActive, t.capabilityCalls()]).toEqual([
+          ["pixel"],
+          true,
+          calls,
+        ])
+      }
+      end()
+
+      // At most four replies stay owed.
+      for (let width = 88; width > 80; width -= 2) {
         t.renderer.resize(width, 30)
         await t.drained()
-        if (native) t.send(DA1_REPLY)
-        else t.clock.advance(5000)
+        end()
       }
-      expect([t.sentinels.length, t.batches(), t.keys]).toEqual([7, [], []])
+      expect([t.sentinels.length, t.r.unansweredPixelQueries, t.batches(), t.keys]).toEqual([6, 4, [], []])
     } finally {
       t.renderer.destroy()
     }
@@ -2239,21 +2270,35 @@ test("pixel queries end at their DA1 reply or backstop, and each reply answers t
 })
 
 test("a batch whose DA1 reply never comes ends at its backstop; only an unexcused one switches to clock mode", async () => {
-  for (const before of ["", "\x1b[200~" + DA1_REPLY + "\x1b[201~", "suspend"]) {
+  const paste = "\x1b[200~" + DA1_REPLY
+  for (const before of ["", paste + "\x1b[201~", paste, "suspend"]) {
     const t = await createBatchRenderer(true)
     try {
       t.send("\x1b[4;80;100t")
+      let batches = ["startup", "pixel"]
       if (before === "suspend") {
+        // This query's output drains only after resume, which has already started its backstop.
+        const { idle } = t.r.nativeSession
+        let drain = () => {}
+        t.r.nativeSession.idle = () => new Promise<void>((resolve) => (drain = resolve))
+        t.renderer.resize(90, 30)
+        t.r.nativeSession.idle = idle
         await t.renderer.suspend()
         await t.renderer.resume()
-        // Admitted behind excused batches, which may take its DA1 reply.
-        t.renderer.resize(90, 30)
+        const timers = t.clock.pendingTimerCount
+        drain()
         await t.drained()
+        expect(t.clock.pendingTimerCount).toBe(timers)
+        // Admitted behind excused batches, which may take its DA1 reply.
+        t.send("\x1b[4;80;90t")
+        t.renderer.resize(80, 30)
+        await t.drained()
+        batches = ["startup", "pixel", "pixel", "pixel"]
       } else t.send(before)
-      const batches = before === "suspend" ? ["startup", "pixel", "pixel"] : ["startup", "pixel"]
       t.clock.advance(4999)
       expect([t.batches(), t.context().replySentinelActive]).toEqual([batches, true])
       t.clock.advance(1)
+      // An open paste may hold the DA1 reply too.
       const miss = before === ""
       expect({ before, batches: t.batches(), sentinel: t.r.replySentinel }).toEqual({
         before,
@@ -2304,8 +2349,8 @@ test("reply batches follow an independent model under random replies, pastes, re
             for (const batch of batches) batch.excused = true
           } else if (op === "pixel") {
             t.send("\x1b[4;80;100t")
-            if (m.unanswered > 0 && --m.unanswered === 0) {
-              m.waiting = false
+            if (m.unanswered > 0) {
+              Object.assign(m, { unanswered: m.unanswered - 1, waiting: false })
               if (m.requery) query()
             }
           } else if (op === "advance") {
