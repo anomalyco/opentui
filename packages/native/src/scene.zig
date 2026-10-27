@@ -535,15 +535,17 @@ const Culling = struct {
 
 /// How far feedback passed a parent's children in a frame, where today's walk would have
 /// passed them: children sort there, once per frame, and an idle-update node uses its update.
-/// A child is passed if its rank is below cursor and limit, and selected if the parent culls.
-/// Ranks of children attached later are at least limit.
+/// A child is passed if its rank is below cursor and limit and, if the parent culls, a scan
+/// of this frame selected it. Ranks of children attached later are at least limit.
 const Pass = struct {
     frame: u64 = 0,
     cursor: u64 = 0,
     limit: u64 = 0,
     // A selection of the frame ended: it decided which of its children were passed.
     finished: bool = false,
-    filtered: bool = false,
+    // The parent's selected_epoch at its first culling selection of the frame, or 0 if its last
+    // selection did not cull: a later scan does not undo what an earlier one passed.
+    epoch: u64 = 0,
     // The frame in which the node moved away from where feedback had passed it.
     moved_frame: u64 = 0,
 };
@@ -918,7 +920,7 @@ pub const Scene = struct {
             const target = parent.scene_node.?;
             if (target.pass.frame == active.frame_id) {
                 if (node.paint_rank < @min(target.pass.cursor, target.pass.limit) and
-                    (!target.pass.filtered or node.culling.selected_at == target.culling.selected_epoch)) return true;
+                    (target.pass.epoch == 0 or node.culling.selected_at >= target.pass.epoch)) return true;
                 // A running selection passes its children one by one, but an earlier pass may have
                 // passed its parent whole.
                 if (target.pass.finished) return false;
@@ -1736,10 +1738,11 @@ pub const Scene = struct {
         const listed = self.scanList(objects, node);
         if (node.pass.frame != active.frame_id) node.pass = .{ .frame = active.frame_id, .moved_frame = node.pass.moved_frame };
         node.pass.limit = if (children.len == 0) node.pass.limit else children[children.len - 1].scene_node.?.paint_rank + 1;
-        node.pass.filtered = filter != null;
-        if (full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch)) {
+        const rescans = full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch);
+        if (rescans) node.culling.selected_epoch = self.selection_epoch;
+        if (filter == null) node.pass.epoch = 0 else if (node.pass.epoch == 0) node.pass.epoch = node.culling.selected_epoch;
+        if (rescans) {
             const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
-            node.culling.selected_epoch = self.selection_epoch;
             var index = node.paint_children.items.len;
             while (index != 0) {
                 index -= 1;
