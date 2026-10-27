@@ -1288,6 +1288,7 @@ test "Scene feedback runs children that replies mark in a later pass of the roun
         .{ .reply = .move_under, .expected = &.{ 1, 3 } },
         .{ .reply = .all, .n = 1000, .expected = &.{} },
         .{ .reply = .chain, .n = 1000, .expected = &.{} },
+        .{ .reply = .chain, .n = 60, .filter = true, .shown = 63, .expected = &.{} },
         .{ .reply = .all_continue, .n = 1000, .expected = &.{} },
         .{ .reply = .show_hidden, .n = 15, .expected = &.{ 1, 17, 2 } },
         .{ .reply = .all, .n = 60, .filter = true, .shown = 63, .expected = &.{} },
@@ -1330,8 +1331,10 @@ test "Scene feedback runs children that replies mark in a later pass of the roun
             // A, its RESIZE first if it owes one, then Y, then X1..Xn in a later pass.
             const head: usize = if (row.reply == .all_continue) 2 else 1;
             for (logs[1].items[head..], head..) |index, position| try testing.expectEqual(if (position == head) row.n + 2 else position - head + 1, index);
-            // One reply costs a pass over P's list; a chain of n replies costs n passes.
-            if (row.n == 1000) try testing.expect(steps <= if (row.reply == .chain) (row.n + 2) * (row.n + 12) else 5 * (row.n + 2) + 64);
+            // Linear: a later pass scans only the children that replies marked in the pass before,
+            // so a chain of n replies costs a constant per reply (1,000: 7,014 child steps, 4,821
+            // when marks joined the running batch). A culling parent adds its refresh batch.
+            try testing.expect(steps <= @as(u64, if (row.filter) 11 else 8) * (row.n + 2) + 64);
         }
         try expectSameObservations(twins, .{ nodes[0][0 .. row.n + 5], nodes[1][0 .. row.n + 5] });
     }
@@ -1937,7 +1940,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 3, 0, 10, 1, 2 }, // stale_reply
             .{ 3, 0, 10, 1, 2 }, // stale_requester
             .{ 2, 0, 10, 1, 2 }, // placed_reply
-            .{ 2, 68, 10, 1, 2 }, // destroy_reply
+            .{ 2, 67, 10, 1, 2 }, // destroy_reply
         },
         .{
             .{ 0, 0, 262, 0, 1 }, // first
@@ -1955,7 +1958,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 3, 0, 10, 1, 2 }, // stale_reply
             .{ 3, 0, 10, 1, 2 }, // stale_requester
             .{ 2, 0, 10, 1, 2 }, // placed_reply
-            .{ 2, 17, 9, 1, 2 }, // destroy_reply
+            .{ 2, 16, 9, 1, 2 }, // destroy_reply
         },
         .{
             .{ 0, 0, 4102, 0, 1 }, // first
@@ -1973,7 +1976,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 3, 0, 10, 1, 2 }, // stale_reply
             .{ 3, 0, 10, 1, 2 }, // stale_requester
             .{ 2, 0, 10, 1, 2 }, // placed_reply
-            .{ 2, 17, 9, 1, 2 }, // destroy_reply
+            .{ 2, 16, 9, 1, 2 }, // destroy_reply
         },
     };
     // VERIFY changes no count.
