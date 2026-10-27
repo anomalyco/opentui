@@ -988,7 +988,7 @@ const Harness = struct {
         try self.reply();
         if (self.side.uintLessThan(u32, 3) == 0) try self.markSibling(requester);
         // The requester takes another node's background, which other replies may write first.
-        if (requester >= scaffold_slots and self.side.uintLessThan(u32, 4) == 0) {
+        if (requester >= scaffold_slots and self.model.handles[requester] != null and self.side.uintLessThan(u32, 4) == 0) {
             const from = scaffold_slots + self.side.uintLessThan(usize, node_count_max - scaffold_slots);
             if (self.model.handles[from] != null) {
                 try self.apply(.{ .relay = .{ .from = from, .to = requester } });
@@ -1481,18 +1481,19 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // counts at 64 x 256 (decoded frames about two thirds), derived again after replies began to
     // destroy nodes: those must spare content rows, or viewport scenes fall below the culling
     // cutoff (filtered frames with a request fell from 441 to 51). Sibling marks draw from their
-    // own stream, so they keep the script's mix. Counts: reused 8,730, culling 1,134, culling
-    // with a request 325, kept lists in such a frame 51, hooked under a hidden ancestor 5,722,
-    // reply hid the requester's parent 43, reply detached the requester 34, reply destroyed a
-    // node 556, a RECORD reply changed the scene 100, content-child RESIZE 42, a truncation
-    // change in its reply 41, a sibling marked mid-batch 156, unmeasured content text replaced
-    // 21, UPDATE 4,485, RESIZE 64, LAYOUT_CHANGED 2,124, recordings 408, box bodies 81, decoded
-    // 12,912, an editor's cursor 1,650, a host cursor 8,401, skipped paint 8,239, partly diffed
-    // 1,278, recorded frames that kept rows 121, non-local or image recordings 21, steady reads
-    // 301, draft writes after paint 2,826, raw writes between frames 416, shared text changes
-    // shown 432, style changes shown 227, view binds 373, selections 233, equal re-sends 468,
-    // palette changes 93, frames showing a scroll node with children 937, scrolls and option
-    // changes 167, SCROLL requests 11.
+    // own stream, so they keep the script's mix. Counts: reused 8,697, culling 1,079, culling
+    // with a request 282, kept lists in such a frame 46, hooked under a hidden ancestor 5,652,
+    // reply hid the requester's parent 41, reply detached the requester 34, reply destroyed a
+    // node 537, a RECORD reply changed the scene 151, content-child RESIZE 38, a truncation
+    // change in its reply 37, a sibling marked mid-batch 140, unmeasured content text replaced
+    // 22, UPDATE 4,363, RESIZE 53, LAYOUT_CHANGED 2,196, recordings 565, box bodies 202, decoded
+    // 12,808, an editor's cursor 1,516, a host cursor 8,492, skipped paint 8,206, partly diffed
+    // 1,295, recorded frames that kept rows 189, non-local or image recordings 26, steady reads
+    // 299, draft writes after paint 2,815, raw writes between frames 404, shared text changes
+    // shown 473, style changes shown 238, view binds 368, selections 233, equal re-sends 472,
+    // palette changes 87, frames showing a scroll node with children 921, scrolls and option
+    // changes 154, SCROLL requests 4, relays 119 (none read a different value), and 1 frame of
+    // 23,143 whose requests came in another order.
     const minimums: Stats = .{
         .reused = 2200,
         .filtered = 260,
