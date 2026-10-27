@@ -532,10 +532,12 @@ const Culling = struct {
     clean_selection: u64 = 0,
 };
 
-/// How far feedback passed a parent's children in a frame, where today's walk would have
-/// passed them: children sort there, once per frame, and an idle-update node uses its update.
-/// A child is passed if its rank is below cursor and limit and, if the parent culls, a scan
-/// of this frame selected it. Ranks of children attached later are at least limit.
+/// How far feedback passed a parent's children in a frame: children sort there, once per
+/// frame, and an idle-update node uses its update. A child is passed if its rank is below cursor
+/// and limit and, if the parent culls, a scan of this frame selected it. Ranks of children
+/// attached later are at least limit. The cursor keeps the frame's first round, so a culling
+/// parent's later round passes a child as soon as it selects it, before the child pops, which
+/// the old walk did only with that child earlier in paint order.
 const Pass = struct {
     frame: u64 = 0,
     cursor: u64 = 0,
@@ -1004,10 +1006,9 @@ pub const Scene = struct {
         self.scratch.clearRetainingCapacity();
         for (items[low..]) |entry| {
             if (entry.parent != node.token) break;
-            const value = objects.get(entry.child, .native_renderable, native.NativeRenderable) catch continue;
-            // A child that moved since is dropped where its entry pops.
-            if (value.scene_node == null or value.scene_node.?.owner != self) continue;
-            self.scratch.appendAssumeCapacity(value);
+            // A child that moved since stays in its old parent's group: its update and refresh
+            // entries drop it on the parent check, and a placed refresh refreshes it once.
+            self.scratch.appendAssumeCapacity(objects.get(entry.child, .native_renderable, native.NativeRenderable) catch continue);
         }
         return self.scratch.items;
     }
@@ -1022,9 +1023,7 @@ pub const Scene = struct {
         self.remarked.clearRetainingCapacity();
         for (self.marked.items) |handle| {
             const value = objects.get(handle, .native_renderable, native.NativeRenderable) catch continue;
-            const node = value.scene_node orelse continue;
-            if (node.owner != self) continue;
-            const parent = node.parent orelse continue;
+            const parent = value.scene_node.?.parent orelse continue;
             self.remarked.appendAssumeCapacity(.{ .parent = parent.scene_node.?.token, .child = handle });
         }
         self.marked.clearRetainingCapacity();
@@ -2047,8 +2046,6 @@ pub const Scene = struct {
         active.visibility_epoch = self.visibility_epoch;
         active.followup = false;
         active.followup_pass = false;
-        self.marked.clearRetainingCapacity();
-        self.remarked.clearRetainingCapacity();
         if (phases and self.candidates.items.len != 0) self.startFeedback(self.candidates.items[0].node);
     }
 
