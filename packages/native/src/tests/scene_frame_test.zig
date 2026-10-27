@@ -624,11 +624,10 @@ test "Scene frame band frames clear and paint only the damaged rows' members" {
     try testing.expectEqual(@as(u8, 90), ansi.red(f.cli.currentRenderBuffer.get(1, 2).?.bg));
 }
 
-const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_text };
+const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface, offscreen_view, offscreen_view_self };
 
 /// Paints a 6 x 4 scene twice, changing one text in between, and returns the hash of the
-/// second draft's cells and the presented cells, and whether a text below the screen still
-/// needs its view prepared.
+/// second draft's cells and the presented cells, and the state of a text view below the screen.
 fn bandCase(case: BandCase, flags: u32) ![3]u64 {
     const f = try Fixture.init(testing.allocator, 6, 4, .{});
     defer f.deinit();
@@ -648,7 +647,7 @@ fn bandCase(case: BandCase, flags: u32) ![3]u64 {
         },
         // A hooked translucent box under rows 0-3 that the band meets in part: its body and
         // phases after its BEFORE phase stay in the band.
-        .hooked_body, .hooked_after, .offscreen_text => {
+        .hooked_body, .hooked_after, .offscreen_view, .offscreen_view_self => {
             try f.owner.sceneMoveNode(box, f.root, 0);
             try f.owner.sceneSetStyle(box, 4, 1, 0, 1, 4, 1);
             try f.owner.sceneSetPositions(box, 3, .{ 1, 1, 0, 0 }, .{ 0, 0, 0, 0 });
@@ -667,20 +666,21 @@ fn bandCase(case: BandCase, flags: u32) ![3]u64 {
             try f.owner.sceneSetText(try placedAt(f, f.root, c.OT_SCENE_TEXT, 4, 0, 0, 6, 1), "\u{4e16}x");
         },
     }
-    // A text below the screen, which a hook reply changes: the recorded frame prepares every
-    // member's view again, painted or not.
-    const below = try placedAt(f, f.root, c.OT_SCENE_TEXT, 7, 0, 10, 6, 1);
-    try f.owner.sceneSetText(below, "below");
-    // Without a measure function its text changes solve nothing, so only paint prepares it.
-    try f.owner.sceneSetMeasure(below, null);
+    // A text view below the screen, which a RECORD reply rebinds and resizes: the recorded frame
+    // prepares the view as a full repaint does, unless a SELF hook replaces its body.
+    const offscreen = case == .offscreen_view or case == .offscreen_view_self;
+    const shared = try f.owner.createTextBuffer(.unicode);
+    try f.owner.textBufferSetText(shared, "below");
+    const below = try placedAt(f, f.root, c.OT_SCENE_TEXT_VIEW, 7, 0, 10, 6, 1);
+    if (offscreen) try f.owner.sceneSetTextView(below, try f.owner.createTextBufferView(shared));
+    if (case == .offscreen_view_self) try f.owner.sceneSetHooks(below, c.OT_SCENE_HOOK_RENDER_SELF, 1, 0, 0);
     var hashes: [3]u64 = undefined;
     for ([_][]const u8{ "abcdef", "ghijkl" }) |value| {
         try f.owner.sceneSetText(text, value);
         var request = try f.owner.sceneFrameStep(f.id, null, options);
         while (request.kind != c.OT_SCENE_FRAME_DONE) {
-            if (case == .offscreen_text) {
-                try f.owner.sceneSetText(below, value);
-                try f.owner.sceneSetTextOptions(below, .{ .truncate = value[0] == 'g' });
+            if (offscreen) {
+                try f.owner.sceneSetTextView(below, try f.owner.createTextBufferView(shared));
                 try f.owner.sceneSetStyle(below, 4, 0, 0, 1, if (value[0] == 'a') 5 else 6, 1);
             }
             var recording: Recording = .{};
@@ -698,7 +698,11 @@ fn bandCase(case: BandCase, flags: u32) ![3]u64 {
         try drain(f.owner, f.id);
     }
     hashes[1] = cellsHash(f.cli.currentRenderBuffer);
-    hashes[2] = @intFromBool((try f.owner.raw().getRenderable(below)).scene_node.?.text.?.view.virtual_lines_dirty);
+    hashes[2] = 0;
+    if ((try f.owner.raw().getRenderable(below)).scene_node.?.control.text_view.view) |view| {
+        const viewport = view.view.getViewport();
+        hashes[2] = @as(u64, @intFromBool(view.view.virtual_lines_dirty)) | (if (viewport) |port| 2 | @as(u64, port.width) << 8 | @as(u64, port.height) << 24 else 0);
+    }
     // The second frame is a band frame: it clears the changed text's row only, and the
     // surface's row, which repaints on every frame.
     if (flags != c.OT_SCENE_DEBUG_FULL_FRAME) try testing.expectEqual(@as(u64, if (case == .surface) 12 else 6), f.state.frame_work.cells_cleared);

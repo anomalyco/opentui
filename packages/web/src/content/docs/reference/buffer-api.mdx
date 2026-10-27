@@ -204,8 +204,10 @@ The default border style is `"single"`. `titleColor` defaults to `borderColor`.
 the call throws. Composition clips to the scissor rectangle and keeps grapheme, continuation, link, image, and
 color-intent state.
 
-Composition copies cells directly when the current opacity is 1, the source's `respectAlpha` is false, and neither
-buffer holds graphemes, links, or images. Otherwise, it alpha-blends each source cell.
+Composition copies each source cell when the current opacity is 1, the source's `respectAlpha` is false, and neither
+buffer holds images. Transparent and translucent source cells are copied too, so they replace the cells below. Otherwise,
+it alpha-blends each source cell. Earlier versions also blended when either buffer held a grapheme or link, so the same
+source could punch holes or blend depending on unrelated cells.
 
 ### Images and numeric buffers
 
@@ -262,8 +264,9 @@ Owned buffers keep their stacks until you pop, clear, or destroy them. Use `try`
 drawing code can throw. Use `setCellWithAlphaBlending()` for opacity-aware cell drawing. `drawText()` with an opaque
 background keeps its direct-write behavior.
 
-`setRespectAlpha(true)` makes `drawFrameBuffer()` always blend this buffer's cells when this buffer is the source. It
-does not convert existing cells. It throws on renderer buffers and paint hook buffers.
+`setRespectAlpha(true)` makes `drawFrameBuffer()` always blend this buffer's cells when this buffer is the source.
+Without it, a source at full opacity is copied cell for cell, transparent cells included. It does not convert existing
+cells. It throws on renderer buffers and paint hook buffers.
 
 ## Color transforms
 

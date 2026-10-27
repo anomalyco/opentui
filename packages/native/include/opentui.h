@@ -439,9 +439,10 @@ typedef struct ot_scene_layout {
  * preserve_unwritten changed), NON_LOCAL (a recording clears or color-matrixes
  * the frame). IMAGES also counts recorded image draws. Otherwise, without a
  * reason, a frame repaints only when a painted member's inputs changed, its
- * recording included: it clears and repaints only the damage_rows rows they
- * cover, and the encoder diffs only those rows; an unchanged frame has
- * damage_rows 0 and paints nothing. After a current-buffer session lease the
+ * recording included: it clears and repaints only bands around the damage_rows
+ * rows they cover (runs one row apart merge, and a sixteenth band takes every
+ * later run, so a band can include undamaged rows), and the encoder diffs only
+ * the damage_rows rows; an unchanged frame has damage_rows 0 and paints nothing. After a current-buffer session lease the
  * encoder diffs every row, without repainting. */
 typedef struct ot_scene_stats {
     uint32_t struct_size;
