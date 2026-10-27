@@ -289,28 +289,6 @@ pub fn adoptHostEnvironment(self: *Terminal, environment: std.process.Environ.Ma
     self.checkEnvironmentOverrides();
 }
 
-pub fn resetState(self: *Terminal, tty: anytype) !void {
-    try self.resetInputModes(tty);
-
-    if (self.state.alt_screen) {
-        try self.exitAltScreen(tty);
-    } else {
-        switch (builtin.os.tag) {
-            .windows => {
-                try tty.writeByte('\r');
-                var i: u16 = 0;
-                while (i < self.state.cursor.row) : (i += 1) {
-                    try tty.writeAll(ansi.ANSI.reverseIndex);
-                }
-                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
-            },
-            else => {},
-        }
-    }
-
-    try self.resetOutputModes(tty);
-}
-
 pub fn resetInputModes(self: *Terminal, tty: anytype) !void {
     try tty.writeAll(ansi.ANSI.showCursor);
     try tty.writeAll(ansi.ANSI.reset);
@@ -1011,7 +989,7 @@ pub fn setMouseMode(self: *Terminal, tty: anytype, enable: bool, enable_movement
     if (enable) {
         self.state.mouse = true;
         self.state.mouse_movement = enable_movement;
-        // Arms the shutdown cleanup path so resetState() will still emit mouse
+        // Arms the shutdown cleanup path so resetInputModes() will still emit mouse
         // disable sequences even if a later best-effort disable silently fails.
         self.state.mouse_was_enabled = true;
         if (!enable_movement) {
@@ -1564,12 +1542,6 @@ pub fn getCursorColor(self: *Terminal) ansi.RGBA {
 
 pub fn setKittyKeyboardFlags(self: *Terminal, flags: u8) void {
     self.opts.kitty_keyboard_flags = flags;
-}
-
-pub fn setTerminalTitle(_: *Terminal, tty: anytype, title: []const u8) void {
-    // For Windows, we might need to use different approach, but ANSI sequences work in Windows Terminal, ConPTY, etc.
-    // For other platforms, ANSI OSC sequences work reliably
-    ansi.ANSI.setTerminalTitleOutput(tty, title) catch {};
 }
 
 fn writePassthroughSequence(self: *Terminal, tty: anytype, sequence: []const u8) !void {

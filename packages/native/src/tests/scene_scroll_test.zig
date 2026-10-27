@@ -403,6 +403,24 @@ test "Scene scroll node paints fills under its children and bars over them, and 
         try commit(f);
         try testing.expectEqual(fill, f.cli.currentRenderBuffer.get(2, 0).?.bg);
         try testing.expectEqual(@as(u32, '3'), char(f, 1, 3));
+        // Without the hook nothing is reported; turning it on again starts from the current state,
+        // and the next request names what changed.
+        try f.owner.sceneSetHooks(box, 0, 4, 0, 0);
+        try f.owner.sceneDestroyNode(rows[8]);
+        _ = try f.step(null, frame_options, c.OT_SCENE_FRAME_DONE, null);
+        try commit(f);
+        try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 5, 0, 0);
+        _ = try f.step(null, frame_options, c.OT_SCENE_FRAME_DONE, null);
+        try commit(f);
+        try f.owner.sceneDestroyNode(rows[7]);
+        _ = try f.step(try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
+        try commit(f);
+        try testing.expectEqual(@as(u32, c.OT_SCENE_SCROLL_CHANGED_CONTENT), (try f.owner.sceneGetScroll(box)).changes);
+        _ = try f.owner.sceneScrollTo(box, .{ 0, 1 }, .{ false, false });
+        try f.owner.sceneSetStyle(box, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 3, 0);
+        _ = try f.step(try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
+        try commit(f);
+        try testing.expect((try f.owner.sceneGetScroll(box)).changes & c.OT_SCENE_SCROLL_CHANGED_VIEWPORT != 0);
     }
 }
 
