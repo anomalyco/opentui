@@ -836,7 +836,8 @@ pub const Scene = struct {
                 self.settleOrder(parent);
                 const siblings = target.paint_children.items;
                 if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) self.orderChanged(parent);
-                node.paint_rank = if (siblings.len == 0) target.pass.limit else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
+                // At least limit: a reply may have detached the children a pass saw last.
+                node.paint_rank = @max(target.pass.limit, if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1);
                 target.paint_children.appendAssumeCapacity(value);
                 node.parent = parent;
                 countBelow(parent, node.skip.update_below, node.skip.filters_below, true);

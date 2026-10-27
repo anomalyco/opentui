@@ -1633,12 +1633,13 @@ test "Scene feedback keeps the update stamp of a passed idle-update node" {
 // An idle-update node uses its update where today's walk passes it, so UPDATE given later in
 // the frame waits for the next one, and UPDATE given before runs in this one. Root children
 // H1, M, V, H2, Q, N; P inside V, with C (UPDATE) and D. H2's reply moves N into P after C
-// (P's selection finished: N was not passed), or detaches C first; moves M, which feedback
-// passed, into Q, which it has not; or unbinds the viewport that culled D. Then the moved
+// (P's selection finished: N was not passed), or detaches C first, or detaches D, P's last
+// child, first; moves M, which feedback passed, into Q, which it has not; or unbinds the
+// viewport that culled D. Then the moved
 // node, or D, gets UPDATE: it runs in this frame unless the node was passed.
 test "Scene feedback uses an idle update only where the walk passed the node" {
-    const Case = enum { appended, emptied, moved, culled };
-    for ([_]Case{ .appended, .emptied, .moved, .culled }) |case| {
+    const Case = enum { appended, emptied, trimmed, moved, culled };
+    for ([_]Case{ .appended, .emptied, .trimmed, .moved, .culled }) |case| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
         defer for (twins) |f| f.deinit();
         var updates: [2]u32 = .{ 0, 0 };
@@ -1662,7 +1663,7 @@ test "Scene feedback uses an idle update only where the walk passed the node" {
             for ([_]usize{ 1, 5, 8 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_IDLE_UPDATE);
             _ = try presentStepped(f, NoReply{});
             const target = switch (case) {
-                .appended, .emptied => list[5],
+                .appended, .emptied, .trimmed => list[5],
                 .moved => list[1],
                 .culled => list[8],
             };
@@ -1675,6 +1676,10 @@ test "Scene feedback uses an idle update only where the walk passed the node" {
                         .emptied => {
                             for (7..9) |index| try f.owner.sceneMoveNode(list[index], list[4], @intCast(index - 7));
                             try f.owner.sceneMoveNode(list[5], list[6], 0);
+                        },
+                        .trimmed => {
+                            try f.owner.sceneMoveNode(list[8], list[4], 0);
+                            try f.owner.sceneMoveNode(list[5], list[6], 1);
                         },
                         .moved => try f.owner.sceneMoveNode(list[1], list[4], 0),
                         .culled => try f.owner.sceneSetViewport(list[6], null),
