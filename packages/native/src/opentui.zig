@@ -15,7 +15,6 @@ pub const text_buffer_view = @import("text-buffer-view.zig");
 pub const yoga_c = @import("yoga");
 pub const yoga = @import("yoga.zig");
 
-pub const BufferedOutput = renderer.BufferedOutput;
 pub const CliRenderer = renderer.CliRenderer;
 pub const Context = context.Context;
 pub const GraphemePool = @import("grapheme.zig").GraphemePool;

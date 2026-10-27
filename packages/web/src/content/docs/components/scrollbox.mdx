@@ -5,7 +5,7 @@ description: Scroll and cull child content in a bounded viewport
 
 # ScrollBox
 
-`ScrollBox` scrolls arbitrary child renderables and manages its own [ScrollBar](/docs/components/scrollbar) instances. Use a standalone ScrollBar only when another model owns the scroll position.
+`ScrollBox` scrolls arbitrary child renderables. Its scroll position, sticky edge, and scrollbars are native state of its own scene node, so scrolling and following new content need no layout pass and no host round trip. Use a standalone [ScrollBar](/docs/components/scrollbar) only when another model owns the scroll position.
 
 ## Availability
 
@@ -144,7 +144,7 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 
 ## Customizing sub-components
 
-ScrollBox contains several internal components that you can style individually:
+The wrapper, viewport, and content areas take a background color each. The viewport also takes padding in whole cells, and the content takes the Yoga layout properties of a box (direction, alignment, padding, gap, sizes). Other box options of these parts are ignored:
 
 ```typescript
 const scrollbox = new ScrollBoxRenderable(renderer, {
@@ -255,17 +255,19 @@ When focused, ScrollBox responds to keyboard input:
 | `scrollWidth`  | `number` | Total scrollable width (read-only)           |
 | `scrollHeight` | `number` | Total scrollable height (read-only)          |
 
-## Internal components
+## Parts
 
-ScrollBox exposes its internal components for advanced use:
+ScrollBox exposes its parts for geometry, events, and styling. They are views of the ScrollBox's native state, not renderables: they have no children of their own and cannot be added to another node.
 
 ```typescript
-scrollbox.wrapper // BoxRenderable - outer wrapper
-scrollbox.viewport // BoxRenderable - visible area
-scrollbox.content // ContentRenderable - holds children
-scrollbox.horizontalScrollBar // ScrollBarRenderable
-scrollbox.verticalScrollBar // ScrollBarRenderable
+scrollbox.wrapper // x, y, width, height, backgroundColor
+scrollbox.viewport // geometry, padding, backgroundColor, "resize" and onSizeChange
+scrollbox.content // geometry, layout properties, backgroundColor, "resize" and onSizeChange; add() adds to the ScrollBox
+scrollbox.horizontalScrollBar // scrollPosition, scrollBy(), visible, showArrows, trackOptions, "change" and onChange
+scrollbox.verticalScrollBar
 ```
+
+The part classes `ScrollBoxWrapper`, `ScrollBoxViewport`, `ScrollBoxContent`, and `ScrollBoxBar` are exported for type annotations. Children of a ScrollBox report the ScrollBox as their `parent`. A press on a scrollbar or one of its arrows targets the ScrollBox.
 
 ## Related concepts
 
