@@ -1200,6 +1200,10 @@ pub const Scene = struct {
             node.resize_width = initial_width;
             node.resize_height = initial_height;
         }
+        // Today's walk stamped an idle-update node it passed shown, so UPDATE given in this frame
+        // waits for the next one.
+        const stamped = flags & api.OT_SCENE_HOOK_UPDATE != 0 and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0 and
+            node.prepared_gen == self.candidates_gen and node.layout_flags.prepared_visible and self.passedThisFrame(value);
         self.hook_count -= @intFromBool(node.hook_flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.hook_count += @intFromBool(flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.layout_hook_count -= @intFromBool(node.hook_flags & scene_layout_hook_flags != 0);
@@ -1209,6 +1213,7 @@ pub const Scene = struct {
         const updates = [2]bool{ node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0, flags & api.OT_SCENE_HOOK_UPDATE != 0 };
         if (updates[0] and !updates[1]) countBelow(value, 1, 0, false);
         if (updates[1] and !updates[0]) countBelow(value, 1, 0, true);
+        if (stamped) node.update_frame = self.attempt.?.frame_id;
         node.hook_flags = flags;
         node.hook_generation = generation;
         self.invalidateObservation(value);
