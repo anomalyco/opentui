@@ -371,9 +371,9 @@ test "Scene painted commit admission rejection retains the draft for retry" {
     const f = try Fixture.init(testing.allocator, 4, 1, .{ .output = transport });
     defer f.deinit();
     const frame = try f.owner.sceneFrameStep(f.id, null, options);
-    f.cli.splitBatchActive = true;
+    f.cli.pendingSplitFooterTransition = .{ .mode = .clear_stale_rows, .source_top_line = 1, .source_height = 1, .target_top_line = 1, .target_height = 1 };
     try testing.expectError(error.SplitRenderPending, f.owner.sceneFrameCommit(f.id, frame, true));
-    f.cli.splitBatchActive = false;
+    f.cli.pendingSplitFooterTransition = .{};
     try testing.expectError(error.FrameBusy, f.owner.renderSession(f.id, true));
     try testing.expectEqual(@as(u64, 0), (try f.owner.raw().getSession(f.id)).getStats().bytes_written);
     _ = try f.owner.sceneFrameCommit(f.id, frame, true);

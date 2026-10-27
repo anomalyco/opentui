@@ -1041,12 +1041,11 @@ pub const Session = struct {
         return .{ .status = if (self.isDrained()) .again else .output_pending };
     }
 
-    /// Session renderers own their feed and never run legacy setup or batch split frames.
+    /// Session renderers own their feed.
     fn assertTerminalOutput(self: *const Session) void {
         const value = self.renderer.?;
-        std.debug.assert(!value.terminalSetup and !value.splitBatchActive);
-        std.debug.assert(value.backend == .feed and value.backend.feed.feed == self.output);
-        std.debug.assert(!value.backend.feed.frameActive);
+        std.debug.assert(value.backend.feed == self.output);
+        std.debug.assert(!value.backend.frameActive);
         std.debug.assert(self.output.callback == null and !self.output.in_callback);
     }
 
