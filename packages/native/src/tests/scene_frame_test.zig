@@ -1790,6 +1790,44 @@ test "Scene feedback passes after a reply visit only the marked path" {
     try testing.expect(operations[1] <= operations[0] + 10);
 }
 
+// A later pass skips the clean subtrees whose updates ran in the frame, not those the first
+// pass could not reach. A's reply hides X1, whose child C has UPDATE, and hooks Z; Y's reply
+// shows X1 again; Z's reply, in the later pass, hides it for good. The later pass must visit
+// C, which no other round can reach.
+test "Scene feedback passes visit hooked subtrees the first pass did not reach" {
+    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 4, .{}), try Fixture.init(testing.allocator, 4, 4, .{}) };
+    defer for (twins) |f| f.deinit();
+    var logs: [2][4]u32 = undefined;
+    for (twins, &logs, 0..) |f, *log, twin| {
+        try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+        // A, X1, Y, Z under the root; C under X1.
+        var list: [5]context.Handle = undefined;
+        for (0..4) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
+        try feedbackNode(f, &list, 4, c.OT_SCENE_BOX, list[1], 0);
+        for ([_]usize{ 0, 2, 4 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
+        _ = try presentStepped(f, NoReply{});
+        var count: usize = 0;
+        var request = try f.owner.sceneFrameStep(f.id, null, options);
+        while (request.kind != c.OT_SCENE_FRAME_DONE) {
+            const index = request.num - 10;
+            log[count] = index;
+            count += 1;
+            const display: f32 = switch (index) {
+                0, 3 => c.OT_DISPLAY_NONE,
+                2 => c.OT_DISPLAY_FLEX,
+                else => -1,
+            };
+            if (display >= 0) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, display, 0);
+            if (index == 0) try feedbackHook(f, list[3], c.OT_SCENE_HOOK_UPDATE);
+            request = try f.owner.sceneFrameStep(f.id, request, options);
+        }
+        _ = try f.owner.sceneFrameCommit(f.id, request, false);
+        try drain(f.owner, f.id);
+        try testing.expectEqual(@as(usize, 4), count);
+    }
+    for (logs) |log| try testing.expectEqual([4]u32{ 0, 2, 4, 3 }, log);
+}
+
 // Later passes of a round run on its layout and count toward neither limit, so a frame needs
 // no more rounds or requests than the forced full-frame twin, which pops every child in the
 // first pass. A's reply hooks X1; each Xi's reply hooks the next one, and the last one's reply

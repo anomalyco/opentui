@@ -926,10 +926,12 @@ pub const Scene = struct {
     }
 
     /// Whether this pass must visit a node: something below changed, a selection change can
-    /// reveal changed nodes, or, in the round's first pass, a hook below can request. A later
-    /// pass of the round already ran every update in a clean subtree.
+    /// reveal changed nodes, or a hook below can request. A later pass of the round already ran
+    /// every update in a clean subtree it visited in this frame (every visit selects).
     fn mustVisit(self: *const Scene, node: *const Node) bool {
-        return node.skip.subtree != .clean or (node.skip.update_below != 0 and !self.attempt.?.followup_pass) or
+        const active = &self.attempt.?;
+        return node.skip.subtree != .clean or
+            (node.skip.update_below != 0 and (!active.followup_pass or node.pass.frame != active.frame_id)) or
             (node.skip.filters_below != 0 and node.culling.clean_selection != self.selection_epoch);
     }
 
