@@ -390,7 +390,6 @@ const Attempt = struct {
     // a follow-up.
     followup: bool = false,
     followup_pass: bool = false,
-    filter_selected: bool = false,
     requests: u32 = 0,
     request_id: u64 = 0,
     pending: ?FrameRequest = null,
@@ -545,10 +544,12 @@ const Culling = struct {
     clean_selection: u64 = 0,
 };
 
-/// How far feedback passed a parent's children in a frame, where today's walk would have
-/// passed them: children sort there, once per frame, and an idle-update node uses its update.
-/// A child is passed if its rank is below cursor and limit and, if the parent culls, a scan
-/// of this frame selected it. Ranks of children attached later are at least limit.
+/// How far feedback passed a parent's children in a frame: children sort there, once per
+/// frame, and an idle-update node uses its update. A child is passed if its rank is below cursor
+/// and limit and, if the parent culls, a scan of this frame selected it. Ranks of children
+/// attached later are at least limit. The cursor keeps the frame's first round, so a culling
+/// parent's later round passes a child as soon as it selects it, before the child pops, which
+/// the old walk did only with that child earlier in paint order.
 const Pass = struct {
     frame: u64 = 0,
     cursor: u64 = 0,
@@ -777,7 +778,9 @@ pub const Scene = struct {
         if (self.last_token == std.math.maxInt(u32)) return error.ObjectLimit;
         try self.tokens.ensureUnusedCapacity(self.allocator, 1);
         try self.view_dirty.ensureTotalCapacity(self.allocator, self.count + 1);
-        try self.marked.ensureTotalCapacity(self.allocator, self.count + 1);
+        // A pass lists each live node at most once and keeps destroyed nodes' entries, so room
+        // for every entry plus every node the pass has not listed yet is enough.
+        try self.marked.ensureTotalCapacity(self.allocator, self.marked.items.len + self.count + 1);
         try self.remarked.ensureTotalCapacity(self.allocator, self.count + 1);
         try self.scratch.ensureTotalCapacity(self.allocator, self.count + 1);
     }
@@ -1019,10 +1022,9 @@ pub const Scene = struct {
         self.scratch.clearRetainingCapacity();
         for (items[low..]) |entry| {
             if (entry.parent != node.token) break;
-            const value = objects.get(entry.child, .native_renderable, native.NativeRenderable) catch continue;
-            // A child that moved since is dropped where its entry pops.
-            if (value.scene_node == null or value.scene_node.?.owner != self) continue;
-            self.scratch.appendAssumeCapacity(value);
+            // A child that moved since stays in its old parent's group: its update and refresh
+            // entries drop it on the parent check, and a placed refresh refreshes it once.
+            self.scratch.appendAssumeCapacity(objects.get(entry.child, .native_renderable, native.NativeRenderable) catch continue);
         }
         return self.scratch.items;
     }
@@ -1037,9 +1039,7 @@ pub const Scene = struct {
         self.remarked.clearRetainingCapacity();
         for (self.marked.items) |handle| {
             const value = objects.get(handle, .native_renderable, native.NativeRenderable) catch continue;
-            const node = value.scene_node orelse continue;
-            if (node.owner != self) continue;
-            const parent = node.parent orelse continue;
+            const parent = value.scene_node.?.parent orelse continue;
             self.remarked.appendAssumeCapacity(.{ .parent = parent.scene_node.?.token, .child = handle });
         }
         self.marked.clearRetainingCapacity();
@@ -1169,10 +1169,9 @@ pub const Scene = struct {
         }
         if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
             self.selection_epoch +%= 1;
-            // Refresh newly revealed descendants before paint.
-            if (self.attempt) |active| if (active.filter_selected) {
-                self.preparation_dirty = true;
-            };
+            // Refresh newly revealed descendants before paint: feedback may have skipped their
+            // culling parent, and nothing else reaches it in this frame.
+            if (self.attempt != null and self.filter_count != 0) self.preparation_dirty = true;
         }
         if (self.attempt != null or node.paint.zIndex != paint.zIndex or
             node.paint.opacity != paint.opacity or node.paint.translateX != paint.translateX or
@@ -1692,10 +1691,7 @@ pub const Scene = struct {
                         }
                         self.orderBatch(self.feedback.items[start..], .rank);
                     },
-                    .select => {
-                        active.filter_selected = true;
-                        try self.selectChildren(objects, value);
-                    },
+                    .select => try self.selectChildren(objects, value),
                 }
                 if (result) |request_value| return request_value;
             }
@@ -2028,7 +2024,6 @@ pub const Scene = struct {
         try self.candidates.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
         if (root) |value| try self.solveLayout(cli, value);
         active.rounds += 1;
-        active.filter_selected = false;
         self.preparation_dirty = false;
         if (root) |value| {
             self.scroll_toggled = false;
@@ -2068,8 +2063,6 @@ pub const Scene = struct {
         active.visibility_epoch = self.visibility_epoch;
         active.followup = false;
         active.followup_pass = false;
-        self.marked.clearRetainingCapacity();
-        self.remarked.clearRetainingCapacity();
         if (phases and self.candidates.items.len != 0) self.startFeedback(self.candidates.items[0].node);
     }
 
