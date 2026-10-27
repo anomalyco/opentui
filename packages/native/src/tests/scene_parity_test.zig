@@ -102,7 +102,7 @@ const FrameSpec = struct {
 };
 
 /// Reference tree: each node's children in Yoga order and its paint children in attachment
-/// order. A frame stably sorts the paint children of every parent it visits by z.
+/// order. Paint sorts a copy stably by z, so equal z paints in attachment order.
 const Model = struct {
     handles: [node_count_max]?[2]context.Handle = @splat(null),
     /// Each editor node's edit buffer, per twin.
@@ -163,10 +163,13 @@ const Model = struct {
     }
 
     /// Writes the visible descendants of `node` in paint order and returns the new count.
-    fn paintOrder(self: *Model, out: []usize, count: usize, node: usize) usize {
-        std.mem.sort(usize, self.paint[node].items, self, zLessThan);
+    fn paintOrder(self: *const Model, out: []usize, count: usize, node: usize) usize {
+        var sorted: [node_count_max]usize = undefined;
+        const children = sorted[0..self.paint[node].items.len];
+        @memcpy(children, self.paint[node].items);
+        std.mem.sort(usize, children, self, zLessThan);
         var next = count;
-        for (self.paint[node].items) |child| {
+        for (children) |child| {
             if (self.hidden[child]) continue;
             out[next] = child;
             next = self.paintOrder(out, next + 1, child);
@@ -1144,8 +1147,8 @@ const Harness = struct {
         return false;
     }
 
-    /// A paint list that the next frame may keep is in the model's order. The model sorts on
-    /// every frame, as the scene does, so tie orders stay in step; it does not cull.
+    /// A paint list that the next frame may keep is in the model's order. The model does not
+    /// cull.
     fn expectPaintOrder(self: *Harness) !void {
         const f = self.twins[candidate];
         var order: [node_count_max]usize = undefined;

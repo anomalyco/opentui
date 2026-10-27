@@ -436,6 +436,8 @@ pub const Node = struct {
     paint_children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     // Strictly increasing along paint_children, so a sorted batch of children is in paint order.
     paint_rank: u64 = 0,
+    // Scene.last_placement when the node joined its parent: equal z paints in attachment order.
+    attach_order: u64 = 0,
     sort_dirty: bool = false,
     child_order_frame: u64 = 0,
     // The frame in which a node moved away from where today's walk had passed it, and the frame
@@ -848,6 +850,7 @@ pub const Scene = struct {
         if (new_placement) {
             self.last_placement += 1;
             node.placement = self.last_placement;
+            if (reparented) node.attach_order = self.last_placement;
         } else if (destination == null) node.placement = 0;
         node.layout_flags.needs_layout = true;
         self.visibility_epoch +%= 1;
@@ -3235,7 +3238,7 @@ fn paintLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeR
     const a = left.scene_node.?;
     const b = right.scene_node.?;
     if (builtin.is_test) a.owner.test_sort_steps += 1;
-    return if (a.paint.zIndex == b.paint.zIndex) a.paint_rank < b.paint_rank else a.paint.zIndex < b.paint.zIndex;
+    return if (a.paint.zIndex == b.paint.zIndex) a.attach_order < b.attach_order else a.paint.zIndex < b.paint.zIndex;
 }
 
 /// Returns whether the order changed.
@@ -3244,7 +3247,6 @@ fn sortChildren(node: *Node, frame_id: u64) bool {
     if (node.child_order_frame == frame_id) return false;
     node.child_order_frame = frame_id;
     if (!node.sort_dirty) return false;
-    // Ranks increase along the children, so equal z keeps their order.
     std.mem.sort(*native.NativeRenderable, node.paint_children.items, {}, paintLessThan);
     for (node.paint_children.items, 0..) |child, index| {
         if (builtin.is_test) node.owner.test_sort_steps += 1;
