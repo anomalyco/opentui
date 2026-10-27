@@ -1532,20 +1532,20 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // counts at 64 x 256 (decoded frames about two thirds), derived again after replies began to
     // destroy nodes: those must spare content rows, or viewport scenes fall below the culling
     // cutoff (filtered frames with a request fell from 441 to 51). Sibling marks draw from their
-    // own stream, so they keep the script's mix. Counts: reused 8,752, culling 977, culling
-    // with a request 173, kept lists in such a frame 25, hooked under a hidden ancestor 5,655,
-    // reply hid the requester's parent 42, reply detached the requester 33, reply destroyed a
-    // node 506, a RECORD reply changed the scene 161, content-child RESIZE 40, a truncation
-    // change in its reply 39, a sibling marked mid-batch 124, unmeasured content text replaced
-    // 15, UPDATE 4,158, RESIZE 50, LAYOUT_CHANGED 2,080, recordings 659, box bodies 253, decoded
-    // 10,958, an editor's cursor 1,696, a host cursor 8,486, skipped paint 8,262, partly diffed
-    // 1,296, band frames 1,135, split renders with a frame 511 and before one 465, recorded
+    // own stream, so they keep the script's mix. Counts: reused 8,729, culling 977, culling
+    // with a request 173, kept lists in such a frame 25, hooked under a hidden ancestor 5,669,
+    // reply hid the requester's parent 41, reply detached the requester 33, reply destroyed a
+    // node 513, a RECORD reply changed the scene 161, content-child RESIZE 38, a truncation
+    // change in its reply 37, a sibling marked mid-batch 152, unmeasured content text replaced
+    // 15, UPDATE 4,273, RESIZE 54, LAYOUT_CHANGED 2,070, recordings 659, box bodies 253, decoded
+    // 10,962, an editor's cursor 1,695, a host cursor 8,455, skipped paint 8,273, partly diffed
+    // 1,307, band frames 1,145, split renders with a frame 509 and before one 465, recorded
     // frames that kept rows 218, non-local or image recordings 24, steady reads 330, draft writes
-    // after paint 2,803, raw writes between frames 404, shared text changes shown 471, style
-    // changes shown 235, view binds 364, selections 226, equal re-sends 466, palette changes 88,
-    // frames showing a scroll node with children 990, scrolls and option changes 157, SCROLL
-    // requests 4, relays 122 (none read a different value), and 1 frame of 23,200 whose requests
-    // came in another order.
+    // after paint 2,792, raw writes between frames 399, shared text changes shown 469, style
+    // changes shown 236, view binds 365, selections 227, equal re-sends 466, palette changes 89,
+    // frames showing a scroll node with children 990, scrolls and option changes 158, SCROLL
+    // requests 4, relays 151 (none read a different value), and no frame whose requests came
+    // in another order.
     const minimums: Stats = .{
         .reused = 2200,
         .filtered = 260,
