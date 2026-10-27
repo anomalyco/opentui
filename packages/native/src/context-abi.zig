@@ -1142,7 +1142,7 @@ pub fn ot_session_setup_terminal(
     if (options.struct_size != @sizeOf(c.ot_session_terminal_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     const known_flags: u32 = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE |
-        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE;
+        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL;
     if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags > 31) {
         return sessionError(owner, error.InvalidOptions);
     }
@@ -1151,6 +1151,7 @@ pub fn ot_session_setup_terminal(
         .mouse = options.flags & c.OT_TERMINAL_MOUSE != 0,
         .mouse_movement = options.flags & c.OT_TERMINAL_MOUSE_MOVEMENT != 0,
         .clear_on_close = options.flags & c.OT_TERMINAL_CLEAR_ON_CLOSE != 0,
+        .reply_sentinel = options.flags & c.OT_TERMINAL_REPLY_SENTINEL != 0,
         .kitty_keyboard_flags = @intCast(options.kitty_keyboard_flags),
     }) catch |err| return sessionError(owner, err);
     return c.OT_OK;
@@ -1274,6 +1275,7 @@ pub fn ot_session_control(
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @intFromEnum(@import("session.zig").MouseMode.motion),
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => 1,
         else => 0,
     };
     if ((!payload and byte_count != 0) or options.argument > argument_max) return sessionError(owner, error.InvalidOptions);
@@ -1284,7 +1286,7 @@ pub fn ot_session_control(
         c.OT_CONTROL_MOUSE => .{ .mouse = @enumFromInt(options.argument) },
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => .{ .kitty_keyboard_flags = @intCast(options.argument) },
         c.OT_CONTROL_RESTORE_MODES => .restore_modes,
-        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .query_pixel_resolution,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .{ .query_pixel_resolution = options.argument != 0 },
         c.OT_CONTROL_QUERY_THEME_COLORS => .query_theme_colors,
         c.OT_CONTROL_RESET_BACKGROUND => .reset_background,
         c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = bytes },
@@ -3351,7 +3353,7 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         const kinds = .{
             .{ c.OT_CONTROL_CAPABILITY_RESPONSE, 0, "\x1b[?0u" }, .{ c.OT_CONTROL_TITLE, 0, "t" },
             .{ c.OT_CONTROL_MOUSE, 2, "" },                       .{ c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, 31, "" },
-            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 0, "" },
+            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 1, "" },
             .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
             .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
             .{ c.OT_CONTROL_PROGRAM_STATUS, 0, programStatus(.{
@@ -3509,13 +3511,13 @@ test "Context ABI Session setup and capability records validate before changing 
     const valid: c.ot_session_terminal_options = .{
         .struct_size = @sizeOf(c.ot_session_terminal_options),
         .abi_version = c.OT_CONTEXT_ABI_VERSION,
-        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE,
+        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL,
         .kitty_keyboard_flags = 31,
     };
     var invalid: [4]c.ot_session_terminal_options = @splat(valid);
     invalid[0].struct_size += 1;
     invalid[1].abi_version += 1;
-    invalid[2].flags |= c.OT_TERMINAL_CLEAR_ON_CLOSE << 1;
+    invalid[2].flags |= c.OT_TERMINAL_REPLY_SENTINEL << 1;
     invalid[3].kitty_keyboard_flags = 32;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_setup_terminal(context, &id, null));
     for (invalid, 0..) |options, index| {
@@ -3524,7 +3526,7 @@ test "Context ABI Session setup and capability records validate before changing 
         try std.testing.expectEqual(.uninitialized, value.getTerminalState().phase);
     }
     try std.testing.expectEqual(c.OT_OK, ot_session_setup_terminal(context, &id, &valid));
-    try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown);
+    try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown and cli.terminal.reply_sentinel);
     try std.testing.expect(value.lifecycle.mouse and !value.lifecycle.mouse_movement);
     try std.testing.expectEqual(@as(u8, 31), cli.terminal.opts.kitty_keyboard_flags);
     value.cancel();

@@ -148,6 +148,8 @@ pub const TerminalOptions = struct {
     /// Applies to both suspension and close, as in renderer restoration, once
     /// setup or resume has claimed the main-screen surface.
     clear_on_close: bool = true,
+    /// End the startup query batch with DA1 instead of sending DA1 mid-batch.
+    reply_sentinel: bool = false,
 };
 
 pub const TerminalPhase = enum(u8) {
@@ -203,7 +205,8 @@ pub const Control = union(enum) {
     /// Zero disables Kitty keyboard; other flags apply when support is detected.
     kitty_keyboard_flags: u8,
     restore_modes,
-    query_pixel_resolution,
+    /// True appends DA1, the sentinel that ends this query batch.
+    query_pixel_resolution: bool,
     query_theme_colors,
     /// Complete read-only OSC palette queries, optionally wrapped for tmux.
     palette_query: []const u8,
@@ -649,6 +652,7 @@ pub const Session = struct {
         try self.reserveControlSequence(packets);
         value.useAlternateScreen = options.use_alternate_screen;
         value.clearOnShutdown = options.clear_on_close;
+        value.terminal.reply_sentinel = options.reply_sentinel;
         value.terminal.opts.kitty_keyboard_flags = options.kitty_keyboard_flags;
         self.lifecycle = .{
             .phase = .setting_up,
@@ -1140,7 +1144,10 @@ pub const Session = struct {
                 try candidate.enableDetectedFeatures(writer, flags != 0);
             },
             .restore_modes => try candidate.restoreTerminalModes(writer),
-            .query_pixel_resolution => try writer.writeAll(ansi.ANSI.queryPixelSize),
+            .query_pixel_resolution => |sentinel| {
+                try writer.writeAll(ansi.ANSI.queryPixelSize);
+                if (sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
+            },
             .query_theme_colors => try candidate.queryThemeColors(writer),
             .palette_query => |bytes| try writer.writeAll(bytes),
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),

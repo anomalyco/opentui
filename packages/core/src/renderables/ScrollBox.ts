@@ -3,7 +3,8 @@ import { LinearScrollAccel, type ScrollAcceleration } from "../lib/scroll-accele
 import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
 import type { NativeRenderableIntegration } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
-import type { RenderContext, Timeout } from "../types.js"
+import type { TimerHandle } from "../lib/clock.js"
+import type { RenderContext } from "../types.js"
 import type { NativeScene } from "../NativeScene.js"
 import { emptySceneScrollState, type NativeSceneRect, type NativeSceneScrollState } from "../zig.js"
 import { BoxRenderable, type BoxOptions } from "./Box.js"
@@ -69,7 +70,7 @@ function stripScrollBoxPadding<T extends object>(options: T): Omit<T, ScrollBoxP
   return sanitized as Omit<T, ScrollBoxPaddingKey>
 }
 
-type BarPress = { axis: number; offset: number } | { axis: number; arrow: -1 | 1; timer: Timeout }
+type BarPress = { axis: number; offset: number } | { axis: number; arrow: -1 | 1; timer?: TimerHandle }
 
 /** A box whose scroll offset, range, sticky edge and scrollbars are native state of its scene node. The
  * `wrapper`, `viewport`, `content` and scrollbar fields are facades over that state, not renderables; the
@@ -520,19 +521,15 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   private pressArrow(axis: number, arrow: -1 | 1, part: ScrollBoxBar): void {
-    const press = { axis, arrow, timer: undefined as Timeout }
+    const press = { axis, arrow, timer: undefined as TimerHandle | undefined }
     this.barPress = press
-    part.scrollBy(arrow * 0.5, "viewport")
-    if (this.barPress !== press || this.isDestroyed) return
-    press.timer = setTimeout(() => {
-      if (this.barPress !== press || this.isDestroyed) return
-      part.scrollBy(arrow * 0.5, "viewport")
-      if (this.barPress !== press || this.isDestroyed) return
-      press.timer = setInterval(() => {
-        if (this.barPress !== press || this.isDestroyed) return this.endBarPress()
-        part.scrollBy(arrow * 0.2, "viewport")
-      }, 200)
-    }, 500)
+    // A half viewport now and after 500 ms, then a fifth every 200 ms. One timeout at a time, so one clear ends it.
+    const step = (amount: number, delay: number): void => {
+      part.scrollBy(arrow * amount, "viewport")
+      if (this.barPress !== press) return
+      press.timer = this._ctx.clock.setTimeout(() => step(delay === 500 ? 0.5 : 0.2, 200), delay)
+    }
+    step(0.5, 500)
   }
 
   /** Thumb geometry is in half cells along the track, as the native slider's. */
@@ -571,7 +568,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   private endBarPress(): void {
     const press = this.barPress
     this.barPress = undefined
-    if (press && "timer" in press) clearTimeout(press.timer)
+    if (press && "timer" in press && press.timer !== undefined) this._ctx.clock.clearTimeout(press.timer)
   }
 
   public handleKeyPress(key: KeyEvent): boolean {

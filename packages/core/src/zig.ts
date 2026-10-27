@@ -761,6 +761,8 @@ export interface NativeSessionTerminalOptions {
   mouseMovement?: boolean
   kittyKeyboardFlags?: number
   clearOnClose?: boolean
+  /** End the startup query batch with DA1 (the reply sentinel). Defaults to false. */
+  replySentinel?: boolean
 }
 
 export enum NativeSessionTerminalPhase {
@@ -803,7 +805,8 @@ export type NativeSessionControl =
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
   | { kind: "program-status"; status: ProgramStatus }
-  | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background" }
+  | { kind: "query-pixel-resolution"; sentinel?: boolean }
+  | { kind: "restore-modes" | "query-theme-colors" | "reset-background" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
   position?: { x: number; y: number; visible: boolean }
@@ -6464,7 +6467,8 @@ export class FFIRenderLib {
       flag(options.useAlternateScreen, "useAlternateScreen", nativeConstants.OT_TERMINAL_ALTERNATE_SCREEN) |
       flag(options.mouse, "mouse", nativeConstants.OT_TERMINAL_MOUSE) |
       flag(options.mouseMovement, "mouseMovement", nativeConstants.OT_TERMINAL_MOUSE_MOVEMENT) |
-      flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE)
+      flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE) |
+      (options.replySentinel ? nativeConstants.OT_TERMINAL_REPLY_SENTINEL : 0)
     const record = createContextRecord(layout)
     record[layout.fields.flags.offset / 4] = flags
     record[layout.fields.kitty_keyboard_flags.offset / 4] = toSafeFFIU32Length(
@@ -6646,6 +6650,7 @@ export class FFIRenderLib {
         break
       case "query-pixel-resolution":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_PIXEL_RESOLUTION
+        record[layout.fields.argument.offset / 4] = command.sentinel ? 1 : 0
         break
       case "query-theme-colors":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_THEME_COLORS

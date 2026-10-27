@@ -201,14 +201,15 @@ const State = union(enum) {
     /// `deferred`: timed out on a prefix that may still be a mouse report, a Kitty
     /// key, or an awaited reply. It waits without a deadline (docs §6.6). `held`: deferred or
     /// recovered by `sentinel`; every byte must continue it, and it completes only as a reply.
-    csi: struct { alt: bool, deferred: bool, held: bool = false },
+    /// `recovered`: its ESC was a timed-out Escape key, so a cut types its introducer.
+    csi: struct { alt: bool, deferred: bool, held: bool = false, recovered: bool = false },
     ss3: struct { alt: bool },
     /// `recovered`: the unit's ESC was reinstated after a timed-out Escape key.
     x10: struct { alt: bool, recovered: bool },
     /// `kind` is `.osc`, `.dcs`, or `.apc`. `deferred`: while `sentinel` is set, a string that
     /// begins like a reply, or a bare introducer that timed out or was recovered; it continues
-    /// only while it matches a reply prefix.
-    string: struct { kind: Protocol, escaped: bool, deferred: bool = false },
+    /// only while it matches a reply prefix. `recovered` as for `csi`.
+    string: struct { kind: Protocol, escaped: bool, deferred: bool = false, recovered: bool = false },
     /// `osc`: BEL also ends the discarded string, as it ends only OSC.
     discard: struct { string: bool, escaped: bool, osc: bool },
     paste: struct { matched: u3 },
@@ -354,10 +355,7 @@ pub const InputParser = struct {
             .x10 => |x10| self.cutShort(x10.alt, .csi, @intFromBool(x10.recovered), sink),
             .string => |string| if (self.expect.sentinel and self.unit_len == 2) {
                 self.state.string.deferred = true;
-            } else {
-                self.state = .ground;
-                emitReply(sink, self.unit[0..self.unit_len], string.kind, flags.reply_fragment);
-            },
+            } else self.cutShort(false, string.kind, 0, sink),
             // After 20 ms of silence the rest of the garbage is more likely typing.
             .discard => self.state = .ground,
             .ground, .expired, .utf8, .paste => unreachable,
@@ -681,10 +679,20 @@ pub const InputParser = struct {
 
     /// Reports a unit ended by something other than its terminator as a fragment, from `start`
     /// (1 skips an ESC that recovery reinstated). After `ESC ESC`, the first Escape is a key.
+    /// A recovered unit that matched no reply shape yet was typing after an Escape key that was
+    /// already emitted, so its introducer is typed, as without `sentinel`.
     fn cutShort(self: *InputParser, alt: bool, protocol: Protocol, start: u16, sink: *Sink) void {
+        const typed = switch (self.state) {
+            .csi => |csi| csi.recovered and allDigits(self.unit[2..self.unit_len]),
+            .string => |string| string.recovered and string.deferred,
+            else => false,
+        };
         self.state = .ground;
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-        emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
+        if (!typed) return emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
+        const introducer = self.unit[1];
+        emitKey(sink, &.{self.unit[1..2]}, introducer, .{}, .{ .text = self.unit[1..2] });
+        if (self.unit_len > 2) emitReply(sink, self.unit[2..self.unit_len], protocol, flags.reply_fragment);
     }
 
     /// `reply_only`: a held unit, which never decodes as a key.
@@ -1077,10 +1085,10 @@ fn beginsReply(introducer: u8, b: u8) bool {
 /// The unit that `sentinel` holds for a bare introducer after a timed-out Escape.
 fn heldUnit(introducer: u8) State {
     return switch (introducer) {
-        '[' => .{ .csi = .{ .alt = false, .deferred = true, .held = true } },
-        ']' => .{ .string = .{ .kind = .osc, .escaped = false, .deferred = true } },
-        'P' => .{ .string = .{ .kind = .dcs, .escaped = false, .deferred = true } },
-        '_' => .{ .string = .{ .kind = .apc, .escaped = false, .deferred = true } },
+        '[' => .{ .csi = .{ .alt = false, .deferred = true, .held = true, .recovered = true } },
+        ']' => .{ .string = .{ .kind = .osc, .escaped = false, .deferred = true, .recovered = true } },
+        'P' => .{ .string = .{ .kind = .dcs, .escaped = false, .deferred = true, .recovered = true } },
+        '_' => .{ .string = .{ .kind = .apc, .escaped = false, .deferred = true, .recovered = true } },
         else => unreachable,
     };
 }
