@@ -43,6 +43,9 @@ jobs:
           kind: lib
           save: ${{ runner.os == 'macOS' }}
 
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -123,6 +126,9 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
           kind: lib
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

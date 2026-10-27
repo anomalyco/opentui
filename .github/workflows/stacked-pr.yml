@@ -58,6 +58,9 @@ jobs:
           zig-version: 0.16.0
           kind: lib
 
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
       - name: Install dependencies
         run: bun install
 

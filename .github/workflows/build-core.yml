@@ -119,6 +119,12 @@ jobs:
           kind: test
           save: true
 
+      - name: Restore Bun install cache
+        id: bun-cache
+        uses: ./.github/actions/restore-bun-cache
+        with:
+          save: true
+
       # Hash native files before install and test steps write into packages/native.
       - name: Restore native test result
         id: native-tested
@@ -146,6 +152,13 @@ jobs:
 
       - name: Install dependencies
         run: bun install
+
+      - name: Save Bun install cache
+        if: steps.bun-cache.outputs.save == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ steps.bun-cache.outputs.key }}
 
       - name: Enable Linux core dumps
         if: runner.os == 'Linux'
@@ -298,6 +311,9 @@ jobs:
           zig-version: ${{ env.ZIG_VERSION }}
           kind: test
 
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -381,6 +397,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup development Bun
         uses: oven-sh/setup-bun@v2
