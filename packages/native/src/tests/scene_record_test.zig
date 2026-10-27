@@ -5,6 +5,7 @@ const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const ansi = @import("../ansi.zig");
+const scene_record = @import("../scene-record.zig");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 
 const options: scene.FrameOptions = .{
@@ -445,6 +446,8 @@ test "Scene body draws nothing unprepared, clips to the target under any scissor
 const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, scene_box, image, unicode };
 
 const Resources = struct {
+    text: context.Handle,
+    edit: context.Handle,
     text_view: context.Handle,
     editor_view: context.Handle,
     scene_text: context.Handle,
@@ -464,6 +467,8 @@ const Resources = struct {
         try f.owner.sceneSetPaint(scene_box, .{ .borderSides = c.OT_BORDER_ALL });
         const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
         return .{
+            .text = text,
+            .edit = edit,
             .text_view = try f.owner.createTextBufferView(text),
             .editor_view = try f.owner.createEditorView(edit, 4, 1),
             .scene_text = scene_text,
@@ -733,4 +738,226 @@ test "Scene image paints a fill wider than its pixel range" {
     }
     try testing.expect(cells[0] != ' ');
     try testing.expectEqual([3]u32{ cells[0], cells[0], cells[0] }, cells);
+}
+
+fn fingerprint(f: Fixture, recording: *const Recording, hooks: u32) !scene_record.Fingerprint {
+    const slots = [_]scene.PaintSlot{.{ .node = f.root, .num = 1, .hooks = hooks, .hook_generation = 1, .layout = .{}, .public_layout = null, .clip = .{ .x = 0, .y = 0, .width = 1, .height = 1 }, .opacity = 1 }};
+    var segments: [1]scene_record.Segments = undefined;
+    try scene_record.index(recording.view(), &slots, &segments);
+    return scene_record.fingerprint(f.owner, try f.owner.raw().getRenderable(f.root), recording.view(), segments[0], hooks, 1);
+}
+
+fn appendClear(recording: *Recording) void {
+    recording.draw(c.ot_buffer_draw_clear{ .header = drawHeader(c.ot_buffer_draw_clear, c.OT_BUFFER_DRAW_CLEAR), .background = .{ 0, 0, 255, 255 } }, null, "", "");
+}
+
+// Rows each command can write before the member clip bounds them (max reaches the clip bottom),
+// and whether it acts outside the clip, draws an image, or reads unfingerprinted cells.
+test "Scene record fingerprints bound the rows each command kind writes" {
+    const f = try Fixture.init(testing.allocator, 12, 4, .{ .output = transport });
+    defer f.deinit();
+    const resources = try Resources.init(f);
+    const source = try f.owner.createBuffer(2, 3, .{});
+    const max = std.math.maxInt(i64);
+    const Draw = enum { text, fill, compose, stale_compose, clear, grid };
+    const rows = [_]struct { command: union(enum) { command: Command, draw: Draw }, print: scene_record.Fingerprint }{
+        .{ .command = .{ .command = .box }, .print = .{ .top = 0, .bottom = 3 } },
+        .{ .command = .{ .command = .grid }, .print = .{ .top = 0, .bottom = 4 } },
+        .{ .command = .{ .command = .packed_cells }, .print = .{ .top = 1, .bottom = 2 } },
+        .{ .command = .{ .command = .supersample }, .print = .{ .top = 2, .bottom = max } },
+        .{ .command = .{ .command = .grayscale }, .print = .{ .top = 3, .bottom = 4 } },
+        // With and without a mask.
+        .{ .command = .{ .command = .color_matrix }, .print = .{ .non_local = true } },
+        .{ .command = .{ .command = .text_view }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .editor_view }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .scene_text }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .scene_box }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .image }, .print = .{ .image = true } },
+        .{ .command = .{ .command = .unicode }, .print = .{ .top = 3, .bottom = 4 } },
+        .{ .command = .{ .draw = .text }, .print = .{ .top = 2, .bottom = 3 } },
+        .{ .command = .{ .draw = .fill }, .print = .{ .top = -1, .bottom = 0 } },
+        // A source's height bounds a composition; a stale source draws nothing.
+        .{ .command = .{ .draw = .compose }, .print = .{ .top = 0, .bottom = 3, .stable = false } },
+        .{ .command = .{ .draw = .stale_compose }, .print = .{ .stable = false } },
+        .{ .command = .{ .draw = .clear }, .print = .{ .non_local = true } },
+        // The fewest offsets a grid draws with.
+        .{ .command = .{ .draw = .grid }, .print = .{ .top = 1, .bottom = 4 } },
+    };
+    for (rows) |row| {
+        var recording: Recording = .{};
+        recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+        switch (row.command) {
+            .command => |command| appendCommand(&recording, command, resources),
+            .draw => |draw| switch (draw) {
+                .text => recording.text("ab", 1, 2),
+                .fill => recording.fill(0, -1, 3, .{ 0, 0, 0, 255 }),
+                .compose => recording.compose(source, 0),
+                .stale_compose => recording.compose(resources.text, 0),
+                .clear => appendClear(&recording),
+                .grid => recording.append(c.ot_scene_record_grid{ .header = recordHeader(c.OT_SCENE_RECORD_GRID), .options = .{ .struct_size = @sizeOf(c.ot_buffer_grid_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = c.OT_BUFFER_GRID_OUTER, .reserved = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 }, .border_chars = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' } }, .column_count = 2, .row_count = 2 }, std.mem.sliceAsBytes(&[_]i32{ 0, 4, 1, 3 })),
+            },
+        }
+        var print = try fingerprint(f, &recording, c.OT_SCENE_HOOK_RENDER_AFTER);
+        print.digest = 0;
+        try testing.expectEqual(row.print, print);
+    }
+}
+
+const FrameWork = @import("../renderer.zig").FrameWork;
+const Hooked = enum { same, text, outside, back, above, below, offscreen, offscreen_text, offscreen_draw, onscreen, phase, unphase, hooks, unicode, unicode_gone, view, view_text, editor, editor_text, editor_styled, editor_unstyled, body, body_text, body_box, body_resize, body_focus, body_focused, body_blur, view_styled, view_unstyled, view_bind, view_resize, compose, compose_write, view_again, stale, stale_again, clear, clear_again, clear_gone, matrix, matrix_gone, image, image_gone };
+
+// A box on row 1 of a 10 x 6 screen records one command per frame. Each row changes the recording or
+// a resource it reads and expects the rows the frame damages and its full-path reasons. The
+// lists stay kept (B5a) and an unchanged recording paints nothing. The table runs without VERIFY,
+// then with it: VERIFY must pass and change no count.
+test "Scene record frames keep unchanged recordings and damage the rows changed ones write" {
+    var results: [2][std.meta.fields(Hooked).len]FrameWork = undefined;
+    for ([_]bool{ false, true }, &results) |verify, *counts| try hookedTable(verify, counts);
+    try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
+}
+
+fn presentHooked(f: Fixture, recording: *const Recording) !FrameWork {
+    const done = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), recording);
+    _ = try f.owner.sceneFrameCommit(f.id, done, false);
+    try @import("scene_frame_test.zig").drain(f.owner, f.id);
+    return (try f.owner.sceneGetStats(f.id)).frameWork;
+}
+
+fn hookedTable(verify: bool, counts: []FrameWork) !void {
+    const f = try Fixture.init(testing.allocator, 10, 6, .{});
+    defer f.deinit();
+    if (verify) try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+    const hooked = try node(f.owner, f.id, f.root, 1, 2, 0);
+    try f.owner.sceneSetPaint(hooked, .{ .translateY = 1, .background = .{ 2, 0, 0, 255 } });
+    // A box on row 0 whose body the hook draws on row 3.
+    const other = try node(f.owner, f.id, f.root, 1, 3, 1);
+    try f.owner.sceneSetPaint(other, .{ .translateX = 2, .borderSides = c.OT_BORDER_ALL, .focusable = true });
+    // A text view node at column 4 of row 0, bound later to the view a hook draws.
+    const bound = try node(f.owner, f.id, f.root, c.OT_SCENE_TEXT_VIEW, 4, 2);
+    try f.owner.sceneSetStyle(bound, 4, 0, 0, 1, 4, 1);
+    var style: context.Handle = undefined;
+    try f.owner.sceneSetHooks(hooked, before_after, 1, 2, 1);
+    const resources = try Resources.init(f);
+    const source = try f.owner.createBuffer(2, 1, .{});
+    var first: Recording = .{};
+    first.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+    first.text("a", 0, 1);
+    _ = try presentHooked(f, &first);
+    const non_local = c.OT_SCENE_FULL_PATH_NON_LOCAL;
+    const rows = [_]struct { change: Hooked, damage: u32, reasons: u32 = 0, kept: bool = true }{
+        .{ .change = .same, .damage = 0 },
+        .{ .change = .text, .damage = 1 },
+        // A hook draws outside its node but inside its clip: its rows reach the row it wrote.
+        .{ .change = .outside, .damage = 4 },
+        .{ .change = .back, .damage = 4 },
+        // Rows outside the clip, and a node moved out of it, add no damage.
+        .{ .change = .above, .damage = 1 },
+        .{ .change = .below, .damage = 1 },
+        .{ .change = .offscreen, .damage = 1, .kept = false },
+        .{ .change = .offscreen_text, .damage = 0 },
+        // A node outside its clip that draws inside it damages only the rows it draws.
+        .{ .change = .offscreen_draw, .damage = 1 },
+        .{ .change = .onscreen, .damage = 2, .kept = false },
+        // Equal bytes in another phase, or with the node's body replaced, paint other cells.
+        .{ .change = .phase, .damage = 1 },
+        .{ .change = .unphase, .damage = 1 },
+        .{ .change = .hooks, .damage = 1, .kept = false },
+        // A destroyed resource draws nothing: equal bytes, other cells.
+        .{ .change = .unicode, .damage = 3 },
+        .{ .change = .unicode_gone, .damage = 3 },
+        // A view reaches the clip bottom. Edits to what a recording reads repaint equal bytes.
+        .{ .change = .view, .damage = 5 },
+        .{ .change = .view_text, .damage = 5 },
+        .{ .change = .editor, .damage = 5 },
+        .{ .change = .editor_text, .damage = 5 },
+        .{ .change = .editor_styled, .damage = 5 },
+        .{ .change = .editor_unstyled, .damage = 5 },
+        .{ .change = .body, .damage = 5 },
+        .{ .change = .body_text, .damage = 5, .kept = false },
+        // A body reads its node's paint size and focus; a view reads whether its style lives.
+        .{ .change = .body_box, .damage = 5 },
+        .{ .change = .body_resize, .damage = 6, .kept = false },
+        .{ .change = .body_focus, .damage = 6, .kept = false },
+        .{ .change = .body_focused, .damage = 0 },
+        .{ .change = .body_blur, .damage = 6, .kept = false },
+        .{ .change = .view_styled, .damage = 5 },
+        .{ .change = .view_unstyled, .damage = 5 },
+        // A view bound to another node takes that node's size, which no epoch tracks: the
+        // recording repaints on every frame, as a composed buffer does.
+        .{ .change = .view_bind, .damage = 6, .kept = false },
+        .{ .change = .view_resize, .damage = 6, .kept = false },
+        // A composed buffer repaints on every frame, written or not.
+        .{ .change = .compose, .damage = 6 },
+        .{ .change = .compose_write, .damage = 2 },
+        .{ .change = .view_again, .damage = 6 },
+        // A destroyed view draws nothing, then stays unchanged.
+        .{ .change = .stale, .damage = 6, .kept = false },
+        .{ .change = .stale_again, .damage = 0 },
+        // Non-local commands repaint in full; removing one repaints every row.
+        .{ .change = .clear, .damage = 6, .reasons = non_local },
+        .{ .change = .clear_again, .damage = 6, .reasons = non_local },
+        .{ .change = .clear_gone, .damage = 6 },
+        .{ .change = .matrix, .damage = 6, .reasons = non_local },
+        .{ .change = .matrix_gone, .damage = 6 },
+        // As an image node: the frame after one is full too.
+        .{ .change = .image, .damage = 6, .reasons = FrameWork.full_path_images },
+        .{ .change = .image_gone, .damage = 6, .reasons = FrameWork.full_path_images | FrameWork.full_path_unretained },
+    };
+    comptime std.debug.assert(rows.len == std.meta.fields(Hooked).len);
+    for (rows, counts) |row, *count| {
+        errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
+        var recording: Recording = .{};
+        recording.slot(0, if (row.change == .phase) c.OT_SCENE_RECORD_PHASE_BEFORE else c.OT_SCENE_RECORD_PHASE_AFTER);
+        switch (row.change) {
+            .same, .clear_gone, .matrix_gone, .image_gone => recording.text("a", 0, 1),
+            .text, .back, .onscreen, .phase, .unphase, .hooks => recording.text("b", 0, 1),
+            .above => recording.text("b", 0, -2),
+            .below => recording.text("b", 0, 6),
+            .offscreen => recording.text("b", 0, 8),
+            .offscreen_text => recording.text("c", 0, 8),
+            .offscreen_draw => recording.text("c", 0, 3),
+            .unicode, .unicode_gone => appendCommand(&recording, .unicode, resources),
+            .outside => recording.text("b", 0, 4),
+            .view, .view_text, .view_again, .view_styled, .view_unstyled, .view_bind, .view_resize, .stale, .stale_again => appendCommand(&recording, .text_view, resources),
+            .body_box, .body_resize, .body_focus, .body_focused, .body_blur => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(other), .x = 0, .y = 3 }, &.{}),
+            .editor, .editor_text, .editor_styled, .editor_unstyled => appendCommand(&recording, .editor_view, resources),
+            .body, .body_text => appendCommand(&recording, .scene_text, resources),
+            .compose, .compose_write => recording.compose(source, 0),
+            .clear, .clear_again => appendClear(&recording),
+            .matrix => appendCommand(&recording, .color_matrix, resources),
+            .image => appendCommand(&recording, .image, resources),
+        }
+        switch (row.change) {
+            .view_text => try f.owner.textBufferSetText(resources.text, "edited"),
+            .editor_text => try f.owner.editSetText(resources.edit, "edited", false),
+            .body_text => try f.owner.sceneSetText(resources.scene_text, "edited"),
+            .body_resize => try f.owner.sceneSetStyle(other, 4, 0, 0, 1, 4, 1),
+            .body_focus, .body_blur => try f.owner.sceneSetFocus(other, row.change == .body_focus),
+            .offscreen, .onscreen => try f.owner.scenePatchPaint(hooked, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (row.change == .offscreen) 8 else 1 }),
+            .editor_styled => {
+                style = try f.owner.createSyntaxStyle();
+                try f.owner.editSetSyntaxStyle(resources.edit, style);
+            },
+            .editor_unstyled => try f.owner.destroy(style),
+            .view_bind => try f.owner.sceneSetTextView(bound, resources.text_view),
+            .view_resize => try f.owner.sceneSetStyle(bound, 4, 0, 0, 1, 2, 1),
+            .view_styled => {
+                style = try f.owner.createSyntaxStyle();
+                try f.owner.textBufferSetSyntaxStyle(resources.text, style);
+            },
+            .view_unstyled => try f.owner.destroy(style),
+            .compose_write => try f.owner.drawBufferText(source, "w", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0),
+            .stale => try f.owner.destroy(resources.text_view),
+            .hooks => try f.owner.sceneSetHooks(hooked, before_after | c.OT_SCENE_HOOK_RENDER_SELF, 2, 2, 1),
+            .unicode_gone => try f.owner.destroy(resources.unicode),
+            else => {},
+        }
+        count.* = try presentHooked(f, &recording);
+        try testing.expectEqual(row.damage, count.damage_rows);
+        try testing.expectEqual(row.reasons, count.full_path_reasons);
+        // Kept lists (B5a) serve both unchanged and changed recordings.
+        if (row.kept) try testing.expectEqual(@as(u64, 0), count.candidate_visits);
+        if (row.damage == 0) try testing.expectEqual(@as(u64, 0), count.members_painted);
+        if (row.change == .back) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 4).?.char);
+    }
 }

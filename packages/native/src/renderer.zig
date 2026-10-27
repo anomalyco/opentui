@@ -127,6 +127,7 @@ pub const FrameWork = struct {
     pub const full_path_tainted: u32 = 8;
     pub const full_path_unretained: u32 = 16;
     pub const full_path_options: u32 = 32;
+    pub const full_path_non_local: u32 = 64;
 
     /// Adds the encoder's counts to a scene frame's counts.
     fn merge(self: FrameWork, encode: FrameWork) FrameWork {

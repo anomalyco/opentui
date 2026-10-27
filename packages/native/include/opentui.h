@@ -421,6 +421,7 @@ typedef struct ot_scene_layout {
 #define OT_SCENE_FULL_PATH_TAINTED UINT32_C(8)
 #define OT_SCENE_FULL_PATH_UNRETAINED UINT32_C(16)
 #define OT_SCENE_FULL_PATH_OPTIONS UINT32_C(32)
+#define OT_SCENE_FULL_PATH_NON_LOCAL UINT32_C(64)
 
 /* Fields from work_frame_id on count the work of the last presented scene
  * frame: preparation, paint, and encoding. They are deterministic work
@@ -433,11 +434,12 @@ typedef struct ot_scene_layout {
  * SCREEN (forced, invalidated, or palette-changed encode), IMAGES (image
  * placements present), TAINTED (the next buffer was written outside scene
  * paint), UNRETAINED (no presented scene frame to compare with: the first
- * frame, a resize, or the frame after a recorded, failed, cancelled, or
- * unpresented frame),
- * OPTIONS (background, use_mouse, excluded_hit_num, or preserve_unwritten
- * changed). A recorded frame repaints every row. Otherwise, without a reason,
- * a frame repaints only when a painted member's inputs changed, and the encoder
+ * frame, a resize, or the frame after a failed, cancelled, or unpresented
+ * frame), OPTIONS (background, use_mouse, excluded_hit_num, or
+ * preserve_unwritten changed), NON_LOCAL (a recording clears or color-matrixes
+ * the frame). IMAGES also counts recorded image draws. Otherwise, without a
+ * reason, a frame repaints only when a painted member's inputs changed, its
+ * recording included, and the encoder
  * diffs only the damage_rows rows they cover; an unchanged frame has
  * damage_rows 0 and paints nothing. After a current-buffer session lease the
  * encoder diffs every row, without repainting. */
