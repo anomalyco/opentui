@@ -72,6 +72,7 @@ const NO_EXPECTATIONS: StdinParserProtocolContext = {
   pixelResolutionQueryActive: false,
   explicitWidthCprActive: false,
   startupCursorCprActive: false,
+  replySentinelActive: false,
 }
 const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
   [C.OT_INPUT_REPLY_CSI]: "csi",
@@ -107,7 +108,8 @@ function expectationFlags(context: StdinParserProtocolContext): number {
   return (
     (replies ? C.OT_INPUT_EXPECT_REPLIES : 0) |
     (context.kittyKeyboardEnabled ? C.OT_INPUT_EXPECT_KITTY_KEYBOARD : 0) |
-    (cursorPosition ? C.OT_INPUT_EXPECT_CURSOR_POSITION : 0)
+    (cursorPosition ? C.OT_INPUT_EXPECT_CURSOR_POSITION : 0) |
+    (context.replySentinelActive ? C.OT_INPUT_EXPECT_SENTINEL : 0)
   )
 }
 

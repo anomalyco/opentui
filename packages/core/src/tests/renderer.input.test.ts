@@ -1643,6 +1643,8 @@ test("partial OSC flushed on timeout should not block later text", async () => {
     keypresses.push(event)
   })
 
+  // DA1 replies end the startup and pixel batches; while one is out, the native parser holds a reply-shaped OSC.
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?62c\x1b[?62c"))
   currentRenderer.stdin.emit("data", Buffer.from("\x1b]52;c;"))
   advanceCurrentClock()
   expect(keypresses).toHaveLength(0)
@@ -2171,6 +2173,237 @@ test("delayed pixel resolution response stays in response path while query is ac
 
   expect(keypresses).toHaveLength(0)
   expect(currentRenderer.resolution).toEqual({ width: 1920, height: 1080 })
+})
+
+const DA1_REPLY = "\x1b[?62c"
+
+// A set-up renderer whose query batches the test ends: `sentinels` records the DA1 flag of setup and each pixel query.
+async function createBatchRenderer(experimental_nativeInput: boolean) {
+  const clock = new ManualClock()
+  const { renderer } = await createTestRenderer({ clock, experimental_nativeInput })
+  const r = renderer as any
+  const sentinels: boolean[] = []
+  const { control, setupTerminal } = r.nativeSession
+  r.nativeSession.setupTerminal = (options: any) => (
+    sentinels.push(options.replySentinel), setupTerminal.call(r.nativeSession, options)
+  )
+  r.nativeSession.control = (request: any) => {
+    if (request.kind === "query-pixel-resolution") sentinels.push(request.sentinel)
+    return control.call(r.nativeSession, request)
+  }
+  const keys: string[] = []
+  renderer.keyInput.on("keypress", (event) => keys.push(event.name))
+  await renderer.setupTerminal()
+  // Backstops start once the batch's output has drained.
+  const drained = () => r.nativeSession.idle()
+  await drained()
+  const send = (bytes: string) => renderer.stdin.emit("data", Buffer.from(bytes))
+  const batches = () => r.replyBatches.map((batch: { kind: string }) => batch.kind)
+  const context = () => r.stdinParser.protocolContext
+  return { renderer, r, clock, sentinels, keys, drained, send, batches, context }
+}
+
+test("pixel queries end at their DA1 reply or backstop, and each reply answers the oldest query (issue 346)", async () => {
+  for (const native of [false, true]) {
+    const t = await createBatchRenderer(native)
+    try {
+      expect(t.sentinels).toEqual([native, native])
+      expect(t.batches()).toEqual(["startup", "pixel"])
+      expect(t.context().pixelResolutionQueryActive).toBe(true)
+      // The terminal ignores CSI 14 t: the DA1 replies, or in clock mode the backstop, end both batches.
+      if (native) t.send(DA1_REPLY + DA1_REPLY)
+      else t.clock.advance(5000)
+      expect([t.batches(), t.context().pixelResolutionQueryActive, t.r.replySentinel]).toEqual([[], false, native])
+
+      t.renderer.resize(100, 30)
+      await t.drained()
+      expect(t.sentinels).toEqual([native, native, native])
+      t.send("\x1b[4;80;100t")
+      expect(t.renderer.resolution).toBeNull()
+      t.send("\x1b[4;80;200t")
+      expect(t.renderer.resolution).toEqual({ width: 200, height: 80 })
+      expect(t.context().pixelResolutionQueryActive).toBe(false)
+
+      // At most four queries stay unanswered.
+      for (let width = 90; width > 80; width -= 2) {
+        t.renderer.resize(width, 30)
+        await t.drained()
+        if (native) t.send(DA1_REPLY)
+        else t.clock.advance(5000)
+      }
+      expect([t.sentinels.length, t.batches(), t.keys]).toEqual([7, [], []])
+    } finally {
+      t.renderer.destroy()
+    }
+  }
+})
+
+test("a batch whose DA1 reply never comes ends at its backstop; only an unexcused one switches to clock mode", async () => {
+  for (const before of ["", "\x1b[200~" + DA1_REPLY + "\x1b[201~", "suspend"]) {
+    const t = await createBatchRenderer(true)
+    try {
+      t.send("\x1b[4;80;100t")
+      if (before === "suspend") {
+        await t.renderer.suspend()
+        await t.renderer.resume()
+        // Admitted behind excused batches, which may take its DA1 reply.
+        t.renderer.resize(90, 30)
+        await t.drained()
+      } else t.send(before)
+      const batches = before === "suspend" ? ["startup", "pixel", "pixel"] : ["startup", "pixel"]
+      t.clock.advance(4999)
+      expect([t.batches(), t.context().replySentinelActive]).toEqual([batches, true])
+      t.clock.advance(1)
+      const miss = before === ""
+      expect({ before, batches: t.batches(), sentinel: t.r.replySentinel }).toEqual({
+        before,
+        batches: [],
+        sentinel: !miss,
+      })
+      expect(t.context()).toMatchObject({ replySentinelActive: false, privateCapabilityRepliesActive: false })
+      t.renderer.resize(100, 30)
+      expect(t.sentinels.at(-1)).toBe(!miss)
+    } finally {
+      t.renderer.destroy()
+    }
+  }
+})
+
+test("reply batches follow an independent model under random replies, pastes, resizes, suspensions and time", async () => {
+  type Batch = { kind: string; deadline: number | null; excused: boolean }
+  const ops = ["resize", "da1", "pastedDa1", "pixel", "advance", "suspend"] as const
+  for (const native of [false, true]) {
+    for (let seed = 1; seed <= 6; seed++) {
+      const t = await createBatchRenderer(native)
+      // Reference: the state machine of tracks/input-reply-sentinel.md, written without the renderer's code.
+      const m = { now: 0, sentinel: native, waiting: true, unanswered: 1, requery: false, queries: 1, resizes: 0 }
+      let batches: Batch[] = ["startup", "pixel"].map((kind) => ({ kind, deadline: 5000, excused: false }))
+      const end = (batch: Batch) => {
+        batches = batches.filter((other) => other !== batch)
+        if (batch.kind === "pixel" && !batches.some((other) => other.kind === "pixel")) m.waiting = false
+      }
+      const query = () => {
+        if (m.waiting || m.unanswered >= 4) return
+        Object.assign(m, { waiting: true, unanswered: m.unanswered + 1, requery: false, queries: m.queries + 1 })
+        batches.push({ kind: "pixel", deadline: m.now + 5000, excused: batches.some((other) => other.excused) })
+      }
+      let random = seed
+      const next = (n: number) => ((random = (random * 1103515245 + 12345) % 2 ** 31), random % n)
+      try {
+        for (let step = 0; step < 60; step++) {
+          const op = ops[next(ops.length)]!
+          if (op === "resize") {
+            t.renderer.resize(60 + (m.resizes++ % 2), 20)
+            m.requery = true
+            query()
+          } else if (op === "da1") {
+            t.send(DA1_REPLY)
+            if (m.sentinel && batches.length > 0) end(batches[0]!)
+          } else if (op === "pastedDa1") {
+            t.send("\x1b[200~" + DA1_REPLY + "\x1b[201~")
+            for (const batch of batches) batch.excused = true
+          } else if (op === "pixel") {
+            t.send("\x1b[4;80;100t")
+            if (m.unanswered > 0 && --m.unanswered === 0) {
+              m.waiting = false
+              if (m.requery) query()
+            }
+          } else if (op === "advance") {
+            const ms = [25, 2500, 5000][next(3)]!
+            t.clock.advance(ms)
+            m.now += ms
+            const due = batches.filter((batch) => batch.deadline !== null && batch.deadline <= m.now)
+            for (const batch of due.sort((a, b) => a.deadline! - b.deadline!)) {
+              m.sentinel &&= batch.excused
+              end(batch)
+            }
+          } else {
+            await t.renderer.suspend()
+            await t.renderer.resume()
+            for (const batch of batches) Object.assign(batch, { deadline: m.now + 5000, excused: true })
+            if (!m.sentinel) batches.filter((batch) => batch.kind === "startup").forEach(end)
+            if (m.requery) query()
+          }
+          await t.drained()
+          const startup = batches.some((batch) => batch.kind === "startup")
+          expect({
+            native,
+            seed,
+            step,
+            op,
+            batches: t.batches(),
+            sentinel: t.r.replySentinel,
+            queries: t.sentinels.length - 1,
+            unanswered: t.r.unansweredPixelQueries,
+            context: t.context(),
+          }).toMatchObject({
+            native,
+            seed,
+            step,
+            op,
+            batches: batches.map((batch) => batch.kind),
+            sentinel: m.sentinel,
+            queries: m.queries,
+            unanswered: m.unanswered,
+            context: {
+              privateCapabilityRepliesActive: startup,
+              explicitWidthCprActive: startup,
+              pixelResolutionQueryActive: m.waiting,
+              replySentinelActive: m.sentinel && batches.length > 0,
+            },
+          })
+        }
+        expect(t.keys).toEqual([])
+      } finally {
+        t.renderer.destroy()
+      }
+    }
+  }
+})
+
+test("startup replies after suspension are still consumed, and their DA1 reply ends the startup batch", async () => {
+  // Late cursor reports, Shift+F3 and Alt+F3 in shape: the startup cursor, then the two explicit-width probes.
+  const late = "\x1b[5;5R\x1b[1;2R\x1b[1;3R" + DA1_REPLY
+  for (const native of [false, true]) {
+    for (const suspended of [false, true]) {
+      const t = await createBatchRenderer(native)
+      try {
+        await t.renderer.suspend()
+        if (suspended) t.renderer.stdin.push(Buffer.from(late))
+        await t.renderer.resume()
+        if (!suspended) t.send(late)
+        t.clock.advance(25)
+        // Replies read while suspended are dropped, as on main; clock mode ended the startup batch at suspension.
+        expect({
+          native,
+          suspended,
+          keys: t.keys,
+          width: t.renderer.capabilities?.explicit_width,
+          batches: t.batches(),
+        }).toEqual({ native, suspended, keys: [], width: native && !suspended, batches: ["pixel"] })
+      } finally {
+        t.renderer.destroy()
+      }
+    }
+  }
+})
+
+test("a startup reply split by a pause types nothing while its DA1 reply is out (issue 342)", async () => {
+  for (const reply of ["\x1b]11;rgb:0000/0000/0000\x07", "\x1bP>|kitty(0.40.1)\x1b\\", "\x1b[?2026;2$y"]) {
+    for (let cut = 1; cut < reply.length; cut++) {
+      const t = await createBatchRenderer(true)
+      try {
+        t.send(reply.slice(0, cut))
+        t.clock.advance(25)
+        t.send(reply.slice(cut) + "j")
+        t.clock.advance(25)
+        // A lone ESC keeps its 20 ms timeout and becomes the Escape key; the reply is still not typed.
+        expect({ reply, cut, keys: t.keys }).toEqual({ reply, cut, keys: cut === 1 ? ["escape", "j"] : ["j"] })
+      } finally {
+        t.renderer.destroy()
+      }
+    }
+  }
 })
 
 test("vscode minimal capability response", async () => {

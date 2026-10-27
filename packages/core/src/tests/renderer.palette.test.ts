@@ -861,7 +861,7 @@ describe("Palette detection while capabilities are unsettled", () => {
 
     let palettePromise: Promise<TerminalColors> | undefined
     try {
-      expect((renderer as any).capabilityTimeoutId).not.toBeNull()
+      expect((renderer as any).startupRepliesPending).toBe(true)
 
       expect(renderer.capabilities?.multiplexer).toBe("none")
 
@@ -884,7 +884,7 @@ describe("Palette detection while capabilities are unsettled", () => {
 
     let palettePromise: Promise<TerminalColors> | undefined
     try {
-      expect((renderer as any).capabilityTimeoutId).not.toBeNull()
+      expect((renderer as any).startupRepliesPending).toBe(true)
 
       expect(renderer.capabilities?.multiplexer).toBe("tmux")
       expect(renderer.capabilities?.terminal?.from_xtversion).toBe(false)
@@ -910,7 +910,7 @@ describe("Palette detection while capabilities are unsettled", () => {
 
     let palettePromise: Promise<TerminalColors> | undefined
     try {
-      expect((renderer as any).capabilityTimeoutId).not.toBeNull()
+      expect((renderer as any).startupRepliesPending).toBe(true)
 
       palettePromise = renderer.getPalette({ size: 16 })
       void palettePromise.catch(() => {})
@@ -931,7 +931,7 @@ describe("Palette detection while capabilities are unsettled", () => {
 
     let palettePromise: Promise<TerminalColors> | undefined
     try {
-      expect((renderer as any).capabilityTimeoutId).not.toBeNull()
+      expect((renderer as any).startupRepliesPending).toBe(true)
 
       palettePromise = renderer.getPalette({ size: 16 })
       void palettePromise.catch(() => {})
@@ -958,7 +958,7 @@ describe("Palette detection while capabilities are unsettled", () => {
 
     let palettePromise: Promise<TerminalColors> | undefined
     try {
-      expect((renderer as any).capabilityTimeoutId).not.toBeNull()
+      expect((renderer as any).startupRepliesPending).toBe(true)
 
       palettePromise = renderer.getPalette({ size: 16 })
       void palettePromise.catch(() => {})
@@ -982,7 +982,7 @@ describe("Palette detection while capabilities are unsettled", () => {
 
     let palettePromise: Promise<TerminalColors> | undefined
     try {
-      expect((renderer as any).capabilityTimeoutId).not.toBeNull()
+      expect((renderer as any).startupRepliesPending).toBe(true)
 
       palettePromise = renderer.getPalette({ size: 16 })
       void palettePromise.catch(() => {})
