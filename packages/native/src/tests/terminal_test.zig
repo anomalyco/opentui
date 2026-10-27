@@ -40,6 +40,38 @@ test "parseXtversion - terminology format enables hyperlinks and osc777 notifica
     try testing.expectEqual(Terminal.NotificationProtocol.osc777, term.notification_protocol);
 }
 
+test "parseXtversion - rex hyperlinks use case-insensitive exact terminal names" {
+    const cases = .{
+        .{ .name = "rex", .hyperlinks = true },
+        .{ .name = "ReX", .hyperlinks = true },
+        .{ .name = "xterm-rex", .hyperlinks = true },
+        .{ .name = "XTERM-ReX", .hyperlinks = true },
+        .{ .name = "notrex", .hyperlinks = false },
+        .{ .name = "ReX-wrapper", .hyperlinks = false },
+        .{ .name = "xterm-rex-extra", .hyperlinks = false },
+    };
+    inline for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+
+        var term = Terminal.init(.{ .env_map = &env });
+        try testing.expect(!term.caps.hyperlinks);
+
+        term.processCapabilityResponse("\x1bP>|" ++ case.name ++ " 0.0.1793047680-g2db882\x1b\\");
+        term.checkEnvironmentOverrides();
+
+        try testing.expectEqualStrings(case.name, term.getTerminalName());
+        try testing.expectEqualStrings("0.0.1793047680-g2db882", term.getTerminalVersion());
+        try testing.expect(term.term_info.from_xtversion);
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+        try testing.expect(!term.caps.osc52);
+        try testing.expect(!term.caps.kitty_graphics);
+        try testing.expect(!term.caps.kitty_keyboard);
+        try testing.expect(!term.caps.sixel);
+    }
+}
+
 test "parseXtversion - tmux format" {
     var term = Terminal.init(.{});
     const response = "\x1bP>|tmux 3.5a\x1b\\";
@@ -993,6 +1025,44 @@ test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal"
         try testing.expectEqual(multiplexer.kind, term.multiplexer);
         try testing.expect(!term.caps.hyperlinks);
     }
+}
+
+test "environment overrides - rex hyperlinks use case-insensitive exact TERM names without XTVersion" {
+    const cases = [_]struct { name: []const u8, hyperlinks: bool }{
+        .{ .name = "rex", .hyperlinks = true },
+        .{ .name = "ReX", .hyperlinks = true },
+        .{ .name = "xterm-rex", .hyperlinks = true },
+        .{ .name = "XTERM-ReX", .hyperlinks = true },
+        .{ .name = "notrex", .hyperlinks = false },
+        .{ .name = "ReX-wrapper", .hyperlinks = false },
+        .{ .name = "xterm-rex-extra", .hyperlinks = false },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", case.name);
+
+        const term = Terminal.init(.{ .env_map = &env });
+        try testing.expect(!term.term_info.from_xtversion);
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - FORCE_HYPERLINK disables rex hyperlinks before and after XTVersion" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "xterm-rex");
+    try env.put("FORCE_HYPERLINK", "0");
+
+    var term = Terminal.init(.{ .env_map = &env });
+    try testing.expect(!term.caps.hyperlinks);
+
+    term.processCapabilityResponse("\x1bP>|rex 0.0.1793047680-g2db882\x1b\\");
+    try testing.expect(!term.caps.hyperlinks);
+
+    term.checkEnvironmentOverrides();
+    try testing.expect(term.term_info.from_xtversion);
+    try testing.expect(!term.caps.hyperlinks);
 }
 
 test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
