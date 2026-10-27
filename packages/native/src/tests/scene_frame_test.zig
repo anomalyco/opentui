@@ -1268,8 +1268,8 @@ fn expectSameObservations(twins: [2]Fixture, nodes: [2][]context.Handle) !void {
 }
 
 // A reply that makes a child need feedback while its parent's batch runs: the child runs in
-// a later feedback pass of the same round, in paint order, where the forced full-frame twin
-// pops it in the batch. Both send the same requests. Rows: a later sibling gets UPDATE (a), or
+// a later feedback pass of the same round, in paint order. The forced full-frame twin, which
+// pops every child, defers it too, and both send the same requests. Rows: a later sibling gets UPDATE (a), or
 // its child does (b), selected (c) or culled (d); an earlier one does (e); 1,000 siblings in
 // one reply (h) and in 1,000 chained replies (i), also selected by a filtering parent; an
 // inserted child moves away (g); a child moves into the running batch (m), or shows under a
@@ -1324,6 +1324,7 @@ test "Scene feedback runs children that replies mark in a later pass of the roun
             try feedbackFrame(f, row, list, true, log);
             steps = f.state.test_feedback_child_steps - steps;
         }
+        try testing.expectEqualSlices(usize, logs[0].items, logs[1].items);
         if (row.expected.len != 0) try testing.expectEqualSlices(usize, row.expected, logs[1].items);
         if (row.reply == .all or row.reply == .chain or row.reply == .all_continue) {
             // A, its RESIZE first if it owes one, then Y, then X1..Xn in a later pass.
@@ -1332,9 +1333,6 @@ test "Scene feedback runs children that replies mark in a later pass of the roun
             // One reply costs a pass over P's list; a chain of n replies costs n passes.
             if (row.n == 1000) try testing.expect(steps <= if (row.reply == .chain) (row.n + 2) * (row.n + 12) else 5 * (row.n + 2) + 64);
         }
-        std.mem.sort(usize, logs[0].items, {}, std.sort.asc(usize));
-        std.mem.sort(usize, logs[1].items, {}, std.sort.asc(usize));
-        try testing.expectEqualSlices(usize, logs[0].items, logs[1].items);
         try expectSameObservations(twins, .{ nodes[0][0 .. row.n + 5], nodes[1][0 .. row.n + 5] });
     }
 }
@@ -1834,10 +1832,9 @@ test "Scene feedback passes keep the round and request counts at the limits" {
 }
 
 // The one behavior change: a reply that reads what another node's reply writes may see a
-// different value when a reply marked the reader mid-batch. A's reply gives X UPDATE and
-// writes Y's background; X's reply copies Y's background to itself. The full-frame twin pops X
-// before Y in the batch; the feedback pass runs X after Y, so X copies Y's own reply. Requests
-// are the same; X's color differs.
+// different value when a reply marked the reader mid-batch. A's reply gives X UPDATE; Y's
+// reply writes its own background; X's reply copies Y's background. X used to run between A
+// and Y and copy the old color; it now runs in the later pass, after Y, in both twins.
 test "Scene feedback runs a reader marked mid-batch after the writers its pass reaches first" {
     const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 1, .{}), try Fixture.init(testing.allocator, 4, 1, .{}) };
     defer for (twins) |f| f.deinit();
@@ -1872,10 +1869,10 @@ test "Scene feedback runs a reader marked mid-batch after the writers its pass r
         try testing.expectEqual(@as(usize, 3), count);
         color.* = (try f.owner.raw().getRenderable(list[1])).scene_node.?.paint.background;
     }
-    try testing.expectEqual([3]u32{ 0, 1, 2 }, logs[0]);
-    try testing.expectEqual([3]u32{ 0, 2, 1 }, logs[1]);
-    try testing.expectEqual((scene.Paint{}).background, colors[0]);
-    try testing.expectEqual(ansi.RGBA{ 9, 0, 0, 255 }, colors[1]);
+    for (logs, colors) |log, color| {
+        try testing.expectEqual([3]u32{ 0, 2, 1 }, log);
+        try testing.expectEqual(ansi.RGBA{ 9, 0, 0, 255 }, color);
+    }
 }
 
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is

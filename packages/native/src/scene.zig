@@ -612,9 +612,11 @@ const Feedback = struct {
     node: handles.Handle,
     kind: enum { update, refresh, prepass, placed, children, filtered_refresh, select, scroll, done },
     placement: u64 = 0,
-    // A queued child's parent and paint rank.
+    // A queued child's parent and paint rank, and whether its parent's selection needed it:
+    // FULL_FRAME queues every child.
     parent: ?handles.Handle = null,
     rank: u64 = 0,
+    needed: bool = true,
 };
 
 /// Session-owned storage. Tokens never recycle, and only live nodes remain in the
@@ -1503,6 +1505,9 @@ pub const Scene = struct {
                 var result: ?FrameRequest = null;
                 switch (operation.kind) {
                     .update => {
+                        // A child that needed nothing when FULL_FRAME queued it, but that a reply
+                        // marked since, waits for the later pass the mark starts, as in a normal frame.
+                        if (!operation.needed and node.skip.subtree != .clean) continue;
                         node.setFeedback(active, .started);
                         // Today's walk would issue no request below.
                         if (!full and !self.mustVisit(node)) continue;
@@ -1683,8 +1688,9 @@ pub const Scene = struct {
                     }
                 }
                 state.culling.selected_at = node.culling.selected_epoch;
-                if (state.feedback(active) != .unseen or !(full or self.mustVisit(state))) continue;
-                self.queueUpdate(node, state);
+                if (state.feedback(active) != .unseen) continue;
+                const needed = self.mustVisit(state);
+                if (full or needed) self.queueUpdate(node, state, needed);
             }
             return;
         }
@@ -1699,7 +1705,7 @@ pub const Scene = struct {
             }
             if (state.feedback(active) != .unseen or !self.mustVisit(state)) continue;
             if (filter != null and state.culling.selected_at != node.culling.selected_epoch) continue;
-            self.queueUpdate(node, state);
+            self.queueUpdate(node, state, true);
         }
         self.orderBatch(self.feedback.items[start..], .rank);
     }
@@ -1723,8 +1729,8 @@ pub const Scene = struct {
         std.mem.sort(Feedback, batch, self, keyGreaterThan(key));
     }
 
-    fn queueUpdate(self: *Scene, parent: *const Node, state: *Node) void {
-        self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = .update, .parent = parent.handle, .rank = state.paint_rank });
+    fn queueUpdate(self: *Scene, parent: *const Node, state: *Node, needed: bool) void {
+        self.feedback.appendAssumeCapacity(.{ .node = state.handle, .kind = .update, .parent = parent.handle, .rank = state.paint_rank, .needed = needed });
         state.setFeedback(&self.attempt.?, .queued);
     }
 
