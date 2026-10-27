@@ -2,7 +2,10 @@
 //! (OT_SCENE_DEBUG_FULL_FRAME) and a candidate Session run one seeded script of
 //! scene mutations, host replies, and frames. After every frame the two must
 //! agree on host requests, draft cells and hits, render status, encoded bytes,
-//! presented cells and hits, cursor, hit tests, and public layouts.
+//! presented cells and hits, cursor, hit tests, public layouts, and paint order.
+//! Requests compare per node and kind within each attempt, not in order: the
+//! reference runs first and records each reply, and the candidate replays the
+//! reply of the same request. Stats count frames whose order differs.
 //!
 //! Extending it for a Track B step:
 //! - a mutation kind: add an `Op` variant, its arm in `applyOn`, and a draw in
@@ -91,6 +94,39 @@ const Op = union(enum) {
     /// An explicit scroll of a scroll node, or its new options.
     scroll_to: struct { slot: usize, target: [2]f64, relative: bool },
     scroll_options: struct { slot: usize, options: scene.ScrollOptions },
+    /// Copies one node's background to another: a reply that reads what other replies write.
+    relay: struct { from: usize, to: usize },
+};
+
+/// A request of an attempt, by node, kind, and occurrence, with the reply the reference
+/// gave it, which the candidate replays when it sends the same request.
+const Entry = struct {
+    slot: usize,
+    request: scene.FrameRequest,
+    occurrence: u32,
+    ops: [8]Recorded = undefined,
+    len: usize = 0,
+    replayed: bool = false,
+};
+
+const Recorded = struct {
+    op: Op,
+    // The hook generation the reference set, and the background a relay read there.
+    generation: u64,
+    value: ansi.RGBA,
+    result: anyerror!void,
+};
+
+/// A twin's requests in one stretch of an attempt, by slot and kind, in the order sent.
+const Order = struct {
+    keys: [65][2]u32 = undefined,
+    len: usize = 0,
+
+    fn count(self: *const Order, key: [2]u32) u32 {
+        var total: u32 = 0;
+        for (self.keys[0..self.len]) |item| total += @intFromBool(std.meta.eql(item, key));
+        return total;
+    }
 };
 
 /// Options drawn once per frame.
@@ -257,6 +293,11 @@ const Stats = struct {
     scroll_frames: u32 = 0,
     scroll_changes: u32 = 0,
     scroll_requests: u32 = 0,
+    /// Frames whose requests came in a different order on the twins (the exact-order oracle,
+    /// now only counted), relay replies, and relays that read a different value there.
+    reordered: u32 = 0,
+    relays: u32 = 0,
+    relay_differences: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -290,6 +331,13 @@ const Harness = struct {
     /// Hooks draw differently when it advances, with no scene change.
     hook_tick: usize = 0,
     recorded: bool = false,
+    /// Replies in the reference's order. While the reference answers a request, `entry`
+    /// records the ops it sends; the candidate's replay sets the generation and relay value.
+    book: [65]Entry = undefined,
+    book_len: usize = 0,
+    entry: ?*Entry = null,
+    generation: ?u64 = null,
+    relay_value: ?ansi.RGBA = null,
 
     fn init(random: std.Random, side: std.Random, verify: bool) !Harness {
         var twins: [2]Fixture = undefined;
@@ -356,11 +404,35 @@ const Harness = struct {
         return self.model.handles[slot].?[twin];
     }
 
-    /// Applies one op to both twins, which must agree on the result, then to the model.
+    /// Applies one op to both twins, which must agree on the result, then to the model. While
+    /// the reference answers a request, only the reference takes it, and the entry records it.
     fn apply(self: *Harness, op: Op) !void {
+        if (self.entry) |entry| {
+            const generation = if (op == .hooks) self.model.hook_generation[op.hooks.slot] + 1 else 0;
+            const value = if (op == .relay) try self.background(reference, op.relay.from) else undefined;
+            const result = self.applyOn(reference, op);
+            entry.ops[entry.len] = .{ .op = op, .generation = generation, .value = value, .result = result };
+            entry.len += 1;
+            if (result) |_| {} else |_| return;
+            return self.applyModel(op);
+        }
         const results = [2]anyerror!void{ self.applyOn(reference, op), self.applyOn(candidate, op) };
         try testing.expectEqual(results[0], results[1]);
         if (results[0]) |_| {} else |_| return;
+        try self.applyModel(op);
+    }
+
+    /// Removal rehashes the token map before tombstones take half of its free slots.
+    fn expectTombstones(self: *const Harness, twin: usize) !void {
+        const state = self.twins[twin].state;
+        try testing.expect(state.token_tombstones < (state.tokens.capacity() - state.tokens.count()) / 2 + 1);
+    }
+
+    fn background(self: *Harness, twin: usize, slot: usize) !ansi.RGBA {
+        return (try self.twins[twin].owner.raw().getRenderable(self.handle(twin, slot))).scene_node.?.paint.background;
+    }
+
+    fn applyModel(self: *Harness, op: Op) !void {
         switch (op) {
             .create => |value| {
                 self.model.kind[value.slot] = value.kind;
@@ -376,8 +448,8 @@ const Harness = struct {
             .destroy => |slot| {
                 self.model.views[slot] = .{ null, null };
                 try self.model.destroy(slot);
-                // Removal rehashes the token map before tombstones take half of its free slots.
-                for (self.twins) |f| try testing.expect(f.state.token_tombstones < (f.state.tokens.capacity() - f.state.tokens.count()) / 2 + 1);
+                try self.expectTombstones(reference);
+                if (self.entry == null) try self.expectTombstones(candidate);
             },
             .rebind => self.stats.rebinds += 1,
             .shared_text, .highlight => self.stats.shared_changes += @intFromBool(self.viewShown()),
@@ -526,7 +598,7 @@ const Harness = struct {
             .slider => |value| try f.owner.sceneSetSlider(self.handle(twin, value.slot), .{ .value = value.value, .orientation = value.orientation }),
             .text_options => |value| try f.owner.sceneSetTextOptions(self.handle(twin, value.slot), value.options),
             .measure => |slot| try f.owner.sceneSetMeasure(self.handle(twin, slot), null),
-            .hooks => |value| try f.owner.sceneSetHooks(self.handle(twin, value.slot), value.flags, self.model.hook_generation[value.slot] + 1, 1, 1),
+            .hooks => |value| try f.owner.sceneSetHooks(self.handle(twin, value.slot), value.flags, self.generation orelse self.model.hook_generation[value.slot] + 1, 1, 1),
             .viewport => |bound| try f.owner.sceneSetViewport(self.handle(twin, content_slot), if (bound) self.handle(twin, viewport_slot) else null),
             .resize => |value| try f.owner.resizeSessionRenderer(f.id, value.width, value.height),
             .editor => |value| {
@@ -537,6 +609,7 @@ const Harness = struct {
             .host_cursor => |value| try f.owner.controlSession(f.id, .{ .cursor = .{ .position = .{ .x = value.x, .y = value.y, .visible = value.visible } } }),
             .scroll_to => |value| _ = try f.owner.sceneScrollTo(self.handle(twin, value.slot), value.target, .{ value.relative, value.relative }),
             .scroll_options => |value| try f.owner.sceneSetScroll(self.handle(twin, value.slot), value.options),
+            .relay => |value| try f.owner.scenePatchPaint(self.handle(twin, value.to), c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = self.relay_value orelse try self.background(twin, value.from) }),
         }
     }
 
@@ -790,82 +863,150 @@ const Harness = struct {
         };
     }
 
-    /// Drives one frame on both twins in lockstep. Returns false if both rejected the attempt.
+    /// Drives one frame. Each twin runs on its own to its next RECORD or DONE: the reference
+    /// answers its requests and records the replies, and the candidate replays the reply of
+    /// each request it sends. Both must send the same requests per node and kind, and end at
+    /// the same point. Returns false if both rejected the attempt.
     fn drive(self: *Harness, spec: FrameSpec) !bool {
         var requests: [2]?scene.FrameRequest = .{ null, null };
         var recordings: [2]Recording = .{ .{}, .{} };
         var records: [2]?[]const u8 = .{ null, null };
         while (true) {
-            const results = [2]anyerror!scene.FrameRequest{
-                self.twins[reference].owner.sceneFrameStepWithRecording(self.twins[reference].id, requests[reference], spec.options, records[reference]),
-                self.twins[candidate].owner.sceneFrameStepWithRecording(self.twins[candidate].id, requests[candidate], spec.options, records[candidate]),
+            var orders: [2]Order = .{ .{}, .{} };
+            self.book_len = 0;
+            const handles = self.model.handles;
+            const results = .{
+                try self.runTwin(reference, &requests[reference], records[reference], spec.options, &orders[reference]),
+                blk: {
+                    // The candidate resolves slots as they were before the reference's replies.
+                    const after = self.model.handles;
+                    self.model.handles = handles;
+                    defer self.model.handles = after;
+                    break :blk try self.runTwin(candidate, &requests[candidate], records[candidate], spec.options, &orders[candidate]);
+                },
             };
+            for (self.book[0..self.book_len]) |entry| {
+                errdefer std.debug.print("reference request kind {d} num {d} has no candidate request\n", .{ entry.request.kind, entry.request.num });
+                try testing.expect(entry.replayed);
+            }
+            self.stats.reordered += @intFromBool(!std.mem.eql([2]u32, orders[0].keys[0..orders[0].len], orders[1].keys[0..orders[1].len]));
             const first = results[reference] catch |err| {
                 try testing.expectError(err, results[candidate]);
                 return false;
             };
             const second = try results[candidate];
             try self.expectSameRequest(first, second);
-            requests = .{ first, second };
             records = .{ null, null };
-            switch (first.kind) {
-                0 => return true,
-                c.OT_SCENE_FRAME_RECORD => {
-                    self.stats.records += 1;
-                    self.recorded = true;
-                    recordings = .{ .{}, .{} };
-                    try self.expectSameSlots(first, second, &recordings);
-                    records = .{ recordings[reference].view(), recordings[candidate].view() };
-                    // Paint hooks may edit what steady recordings read, or change the scene.
-                    if (self.generateRead()) |op| try self.apply(op);
-                    if (self.random.uintLessThan(u32, 4) == 0) {
-                        try self.reply();
-                        self.stats.record_replies += 1;
-                    }
-                },
-                else => {
-                    switch (first.kind) {
-                        c.OT_SCENE_FRAME_UPDATE => self.stats.updates += 1,
-                        c.OT_SCENE_FRAME_RESIZE => self.stats.resizes += 1,
-                        c.OT_SCENE_FRAME_SCROLL => self.stats.scroll_requests += 1,
-                        else => self.stats.layout_changes += 1,
-                    }
-                    const requester = self.model.slotOf(reference, first.node).?;
-                    // A scroll in the reply paints at the new offset in the same frame.
-                    if (first.kind == c.OT_SCENE_FRAME_SCROLL and self.random.boolean()) try self.apply(self.generateScroll(requester));
-                    if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) {
-                        self.stats.content_resizes += 1;
-                        // A text change on a content child in the middle of the refresh batch (B2 argon-2).
-                        const children = self.model.children[content_slot].items;
-                        const start = self.random.uintLessThan(usize, children.len);
-                        for (0..children.len) |offset| {
-                            const target = children[(start + offset) % children.len];
-                            if (self.model.kind[target] != .text) continue;
-                            // Truncation changes the view without a solve.
-                            var options = self.model.text_options[target];
-                            options.truncate = !options.truncate;
-                            try self.apply(.{ .text_options = .{ .slot = target, .options = options } });
-                            self.stats.content_reply_texts += 1;
-                            break;
-                        }
-                    }
-                    try self.reply();
-                    if (self.side.uintLessThan(u32, 3) == 0) try self.markSibling(requester);
-                    // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
-                    // ancestor of a node it already stamped (B2 invariant 7).
-                    // Detaching it instead makes the walk meet a node whose ancestry moved.
-                    if (self.model.parent[requester]) |parent| if (parent != root_slot and self.random.uintLessThan(u32, 4) == 0) {
-                        if (requester >= scaffold_slots and self.random.boolean()) {
-                            try self.apply(.{ .move = .{ .slot = requester, .parent = null, .index = 0 } });
-                            self.stats.reply_detaches += 1;
-                        } else {
-                            try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
-                            self.stats.reply_hides += 1;
-                        }
-                    };
-                },
+            if (first.kind == 0) return true;
+            self.stats.records += 1;
+            self.recorded = true;
+            recordings = .{ .{}, .{} };
+            try self.expectSameSlots(first, second, &recordings);
+            records = .{ recordings[reference].view(), recordings[candidate].view() };
+            // Paint hooks may edit what steady recordings read, or change the scene.
+            if (self.generateRead()) |op| try self.apply(op);
+            if (self.random.uintLessThan(u32, 4) == 0) {
+                try self.reply();
+                self.stats.record_replies += 1;
             }
         }
+    }
+
+    /// Steps one twin to its next RECORD, DONE, or error, answering or replaying each request.
+    fn runTwin(self: *Harness, twin: usize, request: *?scene.FrameRequest, record: ?[]const u8, options: scene.FrameOptions, order: *Order) !anyerror!scene.FrameRequest {
+        const f = self.twins[twin];
+        var bytes = record;
+        while (true) {
+            const next = f.owner.sceneFrameStepWithRecording(f.id, request.*, options, bytes) catch |err| return err;
+            bytes = null;
+            request.* = next;
+            if (next.kind == 0 or next.kind == c.OT_SCENE_FRAME_RECORD) return next;
+            const slot = self.model.slotOf(twin, next.node).?;
+            const key = [2]u32{ @intCast(slot), next.kind };
+            const occurrence = order.count(key);
+            order.keys[order.len] = key;
+            order.len += 1;
+            if (twin == reference) {
+                self.book[self.book_len] = .{ .slot = slot, .request = next, .occurrence = occurrence };
+                self.entry = &self.book[self.book_len];
+                self.book_len += 1;
+                defer self.entry = null;
+                try self.answer(next, slot);
+                continue;
+            }
+            const entry = for (self.book[0..self.book_len]) |*entry| {
+                if (entry.slot == slot and entry.request.kind == next.kind and entry.occurrence == occurrence) break entry;
+            } else {
+                std.debug.print("candidate request kind {d} num {d} has no reference request\n", .{ next.kind, next.num });
+                return error.TestExpectedEqual;
+            };
+            try self.expectSameRequest(entry.request, next);
+            entry.replayed = true;
+            defer self.generation = null;
+            defer self.relay_value = null;
+            for (entry.ops[0..entry.len]) |recorded| {
+                self.generation = recorded.generation;
+                self.relay_value = null;
+                if (recorded.op == .relay) {
+                    // Both twins write what the reference read, so they stay comparable.
+                    const own = self.background(candidate, recorded.op.relay.from) catch null;
+                    self.stats.relay_differences += @intFromBool(own == null or !std.meta.eql(own.?, recorded.value));
+                    self.relay_value = recorded.value;
+                }
+                try testing.expectEqual(recorded.result, self.applyOn(candidate, recorded.op));
+                if (recorded.op == .destroy) try self.expectTombstones(candidate);
+            }
+        }
+    }
+
+    /// The reference's reply to an UPDATE, RESIZE, LAYOUT_CHANGED, or SCROLL request.
+    fn answer(self: *Harness, first: scene.FrameRequest, requester: usize) !void {
+        switch (first.kind) {
+            c.OT_SCENE_FRAME_UPDATE => self.stats.updates += 1,
+            c.OT_SCENE_FRAME_RESIZE => self.stats.resizes += 1,
+            c.OT_SCENE_FRAME_SCROLL => self.stats.scroll_requests += 1,
+            else => self.stats.layout_changes += 1,
+        }
+        // A scroll in the reply paints at the new offset in the same frame.
+        if (first.kind == c.OT_SCENE_FRAME_SCROLL and self.random.boolean()) try self.apply(self.generateScroll(requester));
+        if (first.kind == c.OT_SCENE_FRAME_RESIZE and self.model.parent[requester] == content_slot) {
+            self.stats.content_resizes += 1;
+            // A text change on a content child in the middle of the refresh batch (B2 argon-2).
+            const children = self.model.children[content_slot].items;
+            const start = self.random.uintLessThan(usize, children.len);
+            for (0..children.len) |offset| {
+                const target = children[(start + offset) % children.len];
+                if (self.model.kind[target] != .text) continue;
+                // Truncation changes the view without a solve.
+                var options = self.model.text_options[target];
+                options.truncate = !options.truncate;
+                try self.apply(.{ .text_options = .{ .slot = target, .options = options } });
+                self.stats.content_reply_texts += 1;
+                break;
+            }
+        }
+        try self.reply();
+        if (self.side.uintLessThan(u32, 3) == 0) try self.markSibling(requester);
+        // The requester takes another node's background, which other replies may write first.
+        if (requester >= scaffold_slots and self.side.uintLessThan(u32, 4) == 0) {
+            const from = scaffold_slots + self.side.uintLessThan(usize, node_count_max - scaffold_slots);
+            if (self.model.handles[from] != null) {
+                try self.apply(.{ .relay = .{ .from = from, .to = requester } });
+                self.stats.relays += 1;
+            }
+        }
+        // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
+        // ancestor of a node it already stamped (B2 invariant 7).
+        // Detaching it instead makes the walk meet a node whose ancestry moved.
+        if (self.model.parent[requester]) |parent| if (parent != root_slot and self.random.uintLessThan(u32, 4) == 0) {
+            if (requester >= scaffold_slots and self.random.boolean()) {
+                try self.apply(.{ .move = .{ .slot = requester, .parent = null, .index = 0 } });
+                self.stats.reply_detaches += 1;
+            } else {
+                try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
+                self.stats.reply_hides += 1;
+            }
+        };
     }
 
     /// Zero to two changes, and sometimes a destroyed node, from a host reply.
@@ -903,13 +1044,13 @@ const Harness = struct {
         try self.apply(.{ .hooks = .{ .slot = target, .flags = kept | flags } });
     }
 
+    /// The same request, wherever it came in the attempt.
     fn expectSameRequest(self: *const Harness, first: scene.FrameRequest, second: scene.FrameRequest) !void {
         try testing.expectEqual(first.kind, second.kind);
         try testing.expectEqual(first.num, second.num);
         try testing.expectEqual(first.width, second.width);
         try testing.expectEqual(first.height, second.height);
         try testing.expectEqual(first.frame_id, second.frame_id);
-        try testing.expectEqual(first.request_id, second.request_id);
         try testing.expectEqual(first.layout_epoch, second.layout_epoch);
         try testing.expectEqual(first.hook_generation, second.hook_generation);
         try testing.expectEqual(self.model.slotOf(reference, first.node), self.model.slotOf(candidate, second.node));
@@ -1033,6 +1174,7 @@ const Harness = struct {
             self.stats.draft_writes += 1;
         }
         try self.twins[reference].expectSameCells(self.twins[candidate]);
+        try self.expectSameChildOrder();
         try self.expectPaintOrder();
         var hidden_hooked = false;
         for (self.model.handles, 0..) |maybe, slot| {
@@ -1115,6 +1257,16 @@ const Harness = struct {
             if (views[candidate] != null and self.model.shown(slot)) return true;
         }
         return false;
+    }
+
+    /// Both twins hold every node's paint children in the same order.
+    fn expectSameChildOrder(self: *Harness) !void {
+        for (self.model.handles) |maybe| {
+            const pair = maybe orelse continue;
+            const lists = .{ (try self.twins[reference].owner.raw().getRenderable(pair[reference])).scene_node.?.paint_children.items, (try self.twins[candidate].owner.raw().getRenderable(pair[candidate])).scene_node.?.paint_children.items };
+            try testing.expectEqual(lists[0].len, lists[1].len);
+            for (lists[0], lists[1]) |a, b| try testing.expectEqual(a.scene_node.?.num, b.scene_node.?.num);
+        }
     }
 
     /// A paint list that the next frame may keep is in the model's order. The model sorts on
@@ -1379,6 +1531,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .scroll_frames = 300,
         .scroll_changes = 42,
         .scroll_requests = 2,
+        .relays = 29,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
