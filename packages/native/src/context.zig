@@ -2381,7 +2381,7 @@ pub const Context = struct {
         const value = try self.sceneMutableNode(handle);
         const target = if (target_handle) |id| try self.sceneNode(id) else null;
         if (target) |node| if (node.scene_node.?.owner != value.scene_node.?.owner) return error.WrongSession;
-        try value.scene_node.?.owner.requestScroll(value, kind, target, alignment, inset);
+        try value.scene_node.?.owner.requestScroll(&self.objects, value, kind, target, alignment, inset);
         return scene.scrollReport(value);
     }
 

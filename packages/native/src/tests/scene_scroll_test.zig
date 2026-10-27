@@ -184,12 +184,13 @@ const StickyModel = struct {
         self.restick();
     }
     /// A REAPPLY scroll, then a layout of `max` that applies it again: a target at or past a
-    /// positive max is the end. A scroll that leaves a following view stuck keeps no target.
+    /// positive max is the end. A scroll that reached its place and left a following view stuck
+    /// keeps no target; a clamped one does.
     fn reapply(self: *StickyModel, value: f64, max: f64, solves: bool) void {
         const end = value > 0 and value >= self.max;
         self.scroll(value);
         if (!solves) return;
-        if (self.follow != c.OT_SCENE_SCROLL_FOLLOW_NONE and self.stuck) return self.layout(max);
+        if (self.follow != c.OT_SCENE_SCROLL_FOLLOW_NONE and self.stuck and @floor(value + 0.5) == self.offset) return self.layout(max);
         self.max = max;
         self.scroll(if (end) max else value);
     }
@@ -709,4 +710,111 @@ test "Scene scroll LAYOUT request arrives once the frame's layout settles, befor
     _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0);
     try f.owner.sceneDestroyNode(box);
     try testing.expectEqual(@as(u32, 0), f.state.layout_callbacks);
+}
+
+test "Scene scroll requests in an outer box see a nested scroll's move in the same solve" {
+    const f = try Fixture.init(testing.allocator, 24, 12, .{});
+    defer f.deinit();
+    // An outer 20x5 box: two rows, a sticky-bottom inner 20x3 box with 10 rows, then 8 rows.
+    const outer = try create(f, f.root, c.OT_SCENE_BOX, 2);
+    try style(f, outer, c.OT_STYLE_DIMENSION, 0, 0, c.OT_UNIT_POINT, 20, 1);
+    try style(f, outer, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 5, 1);
+    const never = [2]scene.ScrollBarOptions{ .{}, .{ .policy = c.OT_SCENE_SCROLL_BAR_NEVER } };
+    try f.owner.sceneSetScroll(outer, .{ .bars = never });
+    for (0..2) |index| _ = try oneCell(f, outer, @intCast(10 + index), index);
+    const inner = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    try f.owner.sceneMoveNode(inner, outer, 2);
+    try style(f, inner, c.OT_STYLE_DIMENSION, 1, 0, c.OT_UNIT_POINT, 3, 1);
+    try style(f, inner, c.OT_STYLE_DIMENSION, 0, 0, c.OT_UNIT_POINT, 20, 1);
+    try f.owner.sceneSetScroll(inner, .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_BOTTOM, .bars = never });
+    var rows: [10]context.Handle = undefined;
+    for (&rows, 0..) |*row, index| row.* = try oneCell(f, inner, @intCast(20 + index), index);
+    for (0..8) |index| _ = try oneCell(f, outer, @intCast(40 + index), 3 + index);
+    try present(f);
+    _ = try f.owner.sceneScrollTo(outer, .{ 0, 2 }, .{ false, false }, false);
+    try present(f);
+    // The inner box follows an append in the solve that also resolves the outer anchor.
+    _ = try f.owner.sceneScrollRequest(outer, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, rows[8], 0, 0);
+    const held = try line(f, rows[8]);
+    _ = try oneCell(f, inner, 30, 10);
+    try present(f);
+    try testing.expectEqual(held, try line(f, rows[8]));
+    try testing.expectEqual(@as(f64, 1), try offset(f, outer));
+    try present(f);
+    try testing.expectEqual(held, try line(f, rows[8]));
+    // So does a reveal: row 9 at the outer top after the inner box follows another append.
+    _ = try f.owner.sceneScrollRequest(outer, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, null, 0, 0);
+    _ = try f.owner.sceneScrollRequest(outer, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, rows[9], c.OT_SCENE_SCROLL_ALIGN_START, 0);
+    _ = try oneCell(f, inner, 31, 11);
+    try present(f);
+    try testing.expectEqual((try f.owner.sceneGetLayout(outer, false)).screenY, try line(f, rows[9]));
+}
+
+test "Scene scroll requests survive a cancelled frame and a failed delivery" {
+    const f = try Fixture.init(testing.allocator, 12, 6, .{});
+    defer f.deinit();
+    var rows: [20]context.Handle = undefined;
+    const box = try rowBox(f, c.OT_SCENE_SCROLL_FOLLOW_NONE, &rows);
+    try present(f);
+    try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 1, 0, 0);
+    // A target set in a reply after the frame's solve, then a cancel: the next frame applies it.
+    _ = try oneCell(f, box, 40, 20);
+    var request = try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box);
+    try testing.expectEqual(@as(f64, 17), (try f.owner.sceneScrollTo(box, .{ 0, 100 }, .{ false, false }, true)).offset[1]);
+    try f.owner.sceneFrameCancel(f.id, request.frame_id);
+    try f.owner.sceneSetHooks(box, 0, 2, 0, 0);
+    for (0..10) |index| _ = try oneCell(f, box, @intCast(50 + index), 21 + index);
+    try present(f);
+    try testing.expectEqual(@as(f64, 27), try offset(f, box));
+    // A reveal applied by a solve whose frame is then cancelled applies again in the next frame.
+    try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 3, 0, 0);
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, rows[10], c.OT_SCENE_SCROLL_ALIGN_START, 0);
+    try prepend(f, box, 70, 1);
+    request = try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box);
+    try testing.expectEqual(@as(f64, 11), try offset(f, box));
+    try f.owner.sceneFrameCancel(f.id, request.frame_id);
+    try f.owner.sceneSetHooks(box, 0, 4, 0, 0);
+    try prepend(f, box, 71, 1);
+    try present(f);
+    try testing.expectEqual(@as(f64, 12), try offset(f, box));
+    // A LAYOUT request that the request limit stops stays pending for the next frame.
+    try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_SCROLL, 5, 0, 0);
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0);
+    _ = try oneCell(f, box, 72, 0);
+    var limited = frame_options;
+    limited.max_host_requests = 1;
+    request = try f.step(null, limited, c.OT_SCENE_FRAME_SCROLL, box);
+    try testing.expectError(error.FrameRequestLimit, f.owner.sceneFrameStep(f.id, request, limited));
+    try testing.expectEqual(@as(u32, 1), f.state.layout_callbacks);
+    _ = try f.step(try f.step(null, frame_options, c.OT_SCENE_FRAME_SCROLL, box), frame_options, c.OT_SCENE_FRAME_DONE, null);
+    try commit(f);
+    try testing.expectEqual(@as(u32, c.OT_SCENE_SCROLL_CHANGED_LAYOUT), (try f.owner.sceneGetScroll(box)).changes);
+}
+
+test "Scene scroll anchor ends at a scroll to the end, and waits for an unplaced node's layout" {
+    const f = try Fixture.init(testing.allocator, 12, 6, .{});
+    defer f.deinit();
+    var rows: [20]context.Handle = undefined;
+    const box = try rowBox(f, c.OT_SCENE_SCROLL_FOLLOW_BOTTOM, &rows);
+    try present(f);
+    // The end while an anchor is held reaches the end and follows it.
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, rows[12], 0, 0);
+    _ = try f.owner.sceneScrollTo(box, .{ 0, std.math.inf(f64) }, .{ false, false }, true);
+    for (0..5) |index| _ = try oneCell(f, box, @intCast(40 + index), 20 + index);
+    try present(f);
+    try testing.expectEqual(@as(f64, 21), try offset(f, box));
+    _ = try oneCell(f, box, 50, 25);
+    try present(f);
+    try testing.expectEqual(@as(f64, 22), try offset(f, box));
+    // A row anchored before its first layout keeps the view where it is.
+    _ = try f.owner.sceneScrollTo(box, .{ 0, 10 }, .{ false, false }, false);
+    try present(f);
+    const added = try oneCell(f, box, 60, 26);
+    _ = try f.owner.sceneScrollRequest(box, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, added, 0, 0);
+    try testing.expectEqual(@as(f64, 10), try offset(f, box));
+    try present(f);
+    try testing.expectEqual(@as(f64, 10), try offset(f, box));
+    try prepend(f, box, 70, 2);
+    try present(f);
+    try testing.expectEqual(@as(f64, 12), try offset(f, box));
 }

@@ -909,11 +909,13 @@ ot_status ot_scene_set_scroll_arrow(ot_context *, const ot_handle *node, uint32_
  * the new state to out_state unless it is NULL. During a frame attempt the next
  * round prepares at the new offset.
  * With REAPPLY each axis it sets also keeps its target, and every solve of the
- * next frame (the current one during an attempt) moves the offset to the target
- * again, clamped to the new limits, and recomputes stuck. A relative delta adds
- * to a pending target. A target of +Infinity, or one at or past a positive max
- * of a laid-out node, is the end and lands at the new max. A later scroll
- * without REAPPLY drops pending targets. */
+ * next frame (the current one during an attempt, or a later one if that frame
+ * is cancelled) moves the offset to the target again, clamped to the new limits,
+ * and recomputes stuck. A relative delta adds to a pending target. A target of
+ * +Infinity, or one at or past a positive max of a laid-out node, is the end:
+ * it lands at the new max and releases a held anchor. A following view that the
+ * scroll left stuck where it asked keeps no target on the follow axis. A later
+ * scroll without REAPPLY drops pending targets. */
 ot_status ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, double y, uint32_t flags,
     ot_scene_scroll_state *out_state);
 /* Requests about a node in the scroll node's subtree, read from the last solve
@@ -921,10 +923,12 @@ ot_status ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, doub
  * - INTO_VIEW scrolls now so the target's rect is inside the viewport inset by
  *   inset cells (align NEAREST moves the least, as a browser does; START puts its
  *   start at the inset edge; END its end), and again after each solve of the next
- *   frame, as a REAPPLY scroll does; it replaces pending targets.
+ *   frame, as a REAPPLY scroll does; it replaces pending targets. A target that
+ *   was never laid out scrolls only after its first solve.
  * - ANCHOR holds the target's position in the viewport: after each solve the
  *   offset moves with the target, clamped, and stuck is recomputed; while held,
- *   the anchor decides the offset over sticky follow and pending requests. An
+ *   the anchor decides the offset over sticky follow and pending requests. A
+ *   target that was never laid out holds the place its first solve gives it. An
  *   explicit scroll moves the held row. A NULL target releases it; so does
  *   destroying the target or moving it out of the subtree. align and inset are 0.
  * - LAYOUT asks for one SCROLL request (OT_SCENE_SCROLL_CHANGED_LAYOUT in
