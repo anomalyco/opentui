@@ -173,6 +173,11 @@ const Model = struct {
         return next;
     }
 
+    /// Whether `node` is attached under the root, with no hidden node at or above it.
+    fn shown(self: *const Model, node: usize) bool {
+        return self.contains(root_slot, node) and !self.hidden[node] and !self.hiddenAbove(node);
+    }
+
     /// Whether a hidden node lies strictly above `node`.
     fn hiddenAbove(self: *const Model, node: usize) bool {
         var cursor = self.parent[node];
@@ -1078,7 +1083,7 @@ const Harness = struct {
     /// Whether a bound text view is attached under the root and shown.
     fn viewShown(self: *const Harness) bool {
         for (self.model.views, 0..) |views, slot| {
-            if (views[candidate] != null and self.model.contains(root_slot, slot) and !self.model.hidden[slot] and !self.model.hiddenAbove(slot)) return true;
+            if (views[candidate] != null and self.model.shown(slot)) return true;
         }
         return false;
     }
@@ -1128,7 +1133,7 @@ const Harness = struct {
             const y = self.random.intRangeLessThan(i32, -1, @intCast(expected.height + 1));
             try testing.expectEqual(try owners[0].owner.sceneHitTest(owners[0].id, x, y), try owners[1].owner.sceneHitTest(owners[1].id, x, y));
         }
-        for (self.model.handles) |maybe| {
+        for (self.model.handles, 0..) |maybe, slot| {
             const pair = maybe orelse continue;
             for ([_]bool{ false, true }) |raw| {
                 const layouts = [2]anyerror!scene.Layout{ owners[0].owner.sceneGetLayout(pair[0], raw), owners[1].owner.sceneGetLayout(pair[1], raw) };
@@ -1143,6 +1148,9 @@ const Harness = struct {
             const nodes = .{ (try owners[0].owner.raw().getRenderable(pair[0])).scene_node.?, (try owners[1].owner.raw().getRenderable(pair[1])).scene_node.? };
             try testing.expectEqual(nodes[0].resize_width, nodes[1].resize_width);
             try testing.expectEqual(nodes[0].resize_height, nodes[1].resize_height);
+            // Only a shown node is painted. A recording that reads another node's text prepares
+            // its view when it replays, and a recorded frame with no damaged rows replays none.
+            if (!self.model.shown(slot)) continue;
             if (nodes[0].text) |text| {
                 const views = .{ text.view, nodes[1].text.?.view };
                 try testing.expectEqualDeep(views[0].getViewport(), views[1].getViewport());
