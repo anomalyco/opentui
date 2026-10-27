@@ -160,8 +160,9 @@ test("TabSelect paints the visible tabs, the underline, the description, and scr
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
 // (updateAutoScroll, then a 100 ms frame), `press|move|release:x,y` (left button, then a frame), or `grow:h,ch`
 // (`growx:w,cw`) to set the box's height and its child's height (widths) in one frame, `wait:ms` (advance the clock,
-// then a frame), or `destroy` (`destroy:change`: on the bar's next change). Each step records scrollTop,scrollLeft and a "!" prefix when a key is not handled; an
-// auto step adds "-" when auto-scroll stopped. Once the box is destroyed, a step records its pending timers.
+// then a frame), or `destroy` (`destroy:change`: on the bar's next change). Each step records scrollTop,scrollLeft and
+// a "!" prefix when a key is not handled; an auto step adds "-" when auto-scroll stopped. Once the box is destroyed, a
+// step records its pending timers.
 // Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
 const scrolling: [string, object, string, string][] = [
   [
