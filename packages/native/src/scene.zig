@@ -349,6 +349,8 @@ const PaintInputs = struct {
     resource_epoch: u64,
     // A destroyed style unbinds its borrowers without a mutation gate.
     styled: bool,
+    // What the member's paint hooks recorded this frame, or 0.
+    record_digest: u64,
 };
 
 /// One painted member of a frame and the rows it paints.
@@ -1382,19 +1384,27 @@ pub const Scene = struct {
                 }
             }
             try self.markFocus(objects);
-            const damage = try self.planPaint(objects, cli, active.options);
-            const verify = damage != .all and self.verifiesRetained();
-            // Next still holds the presented frame, unless a lease may have written current.
-            if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), false);
-            if (damage == .none) {
-                try self.skipPaint(cli);
-                if (verify) try self.verifySkip(owner, cli, active.options);
-            } else {
-                try self.paintFrame(owner, cli, active.options, null, false);
-                if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), true);
-            }
-            return self.finishPaint(cli, damage);
+            return self.paintPlanned(owner, cli, null, false);
         }
+    }
+
+    /// Paints the frame, keeps the presented frame's cells, or diffs only the damaged rows.
+    fn paintPlanned(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, recording: ?[]const u8, refresh_views: bool) !FrameRequest {
+        const options = self.attempt.?.options;
+        const damage, const cursor = try self.planPaint(owner, cli, options, recording, refresh_views);
+        const verify = damage != .all and self.verifiesRetained();
+        // Next still holds the presented frame, unless a lease may have written current.
+        if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), false);
+        if (damage == .none) {
+            try self.skipPaint(cli);
+            if (verify) try self.verifySkip(owner, cli, options, recording, refresh_views);
+        } else {
+            try self.paintFrame(owner, cli, options, recording, refresh_views);
+            if (verify and !cli.current_written) try self.verifyRows(cli.getNextBuffer(), cli.getCurrentBuffer(), true);
+        }
+        // The focused editor among the members owns the cursor, wherever it paints.
+        self.maintainCursor(cli, cursor);
+        return self.finishPaint(cli, damage);
     }
 
     /// Builds the paint list from current accepted topology, including transforms accepted
@@ -1765,8 +1775,7 @@ pub const Scene = struct {
     }
 
     /// Counts every row as damaged and returns why the frame cannot compare its members with
-    /// the presented frame's. A recorded frame calls only this: hooks may draw anywhere in their
-    /// clip, so it keeps no records, and the frame after it has none to compare with.
+    /// the presented frame's.
     fn fullPathReasons(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions) u32 {
         if (self.records_frame != 0 and self.records_frame == cli.retained_frame_id) {
             std.mem.swap(std.ArrayListUnmanaged(Record), &self.records, &self.presented_records);
@@ -1792,21 +1801,27 @@ pub const Scene = struct {
     }
 
     /// Records the frame's members and decides which rows can differ from the presented frame.
-    fn planPaint(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, options: FrameOptions) !Damage {
+    /// Also returns the focused editor member, which owns the cursor wherever it paints.
+    fn planPaint(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !struct { Damage, ?Work } {
+        const objects = &owner.objects;
         const frame_id = self.attempt.?.frame_id;
         var reasons = self.fullPathReasons(cli, options);
         self.records.clearRetainingCapacity();
         self.records_frame = frame_id;
         self.records_options = options;
-        try self.records.ensureTotalCapacity(self.allocator, self.members.items.len);
+        try self.records.ensureTotalCapacity(self.allocator, if (recording == null) self.members.items.len else self.paint_members.items.len);
         try self.damage.resize(self.allocator, cli.height, false);
         self.damage.unsetAll();
         var matched: usize = 0;
+        var cursor: ?Work = null;
         // Rows of every member whose inputs changed, before and after, and of every member that left.
-        for (self.members.items) |entry| {
+        var list: PaintList = .{ .scene = self, .objects = objects, .recording = recording, .refresh_views = refresh_views };
+        while (list.next()) |item| {
+            const entry, const phases = item;
+            if (self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
             // A scroll node's record covers its bars: their inputs change its paint epoch.
-            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible or entry.bars) continue;
-            self.record(entry, &reasons);
+            if (entry.bars) continue;
+            self.record(owner, cli, entry, phases, &reasons);
             if (reasons != 0) continue;
             const current = self.records.items[self.records.items.len - 1];
             const old = self.recordOf(entry.node.scene_node.?, self.presented_records_frame, self.presented_records.items);
@@ -1816,7 +1831,7 @@ pub const Scene = struct {
             if (old) |previous| self.damageRows(previous);
         }
         self.frame_work.full_path_reasons |= reasons;
-        if (reasons != 0) return .all;
+        if (reasons != 0) return .{ .all, cursor };
         // Each member matches at most one presented record, so a full match means none left.
         std.debug.assert(matched <= self.presented_records.items.len);
         const departed: []const Record = if (matched == self.presented_records.items.len) &.{} else self.presented_records.items;
@@ -1829,7 +1844,7 @@ pub const Scene = struct {
         }
         const rows = self.damage.count();
         self.frame_work.damage_rows = @intCast(rows);
-        return if (rows == 0) .none else .rows;
+        return .{ if (rows == 0) .none else .rows, cursor };
     }
 
     fn damageRows(self: *Scene, previous: Record) void {
@@ -1852,7 +1867,7 @@ pub const Scene = struct {
         return null;
     }
 
-    fn record(self: *Scene, entry: Work, reasons: *u32) void {
+    fn record(self: *Scene, owner: *Context, cli: *const renderer.CliRenderer, entry: Work, phases: Phases, reasons: *u32) void {
         const node = entry.node.scene_node.?;
         if (node.kind == api.OT_SCENE_IMAGE) reasons.* |= renderer.FrameWork.full_path_images;
         const cells = cellLayout(entry.layout);
@@ -1866,6 +1881,20 @@ pub const Scene = struct {
         }
         // Viewport padding can make the viewport, and so the fills, pass the node's rows.
         if (hasFills(node)) painted = rowSpan(painted, intersection(cellClip(scrollViewport(node.scroll.?, cells)), entry.clip));
+        // A member without paint hooks has an empty print: no rows, digest 0.
+        const print: scene_record.Fingerprint = if (phases.hooks == 0) .{} else scene_record.fingerprint(owner, entry.node, phases.recording, phases.segments, phases.hooks, self.attempt.?.frame_id);
+        if (print.image) reasons.* |= renderer.FrameWork.full_path_images;
+        if (print.non_local) reasons.* |= renderer.FrameWork.full_path_non_local;
+        // Hooks draw inside the member clip, except non-local commands: a change to those, or
+        // their member leaving, damages every row. Rows outside the clip draw nothing.
+        const low = if (print.non_local) 0 else @max(print.top, entry.clip.y);
+        const high = if (print.non_local) cli.height else @min(print.bottom, @as(i64, entry.clip.y) + entry.clip.height);
+        var top: i64 = painted.y;
+        var bottom: i64 = painted.y + @as(i64, painted.height);
+        if (low < high) {
+            top = if (painted.height == 0) low else @min(top, low);
+            bottom = @max(bottom, high);
+        }
         var resource_epoch: u64 = 0;
         var styled = false;
         if (node.kind == api.OT_SCENE_TEXT_VIEW) {
@@ -1881,9 +1910,9 @@ pub const Scene = struct {
         node.records[slot] = .{ .frame = self.records_frame, .index = @intCast(self.records.items.len) };
         self.records.appendAssumeCapacity(.{
             .token = node.token,
-            .top = @intCast(painted.y),
-            .bottom = @intCast(painted.y + @as(i64, painted.height)),
-            .stable = entry.node.surface == null,
+            .top = @intCast(top),
+            .bottom = @intCast(bottom),
+            .stable = print.stable and entry.node.surface == null,
             .inputs = .{
                 .layout = entry.layout,
                 .clip = entry.clip,
@@ -1893,23 +1922,18 @@ pub const Scene = struct {
                 .node_epoch = node.paint_epoch,
                 .resource_epoch = resource_epoch,
                 .styled = styled,
+                .record_digest = print.digest,
             },
         });
     }
 
-    /// The presented frame stays: no cells, hits, or rows change. The cursor follows the
-    /// focused editor as on every frame.
+    /// The presented frame stays: no cells, hits, or rows change.
     fn skipPaint(self: *Scene, cli: *renderer.CliRenderer) !void {
         self.settleHits(cli);
         self.hits.clearRetainingCapacity();
         try self.hits.appendSlice(self.allocator, self.presented_hits.items);
         self.hits_frame = self.attempt.?.frame_id;
         self.hits_generation = cli.hits_generation;
-        var cursor: ?Work = null;
-        for (self.members.items) |entry| {
-            if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and entry.visible and self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
-        }
-        self.maintainCursor(cli, cursor);
     }
 
     /// OT_SCENE_DEBUG_VERIFY: every row of two buffers, or every row outside the damage, holds
@@ -1931,7 +1955,7 @@ pub const Scene = struct {
     /// OT_SCENE_DEBUG_VERIFY on a skipped frame: a full repaint into a scratch buffer equals the
     /// kept cells, and its hits the kept hits. It changes no view, cursor, counter, hit, or
     /// buffer the frame keeps.
-    fn verifySkip(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions) !void {
+    fn verifySkip(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
         const next = cli.getNextBuffer();
         const scratch = try buffer.OptimizedBuffer.init(self.allocator, next.width, next.height, .{ .pool = next.pool, .link_pool = next.link_pool, .logger = next.logger, .width_method = next.width_method, .id = "verify buffer" });
         defer scratch.deinit();
@@ -1946,15 +1970,12 @@ pub const Scene = struct {
             self.hits.deinit(self.allocator);
             self.hits = kept;
         }
-        try self.hits.ensureTotalCapacity(self.allocator, self.members.items.len + self.scroll_count);
+        try self.hits.ensureTotalCapacity(self.allocator, @max(self.members.items.len, self.paint_members.items.len) + self.scroll_count);
         const work = self.frame_work;
         defer self.frame_work = work;
         self.verify_target = scratch;
         defer self.verify_target = null;
-        for (self.members.items) |entry| {
-            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
-            try self.paintMember(owner, cli, entry, options, .{});
-        }
+        try self.paintMembers(owner, cli, options, recording, refresh_views);
         try self.verifyRows(scratch, next, false);
         if (!std.mem.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(kept.items))) return error.RetainedMismatch;
     }
@@ -2021,15 +2042,49 @@ pub const Scene = struct {
         try self.markFocus(&owner.objects);
         // Hooks may change text or views after preparation; refresh them before drawing.
         const refresh_views = self.preparation_dirty or try self.needsSolve(cli, root);
-        _ = self.fullPathReasons(cli, self.attempt.?.options);
-        try self.paintFrame(owner, cli, self.attempt.?.options, recording, refresh_views);
-        return self.finishPaint(cli, .all);
+        return self.paintPlanned(owner, cli, recording, refresh_views);
     }
 
     const Phases = struct {
         recording: []const u8 = &.{},
         segments: scene_record.Segments = .{ .{}, .{}, .{} },
         hooks: u32 = 0,
+    };
+
+    /// The frame's paint list in paint order: the visible members, or the RECORD snapshot with
+    /// each slot's recording, without the members its hooks destroyed.
+    const PaintList = struct {
+        scene: *const Scene,
+        objects: *const handles.Table,
+        recording: ?[]const u8,
+        refresh_views: bool,
+        index: usize = 0,
+
+        fn next(self: *PaintList) ?struct { Work, Phases } {
+            const scene = self.scene;
+            while (true) {
+                const index = self.index;
+                self.index += 1;
+                const bytes = self.recording orelse {
+                    if (index >= scene.members.items.len) return null;
+                    const entry = scene.members.items[index];
+                    // Paint-mode preparation never appends hidden members.
+                    std.debug.assert(entry.visible);
+                    if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT) return .{ entry, .{} };
+                    continue;
+                };
+                if (index >= scene.paint_members.items.len) return null;
+                const member = scene.paint_members.items[index];
+                const value = self.objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
+                std.debug.assert(value.scene_node.?.owner == scene);
+                const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or self.refresh_views, .bars = member.bars };
+                return .{ entry, if (member.slot == no_slot) .{} else .{
+                    .recording = bytes,
+                    .segments = scene.segments.items[member.slot],
+                    .hooks = scene.paint_slots.items[member.slot].hooks,
+                } };
+            }
+        }
     };
 
     /// Paint prepared membership in one pass: the RECORD snapshot with its recording, or
@@ -2040,26 +2095,12 @@ pub const Scene = struct {
         defer target.clearScissorRects();
         defer target.clearOpacity();
         try self.beginPaint(cli, options, if (recording == null) self.members.items.len else self.paint_members.items.len);
-        // The focused editor among the painted members owns the cursor, wherever it paints.
-        var cursor: ?Work = null;
-        if (recording == null) for (self.members.items) |entry| {
-            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
-            try self.paintMember(owner, cli, entry, options, .{});
-            if (self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
-        };
-        if (recording) |bytes| for (self.paint_members.items) |member| {
-            const value = owner.objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
-            std.debug.assert(value.scene_node.?.owner == self);
-            const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or refresh_views, .bars = member.bars };
-            const phases: Phases = if (member.slot == no_slot) .{} else .{
-                .recording = bytes,
-                .segments = self.segments.items[member.slot],
-                .hooks = self.paint_slots.items[member.slot].hooks,
-            };
-            try self.paintMember(owner, cli, entry, options, phases);
-            if (self.focusedEditor(value.scene_node.?)) cursor = entry;
-        };
-        self.maintainCursor(cli, cursor);
+        try self.paintMembers(owner, cli, options, recording, refresh_views);
+    }
+
+    fn paintMembers(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
+        var list: PaintList = .{ .scene = self, .objects = &owner.objects, .recording = recording, .refresh_views = refresh_views };
+        while (list.next()) |item| try self.paintMember(owner, cli, item[0], options, item[1]);
     }
 
     fn focusedEditor(self: *const Scene, node: *const Node) bool {

@@ -4,7 +4,9 @@ const c = @import("context_abi_c");
 const context = @import("context.zig");
 const buffer = @import("buffer.zig");
 const handles = @import("context-handles.zig");
-const PaintSlot = @import("scene.zig").PaintSlot;
+const scene = @import("scene.zig");
+const native = @import("native-renderable.zig");
+const PaintSlot = scene.PaintSlot;
 
 const Context = context.Context;
 
@@ -214,6 +216,125 @@ pub fn index(bytes: []const u8, slots: []const PaintSlot, segments: []Segments) 
         }
         offset += size;
     }
+}
+
+/// What one slot's recording paints, compared with the presented frame's by retained paint.
+pub const Fingerprint = struct {
+    // Hook flags, phases, command bytes, and the identity and paint epoch of each resource
+    // the commands read: equal digests play equal cells.
+    digest: u64 = 0,
+    // Rows the commands can write, before the member clip bounds them.
+    top: i64 = std.math.maxInt(i64),
+    bottom: i64 = std.math.minInt(i64),
+    // A composed buffer has no paint epoch, so the slot repaints on every frame.
+    stable: bool = true,
+    // DRAW clear and COLOR_MATRIX write outside the member clip.
+    non_local: bool = false,
+    image: bool = false,
+
+    fn rows(self: *Fingerprint, top: i64, bottom: i64) void {
+        self.top = @min(self.top, top);
+        self.bottom = @max(self.bottom, bottom);
+    }
+};
+
+/// Fingerprint an indexed slot. Each command is bounded by its own fields; a view reaches the
+/// clip bottom, and a command that names no height or fails to decode reaches the whole clip.
+pub fn fingerprint(owner: *Context, member: *const native.NativeRenderable, bytes: []const u8, segments: Segments, hooks: u32, frame_id: u64) Fingerprint {
+    const clip_bottom = std.math.maxInt(i64);
+    var result: Fingerprint = .{};
+    var hasher = std.hash.Wyhash.init(hooks);
+    const raw = owner.raw();
+    for (segments) |segment| {
+        hasher.update(std.mem.asBytes(&(segment.end - segment.start)));
+        hasher.update(bytes[segment.start..segment.end]);
+        var offset: usize = segment.start;
+        while (offset < segment.end) {
+            // index checked the framing and every fixed part.
+            const header = fixed(c.ot_scene_record_header, bytes[offset..]) catch unreachable;
+            const body = bytes[offset..][0..header.size];
+            offset += header.size;
+            switch (header.operation) {
+                c.OT_SCENE_RECORD_DRAW => {
+                    const value = fixed(c.ot_scene_record_draw, body) catch unreachable;
+                    var draw: context.BufferDraw = undefined;
+                    bufferDrawFromC(fixed(c.ot_buffer_draw_header, body[@sizeOf(c.ot_scene_record_draw)..]) catch unreachable, &draw) catch {
+                        result.rows(std.math.minInt(i64), clip_bottom);
+                        continue;
+                    };
+                    switch (draw.operation) {
+                        .clear => result.non_local = true,
+                        .respect_alpha => {},
+                        .fill, .box => result.rows(draw.y, @as(i64, draw.y) + draw.height),
+                        .text, .cell, .cell_blend, .char => result.rows(draw.y, @as(i64, draw.y) + 1),
+                        .compose => {
+                            result.stable = false;
+                            const source = raw.getBuffer(handleFromC(value.source)) catch continue;
+                            result.rows(draw.y, @as(i64, draw.y) + source.height);
+                        },
+                    }
+                },
+                c.OT_SCENE_RECORD_STACK => {},
+                c.OT_SCENE_RECORD_GRID => {
+                    const value = fixed(c.ot_scene_record_grid, body) catch unreachable;
+                    const offsets: [*]align(1) const i32 = @ptrCast(body[@sizeOf(c.ot_scene_record_grid)..].ptr);
+                    if (value.row_count < 2) continue;
+                    const first = offsets[value.column_count];
+                    const last = offsets[value.column_count + value.row_count - 1];
+                    result.rows(@min(first, last), @as(i64, @max(first, last)) + 1);
+                },
+                c.OT_SCENE_RECORD_PACKED => {
+                    const value = fixed(c.ot_scene_record_packed, body) catch unreachable;
+                    result.rows(value.y, @as(i64, value.y) + value.height);
+                },
+                c.OT_SCENE_RECORD_SUPERSAMPLE => result.rows((fixed(c.ot_scene_record_supersample, body) catch unreachable).y, clip_bottom),
+                c.OT_SCENE_RECORD_GRAYSCALE => {
+                    const value = fixed(c.ot_scene_record_grayscale, body) catch unreachable;
+                    result.rows(value.y, @as(i64, value.y) + value.height);
+                },
+                c.OT_SCENE_RECORD_COLOR_MATRIX => result.non_local = true,
+                c.OT_SCENE_RECORD_TEXT_VIEW, c.OT_SCENE_RECORD_EDITOR_VIEW, c.OT_SCENE_RECORD_SCENE_BODY => {
+                    const value = fixed(c.ot_scene_record_view, body) catch unreachable;
+                    result.rows(value.y, clip_bottom);
+                    // A destroyed resource plays nothing; a live one paints its epoch's cells.
+                    var state = [2]u64{ 0, 0 };
+                    var layout: scene.Layout = .{};
+                    const source = handleFromC(value.source);
+                    // A view bound to another node takes that node's size, which no epoch tracks.
+                    var bound: ?*native.NativeRenderable = null;
+                    if (header.operation == c.OT_SCENE_RECORD_TEXT_VIEW) {
+                        if (raw.getTextBufferView(source)) |view| {
+                            state = .{ view.paint_epoch, @intFromBool(view.text.buffer.getSyntaxStyle() != null) };
+                            bound = view.node;
+                        } else |_| {}
+                    } else if (header.operation == c.OT_SCENE_RECORD_EDITOR_VIEW) {
+                        if (raw.getEditorView(source)) |editor| {
+                            state = .{ editor.paint_epoch, @intFromBool(editor.edit.buffer.tb.getSyntaxStyle() != null) };
+                            bound = editor.node;
+                        } else |_| {}
+                    } else if (raw.getRenderable(source)) |node| {
+                        // A body paints at the node's paint size, with focus colors when focus lies within it.
+                        state = .{ node.scene_node.?.paint_epoch, @intFromBool(node.scene_node.?.focus_frame == frame_id) };
+                        layout = scene.getPaintLayout(node) catch .{};
+                    } else |_| {}
+                    if (bound != null and bound.? != member) result.stable = false;
+                    hasher.update(std.mem.asBytes(&state));
+                    hasher.update(std.mem.asBytes(&layout));
+                },
+                // Images take the full path, as image nodes do.
+                c.OT_SCENE_RECORD_IMAGE => result.image = true,
+                c.OT_SCENE_RECORD_UNICODE => {
+                    const value = fixed(c.ot_scene_record_unicode, body) catch unreachable;
+                    result.rows(value.y, @as(i64, value.y) + 1);
+                    const live = if (raw.getUnicode(handleFromC(value.unicode))) |_| true else |_| false;
+                    hasher.update(&[_]u8{@intFromBool(live)});
+                },
+                else => unreachable,
+            }
+        }
+    }
+    result.digest = hasher.final();
+    return result;
 }
 
 /// Play one indexed segment. The caller owns the first floor entries of the
