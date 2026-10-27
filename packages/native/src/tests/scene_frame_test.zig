@@ -1098,18 +1098,21 @@ fn lifecycleTable(verify: bool, counts: []FrameWork) !void {
     }
 }
 
-// 358: arrow text runs past its node's rect, here a rect wholly left of the 6 x 4 screen. A 1x1
-// arrow at x = -3 draws "ABCD", so D is in column 0, row 1; a 4x2 scroll box at x = -4 draws its
-// right arrow "ABCD" from column -1, so B is in column 0, row 2. A text at column 2 shares the row:
-// changing it makes a band that clears the arrow's row. Each row expects the damaged rows.
+// 358: arrow text runs past its node's rect, here a rect wholly left of the 6 x 4 screen, more
+// than the screen's width away. A 1x1 arrow at x = -7 draws "ABCDEFGH", so H is in column 0, row
+// 1; a 4x2 scroll box at x = -4 draws its right arrow "ABCD" from column -1, so B is in column 0,
+// row 2. A text at column 2 shares the row: changing it makes a band that clears the arrow's row.
+// A text beside the screen on that row draws nothing, so its change damages no row. Each row
+// expects the damaged rows.
 test "Scene frame retained paint repaints arrow text outside its rect" {
-    const Change = enum { none, text, color, move, band };
+    const Change = enum { none, text, color, move, band, beside };
     const rows = [_]struct { scrollbar: bool, change: Change, height: f32 = 1, damage: u32 }{
         .{ .scrollbar = false, .change = .none, .damage = 0 },
         .{ .scrollbar = false, .change = .text, .damage = 1 },
         .{ .scrollbar = false, .change = .color, .damage = 1 },
         .{ .scrollbar = false, .change = .move, .damage = 2 },
         .{ .scrollbar = false, .change = .band, .damage = 1 },
+        .{ .scrollbar = false, .change = .beside, .damage = 0 },
         // Every member lays out at least one row tall, so the text stays on the rect's rows.
         .{ .scrollbar = false, .change = .text, .height = 0, .damage = 1 },
         .{ .scrollbar = true, .change = .none, .damage = 0 },
@@ -1125,12 +1128,14 @@ test "Scene frame retained paint repaints arrow text outside its rect" {
         defer f.deinit();
         try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
         const y: u32 = if (row.scrollbar) 2 else 1;
-        const node = try placedAt(f, f.root, if (row.scrollbar) c.OT_SCENE_BOX else c.OT_SCENE_ARROW, 2, if (row.scrollbar) -4 else -3, 1, if (row.scrollbar) 4 else 1, if (row.scrollbar) 2 else row.height);
+        const node = try placedAt(f, f.root, if (row.scrollbar) c.OT_SCENE_BOX else c.OT_SCENE_ARROW, 2, if (row.scrollbar) -4 else -7, 1, if (row.scrollbar) 4 else 1, if (row.scrollbar) 2 else row.height);
         const label = try placedAt(f, f.root, c.OT_SCENE_TEXT, 3, 2, @floatFromInt(y), 4, 1);
         try f.owner.sceneSetText(label, "a");
+        const aside = try placedAt(f, f.root, c.OT_SCENE_TEXT, 4, -7, @floatFromInt(y), 6, 1);
+        try f.owner.sceneSetText(aside, "a");
         if (row.scrollbar) try f.owner.sceneSetScroll(node, .{ .axes = c.OT_SCENE_SCROLL_X | c.OT_SCENE_SCROLL_Y, .bars = .{ .{ .policy = c.OT_SCENE_SCROLL_BAR_ALWAYS, .arrows = true }, .{ .policy = c.OT_SCENE_SCROLL_BAR_NEVER } } });
-        const text = [_][]const u8{ "ABCD", if (row.scrollbar) "AXCD" else "ABCE" };
-        const glyphs = [_]u32{ if (row.scrollbar) 'B' else 'D', if (row.scrollbar) 'X' else 'E' };
+        const text = [_][]const u8{ if (row.scrollbar) "ABCD" else "ABCDEFGH", if (row.scrollbar) "AXCD" else "ABCDEFGZ" };
+        const glyphs = [_]u32{ if (row.scrollbar) 'B' else 'H', if (row.scrollbar) 'X' else 'Z' };
         for ([_]bool{ false, true }) |changed| {
             const next = changed and row.change == .text;
             const arrow: scene.ArrowOptions = .{ .text = text[@intFromBool(next)], .foreground = if (changed and row.change == .color) red else ansi.rgbColor(255, 255, 255, 255) };
@@ -1139,6 +1144,7 @@ test "Scene frame retained paint repaints arrow text outside its rect" {
             }
             if (changed and row.change == .move) try f.owner.scenePatchPaint(node, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 1 });
             if (changed and row.change == .band) try f.owner.sceneSetText(label, "b");
+            if (changed and row.change == .beside) try f.owner.sceneSetText(aside, "b");
             const w = try presentWork(f, .{});
             const moved = changed and row.change == .move;
             const cell = f.cli.currentRenderBuffer.get(0, y + @intFromBool(moved)).?;
