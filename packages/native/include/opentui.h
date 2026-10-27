@@ -3129,7 +3129,8 @@ ot_status ot_session_input_feed(
  * DCS, or APC introducer, and a CSI of digits. A held string continues only
  * while it matches a reply prefix, and a CSI that timed out completes only as a
  * reply; another byte ends either one and is typed. A lone Escape still times
- * out, and a reply that follows it is not typed. KEEP_REPLY also keeps such a CSI.
+ * out, and a reply that follows it is not typed; if what follows that Escape is
+ * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 

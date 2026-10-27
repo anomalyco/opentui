@@ -1205,12 +1205,12 @@ test "input parser keeps typed text typed after a held or recovered prefix while
         .{ "A13", &.{ .{ .feed = "\x1b]" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "hello\r" }, .{ .wait = 100 }, .{ .feed = da1 } }, &([_]Expect{frag("\x1b]1")} ++ typed("hello\r") ++ [_]Expect{reply(da1)}) },
         .{ "A11", &.{ .{ .feed = "\x1bP" }, .{ .wait = 100 }, .{ .feed = ">" }, .{ .wait = 100 }, .{ .feed = "abc" } }, &([_]Expect{frag("\x1bP>")} ++ typed("abc")) },
         .{ "A12", &.{ .{ .feed = "\x1b_" }, .{ .wait = 100 }, .{ .feed = "G" }, .{ .wait = 100 }, .{ .feed = "abc" } }, &([_]Expect{frag("\x1b_Ga")} ++ typed("bc")) },
-        .{ "C3", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "]" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 50 }, .{ .feed = "hello\r" } }, &([_]Expect{ esc, frag("\x1b]1") } ++ typed("hello\r")) },
-        .{ "C4", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P" }, .{ .wait = 5 }, .{ .feed = ">" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1bP>") } ++ typed("abc")) },
-        .{ "C9", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1bP1") } ++ typed("abc")) },
-        .{ "E1", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P2 bug\r" } }, &([_]Expect{ esc, frag("\x1bP2") } ++ typed(" bug\r")) },
-        .{ "E3", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "_Go" } }, &.{ esc, frag("\x1b_Go") } },
-        .{ "E5", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P2 bug\r" }, .{ .wait = 200 }, .{ .feed = "more" }, .{ .wait = 100 }, .{ .feed = da1 } }, &([_]Expect{ esc, frag("\x1bP2") } ++ typed(" bug\r") ++ typed("more") ++ [_]Expect{reply(da1)}) },
+        .{ "C3", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "]" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 50 }, .{ .feed = "hello\r" } }, &([_]Expect{ esc, kt(']', NONE, "]"), frag("1") } ++ typed("hello\r")) },
+        .{ "C4", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P" }, .{ .wait = 5 }, .{ .feed = ">" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, kt('P', NONE, "P"), frag(">") } ++ typed("abc")) },
+        .{ "C9", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, kt('P', NONE, "P"), frag("1") } ++ typed("abc")) },
+        .{ "E1", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P2 bug\r" } }, &([_]Expect{ esc, kt('P', NONE, "P"), frag("2") } ++ typed(" bug\r")) },
+        .{ "E3", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "_Go" } }, &.{ esc, kt('_', NONE, "_"), frag("Go") } },
+        .{ "E5", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "P2 bug\r" }, .{ .wait = 200 }, .{ .feed = "more" }, .{ .wait = 100 }, .{ .feed = da1 } }, &([_]Expect{ esc, kt('P', NONE, "P"), frag("2") } ++ typed(" bug\r") ++ typed("more") ++ [_]Expect{reply(da1)}) },
         .{ "A1", &.{ .{ .feed = "\x1b[" }, .{ .wait = 200 }, .{ .feed = "1" }, .{ .wait = 200 }, .{ .feed = "2" }, .{ .wait = 200 }, .{ .feed = "x" } }, &.{ frag("\x1b[12"), ch('x') } },
         .{ "A2", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "4" }, .{ .wait = 100 }, .{ .feed = "\r" } }, &.{ frag("\x1b[2024"), k(K.enter, NONE) } },
         .{ "A3", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "5" }, .{ .wait = 100 }, .{ .feed = "~" } }, &.{ frag("\x1b[15"), ch('~') } },
@@ -1219,15 +1219,24 @@ test "input parser keeps typed text typed after a held or recovered prefix while
         .{ "A6", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "?" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "h" } }, &.{ frag("\x1b[?1"), ch('h') } },
         .{ "A7", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = ";" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "R" } }, &.{report("\x1b[1;2R")} },
         .{ "A8", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "1" } }, &.{frag("\x1b[1")} },
-        .{ "C1", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 200 }, .{ .feed = "2" }, .{ .wait = 200 }, .{ .feed = "x" } }, &.{ esc, frag("\x1b[12"), ch('x') } },
-        .{ "C2", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "3" }, .{ .wait = 5 }, .{ .feed = "~" } }, &.{ esc, frag("\x1b[3"), ch('~') } },
+        .{ "C1", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 200 }, .{ .feed = "2" }, .{ .wait = 200 }, .{ .feed = "x" } }, &.{ esc, kt('[', NONE, "["), frag("12"), ch('x') } },
+        .{ "C2", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "3" }, .{ .wait = 5 }, .{ .feed = "~" } }, &.{ esc, kt('[', NONE, "["), frag("3"), ch('~') } },
         .{ "C6", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "?" }, .{ .wait = 50 }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1b[?") } ++ typed("abc")) },
         .{ "C8", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[1;5A" } }, &.{ esc, frag("\x1b[1;5"), ch('A') } },
-        .{ "E2", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[1] item" } }, &([_]Expect{ esc, frag("\x1b[1") } ++ typed("] item")) },
-        .{ "E4", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[2024\r" } }, &.{ esc, frag("\x1b[2024"), k(K.enter, NONE) } },
+        .{ "E2", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[1] item" } }, &([_]Expect{ esc, kt('[', NONE, "["), frag("1") } ++ typed("] item")) },
+        .{ "E4", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[2024\r" } }, &.{ esc, kt('[', NONE, "["), frag("2024"), k(K.enter, NONE) } },
         .{ "P2", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" }, .{ .feed = da1 }, .clear, .{ .wait = 60_000 }, .{ .feed = "later\r" } }, &([_]Expect{ frag("\x1b[200"), ch('~') } ++ typed("abc") ++ [_]Expect{reply(da1)} ++ typed("later\r")) },
-        .{ "C11", &.{ .{ .feed = "\x1b" }, .{ .wait = 30 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "2" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" } }, &([_]Expect{ esc, frag("\x1b[200"), ch('~') } ++ typed("abc")) },
-        .{ "R7", &.{ .{ .feed = "\x1b" }, .{ .wait = 20 }, .{ .feed = "[1x" } }, &.{ esc, frag("\x1b[1"), ch('x') } },
+        .{ "C11", &.{ .{ .feed = "\x1b" }, .{ .wait = 30 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "2" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" } }, &([_]Expect{ esc, kt('[', NONE, "["), frag("200"), ch('~') } ++ typed("abc")) },
+        .{ "R7", &.{ .{ .feed = "\x1b" }, .{ .wait = 20 }, .{ .feed = "[1x" } }, &.{ esc, kt('[', NONE, "["), frag("1"), ch('x') } },
+        // Esc, then an introducer in a read of its own (vim's P, [, ], _): the introducer is typed when
+        // the next key or the batch end cuts it.
+        .{ "O1P", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "P" }, .{ .wait = 120 }, .{ .feed = "x" } }, &.{ esc, kt('P', NONE, "P"), ch('x') } },
+        .{ "O1[", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "[" }, .{ .wait = 120 }, .{ .feed = "x" } }, &.{ esc, kt('[', NONE, "["), ch('x') } },
+        .{ "O1]", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "]" }, .{ .wait = 120 }, .{ .feed = "x" } }, &.{ esc, kt(']', NONE, "]"), ch('x') } },
+        .{ "O1_", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "_" }, .{ .wait = 120 }, .{ .feed = "x" } }, &.{ esc, kt('_', NONE, "_"), ch('x') } },
+        .{ "O2", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "[" }, .{ .wait = 120 }, .{ .feed = "1" }, .{ .wait = 120 }, .{ .feed = "a" } }, &.{ esc, kt('[', NONE, "["), frag("1"), ch('a') } },
+        .{ "O3", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "]" }, .{ .wait = 120 }, .clear }, &.{ esc, kt(']', NONE, "]") } },
+        .{ "O4", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "]" }, .{ .wait = 5 }, .{ .feed = "11;" }, .{ .wait = 120 }, .clear }, &.{ esc, frag("\x1b]11;") } },
         // The check covers a string whose first byte came within 20 ms, or in the same read.
         .{ "W1", &.{ .{ .feed = "\x1b]" }, .{ .wait = 5 }, .{ .feed = "1" }, .{ .wait = 100 }, .{ .feed = "hello\r" } }, &([_]Expect{frag("\x1b]1")} ++ typed("hello\r")) },
         .{ "W2", &.{ .{ .feed = "\x1bP" }, .{ .wait = 5 }, .{ .feed = ">" }, .{ .wait = 100 }, .{ .feed = "abc" } }, &([_]Expect{frag("\x1bP>")} ++ typed("abc")) },
@@ -1329,7 +1338,7 @@ test "input parser recovers mouse reports after a timed-out Escape" {
     _ = try harness.wait(20);
     try expectGot("", &.{}, try harness.feed("_"));
     try expectGot("", &.{}, try harness.wait(60_000));
-    try expectGot("", &.{ frag("\x1b_"), ch('x') }, try harness.feed("x"));
+    try expectGot("", &.{ kt('_', NONE, "_"), ch('x') }, try harness.feed("x"));
 }
 
 test "input parser stays split invariant" {
