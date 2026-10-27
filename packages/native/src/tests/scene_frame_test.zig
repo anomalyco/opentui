@@ -1814,6 +1814,40 @@ test "Scene feedback passes visit hooked subtrees the first pass did not reach" 
     for (logs) |log| try testing.expectEqual([4]u32{ 0, 2, 4, 3 }, log);
 }
 
+// A reply that remounts a list marks nodes it destroys again: the pass's list of marked nodes
+// keeps their entries until it ends. Two hooks each replace 40 rows in one frame, as a
+// reconciler that renders a list again does.
+test "Scene feedback lists the marks of nodes a reply destroys within its capacity" {
+    const f = try Fixture.init(testing.allocator, 4, 4, .{ .limits = .{ .object_capacity = 256 } });
+    defer f.deinit();
+    try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+    var hooks: [2]context.Handle = undefined;
+    for (&hooks, 0..) |*hook, index| {
+        hook.* = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(1 + index));
+        try f.owner.sceneMoveNode(hook.*, f.root, @intCast(index));
+        try feedbackHook(f, hook.*, c.OT_SCENE_HOOK_UPDATE);
+    }
+    var rows: [40]context.Handle = undefined;
+    for (&rows, 0..) |*row, index| {
+        row.* = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(10 + index));
+        try f.owner.sceneMoveNode(row.*, f.root, @intCast(2 + index));
+    }
+    _ = try presentStepped(f, NoReply{});
+    for (0..2) |_| {
+        var request = try f.owner.sceneFrameStep(f.id, null, options);
+        while (request.kind != c.OT_SCENE_FRAME_DONE) {
+            for (&rows, 0..) |*row, index| {
+                try f.owner.sceneDestroyNode(row.*);
+                row.* = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(10 + index));
+                try f.owner.sceneMoveNode(row.*, f.root, @intCast(2 + index));
+            }
+            request = try f.owner.sceneFrameStep(f.id, request, options);
+        }
+        _ = try f.owner.sceneFrameCommit(f.id, request, false);
+        try drain(f.owner, f.id);
+    }
+}
+
 // Later passes of a round run on its layout and count toward neither limit, so a frame needs
 // no more rounds or requests than the forced full-frame twin, which pops every child in the
 // first pass. A's reply hooks X1; each Xi's reply hooks the next one, and the last one's reply

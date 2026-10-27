@@ -761,7 +761,9 @@ pub const Scene = struct {
         if (self.last_token == std.math.maxInt(u32)) return error.ObjectLimit;
         try self.tokens.ensureUnusedCapacity(self.allocator, 1);
         try self.view_dirty.ensureTotalCapacity(self.allocator, self.count + 1);
-        try self.marked.ensureTotalCapacity(self.allocator, self.count + 1);
+        // A pass lists each live node at most once and keeps destroyed nodes' entries, so room
+        // for every entry plus every node the pass has not listed yet is enough.
+        try self.marked.ensureTotalCapacity(self.allocator, self.marked.items.len + self.count + 1);
         try self.remarked.ensureTotalCapacity(self.allocator, self.count + 1);
         try self.scratch.ensureTotalCapacity(self.allocator, self.count + 1);
     }
