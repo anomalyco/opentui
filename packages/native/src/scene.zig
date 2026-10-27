@@ -526,7 +526,16 @@ const Skip = struct {
     refresh_due: bool = false,
     // The node is listed in Scene.view_dirty.
     view_queued: bool = false,
+    // The feedback pass in which a host reply listed the node in Scene.marked.
+    marked_pass: u64 = 0,
 };
+
+/// A child a reply marked, grouped by its parent's token for the later pass.
+const Remark = struct { parent: u32, child: handles.Handle };
+
+fn remarkLessThan(_: void, left: Remark, right: Remark) bool {
+    return left.parent < right.parent;
+}
 
 /// A filtering parent's last overlap scan, the scan a child last overlapped in, and the
 /// selection for which the subtree was clean, all Scene.selection_epoch values.
@@ -538,15 +547,17 @@ const Culling = struct {
 
 /// How far feedback passed a parent's children in a frame, where today's walk would have
 /// passed them: children sort there, once per frame, and an idle-update node uses its update.
-/// A child is passed if its rank is below cursor and limit, and selected if the parent culls.
-/// Ranks of children attached later are at least limit.
+/// A child is passed if its rank is below cursor and limit and, if the parent culls, a scan
+/// of this frame selected it. Ranks of children attached later are at least limit.
 const Pass = struct {
     frame: u64 = 0,
     cursor: u64 = 0,
     limit: u64 = 0,
     // A selection of the frame ended: it decided which of its children were passed.
     finished: bool = false,
-    filtered: bool = false,
+    // The parent's selected_epoch at its first culling selection of the frame, or 0 if its last
+    // selection did not cull: a later scan does not undo what an earlier one passed.
+    epoch: u64 = 0,
     // The frame in which the node moved away from where feedback had passed it.
     moved_frame: u64 = 0,
 };
@@ -701,6 +712,11 @@ pub const Scene = struct {
     selection_epoch: u64 = 1,
     // Nodes whose view changed outside an attempt; a round that keeps its lists prepares them.
     view_dirty: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
+    // The nodes host replies marked in the running feedback pass, and those of the pass before,
+    // which a later pass scans instead of a parent's whole attention list (see scanList).
+    marked: std.ArrayListUnmanaged(handles.Handle) = .empty,
+    remarked: std.ArrayListUnmanaged(Remark) = .empty,
+    scratch: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     layout_pending: bool = false,
     layout_width: u32 = 0,
     layout_height: u32 = 0,
@@ -741,6 +757,9 @@ pub const Scene = struct {
         self.members.deinit(self.allocator);
         self.feedback.deinit(self.allocator);
         self.view_dirty.deinit(self.allocator);
+        self.marked.deinit(self.allocator);
+        self.remarked.deinit(self.allocator);
+        self.scratch.deinit(self.allocator);
         self.paint_members.deinit(self.allocator);
         self.paint_slots.deinit(self.allocator);
         self.segments.deinit(self.allocator);
@@ -758,6 +777,9 @@ pub const Scene = struct {
         if (self.last_token == std.math.maxInt(u32)) return error.ObjectLimit;
         try self.tokens.ensureUnusedCapacity(self.allocator, 1);
         try self.view_dirty.ensureTotalCapacity(self.allocator, self.count + 1);
+        try self.marked.ensureTotalCapacity(self.allocator, self.count + 1);
+        try self.remarked.ensureTotalCapacity(self.allocator, self.count + 1);
+        try self.scratch.ensureTotalCapacity(self.allocator, self.count + 1);
     }
 
     pub fn insert(self: *Scene, storage: native.NodeStorage, handle: handles.Handle, kind: u32, num: u32) void {
@@ -832,7 +854,8 @@ pub const Scene = struct {
                 self.settleOrder(parent);
                 const siblings = target.paint_children.items;
                 if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) self.orderChanged(parent);
-                node.paint_rank = if (siblings.len == 0) target.pass.limit else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
+                // At least limit: a reply may have detached the children a pass saw last.
+                node.paint_rank = @max(target.pass.limit, if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1);
                 target.paint_children.appendAssumeCapacity(value);
                 node.parent = parent;
                 countBelow(parent, node.skip.update_below, node.skip.filters_below, true);
@@ -913,7 +936,7 @@ pub const Scene = struct {
             const target = parent.scene_node.?;
             if (target.pass.frame == active.frame_id) {
                 if (node.paint_rank < @min(target.pass.cursor, target.pass.limit) and
-                    (!target.pass.filtered or node.culling.selected_at == target.culling.selected_epoch)) return true;
+                    (target.pass.epoch == 0 or node.culling.selected_at >= target.pass.epoch)) return true;
                 // A running selection passes its children one by one, but an earlier pass may have
                 // passed its parent whole.
                 if (target.pass.finished) return false;
@@ -941,13 +964,11 @@ pub const Scene = struct {
         return node.skip.update_below != 0 or node.skip.subtree != .clean or node.skip.filters_below != 0;
     }
 
-    /// Whether this pass must visit a node: something below changed, a selection change can
-    /// reveal changed nodes, or a hook below can request. A later pass of the round already ran
-    /// every update in a clean subtree it visited in this frame (every visit selects).
+    /// Whether a pass must visit a node: something below changed, a selection change can reveal
+    /// changed nodes, or a hook below can request. A later pass meets a clean hooked subtree only
+    /// where it visits a parent for the first time in the frame (scanList).
     fn mustVisit(self: *const Scene, node: *const Node) bool {
-        const active = &self.attempt.?;
-        return node.skip.subtree != .clean or
-            (node.skip.update_below != 0 and (!active.followup_pass or node.pass.frame != active.frame_id)) or
+        return node.skip.subtree != .clean or node.skip.update_below != 0 or
             (node.skip.filters_below != 0 and node.culling.clean_selection != self.selection_epoch);
     }
 
@@ -970,14 +991,62 @@ pub const Scene = struct {
     /// Marks a node and its ancestors. A mark in a host reply runs feedback again in this round,
     /// which reaches the node wherever the running pass had got to.
     fn markSubtree(self: *Scene, value: *native.NativeRenderable) void {
-        if (self.attempt) |*active| {
-            if (active.pending != null) active.followup = true;
-        }
+        const reply = if (self.attempt) |active| active.pending != null else false;
+        if (reply) self.attempt.?.followup = true;
         var cursor: ?*native.NativeRenderable = value;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
-            current.scene_node.?.skip.subtree = .stale;
+            const node = current.scene_node.?;
+            node.skip.subtree = .stale;
             attend(current);
+            if (!reply or node.parent == null or node.skip.marked_pass == self.attempt.?.feedback_id) continue;
+            node.skip.marked_pass = self.attempt.?.feedback_id;
+            self.marked.appendAssumeCapacity(node.handle);
         }
+    }
+
+    /// The children a pass scans under a parent: its attention list, or, in a later pass of the
+    /// round over a parent that already selected in this frame, the children that replies
+    /// marked in the pass before. One reply's mark then costs its path, not a parent's list.
+    fn scanList(self: *Scene, objects: *const handles.Table, node: *const Node) []*native.NativeRenderable {
+        if (!self.laterScan(node)) return node.skip.attention.items;
+        const items = self.remarked.items;
+        var low: usize = 0;
+        var high = items.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (items[middle].parent < node.token) low = middle + 1 else high = middle;
+        }
+        self.scratch.clearRetainingCapacity();
+        for (items[low..]) |entry| {
+            if (entry.parent != node.token) break;
+            const value = objects.get(entry.child, .native_renderable, native.NativeRenderable) catch continue;
+            // A child that moved since is dropped where its entry pops.
+            if (value.scene_node == null or value.scene_node.?.owner != self) continue;
+            self.scratch.appendAssumeCapacity(value);
+        }
+        return self.scratch.items;
+    }
+
+    fn laterScan(self: *const Scene, node: *const Node) bool {
+        const active = &self.attempt.?;
+        return active.followup_pass and node.pass.frame == active.frame_id;
+    }
+
+    /// Groups the nodes replies marked in the pass that ended by parent, for the next pass.
+    fn startLaterPass(self: *Scene, objects: *const handles.Table, root: *native.NativeRenderable) void {
+        self.remarked.clearRetainingCapacity();
+        for (self.marked.items) |handle| {
+            const value = objects.get(handle, .native_renderable, native.NativeRenderable) catch continue;
+            const node = value.scene_node orelse continue;
+            if (node.owner != self) continue;
+            const parent = node.parent orelse continue;
+            self.remarked.appendAssumeCapacity(.{ .parent = parent.scene_node.?.token, .child = handle });
+        }
+        self.marked.clearRetainingCapacity();
+        std.mem.sort(Remark, self.remarked.items, {}, remarkLessThan);
+        self.attempt.?.followup = false;
+        self.attempt.?.followup_pass = true;
+        self.startFeedback(root);
     }
 
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
@@ -1388,6 +1457,8 @@ pub const Scene = struct {
         self.painted = null;
         self.attempt = null;
         self.feedback.clearRetainingCapacity();
+        self.marked.clearRetainingCapacity();
+        self.remarked.clearRetainingCapacity();
         self.paint_members.clearRetainingCapacity();
         self.paint_slots.clearRetainingCapacity();
         self.segments.clearRetainingCapacity();
@@ -1573,12 +1644,15 @@ pub const Scene = struct {
                         // Placed children are marked, so the attention list holds them. Children
                         // that no longer need feedback leave it here; none regains need before
                         // the parent selects.
+                        // A later pass scans the children replies marked; others prune the list.
+                        const later = !full and self.laterScan(node);
+                        const marked = if (later) self.scanList(objects, node) else &.{};
                         const children = if (full) &node.children else &node.skip.attention;
                         var index: usize = 0;
-                        while (index < children.items.len) {
+                        while (index < if (later) marked.len else children.items.len) {
                             if (builtin.is_test) self.test_feedback_child_steps += 1;
-                            const state = children.items[index].scene_node.?;
-                            if (!full and !needsFeedback(state)) {
+                            const state = (if (later) marked else children.items)[index].scene_node.?;
+                            if (!full and !later and !needsFeedback(state)) {
                                 dropAttention(node, index);
                                 continue;
                             }
@@ -1610,7 +1684,7 @@ pub const Scene = struct {
                         const start = self.feedback.items.len;
                         const due = full or node.skip.refresh_due;
                         node.skip.refresh_due = false;
-                        for (if (due) (if (full) node.paint_children.items else node.skip.attention.items) else &.{}) |child| {
+                        for (if (due) (if (full) node.paint_children.items else self.scanList(objects, node)) else &.{}) |child| {
                             if (builtin.is_test) self.test_feedback_child_steps += 1;
                             const state = child.scene_node.?;
                             if (state.prepared_gen != self.candidates_gen or !(full or state.skip.self_stale)) continue;
@@ -1628,9 +1702,7 @@ pub const Scene = struct {
             // A reply marked nodes the pass may not reach again: feedback runs again on this
             // round's layout, before any new round, so the round count stays today's.
             if (active.followup) {
-                active.followup = false;
-                active.followup_pass = true;
-                self.startFeedback(root.?);
+                self.startLaterPass(objects, root.?);
                 continue;
             }
             if (self.preparation_dirty or try self.needsSolve(cli, root)) {
@@ -1678,12 +1750,14 @@ pub const Scene = struct {
         const full = self.forcesFullFrame();
         const filter = try self.childFilter(objects, value);
         const children = node.paint_children.items;
+        const listed = self.scanList(objects, node);
         if (node.pass.frame != active.frame_id) node.pass = .{ .frame = active.frame_id, .moved_frame = node.pass.moved_frame };
         node.pass.limit = if (children.len == 0) node.pass.limit else children[children.len - 1].scene_node.?.paint_rank + 1;
-        node.pass.filtered = filter != null;
-        if (full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch)) {
+        const rescans = full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch);
+        if (rescans) node.culling.selected_epoch = self.selection_epoch;
+        if (filter == null) node.pass.epoch = 0 else if (node.pass.epoch == 0) node.pass.epoch = node.culling.selected_epoch;
+        if (rescans) {
             const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
-            node.culling.selected_epoch = self.selection_epoch;
             var index = node.paint_children.items.len;
             while (index != 0) {
                 index -= 1;
@@ -1714,7 +1788,7 @@ pub const Scene = struct {
             return;
         }
         const start = self.feedback.items.len;
-        for (node.skip.attention.items) |child| {
+        for (listed) |child| {
             if (builtin.is_test) self.test_feedback_child_steps += 1;
             const state = child.scene_node.?;
             if (!needsFeedback(state)) continue;
@@ -1994,6 +2068,8 @@ pub const Scene = struct {
         active.visibility_epoch = self.visibility_epoch;
         active.followup = false;
         active.followup_pass = false;
+        self.marked.clearRetainingCapacity();
+        self.remarked.clearRetainingCapacity();
         if (phases and self.candidates.items.len != 0) self.startFeedback(self.candidates.items[0].node);
     }
 

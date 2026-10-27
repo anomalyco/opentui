@@ -759,7 +759,7 @@ test "Scene record fingerprints bound the rows each command kind writes" {
     const resources = try Resources.init(f);
     const source = try f.owner.createBuffer(2, 3, .{});
     const max = std.math.maxInt(i64);
-    const Draw = enum { text, fill, compose, stale_compose, clear, grid };
+    const Draw = enum { text, fill, compose, stale_compose, clear, grid, stack };
     const rows = [_]struct { command: union(enum) { command: Command, draw: Draw }, print: scene_record.Fingerprint }{
         .{ .command = .{ .command = .box }, .print = .{ .top = 0, .bottom = 3 } },
         .{ .command = .{ .command = .grid }, .print = .{ .top = 0, .bottom = 4 } },
@@ -782,7 +782,9 @@ test "Scene record fingerprints bound the rows each command kind writes" {
         .{ .command = .{ .draw = .clear }, .print = .{ .non_local = true } },
         // The fewest offsets a grid draws with.
         .{ .command = .{ .draw = .grid }, .print = .{ .top = 1, .bottom = 4 } },
+        .{ .command = .{ .draw = .stack }, .print = .{} },
     };
+    var seen: std.EnumSet(scene_record.Command) = .initEmpty();
     for (rows) |row| {
         var recording: Recording = .{};
         recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
@@ -795,12 +797,17 @@ test "Scene record fingerprints bound the rows each command kind writes" {
                 .stale_compose => recording.compose(resources.text, 0),
                 .clear => appendClear(&recording),
                 .grid => recording.append(c.ot_scene_record_grid{ .header = recordHeader(c.OT_SCENE_RECORD_GRID), .options = .{ .struct_size = @sizeOf(c.ot_buffer_grid_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = c.OT_BUFFER_GRID_OUTER, .reserved = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 }, .border_chars = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' } }, .column_count = 2, .row_count = 2 }, std.mem.sliceAsBytes(&[_]i32{ 0, 4, 1, 3 })),
+                .stack => recording.stack(c.OT_BUFFER_STACK_PUSH_SCISSOR, 0, 1, 1),
             },
         }
+        const header: *const c.ot_scene_record_header = @ptrCast(@alignCast(recording.view()[std.mem.alignForward(usize, @sizeOf(c.ot_scene_record_slot), 8)..].ptr));
+        seen.insert(std.enums.fromInt(scene_record.Command, header.operation).?);
         var print = try fingerprint(f, &recording, c.OT_SCENE_HOOK_RENDER_AFTER);
         print.digest = 0;
         try testing.expectEqual(row.print, print);
     }
+    // Each command type needs a row.
+    try testing.expect(seen.eql(.initFull()));
 }
 
 const FrameWork = @import("../renderer.zig").FrameWork;
