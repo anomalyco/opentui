@@ -1156,7 +1156,7 @@ test "Scene kept preparation drops hidden placements, follows sorts, and rereads
     }
 }
 
-const Reply = enum { later, later_descendant, earlier, all, chain, move_inserted, move_in, move_under, refresh_mark, refresh_hook, refresh_move, refresh_all, refresh_then_select };
+const Reply = enum { later, later_descendant, earlier, all, all_continue, chain, show_hidden, move_inserted, move_in, move_under, refresh_mark, refresh_hook, refresh_move, refresh_all, refresh_then_select };
 
 /// A parent P with children A, X1..Xn, Y in paint order. Nodes: P, A, X1..Xn, Y, then a child
 /// of X1, a root child Z, and the viewport V of a filtering P. In a filtering P, A and Y lay out
@@ -1197,6 +1197,12 @@ fn feedbackScene(f: Fixture, row: FeedbackRow, nodes: []context.Handle) !void {
     try feedbackNode(f, nodes, y + 2, c.OT_SCENE_BOX, f.root, 0);
     for ([_]usize{ 1, y }) |index| try feedbackHook(f, nodes[index], if (refresh) c.OT_SCENE_HOOK_RESIZE else c.OT_SCENE_HOOK_UPDATE);
     if (row.reply == .refresh_then_select) try feedbackHook(f, nodes[2], c.OT_SCENE_HOOK_UPDATE);
+    // A's UPDATE reply runs before its own resize, which the frame owes.
+    if (row.reply == .all_continue) try feedbackHook(f, nodes[1], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
+    if (row.reply == .show_hidden) {
+        try f.owner.sceneSetStyle(nodes[2], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+        try feedbackHook(f, nodes[2], c.OT_SCENE_HOOK_UPDATE);
+    }
 }
 
 /// Paints a frame; with `reply`, answers each request as the row says. Logs requested nodes.
@@ -1214,7 +1220,10 @@ fn feedbackFrame(f: Fixture, row: FeedbackRow, nodes: []const context.Handle, re
             .later => if (index == 1) try feedbackHook(f, x, c.OT_SCENE_HOOK_UPDATE),
             .later_descendant => if (index == 1) try feedbackHook(f, nodes[y + 1], c.OT_SCENE_HOOK_UPDATE),
             .earlier => if (index == y) try feedbackHook(f, x, c.OT_SCENE_HOOK_UPDATE),
-            .all => if (index == 1) for (nodes[2..y]) |node| try feedbackHook(f, node, c.OT_SCENE_HOOK_UPDATE),
+            .all, .all_continue => if (index == 1 and (try f.owner.raw().getRenderable(x)).scene_node.?.hook_flags == 0) {
+                for (nodes[2..y]) |node| try feedbackHook(f, node, c.OT_SCENE_HOOK_UPDATE);
+            },
+            .show_hidden => if (index == 1) try f.owner.sceneSetStyle(x, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0),
             .chain => if (index + 1 < y) try feedbackHook(f, nodes[index + 1], c.OT_SCENE_HOOK_UPDATE),
             .move_inserted, .refresh_move => if (index == 1) {
                 if (row.reply == .move_inserted) try feedbackHook(f, x, c.OT_SCENE_HOOK_UPDATE) else try f.owner.sceneSetTextOptions(x, .{ .truncate = true });
@@ -1264,7 +1273,8 @@ fn expectSameObservations(twins: [2]Fixture, nodes: [2][]context.Handle) !void {
 // culled (d); an earlier one does (e); 1,000 siblings in one reply (h) and in 1,000 chained
 // replies (i), also selected by a filtering parent; an inserted child moves away (g); a child
 // moves into the running batch (m), or
-// shows under a later sibling, which the next round's walk lists first; a
+// shows under a later sibling, which the next round's walk lists first, or a hidden later
+// sibling with UPDATE shows; the switch after a requester that still owes a RESIZE; a
 // refresh batch meets a text change (f), a new hook (k), a move (l), and 60 new hooks; a due child follows a
 // refresh batch (j). Insertion work stays linear in the batch: past the child count, the batch
 // queues every child.
@@ -1280,6 +1290,8 @@ test "Scene feedback lets replies add children to a running batch in paint order
         .{ .reply = .move_under, .expected = &.{ 1, 3 } },
         .{ .reply = .all, .n = 1000, .expected = &.{} },
         .{ .reply = .chain, .n = 1000, .expected = &.{} },
+        .{ .reply = .all_continue, .n = 1000, .expected = &.{} },
+        .{ .reply = .show_hidden, .n = 15, .expected = &.{ 1, 17, 2 } },
         .{ .reply = .all, .n = 60, .filter = true, .shown = 63, .expected = &.{} },
         .{ .reply = .refresh_mark, .n = 15, .filter = true, .shown = 2, .expected = &.{ 1, 17 } },
         .{ .reply = .refresh_hook, .n = 15, .filter = true, .shown = 2, .expected = &.{ 1, 17 } },
@@ -1309,12 +1321,15 @@ test "Scene feedback lets replies add children to a running batch in paint order
             if (@intFromEnum(row.reply) >= @intFromEnum(Reply.refresh_mark)) {
                 for ([_]usize{ 1, 2 + row.n }) |index| try f.owner.sceneSetStyle(list[index], 4, 0, 0, 1, 2, 1);
             }
+            if (row.reply == .all_continue) try f.owner.sceneSetStyle(list[1], 4, 0, 0, 1, 2, 1);
             steps = f.state.test_feedback_child_steps;
             try feedbackFrame(f, row, list, true, log);
             steps = f.state.test_feedback_child_steps - steps;
         }
         try testing.expectEqualSlices(usize, logs[0].items, logs[1].items);
         if (row.expected.len != 0) try testing.expectEqualSlices(usize, row.expected, logs[1].items);
+        // The switch to queueing every child keeps A's own remaining work first.
+        if (row.reply == .all_continue) try testing.expectEqualSlices(usize, &.{ 1, 1, 2 }, logs[1].items[0..3]);
         if (row.reply == .all or row.reply == .chain) {
             for (logs[1].items, 0..) |index, position| try testing.expectEqual(if (position == row.n + 1) row.n + 2 else position + 1, index);
             // Linear: insertions and the switch to queueing every child take at most
@@ -1329,8 +1344,11 @@ test "Scene feedback lets replies add children to a running batch in paint order
 // frame selects the rows. Unbinding the viewport, or setting culling off, selects every row
 // again: their children refresh, and their RESIZE requests come as in the forced full-frame
 // twin. An UPDATE hook elsewhere keeps feedback running.
+// In the tall variant every row is shown and observed first; after V shrinks, the culled text
+// changes, and an unrelated translate makes a full selection set its row aside: only the
+// culling change's mark, and listing set-aside rows again, reach it (VERIFY).
 test "Scene feedback reaches the children of culled rows when culling stops" {
-    for ([_]bool{ false, true }) |scroll_node| {
+    for ([_]bool{ false, true }) |scroll_node| for ([_]bool{ false, true }) |tall| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 6, 4, .{}), try Fixture.init(testing.allocator, 6, 4, .{}) };
         defer for (twins) |f| f.deinit();
         var nodes: [2][43]context.Handle = undefined;
@@ -1342,7 +1360,7 @@ test "Scene feedback reaches the children of culled rows when culling stops" {
             try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE);
             try feedbackNode(f, list, 1, c.OT_SCENE_BOX, f.root, 1);
             try f.owner.sceneSetStyle(list[1], 4, 0, 0, c.OT_UNIT_PERCENT, 100, 1);
-            try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, 2, 1);
+            try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, if (tall) 22 else 2, 1);
             try f.owner.sceneSetStyle(list[1], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
             // The content: V's child with a viewport, or V itself as a culling scroll node.
             var content = list[1];
@@ -1371,14 +1389,17 @@ test "Scene feedback reaches the children of culled rows when culling stops" {
             }
             try f.owner.sceneSetText(list[24], "culled");
         }
-        for (0..3) |frame| {
+        for (0..@as(usize, if (tall) 5 else 3)) |frame| {
             for (twins, &nodes, &logs) |f, list, *log| {
                 // The culled text changes without a size change, which no solve finds again.
-                if (frame == 1) {
+                if (!tall and frame == 1) {
                     try f.owner.resizeSessionRenderer(f.id, 8, 4);
                     try f.owner.sceneSetTextOptions(list[24], .{ .truncate = true });
                 }
-                if (frame == 2) {
+                if (tall and frame == 1) try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, 2, 1);
+                if (tall and frame == 2) try f.owner.sceneSetTextOptions(list[24], .{ .truncate = true });
+                if (tall and frame == 3) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 1 });
+                if (frame == if (tall) @as(usize, 4) else 2) {
                     if (scroll_node) try f.owner.sceneSetScroll(list[1], .{}) else try f.owner.sceneSetViewport(list[2], null);
                 }
                 log.clearRetainingCapacity();
@@ -1388,16 +1409,17 @@ test "Scene feedback reaches the children of culled rows when culling stops" {
             try expectSameObservations(twins, .{ &nodes[0], &nodes[1] });
         }
         // The last frame resized every row's child that culling hid from the resize frame.
-        try testing.expect(logs[1].items.len >= 16);
-    }
+        if (!tall) try testing.expect(logs[1].items.len >= 16);
+    };
 }
 
 // Changes that no mark in a walk finds: a scroll reveals a culled child with UPDATE, which
 // later frames must still visit; a content style changes only a scroll node's extent, which
 // owes a SCROLL request; an editor's cursor moves outside a frame in a scene without hooks,
-// and the next frame keeps its lists but must follow the cursor.
+// and the next frame keeps its lists but must follow the cursor. A culled child with UPDATE
+// stays listed through a solve, so the frames after a scroll reveals it still visit it.
 test "Scene feedback follows changes that leave no layout behind" {
-    for (0..3) |case| {
+    for (0..4) |case| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 4, .{}), try Fixture.init(testing.allocator, 4, 4, .{}) };
         defer for (twins) |f| f.deinit();
         var nodes: [2][21]context.Handle = undefined;
@@ -1408,9 +1430,9 @@ test "Scene feedback follows changes that leave no layout behind" {
         for (twins, &nodes, &edits, 0..) |f, *list, *edit, twin| {
             try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
             switch (case) {
-                0 => {
+                0, 3 => {
                     try feedbackScene(f, row, list);
-                    try feedbackHook(f, list[2], c.OT_SCENE_HOOK_UPDATE);
+                    try feedbackHook(f, list[if (case == 0) 2 else 5], c.OT_SCENE_HOOK_UPDATE);
                 },
                 1 => {
                     try feedbackNode(f, list, 0, c.OT_SCENE_BOX, f.root, 0);
@@ -1421,7 +1443,7 @@ test "Scene feedback follows changes that leave no layout behind" {
                     try feedbackNode(f, list, 2, c.OT_SCENE_BOX, list[1], 0);
                     try feedbackHook(f, list[1], c.OT_SCENE_HOOK_SCROLL);
                 },
-                else => {
+                2 => {
                     // From the second frame, an UPDATE hook before the editor reads it.
                     try feedbackNode(f, list, 1, c.OT_SCENE_BOX, f.root, 0);
                     edit.* = try f.owner.createEditBuffer(.unicode);
@@ -1430,15 +1452,18 @@ test "Scene feedback follows changes that leave no layout behind" {
                     try f.owner.sceneSetStyle(list[0], 4, 1, 0, 1, 2, 1);
                     try f.owner.sceneSetEditorView(list[0], try f.owner.createEditorView(edit.*, 1, 2));
                 },
+                else => unreachable,
             }
         }
-        for (0..4) |frame| {
+        for (0..@as(usize, if (case == 3) 8 else 4)) |frame| {
             for (twins, &nodes, edits, &logs) |f, list, edit, *log| {
                 if (frame == 1) switch (case) {
                     0 => try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 }),
                     1 => try f.owner.sceneSetStyle(list[1], c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_MIN_HEIGHT, 0, c.OT_UNIT_POINT, 5, c.OT_STYLE_CONTENT),
-                    else => try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE),
+                    2 => try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE),
+                    else => try f.owner.sceneSetStyle(list[20], 4, 1, 0, 1, 3, 1),
                 };
+                if (case == 3 and frame == 2) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -4 });
                 // The cursor moves between frames: a frame that keeps its lists prepares the
                 // editor before any hook, as a walk does.
                 log.clearRetainingCapacity();
@@ -1460,6 +1485,7 @@ test "Scene feedback follows changes that leave no layout behind" {
             // The shown child's UPDATE on every later frame, and the SCROLL after the extent change.
             if (case == 0 and frame >= 1) try testing.expect(std.mem.indexOfScalar(usize, logs[1].items, 2) != null);
             if (case == 1 and frame == 1) try testing.expect(std.mem.indexOfScalar(usize, logs[1].items, 1) != null);
+            if (case == 3 and frame >= 2) try testing.expect(std.mem.indexOfScalar(usize, logs[1].items, 5) != null);
         }
     }
 }
@@ -1745,27 +1771,27 @@ test "Scene frame work counts viewport refresh and culling work" {
 test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const bench = @import("../bench/scene-frame_bench.zig");
     const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [21]u64 }{
-        .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
+        .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 86, 9009, 10000, 1, 1, 0, 0, 1, 1, 87, 0, 0 } },
-        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 174, 0, 0, 348, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
-        .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 0, 0, 87, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
-        .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
-        .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 100, 1, 6160, 1, 1, 0, 0, 1, 1, 0, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 0, 0, 58, 0, 0, 217, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 158, 104, 1, 217, 0, 100, 200, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 108, 0, 0, 217, 0, 0, 200, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 104, 53, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 160, 106, 1, 219, 0, 102, 204, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106, 0, 0 } },
-        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 0, 0, 80, 0, 0, 281, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
+        .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4 } },
+        .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
+        .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
+        .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 1, 6160, 1, 1, 0, 0, 1, 1, 0, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 5, 104, 1, 21, 0, 0, 200, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104, 0, 106 } },
+        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 4, 0, 0, 21, 0, 0, 200, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 104, 53, 155 } },
+        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 6, 106, 1, 18, 0, 0, 204, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106, 0, 109 } },
+        .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         // The scroll shape as one scroll node: one node fewer, two hidden Yoga nodes read per
         // solve, a scroll is an offset without a solve, and an append follows the bottom.
-        .{ .shape = .scroll_node, .size = 100, .change = .unchanged, .work = .{ 0, 0, 56, 0, 0, 213, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
-        .{ .shape = .scroll_node, .size = 100, .change = .scroll, .work = .{ 103, 103, 106, 0, 0, 213, 0, 0, 200, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 103, 52, 0 } },
-        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 105, 158, 107, 1, 215, 0, 102, 204, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52, 0 } },
-        .{ .shape = .boxes, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .update_hook, .work = .{ 0, 0, 58, 0, 0, 217, 0, 0, 100, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .scroll, .work = .{ 103, 103, 3, 0, 0, 16, 0, 0, 200, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 103, 52, 153 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 105, 4, 107, 1, 18, 0, 0, 204, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52, 108 } },
+        .{ .shape = .boxes, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
+        .{ .shape = .scroll, .size = 100, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4 } },
         // A wide parent without a filter: 100 boxes, one with an UPDATE hook.
-        .{ .shape = .boxes, .size = 100, .change = .update_hook, .work = @splat(0) },
-        .{ .shape = .scroll, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 58, 0, 0, 217, 0, 0, 100, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
+        .{ .shape = .boxes, .size = 100, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 2 } },
+        .{ .shape = .scroll, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);
