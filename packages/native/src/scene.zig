@@ -2244,7 +2244,6 @@ pub const Scene = struct {
         try self.damage.resize(self.allocator, cli.height, false);
         self.damage.unsetAll();
         var matched: usize = 0;
-        var composites = false;
         var cursor: ?Work = null;
         // Rows of every member whose inputs changed, before and after, and of every member that left.
         var list: PaintList = .{ .scene = self, .objects = objects, .recording = recording, .refresh_views = refresh_views };
@@ -2256,7 +2255,6 @@ pub const Scene = struct {
             self.record(owner, cli, entry, phases, &reasons);
             if (reasons != 0) continue;
             const current = self.records.items[self.records.items.len - 1];
-            composites = composites or !current.stable;
             const old = self.recordOf(entry.node.scene_node.?, self.presented_records_frame, self.presented_records.items);
             matched += @intFromBool(old != null);
             if (old != null and current.stable and old.?.stable and std.meta.eql(old.?.inputs, current.inputs)) continue;
@@ -2277,16 +2275,13 @@ pub const Scene = struct {
         }
         const rows = self.damage.count();
         self.frame_work.damage_rows = @intCast(rows);
-        self.planBands(composites);
+        self.planBands();
         return .{ if (rows == 0) .none else .rows, cursor };
     }
 
     /// Bands are the runs of damaged rows; runs one row apart merge, and the last band takes
-    /// every run past the limit. No band means a full repaint: every row is damaged, or the
-    /// frame composites a buffer, whose draw takes another path when the target holds
-    /// graphemes or links in any row.
-    fn planBands(self: *Scene, composites: bool) void {
-        if (composites) return;
+    /// every run past the limit. No band means a full repaint: every row is damaged.
+    fn planBands(self: *Scene) void {
         var rows = self.damage.iterator(.{});
         while (rows.next()) |index| {
             const row: u32 = @intCast(index);

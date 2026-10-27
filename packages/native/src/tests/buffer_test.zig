@@ -1614,6 +1614,41 @@ test "OptimizedBuffer - drawFrameBuffer preserves packed metadata on opaque copy
     try std.testing.expectEqual(@as(u8, 6), ansi.slot(copied.bg));
 }
 
+// A source without respectAlpha is copied at full opacity, transparent and translucent cells
+// too, whether or not the target holds a grapheme or link in another row; a source with it
+// blends. Before, a grapheme or link anywhere in the target switched the copy to blending.
+test "OptimizedBuffer - drawFrameBuffer result does not depend on other rows of the target" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const src = try OptimizedBuffer.init(std.testing.allocator, 3, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer src.deinit();
+    src.clear(ansi.rgbColor(0, 0, 0, 0), 0);
+    src.set(0, 0, .{ .char = 0, .fg = ansi.rgbColor(0, 0, 0, 0), .bg = ansi.rgbColor(0, 0, 0, 0), .attributes = 0 });
+    src.set(1, 0, .{ .char = 't', .fg = ansi.rgbColor(255, 0, 0, 128), .bg = ansi.rgbColor(0, 0, 255, 64), .attributes = 0 });
+    src.set(2, 0, .{ .char = 'X', .fg = ansi.rgbColor(255, 255, 255, 255), .bg = ansi.rgbColor(0, 90, 0, 255), .attributes = 0 });
+    const url = try pools.links.acquire("https://row.invalid");
+    defer pools.links.decref(url) catch {};
+    for ([_]bool{ false, true }) |respect| {
+        src.respectAlpha = respect;
+        var first: [3]buffer_mod.Cell = undefined;
+        // The target's other row: empty, a wide grapheme, a link.
+        for (0..3) |row_kind| {
+            const dst = try OptimizedBuffer.init(std.testing.allocator, 3, 2, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+            defer dst.deinit();
+            dst.clear(ansi.rgbColor(20, 20, 20, 255), null);
+            try dst.drawText("abc", 0, 0, ansi.rgbColor(200, 200, 200, 255), null, 0);
+            if (row_kind == 1) try dst.drawText("\u{4e16}", 0, 1, ansi.rgbColor(200, 200, 200, 255), null, 0);
+            if (row_kind == 2) try dst.drawText("l", 0, 1, ansi.rgbColor(200, 200, 200, 255), null, ansi.TextAttributes.setLinkId(0, url));
+            dst.drawFrameBuffer(0, 0, src, null, null, null, null);
+            var cells: [3]buffer_mod.Cell = undefined;
+            for (&cells, 0..) |*cell, x| cell.* = dst.get(@intCast(x), 0).?;
+            if (row_kind == 0) first = cells else try std.testing.expectEqualDeep(first, cells);
+        }
+        // Copied cells keep the source's transparent glyph; blended ones keep the glyph below.
+        try std.testing.expectEqual(@as(u32, if (respect) 'a' else 0), first[0].char);
+    }
+}
+
 test "OptimizedBuffer - drawTextBuffer transparent fast path preserves destination background metadata" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

@@ -440,8 +440,8 @@ typedef struct ot_scene_layout {
  * the frame). IMAGES also counts recorded image draws. Otherwise, without a
  * reason, a frame repaints only when a painted member's inputs changed, its
  * recording included: it clears and repaints only the damage_rows rows they
- * cover (all rows while a member composites a buffer), and the encoder diffs
- * only those rows; an unchanged frame has damage_rows 0 and paints nothing. After a current-buffer session lease the
+ * cover, and the encoder diffs only those rows; an unchanged frame has
+ * damage_rows 0 and paints nothing. After a current-buffer session lease the
  * encoder diffs every row, without repainting. */
 typedef struct ot_scene_stats {
     uint32_t struct_size;

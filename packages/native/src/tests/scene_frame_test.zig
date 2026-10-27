@@ -624,7 +624,7 @@ test "Scene frame band frames clear and paint only the damaged rows' members" {
     try testing.expectEqual(@as(u8, 90), ansi.red(f.cli.currentRenderBuffer.get(1, 2).?.bg));
 }
 
-const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after };
+const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after, surface };
 
 /// Paints a 6 x 4 scene twice, changing one text in between, and returns the hash of the
 /// second draft's cells and the presented cells.
@@ -656,6 +656,15 @@ fn bandCase(case: BandCase, flags: u32) ![2]u64 {
             // A later box covers row 0, where the AFTER phase draws.
             if (case == .hooked_after) try f.owner.sceneSetPaint(try placedAt(f, f.root, c.OT_SCENE_BOX, 5, 0, 0, 6, 1), .{ .background = .{ 90, 0, 0, 255 } });
         },
+        // A surface with transparent cells repaints with the text's band, and a later wide glyph
+        // on a kept row fills the trackers: the copy does not depend on them.
+        .surface => {
+            const custom = try placedAt(f, f.root, c.OT_SCENE_CUSTOM, 6, 0, 1, 6, 1);
+            const surface = try f.owner.createBuffer(6, 1, .{});
+            try f.owner.drawBufferText(surface, "s", 2, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+            try f.owner.sceneSetSurface(custom, surface);
+            try f.owner.sceneSetText(try placedAt(f, f.root, c.OT_SCENE_TEXT, 4, 0, 0, 6, 1), "\u{4e16}x");
+        },
     }
     var hashes: [2]u64 = undefined;
     for ([_][]const u8{ "abcdef", "ghijkl" }) |value| {
@@ -677,8 +686,9 @@ fn bandCase(case: BandCase, flags: u32) ![2]u64 {
         try drain(f.owner, f.id);
     }
     hashes[1] = cellsHash(f.cli.currentRenderBuffer);
-    // The second frame is a band frame: it clears the changed text's row only.
-    if (flags != c.OT_SCENE_DEBUG_FULL_FRAME) try testing.expectEqual(@as(u64, 6), f.state.frame_work.cells_cleared);
+    // The second frame is a band frame: it clears the changed text's row only, and the
+    // surface's row, which repaints on every frame.
+    if (flags != c.OT_SCENE_DEBUG_FULL_FRAME) try testing.expectEqual(@as(u64, if (case == .surface) 12 else 6), f.state.frame_work.cells_cleared);
     return hashes;
 }
 

@@ -2178,6 +2178,9 @@ pub const OptimizedBuffer = struct {
             image_id_map[source_id] = @intCast(self.image_placements.items.len);
         }
 
+        // A source without respectAlpha at full opacity is copied, as the fast path copies it,
+        // so the target's other cells cannot change the result.
+        const copies = opacity == 1.0 and !frameBuffer.respectAlpha and !imageAware;
         var dY = clippedStartY;
         while (dY <= clippedEndY) : (dY += 1) {
             var lastDrawnGraphemeId: ?u32 = null;
@@ -2211,7 +2214,7 @@ pub const OptimizedBuffer = struct {
                 const srcBg = frameBuffer.buffer.bg[srcIndex];
                 const srcAttr = frameBuffer.buffer.attributes[srcIndex];
 
-                if (ansi.alpha(srcBg) == 0 and ansi.alpha(srcFg) == 0) {
+                if (!copies and ansi.alpha(srcBg) == 0 and ansi.alpha(srcFg) == 0) {
                     if (gp.isImageChar(srcChar)) {
                         const current = self.get(@intCast(dX), @intCast(dY)) orelse continue;
                         self.set(@intCast(dX), @intCast(dY), makeCell(srcChar, current.fg, current.bg, current.attributes));
@@ -2225,11 +2228,7 @@ pub const OptimizedBuffer = struct {
                         if (graphemeId != lastDrawnGraphemeId) {
                             // We haven't drawn the start character for this grapheme (likely out of bounds to the left)
                             // Draw a space with the same attributes to fill the cell
-                            self.setCellWithAlphaBlendingCell(
-                                @intCast(dX),
-                                @intCast(dY),
-                                makeCell(DEFAULT_SPACE_CHAR, srcFg, srcBg, srcAttr),
-                            );
+                            self.copyOrBlendCell(copies, @intCast(dX), @intCast(dY), makeCell(DEFAULT_SPACE_CHAR, srcFg, srcBg, srcAttr));
                         }
                         continue;
                     }
@@ -2244,20 +2243,22 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    self.setCellWithAlphaBlendingCell(
-                        @intCast(dX),
-                        @intCast(dY),
-                        makeCell(srcChar, srcFg, srcBg, srcAttr),
-                    );
+                    self.copyOrBlendCell(copies, @intCast(dX), @intCast(dY), makeCell(srcChar, srcFg, srcBg, srcAttr));
                     continue;
                 }
 
                 const cell = makeCell(srcChar, srcFg, srcBg, srcAttr);
-                if (imageAware) {
+                if (copies) {
+                    self.set(@intCast(dX), @intCast(dY), cell);
+                } else if (imageAware) {
                     self.setCellWithAlphaBlendingRawImageAware(@intCast(dX), @intCast(dY), cell);
                 } else self.setCellWithAlphaBlendingRawCell(@intCast(dX), @intCast(dY), cell);
             }
         }
+    }
+
+    inline fn copyOrBlendCell(self: *OptimizedBuffer, copies: bool, x: u32, y: u32, cell: Cell) void {
+        if (copies) self.set(x, y, cell) else self.setCellWithAlphaBlendingCell(x, y, cell);
     }
 
     /// Draw a TextBufferView to this OptimizedBuffer with selection support and optional syntax highlighting
