@@ -1665,43 +1665,52 @@ test "Scene feedback uses an idle update only where the walk passed the node" {
 // A culling parent's later scan does not undo the passing of its first: X, the first row of P
 // inside viewport V, uses its idle update in the first pass. H2's reply moves X out of view,
 // marks another row, and hooks H3; P scans again in the later pass. H3's reply hooks X and moves
-// it back: X's UPDATE waits for the next frame.
+// it back: X's UPDATE waits for the next frame. Or H2's reply also unbinds V, so P selects
+// without culling, and H3's reply binds it again and hooks H4, whose reply hooks X.
 test "Scene feedback keeps an idle update a culling parent passed before it scanned again" {
-    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 6, .{}), try Fixture.init(testing.allocator, 4, 6, .{}) };
-    defer for (twins) |f| f.deinit();
-    var counts: [2]u32 = .{ 0, 0 };
-    for (twins, &counts, 0..) |f, *count, twin| {
-        try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
-        // V, H2, H3 under the root; P under V; rows 0..16 under P.
-        var list: [21]context.Handle = undefined;
-        for (0..3) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
-        try f.owner.sceneSetStyle(list[0], 4, 1, 0, 1, 3, 1);
-        try f.owner.sceneSetStyle(list[0], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
-        try feedbackNode(f, &list, 3, c.OT_SCENE_BOX, list[0], 0);
-        try f.owner.sceneSetStyle(list[3], 4, 1, 0, c.OT_UNIT_AUTO, 0, 1);
-        for (4..21) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, list[3], @intCast(index - 4));
-        try f.owner.sceneSetViewport(list[3], list[0]);
-        try feedbackHook(f, list[4], c.OT_SCENE_HOOK_IDLE_UPDATE);
-        for ([_]usize{ 1, 5 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
-        _ = try presentStepped(f, NoReply{});
-        var request = try f.owner.sceneFrameStep(f.id, null, options);
-        while (request.kind != c.OT_SCENE_FRAME_DONE) {
-            if (std.meta.eql(request.node, list[4])) count.* += 1;
-            if (std.meta.eql(request.node, list[1])) {
-                try f.owner.scenePatchPaint(list[4], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 8 });
-                try feedbackHook(f, list[6], c.OT_SCENE_HOOK_RESIZE);
-                try feedbackHook(f, list[2], c.OT_SCENE_HOOK_UPDATE);
+    for ([_]bool{ false, true }) |rebind| {
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 6, .{}), try Fixture.init(testing.allocator, 4, 6, .{}) };
+        defer for (twins) |f| f.deinit();
+        var counts: [2]u32 = .{ 0, 0 };
+        for (twins, &counts, 0..) |f, *count, twin| {
+            try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+            // V, H2, H3 under the root; P under V; rows 0..16 under P; H4 under the root.
+            var list: [22]context.Handle = undefined;
+            for (0..3) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
+            try feedbackNode(f, &list, 21, c.OT_SCENE_BOX, f.root, 3);
+            try f.owner.sceneSetStyle(list[0], 4, 1, 0, 1, 3, 1);
+            try f.owner.sceneSetStyle(list[0], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+            try feedbackNode(f, &list, 3, c.OT_SCENE_BOX, list[0], 0);
+            try f.owner.sceneSetStyle(list[3], 4, 1, 0, c.OT_UNIT_AUTO, 0, 1);
+            for (4..21) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, list[3], @intCast(index - 4));
+            try f.owner.sceneSetViewport(list[3], list[0]);
+            try feedbackHook(f, list[4], c.OT_SCENE_HOOK_IDLE_UPDATE);
+            for ([_]usize{ 1, 5 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
+            _ = try presentStepped(f, NoReply{});
+            var request = try f.owner.sceneFrameStep(f.id, null, options);
+            while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                if (std.meta.eql(request.node, list[4])) count.* += 1;
+                const unhooked = (try f.owner.raw().getRenderable(list[4])).scene_node.?.hook_flags != c.OT_SCENE_HOOK_UPDATE;
+                if (std.meta.eql(request.node, list[1])) {
+                    try f.owner.scenePatchPaint(list[4], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 8 });
+                    if (rebind) try f.owner.sceneSetViewport(list[3], null) else try feedbackHook(f, list[6], c.OT_SCENE_HOOK_RESIZE);
+                    try feedbackHook(f, list[2], c.OT_SCENE_HOOK_UPDATE);
+                }
+                if (rebind and std.meta.eql(request.node, list[2]) and unhooked) {
+                    try f.owner.sceneSetViewport(list[3], list[0]);
+                    try feedbackHook(f, list[21], c.OT_SCENE_HOOK_UPDATE);
+                }
+                if (std.meta.eql(request.node, list[if (rebind) 21 else 2]) and unhooked) {
+                    try feedbackHook(f, list[4], c.OT_SCENE_HOOK_UPDATE);
+                    try f.owner.scenePatchPaint(list[4], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 0 });
+                }
+                request = try f.owner.sceneFrameStep(f.id, request, options);
             }
-            if (std.meta.eql(request.node, list[2]) and (try f.owner.raw().getRenderable(list[4])).scene_node.?.hook_flags != c.OT_SCENE_HOOK_UPDATE) {
-                try feedbackHook(f, list[4], c.OT_SCENE_HOOK_UPDATE);
-                try f.owner.scenePatchPaint(list[4], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 0 });
-            }
-            request = try f.owner.sceneFrameStep(f.id, request, options);
+            _ = try f.owner.sceneFrameCommit(f.id, request, false);
+            try drain(f.owner, f.id);
         }
-        _ = try f.owner.sceneFrameCommit(f.id, request, false);
-        try drain(f.owner, f.id);
+        try testing.expectEqual([2]u32{ 0, 0 }, counts);
     }
-    try testing.expectEqual([2]u32{ 0, 0 }, counts);
 }
 
 // Re-sending a scene text's bytes rebuilds its rope, which leaves the view to prepare again
