@@ -3029,6 +3029,13 @@ pub const OptimizedBuffer = struct {
         return utf8.eastAsianWidth(@intCast(char)) == 1;
     }
 
+    /// A border cell on the transparent fast path writes what blending writes: a space keeps
+    /// the glyph below it.
+    inline fn setTransparentBorderCell(self: *OptimizedBuffer, x: u32, y: u32, char: u32, color: RGBA) void {
+        if (self.trySetTransparentTextCellFast(self.coordsToIndex(x, y), char, color, 0)) return;
+        self.setCellWithAlphaBlendingCell(x, y, makeCell(char, color, ansi.rgbColor(0, 0, 0, 0), 0));
+    }
+
     inline fn canUseTransparentBorderFastPath(
         self: *const OptimizedBuffer,
         borderChars: [*]const u32,
@@ -3245,10 +3252,7 @@ pub const OptimizedBuffer = struct {
                         }
 
                         if (useTransparentBorderFastPath) {
-                            const index = self.coordsToIndex(@intCast(drawX), @intCast(startY));
-                            self.buffer.char[index] = char;
-                            self.buffer.fg[index] = borderColor;
-                            self.buffer.attributes[index] = 0;
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(startY), char, borderColor);
                         } else if (useOpaqueBorderFastPath) {
                             self.set(@intCast(drawX), @intCast(startY), makeCell(char, borderColor, backgroundColor, 0));
                         } else {
@@ -3281,10 +3285,7 @@ pub const OptimizedBuffer = struct {
                         }
 
                         if (useTransparentBorderFastPath) {
-                            const index = self.coordsToIndex(@intCast(drawX), @intCast(endY));
-                            self.buffer.char[index] = char;
-                            self.buffer.fg[index] = borderColor;
-                            self.buffer.attributes[index] = 0;
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(endY), char, borderColor);
                         } else if (useOpaqueBorderFastPath) {
                             self.set(@intCast(drawX), @intCast(endY), makeCell(char, borderColor, backgroundColor, 0));
                         } else {
@@ -3309,10 +3310,7 @@ pub const OptimizedBuffer = struct {
                 // Left border
                 if (borderSides.left and isAtActualLeft and startX >= 0 and startX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        const index = self.coordsToIndex(@intCast(startX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@intFromEnum(BorderCharIndex.vertical)];
-                        self.buffer.fg[index] = borderColor;
-                        self.buffer.attributes[index] = 0;
+                        self.setTransparentBorderCell(@intCast(startX), @intCast(drawY), borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor);
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(startX),
@@ -3331,10 +3329,7 @@ pub const OptimizedBuffer = struct {
                 // Right border
                 if (borderSides.right and isAtActualRight and endX >= 0 and endX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        const index = self.coordsToIndex(@intCast(endX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@intFromEnum(BorderCharIndex.vertical)];
-                        self.buffer.fg[index] = borderColor;
-                        self.buffer.attributes[index] = 0;
+                        self.setTransparentBorderCell(@intCast(endX), @intCast(drawY), borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor);
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(endX),

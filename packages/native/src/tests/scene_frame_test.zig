@@ -624,6 +624,82 @@ test "Scene frame band frames clear and paint only the damaged rows' members" {
     try testing.expectEqual(@as(u8, 90), ansi.red(f.cli.currentRenderBuffer.get(1, 2).?.bg));
 }
 
+const BandCase = enum { space_border_tall, space_border_tracker, hooked_body, hooked_after };
+
+/// Paints a 6 x 4 scene twice, changing one text in between, and returns the hash of the
+/// second draft's cells and the presented cells.
+fn bandCase(case: BandCase, flags: u32) ![2]u64 {
+    const f = try Fixture.init(testing.allocator, 6, 4, .{});
+    defer f.deinit();
+    try f.owner.sceneSetDebugFlags(f.id, flags);
+    // The text that changes: row 0, or row 2 for the shapes whose band lies below row 0.
+    const row: f32 = if (case == .space_border_tall or case == .hooked_body) 0 else 2;
+    const text = try placedAt(f, f.root, c.OT_SCENE_TEXT, 2, 0, row, 6, 1);
+    try f.owner.sceneSetText(text, "abcdef");
+    const box = try placedAt(f, f.root, c.OT_SCENE_BOX, 3, 0, row, 6, if (case == .space_border_tracker) 1 else 4 - row);
+    switch (case) {
+        // A transparent border of spaces over the text keeps its glyphs, also where the band
+        // cuts the box's corners or a wide glyph on a kept row fills the trackers.
+        .space_border_tall, .space_border_tracker => {
+            try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_TOP, .background = .{ 0, 0, 0, 0 }, .borderColor = .{ 255, 0, 0, 255 } });
+            try f.owner.sceneSetBoxDetails(box, .{ .custom_border_chars = [_]u32{' '} ** 11 });
+            if (case == .space_border_tracker) try f.owner.sceneSetText(try placedAt(f, f.root, c.OT_SCENE_TEXT, 4, 0, 0, 6, 1), "\u{4e16}x");
+        },
+        // A hooked translucent box under rows 0-3 that the band meets in part: its body and
+        // phases after its BEFORE phase stay in the band.
+        .hooked_body, .hooked_after => {
+            try f.owner.sceneMoveNode(box, f.root, 0);
+            try f.owner.sceneSetStyle(box, 4, 1, 0, 1, 4, 1);
+            try f.owner.sceneSetPositions(box, 3, .{ 1, 1, 0, 0 }, .{ 0, 0, 0, 0 });
+            try f.owner.sceneSetPaint(box, .{ .background = .{ 0, 90, 0, 128 } });
+            try f.owner.sceneSetHooks(box, c.OT_SCENE_HOOK_RENDER_BEFORE | c.OT_SCENE_HOOK_RENDER_AFTER, 1, 0, 0);
+            // A later box covers row 0, where the AFTER phase draws.
+            if (case == .hooked_after) try f.owner.sceneSetPaint(try placedAt(f, f.root, c.OT_SCENE_BOX, 5, 0, 0, 6, 1), .{ .background = .{ 90, 0, 0, 255 } });
+        },
+    }
+    var hashes: [2]u64 = undefined;
+    for ([_][]const u8{ "abcdef", "ghijkl" }) |value| {
+        try f.owner.sceneSetText(text, value);
+        var request = try f.owner.sceneFrameStep(f.id, null, options);
+        while (request.kind != c.OT_SCENE_FRAME_DONE) {
+            var recording: Recording = .{};
+            const slots = try f.owner.sceneFramePaintSlots(f.id, request);
+            for (slots, 0..) |slot, index| if (slot.num == 3) {
+                recording.slot(@intCast(index), c.OT_SCENE_RECORD_PHASE_BEFORE);
+                recording.fill(0, if (case == .hooked_body) 0 else 2, 1, .{ 0, 0, 200, 255 });
+                recording.slot(@intCast(index), c.OT_SCENE_RECORD_PHASE_AFTER);
+                recording.text("h", 1, 0);
+            };
+            request = try f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view());
+        }
+        hashes[0] = cellsHash(f.cli.getNextBuffer());
+        _ = try f.owner.sceneFrameCommit(f.id, request, false);
+        try drain(f.owner, f.id);
+    }
+    hashes[1] = cellsHash(f.cli.currentRenderBuffer);
+    // The second frame is a band frame: it clears the changed text's row only.
+    if (flags != c.OT_SCENE_DEBUG_FULL_FRAME) try testing.expectEqual(@as(u64, 6), f.state.frame_work.cells_cleared);
+    return hashes;
+}
+
+fn cellsHash(target: *const @import("../buffer.zig").OptimizedBuffer) u64 {
+    var hash = std.hash.Wyhash.init(0);
+    inline for (.{ target.buffer.char, target.buffer.fg, target.buffer.bg, target.buffer.attributes }) |slice| hash.update(std.mem.sliceAsBytes(slice));
+    return hash.final();
+}
+
+// Band frames draw what a full repaint draws, in the draft and on the screen, with and without
+// VERIFY, where a primitive's fast path depends on its scissor or on other rows' cells, and
+// where a hook's phases re-enter their member's scissor.
+test "Scene frame band frames paint what a full repaint paints" {
+    for (std.enums.values(BandCase)) |case| {
+        errdefer std.debug.print("case {s}\n", .{@tagName(case)});
+        const full = try bandCase(case, c.OT_SCENE_DEBUG_FULL_FRAME);
+        try testing.expectEqual(full, try bandCase(case, 0));
+        try testing.expectEqual(full, try bandCase(case, c.OT_SCENE_DEBUG_VERIFY));
+    }
+}
+
 // Retained paint (B3) on a 10 x 9 screen: a box (rows 0-2), a text (row 3), a text view of a
 // styled shared buffer (row 4), an editor (row 5), a surface taller than its node (rows 6-7),
 // an arrow and a slider (row 8), at column 8 a parent (row 0) whose child (rows 2-3) paints under a
