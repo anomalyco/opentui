@@ -159,8 +159,9 @@ test("TabSelect paints the visible tabs, the underline, the description, and scr
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
 // (updateAutoScroll, then a 100 ms frame), `press|move|release:x,y` (left button, then a frame), or `grow:h,ch`
-// (`growx:w,cw`) to set the box's height and its child's height (widths) in one frame. Each step records
-// scrollTop,scrollLeft and a "!" prefix when a key is not handled; an auto step adds "-" when auto-scroll stopped.
+// (`growx:w,cw`) to set the box's height and its child's height (widths) in one frame, `wait:ms` (advance the clock,
+// then a frame), or `destroy` (`destroy:change`: on the bar's next change). Each step records scrollTop,scrollLeft and a "!" prefix when a key is not handled; an
+// auto step adds "-" when auto-scroll stopped. Once the box is destroyed, a step records its pending timers.
 // Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
 const scrolling: [string, object, string, string][] = [
   [
@@ -177,6 +178,17 @@ const scrolling: [string, object, string, string][] = [
     "1,0 0,0 0,1 0,0 0,1 0,0",
   ],
   ["arrows", { scrollbarOptions: { showArrows: true } }, "arrow:end arrow:end arrow:start", "5,0 10,0 5,0"],
+  // A held arrow repeats after 500 ms, then every 200 ms, until it is released or the box is destroyed.
+  ...[
+    ["release:19,9", "5,0 10,0 12,0 12,0 12,0"],
+    ["destroy", "5,0 10,0 12,0 timers 0 timers 0"],
+    ["destroy:change", "5,0 10,0 12,0 12,0 timers 0"],
+  ].map(([end, expected]): [string, object, string, string] => [
+    `held arrow, then ${end}`,
+    { scrollbarOptions: { showArrows: true } },
+    `press:19,9 wait:500 wait:200 ${end} wait:200`,
+    expected,
+  ]),
   [
     "auto-scroll",
     { scrollX: true },
@@ -232,6 +244,7 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
   scroll.add(content)
   renderer.root.add(scroll)
   await setup.renderOnce()
+  const timers = clock.pendingTimerCount
   const trace: string[] = []
   for (const step of steps.split(" ")) {
     const [kind, arg] = step.split(":")
@@ -252,11 +265,20 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
       clock.advance(100)
       await setup.renderOnce()
       if (!scroll.live) token = "-"
+    } else if (kind === "wait" || kind === "destroy") {
+      if (kind === "wait") clock.advance(Number(arg))
+      else if (arg) scroll.verticalScrollBar.once("change", () => scroll.destroyRecursively())
+      else scroll.destroyRecursively()
+      await setup.renderOnce()
     } else if (kind === "press" || kind === "move" || kind === "release") {
       const [x, y] = arg.split(",").map(Number)
       await setup.mockMouse[kind === "press" ? "pressDown" : kind === "move" ? "moveTo" : "release"](x, y)
       await setup.renderOnce()
     } else if (!scroll.handleKeyPress(key(step))) token = "!"
+    if (scroll.isDestroyed) {
+      trace.push(`timers ${clock.pendingTimerCount - timers}`)
+      continue
+    }
     // One position: the bars and the content's origin agree with scrollTop and scrollLeft.
     const { viewport, wrapper } = scroll
     expect([

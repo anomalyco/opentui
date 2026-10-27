@@ -1,4 +1,5 @@
 import type { RGBA } from "./lib/RGBA.js"
+import type { Clock } from "./lib/clock.js"
 import type { EventEmitter } from "events"
 import type { Selection } from "./lib/selection.js"
 import type { Renderable } from "./Renderable.js"
@@ -195,6 +196,8 @@ export interface RenderContext extends EventEmitter {
   resolution?: { width: number; height: number } | null
   /** Monotonic, bumped once per `loop()` iteration. Lets renderables dedupe per-frame work. */
   frameId: number
+  /** Schedules renderable timers; a test renderer can take a `ManualClock`. */
+  clock: Clock
   requestRender: () => void
   requestAnimationFrame: (callback: FrameRequestCallback) => number
   cancelAnimationFrame: (handle: number) => void

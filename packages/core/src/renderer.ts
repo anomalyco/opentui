@@ -567,6 +567,7 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
     resolution: PixelResolution | null,
     capabilities: TerminalCapabilities | null,
     private readonly nativeOwner: NativeSession,
+    public readonly clock: Clock,
   ) {
     super()
     this.width = width
@@ -2139,6 +2140,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       renderer.resolution,
       renderer.capabilities,
       renderer.nativeSession,
+      renderer.clock,
     )
     let firstLineOffsetOwner: Renderable | null = null
     const renderContext = Object.create(snapshotContext) as RenderContext
@@ -2480,6 +2482,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resolution,
       this.capabilities,
       this.nativeSession,
+      this.clock,
     )
     let snapshot: ScrollbackSnapshot | undefined
     let renderFailed = false
@@ -2770,6 +2773,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resolution,
       this.capabilities,
       this.nativeSession,
+      this.clock,
     )
     const commits: ExternalOutputCommit[] = []
     let snapshotRoot: RootRenderable | undefined
