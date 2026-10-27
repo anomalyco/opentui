@@ -2580,12 +2580,12 @@ pub const Scene = struct {
             .width = @intFromFloat(cells.width),
             .height = @intFromFloat(cells.height),
         }, entry.clip);
-        for (bands) |band| {
-            if (!band.meets(rows)) continue;
-            self.frame_work.members_painted += 1;
-            break;
-        }
-        if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint) or hasFills(node)) for (bands) |band| {
+        const met = bandsMeet(bands, rows);
+        self.frame_work.members_painted += @intFromBool(met);
+        if (!met) {
+            // A member no band meets still prepares its view, as its body would.
+            if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF == 0) try self.prepareMember(entry);
+        } else if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint) or hasFills(node)) for (bands) |band| {
             if (!band.meets(rows)) continue;
             const scissor = bandClip(entry.clip, band);
             const drawn = intersection(painted, scissor);
@@ -2637,6 +2637,15 @@ pub const Scene = struct {
         try scene_record.play(owner, local, 0, phases.recording, segment);
     }
 
+    /// Prepares a member's view for this frame's layout, as its body's paint does. Refresh
+    /// prepares a changed culled text, and drawing applies its layout. A text view can lose its
+    /// viewport to a rebind in a RECORD reply; an editor's preparation follows its cursor.
+    fn prepareMember(self: *Scene, entry: Work) !void {
+        const node = entry.node.scene_node.?;
+        if (!(entry.filtered or self.preparation_dirty) or self.verify_target != null) return;
+        if ((node.kind == api.OT_SCENE_TEXT_VIEW and viewNeedsPrepare(node, entry.layout)) or (node.kind == api.OT_SCENE_EDITOR and node.editor != null)) try prepareView(&self.frame_work, node, entry.layout);
+    }
+
     fn paintNode(self: *Scene, cli: *renderer.CliRenderer, entry: Work, cells: Layout) !void {
         const target = self.paintTarget(cli);
         const node = entry.node.scene_node.?;
@@ -2644,21 +2653,17 @@ pub const Scene = struct {
         const y: i32 = @intFromFloat(cells.screenY);
         const width: u32 = @intFromFloat(cells.width);
         const height: u32 = @intFromFloat(cells.height);
-        // Refresh prepares a changed culled text, and drawing applies its layout. A text view can
-        // lose its viewport to a rebind in a RECORD reply; an editor's preparation follows its cursor.
-        const prepares = (entry.filtered or self.preparation_dirty) and self.verify_target == null;
+        try self.prepareMember(entry);
         if (node.text) |text| {
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(text.view, x, y);
         } else if (node.kind == api.OT_SCENE_TEXT_VIEW) {
             const view = node.control.text_view.view orelse return;
-            if (prepares and viewNeedsPrepare(node, entry.layout)) try prepareView(&self.frame_work, node, entry.layout);
             if (!node.control.text_view.paint) return;
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawTextBufferChecked(view.view, x, y);
         } else if (node.kind == api.OT_SCENE_EDITOR) {
             const editor = node.editor orelse return;
-            if (prepares) try prepareView(&self.frame_work, node, entry.layout);
             const hit = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
             if (hit.width != 0 and hit.height != 0) try target.drawEditorViewChecked(editor.view, x, y);
         } else if (node.kind == api.OT_SCENE_IMAGE) {
@@ -3293,6 +3298,14 @@ fn cellAxis(start: *f64, size: *f32) void {
 /// A view or request size in cells; Yoga sizes can exceed u32.
 fn cellSize(size: f32) u32 {
     return @intFromFloat(@min(size, 0x7fff_ff80));
+}
+
+/// Whether a band meets the rows; bands are sorted and disjoint, so rows outside their hull
+/// meet none.
+fn bandsMeet(bands: []const Band, rows: Band) bool {
+    if (bands.len == 0 or rows.bottom <= bands[0].top or rows.top >= bands[bands.len - 1].bottom) return false;
+    for (bands) |band| if (band.meets(rows)) return true;
+    return false;
 }
 
 /// A clip's part on a band's rows; a band past the clip leaves no rows.
