@@ -827,7 +827,7 @@ pub const Context = struct {
             .host_driven_time = true,
             .logger = &self.logger,
             .remote_mode = options.remote_mode,
-            .output = .{ .feed = value.output },
+            .feed = value.output,
             .link_pool = &self.links,
             .env_map = options.env_map,
         });

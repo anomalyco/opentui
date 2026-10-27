@@ -1577,7 +1577,7 @@ test("capability responses should not trigger keypress events", async () => {
   expect(keypresses).toHaveLength(0)
 })
 
-test("malformed XTGETTCAP Ms replies do not reach application input handlers", async () => {
+test("explicit-width reports, OSC 10 and malformed XTGETTCAP Ms replies do not reach application input handlers", async () => {
   const received: string[] = []
   currentRenderer.addInputHandler((sequence) => {
     received.push(sequence)
@@ -1588,6 +1588,8 @@ test("malformed XTGETTCAP Ms replies do not reach application input handlers", a
   currentRenderer.stdin.emit("data", Buffer.from("\x1bP1+r4d73=\x1b\\"))
   currentRenderer.stdin.emit("data", Buffer.from("\x1bP1+r4d73=abc\x1b\\"))
   currentRenderer.stdin.emit("data", Buffer.from("\x1bP1+r4d73=zz\x1b\\"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[1;2R"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
   advanceCurrentClock()
 
   expect(received).toHaveLength(0)
@@ -1752,14 +1754,13 @@ test("multiple DECRPM responses in sequence", async () => {
   expect(keypresses).toHaveLength(0)
 })
 
-test("OSC 10/11 fallback sets initial theme mode once both colors arrive", () => {
+test("OSC 11 alone sets theme mode, also after the startup window", () => {
   const themeModes: string[] = []
   currentRenderer.on("theme_mode", (mode) => {
     themeModes.push(mode)
   })
 
-  currentRenderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
-  advanceCurrentClock()
+  advanceCurrentClock(5000)
 
   expect(currentRenderer.themeMode).toBeNull()
   expect(themeModes).toEqual([])
@@ -1817,7 +1818,7 @@ test("conflicting CSI 997 before initial OSC replies does not override the OSC-d
   expect(themeModes).toEqual(["dark"])
 })
 
-test("CSI 997 refreshes theme mode only after fresh OSC 10 and 11 replies arrive", async () => {
+test("CSI 997 refreshes theme mode from the fresh OSC 11 reply", async () => {
   const { renderer, captureQueries, clock } = await createThemeQueryRenderer()
   const themeModes: string[] = []
   renderer.on("theme_mode", (mode) => {
@@ -1849,9 +1850,14 @@ test("CSI 997 refreshes theme mode only after fresh OSC 10 and 11 replies arrive
 
   expect(renderer.themeMode).toBe("light")
   expect(themeModes).toEqual(["dark", "light"])
+
+  // The background reply ends the refresh, so the next notification queries again.
+  renderer.stdin.emit("data", Buffer.from("\x1b[?997;1n"))
+  advanceClock(clock)
+  expect((await captureQueries()).length).toBe(4)
 })
 
-test("CSI 997 refresh timeout restores background override state without changing theme mode", async () => {
+test("CSI 997 refresh timeout ends the refresh, and a later OSC 11 still sets the mode", async () => {
   const { renderer, captureQueries, clock } = await createThemeQueryRenderer()
   const themeModes: string[] = []
   renderer.on("theme_mode", (mode) => {
@@ -1874,6 +1880,18 @@ test("CSI 997 refresh timeout restores background override state without changin
 
   expect(renderer.themeMode).toBe("dark")
   expect(themeModes).toEqual(["dark"])
+
+  // The timeout ends the refresh, so the next notification queries again.
+  renderer.stdin.emit("data", Buffer.from("\x1b[?997;2n"))
+  advanceClock(clock)
+  expect((await captureQueries()).length).toBe(4)
+
+  // A reply after the refresh timeout is late, not stale: it is the terminal's current color.
+  renderer.stdin.emit("data", Buffer.from("\x1b]11;#ffffff\x07"))
+  advanceClock(clock)
+
+  expect(renderer.themeMode).toBe("light")
+  expect(themeModes).toEqual(["dark", "light"])
 })
 
 test("CSI 997 refresh with the same OSC-derived mode does not emit twice", () => {

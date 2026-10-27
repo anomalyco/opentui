@@ -1,9 +1,12 @@
 import { test, expect, describe } from "bun:test"
 import {
   isCapabilityResponse,
+  isExplicitWidthReport,
   isPixelResolutionResponse,
   parsePixelResolution,
 } from "./terminal-capability-detection.js"
+import { createTestRenderer } from "../testing/test-renderer.js"
+import { ManualClock } from "../testing/manual-clock.js"
 
 describe("isCapabilityResponse", () => {
   test("detects DECRPM responses", () => {
@@ -15,14 +18,13 @@ describe("isCapabilityResponse", () => {
     expect(isCapabilityResponse("\x1b[?2004;2$y")).toBe(true)
   })
 
-  test("detects CPR responses for width detection", () => {
-    expect(isCapabilityResponse("\x1b[1;2R")).toBe(true) // explicit width
-    expect(isCapabilityResponse("\x1b[1;3R")).toBe(true) // scaled text
-  })
-
-  test("does not detect regular CPR responses as capabilities", () => {
-    // Regular cursor position reports are NOT capabilities
-    expect(isCapabilityResponse("\x1b[10;5R")).toBe(false)
+  test("detects explicit-width reports only among cursor position reports", () => {
+    // Shift, Alt and Ctrl+F3 send the same bytes, so the key path never treats them as replies.
+    expect(isCapabilityResponse("\x1b[1;2R")).toBe(false)
+    expect(isExplicitWidthReport("\x1b[1;2R")).toBe(true) // explicit width
+    expect(isExplicitWidthReport("\x1b[1;3R")).toBe(true) // scaled text
+    expect(isExplicitWidthReport("\x1b[1;1R")).toBe(false)
+    expect(isExplicitWidthReport("\x1b[10;5R")).toBe(false)
     expect(isCapabilityResponse("\x1b[20;30R")).toBe(false)
   })
 
@@ -147,8 +149,6 @@ describe("real-world terminal capability sequences", () => {
     // Should detect multiple capability sequences
     expect(isCapabilityResponse("\x1b[?1016;2$y")).toBe(true)
     expect(isCapabilityResponse("\x1b[?2027;0$y")).toBe(true)
-    expect(isCapabilityResponse("\x1b[1;2R")).toBe(true)
-    expect(isCapabilityResponse("\x1b[1;3R")).toBe(true)
     expect(isCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\")).toBe(true)
     expect(isCapabilityResponse("\x1b_Gi=1;EINVAL:Zero width/height not allowed\x1b\\")).toBe(true)
     expect(isCapabilityResponse("\x1b[?62;c")).toBe(true)
@@ -171,70 +171,77 @@ describe("real-world terminal capability sequences", () => {
 })
 
 describe("renderer capabilities event", () => {
-  /**
-   * The renderer emits "capabilities" event each time a capability response is processed.
-   * This happens multiple times at startup because the terminal responds to multiple queries:
-   * - DECRPM queries (sgr_pixels, unicode, color_scheme, focus, bracketed_paste, sync)
-   * - CPR queries for width detection (explicit_width, scaled_text)
-   * - XTVersion (terminal name/version, kitty detection)
-   * - Kitty keyboard query response
-   *
-   * Each response arrives async and triggers the event, so consumers should expect
-   * multiple emissions and handle them reactively.
-   */
-  test("kitty terminal emits capabilities event for each response", async () => {
-    const { createTestRenderer } = await import("../testing/test-renderer.js")
-    const { renderer } = await createTestRenderer({})
+  // Replies come whenever the terminal sends them: screen, tmux passthrough and ConPTY forward some after their own
+  // DA1, and a slow link after the 5 s startup window. Each one is applied, and an event comes only on a change.
+  const replies = [
+    "\x1b[?62;22c", // DA1 first, as a hop that answers it itself
+    "\x1b[?1016;2$y",
+    "\x1b[?2027;0$y",
+    "\x1b[?2031;2$y",
+    "\x1b[?1004;2$y",
+    "\x1b[?2004;2$y",
+    "\x1b[?2026;2$y",
+    "\x1bP>|kitty(0.42.2)\x1b\\",
+    "\x1b[?0u",
+    "\x1b_Gi=31337;OK\x1b\\",
+  ]
 
-    await renderer.setupTerminal()
-
-    const events: any[] = []
-    renderer.on("capabilities", (caps) => events.push({ ...caps }))
-
-    // Simulate Kitty capability responses as they arrive separately.
-    const kittyResponses = [
-      "\x1b[?1016;2$y", // 1. sgr_pixels
-      "\x1b[?2027;0$y", // 2. unicode query
-      "\x1b[?2031;2$y", // 3. color_scheme_updates
-      "\x1b[?1004;2$y", // 4. focus_tracking
-      "\x1b[?2004;2$y", // 5. bracketed_paste
-      "\x1b[?2026;2$y", // 6. sync
-      "\x1b[15;42R", // 7. startup cursor position (CPR)
-      "\x1b[1;2R", // 8. explicit_width probe reply (CPR)
-      "\x1b[1;3R", // 9. scaled_text probe reply (CPR)
-      "\x1bP>|kitty(0.42.2)\x1b\\", // 10. xtversion (triggers kitty detection)
-      "\x1b[?0u", // 11. kitty keyboard query
-      "\x1b_Gi=31337;OK\x1b\\", // 12. exact graphics query response
-    ]
-
-    for (const response of kittyResponses) {
-      renderer.stdin.emit("data", Buffer.from(response))
-      await new Promise((resolve) => setTimeout(resolve, 10))
+  async function run(experimental_nativeInput: boolean, lateMs: number) {
+    const clock = new ManualClock()
+    const { renderer } = await createTestRenderer({ clock, experimental_nativeInput })
+    const events: string[] = []
+    const keys: string[] = []
+    let renders = 0
+    const requestRender = renderer.requestRender.bind(renderer)
+    renderer.requestRender = () => {
+      renders++
+      requestRender()
     }
-
-    expect(events.length).toBe(12)
-
-    // First event: sgr_pixels detected
-    expect(events[0].sgr_pixels).toBe(true)
-
-    // After xtversion (event 10): kitty_keyboard should be true
-    expect(events[9].kitty_keyboard).toBe(true)
-    expect(events[9].kitty_graphics).toBe(true)
-    expect(events[9].notifications).toBe(true)
-    expect(events[9].terminal.name).toBe("kitty")
-    expect(events[9].terminal.version).toBe("0.42.2")
-
-    // Final state should have all kitty capabilities
-    const finalCaps = events[11]
-    expect(finalCaps.kitty_keyboard).toBe(true)
-    expect(finalCaps.sgr_pixels).toBe(true)
-    expect(finalCaps.color_scheme_updates).toBe(true)
-    expect(finalCaps.focus_tracking).toBe(true)
-    expect(finalCaps.sync).toBe(true)
-    expect(finalCaps.explicit_width).toBe(true)
-    expect(finalCaps.scaled_text).toBe(true)
-    expect(finalCaps.kitty_graphics).toBe(true)
-
+    renderer.on("capabilities", (caps) => events.push(JSON.stringify(caps)))
+    renderer.keyInput.on("keypress", (key) => keys.push(key.sequence))
+    await renderer.setupTerminal()
+    renderer.stdin.emit("data", Buffer.from("\x1b[4;600;800t"))
+    clock.advance(lateMs)
+    // Modified F3 is a key once no explicit-width report is expected (the legacy parser reads it as a report).
+    if (lateMs > 0 && experimental_nativeInput) renderer.stdin.emit("data", Buffer.from("\x1b[1;2R\x1b[1;5R"))
+    const marks: number[][] = []
+    const send = (batch: string[]) => {
+      for (const reply of batch) {
+        renderer.stdin.emit("data", Buffer.from(`${reply}a`))
+        clock.advance(20)
+      }
+      marks.push([events.length, renders])
+    }
+    send(replies)
+    send(replies)
+    // The handler outlives suspension, and a return to an earlier value is a change.
+    await renderer.suspend()
+    await renderer.resume()
+    send([])
+    send(["\x1bP>|beta(1)\x1b\\", replies[7]])
+    const caps = renderer.capabilities!
     renderer.destroy()
-  })
+    return { marks, events, keys, caps }
+  }
+
+  for (const experimental_nativeInput of [false, true]) {
+    test(`replies after the startup window emit what replies inside it emit (native ${experimental_nativeInput})`, async () => {
+      const inside = await run(experimental_nativeInput, 0)
+      const late = await run(experimental_nativeInput, 5000)
+
+      expect(late.events).toEqual(inside.events)
+      for (const { marks, events } of [inside, late]) {
+        expect(marks[0][0]).toBeGreaterThan(0)
+        expect(marks[1]).toEqual(marks[0])
+        expect([marks[3][0] - marks[2][0], marks[3][1] - marks[2][1]]).toEqual([2, 2])
+        expect(events.at(-1)).toBe(events.at(-3))
+        expect(events.filter((event, index) => event === events[index - 1])).toEqual([])
+      }
+      expect(late.caps).toMatchObject({ kitty_keyboard: true, kitty_graphics: true, sgr_pixels: true, sync: true })
+      expect(late.caps.terminal).toEqual({ name: "kitty", version: "0.42.2", from_xtversion: true })
+      const typed = Array(replies.length * 2 + 2).fill("a")
+      expect(inside.keys).toEqual(typed)
+      expect(late.keys).toEqual(experimental_nativeInput ? ["\x1b[1;2R", "\x1b[1;5R", ...typed] : typed)
+    })
+  }
 })

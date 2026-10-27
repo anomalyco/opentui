@@ -58,6 +58,7 @@ import { calculateRenderGeometry } from "./lib/render-geometry.js"
 import { stringWidth } from "./platform/runtime.js"
 import {
   isCapabilityResponse,
+  isExplicitWidthReport,
   isPixelResolutionResponse,
   parsePixelResolution,
 } from "./lib/terminal-capability-detection.js"
@@ -3277,7 +3278,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.requestRender()
       }
 
-      this.removeInputHandler(this.capabilityHandler)
       this.updateStdinParserProtocolContext(
         {
           privateCapabilityRepliesActive: false,
@@ -3391,7 +3391,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private processCapabilitySequence(sequence: string, hasCursorReport: boolean): boolean {
-    const hasStandardCapabilitySignature = isCapabilityResponse(sequence)
+    const hasStandardCapabilitySignature =
+      isCapabilityResponse(sequence) || (hasCursorReport && isExplicitWidthReport(sequence))
     const shouldProcessAsCapability =
       hasStandardCapabilitySignature ||
       (hasCursorReport && (this.capabilityTimeoutId !== null || this.nativeTerminalTransition !== null))
@@ -3407,15 +3408,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // A rejected reply is consumed without being applied. Throwing would reset the parser and drop later input.
       return error.status !== NativeStatus.InvalidPhase
     }
+    const previous = JSON.stringify(this._capabilities)
     this._capabilities = this.nativeSession.getCapabilities()
     if (this._capabilities?.terminal?.from_xtversion) {
       this.resolveXtVersionWaiters()
     }
-    if (hasStandardCapabilitySignature) {
+    if (JSON.stringify(this._capabilities) !== previous) {
       this.forceFullRepaintRequested = true
       this.requestRender()
+      this.emit(CliRenderEvents.CAPABILITIES, this._capabilities)
     }
-    this.emit(CliRenderEvents.CAPABILITIES, this._capabilities)
 
     const hadPendingSplitStartupCursorSeed = this.pendingSplitStartupCursorSeed
 
