@@ -1505,8 +1505,11 @@ pub const Scene = struct {
                     break :blk node.parent orelse continue;
                 } else value;
                 // A dropped entry issues no request, so the next pop moves the cursor before any reply.
-                if (operation.parent != null) {
-                    const segment = &node.parent.?.scene_node.?.segment;
+                if (operation.parent) |handle| {
+                    // A child its destroyed parent left is never visible.
+                    const parent = node.parent orelse continue;
+                    if (!std.meta.eql(parent.scene_node.?.handle, handle)) continue;
+                    const segment = &parent.scene_node.?.segment;
                     std.debug.assert(segment.cursor == null or operation.rank > segment.cursor.?);
                     segment.cursor = operation.rank;
                 }

@@ -1060,7 +1060,8 @@ const StaleReply = struct {
 
 // Frames that keep their preparation hold node pointers across host replies. A reply that
 // destroys the hooked node, or its parent, must leave no pointer to its storage, which the
-// node pool gives to the next node; a list entry left behind fails on the null scene node.
+// node pool gives to the next node; a list entry left behind fails on the null scene node. The
+// parent's other queued child, now detached, is dropped.
 test "Scene preparation drops destroyed nodes from UPDATE and RECORD replies" {
     for ([_]u32{ c.OT_SCENE_HOOK_UPDATE, c.OT_SCENE_HOOK_RENDER_AFTER }) |hook| for ([_]bool{ false, true }) |parent_destroyed| {
         const f = try Fixture.init(testing.allocator, 4, 2, .{});
@@ -1072,11 +1073,15 @@ test "Scene preparation drops destroyed nodes from UPDATE and RECORD replies" {
         try f.owner.sceneSetText(target, "ab");
         try f.owner.sceneMoveNode(target, parent, 0);
         try f.owner.sceneSetHooks(target, hook, 1, 2, 1);
+        // A hooked sibling after it stays queued when the reply destroys the parent.
+        const sibling = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 5);
+        try f.owner.sceneMoveNode(sibling, parent, 1);
+        try f.owner.sceneSetHooks(sibling, hook, 1, 2, 1);
         const kind: u32 = if (hook == c.OT_SCENE_HOOK_UPDATE) c.OT_SCENE_FRAME_UPDATE else c.OT_SCENE_FRAME_RECORD;
         for (0..4) |index| {
             var request = try f.owner.sceneFrameStep(f.id, null, options);
             while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                if (index == 2 and request.kind == kind) try f.owner.sceneDestroyNode(if (parent_destroyed) parent else target);
+                if (index == 2 and request.kind == kind and (kind == c.OT_SCENE_FRAME_RECORD or std.meta.eql(request.node, target))) try f.owner.sceneDestroyNode(if (parent_destroyed) parent else target);
                 const record: ?[]const u8 = if (request.kind == c.OT_SCENE_FRAME_RECORD) &.{} else null;
                 request = try f.owner.sceneFrameStepWithRecording(f.id, request, options, record);
             }
@@ -1090,6 +1095,7 @@ test "Scene preparation drops destroyed nodes from UPDATE and RECORD replies" {
         }
         try testing.expectEqual('c', f.cli.currentRenderBuffer.get(0, 0).?.char);
         if (parent_destroyed) try f.owner.sceneDestroyNode(target);
+        try f.owner.sceneDestroyNode(sibling);
     };
 }
 
