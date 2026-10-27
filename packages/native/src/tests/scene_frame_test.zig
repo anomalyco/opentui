@@ -2120,6 +2120,50 @@ test "Scene feedback passes keep the round and request counts at the limits" {
     }
 }
 
+// Feedback that skips a clean root still passes every parent: a z-index change in a later round
+// keeps the frame's order, as preparation already reached the parent. W's overflow changes
+// before the frame, so the root's LAYOUT_CHANGED request comes first with no box changed; its
+// reply grows W, which needs a second round but marks nothing, so the first round skips the root. The second round's LAYOUT_CHANGED
+// reply lowers C2, the later of P's two overlapping children: it shows from the next frame.
+test "Scene feedback passes every parent when it skips a clean root" {
+    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
+    defer for (twins) |f| f.deinit();
+    var nodes: [2][4]context.Handle = undefined;
+    for (twins, &nodes, 0..) |f, *list, twin| {
+        try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+        // P and W under the root; C1 and C2 under P.
+        for (0..2) |index| try feedbackNode(f, list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
+        for (2..4) |index| {
+            try feedbackNode(f, list, index, c.OT_SCENE_BOX, list[0], @intCast(index - 2));
+            try f.owner.sceneSetStyle(list[index], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
+            try f.owner.scenePatchPaint(list[index], c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ @intCast(index * 50), 0, 0, 255 } });
+        }
+        try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_LAYOUT_CHANGED, 1, 0, 0);
+        _ = try presentStepped(f, NoReply{});
+    }
+    for (0..2) |frame| {
+        for (twins, nodes) |f, list| {
+            if (frame == 0) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+            var replies: u32 = 0;
+            var request = try f.owner.sceneFrameStep(f.id, null, options);
+            while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                replies += 1;
+                if (frame == 0 and replies == 1) try f.owner.sceneSetStyle(list[1], 4, 0, 0, 1, 3, 1);
+                if (frame == 0 and replies == 2) try f.owner.scenePatchPaint(list[3], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
+                request = try f.owner.sceneFrameStep(f.id, request, options);
+            }
+            _ = try f.owner.sceneFrameCommit(f.id, request, false);
+            try drain(f.owner, f.id);
+        }
+        // C2 stays on top in the reply's frame and goes below C1 in the next.
+        for (twins, nodes) |f, list| {
+            const top = (try f.owner.raw().getRenderable(list[0])).scene_node.?.paint_children.items[1];
+            try testing.expectEqual((try f.owner.raw().getRenderable(list[if (frame == 0) 3 else 2])).scene_node.?.num, top.scene_node.?.num);
+        }
+        try twins[0].expectSameCells(twins[1]);
+    }
+}
+
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame. Only rows whose layout, text, or view changed
