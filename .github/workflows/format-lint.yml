@@ -14,7 +14,7 @@ concurrency:
 jobs:
   fmt:
     name: Format Check
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
 
     steps:
       - name: Checkout code
@@ -40,7 +40,7 @@ jobs:
 
   lint:
     name: Lint Check
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
 
     steps:
       - name: Checkout code
@@ -60,7 +60,7 @@ jobs:
   checks-complete:
     name: Format and Lint
     needs: [fmt, lint]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
     if: always()
 
     steps:

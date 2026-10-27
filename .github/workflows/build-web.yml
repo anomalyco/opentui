@@ -28,7 +28,7 @@ env:
 jobs:
   site:
     name: Docs and Site
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
     defaults:
       run:
         working-directory: packages/web
