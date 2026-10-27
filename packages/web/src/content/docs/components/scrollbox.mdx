@@ -238,13 +238,14 @@ up in view.
 ### anchor
 
 Keep a child at its place in the viewport while content above it changes, for example while older messages load above
-the reader. The anchor holds through every layout until you release it or the child leaves the ScrollBox. It takes
-precedence over sticky scrolling; a scroll moves the place it keeps.
+the reader. The anchor holds through every layout until you release it, scroll to the end, or the child leaves the
+ScrollBox. It takes precedence over sticky scrolling; a scroll moves the place it keeps. Release takes effect at once,
+so release it in `afterLayout`: the frame that lays out the new messages still holds the place.
 
 ```typescript
 const release = scrollbox.anchor(firstVisibleRow)
 await loadOlderMessages()
-release()
+scrollbox.afterLayout(release)
 ```
 
 ### afterLayout

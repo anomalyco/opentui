@@ -297,6 +297,12 @@ describe("ScrollBoxRenderable - facade", () => {
       frames: ["prepended 4 (0)", "prepended 4 (0)", "prepended 4 (0)"],
     },
     {
+      // The documented pattern: release after the layout that places the change.
+      name: "anchor released in afterLayout",
+      hold: (scrollbox, rows) => scrollbox.afterLayout(scrollbox.anchor(rows[4])),
+      frames: ["row 4 (2)", "row 4 (0)", "row 4 (0)"],
+    },
+    {
       name: "a later anchor replaces it, and the first release does nothing",
       hold: (scrollbox, rows) => {
         const release = scrollbox.anchor(rows[2])
@@ -389,6 +395,96 @@ describe("ScrollBoxRenderable - facade", () => {
     scrollbox.afterLayout(() => trace.push("dropped"))
     await renderOnce()
     expect(trace).toEqual([8, "a 231", "row 230 ", "b", "shown", "hidden"])
+  })
+
+  // Each step records `scrollTop` and the top line after its frame (and the host requests where they matter): a sticky
+  // box's deliberate position before layout lands; without sticky, a callback's scroll to the end with growth lands at
+  // the new end in its frame;
+  // a step unit is the bar's `scrollStep`; once the callbacks ran, the SCROLL hook is off again.
+  test("afterLayout and scroll targets: sticky position, callback growth, step unit, hook release", async () => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, {
+      width: 20,
+      height: 10,
+      stickyScroll: true,
+      stickyStart: "bottom",
+    })
+    testRenderer.root.add(scrollbox)
+    let count = 0
+    const add = (rows: number) => {
+      for (let i = 0; i < rows; i++) scrollbox.add(new TextRenderable(testRenderer, { content: `row ${count++}` }))
+    }
+    const trace: unknown[] = []
+    const step = async () => {
+      await renderOnce()
+      trace.push(`${scrollbox.scrollTop} ${captureCharFrame().split("\n")[0].slice(0, 7).trim()}`)
+    }
+    scrollbox.scrollTo(25)
+    add(60)
+    await step()
+    scrollbox.stickyScroll = false
+    scrollbox.afterLayout(() => {
+      scrollbox.scrollTo(80)
+      add(40)
+    })
+    await step()
+    scrollbox.verticalScrollBar.scrollStep = 3
+    scrollbox.scrollTo(0)
+    scrollbox.scrollBy(2, "step")
+    await step()
+    add(1)
+    await step()
+    trace.push(testRenderer.getNativeStats().frameWork.hostRequests)
+    expect(trace).toEqual(["25 row 25", "90 row 90", "6 row 6", "6 row 6", 0])
+  })
+
+  // afterLayout callbacks: one that throws does not stop the others, and its error reaches the renderer; one asked
+  // during a frame (here from a content "resize" listener) runs in the next frame; an anchor release that native
+  // rejects can be retried; destroying the box releases the queue.
+  test("afterLayout callbacks and anchor releases keep their order through errors", async () => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 20, height: 4, viewportCulling: false })
+    const rows = Array.from({ length: 10 }, (_, i) => new TextRenderable(testRenderer, { content: `row ${i}` }))
+    for (const row of rows) scrollbox.add(row)
+    testRenderer.root.add(scrollbox)
+    await renderOnce()
+    const trace: string[] = []
+    const errors = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      scrollbox.afterLayout(() => {
+        trace.push("first")
+        throw new Error("first fails")
+      })
+      scrollbox.afterLayout(() => trace.push("second"))
+      await renderOnce()
+      trace.push("|")
+      const listener = () => {
+        scrollbox.content.off("resize", listener)
+        scrollbox.afterLayout(() => trace.push("new"))
+      }
+      scrollbox.content.on("resize", listener)
+      scrollbox.afterLayout(() => trace.push("old"))
+      scrollbox.add(new TextRenderable(testRenderer, { content: "row 10" }))
+      await renderOnce()
+      trace.push("|")
+      await renderOnce()
+    } finally {
+      errors.mockRestore()
+    }
+    expect(trace).toEqual(["first", "second", "|", "old", "|", "new"])
+    scrollbox.scrollTo(4)
+    await renderOnce()
+    const release = scrollbox.anchor(rows[4])
+    const request = spyOn(testRenderer.nativeScene, "scrollRequest").mockImplementation(() => {
+      throw new Error("rejected")
+    })
+    expect(release).toThrow("rejected")
+    request.mockRestore()
+    release()
+    scrollbox.insertBefore(new TextRenderable(testRenderer, { content: "prepended" }), rows[0])
+    await renderOnce()
+    expect(captureCharFrame().split("\n")[0]).toContain("row 3")
+    scrollbox.afterLayout(() => {})
+    scrollbox.destroy()
+    expect(scrollbox["layoutCallbacks"]).toEqual([])
   })
 
   // Bar cells hit the ScrollBox: a click on the track jumps there, and a drag from the thumb moves it.
@@ -1945,6 +2041,8 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
     // one at or past the end stays at the end, even after growth beyond a viewport (D3).
     ["scrollTo past the range lands after growth", { stickyStart: undefined }, 20, ">15+10 +5", "20/20 20/25"],
     ["scrollTo below the range keeps its row", { stickyStart: undefined }, 20, ">7+10", "7/20"],
+    // A scrollTo(0) while the content fits is not the end: it stays at the top after growth.
+    ["scrollTo(0) while the content fits stays at the top", { stickyStart: undefined }, 5, ">0+30", "0/25"],
     ["scrollTo the content size stays at the end", { stickyStart: undefined }, 20, ">h+30", "40/40"],
     ["scrollTo Infinity stays at the end", { stickyStart: undefined }, 20, ">inf+30", "40/40"],
     ["scrollTo -Infinity lands at 0", { stickyStart: undefined }, 20, "#5 >-inf+5", "5/10 0/15"],
