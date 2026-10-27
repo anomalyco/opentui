@@ -1,8 +1,9 @@
 name: Restore Zig cache
 description: >-
   Restore the Zig cache that mlugg/setup-zig points ZIG_GLOBAL_CACHE_DIR and ZIG_LOCAL_CACHE_DIR at
-  ($GITHUB_WORKSPACE/.zig-cache). Jobs that compile the same things share a kind. Only pushes to main save it, from
-  the one job per kind and runner that passes save. Release and publish jobs must not use it.
+  ($GITHUB_WORKSPACE/.zig-cache). Jobs that compile the same things share a kind. Only pushes to main that change
+  native inputs save it, from the one job per kind and runner that passes save. Release and publish jobs must not
+  use it.
 inputs:
   zig-version:
     description: Zig version; a new version starts an empty cache
@@ -28,11 +29,25 @@ runs:
       shell: bash
       run: echo "save=${{ inputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}" >> "$GITHUB_OUTPUT"
 
-    # The key changes only with the C sources Zig compiles, not with every native change. A job that saves starts
-    # empty, so a saved entry never carries objects from an older key.
+    # Each change to the C dependencies or the native sources gets a new key, and every job restores the nearest
+    # older entry. Zig's cache is content-addressed, so older objects are reused or ignored, never wrong.
     - id: restore
       uses: actions/cache/restore@v5
       with:
         path: .zig-cache
-        key: zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-${{ hashFiles('packages/native/build.zig.zon', 'packages/native/scripts/prepare-zig-deps.sh', 'packages/native/src/vendor/zig-deps.tar.gz') }}
-        restore-keys: ${{ steps.policy.outputs.save != 'true' && format('zig-cache-v1-{0}-{1}-{2}-{3}-', runner.os, runner.arch, inputs.zig-version, inputs.kind) || '' }}
+        key: zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-${{ hashFiles('packages/native/build.zig.zon', 'packages/native/scripts/prepare-zig-deps.sh', 'packages/native/src/vendor/zig-deps.tar.gz') }}-${{ hashFiles('packages/native/build.zig', 'packages/native/src/**', 'packages/native/include/**', 'packages/native/examples/**', 'packages/core/scripts/native-abi.zig') }}
+        restore-keys: |
+          zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-${{ hashFiles('packages/native/build.zig.zon', 'packages/native/scripts/prepare-zig-deps.sh', 'packages/native/src/vendor/zig-deps.tar.gz') }}-
+          zig-cache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.kind }}-
+
+    # Zig never deletes from its cache, so each saved entry would hold every older build. A job that will save
+    # starts empty once the restored cache passes 2 GB; fresh builds take 0.8 GB (lib) and 1.3 GB (test).
+    - if: steps.policy.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        size_mb="$(du -sm .zig-cache 2>/dev/null | cut -f1)"
+        echo "Zig cache: ${size_mb:-0} MB"
+        if [ "${size_mb:-0}" -gt 2048 ]; then
+          echo "Over 2048 MB; this job starts with an empty Zig cache"
+          rm -rf .zig-cache
+        fi
