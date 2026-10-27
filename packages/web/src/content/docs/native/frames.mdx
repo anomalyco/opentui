@@ -267,6 +267,7 @@ Updates and resize notifications run during preparation, before painting.
 Native code calculates Yoga layout and prepares node geometry, clipping, and paint order.
 If a preparation hook changes the scene, native code repeats the necessary preparation.
 An update hook runs at most once per node per attempt.
+The relative order of update and resize calls between different nodes is not specified.
 
 Native code sorts a parent's children by `z_index` once per frame, when preparation reaches that parent.
 With update, resize, or layout-changed hooks, or with a Box viewport (`ot_scene_set_viewport`), the host can change the scene after that sort.
