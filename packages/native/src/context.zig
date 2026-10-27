@@ -2447,7 +2447,7 @@ pub const Context = struct {
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
-        if (try self.replaceTextContent(text, bytes)) textResourceChanged(text);
+        if (try self.replaceTextContent(text, bytes)) textResourceChanged(text) else textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
 
@@ -2466,7 +2466,7 @@ pub const Context = struct {
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
-        if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text);
+        if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text) else textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
 
@@ -3774,6 +3774,11 @@ pub const Context = struct {
             scene.Scene.markObservationStale(dependent);
             next = dependent.measure_next;
         }
+    }
+
+    /// Equal bytes still rebuild the rope, so the view prepares again; the size does not change.
+    fn textResent(node: *native_renderable.NativeRenderable) void {
+        scene.Scene.markObservationStale(node);
     }
 
     fn destroyTextResource(self: *Context, text: *Text) void {
