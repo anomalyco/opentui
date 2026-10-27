@@ -431,6 +431,8 @@ pub const Node = struct {
     skip_frame: u64 = 0,
     pass_frame: u64 = 0,
     pass_end: u64 = 0,
+    // The selected_epoch of that selection if it culled, or 0: it passed only overlapping children.
+    pass_epoch: u64 = 0,
     layout_flags: packed struct {
         // Newly placed hidden children expose geometry once, without paint membership.
         needs_layout: bool = true,
@@ -869,12 +871,17 @@ pub const Scene = struct {
             if (node.skip_frame == active.frame_id) return true;
             const parent = node.parent orelse return false;
             const target = parent.scene_node.?;
-            if (target.pass_frame == active.frame_id and node.paint_rank <= target.pass_end) return true;
+            // A culling selection passes only the children it selected.
+            if (target.pass_frame == active.frame_id and node.paint_rank <= target.pass_end and
+                (target.pass_epoch == 0 or node.selected_at == target.pass_epoch)) return true;
             const segment = target.segment;
             if (segment.feedback_id == active.feedback_id and segment.kind == .select and segment.cursor != null and
-                segment.cursor.? > node.paint_rank and node.paint_rank <= segment.end) return true;
-            // A visited parent passes its children one by one.
-            if (target.child_order_frame == active.frame_id or target.feedback(&active) == .started) return false;
+                segment.cursor.? > node.paint_rank and node.paint_rank <= segment.end and
+                (!segment.filtered or node.selected_at == target.selected_epoch)) return true;
+            // A parent that finished a selection in this frame decided its children. Otherwise
+            // its own parent decides: an earlier round may have passed it whole, even if this
+            // round visits it.
+            if (target.pass_frame == active.frame_id) return false;
             current = parent;
         }
     }
@@ -1524,6 +1531,7 @@ pub const Scene = struct {
                     if (node.segment.kind == .select) {
                         node.pass_frame = active.frame_id;
                         node.pass_end = node.segment.end;
+                        node.pass_epoch = if (node.segment.filtered) node.selected_epoch else 0;
                     }
                     node.segment.kind = .none;
                 }
