@@ -2340,7 +2340,9 @@ pub const Scene = struct {
         const cells = cellLayout(entry.layout);
         const x: i32 = @intFromFloat(cells.screenX);
         const y: i32 = @intFromFloat(cells.screenY);
-        var painted = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, entry.clip);
+        // Arrow text, also a scroll node's, runs past the node's columns but stays on its rows.
+        const spills = node.kind == api.OT_SCENE_ARROW or node.scroll != null;
+        var painted = intersection(.{ .x = if (spills) entry.clip.x else x, .y = y, .width = if (spills) entry.clip.width else @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, entry.clip);
         // A surface draws at its own size, which can pass the node's rows.
         if (entry.node.surface) |source| {
             if (source.image_placements.items.len != 0) reasons.* |= renderer.FrameWork.full_path_images;
