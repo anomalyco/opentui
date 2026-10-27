@@ -1464,6 +1464,68 @@ test "Scene feedback follows changes that leave no layout behind" {
     }
 }
 
+// Children sort when today's walk passes their parent, once per frame, even when feedback skips
+// the parent: a reply's z-index change shows in the frame it would today, and no old order
+// stays on screen. P holds two children; H's reply lowers the second one. P is a root child
+// passed before H; the root itself, where H's RESIZE reply also resizes H, so a second round
+// follows; a child of Q, whose selection finished before H's UPDATE reply; or a child of a
+// clean V with a second round, after which V must stay due until P sorts.
+test "Scene feedback sorts children at the point today's walk passes them" {
+    for ([_]enum { child, root, nested, deep }{ .child, .root, .nested, .deep }) |scene_kind| {
+        const rounds = scene_kind == .root or scene_kind == .deep;
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
+        defer for (twins) |f| f.deinit();
+        var nodes: [2][6]context.Handle = undefined;
+        for (twins, &nodes, 0..) |f, *list, twin| {
+            try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+            var holder = f.root;
+            if (scene_kind == .nested or scene_kind == .deep) {
+                // Q holds a hooked R, so feedback visits Q and passes P without queueing it; or
+                // V holds only P, so its subtree is clean.
+                try feedbackNode(f, list, 4, c.OT_SCENE_BOX, f.root, 0);
+                try f.owner.sceneSetStyle(list[4], 4, 0, 0, 1, 4, 1);
+                if (scene_kind == .nested) {
+                    try feedbackNode(f, list, 5, c.OT_SCENE_BOX, list[4], 0);
+                    try feedbackHook(f, list[5], c.OT_SCENE_HOOK_UPDATE);
+                }
+                holder = list[4];
+            }
+            const parent = if (scene_kind == .root) f.root else blk: {
+                try feedbackNode(f, list, 0, c.OT_SCENE_BOX, holder, if (scene_kind == .nested) 1 else 0);
+                try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 4, 1);
+                break :blk list[0];
+            };
+            for (1..3) |index| {
+                try feedbackNode(f, list, index, c.OT_SCENE_BOX, parent, @intCast(index - 1));
+                try f.owner.sceneSetStyle(list[index], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
+                try f.owner.scenePatchPaint(list[index], c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ @intCast(index * 100), 0, 0, 255 } });
+            }
+            try feedbackNode(f, list, 3, c.OT_SCENE_BOX, f.root, if (scene_kind == .root) 2 else 1);
+            try feedbackHook(f, list[3], if (rounds) c.OT_SCENE_HOOK_RESIZE else c.OT_SCENE_HOOK_UPDATE);
+        }
+        for (0..5) |frame| {
+            for (twins, nodes) |f, list| {
+                if (rounds and frame == 1) try f.owner.sceneSetStyle(list[3], 4, 0, 0, 1, 2, 1);
+                var request = try f.owner.sceneFrameStep(f.id, null, options);
+                while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                    if (frame == 1 and std.meta.eql(request.node, list[3])) {
+                        try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
+                        if (rounds) try f.owner.sceneSetStyle(list[3], 4, 1, 0, 1, 2, 1);
+                    }
+                    request = try f.owner.sceneFrameStep(f.id, request, options);
+                }
+                _ = try f.owner.sceneFrameCommit(f.id, request, false);
+                try drain(f.owner, f.id);
+            }
+            try twins[0].expectSameCells(twins[1]);
+            const parents = .{ (try twins[0].owner.raw().getRenderable(if (scene_kind == .root) twins[0].root else nodes[0][0])).scene_node.?, (try twins[1].owner.raw().getRenderable(if (scene_kind == .root) twins[1].root else nodes[1][0])).scene_node.? };
+            for (parents[0].paint_children.items, parents[1].paint_children.items) |a, b| try testing.expectEqual(a.scene_node.?.num, b.scene_node.?.num);
+            // The new order shows from the frame after the reply.
+            if (frame >= 2) try testing.expectEqual(@as(u32, 12), parents[1].paint_children.items[0].scene_node.?.num);
+        }
+    }
+}
+
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame. Only rows whose layout, text, or view changed

@@ -426,6 +426,11 @@ pub const Node = struct {
     paint_rank: u64 = 0,
     sort_dirty: bool = false,
     child_order_frame: u64 = 0,
+    // The frame in which a node moved away from where today's walk had passed it, and the frame
+    // and last child rank of the node's last finished selection, which passed those children.
+    skip_frame: u64 = 0,
+    pass_frame: u64 = 0,
+    pass_end: u64 = 0,
     layout_flags: packed struct {
         // Newly placed hidden children expose geometry once, without paint membership.
         needs_layout: bool = true,
@@ -789,14 +794,14 @@ pub const Scene = struct {
             }
             try yoga.check(yoga.yogaNodeMoveChildChecked(target.childYoga(parent), value.yoga_node, index));
             const previous = node.parent;
+            // Children that today's walk passed keep this frame's order wherever they go.
+            if (previous != parent and self.attempt != null and node.child_order_frame != self.attempt.?.frame_id and self.passedThisFrame(value)) node.skip_frame = self.attempt.?.frame_id;
             if (previous) |old| removeChild(&old.scene_node.?.children, value);
             target.children.insertAssumeCapacity(index, value);
             if (previous != parent) {
                 if (previous) |old| self.detach(value, old);
                 const siblings = target.paint_children.items;
-                if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) {
-                    target.sort_dirty = true;
-                }
+                if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) self.orderChanged(parent);
                 node.paint_rank = if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
                 target.paint_children.appendAssumeCapacity(value);
                 node.parent = parent;
@@ -844,6 +849,36 @@ pub const Scene = struct {
         countBelow(parent, node.update_below, node.filters_below, false);
         node.parent = null;
         self.markSubtree(parent, false);
+    }
+
+    /// A child's paint order input changed. Children sort once per frame, where today's walk
+    /// passes their parent: one it passed keeps its order until the next frame, which visits it.
+    fn orderChanged(self: *Scene, parent: *native.NativeRenderable) void {
+        parent.scene_node.?.sort_dirty = true;
+        if (self.passedThisFrame(parent)) parent.scene_node.?.child_order_frame = self.attempt.?.frame_id;
+        self.markSubtree(parent, false);
+    }
+
+    /// Whether today's walk passed the node in this attempt's frame: a selection passed its rank
+    /// (a skipped child included), or it lies in such a subtree.
+    fn passedThisFrame(self: *Scene, value: *native.NativeRenderable) bool {
+        const active = self.attempt orelse return false;
+        if (value.scene_node.?.child_order_frame == active.frame_id) return true;
+        var current = value;
+        while (true) {
+            if (builtin.is_test) self.test_sort_steps += 1;
+            const node = current.scene_node.?;
+            if (node.skip_frame == active.frame_id) return true;
+            const parent = node.parent orelse return false;
+            const target = parent.scene_node.?;
+            if (target.pass_frame == active.frame_id and node.paint_rank <= target.pass_end) return true;
+            const segment = target.segment;
+            if (segment.feedback_id == active.feedback_id and segment.kind == .select and segment.cursor != null and
+                segment.cursor.? > node.paint_rank and node.paint_rank <= segment.end) return true;
+            // A visited parent passes its children one by one.
+            if (target.child_order_frame == active.frame_id or target.feedback(&active) == .started) return false;
+            current = parent;
+        }
     }
 
     /// Adds to or subtracts from the UPDATE and filter counts of a node and its ancestors.
@@ -1099,7 +1134,7 @@ pub const Scene = struct {
             try yoga.check(yoga.yogaNodeCopyStyleChecked(value.yoga_node, self.style_node));
         }
         if (node.paint.zIndex != paint.zIndex) {
-            if (node.parent) |parent| parent.scene_node.?.sort_dirty = true;
+            if (node.parent) |parent| self.orderChanged(parent);
         }
         if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
             self.selection_epoch +%= 1;
@@ -1495,7 +1530,13 @@ pub const Scene = struct {
                 if (value.scene_node == null or value.scene_node.?.owner != self) continue;
                 const node = value.scene_node.?;
                 if (operation.kind == .update) node.setFeedback(active, .unseen);
-                if (operation.kind == .done) node.segment.kind = .none;
+                if (operation.kind == .done) {
+                    if (node.segment.kind == .select) {
+                        node.pass_frame = active.frame_id;
+                        node.pass_end = node.segment.end;
+                    }
+                    node.segment.kind = .none;
+                }
                 const member = if (operation.kind == .filtered_refresh) blk: {
                     const parent = node.parent orelse continue;
                     if (!std.meta.eql(parent.scene_node.?.handle, operation.parent.?)) continue;
@@ -1537,8 +1578,11 @@ pub const Scene = struct {
                         }
                     },
                     // A mark during the visit keeps the subtree stale for the next round.
-                    .done => if (node.subtree == .running and !node.layout_flags.self_stale) {
+                    .done => if (node.subtree == .running and !node.layout_flags.self_stale and !node.sort_dirty) {
                         node.subtree = .clean;
+                    } else if (node.sort_dirty) {
+                        // An order frozen for this frame sorts in the next: keep the path to it due.
+                        self.markSubtree(value, false);
                     },
                     .refresh, .placed, .filtered_refresh => {
                         if (operation.kind != .placed and !node.layout_flags.self_stale and !full) continue;
