@@ -1663,30 +1663,31 @@ test "Scene feedback follows changes that leave no layout behind" {
 // the parent: a reply's z-index change shows in the frame it would today, and no old order
 // stays on screen. P holds two children; H's reply lowers the second one. P is a root child
 // passed before H; the root itself, where H's RESIZE reply also resizes H, so a second round
-// follows; a child of Q, whose selection finished before H's UPDATE reply; or a child of a
-// clean V with a second round, after which V must stay due until P sorts.
+// follows; a child of Q, whose selection finished before H's UPDATE reply; a child of a
+// clean V with a second round, after which V must stay due until P sorts; or a child of V that
+// the first round passed whole, lowered by a RESIZE reply in the second round, which visits V.
 test "Scene feedback sorts children at the point today's walk passes them" {
-    for ([_]enum { child, root, nested, deep }{ .child, .root, .nested, .deep }) |scene_kind| {
-        const rounds = scene_kind == .root or scene_kind == .deep;
+    for ([_]enum { child, root, nested, deep, later_round }{ .child, .root, .nested, .deep, .later_round }) |scene_kind| {
+        const rounds = scene_kind == .root or scene_kind == .deep or scene_kind == .later_round;
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
         defer for (twins) |f| f.deinit();
         var nodes: [2][6]context.Handle = undefined;
         for (twins, &nodes, 0..) |f, *list, twin| {
             try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
             var holder = f.root;
-            if (scene_kind == .nested or scene_kind == .deep) {
+            if (scene_kind == .nested or scene_kind == .deep or scene_kind == .later_round) {
                 // Q holds a hooked R, so feedback visits Q and passes P without queueing it; or
                 // V holds only P, so its subtree is clean.
                 try feedbackNode(f, list, 4, c.OT_SCENE_BOX, f.root, 0);
                 try f.owner.sceneSetStyle(list[4], 4, 0, 0, 1, 4, 1);
-                if (scene_kind == .nested) {
+                if (scene_kind == .nested or scene_kind == .later_round) {
                     try feedbackNode(f, list, 5, c.OT_SCENE_BOX, list[4], 0);
-                    try feedbackHook(f, list[5], c.OT_SCENE_HOOK_UPDATE);
+                    try feedbackHook(f, list[5], if (scene_kind == .nested) c.OT_SCENE_HOOK_UPDATE else c.OT_SCENE_HOOK_RESIZE);
                 }
                 holder = list[4];
             }
             const parent = if (scene_kind == .root) f.root else blk: {
-                try feedbackNode(f, list, 0, c.OT_SCENE_BOX, holder, if (scene_kind == .nested) 1 else 0);
+                try feedbackNode(f, list, 0, c.OT_SCENE_BOX, holder, if (scene_kind == .nested or scene_kind == .later_round) 1 else 0);
                 try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 4, 1);
                 break :blk list[0];
             };
@@ -1703,7 +1704,11 @@ test "Scene feedback sorts children at the point today's walk passes them" {
                 if (rounds and frame == 1) try f.owner.sceneSetStyle(list[3], 4, 0, 0, 1, 2, 1);
                 var request = try f.owner.sceneFrameStep(f.id, null, options);
                 while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                    if (frame == 1 and std.meta.eql(request.node, list[3])) {
+                    if (frame == 1 and scene_kind == .later_round) {
+                        // H's reply resizes R, whose RESIZE in the second round lowers the child.
+                        if (std.meta.eql(request.node, list[3])) try f.owner.sceneSetStyle(list[5], 4, 0, 0, 1, 2, 1);
+                        if (std.meta.eql(request.node, list[5])) try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
+                    } else if (frame == 1 and std.meta.eql(request.node, list[3])) {
                         try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
                         if (rounds) try f.owner.sceneSetStyle(list[3], 4, 1, 0, 1, 2, 1);
                     }
