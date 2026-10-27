@@ -1848,6 +1848,55 @@ test "Scene feedback lists the marks of nodes a reply destroys within its capaci
     }
 }
 
+// A reply that moves a culled row back into view prepares the frame again, even if no culling
+// parent selected before it: feedback skipped the clean viewport content, and nothing else
+// reaches it in this frame. X, a row of P inside viewport V, was moved out of view, and its
+// child Y (RESIZE) grew there. H's reply, before or after V, moves X back, and may also send a
+// text's equal bytes (a mark that solves nothing). Y's RESIZE comes in this frame (VERIFY).
+test "Scene feedback prepares again when a reply moves a culled row into view" {
+    for ([_]bool{ false, true }) |h_first| for ([_]bool{ false, true }) |resend| {
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 6, .{}), try Fixture.init(testing.allocator, 4, 6, .{}) };
+        defer for (twins) |f| f.deinit();
+        var counts: [2]u32 = .{ 0, 0 };
+        for (twins, &counts, 0..) |f, *count, twin| {
+            try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+            // H, V and T under the root, H first or last; P under V; 17 rows under P; Y under row 1.
+            var list: [23]context.Handle = undefined;
+            const order = if (h_first) [3]usize{ 0, 1, 2 } else [3]usize{ 1, 2, 0 };
+            for (order, 0..) |index, position| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, f.root, @intCast(position));
+            try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, 3, 1);
+            try f.owner.sceneSetStyle(list[1], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+            try feedbackNode(f, &list, 3, c.OT_SCENE_BOX, list[1], 0);
+            try f.owner.sceneSetStyle(list[3], 4, 1, 0, c.OT_UNIT_AUTO, 0, 1);
+            for (4..21) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, list[3], @intCast(index - 4));
+            try f.owner.sceneSetViewport(list[3], list[1]);
+            try feedbackNode(f, &list, 21, c.OT_SCENE_BOX, list[5], 0);
+            list[22] = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 40);
+            try f.owner.sceneSetText(list[22], "t");
+            try f.owner.sceneMoveNode(list[22], list[2], 0);
+            try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE);
+            try feedbackHook(f, list[21], c.OT_SCENE_HOOK_RESIZE);
+            _ = try presentStepped(f, NoReply{});
+            try f.owner.scenePatchPaint(list[5], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 10 });
+            _ = try presentStepped(f, NoReply{});
+            try f.owner.sceneSetStyle(list[21], 4, 0, 0, 1, 2, 1);
+            _ = try presentStepped(f, NoReply{});
+            var request = try f.owner.sceneFrameStep(f.id, null, options);
+            while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                if (std.meta.eql(request.node, list[21]) and request.kind == c.OT_SCENE_FRAME_RESIZE) count.* += 1;
+                if (std.meta.eql(request.node, list[0])) {
+                    try f.owner.scenePatchPaint(list[5], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 0 });
+                    if (resend) try f.owner.sceneSetText(list[22], "t");
+                }
+                request = try f.owner.sceneFrameStep(f.id, request, options);
+            }
+            _ = try f.owner.sceneFrameCommit(f.id, request, false);
+            try drain(f.owner, f.id);
+        }
+        try testing.expectEqual([2]u32{ 1, 1 }, counts);
+    };
+}
+
 // Later passes of a round run on its layout and count toward neither limit, so a frame needs
 // no more rounds or requests than the forced full-frame twin, which pops every child in the
 // first pass. A's reply hooks X1; each Xi's reply hooks the next one, and the last one's reply

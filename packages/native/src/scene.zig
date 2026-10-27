@@ -378,7 +378,6 @@ const Attempt = struct {
     // a follow-up.
     followup: bool = false,
     followup_pass: bool = false,
-    filter_selected: bool = false,
     requests: u32 = 0,
     request_id: u64 = 0,
     pending: ?FrameRequest = null,
@@ -1155,10 +1154,9 @@ pub const Scene = struct {
         }
         if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
             self.selection_epoch +%= 1;
-            // Refresh newly revealed descendants before paint.
-            if (self.attempt) |active| if (active.filter_selected) {
-                self.preparation_dirty = true;
-            };
+            // Refresh newly revealed descendants before paint: feedback may have skipped their
+            // culling parent, and nothing else reaches it in this frame.
+            if (self.attempt != null and self.filter_count != 0) self.preparation_dirty = true;
         }
         if (self.attempt != null or node.paint.zIndex != paint.zIndex or
             node.paint.opacity != paint.opacity or node.paint.translateX != paint.translateX or
@@ -1678,10 +1676,7 @@ pub const Scene = struct {
                         }
                         self.orderBatch(self.feedback.items[start..], .rank);
                     },
-                    .select => {
-                        active.filter_selected = true;
-                        try self.selectChildren(objects, value);
-                    },
+                    .select => try self.selectChildren(objects, value),
                 }
                 if (result) |request_value| return request_value;
             }
@@ -2013,7 +2008,6 @@ pub const Scene = struct {
         try self.candidates.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
         if (root) |value| try self.solveLayout(cli, value);
         active.rounds += 1;
-        active.filter_selected = false;
         self.preparation_dirty = false;
         if (root) |value| {
             self.scroll_toggled = false;
