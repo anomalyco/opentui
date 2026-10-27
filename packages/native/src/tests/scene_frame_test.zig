@@ -1799,6 +1799,38 @@ test "Scene feedback keeps the update stamp of a passed idle-update node" {
     }
 }
 
+// Re-sending a scene text's bytes rebuilds its rope, which leaves the view to prepare again
+// although the text is equal. Feedback must still refresh the node, as today's walk refreshed
+// every member: in a reply to the root's UPDATE, or between frames, plain or styled (VERIFY).
+test "Scene feedback prepares a text whose equal bytes were sent again" {
+    for ([_]bool{ false, true }) |in_reply| for ([_]bool{ false, true }) |styled| {
+        const f = try Fixture.init(testing.allocator, 8, 4, .{});
+        defer f.deinit();
+        try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+        try feedbackHook(f, f.root, c.OT_SCENE_HOOK_UPDATE);
+        const label = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 2);
+        try f.owner.sceneSetText(label, "ab");
+        try f.owner.sceneMoveNode(label, f.root, 0);
+        const resend = struct {
+            fn run(owner: anytype, node: context.Handle, with_style: bool) !void {
+                if (with_style) return owner.sceneSetStyledText(node, "ab", &.{.{ .byte_count = 2 }});
+                try owner.sceneSetText(node, "ab");
+            }
+        }.run;
+        for (0..4) |frame| {
+            if (!in_reply and frame == 2) try resend(f.owner, label, styled);
+            var request = try f.owner.sceneFrameStep(f.id, null, options);
+            while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                if (in_reply and frame == 2 and request.kind == c.OT_SCENE_FRAME_UPDATE) try resend(f.owner, label, styled);
+                request = try f.owner.sceneFrameStep(f.id, request, options);
+            }
+            _ = try f.owner.sceneFrameCommit(f.id, request, false);
+            try drain(f.owner, f.id);
+            try testing.expect(!(try f.owner.raw().getRenderable(label)).scene_node.?.text.?.view.needsPrepare());
+        }
+    };
+}
+
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame. Only rows whose layout, text, or view changed
@@ -1815,7 +1847,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 1, 0, 4, 0, 1 }, // options_prepare
             .{ 0, 0, 3, 0, 1 }, // options_color
             .{ 1, 0, 4, 0, 1 }, // measure_text
-            .{ 0, 0, 3, 0, 1 }, // measure_same_text
+            .{ 1, 0, 4, 0, 1 }, // measure_same_text
             .{ 1, 0, 1, 0, 1 }, // editor_cursor
             .{ 16, 0, 19, 0, 1 }, // hidden
             .{ 0, 0, 0, 0, 1 }, // hidden_unchanged
@@ -1833,7 +1865,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 1, 0, 4, 0, 1 }, // options_prepare
             .{ 0, 0, 3, 0, 1 }, // options_color
             .{ 1, 0, 4, 0, 1 }, // measure_text
-            .{ 0, 0, 3, 0, 1 }, // measure_same_text
+            .{ 1, 0, 4, 0, 1 }, // measure_same_text
             .{ 1, 0, 1, 0, 1 }, // editor_cursor
             .{ 256, 0, 259, 0, 1 }, // hidden
             .{ 0, 0, 0, 0, 1 }, // hidden_unchanged
@@ -1851,7 +1883,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 1, 0, 4, 0, 1 }, // options_prepare
             .{ 0, 0, 3, 0, 1 }, // options_color
             .{ 1, 0, 4, 0, 1 }, // measure_text
-            .{ 0, 0, 3, 0, 1 }, // measure_same_text
+            .{ 1, 0, 4, 0, 1 }, // measure_same_text
             .{ 1, 0, 1, 0, 1 }, // editor_cursor
             .{ 4096, 0, 4099, 0, 1 }, // hidden
             .{ 0, 0, 0, 0, 1 }, // hidden_unchanged
@@ -1923,8 +1955,8 @@ test "Scene frame work counts viewport refresh and culling work" {
                         try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
                         break :blk try presentWork(f, .{});
                     },
-                    // The same bytes again: the write keeps the Yoga measure (no solve) and leaves the view
-                    // prepared, so nothing is stale.
+                    // The same bytes again: the write keeps the Yoga measure (no solve), and the rebuilt
+                    // rope leaves only that row's view to prepare.
                     .measure_same_text => blk: {
                         try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
                         const result = try presentWork(f, .{});
