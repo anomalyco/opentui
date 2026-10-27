@@ -1854,9 +1854,10 @@ pub const Scene = struct {
         // A surface draws at its own size, which can pass the node's rows.
         if (entry.node.surface) |source| {
             if (source.image_placements.items.len != 0) reasons.* |= renderer.FrameWork.full_path_images;
-            const drawn = intersection(.{ .x = x, .y = y, .width = source.width, .height = source.height }, entry.clip);
-            if (drawn.height > painted.height) painted = drawn;
+            painted = rowSpan(painted, intersection(.{ .x = x, .y = y, .width = source.width, .height = source.height }, entry.clip));
         }
+        // Viewport padding can make the viewport, and so the fills, pass the node's rows.
+        if (hasFills(node)) painted = rowSpan(painted, intersection(cellClip(scrollViewport(node.scroll.?, cells)), entry.clip));
         var resource_epoch: u64 = 0;
         var styled = false;
         if (node.kind == api.OT_SCENE_TEXT_VIEW) {
@@ -2723,6 +2724,14 @@ fn cellAxis(start: *f64, size: *f32) void {
 /// A view or request size in cells; Yoga sizes can exceed u32.
 fn cellSize(size: f32) u32 {
     return @intFromFloat(@min(size, 0x7fff_ff80));
+}
+
+/// The rows that `a` or `b` covers; an empty rect covers none.
+fn rowSpan(a: buffer.ClipRect, b: buffer.ClipRect) buffer.ClipRect {
+    if (b.height == 0) return a;
+    if (a.height == 0) return b;
+    const top = @min(a.y, b.y);
+    return .{ .x = a.x, .y = top, .width = a.width, .height = @intCast(@max(a.y + @as(i64, a.height), b.y + @as(i64, b.height)) - top) };
 }
 
 fn intersection(a: buffer.ClipRect, b: buffer.ClipRect) buffer.ClipRect {
