@@ -2024,8 +2024,10 @@ pub const Context = struct {
     fn freeNodeStorage(self: *Context, storage: native_renderable.NodeStorage) void {
         var children = storage.children;
         var paint_children = storage.paint_children;
+        var attention = storage.attention;
         children.deinit(self.allocator);
         paint_children.deinit(self.allocator);
+        attention.deinit(self.allocator);
         self.allocator.destroy(storage.scene_node);
         storage.node.deinit();
         self.allocator.destroy(storage.node);
@@ -2339,12 +2341,7 @@ pub const Context = struct {
             if (viewport.scene_node.?.kind > api.OT_SCENE_BOX) return error.WrongKind;
         }
         try scene.Scene.checkWritable(value);
-        if (std.meta.eql(node.viewport, viewport_handle)) return;
-        node.owner.filter_count -= @intFromBool(node.viewport != null);
-        node.owner.filter_count += @intFromBool(viewport_handle != null);
-        node.viewport = viewport_handle;
-        node.owner.preparation_dirty = true;
-        node.owner.clearPreparation();
+        node.owner.setViewport(value, viewport_handle);
     }
 
     pub fn sceneSetScroll(self: *Context, handle: Handle, options: scene.ScrollOptions) !void {
@@ -2461,7 +2458,7 @@ pub const Context = struct {
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
-        if (try self.replaceTextContent(text, bytes)) textResourceChanged(text);
+        if (try self.replaceTextContent(text, bytes)) textResourceChanged(text) else textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
 
@@ -2480,7 +2477,7 @@ pub const Context = struct {
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
-        if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text);
+        if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text) else textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
 
@@ -3788,6 +3785,11 @@ pub const Context = struct {
             scene.Scene.markObservationStale(dependent);
             next = dependent.measure_next;
         }
+    }
+
+    /// Equal bytes still rebuild the rope, so the view prepares again; the size does not change.
+    fn textResent(node: *native_renderable.NativeRenderable) void {
+        scene.Scene.markObservationStale(node);
     }
 
     fn destroyTextResource(self: *Context, text: *Text) void {

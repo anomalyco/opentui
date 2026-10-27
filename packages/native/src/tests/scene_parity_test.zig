@@ -1,8 +1,11 @@
 //! Twin-Session parity harness. A reference Session forced to the full path
 //! (OT_SCENE_DEBUG_FULL_FRAME) and a candidate Session run one seeded script of
 //! scene mutations, host replies, and frames. After every frame the two must
-//! agree on host requests, draft cells and hits, render status, encoded bytes,
-//! presented cells and hits, cursor, hit tests, and public layouts.
+//! agree on host requests, in order, draft cells and hits, render status, encoded
+//! bytes, presented cells and hits, cursor, hit tests, public layouts, and every
+//! node's paint order. FULL_FRAME visits every child, but it shares the feedback
+//! passes' rule for children a reply marks, so it is an independent reference for
+//! cells, hits, observations, and paint order, not for the order of hook calls.
 //!
 //! Extending it for a Track B step:
 //! - a mutation kind: add an `Op` variant, its arm in `applyOn`, and a draw in
@@ -12,11 +15,12 @@
 //! - a frame kind it must reach: count it in `Stats` and give it a minimum in
 //!   the test.
 //! The script has editors, focus moves, host cursors, text views of one shared
-//! text buffer and syntax style, scroll nodes (D2b), and recordings that read views, editors,
-//! text bodies, composed and destroyed resources, clear, recolor, or draw an image (B7), but no
-//! image nodes or linked text, so image node and link shortcuts are invisible to it.
-//! Retained paint (B3) is its gate: the candidate verifies every row it keeps on
-//! even seeds and skips paint outright on odd seeds, and the script writes the
+//! text buffer and syntax style, scroll nodes (D2b), recordings that read views, editors,
+//! text bodies, composed and destroyed resources, clear, recolor, or draw an image (B7), linked
+//! text, and split renders with and without a frame (B4), but no image nodes, so image node
+//! shortcuts are invisible to it.
+//! Retained paint (B3, B4) is its gate: the candidate verifies every row it keeps or repaints
+//! in a band on even seeds and skips paint outright on odd seeds, and the script writes the
 //! buffers outside scene paint, before and after a draft's paint.
 const std = @import("std");
 const testing = std.testing;
@@ -102,7 +106,7 @@ const FrameSpec = struct {
 };
 
 /// Reference tree: each node's children in Yoga order and its paint children in attachment
-/// order. A frame stably sorts the paint children of every parent it visits by z.
+/// order. Paint sorts a copy stably by z, so equal z paints in attachment order.
 const Model = struct {
     handles: [node_count_max]?[2]context.Handle = @splat(null),
     /// Each editor node's edit buffer, per twin.
@@ -163,10 +167,13 @@ const Model = struct {
     }
 
     /// Writes the visible descendants of `node` in paint order and returns the new count.
-    fn paintOrder(self: *Model, out: []usize, count: usize, node: usize) usize {
-        std.mem.sort(usize, self.paint[node].items, self, zLessThan);
+    fn paintOrder(self: *const Model, out: []usize, count: usize, node: usize) usize {
+        var sorted: [node_count_max]usize = undefined;
+        const children = sorted[0..self.paint[node].items.len];
+        @memcpy(children, self.paint[node].items);
+        std.mem.sort(usize, children, self, zLessThan);
         var next = count;
-        for (self.paint[node].items) |child| {
+        for (children) |child| {
             if (self.hidden[child]) continue;
             out[next] = child;
             next = self.paintOrder(out, next + 1, child);
@@ -221,6 +228,8 @@ const Stats = struct {
     content_resizes: u32 = 0,
     /// Replies to those requests that changed text on a content child, mid-batch.
     content_reply_texts: u32 = 0,
+    /// Replies that gave a sibling of the requester, or its child, a hook or a text change (B5b).
+    sibling_marks: u32 = 0,
     /// Text replaced on a filtered content child without a measure function, so without a solve.
     unmeasured_texts: u32 = 0,
     updates: u32 = 0,
@@ -233,9 +242,14 @@ const Stats = struct {
     /// Frames that end with an editor's cursor, and with a host cursor shown.
     editor_cursors: u32 = 0,
     host_cursors: u32 = 0,
-    /// Candidate frames that skipped paint (no damaged row), and that diffed some rows only.
+    /// Candidate frames that skipped paint (no damaged row), that diffed some rows only, and
+    /// that cleared some rows only (B4).
     skipped: u32 = 0,
     partial: u32 = 0,
+    banded: u32 = 0,
+    /// Frames presented by a split render, and snapshot-only split renders before a frame.
+    split_frames: u32 = 0,
+    split_snapshots: u32 = 0,
     /// Recorded candidate frames that kept some rows (B7), and recordings that clear, recolor,
     /// or draw an image.
     retained_records: u32 = 0,
@@ -265,6 +279,8 @@ const Harness = struct {
     twins: [2]Fixture,
     model: Model = .{},
     random: std.Random,
+    /// Draws for sibling marks, apart from `random`, so the script keeps its mix of frames.
+    side: std.Random,
     stats: Stats = .{},
     bytes: [2]std.ArrayListUnmanaged(u8) = .{ .empty, .empty },
     /// Decodes the candidate's bytes independently of the encoder.
@@ -288,8 +304,10 @@ const Harness = struct {
     /// Hooks draw differently when it advances, with no scene change.
     hook_tick: usize = 0,
     recorded: bool = false,
+    /// A split render moved the output, so the decoder no longer follows the screen.
+    split: bool = false,
 
-    fn init(random: std.Random, verify: bool) !Harness {
+    fn init(random: std.Random, side: std.Random, verify: bool) !Harness {
         var twins: [2]Fixture = undefined;
         for (&twins, 0..) |*twin, index| {
             twin.* = try Fixture.init(testing.allocator, 16, 6, .{ .output = .{ .chunk_size = 8192, .chunk_count = 2, .span_capacity = 2 } });
@@ -303,7 +321,7 @@ const Harness = struct {
                 try twin.owner.sceneSetDebugFlags(twin.id, c.OT_SCENE_DEBUG_VERIFY);
             }
         }
-        var self: Harness = .{ .twins = twins, .random = random, .terminal = try newTerminal(16, 6), .read_base = random.uintLessThan(usize, 16) };
+        var self: Harness = .{ .twins = twins, .random = random, .side = side, .terminal = try newTerminal(16, 6), .read_base = random.uintLessThan(usize, 16) };
         for (twins, 0..) |twin, index| {
             self.shared[index] = try twin.owner.createTextBuffer(.unicode);
             try twin.owner.textBufferSetText(self.shared[index], "shared text");
@@ -519,7 +537,9 @@ const Harness = struct {
                     @memcpy(bytes[len..][0..piece.len], piece);
                     len += piece.len;
                 }
-                try f.owner.sceneSetText(self.handle(twin, value.slot), bytes[0..len]);
+                // Some texts are links, so link references reach band edges.
+                if (value.seed & 0x40000 == 0) return f.owner.sceneSetText(self.handle(twin, value.slot), bytes[0..len]);
+                try f.owner.sceneSetStyledText(self.handle(twin, value.slot), bytes[0..len], &.{.{ .byte_count = @intCast(len), .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 0 }, .link_url = "https://example.test/band" }});
             },
             .slider => |value| try f.owner.sceneSetSlider(self.handle(twin, value.slot), .{ .value = value.value, .orientation = value.orientation }),
             .text_options => |value| try f.owner.sceneSetTextOptions(self.handle(twin, value.slot), value.options),
@@ -867,6 +887,7 @@ const Harness = struct {
                         }
                     }
                     try self.reply();
+                    if (self.side.uintLessThan(u32, 3) == 0) try self.markSibling(requester);
                     // Hiding the requester's parent mid-frame makes the visibility walk meet a hidden
                     // ancestor of a node it already stamped (B2 invariant 7).
                     // Detaching it instead makes the walk meet a node whose ancestry moved.
@@ -896,6 +917,27 @@ const Harness = struct {
         if (self.model.parent[slot] == content_slot) return;
         try self.apply(.{ .destroy = slot });
         self.stats.reply_destroys += 1;
+    }
+
+    /// A sibling of the requester, before or after it in paint order, or the sibling's first
+    /// child, gets or loses UPDATE, or a text change, while their parent's batch runs.
+    fn markSibling(self: *Harness, requester: usize) !void {
+        const parent = self.model.parent[requester] orelse return;
+        const siblings = self.model.paint[parent].items;
+        var target = siblings[self.side.uintLessThan(usize, siblings.len)];
+        if (target == requester) return;
+        if (self.model.children[target].items.len != 0 and self.side.boolean()) target = self.model.children[target].items[0];
+        if (target < scaffold_slots) return;
+        self.stats.sibling_marks += 1;
+        if (self.model.kind[target] == .text and self.side.boolean()) {
+            var text_options = self.model.text_options[target];
+            text_options.truncate = !text_options.truncate;
+            return self.apply(.{ .text_options = .{ .slot = target, .options = text_options } });
+        }
+        // Half the changes clear the hooks they set, so hooked siblings do not pile up.
+        const kept = self.model.hooks[target] & ~@as(u32, c.OT_SCENE_HOOK_IDLE_UPDATE | c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
+        const flags: u32 = if (self.side.boolean()) c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE else 0;
+        try self.apply(.{ .hooks = .{ .slot = target, .flags = kept | flags } });
     }
 
     fn expectSameRequest(self: *const Harness, first: scene.FrameRequest, second: scene.FrameRequest) !void {
@@ -1008,6 +1050,20 @@ const Harness = struct {
         }
         const stamps = self.twins[candidate].state.test_stamp_steps;
         self.recorded = false;
+        // Late in a run, since the decoder cannot follow a split's scrollback: a split render
+        // before the frame without one, and the frame presented by a split render.
+        const split = self.stats.frames >= 300 and self.random.uintLessThan(u32, 4) == 0;
+        if (split and self.random.boolean()) {
+            for (self.twins, self.scratch, 0..) |twin, scratch, index| {
+                const commits = [_]renderer.SplitSnapshot{.{ .snapshot = try twin.owner.raw().getBuffer(scratch), .row_columns = 2 }};
+                _ = try (try twin.owner.raw().getSession(twin.id)).renderSplit(null, &commits, 0, spec.force);
+                self.bytes[index].clearRetainingCapacity();
+                try self.drain(index);
+            }
+            try testing.expectEqualSlices(u8, self.bytes[reference].items, self.bytes[candidate].items);
+            self.stats.split_snapshots += 1;
+        }
+        if (split) self.split = true;
         if (!try self.drive(spec)) return;
         // A write after paint must reach the terminal, on a skipped or partly diffed draft too.
         if (self.random.uintLessThan(u32, 8) == 0) {
@@ -1028,6 +1084,10 @@ const Harness = struct {
             self.stats.draft_writes += 1;
         }
         try self.twins[reference].expectSameCells(self.twins[candidate]);
+        // The draft holds the frame with consistent grapheme and link accounting: a band clear
+        // releases the references of the cells it clears.
+        try expectBufferInvariants(self.twins[candidate].cli.getNextBuffer());
+        try self.expectSameChildOrder();
         try self.expectPaintOrder();
         var hidden_hooked = false;
         for (self.model.handles, 0..) |maybe, slot| {
@@ -1040,8 +1100,12 @@ const Harness = struct {
         const cells = draft.cli.width * draft.cli.height;
         for (drafted_hits[0..cells], 0..) |*hit, index| hit.* = draft.draftHit(index);
         var statuses: [2]@import("../session.zig").RenderStatus = undefined;
-        for (self.twins, 0..) |twin, index| {
-            statuses[index] = try twin.owner.sceneFrameCommit(twin.id, twin.state.painted.?.ticket, spec.force);
+        const split_commit = split and self.random.boolean();
+        self.stats.split_frames += @intFromBool(split_commit);
+        for (self.twins, self.scratch, 0..) |twin, scratch, index| {
+            const commits = [_]renderer.SplitSnapshot{.{ .snapshot = try twin.owner.raw().getBuffer(scratch), .row_columns = 2 }};
+            const ticket = twin.state.painted.?.ticket;
+            statuses[index] = if (split_commit) try (try twin.owner.raw().getSession(twin.id)).renderSplit(ticket, &commits, 0, spec.force) else try twin.owner.sceneFrameCommit(twin.id, ticket, spec.force);
             self.bytes[index].clearRetainingCapacity();
             try self.drain(index);
         }
@@ -1064,10 +1128,14 @@ const Harness = struct {
         if (work.candidate_visits == 0) try testing.expectEqual(stamps, self.twins[candidate].state.test_stamp_steps);
         self.stats.skipped += @intFromBool(work.damage_rows == 0);
         self.stats.partial += @intFromBool(work.damage_rows != 0 and work.damage_rows < self.twins[candidate].cli.height);
+        self.stats.banded += @intFromBool(work.damage_rows != 0 and work.cells_cleared < @as(u64, self.twins[candidate].cli.width) * self.twins[candidate].cli.height);
         self.stats.retained_records += @intFromBool(self.recorded and work.damage_rows < self.twins[candidate].cli.height);
-        self.stats.filtered += @intFromBool(work.overlap_tests != 0);
-        self.stats.filtered_requests += @intFromBool(work.overlap_tests != 0 and work.host_requests != 0);
-        self.stats.reused_filtered_requests += @intFromBool(work.candidate_visits == 0 and work.overlap_tests != 0 and work.host_requests != 0);
+        // The content culls; a frame whose selection did not change tests no overlap (B5b).
+        const culling = work.overlap_tests != 0 or (self.model.bound and !self.model.hidden[content_slot] and
+            !self.model.hiddenAbove(content_slot) and self.model.children[content_slot].items.len >= 16);
+        self.stats.filtered += @intFromBool(culling);
+        self.stats.filtered_requests += @intFromBool(culling and work.host_requests != 0);
+        self.stats.reused_filtered_requests += @intFromBool(work.candidate_visits == 0 and culling and work.host_requests != 0);
         self.stats.hidden_hooked += @intFromBool(hidden_hooked);
         for (self.model.handles, 0..) |maybe, slot| {
             if (maybe == null or self.model.kind[slot] != .scroll or self.model.children[slot].items.len == 0) continue;
@@ -1109,8 +1177,18 @@ const Harness = struct {
         return false;
     }
 
-    /// A paint list that the next frame may keep is in the model's order. The model sorts on
-    /// every frame, as the scene does, so tie orders stay in step; it does not cull.
+    /// Both twins hold every node's paint children in the same order.
+    fn expectSameChildOrder(self: *Harness) !void {
+        for (self.model.handles) |maybe| {
+            const pair = maybe orelse continue;
+            const lists = .{ (try self.twins[reference].owner.raw().getRenderable(pair[reference])).scene_node.?.paint_children.items, (try self.twins[candidate].owner.raw().getRenderable(pair[candidate])).scene_node.?.paint_children.items };
+            try testing.expectEqual(lists[0].len, lists[1].len);
+            for (lists[0], lists[1]) |a, b| try testing.expectEqual(a.scene_node.?.num, b.scene_node.?.num);
+        }
+    }
+
+    /// A paint list that the next frame may keep is in the model's order. The model does not
+    /// cull.
     fn expectPaintOrder(self: *Harness) !void {
         const f = self.twins[candidate];
         var order: [node_count_max]usize = undefined;
@@ -1172,12 +1250,14 @@ const Harness = struct {
             // Only a shown node is painted. A recording that reads another node's text prepares
             // its view when it replays, and a recorded frame with no damaged rows replays none.
             if (!self.model.shown(slot)) continue;
-            if (nodes[0].text) |text| {
+            // Where the reference left a view to paint, which prepares it as drawing does, the
+            // candidate may have prepared it already (B5b): a refresh of the round skipped it.
+            if (nodes[0].text) |text| if (!text.view.needsPrepare()) {
                 const views = .{ text.view, nodes[1].text.?.view };
                 try testing.expectEqualDeep(views[0].getViewport(), views[1].getViewport());
                 try testing.expectEqual(views[0].virtual_lines_dirty, views[1].virtual_lines_dirty);
                 try testing.expectEqual(views[0].truncation_applied, views[1].truncation_applied);
-            }
+            };
         }
     }
 
@@ -1187,7 +1267,7 @@ const Harness = struct {
         var stream = self.terminal.vtStream();
         defer stream.deinit();
         stream.nextSlice(self.bytes[candidate].items);
-        if (!self.decoder_synced) return;
+        if (!self.decoder_synced or self.split) return;
         self.stats.decoded += 1;
         const cli = self.twins[candidate].cli;
         const pages = &self.terminal.screens.active.pages;
@@ -1225,9 +1305,28 @@ const Harness = struct {
         // Every visible node, the root included, at least once (B5a).
         var order: [node_count_max]usize = undefined;
         try testing.expect(work.candidate_visits > self.model.paintOrder(&order, 0, root_slot));
-        // Retained paint (B3): the reference clears and repaints every frame and diffs every row.
-        try testing.expect(work.cells_cleared >= cells);
+        // Retained paint (B3, B4): the reference clears every cell, paints every member in full, and
+        // diffs every row.
+        // A frame the encoder does not keep (tainted or with images) is cleared after encode too.
+        try testing.expectEqual(cells * (1 + @as(u64, @intFromBool(f.cli.retained_frame_id != work.work_frame_id))), work.cells_cleared);
         try testing.expectEqual(f.cli.height, work.damage_rows);
+        try testing.expectEqual(f.state.records.items.len, work.members_painted);
+        var member_cells: u64 = 0;
+        for (f.state.records.items) |record| {
+            const node = (try f.owner.raw().getRenderable(f.state.tokens.get(record.token).?)).scene_node.?;
+            const box = node.kind == c.OT_SCENE_BOX and record.inputs.record_digest == 0 and node.paint.borderSides == c.OT_BORDER_NONE and
+                (node.paint.shouldFill == 0 or node.paint.background[3] == 0) and (node.scroll == null or std.meta.eql(node.scroll.?.options.fills, .{ null, null, null }));
+            if (box) continue;
+            // As paint casts them: toward zero.
+            const cell = scene.cellLayout(record.inputs.layout);
+            const clip = record.inputs.clip;
+            const x: i64 = @intFromFloat(cell.screenX);
+            const y: i64 = @intFromFloat(cell.screenY);
+            const width = @min(x + @as(i64, @intFromFloat(cell.width)), clip.x + @as(i64, clip.width)) - @max(x, clip.x);
+            const height = @min(y + @as(i64, @intFromFloat(cell.height)), clip.y + @as(i64, clip.height)) - @max(y, clip.y);
+            if (width > 0 and height > 0) member_cells += @intCast(width * height);
+        }
+        try testing.expectEqual(member_cells, work.member_cells);
         // Every round refreshes every child of a bound, visible content (B2 W3).
         const content_shown = !self.model.hidden[content_slot] and !self.model.hiddenAbove(content_slot);
         if (self.model.bound and content_shown) try testing.expect(work.viewport_child_refreshes >= self.model.children[content_slot].items.len);
@@ -1300,7 +1399,8 @@ fn cellHash(target: *const @import("../buffer.zig").OptimizedBuffer) u64 {
 
 fn runParity(seed: u64, steps: usize) !Stats {
     var prng = std.Random.DefaultPrng.init(seed);
-    var harness = try Harness.init(prng.random(), seed % 2 == 0);
+    var side = std.Random.DefaultPrng.init(~seed);
+    var harness = try Harness.init(prng.random(), side.random(), seed % 2 == 0);
     defer harness.deinit();
     for (0..steps) |_| try harness.step();
     return harness.stats;
@@ -1313,22 +1413,24 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         const stats = try runParity(seed, 256);
         inline for (std.meta.fields(Stats)) |field| @field(total, field.name) +%= @field(stats, field.name);
     }
-    // Every frame kind B2, B3, D2b, and B5 rely on is reached in quantity, and each minimum
+    // Every frame kind B2, B3, D2b, B4, and B5 rely on is reached in quantity, and each minimum
     // fails if the draw that produces its kind is removed. Minimums are about a quarter of the
     // counts at 64 x 256 (decoded frames about two thirds), derived again after replies began to
     // destroy nodes: those must spare content rows, or viewport scenes fall below the culling
-    // cutoff (filtered frames with a request fell from 441 to 51). Counts: reused 8,802,
-    // filtered 1,199, filtered with a request 359, kept lists in such a frame 57, hooked under
-    // a hidden ancestor 5,393, reply hid the requester's parent 41, reply detached the
-    // requester 25, reply destroyed a node 504, a RECORD reply changed the scene 95,
-    // content-child RESIZE 39, a truncation change in its reply 38, unmeasured content text
-    // replaced 21, UPDATE 4,044, RESIZE 47, LAYOUT_CHANGED 2,143, recordings 395, box bodies 81,
-    // decoded 12,947, an editor's cursor 1,667, a host cursor 8,313, skipped paint 8,209, partly
-    // diffed 1,289, recorded frames that kept rows 117, non-local or image recordings 21, steady
-    // reads 291, draft writes after paint 2,825, raw writes between frames 402, shared text
-    // changes shown 439, style changes shown 234, view binds 369, selections 238, equal
-    // re-sends 465, palette changes 91, frames showing a scroll node with children 967, scrolls
-    // and option changes 164, SCROLL requests 8.
+    // cutoff (filtered frames with a request fell from 441 to 51). Sibling marks draw from their
+    // own stream, so they keep the script's mix. Counts: reused 8,780, culling 1,092, culling
+    // with a request 201, kept lists in such a frame 25, hooked under a hidden ancestor 5,282,
+    // reply hid the requester's parent 44, reply detached the requester 35, reply destroyed a
+    // node 496, a RECORD reply changed the scene 117, content-child RESIZE 45, a truncation
+    // change in its reply 44, a sibling marked mid-batch 127, unmeasured content text replaced
+    // 22, UPDATE 4,159, RESIZE 58, LAYOUT_CHANGED 2,064, recordings 515, box bodies 95, decoded
+    // 10,925, an editor's cursor 1,824, a host cursor 8,201, skipped paint 8,248, partly diffed
+    // 1,301, band frames 1,141, split renders with a frame 492 and before one 490, recorded
+    // frames that kept rows 151, non-local or image recordings 24, steady reads 328, draft writes
+    // after paint 2,802, raw writes between frames 406, shared text changes shown 449, style
+    // changes shown 235, view binds 367, selections 224, equal re-sends 462, palette changes 96,
+    // frames showing a scroll node with children 983, scrolls and option changes 151, SCROLL
+    // requests 4.
     const minimums: Stats = .{
         // SCROLL requests that deliver a LAYOUT request: 13 in one run.
         .scroll_layouts = 3,
@@ -1343,6 +1445,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .record_replies = 23,
         .content_resizes = 11,
         .content_reply_texts = 10,
+        .sibling_marks = 38,
         .unmeasured_texts = 3,
         .updates = 680,
         .resizes = 13,
@@ -1354,6 +1457,9 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .host_cursors = 1900,
         .skipped = 2000,
         .partial = 300,
+        .banded = 290,
+        .split_frames = 130,
+        .split_snapshots = 130,
         .retained_records = 29,
         .non_local_records = 5,
         .steady_reads = 72,

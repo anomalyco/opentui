@@ -5,6 +5,7 @@ import type { RenderContext } from "../types.js"
 export interface FrameBufferOptions extends RenderableOptions<FrameBufferRenderable> {
   width: number
   height: number
+  /** Blend the buffer's cells into the frame. Without it, the cells are copied, transparent ones too. */
   respectAlpha?: boolean
 }
 

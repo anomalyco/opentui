@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ansi = @import("ansi.zig");
 const tb = @import("text-buffer.zig");
@@ -697,6 +698,8 @@ pub const OptimizedBuffer = struct {
     scissor_stack: std.ArrayListUnmanaged(ClipRect),
     opacity_stack: std.ArrayListUnmanaged(f32),
     image_placements: *std.ArrayListUnmanaged(ImagePlacement),
+    // Text lines that draws visited.
+    test_text_lines: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     const InitOptions = struct {
         respectAlpha: bool = false,
@@ -1011,6 +1014,24 @@ pub const OptimizedBuffer = struct {
         fillU32(self.buffer.attributes, 0);
         @memset(self.buffer.fg, ansi.rgbColor(255, 255, 255, 255));
         @memset(self.buffer.bg, bg);
+    }
+
+    /// Clear rows [top, bottom) as clear does, releasing the grapheme and link references of
+    /// their cells. Wide graphemes stay within their row, so no span crosses the edge.
+    /// Placements stay; a buffer with placements is cleared whole.
+    pub fn clearRows(self: *OptimizedBuffer, top: u32, bottom: u32, bg: RGBA, char: ?u32) void {
+        assert(top <= bottom and bottom <= self.height);
+        const start = top * self.width;
+        const end = bottom * self.width;
+        for (self.buffer.char[start..end], self.buffer.attributes[start..end]) |cell, attributes| {
+            if (gp.isGraphemeChar(cell)) self.grapheme_tracker.remove(gp.graphemeIdFromChar(cell));
+            const link_id = ansi.TextAttributes.getLinkId(attributes);
+            if (link_id != 0) self.link_tracker.removeCellRef(link_id);
+        }
+        fillU32(self.buffer.char[start..end], char orelse DEFAULT_SPACE_CHAR);
+        fillU32(self.buffer.attributes[start..end], 0);
+        @memset(self.buffer.fg[start..end], ansi.rgbColor(255, 255, 255, 255));
+        @memset(self.buffer.bg[start..end], bg);
     }
 
     fn clearImagePlacements(self: *OptimizedBuffer) void {
@@ -2157,6 +2178,9 @@ pub const OptimizedBuffer = struct {
             image_id_map[source_id] = @intCast(self.image_placements.items.len);
         }
 
+        // A source without respectAlpha at full opacity is copied, as the fast path copies it,
+        // so the target's other cells cannot change the result.
+        const copies = opacity == 1.0 and !frameBuffer.respectAlpha and !imageAware;
         var dY = clippedStartY;
         while (dY <= clippedEndY) : (dY += 1) {
             var lastDrawnGraphemeId: ?u32 = null;
@@ -2190,7 +2214,7 @@ pub const OptimizedBuffer = struct {
                 const srcBg = frameBuffer.buffer.bg[srcIndex];
                 const srcAttr = frameBuffer.buffer.attributes[srcIndex];
 
-                if (ansi.alpha(srcBg) == 0 and ansi.alpha(srcFg) == 0) {
+                if (!copies and ansi.alpha(srcBg) == 0 and ansi.alpha(srcFg) == 0) {
                     if (gp.isImageChar(srcChar)) {
                         const current = self.get(@intCast(dX), @intCast(dY)) orelse continue;
                         self.set(@intCast(dX), @intCast(dY), makeCell(srcChar, current.fg, current.bg, current.attributes));
@@ -2204,11 +2228,7 @@ pub const OptimizedBuffer = struct {
                         if (graphemeId != lastDrawnGraphemeId) {
                             // We haven't drawn the start character for this grapheme (likely out of bounds to the left)
                             // Draw a space with the same attributes to fill the cell
-                            self.setCellWithAlphaBlendingCell(
-                                @intCast(dX),
-                                @intCast(dY),
-                                makeCell(DEFAULT_SPACE_CHAR, srcFg, srcBg, srcAttr),
-                            );
+                            self.copyOrBlendCell(copies, @intCast(dX), @intCast(dY), makeCell(DEFAULT_SPACE_CHAR, srcFg, srcBg, srcAttr));
                         }
                         continue;
                     }
@@ -2223,20 +2243,22 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    self.setCellWithAlphaBlendingCell(
-                        @intCast(dX),
-                        @intCast(dY),
-                        makeCell(srcChar, srcFg, srcBg, srcAttr),
-                    );
+                    self.copyOrBlendCell(copies, @intCast(dX), @intCast(dY), makeCell(srcChar, srcFg, srcBg, srcAttr));
                     continue;
                 }
 
                 const cell = makeCell(srcChar, srcFg, srcBg, srcAttr);
-                if (imageAware) {
+                if (copies) {
+                    self.set(@intCast(dX), @intCast(dY), cell);
+                } else if (imageAware) {
                     self.setCellWithAlphaBlendingRawImageAware(@intCast(dX), @intCast(dY), cell);
                 } else self.setCellWithAlphaBlendingRawCell(@intCast(dX), @intCast(dY), cell);
             }
         }
+    }
+
+    inline fn copyOrBlendCell(self: *OptimizedBuffer, copies: bool, x: u32, y: u32, cell: Cell) void {
+        if (copies) self.set(x, y, cell) else self.setCellWithAlphaBlendingCell(x, y, cell);
     }
 
     /// Draw a TextBufferView to this OptimizedBuffer with selection support and optional syntax highlighting
@@ -2313,17 +2335,16 @@ pub const OptimizedBuffer = struct {
 
         if (virtual_lines.len == 0) return;
 
-        const firstVisibleLine: u32 = if (y < 0) @intCast(-@as(i64, y)) else 0;
         const bufferBottomY = self.height;
-        const lastPossibleLine = if (y >= @as(i32, @intCast(bufferBottomY)))
-            0
-        else if (y < 0)
-            @min(virtual_lines.len, firstVisibleLine + bufferBottomY)
-        else
-            @min(virtual_lines.len, bufferBottomY - @as(u32, @intCast(y)));
-
-        if (firstVisibleLine >= virtual_lines.len or lastPossibleLine == 0) return;
+        // Only lines on the buffer's and the scissor's rows can write a cell.
+        const scissor = self.getCurrentScissorRect() orelse ClipRect{ .x = 0, .y = 0, .width = 0, .height = bufferBottomY };
+        const rows_top: i64 = @max(0, scissor.y);
+        const rows_bottom = @min(@as(i64, bufferBottomY), @as(i64, scissor.y) + scissor.height);
+        const line_count: i64 = @intCast(virtual_lines.len);
+        const firstVisibleLine: u32 = @intCast(std.math.clamp(rows_top - @as(i64, y), 0, line_count));
+        const lastPossibleLine: u32 = @intCast(std.math.clamp(rows_bottom - @as(i64, y), 0, line_count));
         if (firstVisibleLine >= lastPossibleLine) return;
+        if (builtin.is_test) self.test_text_lines += lastPossibleLine - firstVisibleLine;
 
         const horizontal_offset: u32 = if (viewport) |vp| vp.x else 0;
         const viewport_width: u32 = if (viewport) |vp| vp.width else std.math.maxInt(u32);
@@ -3009,6 +3030,13 @@ pub const OptimizedBuffer = struct {
         return utf8.eastAsianWidth(@intCast(char)) == 1;
     }
 
+    /// A border cell on the transparent fast path writes what blending writes: a space keeps
+    /// the glyph below it.
+    inline fn setTransparentBorderCell(self: *OptimizedBuffer, x: u32, y: u32, char: u32, color: RGBA) void {
+        if (self.trySetTransparentTextCellFast(self.coordsToIndex(x, y), char, color, 0)) return;
+        self.setCellWithAlphaBlendingCell(x, y, makeCell(char, color, ansi.rgbColor(0, 0, 0, 0), 0));
+    }
+
     inline fn canUseTransparentBorderFastPath(
         self: *const OptimizedBuffer,
         borderChars: [*]const u32,
@@ -3225,10 +3253,7 @@ pub const OptimizedBuffer = struct {
                         }
 
                         if (useTransparentBorderFastPath) {
-                            const index = self.coordsToIndex(@intCast(drawX), @intCast(startY));
-                            self.buffer.char[index] = char;
-                            self.buffer.fg[index] = borderColor;
-                            self.buffer.attributes[index] = 0;
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(startY), char, borderColor);
                         } else if (useOpaqueBorderFastPath) {
                             self.set(@intCast(drawX), @intCast(startY), makeCell(char, borderColor, backgroundColor, 0));
                         } else {
@@ -3261,10 +3286,7 @@ pub const OptimizedBuffer = struct {
                         }
 
                         if (useTransparentBorderFastPath) {
-                            const index = self.coordsToIndex(@intCast(drawX), @intCast(endY));
-                            self.buffer.char[index] = char;
-                            self.buffer.fg[index] = borderColor;
-                            self.buffer.attributes[index] = 0;
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(endY), char, borderColor);
                         } else if (useOpaqueBorderFastPath) {
                             self.set(@intCast(drawX), @intCast(endY), makeCell(char, borderColor, backgroundColor, 0));
                         } else {
@@ -3289,10 +3311,7 @@ pub const OptimizedBuffer = struct {
                 // Left border
                 if (borderSides.left and isAtActualLeft and startX >= 0 and startX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        const index = self.coordsToIndex(@intCast(startX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@intFromEnum(BorderCharIndex.vertical)];
-                        self.buffer.fg[index] = borderColor;
-                        self.buffer.attributes[index] = 0;
+                        self.setTransparentBorderCell(@intCast(startX), @intCast(drawY), borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor);
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(startX),
@@ -3311,10 +3330,7 @@ pub const OptimizedBuffer = struct {
                 // Right border
                 if (borderSides.right and isAtActualRight and endX >= 0 and endX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        const index = self.coordsToIndex(@intCast(endX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@intFromEnum(BorderCharIndex.vertical)];
-                        self.buffer.fg[index] = borderColor;
-                        self.buffer.attributes[index] = 0;
+                        self.setTransparentBorderCell(@intCast(endX), @intCast(drawY), borderChars[@intFromEnum(BorderCharIndex.vertical)], borderColor);
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(endX),

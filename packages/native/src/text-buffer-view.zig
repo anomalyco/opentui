@@ -494,11 +494,13 @@ pub const UnifiedTextBufferView = struct {
 
     pub fn prepare(self: *Self) TextBufferViewError!void {
         _ = self.getVirtualLines();
-        if (self.virtual_lines_dirty or
-            (self.truncate and self.viewport != null and !self.truncation_applied))
-        {
-            return error.OutOfMemory;
-        }
+        if (self.needsPrepare()) return error.OutOfMemory;
+    }
+
+    /// Whether prepare would lay out the lines or truncate them again.
+    pub fn needsPrepare(self: *const Self) bool {
+        const changed = if (self.baseline) |baseline| !std.meta.eql(baseline, self.currentBaseline()) else true;
+        return self.virtual_lines_dirty or changed or (self.truncate and self.viewport != null and !self.truncation_applied);
     }
 
     pub fn setViewport(self: *Self, vp: ?Viewport) void {

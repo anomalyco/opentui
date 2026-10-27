@@ -439,9 +439,10 @@ typedef struct ot_scene_layout {
  * preserve_unwritten changed), NON_LOCAL (a recording clears or color-matrixes
  * the frame). IMAGES also counts recorded image draws. Otherwise, without a
  * reason, a frame repaints only when a painted member's inputs changed, its
- * recording included, and the encoder
- * diffs only the damage_rows rows they cover; an unchanged frame has
- * damage_rows 0 and paints nothing. After a current-buffer session lease the
+ * recording included: it clears and repaints only bands around the damage_rows
+ * rows they cover (runs one row apart merge, and a sixteenth band takes every
+ * later run, so a band can include undamaged rows), and the encoder diffs only
+ * the damage_rows rows; an unchanged frame has damage_rows 0 and paints nothing. After a current-buffer session lease the
  * encoder diffs every row, without repainting. */
 typedef struct ot_scene_stats {
     uint32_t struct_size;
@@ -771,10 +772,9 @@ ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot
     const uint8_t *title, uint32_t title_bytes, const uint8_t *bottom_title, uint32_t bottom_title_bytes);
 /* A box may filter its direct children against a root/box in the same Session.
  * The viewport handle is copied, not pinned. NULL disables filtering. A destroyed
- * viewport fails frame preparation until rebound or disabled. After a layout
- * change, or a change to a child's text, view, or hooks, all direct children
- * refresh before selection, including hidden/culled children; hidden nodes do not
- * update or resize. Fewer than 16 total children bypass overlap filtering.
+ * viewport fails frame preparation until rebound or disabled. Every direct child
+ * whose layout, text, view, or hooks changed refreshes before selection,
+ * including hidden/culled children; hidden nodes do not update or resize. Fewer than 16 total children bypass overlap filtering.
  * Bounds use the full viewport, not its border-inset paint clip. Row/reverse-row
  * use horizontal overlap; column/reverse-column use vertical overlap. Primary
  * overlap is strict, cross-axis touching is included, and padding is zero.
@@ -1057,9 +1057,10 @@ ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_st
  * OT_INVALID_ARGUMENT, a Session without a scene OT_INVALID_PHASE, and an active
  * frame attempt, draft, or frame lease OT_FRAME_BUSY. Rejection keeps the flags.
  * Flags persist for the Session. VERIFY checks frames that retained paint skips
- * or diffs partly: next must still hold the presented frame, a partly diffed
- * frame's other rows must match it, and a skipped frame's repaint into a
- * scratch buffer must match its cells and hits. A mismatch fails the frame step
+ * or repaints partly: next must still hold the presented frame, a partly
+ * repainted frame's other rows must match it, and a full repaint into a
+ * scratch buffer must match the cells and hits of a skipped or partly
+ * repainted frame. A mismatch fails the frame step
  * with OT_INTERNAL_ERROR; VERIFY changes no other state or count. */
 ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
 /* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
@@ -2199,9 +2200,12 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
 #define OT_TERMINAL_MOUSE UINT32_C(2)
 #define OT_TERMINAL_MOUSE_MOVEMENT UINT32_C(4)
 #define OT_TERMINAL_CLEAR_ON_CLOSE UINT32_C(8)
+#define OT_TERMINAL_REPLY_SENTINEL UINT32_C(16)
 
-/* flags is a combination of the four OT_TERMINAL_* option bits above. Other bits
- * must be zero. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
+/* flags is a combination of the five OT_TERMINAL_* option bits above. Other bits
+ * must be zero. REPLY_SENTINEL ends the startup query packet with DA1 (CSI c),
+ * also inside tmux, and sends no other DA1; the host waits for its reply instead
+ * of a timer. A DA1 reply then also ends the startup cursor-report probes. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
  * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
  * clears only a surface that setup or resume claimed: a close before their mode
  * packet leaves visible shell output in place. */
@@ -2225,7 +2229,7 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
- * and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
+ * 0/1 for QUERY_PIXEL_RESOLUTION (1 appends the DA1 sentinel), and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
  * PROGRAM_STATUS accept payload bytes. reserved must be zero. */
 typedef struct ot_session_control_options {
     uint32_t struct_size;
@@ -3167,7 +3171,8 @@ ot_status ot_session_input_feed(
  * DCS, or APC introducer, and a CSI of digits. A held string continues only
  * while it matches a reply prefix, and a CSI that timed out completes only as a
  * reply; another byte ends either one and is typed. A lone Escape still times
- * out, and a reply that follows it is not typed. KEEP_REPLY also keeps such a CSI.
+ * out, and a reply that follows it is not typed; if what follows that Escape is
+ * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 

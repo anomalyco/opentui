@@ -25,7 +25,7 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .mouse = .drag },
         .{ .kitty_keyboard_flags = 31 },
         .restore_modes,
-        .query_pixel_resolution,
+        .{ .query_pixel_resolution = false },
         .query_theme_colors,
         .reset_background,
         .{ .program_status = .{ .state = .working } },
@@ -134,7 +134,7 @@ test "Session controls preserve rejected drafts and leave restoration capacity u
         .{ .kitty_keyboard_flags = 31 },
         .{ .title = "rejected" },
         .restore_modes,
-        .query_pixel_resolution,
+        .{ .query_pixel_resolution = false },
         .query_theme_colors,
         .reset_background,
         .{ .program_status = .{ .state = .done } },
@@ -145,7 +145,7 @@ test "Session controls preserve rejected drafts and leave restoration capacity u
         try testing.expectEqual(.unicode, f.cli.getNextBuffer().width_method);
     }
     try f.owner.beginSessionClose(f.id);
-    try testing.expectError(error.SessionClosed, f.value.control(.query_pixel_resolution));
+    try testing.expectError(error.SessionClosed, f.value.control(.{ .query_pixel_resolution = false }));
     try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
     try f.owner.completeOutput(f.id, ticket, .written);
     try testing.expectEqualStrings(blocker[1..], try f.drain(&bytes));
@@ -219,8 +219,12 @@ test "Session controls bound input and output without allocation after attachmen
     try testing.expect(f.cli.terminal.caps.osc52 and f.cli.terminal.caps.kitty_graphics);
     try testing.expect(f.cli.terminal.caps.sixel and f.cli.terminal.caps.notifications);
     try testing.expect(f.cli.terminal.caps.program_status);
-    try f.value.control(.query_pixel_resolution);
-    try testing.expectEqualStrings(ansi.ANSI.queryPixelSize, try f.drain(&bytes));
+    for ([_]bool{ false, true }) |sentinel| {
+        try f.value.control(.{ .query_pixel_resolution = sentinel });
+        const sent = try f.drain(&bytes);
+        try testing.expectEqualStrings(ansi.ANSI.queryPixelSize, sent[0..ansi.ANSI.queryPixelSize.len]);
+        try testing.expectEqualStrings(if (sentinel) ansi.ANSI.primaryDeviceAttrs else "", sent[ansi.ANSI.queryPixelSize.len..]);
+    }
     try f.value.control(.query_theme_colors);
     try testing.expectEqualStrings(ansi.ANSI.oscThemeQueries, try f.drain(&bytes));
     try f.owner.beginSessionClose(f.id);

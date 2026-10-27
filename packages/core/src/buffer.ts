@@ -389,6 +389,8 @@ export class OptimizedBuffer {
     return this._height
   }
 
+  /** With `respectAlpha`, `drawFrameBuffer()` blends this buffer's cells when it is the source. Without it, a source at
+   * full opacity is copied cell for cell, transparent and translucent cells included, unless either buffer holds images. */
   public setRespectAlpha(respectAlpha: boolean): void {
     this.guard()
     this.drawChecked({ operation: "respectAlpha", enabled: respectAlpha })
@@ -601,6 +603,8 @@ export class OptimizedBuffer {
     this.lib.contextColorMatrixBuffer(destination, matrix, null, strength, target)
   }
 
+  /** Composites a source cell rectangle, clipped to the scissor. At full opacity a source without `respectAlpha` is
+   * copied, transparent and translucent cells included, unless either buffer holds images; otherwise each cell blends. */
   public drawFrameBuffer(
     destX: number,
     destY: number,

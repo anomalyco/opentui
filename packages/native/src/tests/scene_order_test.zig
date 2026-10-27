@@ -51,6 +51,34 @@ fn expectTop(f: Fixture, child: context.Handle) !void {
     for (0..2) |x| try testing.expectEqual(node.num, try f.owner.sceneHitTest(f.id, @intCast(x), 0));
 }
 
+test "Scene equal-z siblings paint in attachment order however z reached them" {
+    // A is attached before B and both end at z 2, as in a fresh scene where B is on top.
+    for ([_]enum { fresh, between, reply, history }{ .fresh, .between, .reply, .history }) |when| {
+        const f = try Fixture.init(testing.allocator, 2, 1, .{});
+        defer f.deinit();
+        const a = try box(f.owner, f.id, 2, if (when == .history) 0 else 2);
+        const b = try box(f.owner, f.id, 3, if (when == .fresh) 2 else 0);
+        const hook = try box(f.owner, f.id, 4, -1);
+        for ([_]context.Handle{ a, b, hook }, 0..) |child, index| try f.owner.sceneMoveNode(child, f.root, @intCast(index));
+        try f.owner.sceneSetHooks(hook, 1, 1, 2, 1);
+        if (when == .history) {
+            try frame(f, &.{hook});
+            try expectTop(f, b);
+            try f.owner.scenePatchPaint(a, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = 2 });
+            try frame(f, &.{hook});
+            try expectTop(f, a);
+        }
+        if (when == .between or when == .history) try f.owner.scenePatchPaint(b, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = 2 });
+        // The reply lands after this frame sorted, so the order changes in the next frame.
+        const request = try f.step(null, frame_options, 1, hook);
+        if (when == .reply) try f.owner.scenePatchPaint(b, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = 2 });
+        _ = try f.step(request, frame_options, 0, null);
+        try expectTop(f, if (when == .reply) a else b);
+        try frame(f, &.{hook});
+        try expectTop(f, b);
+    }
+}
+
 test "Scene ordered equal-z append skips settled sibling rank and sort work" {
     for ([_]bool{ false, true }) |hooks| {
         const f = try Fixture.init(testing.allocator, 2, 1, .{});

@@ -688,6 +688,31 @@ test "processCapabilityResponse captures startup cursor report before home probe
     try testing.expect(term.caps.scaled_text);
 }
 
+test "a DA1 reply ends startup cursor reports in sentinel mode and reports Sixel only for a graphics query" {
+    // Rows: sentinel, multiplexer variable, replies (one capability response each), explicit width, Sixel.
+    const rows = .{
+        .{ false, "", .{ "\x1b[?62;4c", "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R\x1b[1;2R\x1b[1;3R\x1b[?62;4c", "", "", "" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[?62;4c", "\x1b[1;2R", "\x1b[1;3R" }, false, true },
+        .{ true, "TMUX", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+        .{ true, "STY", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+    };
+    inline for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (row[1].len != 0) try env.put(row[1], "fixture");
+        var term = Terminal.init(.{ .env_map = &env });
+        term.reply_sentinel = row[0];
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        inline for (row[2]) |reply| term.processCapabilityResponse(reply);
+        try testing.expectEqual(row[3], term.caps.explicit_width);
+        try testing.expectEqual(row[4], term.caps.sixel);
+    }
+}
+
 test "processCapabilityResponse only accepts exact ordered explicit width probe reports" {
     var unrelated = Terminal.init(.{});
     unrelated.processCapabilityResponse("\x1b[1;5R");
@@ -1128,6 +1153,32 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
     // tmux's graphics replies describe tmux, not the passthrough endpoint.
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) == null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) == null);
+}
+
+test "queryTerminalSend - sentinel mode moves its one DA1 to the end of the packet" {
+    for ([_]bool{ false, true }) |tmux| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (tmux) try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        var clock = TestWriter.init(testing.allocator);
+        defer clock.deinit();
+        var sentinel = TestWriter.init(testing.allocator);
+        defer sentinel.deinit();
+        var clock_term = Terminal.init(.{ .env_map = &env });
+        try clock_term.queryTerminalSend(&clock);
+        var sentinel_term = Terminal.init(.{ .env_map = &env });
+        sentinel_term.reply_sentinel = true;
+        try sentinel_term.queryTerminalSend(&sentinel);
+
+        const da1 = ansi.ANSI.primaryDeviceAttrs;
+        try testing.expectEqual(@as(usize, @intFromBool(!tmux)), std.mem.count(u8, clock.getWritten(), da1));
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, sentinel.getWritten(), da1));
+        const moved = try std.mem.replaceOwned(u8, testing.allocator, clock.getWritten(), da1, "");
+        defer testing.allocator.free(moved);
+        const expected = try std.mem.concat(testing.allocator, u8, &.{ moved, da1 });
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, sentinel.getWritten());
+    }
 }
 
 test "queryTerminalSend - sends plain theme queries when TMUX is set" {
