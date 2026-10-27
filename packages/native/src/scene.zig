@@ -609,8 +609,9 @@ const Pass = struct {
     // later scans, which do not undo what an earlier one passed; and whether the last culled.
     epoch: u64 = 0,
     culls: bool = false,
-    // The frame in which the node moved away from where feedback had passed it.
-    moved_frame: u64 = 0,
+    // The frame in which feedback passed the node's subtree whole: it skipped the node, or the
+    // node moved away from where feedback had passed it.
+    passed_frame: u64 = 0,
 };
 
 const Work = struct {
@@ -902,7 +903,7 @@ pub const Scene = struct {
             try yoga.check(yoga.yogaNodeMoveChildChecked(target.childYoga(parent), value.yoga_node, index));
             const previous = node.parent;
             // Children that feedback passed keep this frame's order wherever they go.
-            if (previous != parent and self.attempt != null and node.child_order_frame != self.attempt.?.frame_id and self.passedThisFrame(value)) node.pass.moved_frame = self.attempt.?.frame_id;
+            if (previous != parent and self.attempt != null and node.child_order_frame != self.attempt.?.frame_id and self.passedThisFrame(value)) node.pass.passed_frame = self.attempt.?.frame_id;
             if (previous) |old| removeChild(&old.scene_node.?.children, value);
             target.children.insertAssumeCapacity(index, value);
             if (previous != parent) {
@@ -989,7 +990,7 @@ pub const Scene = struct {
         while (true) {
             if (builtin.is_test) self.test_sort_steps += 1;
             const node = current.scene_node.?;
-            if (node.pass.moved_frame == active.frame_id) return true;
+            if (node.pass.passed_frame == active.frame_id) return true;
             const parent = node.parent orelse return false;
             const target = parent.scene_node.?;
             if (target.pass.frame == active.frame_id) {
@@ -1780,8 +1781,12 @@ pub const Scene = struct {
                         // marked since, waits for the later pass the mark starts, as in a normal frame.
                         if (!operation.needed and node.skip.subtree != .clean) continue;
                         node.setFeedback(active, .started);
-                        // Today's walk would issue no request below.
-                        if (!full and !self.mustVisit(node)) continue;
+                        // Today's walk would issue no request below. It passes the subtree, which
+                        // only a skipped root has no parent to say.
+                        if (!full and !self.mustVisit(node)) {
+                            node.pass.passed_frame = active.frame_id;
+                            continue;
+                        }
                         node.skip.subtree = .running;
                         node.culling.clean_selection = self.selection_epoch;
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .done });
@@ -1926,7 +1931,7 @@ pub const Scene = struct {
         const filter = try self.childFilter(objects, value);
         const children = node.paint_children.items;
         const listed = self.scanList(objects, node);
-        if (node.pass.frame != active.frame_id) node.pass = .{ .frame = active.frame_id, .moved_frame = node.pass.moved_frame };
+        if (node.pass.frame != active.frame_id) node.pass = .{ .frame = active.frame_id, .passed_frame = node.pass.passed_frame };
         node.pass.limit = if (children.len == 0) node.pass.limit else children[children.len - 1].scene_node.?.paint_rank + 1;
         const rescans = full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch);
         if (rescans) node.culling.selected_epoch = self.selection_epoch;
@@ -2560,7 +2565,9 @@ pub const Scene = struct {
         const cells = cellLayout(entry.layout);
         const x: i32 = @intFromFloat(cells.screenX);
         const y: i32 = @intFromFloat(cells.screenY);
-        var painted = intersection(.{ .x = x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, entry.clip);
+        // Arrow text, also a scroll node's, runs past the node's columns but stays on its rows.
+        const spills = node.kind == api.OT_SCENE_ARROW or node.scroll != null;
+        var painted = intersection(.{ .x = if (spills) entry.clip.x else x, .y = y, .width = @intFromFloat(cells.width), .height = @intFromFloat(cells.height) }, entry.clip);
         // A surface draws at its own size, which can pass the node's rows.
         if (entry.node.surface) |source| {
             if (source.image_placements.items.len != 0) reasons.* |= renderer.FrameWork.full_path_images;

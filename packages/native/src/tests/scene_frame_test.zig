@@ -1102,6 +1102,64 @@ fn lifecycleTable(verify: bool, counts: []FrameWork) !void {
     }
 }
 
+// 358: arrow text runs past its node's rect, here a rect wholly left of the 6 x 4 screen, more
+// than the screen's width away. A 1x1 arrow at x = -7 draws "ABCDEFGH", so H is in column 0, row
+// 1; a 4x2 scroll box at x = -4 draws its right arrow "ABCD" from column -1, so B is in column 0,
+// row 2. A text at column 2 shares the row: changing it makes a band that clears the arrow's row.
+// A text beside the screen on that row draws nothing, so its change damages no row. Each row
+// expects the damaged rows.
+test "Scene frame retained paint repaints arrow text outside its rect" {
+    const Change = enum { none, text, color, move, band, beside };
+    const rows = [_]struct { scrollbar: bool, change: Change, height: f32 = 1, damage: u32 }{
+        .{ .scrollbar = false, .change = .none, .damage = 0 },
+        .{ .scrollbar = false, .change = .text, .damage = 1 },
+        .{ .scrollbar = false, .change = .color, .damage = 1 },
+        .{ .scrollbar = false, .change = .move, .damage = 2 },
+        .{ .scrollbar = false, .change = .band, .damage = 1 },
+        .{ .scrollbar = false, .change = .beside, .damage = 0 },
+        // Every member lays out at least one row tall, so the text stays on the rect's rows.
+        .{ .scrollbar = false, .change = .text, .height = 0, .damage = 1 },
+        .{ .scrollbar = true, .change = .none, .damage = 0 },
+        .{ .scrollbar = true, .change = .text, .damage = 2 },
+        .{ .scrollbar = true, .change = .color, .damage = 2 },
+        .{ .scrollbar = true, .change = .move, .damage = 3 },
+        .{ .scrollbar = true, .change = .band, .damage = 1 },
+    };
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    for (rows) |row| {
+        errdefer std.debug.print("scrollbar {} change {s} height {d}\n", .{ row.scrollbar, @tagName(row.change), row.height });
+        const f = try Fixture.init(testing.allocator, 6, 4, .{});
+        defer f.deinit();
+        try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+        const y: u32 = if (row.scrollbar) 2 else 1;
+        const node = try placedAt(f, f.root, if (row.scrollbar) c.OT_SCENE_BOX else c.OT_SCENE_ARROW, 2, if (row.scrollbar) -4 else -7, 1, if (row.scrollbar) 4 else 1, if (row.scrollbar) 2 else row.height);
+        const label = try placedAt(f, f.root, c.OT_SCENE_TEXT, 3, 2, @floatFromInt(y), 4, 1);
+        try f.owner.sceneSetText(label, "a");
+        const aside = try placedAt(f, f.root, c.OT_SCENE_TEXT, 4, -7, @floatFromInt(y), 6, 1);
+        try f.owner.sceneSetText(aside, "a");
+        if (row.scrollbar) try f.owner.sceneSetScroll(node, .{ .axes = c.OT_SCENE_SCROLL_X | c.OT_SCENE_SCROLL_Y, .bars = .{ .{ .policy = c.OT_SCENE_SCROLL_BAR_ALWAYS, .arrows = true }, .{ .policy = c.OT_SCENE_SCROLL_BAR_NEVER } } });
+        const text = [_][]const u8{ if (row.scrollbar) "ABCD" else "ABCDEFGH", if (row.scrollbar) "AXCD" else "ABCDEFGZ" };
+        const glyphs = [_]u32{ if (row.scrollbar) 'B' else 'H', if (row.scrollbar) 'X' else 'Z' };
+        for ([_]bool{ false, true }) |changed| {
+            const next = changed and row.change == .text;
+            const arrow: scene.ArrowOptions = .{ .text = text[@intFromBool(next)], .foreground = if (changed and row.change == .color) red else ansi.rgbColor(255, 255, 255, 255) };
+            if (!changed or row.change == .text or row.change == .color) {
+                if (row.scrollbar) try f.owner.sceneSetScrollArrow(node, 0, 1, arrow) else try f.owner.sceneSetArrow(node, arrow);
+            }
+            if (changed and row.change == .move) try f.owner.scenePatchPaint(node, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 1 });
+            if (changed and row.change == .band) try f.owner.sceneSetText(label, "b");
+            if (changed and row.change == .beside) try f.owner.sceneSetText(aside, "b");
+            const w = try presentWork(f, .{});
+            const moved = changed and row.change == .move;
+            const cell = f.cli.currentRenderBuffer.get(0, y + @intFromBool(moved)).?;
+            try testing.expectEqual(glyphs[@intFromBool(next)], cell.char);
+            try testing.expectEqual(arrow.foreground, cell.fg);
+            if (moved) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, y).?.char);
+            if (changed) try testing.expectEqual(row.damage, w.damage_rows);
+        }
+    }
+}
+
 test "Scene frame work solves Yoga only for text writes that can change the measured size" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
@@ -2117,6 +2175,50 @@ test "Scene feedback passes keep the round and request counts at the limits" {
         }
         try testing.expectEqual(results[0], results[1]);
         try testing.expectEqual(@as(anyerror!u32, if (limits[0] == 1) error.LayoutLimit else if (limits[1] == chain) error.FrameRequestLimit else chain + 1), results[1]);
+    }
+}
+
+// Feedback that skips a clean root still passes every parent: a z-index change in a later round
+// keeps the frame's order, as preparation already reached the parent. W's overflow changes
+// before the frame, so the root's LAYOUT_CHANGED request comes first with no box changed; its
+// reply grows W, which needs a second round but marks nothing, so the first round skips the root. The second round's LAYOUT_CHANGED
+// reply lowers C2, the later of P's two overlapping children: it shows from the next frame.
+test "Scene feedback passes every parent when it skips a clean root" {
+    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
+    defer for (twins) |f| f.deinit();
+    var nodes: [2][4]context.Handle = undefined;
+    for (twins, &nodes, 0..) |f, *list, twin| {
+        try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+        // P and W under the root; C1 and C2 under P.
+        for (0..2) |index| try feedbackNode(f, list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
+        for (2..4) |index| {
+            try feedbackNode(f, list, index, c.OT_SCENE_BOX, list[0], @intCast(index - 2));
+            try f.owner.sceneSetStyle(list[index], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
+            try f.owner.scenePatchPaint(list[index], c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ @intCast(index * 50), 0, 0, 255 } });
+        }
+        try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_LAYOUT_CHANGED, 1, 0, 0);
+        _ = try presentStepped(f, NoReply{});
+    }
+    for (0..2) |frame| {
+        for (twins, nodes) |f, list| {
+            if (frame == 0) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+            var replies: u32 = 0;
+            var request = try f.owner.sceneFrameStep(f.id, null, options);
+            while (request.kind != c.OT_SCENE_FRAME_DONE) {
+                replies += 1;
+                if (frame == 0 and replies == 1) try f.owner.sceneSetStyle(list[1], 4, 0, 0, 1, 3, 1);
+                if (frame == 0 and replies == 2) try f.owner.scenePatchPaint(list[3], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
+                request = try f.owner.sceneFrameStep(f.id, request, options);
+            }
+            _ = try f.owner.sceneFrameCommit(f.id, request, false);
+            try drain(f.owner, f.id);
+        }
+        // C2 stays on top in the reply's frame and goes below C1 in the next.
+        for (twins, nodes) |f, list| {
+            const top = (try f.owner.raw().getRenderable(list[0])).scene_node.?.paint_children.items[1];
+            try testing.expectEqual((try f.owner.raw().getRenderable(list[if (frame == 0) 3 else 2])).scene_node.?.num, top.scene_node.?.num);
+        }
+        try twins[0].expectSameCells(twins[1]);
     }
 }
 
