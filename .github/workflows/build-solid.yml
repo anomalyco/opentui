@@ -33,7 +33,7 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
 
       - name: Restore Zig cache
         uses: ./.github/actions/restore-zig-cache
@@ -96,7 +96,7 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
 
       - name: Restore Zig cache
         uses: ./.github/actions/restore-zig-cache
@@ -152,7 +152,7 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
 
       - name: Restore Zig cache
         uses: ./.github/actions/restore-zig-cache

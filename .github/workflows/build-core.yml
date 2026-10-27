@@ -396,7 +396,7 @@ jobs:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
 
       - name: Restore Bun install cache
         uses: ./.github/actions/restore-bun-cache
