@@ -1526,6 +1526,29 @@ test "Scene feedback sorts children at the point today's walk passes them" {
     }
 }
 
+// Under a filtering parent whose selection does not change, 1,000 culled children with UPDATE
+// keep the parent visited on every frame. Feedback scans its children no more often than
+// today's walk, which scans them twice: once for placements and once to select.
+test "Scene feedback scans a culled wide parent no more than today's walk" {
+    const f = try Fixture.init(testing.allocator, 4, 4, .{ .limits = .{ .object_capacity = 2048 } });
+    defer f.deinit();
+    const row: FeedbackRow = .{ .reply = .later, .n = 1000, .filter = true, .shown = 2, .expected = &.{} };
+    const nodes = try testing.allocator.alloc(context.Handle, row.n + 6);
+    defer testing.allocator.free(nodes);
+    try feedbackScene(f, row, nodes);
+    for (nodes[2 .. row.n + 2]) |node| try feedbackHook(f, node, c.OT_SCENE_HOOK_UPDATE);
+    var log: std.ArrayListUnmanaged(usize) = .empty;
+    defer log.deinit(testing.allocator);
+    for (0..4) |frame| {
+        log.clearRetainingCapacity();
+        const steps = f.state.test_feedback_child_steps;
+        try feedbackFrame(f, row, nodes, false, &log);
+        if (frame < 2) continue;
+        try testing.expectEqualSlices(usize, &.{ 1, row.n + 2 }, log.items);
+        try testing.expect(f.state.test_feedback_child_steps - steps <= 2 * (row.n + 2) + 8);
+    }
+}
+
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
 // host requests, and layout rounds of that frame. Only rows whose layout, text, or view changed

@@ -441,6 +441,8 @@ pub const Node = struct {
         // The node's next refresh may differ from its last one.
         self_stale: bool = true,
         view_queued: bool = false,
+        // A child was marked since the node's last refresh batch.
+        refresh_due: bool = false,
     } = .{},
     // Whether feedback needs to visit the subtree. Clean means every node feedback would visit
     // in it needs nothing, for the selection of clean_selection; culled and hidden nodes keep
@@ -1393,6 +1395,7 @@ pub const Scene = struct {
         const owner = node.owner;
         const newly_stale = !node.layout_flags.self_stale;
         node.layout_flags.self_stale = true;
+        if (node.parent) |parent| parent.scene_node.?.layout_flags.refresh_due = true;
         node.stale_id = if (owner.attempt) |active| (if (active.pending != null) active.feedback_id else 0) else 0;
         owner.markSubtree(value, newly_stale);
         if (owner.attempt != null or node.layout_flags.view_queued) return;
@@ -1641,7 +1644,9 @@ pub const Scene = struct {
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .select });
                         self.startSegment(node, .refresh);
                         const start = self.feedback.items.len;
-                        for (if (full) node.paint_children.items else node.attention.items) |child| {
+                        const due = full or node.layout_flags.refresh_due;
+                        node.layout_flags.refresh_due = false;
+                        for (if (due) (if (full) node.paint_children.items else node.attention.items) else &.{}) |child| {
                             if (builtin.is_test) self.test_feedback_child_steps += 1;
                             const state = child.scene_node.?;
                             if (state.prepared_gen != self.candidates_gen or !(full or state.layout_flags.self_stale)) continue;
@@ -1866,7 +1871,13 @@ pub const Scene = struct {
     fn refresh(self: *Scene, value: *native.NativeRenderable, check_display: bool) !?FrameRequest {
         const node = value.scene_node.?;
         const active = &self.attempt.?;
-        if (node.observed_frame == active.frame_id and node.observed_round == active.rounds) return null;
+        if (node.observed_frame == active.frame_id and node.observed_round == active.rounds) {
+            // Marked after this round's refresh: the next round's batch refreshes it.
+            if (node.layout_flags.self_stale) if (node.parent) |parent| {
+                parent.scene_node.?.layout_flags.refresh_due = true;
+            };
+            return null;
+        }
         const changed = node.resize_width != node.layout.width or node.resize_height != node.layout.height;
         var visible = true;
         if (check_display and (node.text != null or node.editor != null or node.kind == api.OT_SCENE_TEXT_VIEW or (changed and node.hook_flags & api.OT_SCENE_HOOK_RESIZE != 0))) {
