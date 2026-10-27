@@ -1580,66 +1580,18 @@ test "Scene feedback scans a culled wide parent no more than today's walk" {
     }
 }
 
-// Today's walk stamps an idle-update node it passes, so UPDATE given to it by a later reply in
-// the frame waits for the next frame; feedback that skips the node keeps that timing. Rows: T
-// (idle update) before B (UPDATE); B's reply gives T UPDATE and RESIZE; or T is hidden and the
-// reply also shows it, before or after the hooks, so the walk never stamped it; or the reply
-// clears T's hooks, or gives T idle update after UPDATE. The twins send the same requests in every frame.
-test "Scene feedback keeps the update stamp of a passed idle-update node" {
-    const Change = enum { to_update, shown_to_update, show_then_update, to_none, update_to_idle };
-    for (std.enums.values(Change)) |change| {
-        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
-        defer for (twins) |f| f.deinit();
-        var nodes: [2][6]context.Handle = undefined;
-        var logs: [2]std.ArrayListUnmanaged(usize) = .{ .empty, .empty };
-        defer for (&logs) |*log| log.deinit(testing.allocator);
-        for (twins, &nodes, 0..) |f, *list, twin| {
-            try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
-            try feedbackNode(f, list, 0, c.OT_SCENE_BOX, f.root, 0);
-            try feedbackHook(f, list[0], if (change == .update_to_idle) c.OT_SCENE_HOOK_UPDATE else c.OT_SCENE_HOOK_IDLE_UPDATE);
-            if (change == .shown_to_update or change == .show_then_update) try f.owner.sceneSetStyle(list[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
-            try feedbackNode(f, list, 1, c.OT_SCENE_BOX, f.root, 1);
-            try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
-        }
-        for (0..3) |frame| {
-            for (twins, nodes, &logs) |f, list, *log| {
-                log.clearRetainingCapacity();
-                var request = try f.owner.sceneFrameStep(f.id, null, options);
-                while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                    try log.append(testing.allocator, request.num);
-                    if (frame == 1 and std.meta.eql(request.node, list[1])) switch (change) {
-                        .to_update => try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE),
-                        .shown_to_update => {
-                            try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
-                            try f.owner.sceneSetStyle(list[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
-                        },
-                        .show_then_update => {
-                            try f.owner.sceneSetStyle(list[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
-                            try feedbackHook(f, list[0], c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE);
-                        },
-                        .to_none => try feedbackHook(f, list[0], 0),
-                        .update_to_idle => try feedbackHook(f, list[0], c.OT_SCENE_HOOK_IDLE_UPDATE),
-                    };
-                    request = try f.owner.sceneFrameStep(f.id, request, options);
-                }
-                _ = try f.owner.sceneFrameCommit(f.id, request, false);
-                try drain(f.owner, f.id);
-            }
-            try testing.expectEqualSlices(usize, logs[0].items, logs[1].items);
-        }
-    }
-}
-
 // An idle-update node uses its update where today's walk passes it, so UPDATE given later in
 // the frame waits for the next one, and UPDATE given before runs in this one. Root children
-// H1, M, V, H2, Q, N; P inside V, with C (UPDATE) and D. H2's reply moves N into P after C
-// (P's selection finished: N was not passed), or detaches C first, or detaches D, P's last
-// child, first; moves M, which feedback passed, into Q, which it has not; or unbinds the
-// viewport that culled D. Then the moved
-// node, or D, gets UPDATE: it runs in this frame unless the node was passed.
+// H1, M (idle update), V, H2, Q, N; P inside V, with C (UPDATE) and D. H2's reply gives M
+// UPDATE and RESIZE (seed 137), shows the hidden M before or after doing so (the walk never
+// stamped it), clears M's hooks, or gives M, which had UPDATE, idle update. Or it moves N into P
+// after C (P's selection finished: N was not passed), first detaching C, or D, P's last child;
+// moves M, which feedback passed, into Q, which it has not; or unbinds the viewport that culled
+// D. Then the moved node, or D, gets UPDATE. The count is the target's UPDATE calls that frame.
 test "Scene feedback uses an idle update only where the walk passed the node" {
-    const Case = enum { appended, emptied, trimmed, moved, culled };
-    for ([_]Case{ .appended, .emptied, .trimmed, .moved, .culled }) |case| {
+    const Case = enum { to_update, shown_to_update, show_then_update, to_none, update_to_idle, appended, emptied, trimmed, moved, culled };
+    const expected = [_]u32{ 0, 1, 1, 0, 1, 1, 1, 1, 0, 1 };
+    for (std.enums.values(Case), expected) |case, count_expected| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
         defer for (twins) |f| f.deinit();
         var updates: [2]u32 = .{ 0, 0 };
@@ -1661,38 +1613,52 @@ test "Scene feedback uses an idle update only where the walk passed the node" {
             }
             for ([_]usize{ 0, 3, 7 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
             for ([_]usize{ 1, 5, 8 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_IDLE_UPDATE);
+            if (case == .update_to_idle) try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE);
+            if (case == .shown_to_update or case == .show_then_update) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
             _ = try presentStepped(f, NoReply{});
             const target = switch (case) {
                 .appended, .emptied, .trimmed => list[5],
-                .moved => list[1],
                 .culled => list[8],
+                else => list[1],
             };
             var request = try f.owner.sceneFrameStep(f.id, null, options);
             while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                if (std.meta.eql(request.node, target)) count.* += 1;
-                if (std.meta.eql(request.node, list[3])) {
-                    switch (case) {
-                        .appended => try f.owner.sceneMoveNode(list[5], list[6], 2),
-                        .emptied => {
-                            for (7..9) |index| try f.owner.sceneMoveNode(list[index], list[4], @intCast(index - 7));
-                            try f.owner.sceneMoveNode(list[5], list[6], 0);
-                        },
-                        .trimmed => {
-                            try f.owner.sceneMoveNode(list[8], list[4], 0);
-                            try f.owner.sceneMoveNode(list[5], list[6], 1);
-                        },
-                        .moved => try f.owner.sceneMoveNode(list[1], list[4], 0),
-                        .culled => try f.owner.sceneSetViewport(list[6], null),
-                    }
-                    try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
-                }
+                if (std.meta.eql(request.node, target) and request.kind == c.OT_SCENE_FRAME_UPDATE) count.* += 1;
+                if (std.meta.eql(request.node, list[3])) switch (case) {
+                    .to_update => try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE),
+                    .shown_to_update, .show_then_update => {
+                        if (case == .shown_to_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                        try f.owner.sceneSetStyle(target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                        if (case == .show_then_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                    },
+                    .to_none => try feedbackHook(f, target, 0),
+                    .update_to_idle => try feedbackHook(f, target, c.OT_SCENE_HOOK_IDLE_UPDATE),
+                    else => {
+                        switch (case) {
+                            .appended => try f.owner.sceneMoveNode(list[5], list[6], 2),
+                            .emptied => {
+                                for (7..9) |index| try f.owner.sceneMoveNode(list[index], list[4], @intCast(index - 7));
+                                try f.owner.sceneMoveNode(list[5], list[6], 0);
+                            },
+                            .trimmed => {
+                                try f.owner.sceneMoveNode(list[8], list[4], 0);
+                                try f.owner.sceneMoveNode(list[5], list[6], 1);
+                            },
+                            .moved => try f.owner.sceneMoveNode(list[1], list[4], 0),
+                            .culled => try f.owner.sceneSetViewport(list[6], null),
+                            else => unreachable,
+                        }
+                        try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                    },
+                };
                 request = try f.owner.sceneFrameStep(f.id, request, options);
             }
             _ = try f.owner.sceneFrameCommit(f.id, request, false);
             try drain(f.owner, f.id);
         }
+        errdefer std.debug.print("case {s}\n", .{@tagName(case)});
         try testing.expectEqual(updates[0], updates[1]);
-        try testing.expectEqual(@as(u32, @intFromBool(case != .moved)), updates[1]);
+        try testing.expectEqual(count_expected, updates[1]);
     }
 }
 
@@ -1810,36 +1776,6 @@ test "Scene feedback appends a node moved into a passed parent after its sorted 
     }
 }
 
-// A reply's mark costs a pass over the marked path, not over every hooked node: the update
-// hooks of a clean subtree already ran in the round's first pass. A's reply sends X's equal
-// text again beside 40 hooked siblings.
-test "Scene feedback passes after a reply visit only the marked path" {
-    const f = try Fixture.init(testing.allocator, 8, 2, .{});
-    defer f.deinit();
-    try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
-    var list: [42]context.Handle = undefined;
-    for (0..41) |index| {
-        try feedbackNode(f, &list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
-        try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
-    }
-    list[41] = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 51);
-    try f.owner.sceneSetText(list[41], "ab");
-    try f.owner.sceneMoveNode(list[41], f.root, 41);
-    var operations: [2]u64 = undefined;
-    for (0..3) |frame| {
-        var request = try f.owner.sceneFrameStep(f.id, null, options);
-        while (request.kind != c.OT_SCENE_FRAME_DONE) {
-            if (frame == 2 and std.meta.eql(request.node, list[0])) try f.owner.sceneSetText(list[41], "ab");
-            request = try f.owner.sceneFrameStep(f.id, request, options);
-        }
-        _ = try f.owner.sceneFrameCommit(f.id, request, false);
-        try drain(f.owner, f.id);
-        if (frame != 0) operations[frame - 1] = (try f.owner.sceneGetStats(f.id)).frameWork.feedback_operations;
-    }
-    // The second pass visits the root and X.
-    try testing.expect(operations[1] <= operations[0] + 10);
-}
-
 // A later pass skips the clean subtrees whose updates ran in the frame, not those the first
 // pass could not reach. A's reply hides X1, whose child C has UPDATE, and hooks Z; Y's reply
 // shows X1 again; Z's reply, in the later pass, hides it for good. The later pass must visit
@@ -1916,50 +1852,6 @@ test "Scene feedback passes keep the round and request counts at the limits" {
         }
         try testing.expectEqual(results[0], results[1]);
         try testing.expectEqual(@as(anyerror!u32, if (limits[0] == 1) error.LayoutLimit else if (limits[1] == chain) error.FrameRequestLimit else chain + 1), results[1]);
-    }
-}
-
-// The one behavior change: a reply that reads what another node's reply writes may see a
-// different value when a reply marked the reader mid-batch. A's reply gives X UPDATE; Y's
-// reply writes its own background; X's reply copies Y's background. X used to run between A
-// and Y and copy the old color; it now runs in the later pass, after Y, in both twins.
-test "Scene feedback runs a reader marked mid-batch after the writers its pass reaches first" {
-    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 1, .{}), try Fixture.init(testing.allocator, 4, 1, .{}) };
-    defer for (twins) |f| f.deinit();
-    var logs: [2][3]u32 = undefined;
-    var colors: [2]ansi.RGBA = undefined;
-    for (twins, &logs, &colors, 0..) |f, *log, *color, twin| {
-        try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
-        var list: [3]context.Handle = undefined;
-        for (&list, 0..) |*node, index| {
-            node.* = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(10 + index));
-            try f.owner.sceneSetStyle(node.*, 4, 0, 0, 1, 1, 1);
-            try f.owner.sceneMoveNode(node.*, f.root, @intCast(index));
-        }
-        // A, X, Y in paint order; Y's reply writes its own background.
-        for ([_]usize{ 0, 2 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
-        _ = try presentStepped(f, NoReply{});
-        var count: usize = 0;
-        var request = try f.owner.sceneFrameStep(f.id, null, options);
-        while (request.kind != c.OT_SCENE_FRAME_DONE) {
-            const index = request.num - 10;
-            log[count] = index;
-            count += 1;
-            switch (index) {
-                0 => try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE),
-                1 => try f.owner.scenePatchPaint(list[1], c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = (try f.owner.raw().getRenderable(list[2])).scene_node.?.paint.background }),
-                else => try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ 9, 0, 0, 255 } }),
-            }
-            request = try f.owner.sceneFrameStep(f.id, request, options);
-        }
-        _ = try f.owner.sceneFrameCommit(f.id, request, false);
-        try drain(f.owner, f.id);
-        try testing.expectEqual(@as(usize, 3), count);
-        color.* = (try f.owner.raw().getRenderable(list[1])).scene_node.?.paint.background;
-    }
-    for (logs, colors) |log, color| {
-        try testing.expectEqual([3]u32{ 0, 2, 1 }, log);
-        try testing.expectEqual(ansi.RGBA{ 9, 0, 0, 255 }, color);
     }
 }
 
@@ -2155,13 +2047,16 @@ test "Scene frame work counts viewport refresh and culling work" {
 // Unchanged frames paint and diff nothing (B3) and keep both lists through hooks and filters
 // (B5a), so they walk and stamp nothing; the scroll scene's status text is as tall as
 // the screen, so its glyph damages every row. A recorded frame whose recording did not change
-// paints nothing either (B7).
+// paints nothing either (B7). A reply that sends the target's text again marks its path: the
+// later pass costs that path (scroll-100: 10 more feedback operations, 2 more child steps).
 test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const bench = @import("../bench/scene-frame_bench.zig");
     const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [21]u64 }{
         .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 86, 9009, 10000, 1, 1, 0, 0, 1, 1, 87, 0, 0 } },
         .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4 } },
+        .{ .shape = .ui, .size = 0, .change = .reply_text, .work = .{ 87, 87, 88, 0, 0, 30, 0, 0, 0, 86, 9009, 10000, 1, 0, 0, 1, 1, 1, 87, 0, 11 } },
+        .{ .shape = .scroll, .size = 100, .change = .reply_text, .work = .{ 104, 104, 5, 0, 0, 20, 0, 0, 100, 53, 10000, 10000, 50, 0, 0, 1, 1, 50, 104, 0, 6 } },
         .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
         .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 1, 6160, 1, 1, 0, 0, 1, 1, 0, 0, 0 } },
