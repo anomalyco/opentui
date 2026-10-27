@@ -111,6 +111,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Restore Zig cache
+        id: zig-cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: test
+          save: true
+
       # Hash native files before install and test steps write into packages/native.
       - name: Restore native test result
         id: native-tested
@@ -203,6 +211,14 @@ jobs:
           cd packages/core
           bun run build:lib
 
+      # Only a run that built the native tests holds their objects.
+      - name: Save Zig cache
+        if: steps.zig-cache.outputs.save == 'true' && steps.native-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .zig-cache
+          key: ${{ steps.zig-cache.outputs.key }}
+
       # Both lanes run the same tests on fixed paths under the temp directory, so the Node lane gets its own.
       - name: Run Bun and Node TypeScript tests
         working-directory: packages/core
@@ -274,6 +290,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      # This job compiles only the ABI check, which the test key holds too.
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: test
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

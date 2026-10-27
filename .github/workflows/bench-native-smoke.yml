@@ -26,6 +26,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:

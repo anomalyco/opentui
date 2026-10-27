@@ -34,6 +34,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -53,6 +59,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+          use-cache: false
 
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib

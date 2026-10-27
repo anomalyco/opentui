@@ -35,6 +35,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Restore Zig cache
+        id: zig-cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+          save: ${{ runner.os == 'macOS' }}
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -54,10 +62,18 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-          cache-key: build-ssh
+          use-cache: false
 
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
+
+      # Only a run that built the library holds its objects.
+      - name: Save Zig cache
+        if: steps.zig-cache.outputs.save == 'true' && steps.bottle.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .zig-cache
+          key: ${{ steps.zig-cache.outputs.key }}
 
       - name: Build framework declarations
         run: |
@@ -102,6 +118,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -126,7 +148,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-          cache-key: build-ssh-packed
+          use-cache: false
 
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
