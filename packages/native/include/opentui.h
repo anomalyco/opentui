@@ -2158,9 +2158,12 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
 #define OT_TERMINAL_MOUSE UINT32_C(2)
 #define OT_TERMINAL_MOUSE_MOVEMENT UINT32_C(4)
 #define OT_TERMINAL_CLEAR_ON_CLOSE UINT32_C(8)
+#define OT_TERMINAL_REPLY_SENTINEL UINT32_C(16)
 
-/* flags is a combination of the four OT_TERMINAL_* option bits above. Other bits
- * must be zero. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
+/* flags is a combination of the five OT_TERMINAL_* option bits above. Other bits
+ * must be zero. REPLY_SENTINEL ends the startup query packet with DA1 (CSI c),
+ * also inside tmux, and sends no other DA1; the host waits for its reply instead
+ * of a timer. A DA1 reply then also ends the startup cursor-report probes. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
  * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
  * clears only a surface that setup or resume claimed: a close before their mode
  * packet leaves visible shell output in place. */
@@ -2184,7 +2187,7 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
- * and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
+ * 0/1 for QUERY_PIXEL_RESOLUTION (1 appends the DA1 sentinel), and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
  * PROGRAM_STATUS accept payload bytes. reserved must be zero. */
 typedef struct ot_session_control_options {
     uint32_t struct_size;
