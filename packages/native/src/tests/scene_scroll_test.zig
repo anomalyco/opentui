@@ -406,6 +406,31 @@ test "Scene scroll node paints fills under its children and bars over them, and 
     }
 }
 
+test "Scene scroll node repaints the rows its viewport fill paints past its box" {
+    // 357: viewport padding makes the viewport 2 rows in a 1-row box, so the fill covers the
+    // box below it, or, with the box moved off the screen, the row that the box leaves.
+    for ([_]i32{ 0, -1 }) |shift| {
+        const f = try Fixture.init(testing.allocator, 6, 4, .{});
+        defer f.deinit();
+        try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+        const box = try create(f, f.root, c.OT_SCENE_BOX, 2);
+        const below = try create(f, f.root, c.OT_SCENE_BOX, 3);
+        for ([_]context.Handle{ box, below }) |node| for (0..2) |kind| try style(f, node, c.OT_STYLE_DIMENSION, @intCast(kind), 0, c.OT_UNIT_POINT, @floatFromInt(6 - 5 * kind), 1);
+        try f.owner.scenePatchPaint(box, c.OT_SCENE_PROPERTY_Z_INDEX | c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .zIndex = 1, .translateY = @floatFromInt(shift) });
+        try f.owner.sceneSetPaint(below, .{ .background = ansi.rgbColor(220, 0, 0, 255) });
+        const never: scene.ScrollBarOptions = .{ .policy = c.OT_SCENE_SCROLL_BAR_NEVER };
+        // Then only the fill changes, then only the box under the fill.
+        for ([_]?ansi.RGBA{ ansi.rgbColor(40, 0, 222, 255), ansi.rgbColor(0, 90, 0, 255), null }) |next| {
+            if (next) |color| try f.owner.sceneSetScroll(box, .{ .padding = .{ 0, 1, 0, 1 }, .fills = .{ null, color, null }, .bars = .{ never, never } });
+            if (next == null) try f.owner.scenePatchPaint(below, c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = ansi.rgbColor(0, 0, 220, 255) });
+            try present(f);
+            try testing.expectEqual(@as(f64, 2), (try f.owner.sceneGetScroll(box)).viewport[3]);
+            const fill = (try f.owner.raw().getRenderable(box)).scene_node.?.scroll.?.options.fills[1].?;
+            for (0..@intCast(2 + shift)) |y| for (0..6) |x| try testing.expectEqual(fill, f.cli.currentRenderBuffer.get(@intCast(x), @intCast(y)).?.bg);
+        }
+    }
+}
+
 test "Scene scroll node range excludes viewport padding, and a scroll in a later reply reveals culled rows" {
     // 321: with vertical viewport padding the last row reaches the padding's edge.
     const f = try Fixture.init(testing.allocator, 10, 10, .{});
