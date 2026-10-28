@@ -17,8 +17,8 @@
 //! The script has editors, focus moves, host cursors, text views of one shared
 //! text buffer and syntax style, scroll nodes (D2b), recordings that read views, editors,
 //! text bodies, composed and destroyed resources, clear, recolor, or draw an image (B7), linked
-//! text, and split renders with and without a frame (B4), but no image nodes, so image node
-//! shortcuts are invisible to it.
+//! text, split renders with and without a frame (B4), and arrows whose text reaches past
+//! their rect, but no image nodes, so image node shortcuts are invisible to it.
 //! Retained paint (B3, B4) is its gate: the candidate verifies every row it keeps or repaints
 //! in a band on even seeds and skips paint outright on odd seeds, and the script writes the
 //! buffers outside scene paint, before and after a draft's paint.
@@ -50,7 +50,7 @@ const candidate = 1;
 // The largest screen a resize step picks (20×8).
 const max_cells = 20 * 8;
 
-const Kind = enum { box, text, slider, editor, text_view, scroll };
+const Kind = enum { box, text, slider, editor, text_view, scroll, arrow };
 
 /// One scripted step, drawn once and applied to both twins.
 const Op = union(enum) {
@@ -96,6 +96,9 @@ const Op = union(enum) {
     scroll_to: struct { slot: usize, target: [2]f64, relative: bool, reapply: bool },
     scroll_request: struct { slot: usize, kind: u32, target: ?usize, alignment: u32, inset: u32 },
     scroll_options: struct { slot: usize, options: scene.ScrollOptions },
+    /// An arrow's options and text, or a scroll node's bar arrow.
+    arrow: struct { slot: usize, seed: u32 },
+    scroll_arrow: struct { slot: usize, seed: u32 },
 };
 
 /// Options drawn once per frame.
@@ -273,6 +276,8 @@ const Stats = struct {
     scroll_changes: u32 = 0,
     scroll_requests: u32 = 0,
     scroll_layouts: u32 = 0,
+    /// Frames that show an arrow wholly left of the screen, whose text may reach into it.
+    arrows_beside: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -447,6 +452,7 @@ const Harness = struct {
                 const kind: u32 = switch (value.kind) {
                     .text => c.OT_SCENE_TEXT,
                     .slider => c.OT_SCENE_SLIDER,
+                    .arrow => c.OT_SCENE_ARROW,
                     .editor => c.OT_SCENE_EDITOR,
                     .text_view => c.OT_SCENE_TEXT_VIEW,
                     .box, .scroll => c.OT_SCENE_BOX,
@@ -461,6 +467,8 @@ const Harness = struct {
                     self.model.edits[value.slot][twin] = edit;
                 }
                 if (value.kind == .text_view) try self.bindView(twin, value.slot);
+                // 1x1, so its rect can lie wholly beside the clip while its text reaches in.
+                if (value.kind == .arrow) for (0..2) |axis| try f.owner.sceneSetStyle(created, c.OT_STYLE_DIMENSION, @intCast(axis), 0, 1, 1, 1);
             },
             .rebind => |value| {
                 if (self.model.views[value.slot][twin]) |view| {
@@ -543,6 +551,12 @@ const Harness = struct {
                 if (value.seed & 0x40000 == 0) return f.owner.sceneSetText(self.handle(twin, value.slot), bytes[0..len]);
                 try f.owner.sceneSetStyledText(self.handle(twin, value.slot), bytes[0..len], &.{.{ .byte_count = @intCast(len), .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 0 }, .link_url = "https://example.test/band" }});
             },
+            .arrow => |value| try f.owner.sceneSetArrow(self.handle(twin, value.slot), arrowOptions(value.seed)),
+            .scroll_arrow => |value| {
+                var options = arrowOptions(value.seed >> 2);
+                options.direction = 0;
+                try f.owner.sceneSetScrollArrow(self.handle(twin, value.slot), value.seed & 1, (value.seed >> 1) & 1, options);
+            },
             .slider => |value| try f.owner.sceneSetSlider(self.handle(twin, value.slot), .{ .value = value.value, .orientation = value.orientation }),
             .text_options => |value| try f.owner.sceneSetTextOptions(self.handle(twin, value.slot), value.options),
             .measure => |slot| try f.owner.sceneSetMeasure(self.handle(twin, slot), null),
@@ -588,7 +602,7 @@ const Harness = struct {
                     0 => .box,
                     // Half the boxes are scroll nodes, so the mix of the other kinds stays as before.
                     1 => if (random.boolean()) .box else .scroll,
-                    2 => .slider,
+                    2 => if (random.boolean()) .slider else .arrow,
                     8 => .editor,
                     9 => .text_view,
                     else => .text,
@@ -648,7 +662,7 @@ const Harness = struct {
         switch (random.uintLessThan(u32, 6)) {
             // A move into the node itself or its subtree is rejected by both twins.
             5 => return .{ .move = .{ .slot = self.liveSlot(scaffold_slots) orelse slot, .parent = slot, .index = @intCast(self.model.children[slot].items.len) } },
-            4 => return .{ .hooks = .{ .slot = slot, .flags = if (random.boolean()) c.OT_SCENE_HOOK_SCROLL else 0 } },
+            4 => return if (random.boolean()) .{ .scroll_arrow = .{ .slot = slot, .seed = random.int(u32) } } else .{ .hooks = .{ .slot = slot, .flags = if (random.boolean()) c.OT_SCENE_HOOK_SCROLL else 0 } },
             0 => return .{ .scroll_to = .{ .slot = slot, .target = .{ @floatFromInt(random.intRangeAtMost(i32, -3, 12)), @floatFromInt(random.intRangeAtMost(i32, -3, 12)) }, .relative = random.boolean(), .reapply = random.boolean() } },
             // A node to reveal or anchor, from anywhere: one outside the subtree is rejected by both twins.
             1 => {
@@ -765,14 +779,14 @@ const Harness = struct {
             },
             2 => .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = @floatFromInt(@intFromBool(random.uintLessThan(u32, 4) == 0)), .flags = 0 } },
             3 => .{ .style = .{ .slot = slot, .group = c.OT_STYLE_DIMENSION, .kind = random.uintLessThan(u32, 2), .unit = 1, .value = @floatFromInt(random.intRangeAtMost(u32, 1, 6)), .flags = 1 } },
-            4 => if (self.model.kind[slot] == .text) self.generateText(slot) else if (self.model.kind[slot] == .slider)
+            4 => if (self.model.kind[slot] == .arrow) .{ .arrow = .{ .slot = slot, .seed = random.int(u32) } } else if (self.model.kind[slot] == .text) self.generateText(slot) else if (self.model.kind[slot] == .slider)
                 .{ .slider = .{ .slot = slot, .value = @floatFromInt(random.uintLessThan(u32, 101)), .orientation = random.uintLessThan(u32, 2) } }
             else
                 .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_OVERFLOW, .unit = 0, .value = @floatFromInt(random.uintLessThan(u32, 2)), .flags = 0 } },
             else => if (random.uintLessThan(u32, 3) == 0)
                 .{ .style = .{ .slot = slot, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_POSITION_TYPE, .unit = 0, .value = @floatFromInt(1 + random.uintLessThan(u32, 2)), .flags = 0 } }
             else
-                .{ .position = .{ .slot = slot, .left = @floatFromInt(random.uintLessThan(u32, 14)), .top = @floatFromInt(random.uintLessThan(u32, 8)) } },
+                .{ .position = .{ .slot = slot, .left = @floatFromInt(random.intRangeLessThan(i32, -8, 14)), .top = @floatFromInt(random.uintLessThan(u32, 8)) } },
         };
     }
 
@@ -1145,6 +1159,14 @@ const Harness = struct {
             self.stats.scroll_frames += 1;
             break;
         }
+        for (self.model.handles, 0..) |maybe, slot| {
+            const pair = maybe orelse continue;
+            if (self.model.kind[slot] != .arrow or !self.model.shown(slot)) continue;
+            const layout = try self.twins[candidate].owner.sceneGetLayout(pair[candidate], false);
+            if (layout.screenX + layout.width > 0) continue;
+            self.stats.arrows_beside += 1;
+            break;
+        }
         const cursor = try self.twins[candidate].owner.sceneGetCursorState(self.twins[candidate].id);
         self.stats.editor_cursors += @intFromBool(self.twins[candidate].state.editor_cursor_owned);
         self.stats.host_cursors += @intFromBool(cursor.visible and !self.twins[candidate].state.editor_cursor_owned);
@@ -1380,12 +1402,19 @@ const Harness = struct {
         if (self.random.boolean()) {
             const slot = self.liveSlot(scaffold_slots) orelse return;
             const op_paint = self.generateReply(slot);
-            if (op_paint != .paint) return;
+            // An arrow's change too: its record must hold the rows its text reaches.
+            if (op_paint != .paint and op_paint != .arrow) return;
             try self.apply(op_paint);
             try self.frame();
         }
     }
 };
+
+/// Arrow text from one to eight cells, a wide glyph, or the standard glyph.
+fn arrowOptions(seed: u32) scene.ArrowOptions {
+    const texts = [_]?[]const u8{ null, "A", "ABCD", "ABCDEFGH", "\u{754c}x", "ABCE" };
+    return .{ .direction = seed % 4, .foreground = .{ 255, @intCast((seed >> 2) % 256), 0, 255 }, .text = texts[(seed >> 10) % texts.len] };
+}
 
 /// A recorded clear, a color matrix without and with a mask, or an image.
 fn appendNonLocal(recording: *Recording, kind: u32, image: context.Handle) void {
@@ -1481,6 +1510,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .scroll_frames = 300,
         .scroll_changes = 42,
         .scroll_requests = 2,
+        .arrows_beside = 200,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
