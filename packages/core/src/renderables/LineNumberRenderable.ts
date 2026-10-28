@@ -297,7 +297,7 @@ class GutterRenderable extends Renderable {
     const sources = getLineSources(this.target, sourceStart, end - start + sourceOffset)
     let lastSource = sourceOffset > 0 ? sources[0] : -1
 
-    for (let i = sourceOffset; i < sources.length; i++) {
+    for (let i = sourceOffset; i < end - start + sourceOffset; i++) {
       const row = y + start + i - sourceOffset
       const logicalLine = sources[i]
       const lineBg = this._lineColorsGutter.get(logicalLine)
@@ -305,7 +305,7 @@ class GutterRenderable extends Renderable {
       if (lineBg) buffer.fillRect(x, row, this.width, 1, lineBg)
 
       // Only the first visual row of a logical line gets its number and signs.
-      if (logicalLine !== lastSource) {
+      if (logicalLine !== undefined && logicalLine !== lastSource) {
         const sign = this._lineSigns.get(logicalLine)
         if (sign?.before) {
           // Padded to the widest before sign, for alignment.

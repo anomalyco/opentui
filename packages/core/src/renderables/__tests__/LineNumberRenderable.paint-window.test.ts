@@ -175,19 +175,29 @@ describe("LineNumber paint window", () => {
       height: 1,
       flexGrow: 1,
     })
-    const numbers = new LineNumberRenderable(setup.renderer, { target: text, minHeight: 3, flexShrink: 0 })
+    const numbers = new LineNumberRenderable(setup.renderer, {
+      target: text,
+      minHeight: 3,
+      minWidth: 5,
+      flexShrink: 0,
+      bg: "#405060",
+    })
     setup.renderer.root.add(numbers)
     await setup.flush()
     expect(text.getLineSources(0, 4)).toEqual([0, 0])
-    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghijk")
+    // The row below the last source keeps the gutter background and gets no number.
+    const lastRow = setup.renderer.currentRenderBuffer.withBuffers(({ bg }) => Array.from(bg.slice(112, 116)))
+    expect(lastRow).toEqual([64, 80, 96, 255])
+    expect(setup.captureCharFrame().split("\n")[2]).toBe(" ".repeat(14))
+    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghi")
     setup.resize(14, 2)
     await setup.flush()
-    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghijk")
+    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghi")
     setup.resize(14, 3)
     await setup.flush()
     text.scrollY = 1
     await setup.renderOnce()
-    expect(setup.captureCharFrame().split("\n")[0]).toBe("   o          ")
+    expect(setup.captureCharFrame().split("\n")[0]).toBe("     o        ")
   })
 
   test("remapped sources refresh when the target paints before its gutter", async () => {
