@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
 import type { Renderable } from "../Renderable.js"
-import { RGBA } from "../lib/RGBA.js"
+import { RGBA, rgbToHex } from "../lib/RGBA.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -191,6 +191,84 @@ test.each(tabPaints)("TabSelect paints $name", async ({ options, lines }) => {
   await setup.renderOnce()
   const frame = setup.captureCharFrame().split("\n")
   expect(frame.slice(0, lines.length).map((line) => line.trimEnd())).toEqual(lines)
+})
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+const hex = (color: RGBA) => rgbToHex(color).slice(1)
+
+// A frame's visible cells, [grapheme, fg, bg] each: the foreground of a blank cell without attributes does not show.
+function cells(frame: CapturedFrame, rows = frame.rows): [string, RGBA | null, RGBA][][] {
+  return frame.lines
+    .slice(0, rows)
+    .map((line) =>
+      line.spans.flatMap((span) =>
+        Array.from(graphemes.segment(span.text), ({ segment }): [string, RGBA | null, RGBA] => [
+          segment,
+          segment.trim() || span.attributes ? span.fg : null,
+          span.bg,
+        ]),
+      ),
+    )
+}
+
+// Each row of the first `width` cells as runs of the same visible colors, `text fg/bg|…` with hex colors.
+function runs(frame: CapturedFrame, rows: number, width: number): string[] {
+  return cells(frame, rows).map((line) => {
+    const out: { text: string; fg: RGBA | null; bg: RGBA }[] = []
+    for (const [text, fg, bg] of line.slice(0, width)) {
+      const last = out.at(-1)
+      if (last?.bg.equals(bg) && (!fg || !last.fg || last.fg.equals(fg))) {
+        last.text += text
+        last.fg ??= fg
+      } else out.push({ text, fg, bg })
+    }
+    return out.map(({ text, fg, bg }) => `${text} ${fg ? hex(fg) : ""}/${hex(bg)}`).join("|")
+  })
+}
+
+// Default colors over a backdrop: the transparent background shows it, and focus fills the control opaque. Each
+// row focuses one control, so the other paints unfocused.
+const selectRows = [
+  " ▶ one         ffff00/334455|             /102030",
+  "   one item    cccccc/334455|             /102030",
+]
+const tabRows = [" one     ffffff/102030| two     ffff00/334455| three     ffffff/102030"]
+const defaultPaints: [string, string[]][] = [
+  [
+    "Select",
+    [
+      ...selectRows,
+      "   two         ffffff/1a1a1a|             /102030",
+      "   two item    888888/1a1a1a|             /102030",
+      ...tabRows,
+      "         /102030|▬▬▬▬▬▬▬▬ ffff00/334455|           /102030",
+      " two item                  cccccc/102030",
+    ],
+  ],
+  [
+    "TabSelect",
+    [
+      ...selectRows,
+      "   two                     ffffff/102030",
+      "   two item                888888/102030",
+      " one     ffffff/1a1a1a| two     ffff00/334455| three   ffffff/1a1a1a|   /102030",
+      "         /1a1a1a|▬▬▬▬▬▬▬▬ ffff00/334455|         /1a1a1a|   /102030",
+      " two item                cccccc/1a1a1a|   /102030",
+    ],
+  ],
+]
+
+test.each(defaultPaints)("Select and TabSelect default colors over a backdrop, focus %s", async (focus, lines) => {
+  const backdrop = new BoxRenderable(renderer, { width: 26, height: 7, backgroundColor: "#102030" })
+  const select = new SelectRenderable(renderer, { width: 14, height: 4, options: items.slice(0, 3) })
+  const tabs = new TabSelectRenderable(renderer, { width: 24, tabWidth: 8, options: items.slice(0, 3) })
+  backdrop.add(select)
+  backdrop.add(tabs)
+  renderer.root.add(backdrop)
+  ;(focus === "Select" ? select : tabs).focus()
+  tabs.setSelectedIndex(1)
+  await setup.renderOnce()
+  expect(runs(setup.captureSpans(), 7, 26)).toEqual(lines)
 })
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
