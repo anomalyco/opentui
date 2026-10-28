@@ -16,7 +16,7 @@ import { ArrowRenderable, ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
 import { SliderRenderable } from "./Slider.js"
-import { TabSelectRenderable } from "./TabSelect.js"
+import { TabSelectRenderable, type TabSelectOption, type TabSelectRenderableOptions } from "./TabSelect.js"
 import { TextRenderable } from "./Text.js"
 import { TextareaRenderable } from "./Textarea.js"
 import { TimeToFirstDrawRenderable } from "./TimeToFirstDraw.js"
@@ -148,7 +148,11 @@ test.each(navigation)("%s", (_, Control, options, steps, expected) => {
 })
 
 // Names and the description are cut by display width on a glyph, with "…" right after the kept text (032).
-test.each([
+const tabPaints: {
+  name: string
+  options: TabSelectRenderableOptions & { options: TabSelectOption[] }
+  lines: string[]
+}[] = [
   {
     name: "the visible tabs, the underline, the description, and scroll arrows",
     options: { options: [...items, ...items] },
@@ -178,7 +182,9 @@ test.each([
     options: { tabWidth: 3, showDescription: false, showUnderline: false, options: [{ name: "ab", description: "" }] },
     lines: [" …"],
   },
-])("TabSelect paints $name", async ({ options, lines }) => {
+]
+
+test.each(tabPaints)("TabSelect paints $name", async ({ options, lines }) => {
   const tabs = new TabSelectRenderable(renderer, { width: "100%", tabWidth: 10, ...options })
   renderer.root.add(tabs)
   if (options.options.length > 5) tabs.setSelectedIndex(5)
