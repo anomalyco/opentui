@@ -280,6 +280,8 @@ const Stats = struct {
     scroll_layouts: u32 = 0,
     /// Frames that show an arrow wholly left of the screen, whose text may reach into it.
     arrows_beside: u32 = 0,
+    /// Width changes of a shown text view node right after a recording drew its view.
+    view_resizes: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -315,6 +317,8 @@ const Harness = struct {
     recorded: bool = false,
     /// A split render moved the output, so the decoder no longer follows the screen.
     split: bool = false,
+    /// The last recording drew the view of another, shown node.
+    bound_read: bool = false,
 
     fn init(random: std.Random, side: std.Random, verify: bool) !Harness {
         var twins: [2]Fixture = undefined;
@@ -1011,16 +1015,17 @@ const Harness = struct {
             if (body) self.stats.bodies += 1;
             // Other slots draw text or a fill, in their node or beside it, a view, an editor, a text
             // body, a composed buffer, or a destroyed view; the first one now and then clears,
-            // recolors, or draws an image. Three nodes in four draw the same reader, or the view of
-            // a text view node, on the last row of their clip on every frame, so only the
-            // resource's own changes, or that node's size, repaint them.
+            // recolors, or draws an image. Three nodes in four draw the same reader, or half of them
+            // the view of a shown text view node, on the last row of their clip on every frame, so
+            // only the resource's own changes, or that node's size, repaint them.
             const steady = (a.num + self.read_base) % 4 != 0 and !body;
             const variant = (index + self.hook_tick) % 8;
             const read = (a.num + self.read_base / 4) % 4;
-            const bound = if (read == 3) self.slotWith(.text_view) else null;
+            const bound = if (read % 3 == 0) self.slotWith(.text_view) else null;
             const rare = if (index == 0) self.random.uintLessThan(u32, 64) else 64;
             self.stats.non_local_records += @intFromBool(!body and rare < 4);
             self.stats.steady_reads += @intFromBool(steady and rare >= 4);
+            if (steady and rare >= 4 and bound != null) self.bound_read = true;
             const view_slot = self.slotWith(.text_view);
             for (recordings, [2]context.Handle{ a.node, b.node }, 0..) |*recording, node, twin| {
                 recording.slot(@intCast(index), phase);
@@ -1053,10 +1058,14 @@ const Harness = struct {
     }
 
     /// Five times in eight, an edit to what a steady recording reads: a highlight of the
-    /// shared text, the readers, or the width of a node that shows a view.
+    /// shared text, the readers, or the width of a node that shows a view. After a recording
+    /// that drew that view, always its width, which no epoch tracks.
     fn generateRead(self: *Harness) ?Op {
         const random = self.random;
-        return switch (random.uintLessThan(u32, 8)) {
+        const bound = self.bound_read;
+        self.bound_read = false;
+        self.stats.view_resizes += @intFromBool(bound);
+        return switch (if (bound) 3 else random.uintLessThan(u32, 8)) {
             0 => .{ .highlight = .{ .start = random.uintLessThan(u32, 4), .end = random.uintLessThan(u32, 8) } },
             1, 2, 4 => .{ .reader = random.int(u32) },
             3 => .{ .style = .{ .slot = self.slotWith(.text_view) orelse return null, .group = c.OT_STYLE_DIMENSION, .kind = 0, .unit = 1, .value = @floatFromInt(random.intRangeAtMost(u32, 2, 8)), .flags = 1 } },
@@ -1065,10 +1074,11 @@ const Harness = struct {
     }
 
     /// The first slot of a kind whose resource a recording can read, past the slots that
-    /// take paint hooks, so a recording reads another node's resource.
+    /// take paint hooks, so a recording reads another node's resource. A text view must be
+    /// shown, so that its node's size reaches the view.
     fn slotWith(self: *const Harness, kind: Kind) ?usize {
         for (self.model.handles[paint_hook_slots_end..], paint_hook_slots_end..) |maybe, slot| {
-            if (maybe != null and self.model.kind[slot] == kind and (kind != .text_view or self.model.views[slot][0] != null)) return slot;
+            if (maybe != null and self.model.kind[slot] == kind and (kind != .text_view or (self.model.views[slot][0] != null and self.model.shown(slot)))) return slot;
         }
         return null;
     }
@@ -1529,6 +1539,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .scroll_changes = 42,
         .scroll_requests = 2,
         .arrows_beside = 210,
+        .view_resizes = 25,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
