@@ -2489,9 +2489,10 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         mechanism: ?clipboard_linux.Mechanism = null,
         clear: bool = false,
         provider: bool = false,
+        primary: bool = false,
         barrier: bool = false,
         output_pending: bool = false,
-        phase: enum { ready, unsupported } = .ready,
+        phase: enum { ready, unsupported, failed } = .ready,
         inherited_socket: bool = false,
         open: bool,
     };
@@ -2503,9 +2504,11 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         .{ .name = "settled Wayland operation", .status = .read, .mechanism = .wayland, .open = false },
         .{ .name = "clear awaiting its barrier", .clear = true, .open = true },
         .{ .name = "owned selection", .provider = true, .open = true },
+        .{ .name = "owned primary selection", .provider = true, .primary = true, .open = true },
         .{ .name = "selection barrier", .barrier = true, .open = true },
         .{ .name = "queued output", .output_pending = true, .open = true },
         .{ .name = "cached unsupported probe", .phase = .unsupported, .open = true },
+        .{ .name = "failed connection", .phase = .failed, .open = false },
         .{ .name = "inherited WAYLAND_SOCKET", .inherited_socket = true, .open = true },
     };
     var symbols = clipboard_wayland.testSymbols();
@@ -2523,7 +2526,8 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         service.wayland = wayland;
         if (case.provider) {
             const data = try std.testing.allocator.dupe(u8, "owned");
-            try std.testing.expectEqual(clipboard_wayland.SelectionResult.ok, wayland.publishText(false, data));
+            wayland.primary_supported = case.primary;
+            try std.testing.expectEqual(clipboard_wayland.SelectionResult.ok, wayland.publishText(case.primary, data));
         }
         if (case.barrier) _ = wayland.requestSelectionBarrier().?;
         if (case.clear) {
@@ -2534,6 +2538,7 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         }
         wayland.output_pending = case.output_pending;
         if (case.phase == .unsupported) wayland.phase = .unsupported;
+        if (case.phase == .failed) wayland.phase = .failed;
         wayland.inherited_socket = case.inherited_socket;
         var operation: Operation = .{
             .allocator = std.testing.allocator,
@@ -2548,7 +2553,8 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
 
         // The X11 turn leaves the fake display alone, so only the idle policy decides.
         service.drain_mechanism = .x11;
-        _ = drainService(&objects, service_handle);
+        const active = case.clear or case.provider or case.barrier or case.output_pending;
+        try std.testing.expectEqual(@as(u8, @intFromBool(active)), drainService(&objects, service_handle));
         try std.testing.expectEqual(case.open, service.wayland != null);
         // Queued events are dispatched before a close so their offers are destroyed.
         try std.testing.expectEqual(@intFromBool(!case.open), Dispatch.count);
