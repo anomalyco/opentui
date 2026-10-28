@@ -2382,9 +2382,14 @@ test "drawTextBuffer - a wide glyph cut by an edge draws the cells that two spac
         .{ .text = "a界b", .shown = "a  b", .viewport = .{ .x = 0, .y = 0, .width = 2, .height = 1 } },
         .{ .text = "界a界b", .shown = "  a  b", .x = 1, .viewport = .{ .x = 1, .y = 0, .width = 3, .height = 1 } },
         .{ .text = "a\tb", .shown = "a  b", .viewport = .{ .x = 2, .y = 0, .width = 4, .height = 1 } },
+        .{ .text = "\u{1f44d}\u{1f3fd}a", .shown = "  a", .x = 1, .viewport = .{ .x = 1, .y = 0, .width = 3, .height = 1 } },
     };
-    const Style = struct { bg: ?RGBA = ansi.rgbColor(32, 64, 192, 255), attributes: u32 = 0, select: bool = false };
-    const styles = [_]Style{ .{}, .{ .bg = null }, .{ .attributes = ansi.TextAttributes.setLinkId(ansi.TextAttributes.UNDERLINE, url) }, .{ .bg = null, .select = true } };
+    const syntax = try ss.SyntaxStyle.init(allocator);
+    defer syntax.deinit();
+    const green = try syntax.registerStyle("green", null, ansi.rgbColor(20, 200, 100, 255), 0);
+    // A highlighted span's background differs from the default one.
+    const Style = struct { bg: ?RGBA = ansi.rgbColor(32, 64, 192, 255), attributes: u32 = 0, select: bool = false, highlight: bool = false };
+    const styles = [_]Style{ .{}, .{ .bg = null }, .{ .attributes = ansi.TextAttributes.setLinkId(ansi.TextAttributes.UNDERLINE, url) }, .{ .bg = null, .select = true }, .{ .highlight = true } };
     const screens = [2]*OptimizedBuffer{
         try OptimizedBuffer.init(allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links }),
         try OptimizedBuffer.init(allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links }),
@@ -2399,6 +2404,8 @@ test "drawTextBuffer - a wide glyph cut by an edge draws the cells that two spac
             try tb.setText(text);
             tb.setDefaultBg(style.bg);
             tb.setDefaultAttributes(style.attributes);
+            tb.setSyntaxStyle(syntax);
+            if (style.highlight) try tb.addHighlight(0, 0, 8, green, 1, 0);
             const view = try TextBufferView.init(allocator, tb);
             defer view.deinit();
             view.setWrapMode(.none);
