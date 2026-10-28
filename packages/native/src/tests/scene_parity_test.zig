@@ -215,6 +215,8 @@ const Stats = struct {
     filtered_requests: u32 = 0,
     /// Filtered frames with a request that kept the last frame's lists (B5a).
     reused_filtered_requests: u32 = 0,
+    /// Frames whose culled paint list was checked against the model's order.
+    culled_orders: u32 = 0,
     /// Frames with a hooked node under a hidden ancestor.
     hidden_hooked: u32 = 0,
     /// Host replies that hid an ancestor of the requesting node mid-frame.
@@ -1188,24 +1190,30 @@ const Harness = struct {
     }
 
     /// A paint list that the next frame may keep is in the model's order. The model does not
-    /// cull.
+    /// cull: a culled list drops members, with their subtrees, and keeps the order of the rest.
     fn expectPaintOrder(self: *Harness) !void {
         const f = self.twins[candidate];
         var order: [node_count_max]usize = undefined;
         const count = self.model.paintOrder(&order, 0, root_slot);
-        if (f.state.members.items.len == 0 or f.state.filter_count != 0) return;
+        if (f.state.members.items.len == 0) return;
         // A reply after paint changed layout or a view: the next frame prepares again.
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked((try f.owner.raw().getRenderable(self.handle(candidate, root_slot))).yoga_node, &dirty));
         if (dirty != 0 or f.state.preparation_dirty) return;
+        const culled = f.state.filter_count != 0;
+        self.stats.culled_orders += @intFromBool(culled);
         var painted: usize = 0;
         for (f.state.members.items) |entry| {
             if (entry.node.scene_node.?.kind == c.OT_SCENE_ROOT or !entry.visible or entry.bars) continue;
+            const node = entry.node.scene_node.?.handle;
+            if (culled) while (painted < count and !std.meta.eql(self.handle(candidate, order[painted]), node)) {
+                painted += 1;
+            };
             try testing.expect(painted < count);
-            try testing.expectEqual(self.handle(candidate, order[painted]), entry.node.scene_node.?.handle);
+            try testing.expectEqual(self.handle(candidate, order[painted]), node);
             painted += 1;
         }
-        try testing.expectEqual(count, painted);
+        if (!culled) try testing.expectEqual(count, painted);
     }
 
     fn expectSamePresentation(self: *Harness) !void {
@@ -1436,6 +1444,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .filtered = 260,
         .filtered_requests = 100,
         .reused_filtered_requests = 18,
+        .culled_orders = 4100,
         .hidden_hooked = 1150,
         .reply_hides = 7,
         .reply_detaches = 9,
