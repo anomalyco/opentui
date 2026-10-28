@@ -1412,7 +1412,6 @@ pub const Service = struct {
             if (operation.status == .pending and operation.mechanism != .x11) return;
         }
         wayland.dispatchQueued();
-        if (!wayland.closableWhenIdle()) return;
         service.resetWayland();
     }
 
