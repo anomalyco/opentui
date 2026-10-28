@@ -1222,10 +1222,10 @@ pub const Scene = struct {
             node.resize_width = initial_width;
             node.resize_height = initial_height;
         }
-        // A shown idle-update node used its update when this round prepared it, so UPDATE given
-        // in this frame waits for the next one.
-        const stamped = flags & api.OT_SCENE_HOOK_UPDATE != 0 and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0 and
-            self.attempt != null and node.prepared_gen == self.candidates_gen and node.layout_flags.prepared_visible;
+        // A shown idle-update node used its update when the latest round prepared it, so UPDATE
+        // given in this frame, whatever hooks come between, waits for the next one.
+        const stamped = node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0 and self.attempt != null and
+            node.prepared_gen == self.candidates_gen and node.layout_flags.prepared_visible;
         self.hook_count -= @intFromBool(node.hook_flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.hook_count += @intFromBool(flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.layout_hook_count -= @intFromBool(node.hook_flags & scene_layout_hook_flags != 0);
@@ -1718,8 +1718,8 @@ pub const Scene = struct {
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .prepass });
                         if (node.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0) self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .scroll });
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .refresh });
-                        if (node.hook_flags & (api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_IDLE_UPDATE) != 0 and node.update_frame != active.frame_id) {
-                            if (node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0) result = try self.request(node, api.OT_SCENE_FRAME_UPDATE);
+                        if (node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0 and node.update_frame != active.frame_id) {
+                            result = try self.request(node, api.OT_SCENE_FRAME_UPDATE);
                             node.update_frame = active.frame_id;
                         }
                     },

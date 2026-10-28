@@ -268,8 +268,8 @@ Native code calculates Yoga layout and prepares node geometry, clipping, and pai
 If a preparation hook changes the scene, native code repeats the necessary preparation.
 An update hook runs at most once per node per attempt.
 The relative order of update and resize calls between different nodes is not specified.
-A node with `OT_SCENE_HOOK_IDLE_UPDATE` that a layout round prepares as visible uses up its update for that frame.
-If an acknowledgement then switches it to `OT_SCENE_HOOK_UPDATE`, its first update request comes in the next frame.
+A node with `OT_SCENE_HOOK_IDLE_UPDATE` that the latest layout round prepared as visible has used up its update for that frame.
+If an acknowledgement then gives it `OT_SCENE_HOOK_UPDATE`, directly or after other hook changes, its first update request comes in the next frame.
 
 Native code sorts a parent's children by `z_index` before it paints them.
 A `z_index` change or reparent in a preparation hook's acknowledgement shows in the same frame.

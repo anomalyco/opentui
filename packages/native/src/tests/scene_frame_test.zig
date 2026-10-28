@@ -1819,17 +1819,18 @@ test "Scene feedback scans a culled wide parent no more than today's walk" {
     }
 }
 
-// A shown idle-update node uses its update when the round prepares it, so UPDATE given in the
-// frame waits for the next one, wherever feedback is. Root children H1, M (idle update), V, H2,
-// Q, N; P inside V, with C (UPDATE) and D. H2's reply gives M UPDATE and RESIZE (seed 137),
-// shows the hidden M before or after doing so (the round did not prepare it shown; M was hidden
-// before it was ever shown, after, or after and moved, so the round lists it hidden), clears M's
-// hooks, or gives M, which had UPDATE, idle update. Or it moves M into Q, or unbinds the
-// viewport that culled D; then the moved node, or D, gets UPDATE. The count is the target's
-// UPDATE calls that frame.
+// A shown idle-update node uses its update when the latest round prepares it, so UPDATE given
+// in the frame waits for the next one, wherever feedback is. Root children H1, M (idle update),
+// V, H2, Q, N; P inside V, with C (UPDATE) and D. H2's reply gives M UPDATE and RESIZE (seed
+// 137), shows the hidden M before or after doing so (the round did not prepare it shown; M was
+// hidden before it was ever shown, after, or after and moved, so the round lists it hidden),
+// clears M's hooks, clears them and then gives M UPDATE, or gives M, which had UPDATE, idle
+// update. Or it hides M and resizes N, whose RESIZE reply in the next round shows M and gives it
+// UPDATE. Or it moves M into Q, or unbinds the viewport that culled D; then the moved node, or D,
+// gets UPDATE. Or M gets UPDATE between frames. The count is the target's UPDATE calls that frame.
 test "Scene feedback uses an idle update for the frame of the round that prepared it shown" {
-    const Case = enum { to_update, shown_to_update, rehidden, placed_hidden, show_then_update, to_none, update_to_idle, moved, culled };
-    const expected = [_]u32{ 0, 1, 1, 1, 1, 0, 1, 0, 0 };
+    const Case = enum { to_update, shown_to_update, rehidden, placed_hidden, show_then_update, to_none, cleared_to_update, update_to_idle, hidden_by_reply, moved, culled, between_frames };
+    const expected = [_]u32{ 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1 };
     for (std.enums.values(Case), expected) |case, count_expected| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
         defer for (twins) |f| f.deinit();
@@ -1853,14 +1854,20 @@ test "Scene feedback uses an idle update for the frame of the round that prepare
             for ([_]usize{ 0, 3, 7 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
             for ([_]usize{ 1, 5, 8 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_IDLE_UPDATE);
             if (case == .update_to_idle) try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE);
+            if (case == .hidden_by_reply) try feedbackHook(f, list[5], c.OT_SCENE_HOOK_IDLE_UPDATE | c.OT_SCENE_HOOK_RESIZE);
             if (case == .shown_to_update or case == .show_then_update) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
             _ = try presentStepped(f, NoReply{});
             if (case == .rehidden or case == .placed_hidden) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
             if (case == .placed_hidden) try f.owner.sceneMoveNode(list[1], f.root, 1);
+            if (case == .between_frames) try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE);
             const target = if (case == .culled) list[8] else list[1];
             var request = try f.owner.sceneFrameStep(f.id, null, options);
             while (request.kind != c.OT_SCENE_FRAME_DONE) {
                 if (std.meta.eql(request.node, target) and request.kind == c.OT_SCENE_FRAME_UPDATE) count.* += 1;
+                if (case == .hidden_by_reply and std.meta.eql(request.node, list[5])) {
+                    try f.owner.sceneSetStyle(target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                    try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                }
                 if (std.meta.eql(request.node, list[3])) switch (case) {
                     .to_update => try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE),
                     .shown_to_update, .rehidden, .placed_hidden, .show_then_update => {
@@ -1868,7 +1875,15 @@ test "Scene feedback uses an idle update for the frame of the round that prepare
                         try f.owner.sceneSetStyle(target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
                         if (case == .show_then_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
                     },
-                    .to_none => try feedbackHook(f, target, 0),
+                    .to_none, .cleared_to_update => {
+                        try feedbackHook(f, target, 0);
+                        if (case == .cleared_to_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                    },
+                    .hidden_by_reply => {
+                        try f.owner.sceneSetStyle(target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+                        try f.owner.sceneSetStyle(list[5], 4, 1, 0, 1, 2, 1);
+                    },
+                    .between_frames => {},
                     .update_to_idle => try feedbackHook(f, target, c.OT_SCENE_HOOK_IDLE_UPDATE),
                     else => {
                         if (case == .moved) try f.owner.sceneMoveNode(list[1], list[4], 0) else try f.owner.sceneSetViewport(list[6], null);
