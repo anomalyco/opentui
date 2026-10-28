@@ -252,6 +252,135 @@ test "Scene viewport exact overlap retains spanning children beyond the legacy 5
     try testing.expectEqual(@as(u32, 0), (try f.owner.sceneFrameStep(f.id, request, frame_options)).kind);
 }
 
+/// One random change to a culled scene, the same in both twins. Frame 0 builds it: a filtering
+/// parent (a content box bound to a viewport box, or a culling scroll node) with 24 children
+/// in flow, absolute (spanning or out of order), hidden, translated, or with z ties.
+fn cullStep(f: Fixture, random: std.Random, nodes: []context.Handle, frame: usize) !void {
+    // Window and parent positions: small, fractional, at the 2^24 bound, near 2^55, f32's limit.
+    const shifts = [_]f64{ 0, 0.1, -0.5, -0.75, -20, -(1 << 24) + 2, -(1 << 24) - 2, 1 << 24, (1 << 55) - 4, 1 << 55, -(1 << 60), -3.4e38, 3.4e38 };
+    const parent = nodes[nodes.len - 2];
+    const viewport = nodes[nodes.len - 1];
+    const rows = nodes[0 .. nodes.len - 2];
+    const shift = shifts[random.uintLessThan(usize, shifts.len)];
+    if (frame == 0) {
+        if (random.uintLessThan(u32, 4) == 0) {
+            try f.owner.sceneSetScroll(parent, .{ .axes = 3, .culling = true });
+            try dimensions(f.owner, parent, 8, 4);
+        } else {
+            try dimensions(f.owner, viewport, 8, 4);
+            try f.owner.sceneSetStyle(parent, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+            try f.owner.sceneSetViewport(parent, viewport);
+        }
+        // The viewport box updates before the parent selects, so its replies come first.
+        try f.owner.sceneMoveNode(viewport, f.root, 0);
+        try f.owner.sceneSetHooks(viewport, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
+        try f.owner.sceneMoveNode(parent, f.root, 0);
+        const direction = if (random.boolean()) 0 else random.uintLessThan(u32, 4);
+        try f.owner.sceneSetStyle(parent, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, @floatFromInt(direction), 0);
+        if (random.uintLessThan(u32, 8) == 0) try f.owner.sceneSetStyle(parent, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_WRAP, 0, 0, 1, 0);
+        for (rows, 0..) |*row, index| {
+            row.* = try f.owner.sceneCreateNode(f.id, 1, @intCast(index + 10));
+            const size: f32 = @floatFromInt(random.intRangeAtMost(u32, 1, 3));
+            try dimensions(f.owner, row.*, size, size);
+            try f.owner.sceneSetStyle(row.*, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+            try f.owner.sceneSetPaint(row.*, .{ .background = .{ @intCast(index * 10), 0, 0, 255 } });
+            if (random.uintLessThan(u32, 4) == 0) try f.owner.sceneSetHooks(row.*, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
+            try f.owner.sceneMoveNode(row.*, parent, @intCast(index));
+        }
+        // A spanning child before the rest, as a tall log row, or one Yoga cannot add up.
+        if (random.boolean()) try dimensions(f.owner, rows[0], 8, 40);
+        if (random.uintLessThan(u32, 8) == 0) try dimensions(f.owner, rows[random.uintLessThan(usize, rows.len)], 3e38, 3e38);
+    }
+    const row = rows[random.uintLessThan(usize, rows.len)];
+    switch (random.uintLessThan(u32, 12)) {
+        0 => try f.owner.sceneSetStyle(row, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, @floatFromInt(random.uintLessThan(u32, 2)), 0),
+        1 => try f.owner.scenePatchPaint(row, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X, if (random.boolean()) .{} else .{
+            .translateX = @floatFromInt(random.intRangeAtMost(i32, -2, 2)),
+            .translateY = @as(f64, @floatFromInt(random.intRangeAtMost(i32, -24, 24))) / 2,
+        }),
+        2 => try f.owner.scenePatchPaint(row, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = random.intRangeAtMost(i32, -1, 1) }),
+        // Inserted before a sibling, or prepended as a backfilled row: it paints last.
+        3 => try cullMove(f, random, row, parent),
+        4 => if (random.uintLessThan(u32, 3) == 0) {
+            try f.owner.sceneSetStyle(row, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
+            try f.owner.sceneSetPositions(row, 3, .{ 1, 1, 0, 0 }, .{ @floatFromInt(random.intRangeAtMost(i32, -2, 30)), @floatFromInt(random.intRangeAtMost(i32, -2, 30)), 0, 0 });
+        } else try dimensions(f.owner, row, 2, @floatFromInt(random.intRangeAtMost(u32, 1, 4))),
+        5, 6 => if ((try f.owner.raw().getRenderable(parent)).scene_node.?.scroll != null) {
+            _ = try f.owner.sceneScrollTo(parent, .{ @floatFromInt(random.uintLessThan(u32, 40)), @floatFromInt(random.uintLessThan(u32, 40)) }, .{ false, false }, false);
+        } else try f.owner.scenePatchPaint(viewport, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = shift, .translateY = shift }),
+        // A tenth of a cell: sums that round apart from the window's edges.
+        else => try f.owner.scenePatchPaint(parent, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X, .{
+            .translateX = shift / 4,
+            .translateY = if (random.uintLessThan(u32, 4) == 0) shift else -@as(f64, @floatFromInt(random.uintLessThan(u32, 600))) / 10,
+        }),
+    }
+}
+
+/// Moves a child within its parent, into it, or out to the root.
+fn cullMove(f: Fixture, random: std.Random, row: context.Handle, parent: context.Handle) !void {
+    if (random.uintLessThan(u32, 4) == 0) return f.owner.sceneMoveNode(row, f.root, 0);
+    const node = (try f.owner.raw().getRenderable(parent)).scene_node.?;
+    const inside = (try f.owner.raw().getRenderable(row)).scene_node.?.parent == try f.owner.raw().getRenderable(parent);
+    const count: u32 = @intCast(node.children.items.len - @intFromBool(inside));
+    try f.owner.sceneMoveNode(row, parent, if (random.boolean()) 0 else random.uintAtMost(u32, count));
+}
+
+// Exact culling (B2b): the index only narrows which children a filtering parent tests, so the
+// requests, the paint list, and the cells equal those of the full path, which tests them all.
+// Replies, before the parent selects and after, move, destroy, add, and raise or lower rows, and
+// turn the parent's main axis.
+test "Scene viewport culling selects and paints what the full path's scan does" {
+    for (0..400) |seed| {
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
+        defer for (twins) |f| f.deinit();
+        try twins[0].owner.sceneSetDebugFlags(twins[0].id, c.OT_SCENE_DEBUG_FULL_FRAME);
+        var prngs = [2]std.Random.DefaultPrng{ .init(seed), .init(seed) };
+        var nodes: [2][26]context.Handle = undefined;
+        for (twins, &nodes) |f, *twin_nodes| {
+            twin_nodes[24] = try f.owner.sceneCreateNode(f.id, 1, 2);
+            twin_nodes[25] = try f.owner.sceneCreateNode(f.id, 1, 3);
+        }
+        for (0..16) |frame| {
+            var logs: [2][64]u32 = undefined;
+            var counts: [2]usize = .{ 0, 0 };
+            for (twins, &prngs, &nodes, &logs, &counts) |f, *prng, *twin_nodes, *log, *count| {
+                const random = prng.random();
+                try cullStep(f, random, &twin_nodes.*, frame);
+                var request = try f.owner.sceneFrameStep(f.id, null, frame_options);
+                while (request.kind != 0) : (request = try f.owner.sceneFrameStep(f.id, request, frame_options)) {
+                    log[count.*] = request.num;
+                    count.* += 1;
+                    const slot = random.uintLessThan(usize, 24);
+                    // The viewport box's reply comes before the parent selects: it raises or lowers a row.
+                    switch (if (request.num == 3) 3 else random.uintLessThan(u32, 6)) {
+                        0 => try cullMove(f, random, twin_nodes[slot], twin_nodes[24]),
+                        // A destroyed row's place is taken by a new one, which moves in.
+                        2 => {
+                            try f.owner.sceneDestroyNode(twin_nodes[slot]);
+                            twin_nodes[slot] = try f.owner.sceneCreateNode(f.id, 1, @intCast(100 + slot));
+                            try cullMove(f, random, twin_nodes[slot], twin_nodes[24]);
+                        },
+                        1 => try f.owner.sceneSetStyle(twin_nodes[24], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, @floatFromInt(2 * random.uintLessThan(u32, 2)), 0),
+                        // Children stay unsorted until paint: selection follows the old order.
+                        3 => try f.owner.scenePatchPaint(twin_nodes[slot], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = random.intRangeAtMost(i32, -1, 1) }),
+                        else => {},
+                    }
+                }
+                _ = try f.owner.sceneFrameCommit(f.id, request, false);
+                try drain(f.owner, f.id);
+            }
+            try testing.expectEqualSlices(u32, logs[0][0..counts[0]], logs[1][0..counts[1]]);
+            try twins[0].expectSameCells(twins[1]);
+            const members = .{ twins[0].state.members.items, twins[1].state.members.items };
+            try testing.expectEqual(members[0].len, members[1].len);
+            for (members[0], members[1]) |expected, actual| {
+                try testing.expectEqual(expected.node.scene_node.?.num, actual.node.scene_node.?.num);
+                try testing.expect(std.mem.eql(u8, std.mem.asBytes(&expected.layout), std.mem.asBytes(&actual.layout)));
+            }
+        }
+    }
+}
+
 test "Scene viewport late reveal settles Slider refresh and resize feedback before paint without replaying updates" {
     const f = try Fixture.init(testing.allocator, 12, 4, .{});
     defer f.deinit();

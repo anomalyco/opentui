@@ -1282,8 +1282,14 @@ const StaleReply = struct {
     target: context.Handle,
     truncate: bool = true,
     destroy: bool = false,
+    // Answers UPDATE instead: destroys the target and scrolls this content.
+    scroll: ?context.Handle = null,
     fn apply(self: StaleReply, f: Fixture, request: scene.FrameRequest) !void {
-        if (request.kind != c.OT_SCENE_FRAME_RESIZE) return;
+        if (request.kind != if (self.scroll != null) c.OT_SCENE_FRAME_UPDATE else c.OT_SCENE_FRAME_RESIZE) return;
+        if (self.scroll) |content| {
+            try f.owner.sceneDestroyNode(self.target);
+            return f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
+        }
         if (self.destroy) return f.owner.sceneDestroyNode(self.target);
         try f.owner.sceneSetTextOptions(self.target, .{ .truncate = self.truncate });
     }
@@ -2135,74 +2141,82 @@ test "Scene feedback passes keep the round and request counts at the limits" {
 
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
-// host requests, and layout rounds of that frame. Only rows whose layout, text, or view changed
-// refresh, culled ones too; a frame that walks prepares the three boxes' views (B5b).
+// host requests, layout rounds, overlap tests, and paint visits of that frame. Only rows whose
+// layout, text, or view changed refresh, culled ones too; a frame that walks prepares the three
+// boxes' views (B5b). A selection tests every row, and so does a paint walk.
 test "Scene frame work counts viewport refresh and culling work" {
-    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, measure_same_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, placed_reply, destroy_reply };
+    const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, measure_same_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, placed_reply, destroy_reply, destroy_hidden, full_scroll };
     const sizes = [_]u32{ 16, 256, 4096 };
-    const expected = [sizes.len][std.meta.fields(Frame).len][5]u64{
+    const expected = [sizes.len][std.meta.fields(Frame).len][7]u64{
         .{
-            .{ 0, 0, 22, 0, 1 }, // first
-            .{ 0, 0, 0, 0, 1 }, // unchanged
-            .{ 0, 0, 3, 0, 1 }, // scroll
-            .{ 1, 0, 5, 0, 1 }, // grow
-            .{ 1, 0, 4, 0, 1 }, // options_prepare
-            .{ 0, 0, 3, 0, 1 }, // options_color
-            .{ 1, 0, 4, 0, 1 }, // measure_text
-            .{ 1, 0, 4, 0, 1 }, // measure_same_text
-            .{ 1, 0, 1, 0, 1 }, // editor_cursor
-            .{ 16, 0, 19, 0, 1 }, // hidden
-            .{ 0, 0, 0, 0, 1 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1 }, // cancelled
-            .{ 3, 0, 10, 1, 2 }, // stale_reply
-            .{ 3, 0, 10, 1, 2 }, // stale_requester
-            .{ 2, 0, 10, 1, 2 }, // placed_reply
-            .{ 2, 67, 10, 1, 2 }, // destroy_reply
+            .{ 0, 0, 22, 0, 1, 32, 19 }, // first
+            .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
+            .{ 0, 0, 3, 0, 1, 32, 19 }, // scroll
+            .{ 1, 0, 5, 0, 1, 32, 19 }, // grow
+            .{ 1, 0, 4, 0, 1, 16, 19 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 16, 19 }, // options_color
+            .{ 1, 0, 4, 0, 1, 16, 19 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 16, 19 }, // measure_same_text
+            .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
+            .{ 16, 0, 19, 0, 1, 31, 19 }, // hidden
+            .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
+            .{ 1, 0, 4, 0, 1, 31, 19 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 31, 19 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 31, 19 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 31, 19 }, // placed_reply
+            .{ 2, 67, 10, 1, 2, 0, 18 }, // destroy_reply
+            .{ 1, 26, 8, 1, 2, 0, 17 }, // destroy_hidden
+            .{ 14, 72, 21, 1, 1, 0, 17 }, // full_scroll
         },
         .{
-            .{ 0, 0, 262, 0, 1 }, // first
-            .{ 0, 0, 0, 0, 1 }, // unchanged
-            .{ 0, 0, 3, 0, 1 }, // scroll
-            .{ 1, 0, 5, 0, 1 }, // grow
-            .{ 1, 0, 4, 0, 1 }, // options_prepare
-            .{ 0, 0, 3, 0, 1 }, // options_color
-            .{ 1, 0, 4, 0, 1 }, // measure_text
-            .{ 1, 0, 4, 0, 1 }, // measure_same_text
-            .{ 1, 0, 1, 0, 1 }, // editor_cursor
-            .{ 256, 0, 259, 0, 1 }, // hidden
-            .{ 0, 0, 0, 0, 1 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1 }, // cancelled
-            .{ 3, 0, 10, 1, 2 }, // stale_reply
-            .{ 3, 0, 10, 1, 2 }, // stale_requester
-            .{ 2, 0, 10, 1, 2 }, // placed_reply
-            .{ 2, 16, 9, 1, 2 }, // destroy_reply
+            .{ 0, 0, 262, 0, 1, 512, 259 }, // first
+            .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
+            .{ 0, 0, 3, 0, 1, 512, 259 }, // scroll
+            .{ 1, 0, 5, 0, 1, 512, 259 }, // grow
+            .{ 1, 0, 4, 0, 1, 256, 259 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 256, 259 }, // options_color
+            .{ 1, 0, 4, 0, 1, 256, 259 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 256, 259 }, // measure_same_text
+            .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
+            .{ 256, 0, 259, 0, 1, 511, 259 }, // hidden
+            .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
+            .{ 1, 0, 4, 0, 1, 511, 259 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 511, 259 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 511, 259 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 511, 259 }, // placed_reply
+            .{ 2, 16, 9, 1, 2, 764, 258 }, // destroy_reply
+            .{ 1, 26, 7, 1, 2, 762, 257 }, // destroy_hidden
+            .{ 254, 24, 260, 1, 1, 508, 257 }, // full_scroll
         },
         .{
-            .{ 0, 0, 4102, 0, 1 }, // first
-            .{ 0, 0, 0, 0, 1 }, // unchanged
-            .{ 0, 0, 3, 0, 1 }, // scroll
-            .{ 1, 0, 5, 0, 1 }, // grow
-            .{ 1, 0, 4, 0, 1 }, // options_prepare
-            .{ 0, 0, 3, 0, 1 }, // options_color
-            .{ 1, 0, 4, 0, 1 }, // measure_text
-            .{ 1, 0, 4, 0, 1 }, // measure_same_text
-            .{ 1, 0, 1, 0, 1 }, // editor_cursor
-            .{ 4096, 0, 4099, 0, 1 }, // hidden
-            .{ 0, 0, 0, 0, 1 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1 }, // cancelled
-            .{ 3, 0, 10, 1, 2 }, // stale_reply
-            .{ 3, 0, 10, 1, 2 }, // stale_requester
-            .{ 2, 0, 10, 1, 2 }, // placed_reply
-            .{ 2, 16, 9, 1, 2 }, // destroy_reply
+            .{ 0, 0, 4102, 0, 1, 8192, 4099 }, // first
+            .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
+            .{ 0, 0, 3, 0, 1, 8192, 4099 }, // scroll
+            .{ 1, 0, 5, 0, 1, 8192, 4099 }, // grow
+            .{ 1, 0, 4, 0, 1, 4096, 4099 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 4096, 4099 }, // options_color
+            .{ 1, 0, 4, 0, 1, 4096, 4099 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 4096, 4099 }, // measure_same_text
+            .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
+            .{ 4096, 0, 4099, 0, 1, 8191, 4099 }, // hidden
+            .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
+            .{ 1, 0, 4, 0, 1, 8191, 4099 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 8191, 4099 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 8191, 4099 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 8191, 4099 }, // placed_reply
+            .{ 2, 16, 9, 1, 2, 12284, 4098 }, // destroy_reply
+            .{ 1, 26, 7, 1, 2, 12282, 4097 }, // destroy_hidden
+            .{ 4094, 24, 4100, 1, 1, 8188, 4097 }, // full_scroll
         },
     };
     // VERIFY changes no count.
     for ([_]bool{ false, true }) |verify| {
-        var all: [sizes.len][std.meta.fields(Frame).len][5]u64 = undefined;
+        var all: [sizes.len][std.meta.fields(Frame).len][7]u64 = undefined;
         for (sizes, &all) |n, *actual| {
             const f = try Fixture.init(testing.allocator, 8, 4, .{ .limits = .{ .object_capacity = 8192 } });
             defer f.deinit();
-            if (verify) try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+            const flags: u32 = if (verify) c.OT_SCENE_DEBUG_VERIFY else 0;
+            try f.owner.sceneSetDebugFlags(f.id, flags);
             const viewport = try f.owner.sceneCreateNode(f.id, 1, 2);
             try f.owner.sceneSetStyle(viewport, 4, 0, 0, 1, 4, 1);
             try f.owner.sceneSetStyle(viewport, 4, 1, 0, 1, 2, 1);
@@ -2310,8 +2324,22 @@ test "Scene frame work counts viewport refresh and culling work" {
                         try f.owner.sceneSetStyle(rows[n - 2], 4, 1, 0, 1, 3, 1);
                         break :blk try presentStepped(f, StaleReply{ .target = rows[n - 1], .destroy = true });
                     },
+                    // A shown row's UPDATE reply destroys the hidden first row and scrolls, so the
+                    // content selects again in the round.
+                    .destroy_hidden => blk: {
+                        try f.owner.sceneSetHooks(rows[1], c.OT_SCENE_HOOK_UPDATE, 1, 8, 1);
+                        break :blk try presentStepped(f, StaleReply{ .target = rows[0], .scroll = content });
+                    },
+                    // A scroll and a solve on the full path test every row twice.
+                    .full_scroll => blk: {
+                        try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_FULL_FRAME | flags);
+                        defer f.owner.sceneSetDebugFlags(f.id, flags) catch unreachable;
+                        try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
+                        try f.owner.sceneSetStyle(rows[1], 4, 1, 0, 1, 2, 1);
+                        break :blk try presentStepped(f, NoReply{});
+                    },
                 };
-                actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds };
+                actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds, w.overlap_tests, w.paint_visits };
             }
         }
         try testing.expectEqual(expected, all);
