@@ -8,8 +8,8 @@ import conformance from "./stdin-parser.conformance.json" with { type: "json" }
 import { NativeStdinParser } from "./stdin-parser-native.js"
 
 // Every case runs against the legacy TypeScript parser and the native adapter.
-// Expected differences are the intentional changes in packages/native/docs/input-parser.md
-// §14.3, asserted explicitly; tests of legacy-only hooks run for the legacy parser only.
+// Expected differences are the native parser's intentional changes, asserted explicitly;
+// tests of legacy-only hooks run for the legacy parser only.
 type Parser = StdinParser | NativeStdinParser
 type Implementation = { name: "legacy" | "native"; create: (options: StdinParserOptions) => Parser }
 const asLegacy = (parser: Parser): StdinParser => parser as StdinParser
@@ -186,11 +186,11 @@ function notation(event: Snap): string {
 
 function defineStdinParserSuite(impl: Implementation): void {
   const native = impl.name === "native"
-  // Hooks the native adapter removed (docs §12): CPR aborts, paused timeouts, pending-byte caps.
+  // Hooks the native adapter removed: CPR aborts, paused timeouts, pending-byte caps.
   const legacyTest = (label: string, fn: () => void) => {
     if (!native) test(label, fn)
   }
-  /** Picks the expectation for this implementation where docs §14.3 changes behavior. */
+  /** Picks the expectation for this implementation where the native parser changes behavior. */
   const either = <T>(legacy: T, nativeValue: T): T => (native ? nativeValue : legacy)
 
   function createParser(options: StdinParserOptions = {}): Parser {
