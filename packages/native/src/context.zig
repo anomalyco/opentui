@@ -2260,6 +2260,8 @@ pub const Context = struct {
             // A shown child's refresh prepares its view although its layout did not change.
             scene.Scene.markObservationStale(node);
         }
+        // A culling parent's main axis decides which children it selects.
+        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_FLEX_DIRECTION) node.scene_node.?.owner.selection_epoch +%= 1;
     }
 
     pub fn sceneGetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32) !scene.StyleValue {

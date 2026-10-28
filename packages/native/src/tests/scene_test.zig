@@ -351,8 +351,9 @@ test "Scene viewport culling selects and paints what the full path's scan does" 
                     log[count.*] = request.num;
                     count.* += 1;
                     const slot = random.uintLessThan(usize, 24);
-                    // The viewport box's reply comes before the parent selects: it raises or lowers a row.
-                    switch (if (request.num == 3) 3 else random.uintLessThan(u32, 6)) {
+                    // The viewport box's reply comes before the parent selects: it raises or lowers a row,
+                    // or turns the parent's main axis.
+                    switch (if (request.num == 3) 1 + 2 * random.uintLessThan(u32, 2) else random.uintLessThan(u32, 6)) {
                         0 => try cullMove(f, random, twin_nodes[slot], twin_nodes[24]),
                         // A destroyed row's place is taken by a new one, which moves in.
                         2 => {
