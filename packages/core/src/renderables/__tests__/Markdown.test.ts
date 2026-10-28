@@ -1952,23 +1952,28 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor2.toInts())
 })
 
-for (const internalBlockMode of ["coalesced", "top-level"] as const) {
-  test(`list items follow fg and syntax style changes with internalBlockMode=${internalBlockMode}`, async () => {
+for (const [name, options] of [
+  ["coalesced", { internalBlockMode: "coalesced" }],
+  ["top-level", { internalBlockMode: "top-level" }],
+  ["coalesced with renderNode", { internalBlockMode: "coalesced", renderNode: () => undefined }],
+] as const) {
+  test(`list items follow fg and syntax style changes with ${name}`, async () => {
     const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
     const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
     const theme = (fg: RGBA) =>
       SyntaxStyle.fromStyles({ "markup.raw": { fg }, "markup.list": { fg } }, renderer.nativeScene)
     const md = createMarkdownRenderable({
-      id: `markdown-list-style-update-${internalBlockMode}`,
+      id: `markdown-list-style-update-${name}`,
       content:
-        "Intro paragraph\n\n- first item with `code`\n- second item\n- third\n  > quoted\n\n| H |\n| --- |\n| `cell` |",
+        "Intro\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n\n| H |\n| --- |\n| `cell` |",
       syntaxStyle: theme(fg2),
       fg: fg1,
-      internalBlockMode,
+      ...options,
     })
     const spans = [
-      ["Intro paragraph", fg1, fg2],
+      ["Intro", fg1, fg2],
       ["second item", fg1, fg2],
+      ["nested item", fg1, fg2],
       ["code", fg2, fg1],
       ["- ", fg2, fg1],
       ["cell", fg2, fg1],
