@@ -818,6 +818,75 @@ test.each(hostPaintCases)("%s paints at a fractional position", async (_, create
   renderer.off(CliRenderEvents.RENDER_ERROR, onError)
 })
 
+// Today's gutter frames: default colors, and opaque gutter, line and sign colors under ancestor opacity 0.6×0.7. The
+// signs pad and align, line 3 hides its number, line 4 shows a custom one, and line 2 wraps.
+const gutterPaints: [string, number[], object, string[]][] = [
+  [
+    "default colors",
+    [1, 1],
+    {
+      lineSigns: new Map([
+        [0, { before: "+" }],
+        [1, { before: "--" }],
+        [2, { after: "!" }],
+      ]),
+    },
+    [
+      " +  1   888888/102030|one             ffffff/102030",
+      "--  2   888888/102030|two             ffffff/102030",
+      "    3!  888888/102030|three four      ffffff/102030",
+      "       five            ffffff/102030",
+      "       six             ffffff/102030",
+      "   42   888888/102030|seven           ffffff/102030",
+    ],
+  ],
+  [
+    "opaque colors",
+    [0.6, 0.7],
+    {
+      bg: "#283848",
+      fg: "#d0c0b0",
+      lineColors: new Map<number, string | object>([
+        [1, "#304050"],
+        [2, { gutter: "#405060", content: "#203040" }],
+      ]),
+      lineSigns: new Map([
+        [0, { before: "+", beforeColor: "#00ff00" }],
+        [1, { before: "--" }],
+        [2, { after: "!", afterColor: "#ff0000" }],
+      ]),
+    },
+    [
+      " +   0f8322/1a2a3a|1   66696c/1a2a3a|one             747e87/102030",
+      "--  2   686b6d/1d2d3d|two         7a828b/192837|     /102030",
+      "    3 6c6f71/243444|!  801e27/243444|three four  78828b/172737|     /102030",
+      "        /243444|five        78828b/172737|     /102030",
+      "        /1a2a3a|six             747e87/102030",
+      "   42   66696c/1a2a3a|seven           747e87/102030",
+    ],
+  ],
+]
+
+test.each(gutterPaints)("LineNumber gutter paints %s", async (_, [outerOpacity, innerOpacity], options, lines) => {
+  const backdrop = new BoxRenderable(renderer, { width: 22, height: 7, backgroundColor: "#102030" })
+  const outer = new BoxRenderable(renderer, { opacity: outerOpacity })
+  const inner = new BoxRenderable(renderer, { opacity: innerOpacity })
+  const text = new TextRenderable(renderer, { content: "one\ntwo\nthree four five\nsix\nseven", wrapMode: "char" })
+  const numbers = new LineNumberRenderable(renderer, {
+    target: text,
+    width: 18,
+    hideLineNumbers: new Set([3]),
+    lineNumbers: new Map([[4, 42]]),
+    ...options,
+  })
+  inner.add(numbers)
+  outer.add(inner)
+  backdrop.add(outer)
+  renderer.root.add(backdrop)
+  await setup.renderOnce()
+  expect(runs(setup.captureSpans(), 6, 22)).toEqual(lines)
+})
+
 // As on `main`, controls and graphemes longer than a cell holds are accepted when set and skipped when drawn.
 test("box titles and arrow characters accept any text", async () => {
   const text = `x\ny\x1b\te${"\u0301".repeat(64)}`
