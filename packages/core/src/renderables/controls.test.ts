@@ -147,17 +147,39 @@ test.each(navigation)("%s", (_, Control, options, steps, expected) => {
   node.destroy()
 })
 
-test("TabSelect paints the visible tabs, the underline, the description, and scroll arrows", async () => {
-  const tabs = new TabSelectRenderable(renderer, { width: "100%", tabWidth: 10, options: [...items, ...items] })
+// Names and the description are cut by display width on a glyph, with "…" right after the kept text (032).
+test.each([
+  {
+    name: "the visible tabs, the underline, the description, and scroll arrows",
+    options: { options: [...items, ...items] },
+    lines: ["‹four      five      one       two     ›", "                    ▬▬▬▬▬▬▬▬▬▬", " one item"],
+  },
+  {
+    name: "wide and surrogate-pair names cut by display width",
+    options: {
+      showDescription: false,
+      showUnderline: false,
+      options: ["設定とオプション", "abcdef😀xy", "three"].map((name) => ({ name, description: "" })),
+    },
+    lines: [" 設定と…   abcdef…   three"],
+  },
+  {
+    name: "a wide description cut by display width",
+    options: { showUnderline: false, options: [{ name: "a", description: "あ".repeat(20) }] },
+    lines: [" a", ` ${"あ".repeat(18)}…`],
+  },
+  {
+    name: "no text in tabs without room for it",
+    options: { tabWidth: 2, showDescription: false, showUnderline: false, options: [{ name: "ab", description: "" }] },
+    lines: [""],
+  },
+])("TabSelect paints $name", async ({ options, lines }) => {
+  const tabs = new TabSelectRenderable(renderer, { width: "100%", tabWidth: 10, ...options })
   renderer.root.add(tabs)
-  tabs.setSelectedIndex(5)
+  if (options.options.length > 5) tabs.setSelectedIndex(5)
   await setup.renderOnce()
-  const lines = setup.captureCharFrame().split("\n")
-  expect(lines.slice(0, 3).map((line) => line.trimEnd())).toEqual([
-    "‹four      five      one       two     ›",
-    "                    ▬▬▬▬▬▬▬▬▬▬",
-    " one item",
-  ])
+  const frame = setup.captureCharFrame().split("\n")
+  expect(frame.slice(0, lines.length).map((line) => line.trimEnd())).toEqual(lines)
 })
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
