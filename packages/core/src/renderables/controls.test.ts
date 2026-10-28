@@ -542,12 +542,13 @@ const hostPaintCases: [string, () => Renderable][] = [
   ],
 ]
 
-// A host body paints at the truncated screen position, as native bodies do.
+// A host body paints at the truncated screen position, as native bodies do. Screen x -3.5 and y -0.5
+// truncate toward zero, unlike floor; at -3.5 the LineNumber and its children all sit left of 0.
 test.each(hostPaintCases)("%s paints at a fractional position", async (_, create) => {
   const errors: string[] = []
   const onError = ({ error }: { error: Error }) => errors.push(error.message)
   renderer.on(CliRenderEvents.RENDER_ERROR, onError)
-  const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 2 })
+  const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
   parent.add(create())
   renderer.root.add(parent)
   const capture = async (translateX: number, translateY: number) => {
@@ -560,10 +561,12 @@ test.each(hostPaintCases)("%s paints at a fractional position", async (_, create
     [-1.5, 0],
     [0, 0.5],
     [0, -1.5],
+    [-5.5, 0],
   ]) {
     const frame = await capture(x, y)
     expect(errors.splice(0)).toEqual([])
-    expect(frame).toEqual(await capture(Math.trunc(2 + x) - 2, Math.trunc(2 + y) - 2))
+    expect(frame.lines[Math.trunc(1 + y)].spans.some((span) => span.text.trim() !== "")).toBe(true)
+    expect(frame).toEqual(await capture(Math.trunc(2 + x) - 2, Math.trunc(1 + y) - 1))
   }
   renderer.off(CliRenderEvents.RENDER_ERROR, onError)
 })
