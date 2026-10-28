@@ -1,6 +1,6 @@
 name: Restore Zig cache
 description: >-
-  Restore the Zig cache that mlugg/setup-zig points ZIG_GLOBAL_CACHE_DIR and ZIG_LOCAL_CACHE_DIR at
+  Restore the Zig cache that setup-zig points ZIG_GLOBAL_CACHE_DIR and ZIG_LOCAL_CACHE_DIR at
   ($GITHUB_WORKSPACE/.zig-cache). Jobs that compile the same things share a kind. Only pushes to main that change
   native inputs save it, from the one job per kind and runner that passes save. Release and publish jobs must not
   use it.

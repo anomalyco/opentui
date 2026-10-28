@@ -14,7 +14,6 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   BUN_VERSION: 1.4.1
-  ZIG_VERSION: 0.16.0
 
 jobs:
   bench-native-smoke:
@@ -25,6 +24,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
 
       - name: Restore Zig cache
         uses: ./.github/actions/restore-zig-cache
@@ -39,12 +41,6 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
 
       - name: Install dependencies
         run: bun install

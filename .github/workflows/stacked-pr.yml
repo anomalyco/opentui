@@ -46,16 +46,13 @@ jobs:
 
       - name: Setup Zig
         if: steps.changes.outputs.build_native == 'true'
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          use-cache: false
+        uses: ./.github/actions/setup-zig
 
       - name: Restore Zig cache
         if: steps.changes.outputs.build_native == 'true'
         uses: ./.github/actions/restore-zig-cache
         with:
-          zig-version: 0.16.0
+          zig-version: ${{ env.ZIG_VERSION }}
           kind: lib
 
       - name: Restore Bun install cache
