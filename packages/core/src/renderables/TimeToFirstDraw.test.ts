@@ -22,7 +22,7 @@ async function renderTimestamp(label: string): Promise<string> {
     renderer.root.add(
       new TimeToFirstDrawRenderable(renderer, {
         width: 8,
-        alignSelf: "flex-start",
+        alignSelf: "flex-end",
         label,
         precision: 0,
       }),
@@ -50,5 +50,5 @@ test.each([
 })
 
 test.each(["🫩", "क्त"])("TimeToFirstDraw centers %s with native-compatible width", async (label) => {
-  expect((await renderTimestamp(label)).startsWith(`${label}: 0ms`)).toBe(true)
+  expect((await renderTimestamp(label)).startsWith(`  ${label}: 0ms`)).toBe(true)
 })
