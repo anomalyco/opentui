@@ -1427,6 +1427,7 @@ test "Wayland core helper destroys its role before its surface" {
 }
 
 test "Wayland connection setup applies the finite receive buffer cap and records an inherited socket" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const Environment = struct {
         extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
         extern "c" fn unsetenv(name: [*:0]const u8) c_int;
