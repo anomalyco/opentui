@@ -887,7 +887,7 @@ pub const Scene = struct {
             if (previous != parent) {
                 if (previous) |old| self.detach(value, old);
                 const siblings = target.paint_children.items;
-                if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) self.orderChanged(parent);
+                if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) target.sort_dirty = true;
                 node.paint_rank = if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
                 target.paint_children.appendAssumeCapacity(value);
                 node.parent = parent;
@@ -934,13 +934,6 @@ pub const Scene = struct {
         if (node.skip.attention_index != no_slot) dropAttention(parent.scene_node.?, node.skip.attention_index);
         countBelow(parent, node.skip.update_below, node.skip.filters_below, false);
         node.parent = null;
-        self.markSubtree(parent);
-    }
-
-    /// A child's paint order input changed. Children sort again where feedback next selects
-    /// them or the paint list is built, whichever comes first, so the change shows before paint.
-    fn orderChanged(self: *Scene, parent: *native.NativeRenderable) void {
-        parent.scene_node.?.sort_dirty = true;
         self.markSubtree(parent);
     }
 
@@ -1162,7 +1155,8 @@ pub const Scene = struct {
             try yoga.check(yoga.yogaNodeCopyStyleChecked(value.yoga_node, self.style_node));
         }
         if (node.paint.zIndex != paint.zIndex) {
-            if (node.parent) |parent| self.orderChanged(parent);
+            // The paint list sorts the children before it paints them.
+            if (node.parent) |parent| parent.scene_node.?.sort_dirty = true;
         }
         if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
             self.selection_epoch +%= 1;
@@ -1730,7 +1724,7 @@ pub const Scene = struct {
                         }
                     },
                     // A mark during the visit keeps the subtree stale for the next round.
-                    .done => if (node.skip.subtree == .running and !node.skip.self_stale and !node.sort_dirty) {
+                    .done => if (node.skip.subtree == .running and !node.skip.self_stale) {
                         node.skip.subtree = .clean;
                     },
                     .refresh, .placed, .filtered_refresh => {
@@ -1778,9 +1772,6 @@ pub const Scene = struct {
                         }
                     },
                     .children => {
-                        // Capture child order after the parent's callbacks, never midway through siblings.
-                        // The lists hold the old order, so the next frame prepares again.
-                        if (sortChildren(node)) self.clearPreparation();
                         if (!node.filtersChildren()) {
                             try self.selectChildren(objects, value);
                             continue;

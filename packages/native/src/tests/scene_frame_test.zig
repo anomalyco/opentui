@@ -1918,10 +1918,9 @@ test "Scene feedback prepares a text whose equal bytes were sent again" {
     };
 }
 
-// A node a reply moves into a parent that feedback already sorted sorts among its siblings in
-// the same frame. H1's reply raises P's first child C1; C2's UPDATE makes feedback sort P;
-// then H2's reply moves N, whose z is between C2's and C1's, into P.
-test "Scene feedback sorts a node moved into a sorted parent in the same frame" {
+// A node a reply moves into a parent sorts among its siblings in the same frame. H1's reply
+// raises P's first child C1; H2's reply moves N, whose z is between C2's and C1's, into P.
+test "Scene feedback sorts a node a reply moves in the same frame" {
     const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
     defer for (twins) |f| f.deinit();
     var parents: [2]context.Handle = undefined;
@@ -1933,7 +1932,7 @@ test "Scene feedback sorts a node moved into a sorted parent in the same frame" 
         try feedbackNode(f, &list, 6, c.OT_SCENE_BOX, list[1], 0);
         for ([_]usize{ 4, 5 }, 0..) |index, position| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, list[6], @intCast(position));
         try f.owner.scenePatchPaint(list[3], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = 6 });
-        for ([_]usize{ 0, 2, 5 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
+        for ([_]usize{ 0, 2 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
         _ = try presentStepped(f, NoReply{});
         var request = try f.owner.sceneFrameStep(f.id, null, options);
         while (request.kind != c.OT_SCENE_FRAME_DONE) {
