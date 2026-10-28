@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 
 import { OptimizedBuffer } from "../buffer.js"
+import { RGBA } from "../lib/RGBA.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { resolveRenderLib } from "../zig.js"
 import { TimeToFirstDrawRenderable } from "./TimeToFirstDraw.js"
@@ -71,7 +72,16 @@ test.each([
   await renderOnce()
   const buffer = OptimizedBuffer.create(10, 1, method, { owner: renderer.nativeScene })
   Object.assign(node, { _runtimeMs: 0 })
+  // The label follows the opacity stack: its foreground blends with the cells under it.
+  buffer.clear(RGBA.fromInts(0, 0, 0))
+  buffer.pushOpacity(0.5)
   ;(node as unknown as { renderSelf(buffer: OptimizedBuffer): void }).renderSelf(buffer)
+  expect(
+    buffer
+      .getSpanLines()[0]
+      .spans.find((span) => span.text.trim())
+      ?.fg.toInts(),
+  ).toEqual([85, 85, 85, 255])
   expect(
     buffer
       .getSpanLines()[0]

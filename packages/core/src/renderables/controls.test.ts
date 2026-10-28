@@ -159,9 +159,9 @@ test.each([
     options: {
       showDescription: false,
       showUnderline: false,
-      options: ["設定とオプション", "abcdef😀xy", "three"].map((name) => ({ name, description: "" })),
+      options: ["設定とオプション", "abcdef😀xy", "three", "設定"].map((name) => ({ name, description: "" })),
     },
-    lines: [" 設定と…   abcdef…   three"],
+    lines: [" 設定と…   abcdef…   three     設定"],
   },
   {
     name: "a wide description cut by display width",
@@ -172,6 +172,11 @@ test.each([
     name: "no text in tabs without room for it",
     options: { tabWidth: 2, showDescription: false, showUnderline: false, options: [{ name: "ab", description: "" }] },
     lines: [""],
+  },
+  {
+    name: "an ellipsis in a tab with room for one cell",
+    options: { tabWidth: 3, showDescription: false, showUnderline: false, options: [{ name: "ab", description: "" }] },
+    lines: [" …"],
   },
 ])("TabSelect paints $name", async ({ options, lines }) => {
   const tabs = new TabSelectRenderable(renderer, { width: "100%", tabWidth: 10, ...options })
