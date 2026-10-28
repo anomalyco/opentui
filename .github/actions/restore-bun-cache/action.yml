@@ -1,0 +1,36 @@
+name: Restore Bun install cache
+description: >-
+  Restore Bun's global package cache (~/.bun/install/cache); node_modules is not kept. Only pushes to main save it,
+  from the one job per runner that passes save, right after bun install: Bun hardlinks node_modules files to the
+  cache, and later steps write into node_modules. Release and publish jobs must not use it.
+inputs:
+  save:
+    description: This job saves the cache on pushes to main
+    required: false
+    default: "false"
+outputs:
+  key:
+    description: Cache key for actions/cache/save
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+  save:
+    description: true when this job should save the cache after bun install
+    value: ${{ steps.policy.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+runs:
+  using: composite
+  steps:
+    - id: policy
+      shell: bash
+      run: |
+        echo "save=${{ inputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}" >> "$GITHUB_OUTPUT"
+        # Pin the directory: Bun prefers $XDG_CACHE_HOME/.bun/install/cache when that variable is set.
+        dir=~/.bun/install/cache
+        if [ "$RUNNER_OS" = Windows ]; then dir="$(cygpath -w "$dir")"; fi
+        echo "BUN_INSTALL_CACHE_DIR=$dir" >> "$GITHUB_ENV"
+
+    # Entries are per package version, so an older entry is safe to restore; bun install adds what bun.lock needs.
+    - id: restore
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.bun/install/cache
+        key: bun-install-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+        restore-keys: bun-install-v1-${{ runner.os }}-${{ runner.arch }}-

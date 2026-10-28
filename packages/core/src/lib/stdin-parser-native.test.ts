@@ -43,7 +43,7 @@ function summary(event: StdinEvent | undefined): unknown {
   }
 }
 
-describe("native stdin parser: intentional changes (docs §14.3)", () => {
+describe("native stdin parser: intentional changes", () => {
   const cases: Array<
     [label: string, chunks: (string | Uint8Array)[], legacy: unknown[], native: unknown[], options?: StdinParserOptions]
   > = [
