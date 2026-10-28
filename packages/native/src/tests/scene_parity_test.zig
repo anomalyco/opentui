@@ -100,8 +100,8 @@ const Op = union(enum) {
     /// An arrow's options and text, or a scroll node's bar arrow.
     arrow: struct { slot: usize, seed: u32 },
     scroll_arrow: struct { slot: usize, seed: u32 },
-    /// A box's titles and border glyphs, with a border over a transparent background, lifted a
-    /// row over the node above it.
+    /// A box's titles and border glyphs, with top and bottom borders over a transparent
+    /// background, lifted a row over the node above it.
     box: struct { slot: usize, seed: u32 },
 };
 
@@ -564,7 +564,7 @@ const Harness = struct {
             .arrow => |value| try f.owner.sceneSetArrow(self.handle(twin, value.slot), arrowOptions(value.seed)),
             .box => |value| {
                 try f.owner.sceneSetBoxDetails(self.handle(twin, value.slot), boxDetails(value.seed));
-                try f.owner.scenePatchPaint(self.handle(twin, value.slot), c.OT_SCENE_PROPERTY_BORDER | c.OT_SCENE_PROPERTY_BACKGROUND | c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .borderSides = 1 + (value.seed >> 24) % 15, .translateY = -1 });
+                try f.owner.scenePatchPaint(self.handle(twin, value.slot), c.OT_SCENE_PROPERTY_BORDER | c.OT_SCENE_PROPERTY_BACKGROUND | c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .borderSides = c.OT_BORDER_TOP | c.OT_BORDER_BOTTOM | ((value.seed >> 24) & 5), .translateY = -1 });
             },
             .scroll_arrow => |value| {
                 var options = arrowOptions(value.seed >> 2);
@@ -1507,20 +1507,20 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // counts at 64 x 256 (decoded frames about two thirds), derived again after resized views and
     // box details changed the mix. Replies that destroy nodes spare content rows, or viewport
     // scenes fall below the culling cutoff. Sibling marks and remounts draw from their own
-    // stream, so they keep the script's mix. Counts: reused 8,774, culling 1,397, culling with a
-    // request 406, kept lists in such a frame 43, culled paint lists checked 15,311, hooked under
-    // a hidden ancestor 6,161, reply hid the requester's parent 44, reply detached the requester
-    // 47, reply destroyed a node 382, a RECORD reply changed the scene 156, nodes remounted in a
-    // reply 5,901, content-child RESIZE 69, a truncation change in its reply 68, a sibling marked
-    // mid-batch 130, unmeasured content text replaced 15, UPDATE 3,184, RESIZE 119,
-    // LAYOUT_CHANGED 1,662, recordings 715, box bodies 92, decoded 11,123, an editor's cursor
-    // 1,833, a host cursor 8,434, skipped paint 8,422, partly diffed 1,338, band frames 1,166,
-    // split renders with a frame 517 and before one 508, recorded frames that kept rows 223,
-    // non-local or image recordings 41, steady reads 387, draft writes after paint 2,865, raw
-    // writes between frames 414, shared text changes shown 456, style changes shown 177, view
-    // binds 334, selections 240, equal re-sends 365, palette changes 83, frames showing a scroll
-    // node with children 591, scrolls and option changes 110, SCROLL requests 26, an arrow left
-    // of the screen 1,136, a drawn view's node resized 106, framed box records 1,252.
+    // stream, so they keep the script's mix. Counts: reused 8,784, culling 1,337, culling with a
+    // request 353, kept lists in such a frame 35, culled paint lists checked 15,420, hooked under
+    // a hidden ancestor 6,273, reply hid the requester's parent 44, reply detached the requester
+    // 45, reply destroyed a node 412, a RECORD reply changed the scene 161, nodes remounted in a
+    // reply 6,192, content-child RESIZE 66, a truncation change in its reply 65, a sibling marked
+    // mid-batch 130, unmeasured content text replaced 17, UPDATE 3,350, RESIZE 116,
+    // LAYOUT_CHANGED 1,661, recordings 723, box bodies 92, decoded 11,119, an editor's cursor
+    // 1,833, a host cursor 8,412, skipped paint 8,432, partly diffed 1,332, band frames 1,170,
+    // split renders with a frame 511 and before one 507, recorded frames that kept rows 231,
+    // non-local or image recordings 44, steady reads 392, draft writes after paint 2,882, raw
+    // writes between frames 412, shared text changes shown 440, style changes shown 174, view
+    // binds 338, selections 238, equal re-sends 365, palette changes 82, frames showing a scroll
+    // node with children 587, scrolls and option changes 110, SCROLL requests 26, an arrow left
+    // of the screen 1,160, a drawn view's node resized 112, framed box records 1,160.
     const minimums: Stats = .{
         // SCROLL requests that deliver a LAYOUT request: 9 in one run.
         .scroll_layouts = 2,
@@ -1568,7 +1568,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .scroll_requests = 6,
         .arrows_beside = 280,
         .view_resizes = 26,
-        .framed_boxes = 313,
+        .framed_boxes = 290,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
