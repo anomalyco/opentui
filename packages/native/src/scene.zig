@@ -1922,20 +1922,13 @@ pub const Scene = struct {
                 if (full or needed) self.queueUpdate(node, state, needed);
             }
             if (culled == null) return;
-            // The children the index passed over do not overlap. Only listed ones can need a
-            // deferral or leave the list, as in the scan above.
+            // The children the index passed over do not overlap: they leave the list as in the scan.
+            // One the round did not prepare was moved in, and the move marked this parent.
             var position: usize = 0;
             while (position < node.skip.attention.items.len) {
                 if (builtin.is_test) self.test_feedback_child_steps += 1;
-                const child = node.skip.attention.items[position];
-                const state = child.scene_node.?;
-                if (state.prepared_gen != self.candidates_gen) {
-                    try self.deferChild(value, child);
-                } else if (state.culling.selected_at != node.culling.selected_epoch and onlySubtreeListed(state)) {
-                    dropAttention(node, position);
-                    continue;
-                }
-                position += 1;
+                const state = node.skip.attention.items[position].scene_node.?;
+                if (state.culling.selected_at != node.culling.selected_epoch and onlySubtreeListed(state)) dropAttention(node, position) else position += 1;
             }
             return;
         }
