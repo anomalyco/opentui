@@ -442,10 +442,8 @@ export class TextTableRenderable extends Renderable {
     else if (this._backgroundColor.a > 0) {
       buffer.fillRect(x, y, this._paintWidth, this._paintHeight, this._backgroundColor)
     }
-    if (this._rowCount > 0 && this._columnCount > 0) {
-      this.drawBorders(buffer, x, y)
-      this.drawCells(buffer, x, y)
-    }
+    this.drawBorders(buffer, x, y)
+    this.drawCells(buffer, x, y)
     buffer.popScissorRect()
   }
 
