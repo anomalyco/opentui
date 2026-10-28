@@ -284,7 +284,7 @@ fn cullStep(f: Fixture, random: std.Random, nodes: []context.Handle, frame: usiz
             try dimensions(f.owner, row.*, size, size);
             try f.owner.sceneSetStyle(row.*, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
             try f.owner.sceneSetPaint(row.*, .{ .background = .{ @intCast(index * 10), 0, 0, 255 } });
-            if (random.uintLessThan(u32, 4) == 0) try f.owner.sceneSetHooks(row.*, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
+            if (random.uintLessThan(u32, 4) != 0) try f.owner.sceneSetHooks(row.*, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
             try f.owner.sceneMoveNode(row.*, parent, @intCast(index));
         }
         // A spanning child before the rest, as a tall log row, or one Yoga cannot add up.
@@ -294,9 +294,10 @@ fn cullStep(f: Fixture, random: std.Random, nodes: []context.Handle, frame: usiz
     const row = rows[random.uintLessThan(usize, rows.len)];
     switch (random.uintLessThan(u32, 12)) {
         0 => try f.owner.sceneSetStyle(row, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, @floatFromInt(random.uintLessThan(u32, 2)), 0),
-        1 => try f.owner.scenePatchPaint(row, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X, if (random.boolean()) .{} else .{
+        // One axis or both: a patch may move a row on either axis alone.
+        1 => try f.owner.scenePatchPaint(row, ([_]u32{ c.OT_SCENE_PROPERTY_TRANSLATE_Y, c.OT_SCENE_PROPERTY_TRANSLATE_X, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X })[random.uintLessThan(usize, 3)], if (random.uintLessThan(u32, 4) == 0) .{} else .{
             .translateX = @floatFromInt(random.intRangeAtMost(i32, -2, 2)),
-            .translateY = @as(f64, @floatFromInt(random.intRangeAtMost(i32, -24, 24))) / 2,
+            .translateY = @as(f64, @floatFromInt(random.intRangeAtMost(i32, -48, 48))) / 2,
         }),
         2 => try f.owner.scenePatchPaint(row, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = random.intRangeAtMost(i32, -1, 1) }),
         // Inserted before a sibling, or prepended as a backfilled row: it paints last.
@@ -307,7 +308,11 @@ fn cullStep(f: Fixture, random: std.Random, nodes: []context.Handle, frame: usiz
         } else try dimensions(f.owner, row, 2, @floatFromInt(random.intRangeAtMost(u32, 1, 4))),
         5, 6 => if ((try f.owner.raw().getRenderable(parent)).scene_node.?.scroll != null) {
             _ = try f.owner.sceneScrollTo(parent, .{ @floatFromInt(random.uintLessThan(u32, 40)), @floatFromInt(random.uintLessThan(u32, 40)) }, .{ false, false }, false);
-        } else try f.owner.scenePatchPaint(viewport, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = shift, .translateY = shift }),
+        } else {
+            // Half the time back home, where the index serves.
+            const at = if (random.boolean()) shift else 0;
+            try f.owner.scenePatchPaint(viewport, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = at, .translateY = at });
+        },
         // A tenth of a cell: sums that round apart from the window's edges.
         else => try f.owner.scenePatchPaint(parent, c.OT_SCENE_PROPERTY_TRANSLATE_Y | c.OT_SCENE_PROPERTY_TRANSLATE_X, .{
             .translateX = shift / 4,
@@ -323,6 +328,16 @@ fn cullMove(f: Fixture, random: std.Random, row: context.Handle, parent: context
     const inside = (try f.owner.raw().getRenderable(row)).scene_node.?.parent == try f.owner.raw().getRenderable(parent);
     const count: u32 = @intCast(node.children.items.len - @intFromBool(inside));
     try f.owner.sceneMoveNode(row, parent, if (random.boolean()) 0 else random.uintAtMost(u32, count));
+}
+
+/// The first of the 24 rows from `start` that is not in the parent, or `start`.
+fn cullOutside(f: Fixture, nodes: []const context.Handle, start: usize) !usize {
+    const parent = try f.owner.raw().getRenderable(nodes[24]);
+    for (0..24) |offset| {
+        const slot = (start + offset) % 24;
+        if ((try f.owner.raw().getRenderable(nodes[slot])).scene_node.?.parent != parent) return slot;
+    }
+    return start;
 }
 
 // Exact culling (B2b): the index only narrows which children a filtering parent tests, so the
@@ -351,10 +366,11 @@ test "Scene viewport culling selects and paints what the full path's scan does" 
                     log[count.*] = request.num;
                     count.* += 1;
                     const slot = random.uintLessThan(usize, 24);
-                    // The viewport box's reply comes before the parent selects: it raises or lowers a row,
-                    // or turns the parent's main axis.
-                    switch (if (request.num == 3) 1 + 2 * random.uintLessThan(u32, 2) else random.uintLessThan(u32, 6)) {
-                        0 => try cullMove(f, random, twin_nodes[slot], twin_nodes[24]),
+                    // The viewport box's reply comes before the parent selects: it moves, raises or lowers
+                    // a row, or turns the parent's main axis.
+                    switch (if (request.num == 3) ([_]u32{ 0, 1, 3 })[random.uintLessThan(usize, 3)] else random.uintLessThan(u32, 6)) {
+                        // From the viewport box, a row outside the parent, prepared where it was, moves in.
+                        0 => try cullMove(f, random, twin_nodes[if (request.num == 3) try cullOutside(f, twin_nodes, slot) else slot], twin_nodes[24]),
                         // A destroyed row's place is taken by a new one, which moves in.
                         2 => {
                             try f.owner.sceneDestroyNode(twin_nodes[slot]);
@@ -379,6 +395,51 @@ test "Scene viewport culling selects and paints what the full path's scan does" 
                 try testing.expect(std.mem.eql(u8, std.mem.asBytes(&expected.layout), std.mem.asBytes(&actual.layout)));
             }
         }
+    }
+}
+
+// The index's 2^24 bounds: beyond them the scan's f64 sums round apart from the index's local
+// positions by more than its cell of slack. Rows: the window near -2^54, where the spacing is 4,
+// and row 19 three cells tall ends inside it only after rounding; a row at -2^60 that is 2^60
+// tall ends at 0 in local terms but at 256 on screen, past the window's start at 20.
+test "Scene viewport culling falls back to the scan beyond 2^24" {
+    const rows = [_]struct { content: f64, viewport: f64, row: usize, top: f32, size: f32 }{
+        .{ .content = -(1 << 54) - 40, .viewport = -(1 << 54) + 2, .row = 19, .top = 38, .size = 3 },
+        .{ .content = 200, .viewport = 220, .row = 0, .top = -(1 << 60), .size = 1 << 60 },
+    };
+    for (rows) |case| {
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
+        defer for (twins) |f| f.deinit();
+        try twins[0].owner.sceneSetDebugFlags(twins[0].id, c.OT_SCENE_DEBUG_FULL_FRAME);
+        var logs: [2][64]u32 = undefined;
+        var counts: [2]usize = .{ 0, 0 };
+        for (twins, &logs, &counts) |f, *log, *count| {
+            const viewport = try f.owner.sceneCreateNode(f.id, 1, 3);
+            const content = try f.owner.sceneCreateNode(f.id, 1, 2);
+            for ([_]context.Handle{ viewport, content }, [_]f32{ 4, 130 }, [_]f64{ case.viewport, case.content }) |node, height, y| {
+                try dimensions(f.owner, node, 8, height);
+                try f.owner.sceneSetStyle(node, 0, 6, 0, 0, 2, 0);
+                try f.owner.sceneSetPositions(node, 3, .{ 1, 1, 0, 0 }, .{ 0, 0, 0, 0 });
+                try f.owner.sceneSetPaint(node, .{ .translateY = y });
+                try f.owner.sceneMoveNode(node, f.root, 0);
+            }
+            try f.owner.sceneSetViewport(content, viewport);
+            var children: [24]context.Handle = undefined;
+            try filterChildren(f.owner, f.id, content, &children);
+            try dimensions(f.owner, children[case.row], 8, case.size);
+            try f.owner.sceneSetPositions(children[case.row], 3, .{ 1, 1, 0, 0 }, .{ 0, case.top, 0, 0 });
+            try f.owner.sceneSetPaint(children[case.row], .{ .background = .{ 200, 0, 0, 255 } });
+            for (children) |child| try f.owner.sceneSetHooks(child, 1, 1, 0, 0);
+            var request = try f.owner.sceneFrameStep(f.id, null, frame_options);
+            while (request.kind != 0) : (request = try f.owner.sceneFrameStep(f.id, request, frame_options)) {
+                log[count.*] = request.num;
+                count.* += 1;
+            }
+            _ = try f.owner.sceneFrameCommit(f.id, request, false);
+            try drain(f.owner, f.id);
+        }
+        try testing.expectEqualSlices(u32, logs[0][0..counts[0]], logs[1][0..counts[1]]);
+        try twins[0].expectSameCells(twins[1]);
     }
 }
 
