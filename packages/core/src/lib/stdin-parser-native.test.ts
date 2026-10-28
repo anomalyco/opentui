@@ -64,9 +64,8 @@ const mouse = (type: string, x: number, y: number, button = 0) => ({ mouse: type
 // OpenCode's renderer while a startup query batch waits for its DA1 reply (native parser only).
 const SENTINEL = { protocolContext: { privateCapabilityRepliesActive: true, replySentinelActive: true } }
 
-// Where the parsers differ on purpose (docs §14.3, and the native fixes since), and where only the
-// legacy parser is wrong: it is not changed for its own bugs. Rows from the replay corpus name the
-// issue they pin.
+// Where the parsers differ on purpose, and where only the legacy parser is wrong: it is not changed
+// for its own bugs. Rows from the replay corpus name the issue they pin.
 const INTENTIONAL: Array<
   [label: string, chunks: Chunk[], legacy: unknown[], native: unknown[], options?: StdinParserOptions]
 > = [
@@ -196,7 +195,7 @@ const INTENTIONAL: Array<
   ],
 ]
 
-describe("native stdin parser: intentional changes (docs §14.3)", () => {
+describe("native stdin parser: intentional changes", () => {
   for (const [label, chunks, legacyEvents, nativeEvents, options] of INTENTIONAL) {
     test(label, () => {
       expect(parse(legacy, chunks, options).map(summary)).toEqual(legacyEvents)

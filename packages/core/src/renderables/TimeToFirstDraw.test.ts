@@ -15,16 +15,17 @@ afterEach(() => {
   renderer.destroy()
 })
 
-async function renderTimestamp(label: string): Promise<string> {
+async function renderTimestamp(label: string, buffered = false): Promise<string> {
   const now = Object.getOwnPropertyDescriptor(performance, "now")
   Object.defineProperty(performance, "now", { configurable: true, value: () => 0 })
   try {
     renderer.root.add(
       new TimeToFirstDrawRenderable(renderer, {
         width: 8,
-        alignSelf: "flex-start",
+        alignSelf: "flex-end",
         label,
         precision: 0,
+        buffered,
       }),
     )
 
@@ -49,6 +50,10 @@ test.each([
   expect(frame).not.toContain(excluded)
 })
 
-test.each(["🫩", "क्त"])("TimeToFirstDraw centers %s with native-compatible width", async (label) => {
-  expect((await renderTimestamp(label)).startsWith(`${label}: 0ms`)).toBe(true)
+// A buffered node draws at its own buffer's origin.
+test.each([
+  ["🫩", false],
+  ["क्त", true],
+])("TimeToFirstDraw centers %s with native-compatible width (buffered %p)", async (label, buffered) => {
+  expect((await renderTimestamp(label, buffered)).startsWith(`  ${label}: 0ms`)).toBe(true)
 })
