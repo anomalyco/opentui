@@ -94,6 +94,7 @@ pub const Connection = struct {
     registry: ?*WlProxy = null,
     sync_callback: ?*WlProxy = null,
     phase: Phase = .idle,
+    inherited_socket: bool = false,
     sync_done: bool = false,
     // Selection barriers are wl_display.sync roundtrips issued at read admission.
     // At most one is in flight; later admissions wait for the follow-up barrier.
@@ -443,6 +444,20 @@ pub const Connection = struct {
         return if (flush_result == .complete) .ok else .committed;
     }
 
+    // An idle connection still receives an offer for every selection change, so the host
+    // closes it and reconnects on demand. An unsupported result binds no device and stays
+    // cached, and an inherited socket cannot be reopened after libwayland consumed it.
+    pub fn closableWhenIdle(self: *const Connection) bool {
+        return self.phase != .unsupported and !self.inherited_socket and !self.hasWork();
+    }
+
+    // Events already read from the socket may create offer proxies. Dispatching them
+    // registers those offers so deinit destroys them; nothing new is read from the socket.
+    pub fn dispatchQueued(self: *Connection) void {
+        const display = self.display orelse return;
+        _ = self.symbols.wl_display_dispatch_pending(display);
+    }
+
     pub fn hasProviders(self: *const Connection) bool {
         for (self.providers) |provider| if (provider != null) return true;
         return false;
@@ -509,7 +524,10 @@ pub const Connection = struct {
     }
 
     fn start(self: *Connection) !void {
+        // libwayland adopts and unsets an inherited WAYLAND_SOCKET, so record it before connecting.
+        const inherited_socket = posix_io.getEnv("WAYLAND_SOCKET") != null;
         const display = self.symbols.wl_display_connect(null) orelse return error.ConnectFailed;
+        self.inherited_socket = inherited_socket;
         // libwayland before 1.23 has no cap symbol and uses fixed-size bounded buffers instead.
         if (self.symbols.wl_display_set_max_buffer_size) |set_max_buffer_size| {
             set_max_buffer_size(display, WAYLAND_CONNECTION_BUFFER_SIZE_MAX);

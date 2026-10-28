@@ -944,6 +944,9 @@ pub const Service = struct {
             .unsupported => return service.fallbackCurrentWayland(operation),
             .failed => return service.finishWaylandFailure(operation),
         }
+        // The compositor drops unread requests of a disconnected client. The barrier keeps the
+        // connection busy until a roundtrip proves the clear was processed.
+        _ = service.wayland.?.requestSelectionBarrier();
         return service.finishOperation(operation, .cleared);
     }
 
@@ -1401,12 +1404,15 @@ pub const Service = struct {
     // offers until the compositor's buffer overflows, so close it and reconnect on demand.
     fn closeIdleWayland(service: *Service) void {
         const wayland = service.wayland orelse return;
-        if (wayland.hasWork()) return;
+        if (!wayland.closableWhenIdle()) return;
         for (service.operations.items) |operation| {
             operation.mutex.lock();
             defer operation.mutex.unlock();
-            if (operation.status == .pending and operation.mechanism == .wayland) return;
+            // An operation without a mechanism has not been polled yet and will most likely use Wayland.
+            if (operation.status == .pending and operation.mechanism != .x11) return;
         }
+        wayland.dispatchQueued();
+        if (!wayland.closableWhenIdle()) return;
         service.resetWayland();
     }
 
@@ -1817,6 +1823,7 @@ pub fn drainService(objects: *handles.Table, service_handle: Handle) u8 {
             active = x11.driveProviderUnit();
         },
     }
+    // The JS scheduler drains once more after the last operation settles, which is when this closes the connection.
     service.closeIdleWayland();
     if (service.wayland) |wayland| active = active or wayland.hasWork();
     if (service.x11) |x11| active = active or x11.hasWork();
@@ -2470,37 +2477,52 @@ test "clipboard failed core selection progress releases operation focus" {
 
 test "clipboard drain closes an idle Wayland connection and keeps a busy one" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var objects = try handles.Table.init(std.testing.allocator, 2);
+    defer objects.deinit();
+    const service_handle = try createService(std.testing.allocator, &objects, 1, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
+    defer destroyTestService(&objects, service_handle);
+    const service = acquireService(&objects, service_handle).?;
+    service.libraries = .{ .wayland = true };
     var symbols: clipboard_linux.WaylandSymbols = undefined;
-    var service: Service = .{
-        .allocator = std.testing.allocator,
-        .objects = undefined,
-        .libraries = .{ .wayland = true },
-        .requested_wayland_seat = &.{},
-        .environment_wayland_seat = &.{},
-    };
-    defer service.operations.deinit(std.testing.allocator);
     const wayland = try std.testing.allocator.create(clipboard_wayland.Connection);
     wayland.* = clipboard_wayland.Connection.init(std.testing.allocator, &symbols, "", "", 1);
     wayland.phase = .ready;
     service.wayland = wayland;
 
+    const Drain = struct {
+        // The X11 turn skips driving the fake Wayland display.
+        fn x11Turn(table: *handles.Table, handle: Handle, owner: *Service) u8 {
+            owner.drain_mechanism = .x11;
+            return drainService(table, handle);
+        }
+    };
+
     var operation: Operation = .{
         .allocator = std.testing.allocator,
-        .service = &service,
+        .service = service,
         .kind = .read,
-        .mechanism = .wayland,
     };
     try service.operations.append(std.testing.allocator, &operation);
-    service.closeIdleWayland();
+    _ = Drain.x11Turn(&objects, service_handle, service);
     try std.testing.expect(service.wayland != null);
+    service.operations.clearRetainingCapacity();
 
-    operation.status = .read;
     wayland.output_pending = true;
-    service.closeIdleWayland();
+    try std.testing.expectEqual(@as(u8, 1), Drain.x11Turn(&objects, service_handle, service));
     try std.testing.expect(service.wayland != null);
-
     wayland.output_pending = false;
-    service.closeIdleWayland();
+
+    wayland.phase = .unsupported;
+    try std.testing.expectEqual(@as(u8, 0), Drain.x11Turn(&objects, service_handle, service));
+    try std.testing.expect(service.wayland != null);
+    wayland.phase = .ready;
+
+    wayland.inherited_socket = true;
+    try std.testing.expectEqual(@as(u8, 0), Drain.x11Turn(&objects, service_handle, service));
+    try std.testing.expect(service.wayland != null);
+    wayland.inherited_socket = false;
+
+    try std.testing.expectEqual(@as(u8, 0), Drain.x11Turn(&objects, service_handle, service));
     try std.testing.expect(service.wayland == null);
 }
 
