@@ -500,7 +500,8 @@ describe("LineNumberRenderable", () => {
     expect(line0Visual2Bg.b).toBeCloseTo((0x2e / 255) * 0.8, 2)
   })
 
-  test("renders line colors correctly within a box with borders", async () => {
+  // A buffered node paints its line colors at its own buffer's origin.
+  const lineColorsInBox = async (buffered: boolean) => {
     const { renderer, renderOnce } = await createTestRenderer({
       width: 30,
       height: 10,
@@ -526,6 +527,7 @@ describe("LineNumberRenderable", () => {
       lineColors: lineColors,
       width: "100%",
       height: "100%",
+      buffered,
     })
 
     const box = new BoxRenderable(renderer, {
@@ -604,7 +606,8 @@ describe("LineNumberRenderable", () => {
     expect(line1ContentBg.r).toBeCloseTo(0, 2)
     expect(line1ContentBg.g).toBeCloseTo(0, 2)
     expect(line1ContentBg.b).toBeCloseTo(0, 2)
-  })
+  }
+  test.each([false, true])("renders line colors correctly within a box with borders (buffered %p)", lineColorsInBox)
 
   test("renders full-width line colors when line numbers are hidden", async () => {
     const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({
