@@ -32,11 +32,13 @@ renderer.on(CliRenderEvents.CAPABILITIES, applyCapabilities)
 
 Read the current snapshot first, then handle events. A response can arrive before your listener is attached.
 
-The startup capability handler remains active for five seconds. Each recognized later response updates
-`renderer.capabilities` and emits `"capabilities"`. Expect multiple events during that window. Do not wait for one
-specific count or treat the first event as final.
+The capability handler stays active for the whole session. A recognized response updates `renderer.capabilities`
+whenever it arrives, including after startup: GNU screen, tmux passthrough, and OpenSSH ConPTY can forward some
+replies late. `"capabilities"` is emitted only when the capabilities change. Expect several events during startup and
+occasionally later. Do not wait for one specific count or treat the first event as final.
 
-After the startup window, OpenTUI removes the general capability handler and stops treating private replies as startup
+The renderer consumes these responses before handlers added with `addInputHandler` run. Use `prependInputHandler` to
+observe them. After a five-second startup window, the input parser stops treating private replies as expected
 responses. Pixel-resolution and theme queries have separate lifecycles.
 
 ## Public types

@@ -972,16 +972,51 @@ pub const UnifiedTextBuffer = struct {
 
     /// Owned bytes use the registry allocator and transfer only on success.
     pub fn appendWithOwnership(self: *Self, text: []const u8, owned: bool) TextBufferError!void {
+        return self.appendBytes(text, if (owned) .own else .borrow);
+    }
+
+    /// Append a copy of `text`, which the caller keeps.
+    pub fn appendCopy(self: *Self, text: []const u8) TextBufferError!void {
+        return self.appendBytes(text, .copy);
+    }
+
+    const AppendSource = union(enum) { borrow, own, copy, slot: u8 };
+
+    /// A grapheme that the last chunk and `text` split moves whole into the appended bytes, so
+    /// the chunk boundary stays a grapheme boundary. Its tail then precedes `text` in a new owned
+    /// copy, as every `.copy` append does.
+    fn appendBytes(self: *Self, text: []const u8, source: AppendSource) TextBufferError!void {
         if (text.len == 0) {
-            if (owned) self.global_allocator.free(text);
+            if (source == .own) self.global_allocator.free(text);
             return;
         }
+        var candidate = self._rope;
+        var tail: []const u8 = &.{};
+        const last_index = candidate.count() -| 1;
+        if (candidate.get(last_index)) |last| if (last.asText()) |chunk| {
+            const bytes = chunk.getBytes(&self.mem_registry);
+            if (Segment.findJunction(bytes, text, self.width_method)) |at| {
+                tail = bytes[at.tail..];
+                text_work.add(.grapheme_joins, 1);
+                if (at.tail == 0) try candidate.delete(last_index) else try candidate.replace(last_index, .{ .text = self.createChunk(chunk.mem_id, chunk.byte_start, chunk.byte_start + at.tail) });
+            }
+        };
+        const copied = source == .copy or tail.len > 0;
+        if (tail.len > 0) text_work.add(.grapheme_join_bytes, if (source == .copy) tail.len else tail.len + text.len);
+        if (!copied and source == .slot) return self.appendInternal(&candidate, source.slot, text);
 
+        const data = if (copied) try self.global_allocator.alloc(u8, tail.len + text.len) else text;
+        errdefer if (copied) self.global_allocator.free(data);
+        if (copied) {
+            @memcpy(@constCast(data[0..tail.len]), tail);
+            @memcpy(@constCast(data[tail.len..]), text);
+        }
         const previous_buffer_count = self.mem_registry.buffers.items.len;
-        const mem_id = try self.mem_registry.register(text, false);
+        const mem_id = try self.mem_registry.register(data, false);
         errdefer self.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
-        try self.appendInternal(mem_id, text);
-        self.mem_registry.buffers.items[mem_id].owned = owned;
+        try self.appendInternal(&candidate, mem_id, data);
+        self.mem_registry.buffers.items[mem_id].owned = copied or source == .own;
+        if (copied and source == .own) self.global_allocator.free(text);
     }
 
     /// Copy every chunk's bytes, in document order, into one owned slot 0 and rebuild the rope
@@ -1033,15 +1068,11 @@ pub const UnifiedTextBuffer = struct {
     /// Append text from a pre-registered memory ID
     pub fn appendFromMemId(self: *Self, mem_id: u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
-        try self.appendInternal(mem_id, text);
+        try self.appendBytes(text, .{ .slot = mem_id });
     }
 
     /// Internal append that doesn't register memory
-    fn appendInternal(self: *Self, mem_id: u8, text: []const u8) TextBufferError!void {
-        if (text.len == 0) {
-            return;
-        }
-
+    fn appendInternal(self: *Self, candidate: *UnifiedRope, mem_id: u8, text: []const u8) TextBufferError!void {
         // The rope's boundary rewrite will handle normalization at join points
         var result = try self.textToSegments(self.global_allocator, text, mem_id, 0, false);
         defer result.segments.deinit(result.allocator);
@@ -1049,7 +1080,6 @@ pub const UnifiedTextBuffer = struct {
         // Canonical appends preserve the leading linestart, but public rope edits
         // can remove it. Stage the root until fallible end-marker repair finishes.
         // insert_slice changes only the root; history remains shared.
-        var candidate = self._rope;
         try candidate.insert_slice(candidate.count(), result.segments.items);
         self._rope.root = candidate.root;
 

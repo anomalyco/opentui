@@ -287,6 +287,9 @@ Use the buffer's checked clipping and opacity operations for local drawing limit
 
 Use `requestRender()` for a one-shot repaint. Property setters that affect drawing must call it.
 
+Set `animationFps` and override `onAnimationTick(deltaTime, ticks, time)` for an animation at a fixed rate. Core ticks it
+on the renderer's shared [animation clock](/docs/application-apis/animation#animation-ticks) while the node is drawn.
+
 Set `live: true` only when the node needs a continuous frame loop. A visible live descendant increments the root's live
 count. Hiding, detaching, destroying, or setting `live` to `false` removes that request.
 

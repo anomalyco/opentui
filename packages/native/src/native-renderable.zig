@@ -141,11 +141,12 @@ pub const NodeStorage = struct {
     scene_node: *scene.Node,
     children: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
     paint_children: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
+    attention: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
     reuse_web_defaults: bool = false,
 
     pub fn retainedBytes(self: *const NodeStorage) usize {
         return @sizeOf(NativeRenderable) + @sizeOf(scene.Node) + native_yoga.nodeStorageBytes(self.node.yoga_node) +
-            (self.children.capacity + self.paint_children.capacity) * @sizeOf(*NativeRenderable);
+            (self.children.capacity + self.paint_children.capacity + self.attention.capacity) * @sizeOf(*NativeRenderable);
     }
 };
 

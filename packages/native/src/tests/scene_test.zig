@@ -8,9 +8,11 @@ const yoga = @import("../yoga.zig");
 const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const scene = @import("../scene.zig");
+const c = @import("context_abi_c");
 
 test {
     _ = @import("scene_editor_test.zig");
+    _ = @import("scene_scroll_test.zig");
 }
 
 const frame_options: scene.FrameOptions = .{
@@ -190,24 +192,26 @@ test "Scene geometry cache retries a failed third solve in one frame with clean 
     try f.owner.sceneSetHooks(f.root, 4, 1, 0, 0);
     const node = (try f.owner.raw().getRenderable(box)).scene_node.?;
     var request = try f.step(null, frame_options, 3, null);
-    try testing.expectEqual(@as(u32, 1), node.prepared_round);
+    try testing.expectEqual(f.state.candidates_gen, node.prepared_gen);
+    const gen = node.prepared_gen;
     const frame_id = request.frame_id;
     const epoch = request.layout_epoch;
     try dimensions(f.owner, box, 4, 1);
     request = try f.step(request, frame_options, 3, null);
     try testing.expectEqual(frame_id, request.frame_id);
     try testing.expectEqual(epoch + 1, request.layout_epoch);
-    try testing.expectEqual(@as(u32, 2), node.prepared_round);
+    try testing.expectEqual(gen + 1, node.prepared_gen);
     try testing.expectEqual(@as(f32, 3), (try f.owner.sceneGetLayout(box, false)).width);
 
     try dimensions(f.owner, box, 5, 1);
     // The slider fails preparation only after the third Yoga solve.
     try dimensions(f.owner, slider, 5, 1);
     try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStep(f.id, request, frame_options));
-    try testing.expect(f.state.attempt == null and f.state.work.items.len == 0 and f.state.feedback.items.len == 0);
+    try testing.expect(f.state.attempt == null and f.state.candidates.items.len == 0 and f.state.feedback.items.len == 0);
     try testing.expectEqual(epoch + 2, f.state.layout_epoch);
-    try testing.expectEqual(frame_id, node.prepared_frame);
-    try testing.expectEqual(@as(u32, 2), node.prepared_round);
+    // The failed walk stamped nothing, so the next one reads the third solve's geometry.
+    try testing.expectEqual(gen + 1, node.prepared_gen);
+    try testing.expectEqual(epoch + 1, node.geometry_epoch);
     var dirty: u32 = 1;
     try yoga.check(yoga.yogaNodeIsDirtyChecked((try f.owner.raw().getRenderable(f.root)).yoga_node, &dirty));
     try testing.expectEqual(@as(u32, 0), dirty);
@@ -295,16 +299,23 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try testing.expectEqual(@as(u32, 0x258c), f.cli.getNextBuffer().get(4, 0).?.char);
     try testing.expectEqual((try f.owner.raw().getRenderable(slider)).scene_node.?.token, f.draftHit(7));
     try testing.expectEqual((try f.owner.raw().getRenderable(children[10])).scene_node.?.token, f.draftHit(8));
-    try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0 and f.state.work.items.len == 0);
+    try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0);
     try testing.expect((try f.owner.raw().getRenderable(hidden)).scene_node.?.text.?.view.getViewport() == null);
 }
 
 fn viewportAllocationFailures(allocator: std.mem.Allocator) !void {
-    const f = try Fixture.init(allocator, 8, 4, .{ .limits = .{ .object_capacity = 20 } });
+    const f = try Fixture.init(allocator, 8, 4, .{ .limits = .{ .object_capacity = 24 } });
     defer f.deinit();
+    // A scroll node owns two Yoga nodes and its state; a child moves into its content node.
+    const scroll = try f.owner.sceneCreateNode(f.id, 1, 4);
+    try f.owner.sceneSetScroll(scroll, .{ .culling = true });
+    try f.owner.sceneSetScrollArrow(scroll, 1, 0, .{ .text = "^" });
+    try f.owner.sceneMoveNode(scroll, f.root, 0);
+    try f.owner.sceneMoveNode(try f.owner.sceneCreateNode(f.id, 2, 5), scroll, 0);
+    try f.owner.sceneSetHooks(scroll, c.OT_SCENE_HOOK_SCROLL, 1, 0, 0);
     const content = try f.owner.sceneCreateNode(f.id, 1, 2);
     try dimensions(f.owner, content, 8, 32);
-    try f.owner.sceneMoveNode(content, f.root, 0);
+    try f.owner.sceneMoveNode(content, f.root, 1);
     var children: [16]context.Handle = undefined;
     try filterChildren(f.owner, f.id, content, &children);
     const text = try f.owner.sceneCreateNode(f.id, 2, 3);
@@ -314,7 +325,7 @@ fn viewportAllocationFailures(allocator: std.mem.Allocator) !void {
     try f.owner.sceneSetFocus(text, true);
     try f.owner.sceneSetHooks(children[0], 3, 1, 0, 0);
     var request: ?scene.FrameRequest = null;
-    for (0..3) |_| {
+    for (0..4) |_| {
         request = try f.owner.sceneFrameStep(f.id, request, frame_options);
         if (request.?.kind == 0) break;
     } else return error.TestUnexpectedResult;

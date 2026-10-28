@@ -46,6 +46,8 @@ export interface StdinParserProtocolContext {
   pixelResolutionQueryActive: boolean
   explicitWidthCprActive: boolean
   startupCursorCprActive: boolean
+  /** Native only: a query batch's DA1 reply is outstanding, so split replies wait for it without a deadline. */
+  replySentinelActive: boolean
 }
 
 export interface StdinParserOptions {
@@ -125,6 +127,7 @@ const DEFAULT_PROTOCOL_CONTEXT: StdinParserProtocolContext = {
   pixelResolutionQueryActive: false,
   explicitWidthCprActive: false,
   startupCursorCprActive: false,
+  replySentinelActive: false,
 }
 // rxvt uses $-terminated CSI sequences for shifted function keys (e.g. ESC[2$).
 // Standard CSI treats $ as an intermediate byte, not a final, so we match these

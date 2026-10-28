@@ -14,7 +14,7 @@ concurrency:
 jobs:
   check:
     name: Stacked PR Check
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
 
     steps:
       - name: Checkout code

@@ -500,7 +500,7 @@ Each item names the changed API or behavior first. New APIs are in the tables ab
 - Protected `renderCursor()` of edit buffer renderables: removed. Use the cursor options.
 - Protected `updateViewportOffset()`: `TextRenderable` no longer calls it when it scrolls or resizes. Native code applies the viewport.
 - Protected color fields of `ASCIIFontRenderable`: now hold `RGBA` values.
-- Custom `RenderContext`: must now implement `nativeScene`, `requestAnimationFrame()`, and `cancelAnimationFrame()`.
+- Custom `RenderContext`: must now implement `nativeScene`, `clock`, `requestAnimationFrame()`, and `cancelAnimationFrame()`.
 - Paint hooks (`renderBefore`, `renderSelf`, and `renderAfter`): now receive a recording buffer. `buffers`, `withBuffers()`, `getRealCharBytes()`, and `getSpanLines()` throw in a hook. Draw into a buffer that you own and compose it, or use a post-process function. A `buffered: true` custom renderable is different: its hooks receive its own frame buffer.
 - Changes made in a paint hook: a layout, position, visibility, child, or `zIndex` change takes effect in the next frame. Color and text changes paint in the same frame.
 - `on("resized")` and `on("layout-changed")`: now throw on a renderable that is not the root. These listeners never ran in 0.5.14. Use `onSizeChange`.

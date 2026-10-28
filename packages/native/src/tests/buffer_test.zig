@@ -1074,9 +1074,9 @@ test "OptimizedBuffer checked text draws skip controls, editors show their notat
 test "OptimizedBuffer checked grapheme draws write blank cells for clusters a cell cannot hold" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    const actual = try OptimizedBuffer.init(std.testing.allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    const actual = try OptimizedBuffer.init(std.testing.allocator, 20, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
     defer actual.deinit();
-    const expected = try OptimizedBuffer.init(std.testing.allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    const expected = try OptimizedBuffer.init(std.testing.allocator, 20, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
     defer expected.deinit();
     const fg = ansi.rgbColor(250, 240, 230, 255);
     const bg = ansi.rgbColor(10, 20, 30, 255);
@@ -1090,16 +1090,17 @@ test "OptimizedBuffer checked grapheme draws write blank cells for clusters a ce
         .{ .bytes = "\u{9b}", .width = 2 },
         .{ .bytes = "e" ++ "\u{301}" ** 64, .width = 1 },
         .{ .bytes = "\u{4e2d}" ++ "\u{301}" ** 63, .width = 2 },
+        .{ .bytes = "\u{1f468}", .width = gp.glyph_width_max + 1 },
     };
     for (glyphs) |glyph| {
-        for ([_]u32{ 0, 2, 6 - glyph.width }) |x| {
+        for ([_]u32{ 0, 2, 20 - glyph.width }) |x| {
             // The authoritative width draws all cells of a glyph or none of them.
-            const clips = [_]?buffer_mod.ClipRect{ null, .{ .x = 0, .y = 0, .width = 6, .height = 1 }, .{ .x = @intCast(x + 1), .y = 0, .width = 6, .height = 1 } };
+            const clips = [_]?buffer_mod.ClipRect{ null, .{ .x = 0, .y = 0, .width = 20, .height = 1 }, .{ .x = @intCast(x + 1), .y = 0, .width = 20, .height = 1 } };
             for (clips, 0..) |clip, clip_index| {
                 errdefer std.debug.print("glyph={any} x={d} clip={any}\n", .{ glyph.bytes, x, clip });
                 for ([_]*OptimizedBuffer{ actual, expected }) |target| {
                     target.clear(ansi.rgbColor(0, 0, 0, 255), null);
-                    target.set(5, 0, .{ .char = 'Z', .fg = fg, .bg = bg, .attributes = 0 });
+                    target.set(19, 0, .{ .char = 'Z', .fg = fg, .bg = bg, .attributes = 0 });
                     if (clip) |rect| try target.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
                 }
                 defer for ([_]*OptimizedBuffer{ actual, expected }) |target| target.clearScissorRects();
@@ -1147,8 +1148,6 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
         wrap: bool = false,
         scissor_width: u32 = 4,
         truncate: bool = false,
-        /// The one-chunk text that draws the same cells, when it is not the joined chunks.
-        reference: ?[]const u8 = null,
         /// Per source, the cell that holds the mark, or null when no drawn glyph comes before it.
         mark: [2]?u32,
     };
@@ -1163,7 +1162,7 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
         .{ .chunks = &.{ "abcde", "\u{301}" }, .truncate = true, .mark = .{ 3, 3 } },
         .{ .chunks = &.{ "abcd", "\u{301}e" }, .truncate = true, .mark = .{ null, null } },
         .{ .chunks = &.{ "a", "\u{301}", "bcdef" }, .viewport = .{ .x = 0, .y = 0, .width = 5, .height = 2 }, .truncate = true, .mark = .{ 0, 0 } },
-        .{ .chunks = &.{ "\u{2714}", "\u{fe0f}" }, .reference = "\u{2714}", .mark = .{ null, null } },
+        .{ .chunks = &.{ "\u{2714}", "\u{fe0f}" }, .mark = .{ 0, 0 } },
         .{ .chunks = &.{ "a\t", "\u{301}" }, .mark = .{ null, null } },
         .{ .chunks = &.{ "abc", "\u{301}d" }, .viewport = .{ .x = 0, .y = 0, .width = 3, .height = 2 }, .wrap = true, .mark = .{ 2, 2 } },
         .{ .chunks = &.{ "\u{4e2d}", "\u{301}", "\u{301}" }, .mark = .{ 0, 0 } },
@@ -1177,7 +1176,7 @@ test "OptimizedBuffer text views attach a combining mark only to the glyph drawn
         // The editor scrolls to its cursor, so it cannot keep a viewport that starts right of column 0.
         if (source == .insert and (row.viewport.x != 0 or row.truncate)) continue;
         errdefer std.debug.print("opacity={d} source={t} chunks={any}\n", .{ opacity, source, row.chunks });
-        const text = try std.mem.concat(std.testing.allocator, u8, if (row.reference) |reference| &.{reference} else row.chunks);
+        const text = try std.mem.concat(std.testing.allocator, u8, row.chunks);
         defer std.testing.allocator.free(text);
         const one_chunk = try OptimizedBuffer.init(std.testing.allocator, 4, 2, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
         defer one_chunk.deinit();
@@ -1490,8 +1489,7 @@ test "OptimizedBuffer - a scissor never moves the text glyphs it leaves visible"
     const black = ansi.rgbColor(0, 0, 0, 255);
     const white = ansi.rgbColor(255, 255, 255, 255);
     const texts = [_][]const u8{
-        // The model walks packed spans, which hold at most four cells; this cluster is exactly four wide in wcwidth.
-        "\u{1f469}\u{200d}\u{1f4bb}XY",
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}XY",
         "\u{1f1fa}\u{1f1f8}XY",
         "a\u{4e2d}b\tc",
         "e\u{301}\u{4e2d}XY",
@@ -1502,6 +1500,8 @@ test "OptimizedBuffer - a scissor never moves the text glyphs it leaves visible"
         defer whole.deinit();
         const clipped = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = width_method });
         defer clipped.deinit();
+        const copied = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = width_method });
+        defer copied.deinit();
         for (texts) |text| {
             for ([_]bool{ false, true }) |checked| {
                 for (0..8) |clip_start| {
@@ -1514,14 +1514,18 @@ test "OptimizedBuffer - a scissor never moves the text glyphs it leaves visible"
                         for ([_]*OptimizedBuffer{ whole, clipped }) |target| {
                             if (checked) try target.drawTextChecked(text, 0, 0, white, black, 0) else try target.drawTextClipped(text, 0, 0, white, black, 0);
                         }
-                        // A cell inside the scissor shows the unclipped glyph if the whole glyph is inside it.
+                        copied.clear(black, null);
+                        copied.drawFrameBuffer(@intCast(clip_start), 0, whole, @intCast(clip_start), 0, @intCast(clip_end - clip_start), 1);
+                        // A cell inside the scissor or the copied rectangle shows the unclipped glyph if the whole glyph is inside it.
                         var x: u32 = 0;
                         while (x < 8) {
-                            const width = gp.encodedCharWidth(whole.buffer.char[x]);
+                            // A continuation (0 cells) means a span shorter than its glyph: fail, do not hang.
+                            const width = @max(gp.encodedCharWidth(whole.buffer.char[x]), 1);
                             const inside = x >= clip_start and x + width <= clip_end;
                             for (x..@min(x + width, 8)) |column| {
                                 const expected: u32 = if (inside) whole.buffer.char[column] else ' ';
                                 try std.testing.expectEqual(expected, clipped.buffer.char[column]);
+                                try std.testing.expectEqual(expected, copied.buffer.char[column]);
                             }
                             x += width;
                         }
@@ -1608,6 +1612,57 @@ test "OptimizedBuffer - drawFrameBuffer preserves packed metadata on opaque copy
     try std.testing.expectEqual(ansi.ColorIntent.default, ansi.intent(copied.fg));
     try std.testing.expectEqual(ansi.ColorIntent.indexed, ansi.intent(copied.bg));
     try std.testing.expectEqual(@as(u8, 6), ansi.slot(copied.bg));
+}
+
+// A source without respectAlpha is copied at full opacity, transparent and translucent cells
+// too, whether or not the target or the source holds a grapheme or link; a source with it, or
+// any source below full opacity, blends. Before, a grapheme or link in either buffer switched
+// the copy to blending, so transparent cells showed the target instead of punching holes.
+test "OptimizedBuffer - drawFrameBuffer result does not depend on other rows of the target" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const src = try OptimizedBuffer.init(std.testing.allocator, 5, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer src.deinit();
+    const url = try pools.links.acquire("https://row.invalid");
+    defer pools.links.decref(url) catch {};
+    for ([_]f32{ 1.0, 0.5 }) |opacity| {
+        var by_respect: [2][3]buffer_mod.Cell = undefined;
+        for ([_]bool{ false, true }, &by_respect) |respect, *first| {
+            src.respectAlpha = respect;
+            // The target's other row: empty, a wide grapheme, a link; or a wide grapheme in the
+            // source's own last two columns.
+            for (0..4) |row_kind| {
+                src.clear(ansi.rgbColor(0, 0, 0, 0), 0);
+                src.set(0, 0, .{ .char = 0, .fg = ansi.rgbColor(0, 0, 0, 0), .bg = ansi.rgbColor(0, 0, 0, 0), .attributes = 0 });
+                src.set(1, 0, .{ .char = 't', .fg = ansi.rgbColor(255, 0, 0, 128), .bg = ansi.rgbColor(0, 0, 255, 64), .attributes = 0 });
+                src.set(2, 0, .{ .char = 'X', .fg = ansi.rgbColor(255, 255, 255, 255), .bg = ansi.rgbColor(0, 90, 0, 255), .attributes = 0 });
+                if (row_kind == 3) try src.drawText("\u{754c}", 3, 0, ansi.rgbColor(200, 200, 200, 255), null, 0);
+                const dst = try OptimizedBuffer.init(std.testing.allocator, 5, 2, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+                defer dst.deinit();
+                dst.clear(ansi.rgbColor(20, 20, 20, 255), null);
+                try dst.drawText("abc", 0, 0, ansi.rgbColor(200, 200, 200, 255), null, 0);
+                if (row_kind == 1) try dst.drawText("\u{4e16}", 0, 1, ansi.rgbColor(200, 200, 200, 255), null, 0);
+                if (row_kind == 2) try dst.drawText("l", 0, 1, ansi.rgbColor(200, 200, 200, 255), null, ansi.TextAttributes.setLinkId(0, url));
+                try dst.pushOpacity(opacity);
+                dst.drawFrameBuffer(0, 0, src, null, null, null, null);
+                dst.popOpacity();
+                var cells: [3]buffer_mod.Cell = undefined;
+                for (&cells, 0..) |*cell, x| cell.* = dst.get(@intCast(x), 0).?;
+                if (row_kind == 0) first.* = cells else try std.testing.expectEqualDeep(first.*, cells);
+            }
+        }
+        if (opacity == 1.0) {
+            // Copied cells keep the source's transparent glyph and color; blended ones keep the
+            // glyph below.
+            try std.testing.expectEqual(@as(u32, 0), by_respect[0][0].char);
+            try std.testing.expectEqual(@as(u16, 0), by_respect[0][0].bg[3]);
+            try std.testing.expectEqual(@as(u32, 'a'), by_respect[1][0].char);
+        } else {
+            // Below full opacity both sources blend: the opaque 'X' is mixed with the target.
+            try std.testing.expectEqualDeep(by_respect[1], by_respect[0]);
+            try std.testing.expect(by_respect[0][2].bg[1] != 90);
+        }
+    }
 }
 
 test "OptimizedBuffer - drawTextBuffer transparent fast path preserves destination background metadata" {
@@ -1848,6 +1903,16 @@ test "OptimizedBuffer - set should not clear newly written adjacent grapheme con
     try std.testing.expect(gp.graphemeIdFromChar(c3.char) == (new_gid & gp.GRAPHEME_ID_MASK));
 
     try std.testing.expect(c4.char == ' ');
+
+    // A wide glyph over a start clears only that span's tail, not an overlapping copy with the same ID.
+    buf.clear(bg, null);
+    const span = gp.packGraphemeStart(old_gid, 4);
+    buf.set(1, 0, .{ .char = span, .fg = fg, .bg = bg, .attributes = 0 });
+    buf.syncCell(3, 0, .{ .char = span, .fg = fg, .bg = bg, .attributes = 0 });
+    const copy = buf.buffer.char[3..7].*;
+    buf.set(0, 0, .{ .char = new_start, .fg = fg, .bg = bg, .attributes = 0 });
+    try std.testing.expectEqual(@as(u32, ' '), buf.buffer.char[2]);
+    try std.testing.expectEqualSlices(u32, &copy, buf.buffer.char[3..7]);
 }
 
 test "OptimizedBuffer - set span cleanup keeps shared link refcounts consistent" {
@@ -2209,6 +2274,52 @@ test "OptimizedBuffer - fillRect transparent path is a no-op without trackers" {
     try std.testing.expectEqual(ansi.greenF(blue_bg), ansi.greenF(unchangedSpace.bg));
     try std.testing.expectEqual(ansi.blueF(blue_bg), ansi.blueF(unchangedSpace.bg));
     try std.testing.expectEqual(ansi.TextAttributes.UNDERLINE, unchangedSpace.attributes);
+}
+
+test "OptimizedBuffer - drawBox places titles against the whole box when the buffer or a scissor clips it" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const buf = try OptimizedBuffer.init(std.testing.allocator, 12, 3, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer buf.deinit();
+    // Equal corners make the top and the bottom title rows read the same.
+    const border_chars = [_]u32{ '+', '+', '+', '+', '-', '|', 0, 0, 0, 0, 0 };
+    const sides: buffer_mod.BorderSides = .{ .top = true, .right = true, .bottom = true, .left = true };
+    const fg = ansi.rgbColor(250, 240, 230, 255);
+    const bg = ansi.rgbColor(10, 20, 30, 255);
+    const Case = struct { x: i32, y: i32 = 0, alignment: u8 = 0, title: []const u8 = "ab", clip: ?buffer_mod.ClipRect = null, row: []const u8 };
+    // A 10-cell box: a 2-cell title starts at x + 2 (left), x + 4 (center), or x + 6 (right).
+    const cases = [_]Case{
+        .{ .x = 0, .row = "+-ab-----+  " },
+        .{ .x = -2, .row = "ab-----+    " },
+        .{ .x = -3, .row = "b-----+     " },
+        .{ .x = -2, .alignment = 1, .row = "--ab---+    " },
+        .{ .x = -2, .alignment = 2, .row = "----ab-+    " },
+        .{ .x = 6, .alignment = 1, .row = "      +---ab" },
+        .{ .x = 5, .alignment = 2, .row = "     +-----a" },
+        .{ .x = -2, .title = "世界", .row = "世界---+    " },
+        // The wide glyph covers columns -1 and 0, so column 0 keeps its cell.
+        .{ .x = -3, .title = "世界", .row = " 界---+     " },
+        .{ .x = -2, .alignment = 2, .title = "e\u{301}x", .row = "----e\u{301}x-+    " },
+        .{ .x = -2, .alignment = 2, .title = "abcdef", .row = "abcdef-+    " },
+        .{ .x = -2, .title = "abcdefg", .row = "-------+    " },
+        .{ .x = 0, .y = -1, .row = "+-ab-----+  " },
+        .{ .x = 0, .clip = .{ .x = 3, .y = 0, .width = 9, .height = 3 }, .row = "   b-----+  " },
+        .{ .x = 2, .alignment = 2, .clip = .{ .x = 0, .y = 0, .width = 8, .height = 3 }, .row = "  +-----    " },
+    };
+    var text: [256]u8 = undefined;
+    for ([_]bool{ false, true }) |checked| for (cases) |case| {
+        errdefer std.debug.print("checked={} case={any}\n", .{ checked, case });
+        buf.clear(bg, null);
+        if (case.clip) |rect| try buf.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
+        defer buf.clearScissorRects();
+        const args = .{ buf, case.x, case.y, 10, 3, &border_chars, sides, fg, bg, fg, false, case.title, case.alignment, case.title, case.alignment };
+        try if (checked) @call(.auto, OptimizedBuffer.drawBoxChecked, args) else @call(.auto, OptimizedBuffer.drawBox, args);
+        var rows = std.mem.splitScalar(u8, text[0..try buf.writeResolvedChars(&text, true)], '\n');
+        var y: i32 = 0;
+        while (rows.next()) |row| : (y += 1) {
+            if (y == case.y or y == case.y + 2) try std.testing.expectEqualStrings(case.row, row);
+        }
+    };
 }
 
 test "OptimizedBuffer - drawBox transparent border preserves destination background metadata without trackers" {
@@ -2651,7 +2762,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/    ▪ file.ts                │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎ select  esc close   │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2661,7 +2772,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("                                         ", 0, 2, fg, bg, 0);
         try next.drawText("  Select Files                           ", 0, 3, fg, bg, 0);
         try next.drawText("  Enter file path...                     ", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2671,7 +2782,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/    ▪ file.ts                │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎ select  esc close   │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2681,7 +2792,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("                                         ", 0, 2, fg, bg, 0);
         try next.drawText("  Select Files                           ", 0, 3, fg, bg, 0);
         try next.drawText("  Enter file path...                     ", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     {
@@ -2691,7 +2802,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/                             │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎/tab select          │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 }
 
@@ -2722,7 +2833,7 @@ test "renderer - CJK graphemes shifting left must preserve continuation cells (#
     {
         const next = cli_renderer.getNextBuffer();
         try next.drawText("abcd你好世          ", 0, 0, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     // Frame 2: "abc你好世" — backspace deleted 'd', CJK chars shift left by 1
@@ -2730,7 +2841,7 @@ test "renderer - CJK graphemes shifting left must preserve continuation cells (#
     {
         const next = cli_renderer.getNextBuffer();
         try next.drawText("abc你好世           ", 0, 0, fg, bg, 0);
-        _ = cli_renderer.render(false);
+        _ = test_renderer.render(false);
     }
 
     // After frame 2, currentRenderBuffer should match the frame 2 layout exactly.

@@ -916,10 +916,14 @@ function defineStdinParserSuite(impl: Implementation): void {
       test("legacy single high-byte on timeout", () => {
         const { parser, clock } = createTimedParser()
         try {
+          // Native waits for the rest of a UTF-8 lead without a deadline, until a byte that cannot continue it.
+          const key = k("i", { raw: "\x1bi", meta: true })
           parser.push(Uint8Array.from([0xe9]))
           expect(snap(parser)).toEqual([])
           clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual([k("i", { raw: "\x1bi", meta: true })])
+          expect(snap(parser)).toEqual(either([key], []))
+          parser.push(Buffer.from("x"))
+          expect(snap(parser)).toEqual(either([k("x")], [key, k("x")]))
         } finally {
           parser.destroy()
         }

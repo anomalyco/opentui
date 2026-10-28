@@ -352,4 +352,57 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       expect(highlights.length).toBe(1)
     })
   })
+
+  describe("Deletions that rejoin a grapheme", () => {
+    // Deleting `x` joins U+1F44B and U+1F3FB into one 2-cell grapheme, so `Z` moves 3 cells, not 1.
+    for (const [name, remove] of [
+      ["Delete", () => (textarea.editBuffer.setCursor(0, 2), textarea.editBuffer.deleteChar())],
+      ["Backspace", () => (textarea.editBuffer.setCursor(0, 3), textarea.editBuffer.deleteCharBackward())],
+      ["deleteRange", () => textarea.editBuffer.deleteRange(0, 2, 0, 3)],
+      ["deleteSelectedText", () => (textarea.editorView.setSelection(2, 3), textarea.editorView.deleteSelectedText())],
+      [
+        "replaceSelectedText",
+        () => (textarea.editorView.setSelection(2, 3), textarea.editorView._replaceSelectedText("")),
+      ],
+    ] as const) {
+      it(`${name} shifts the marks after it by the change in width`, async () => {
+        await setup("\u{1f44b}x\u{1f3fb}Z")
+        const id = extmarks.create({ start: 5, end: 6 })
+        remove()
+        expect(textarea.plainText).toBe("\u{1f44b}\u{1f3fb}Z")
+        expect(extmarks.get(id)).toMatchObject({ start: 2, end: 3 })
+      })
+    }
+
+    // Backspace over `x` joins the flag and leaves the cursor after it, past where the deletion started.
+    it("Backspace that joins a flag removes the mark on the character it deletes", async () => {
+      await setup("\u{1f1fa}x\u{1f1f8}z")
+      const id = extmarks.create({ start: 1, end: 2 })
+      textarea.editBuffer.setCursor(0, 2)
+      textarea.editBuffer.deleteCharBackward()
+      expect(textarea.plainText).toBe("\u{1f1fa}\u{1f1f8}z")
+      expect(extmarks.get(id)).toBeNull()
+    })
+
+    // Deleting the line break joins U+263A and U+FE0F into one 2-cell grapheme, so `Z` keeps its offset.
+    it("Delete before a widening join keeps the marks after it", async () => {
+      await setup("\u263a\n\ufe0fZ")
+      const id = extmarks.create({ start: 2, end: 3 })
+      textarea.editBuffer.setCursor(0, 1)
+      textarea.editBuffer.deleteChar()
+      expect(textarea.plainText).toBe("\u263a\ufe0fZ")
+      expect(extmarks.get(id)).toMatchObject({ start: 2, end: 3 })
+    })
+
+    // Typing ZWJ joins U+1F468 and U+1F469 into one 2-cell grapheme, so `Z` moves 2 cells left.
+    it("an insert that joins the text after it shifts the marks by the change in width", async () => {
+      await setup("\u{1f468}\u{1f469}Z")
+      const id = extmarks.create({ start: 4, end: 5 })
+      textarea.editBuffer.setCursor(0, 2)
+      textarea.editBuffer.insertText("\u200d")
+      expect(textarea.plainText).toBe("\u{1f468}\u200d\u{1f469}Z")
+      expect(extmarks.get(id)).toMatchObject({ start: 2, end: 3 })
+      expect(textarea.editBuffer.getCursorPosition().offset).toBe(2)
+    })
+  })
 })

@@ -667,8 +667,7 @@ describe("EditBuffer", () => {
 describe("EditBuffer Events", () => {
   const edit = { "cursor-changed": 1, "content-changed": 1 }
   const move = { "cursor-changed": 1 }
-  // Undo and redo emit no content-changed (U21 D7, also on `main`).
-  const history = { "cursor-changed": 1, cursorChanged: 1 }
+  const history = { ...edit, cursorChanged: 1 }
   it.each([
     ["setText", (buffer: EditBuffer) => buffer.setText("xy"), edit],
     ["setTextOwned", (buffer: EditBuffer) => buffer.setTextOwned("xy"), edit],
@@ -688,6 +687,8 @@ describe("EditBuffer Events", () => {
     ["setCursorByOffset", (buffer: EditBuffer) => buffer.setCursorByOffset(1), move],
     ["gotoLine", (buffer: EditBuffer) => buffer.gotoLine(0), move],
     ["undo", (buffer: EditBuffer) => buffer.undo(), history],
+    ["redo", (buffer: EditBuffer) => buffer.redo(), history],
+    ["undo without history", (buffer: EditBuffer) => (buffer.clearHistory(), buffer.undo()), {}],
   ] as const)("%s emits each event once, only to its own buffer", async (_name, operation, expected) => {
     const buffer = EditBuffer.create("wcwidth", resourceContext)
     const other = EditBuffer.create("wcwidth", resourceContext)
@@ -695,6 +696,8 @@ describe("EditBuffer Events", () => {
       buffer.setText("ab\ncd")
       buffer.setCursorToLineCol(0, 1)
       buffer.insertText("Z")
+      buffer.insertText("Y")
+      buffer.undo()
       await flushNativeEvents()
       const counts: Record<string, number> = {}
       for (const name of ["cursor-changed", "content-changed", "cursorChanged"]) {

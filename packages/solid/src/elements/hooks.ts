@@ -3,11 +3,13 @@ import {
   PasteEvent,
   Selection,
   Timeline,
+  type AnimationTickCallback,
+  type AnimationTickOptions,
   type CliRenderer,
   type KeyEvent,
   type TimelineOptions,
 } from "@opentui/core"
-import { createContext, createSignal, onCleanup, onMount, useContext } from "solid-js"
+import { createContext, createEffect, createSignal, onCleanup, onMount, useContext, type Accessor } from "solid-js"
 
 export const RendererContext = createContext<CliRenderer>()
 
@@ -30,6 +32,19 @@ export const onResize = (callback: (width: number, height: number) => void) => {
 
   onCleanup(() => {
     renderer.off("resize", callback)
+  })
+}
+
+/** Ticks `callback` at `fps` on the renderer's shared animation clock; an undefined rate pauses it. */
+export const onAnimationTick = (
+  fps: number | Accessor<number | undefined>,
+  callback: AnimationTickCallback,
+  options?: AnimationTickOptions,
+) => {
+  const renderer = useRenderer()
+  createEffect(() => {
+    const rate = typeof fps === "function" ? fps() : fps
+    if (rate !== undefined) onCleanup(renderer.onAnimationTick(rate, callback, options))
   })
 }
 

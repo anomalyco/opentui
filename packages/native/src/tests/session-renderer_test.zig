@@ -216,7 +216,6 @@ test "Session renderer completes its byte endpoint between raw writes" {
     try owner.attachSessionRenderer(id, 4, 2, .{ .env_map = &environment });
     const cli = try owner.raw().getSessionRenderer(id);
     try testing.expectEqualDeep(raw_stats, value.getStats());
-    try testing.expect(!cli.terminalSetup);
     try testing.expect(value.output.callback == null);
     const published = cli.getRenderStats();
 
@@ -409,7 +408,7 @@ fn attachWithAllocationFailures(allocator: std.mem.Allocator) !void {
     try testing.expect(!owner.mutating);
     if (result) |_| {
         const cli = try owner.raw().getSessionRenderer(id);
-        try testing.expect(cli.backend.feed.feed == value.output);
+        try testing.expect(cli.backend.feed == value.output);
     } else |_| {
         try testing.expectError(error.RendererNotAttached, owner.raw().getSessionRenderer(id));
     }
