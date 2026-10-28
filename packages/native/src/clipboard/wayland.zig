@@ -1430,14 +1430,18 @@ test "Wayland connection setup applies the finite receive buffer cap and records
     const Environment = struct {
         extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
         extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+        // Like libwayland, connecting consumes an inherited WAYLAND_SOCKET.
+        fn connect(_: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
+            _ = unsetenv("WAYLAND_SOCKET");
+            return @ptrFromInt(1);
+        }
     };
     var symbols = testSymbols();
-    symbols.wl_display_connect = testDisplayConnect;
+    symbols.wl_display_connect = Environment.connect;
     symbols.wl_display_set_max_buffer_size = testSetMaxBufferSize;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
     connection.flush_outcome_override = .{ .result = 0, .errno = .SUCCESS };
     test_max_buffer_size = 0;
-    // libwayland unsets an adopted WAYLAND_SOCKET; the fake connect does not, so the test does.
     try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
     defer _ = Environment.unsetenv("WAYLAND_SOCKET");
 
@@ -1445,7 +1449,6 @@ test "Wayland connection setup applies the finite receive buffer cap and records
 
     try std.testing.expectEqual(@as(usize, WAYLAND_CONNECTION_BUFFER_SIZE_MAX), test_max_buffer_size);
     try std.testing.expect(connection.inherited_socket);
-    _ = Environment.unsetenv("WAYLAND_SOCKET");
 
     // libwayland before 1.23 has no cap symbol; setup must still succeed because
     // those versions already use fixed-size bounded connection buffers.
@@ -1669,10 +1672,6 @@ var test_read_event_count: u32 = 0;
 var test_display_error_call_count: u32 = 0;
 var test_role_connection: ?*Connection = null;
 var test_role_destroyed_before_surface = false;
-
-fn testDisplayConnect(_: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
-    return @ptrFromInt(1);
-}
 
 fn testSetMaxBufferSize(_: *linux.WlDisplay, size: usize) callconv(.c) void {
     test_max_buffer_size = size;
