@@ -229,6 +229,8 @@ const Stats = struct {
     /// Host replies that destroyed a node mid-frame, and RECORD replies that changed the scene.
     reply_destroys: u32 = 0,
     record_replies: u32 = 0,
+    /// Nodes a reply created, attached, and destroyed again, as a list remount does.
+    remounts: u32 = 0,
     /// RESIZE requests from children of the viewport content.
     content_resizes: u32 = 0,
     /// Replies to those requests that changed text on a content child, mid-batch.
@@ -598,7 +600,8 @@ const Harness = struct {
         if (self.model.handles[empty] == null) return .{
             .create = .{
                 .slot = empty,
-                .kind = switch (random.uintLessThan(u32, 10)) {
+                // The first slot that takes paint hooks holds a box, so recordings play box bodies.
+                .kind = if (empty == scaffold_slots) .box else switch (random.uintLessThan(u32, 10)) {
                     0 => .box,
                     // Half the boxes are scroll nodes, so the mix of the other kinds stays as before.
                     1 => if (random.boolean()) .box else .scroll,
@@ -927,6 +930,18 @@ const Harness = struct {
             const slot = self.liveSlot(scaffold_slots) orelse break;
             try self.apply(self.generateReply(slot));
         }
+        // A remount marks more nodes in one pass than the scene holds. It draws from `side`, as
+        // sibling marks do, and leaves the tree as it was.
+        if (self.side.uintLessThan(u32, 32) == 0) for (scaffold_slots..node_count_max) |free| {
+            if (self.model.handles[free] != null) continue;
+            for (0..self.side.intRangeAtMost(u32, 8, 64)) |_| {
+                try self.apply(.{ .create = .{ .slot = free, .kind = if (self.side.boolean()) .text else .box } });
+                try self.apply(.{ .move = .{ .slot = free, .parent = content_slot, .index = 0 } });
+                try self.apply(.{ .destroy = free });
+                self.stats.remounts += 1;
+            }
+            break;
+        };
         if (self.random.uintLessThan(u32, 8) != 0) return;
         const slot = self.liveSlot(scaffold_slots) orelse return;
         // Content rows stay, so viewport scenes keep enough children to cull.
@@ -1452,20 +1467,22 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // fails if the draw that produces its kind is removed. Minimums are about a quarter of the
     // counts at 64 x 256 (decoded frames about two thirds), derived again after replies began to
     // destroy nodes: those must spare content rows, or viewport scenes fall below the culling
-    // cutoff (filtered frames with a request fell from 441 to 51). Sibling marks draw from their
-    // own stream, so they keep the script's mix. Counts: reused 8,780, culling 1,092, culling
-    // with a request 201, kept lists in such a frame 25, hooked under a hidden ancestor 5,282,
-    // reply hid the requester's parent 44, reply detached the requester 35, reply destroyed a
-    // node 496, a RECORD reply changed the scene 117, content-child RESIZE 45, a truncation
-    // change in its reply 44, a sibling marked mid-batch 127, unmeasured content text replaced
-    // 22, UPDATE 4,159, RESIZE 58, LAYOUT_CHANGED 2,064, recordings 515, box bodies 95, decoded
-    // 10,925, an editor's cursor 1,824, a host cursor 8,201, skipped paint 8,248, partly diffed
-    // 1,301, band frames 1,141, split renders with a frame 492 and before one 490, recorded
-    // frames that kept rows 151, non-local or image recordings 24, steady reads 328, draft writes
-    // after paint 2,802, raw writes between frames 406, shared text changes shown 449, style
-    // changes shown 235, view binds 367, selections 224, equal re-sends 462, palette changes 96,
-    // frames showing a scroll node with children 983, scrolls and option changes 151, SCROLL
-    // requests 4.
+    // cutoff (filtered frames with a request fell from 441 to 51). Sibling marks and remounts
+    // draw from their own stream, so they keep the script's mix. Arrows and negative positions
+    // changed the mix; the older minimums still hold, so they stay. Counts: reused 8,686,
+    // culling 830, culling with a request 347, kept lists in such a frame 64, culled paint lists
+    // checked 15,539, hooked under a hidden ancestor 7,122, reply hid the requester's parent 44,
+    // reply detached the requester 59, reply destroyed a node 451, a RECORD reply changed the
+    // scene 185, nodes remounted in a reply 5,657, content-child RESIZE 62, a truncation change
+    // in its reply 60, a sibling marked mid-batch 125, unmeasured content text replaced 24,
+    // UPDATE 3,600, RESIZE 69, LAYOUT_CHANGED 1,840, recordings 815, box bodies 134, decoded
+    // 10,892, an editor's cursor 1,362, a host cursor 7,772, skipped paint 8,491, partly diffed
+    // 1,288, band frames 1,120, split renders with a frame 483 and before one 481, recorded
+    // frames that kept rows 292, non-local or image recordings 36, steady reads 638, draft writes
+    // after paint 2,934, raw writes between frames 393, shared text changes shown 387, style
+    // changes shown 170, view binds 358, selections 252, equal re-sends 435, palette changes 72,
+    // frames showing a scroll node with children 431, scrolls and option changes 116, SCROLL
+    // requests 32, an arrow left of the screen 865.
     const minimums: Stats = .{
         // SCROLL requests that deliver a LAYOUT request: 13 in one run.
         .scroll_layouts = 3,
@@ -1473,12 +1490,13 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .filtered = 260,
         .filtered_requests = 100,
         .reused_filtered_requests = 18,
-        .culled_orders = 4100,
+        .culled_orders = 3900,
         .hidden_hooked = 1150,
         .reply_hides = 7,
         .reply_detaches = 9,
         .reply_destroys = 80,
         .record_replies = 23,
+        .remounts = 1400,
         .content_resizes = 11,
         .content_reply_texts = 10,
         .sibling_marks = 38,
@@ -1510,7 +1528,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .scroll_frames = 300,
         .scroll_changes = 42,
         .scroll_requests = 2,
-        .arrows_beside = 200,
+        .arrows_beside = 210,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
