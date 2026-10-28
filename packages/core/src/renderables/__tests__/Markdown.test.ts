@@ -1960,7 +1960,8 @@ for (const internalBlockMode of ["coalesced", "top-level"] as const) {
       SyntaxStyle.fromStyles({ "markup.raw": { fg }, "markup.list": { fg } }, renderer.nativeScene)
     const md = createMarkdownRenderable({
       id: `markdown-list-style-update-${internalBlockMode}`,
-      content: "Intro paragraph\n\n- first item with `code`\n- second item\n\n| H |\n| --- |\n| `cell` |",
+      content:
+        "Intro paragraph\n\n- first item with `code`\n- second item\n- third\n  > quoted\n\n| H |\n| --- |\n| `cell` |",
       syntaxStyle: theme(fg2),
       fg: fg1,
       internalBlockMode,
@@ -1980,6 +1981,8 @@ for (const internalBlockMode of ["coalesced", "top-level"] as const) {
 
     md.fg = fg2
     md.syntaxStyle = theme(fg1)
+    await renderOnce()
+    expect(captureFrame()).toContain("quoted")
     await renderMarkdownRenderable(md)
     expect(colors()).toEqual(spans.map(([, , after]) => after.toInts()))
   })

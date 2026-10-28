@@ -1103,6 +1103,11 @@ export class MarkdownRenderable extends Renderable {
       return true
     }
 
+    if (token.type === "blockquote" && renderable instanceof BoxRenderable) {
+      this.applyBlockquoteRenderable(renderable, token, 0)
+      return true
+    }
+
     return previousToken?.raw === token.raw
   }
 
