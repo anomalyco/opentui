@@ -428,9 +428,9 @@ const recordsComposed = async (
 }
 test.each(recordCases)("%s records what its buffer composes", recordsComposed)
 
-// Open decision: a wide glyph cut by a clip edge (here x = -1) keeps its visible half's background in the composed
-// buffer, but a recorded text view skips the whole glyph and the backdrop shows. Either native text views keep that
-// background, or invariant 1 scopes the case out.
+// A wide glyph cut by a clip edge (here x = -1) keeps its visible half's background in the composed buffer, but a
+// recorded text view skips the whole glyph and the backdrop shows. This row becomes a normal test once the native
+// fix that keeps that background (record 370) is in this branch's base.
 const clipped = Array.from({ length: 3 }, () => [chunk("界", "#203040")])
 test.todo.each([
   ["TextTable clipped wide glyph", TextTableRenderable, { content: clipped, border: false }],
