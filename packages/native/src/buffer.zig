@@ -3023,9 +3023,17 @@ pub const OptimizedBuffer = struct {
     }
 
     /// A border cell on the transparent fast path writes what blending writes: a space keeps
-    /// the glyph below it.
+    /// the glyph below it. The fast path's preconditions rule out links, graphemes and image
+    /// markers under the box, so only a space needs the target cell.
     inline fn setTransparentBorderCell(self: *OptimizedBuffer, x: u32, y: u32, char: u32, color: RGBA) void {
-        if (self.trySetTransparentTextCellFast(self.coordsToIndex(x, y), char, color, 0)) return;
+        const index = self.coordsToIndex(x, y);
+        if (char != DEFAULT_SPACE_CHAR) {
+            self.buffer.char[index] = char;
+            self.buffer.fg[index] = color;
+            self.buffer.attributes[index] = 0;
+            return;
+        }
+        if (self.trySetTransparentTextCellFast(index, char, color, 0)) return;
         self.setCellWithAlphaBlendingCell(x, y, makeCell(char, color, ansi.rgbColor(0, 0, 0, 0), 0));
     }
 
