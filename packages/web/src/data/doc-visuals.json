@@ -7819,7 +7819,7 @@
           "background": 1
         },
         {
-          "text": "▀",
+          "text": "█",
           "width": 1,
           "foreground": 3,
           "background": 4
@@ -7845,9 +7845,9 @@
           "background": 1
         },
         {
-          "text": " ",
+          "text": "█",
           "width": 1,
-          "foreground": 2,
+          "foreground": 3,
           "background": 4
         },
         {
@@ -8063,9 +8063,9 @@
           "background": 1
         },
         {
-          "text": " ",
+          "text": "█",
           "width": 1,
-          "foreground": 2,
+          "foreground": 3,
           "background": 4
         },
         {
@@ -8089,7 +8089,7 @@
           "background": 1
         },
         {
-          "text": "▀",
+          "text": "█",
           "width": 1,
           "foreground": 3,
           "background": 4
