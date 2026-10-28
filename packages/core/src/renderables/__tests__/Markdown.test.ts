@@ -1952,6 +1952,38 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor2.toInts())
 })
 
+for (const internalBlockMode of ["coalesced", "top-level"] as const) {
+  test(`list items follow fg and syntax style changes with internalBlockMode=${internalBlockMode}`, async () => {
+    const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+    const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
+    const code1 = RGBA.fromValues(0.1, 0.8, 0.2, 1)
+    const code2 = RGBA.fromValues(0.8, 0.1, 0.6, 1)
+    const theme1 = SyntaxStyle.fromStyles({ "markup.raw": { fg: code1 } }, renderer.nativeScene)
+    const theme2 = SyntaxStyle.fromStyles({ "markup.raw": { fg: code2 } }, renderer.nativeScene)
+    const md = createMarkdownRenderable({
+      id: `markdown-list-style-update-${internalBlockMode}`,
+      content: "Intro paragraph\n\n- first item with `code`\n- second item",
+      syntaxStyle: theme1,
+      fg: fg1,
+      internalBlockMode,
+    })
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    expect(findSpanContaining(captureSpans(), "second item")?.fg?.toInts()).toEqual(fg1.toInts())
+    expect(findSpanContaining(captureSpans(), "code")?.fg?.toInts()).toEqual(code1.toInts())
+
+    md.fg = fg2
+    md.syntaxStyle = theme2
+    renderer.requestRender()
+    await renderMarkdownRenderable(md)
+
+    expect(findSpanContaining(captureSpans(), "Intro paragraph")?.fg?.toInts()).toEqual(fg2.toInts())
+    expect(findSpanContaining(captureSpans(), "second item")?.fg?.toInts()).toEqual(fg2.toInts())
+    expect(findSpanContaining(captureSpans(), "code")?.fg?.toInts()).toEqual(code2.toInts())
+  })
+}
+
 test("table cells use the markdown fg and follow fg changes", async () => {
   const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
   const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)

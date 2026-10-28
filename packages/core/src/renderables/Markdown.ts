@@ -2054,7 +2054,8 @@ export class MarkdownRenderable extends Renderable {
           this.destroyUnusedDefaultRenderable(custom.renderable)
         }
 
-        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token)
+        // A forced refresh restyles lists even when their items are unchanged, matching coalesced mode.
+        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token, forceTableRefresh)
         existing.renderable.marginBottom = 0
         if (existing.marginTop !== block.marginTop) {
           this.applyMargins(existing.renderable, block.marginTop, 0)
