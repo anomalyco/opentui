@@ -183,6 +183,11 @@ const tabPaints: {
     options: { tabWidth: 3, showDescription: false, showUnderline: false, options: [{ name: "ab", description: "" }] },
     lines: [" …"],
   },
+  {
+    name: "an underline without a description",
+    options: { showDescription: false, options: items.slice(0, 2) },
+    lines: [" one       two", "▬▬▬▬▬▬▬▬▬▬"],
+  },
 ]
 
 test.each(tabPaints)("TabSelect paints $name", async ({ options, lines }) => {
@@ -272,9 +277,12 @@ test.each(defaultPaints)("Select and TabSelect default colors over a backdrop, f
   expect(runs(setup.captureSpans(), 7, 26)).toEqual(lines)
 })
 
-// 029: the tabs paint on the first frame, also when the width gives the layout the constructor's size.
-test.each([40, "100%"] as const)("TabSelect with width %p paints on the first frame", async (width) => {
-  renderer.root.add(new TabSelectRenderable(renderer, { width, tabWidth: 10, options: items.slice(0, 1) }))
+// 029: the tabs paint on the first frame, also when the width gives the layout the constructor's size. The
+// `tabPaints` rows cover a "100%" width.
+test.each([false, true])("TabSelect with width 40 paints on the first frame, buffered %p", async (buffered) => {
+  renderer.root.add(
+    new TabSelectRenderable(renderer, { width: 40, tabWidth: 10, options: items.slice(0, 1), buffered }),
+  )
   await setup.renderOnce()
   expect(setup.captureCharFrame().split("\n")[0].trimEnd()).toBe(" one")
 })
@@ -301,10 +309,21 @@ const recordCases: [string, typeof Select | typeof Tabs, object, number?][] = [
     Select,
     { options: wideItems, showScrollIndicator: true, selectedIndex: 6, focusable: false },
   ],
-  ["Select too short for an item", Select, { options: items, height: 1, backgroundColor: "#101820", focusable: false }],
+  [
+    "Select too short for an item",
+    Select,
+    { options: items, height: 1, showScrollIndicator: true, backgroundColor: "#101820", focusable: false },
+  ],
+  // "down" would move an empty Select's index to -1, which hides a missing options check.
+  [
+    "Select empty",
+    Select,
+    { options: [], backgroundColor: "#101820", keyBindings: [{ name: "down", action: "move-up" }], focusable: false },
+  ],
   ["Select translucent", Select, { options: items, font: "tiny", ...translucent }, 2],
   ["TabSelect", Tabs, { options: [...items, ...items], selectedIndex: 5, focusable: false }],
   ["TabSelect focused", Tabs, { options: wideItems.slice(0, 3), backgroundColor: "#101820" }],
+  ["TabSelect empty", Tabs, { options: [], backgroundColor: "#101820", focusable: false }],
   ["TabSelect translucent", Tabs, { options: [...items, ...items], showUnderline: false, ...translucent }, 2],
 ]
 
@@ -344,8 +363,12 @@ test.each(recordCases)("%s records what its buffer composes", async (_, Control,
         draws = 0
         await setup.renderOnce()
         expect([Reflect.get(node, "frameBuffer") === null, draws === 0]).toEqual([!buffered, !buffered])
+        // An unchanged frame paints the same cells.
+        const painted = setup.captureSpans()
+        await setup.renderOnce()
+        expect(setup.captureSpans()).toEqual(painted)
         frames.push(
-          cells(setup.captureSpans())
+          cells(painted)
             .flat()
             .map(([text, fg, bg]) => [text, ...(fg?.toInts() ?? []), ...bg.toInts()]),
         )
