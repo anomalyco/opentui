@@ -480,6 +480,16 @@ pub const BufferLease = struct {
 /// A glyph that a text view draw wrote at column x of its current row.
 const MarkBase = struct { x: u32, char: u32 };
 
+/// A cell limit for a text draw.
+pub const TextFit = struct {
+    /// Cells right of x that the text may cover; zero means no limit.
+    max_width: u32 = 0,
+    /// For text wider than max_width: keep the glyphs that leave room for an ellipsis, then draw it.
+    ellipsis: bool = false,
+};
+
+const ellipsis_bytes = "\u{2026}";
+
 /// One glyph of a text row with at least one cell to draw.
 const TextGlyph = struct {
     bytes: []const u8,
@@ -494,7 +504,7 @@ const TextGlyph = struct {
 /// Places the glyphs of one text row for drawText and drawTextChecked. Controls and other
 /// zero-width clusters take no cells. A tab or a cluster that a cell cannot hold is blank
 /// (see isPrintableGlyph): its spaces clip one by one, also left of column 0. Any other glyph
-/// draws only when all of its cells are inside the target and its scissor. Every glyph
+/// draws only when all of its cells are left of end and inside the target's scissor. Every glyph
 /// advances by the width it is drawn with, so clipping never moves the visible glyphs.
 const TextRow = struct {
     target: *const OptimizedBuffer,
@@ -503,6 +513,8 @@ const TextRow = struct {
     clusters: []const utf8.RenderClusterInfo,
     x: i32,
     y: i32,
+    /// The column where the row stops: the target's width, or less for a fitted draw.
+    end: i64,
     byte_offset: usize = 0,
     cluster_index: usize = 0,
     advance_cells: u64 = 0,
@@ -510,9 +522,36 @@ const TextRow = struct {
     const tab_width: u8 = 2;
 
     fn next(self: *TextRow) ?TextGlyph {
-        const target = self.target;
         // A glyph is at most two cells per byte, so the columns fit in i64.
-        while (self.byte_offset < self.text.len and self.x + @as(i64, @intCast(self.advance_cells)) < target.width) {
+        while (self.x + @as(i64, @intCast(self.advance_cells)) < self.end) {
+            const glyph = self.nextGlyph() orelse return null;
+            const blank = !isPrintableGlyph(glyph.bytes, glyph.width);
+            // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
+            if (!blank and glyph.x < 0) continue;
+            const first: u32 = @intCast(@max(glyph.x, 0));
+            const end = @min(glyph.x + glyph.width, self.end);
+            const count: u32 = if (!blank) 1 else if (end > first) @intCast(end - first) else 0;
+            if (!self.isVisible(first, if (blank) count else glyph.width, blank)) continue;
+            return .{ .bytes = glyph.bytes, .x = first, .width = glyph.width, .blank = blank, .count = count };
+        }
+        return null;
+    }
+
+    /// The byte length of the glyphs that end at most `room` cells right of x, or null when the
+    /// whole row is at most `max_width` cells wide.
+    fn fitBytes(self: *TextRow, room: u64, max_width: u64) ?usize {
+        var kept: ?usize = null;
+        while (self.advance_cells <= max_width) {
+            const start = self.byte_offset;
+            _ = self.nextGlyph() orelse return null;
+            if (kept == null and self.advance_cells > room) kept = start;
+        }
+        return kept;
+    }
+
+    /// The next glyph with at least one cell, at column x plus the cells before it.
+    fn nextGlyph(self: *TextRow) ?struct { bytes: []const u8, x: i64, width: u32 } {
+        while (self.byte_offset < self.text.len) {
             const start = self.byte_offset;
             // Unchecked text can be invalid UTF-8, which ends a cluster at another byte.
             while (self.cluster_index < self.clusters.len and self.clusters[self.cluster_index].byte_start < start) {
@@ -529,25 +568,18 @@ const TextRow = struct {
                 self.byte_offset = @min(start + length, self.text.len);
             }
             const bytes = self.text[start..self.byte_offset];
-            const width = if (cluster) |entry| entry.width_cols else utf8.getWidthAt(bytes, 0, tab_width, .hidden, target.width_method);
+            const width = if (cluster) |entry| entry.width_cols else utf8.getWidthAt(bytes, 0, tab_width, .hidden, self.target.width_method);
             if (width == 0) continue;
             const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
             self.advance_cells += width;
-            const blank = !isPrintableGlyph(bytes, width);
-            // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
-            if (!blank and glyph_x < 0) continue;
-            const first: u32 = @intCast(@max(glyph_x, 0));
-            const end = @min(glyph_x + width, target.width);
-            const count: u32 = if (!blank) 1 else if (end > first) @intCast(end - first) else 0;
-            if (!self.isVisible(first, if (blank) count else width, blank)) continue;
-            return .{ .bytes = bytes, .x = first, .width = width, .blank = blank, .count = count };
+            return .{ .bytes = bytes, .x = glyph_x, .width = width };
         }
         return null;
     }
 
-    /// Blank cells need one cell in the scissor; a glyph needs all of its cells in the target and scissor.
+    /// Blank cells need one cell in the scissor; a glyph needs all of its cells left of end and in the scissor.
     fn isVisible(self: *const TextRow, first: u32, cells: u32, blank: bool) bool {
-        if (cells > self.target.width - first) return false;
+        if (@as(i64, first) + cells > self.end) return false;
         for (0..cells) |offset| {
             const inside = self.target.isPointInScissor(@intCast(first + offset), self.y);
             if (blank and inside) return true;
@@ -1826,6 +1858,21 @@ pub const OptimizedBuffer = struct {
         bg: ?RGBA,
         attributes: u32,
     ) error{ InvalidUnicode, InvalidOptions, TextLimit, UnsupportedResource, OutOfMemory, TrackerLimit }!void {
+        return self.drawTextFitted(text, x, y, fg, bg, attributes, .{});
+    }
+
+    /// drawTextChecked within fit.max_width cells from x (see TextFit).
+    pub fn drawTextFitted(
+        self: *OptimizedBuffer,
+        text: []const u8,
+        x: i32,
+        y: i32,
+        fg: RGBA,
+        bg: ?RGBA,
+        attributes: u32,
+        fit: TextFit,
+    ) error{ InvalidUnicode, InvalidOptions, TextLimit, UnsupportedResource, OutOfMemory, TrackerLimit }!void {
+        assert(!fit.ellipsis or fit.max_width > 0);
         if (text.len > text_bytes_max) return error.TextLimit;
         try self.checkImageResources();
         if (attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
@@ -1837,13 +1884,16 @@ pub const OptimizedBuffer = struct {
         try self.checkDrawState();
         const opacity = self.getCurrentOpacity();
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
-        if (utf8.isAsciiOnly(text)) {
+        // i64 holds any i32 position plus any u32 width.
+        const end: i64 = if (fit.max_width == 0) self.width else @min(self.width, @as(i64, x) + fit.max_width);
+        const ascii = utf8.isAsciiOnly(text);
+        if (ascii and !(fit.ellipsis and text.len > fit.max_width)) {
             // Printable ASCII is one cell per byte and takes no pool or tracker capacity, so it
             // skips the copy and the prepared runs. The bytes left of column 0 are clipped.
             const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
             var column: u32 = @intCast(@max(x, 0));
             for (text[clipped_byte_count..]) |byte| {
-                if (column >= self.width) break;
+                if (column >= end) break;
                 self.setTextCell(column, row, makeCell(byte, fg, bg orelse self.get(column, row).?.bg, attributes));
                 column += 1;
             }
@@ -1852,12 +1902,26 @@ pub const OptimizedBuffer = struct {
 
         var scratch = std.heap.stackFallback(4096, self.allocator);
         const scratch_allocator = scratch.get();
-        // Pool growth can move input borrowed from this same pool.
-        const input = try scratch_allocator.dupe(u8, text);
-        defer scratch_allocator.free(input);
+        // Pool growth can move input borrowed from this same pool. The spare bytes hold an ellipsis.
+        const storage = try scratch_allocator.alloc(u8, text.len + ellipsis_bytes.len);
+        defer scratch_allocator.free(storage);
+        @memcpy(storage[0..text.len], text);
+        var input = storage[0..text.len];
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(scratch_allocator);
-        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, .hidden, utf8.isAsciiOnly(input), self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, .hidden, ascii, self.width_method, &clusters);
+        if (fit.ellipsis) {
+            var measure: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y, .end = std.math.maxInt(i64) };
+            const room = fit.max_width -| utf8.getWidthAt(ellipsis_bytes, 0, TextRow.tab_width, .hidden, self.width_method);
+            if (measure.fitBytes(room, fit.max_width)) |kept| {
+                // TextRow measures the ellipsis itself: metadata for the cut bytes no longer applies.
+                var count: usize = 0;
+                while (count < clusters.items.len and clusters.items[count].byte_start < kept) count += 1;
+                clusters.shrinkRetainingCapacity(count);
+                @memcpy(storage[kept..][0..ellipsis_bytes.len], ellipsis_bytes);
+                input = storage[0 .. kept + ellipsis_bytes.len];
+            }
+        }
 
         const PreparedRun = struct { x: u32, char: u32, count: u32 };
         var runs: std.ArrayListUnmanaged(PreparedRun) = .empty;
@@ -1868,7 +1932,7 @@ pub const OptimizedBuffer = struct {
             runs.deinit(scratch_allocator);
         }
         var grapheme_count: u32 = 0;
-        var layout: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y };
+        var layout: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y, .end = end };
         while (layout.next()) |glyph| {
             try runs.ensureUnusedCapacity(scratch_allocator, 1);
             const encoded: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else encoded: {
@@ -2005,7 +2069,7 @@ pub const OptimizedBuffer = struct {
         defer clusters.deinit(self.allocator);
         try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, .hidden, is_ascii_only, self.width_method, &clusters);
 
-        var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y) };
+        var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y), .end = self.width };
         while (layout.next()) |glyph| {
             const background = bg orelse self.get(glyph.x, y).?.bg;
             var retained_id: ?u32 = null;
