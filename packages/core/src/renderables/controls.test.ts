@@ -2,12 +2,13 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
 import type { Renderable } from "../Renderable.js"
 import { RGBA, rgbToHex } from "../lib/RGBA.js"
+import { renderFontToFrameBuffer } from "../lib/ascii.font.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import type { CapturedFrame } from "../types.js"
-import { NativePaintRecorder } from "../zig.js"
+import { NativePaintRecorder, resolveRenderLib } from "../zig.js"
 import { BoxRenderable } from "./Box.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
@@ -269,6 +270,118 @@ test.each(defaultPaints)("Select and TabSelect default colors over a backdrop, f
   tabs.setSelectedIndex(1)
   await setup.renderOnce()
   expect(runs(setup.captureSpans(), 7, 26)).toEqual(lines)
+})
+
+// 029: the tabs paint on the first frame, also when the width gives the layout the constructor's size.
+test.each([40, "100%"] as const)("TabSelect with width %p paints on the first frame", async (width) => {
+  renderer.root.add(new TabSelectRenderable(renderer, { width, tabWidth: 10, options: items.slice(0, 1) }))
+  await setup.renderOnce()
+  expect(setup.captureCharFrame().split("\n")[0].trimEnd()).toBe(" one")
+})
+
+const wide = "設定とオプション設"
+const wideItems = Array.from({ length: 10 }, () => ({ name: wide, description: wide }))
+const translucent = {
+  backgroundColor: "#20202080",
+  focusedBackgroundColor: "#30303080",
+  selectedBackgroundColor: "#33445580",
+}
+// Recorded into the frame, a control paints what its composed `buffered: true` buffer paints: exactly with opaque
+// layer colors, also under parent opacity 0.5, and within 2 per channel with translucent ones over a translucent
+// background. Translations cut the left and top edges, and the last one the bottom (the font's second row).
+// The "wide" rows put a wide glyph under the scroll indicator, over the transparent background; the font's "three"
+// is wider than the node. The frame after a key press makes no native draw call and has no buffer unless buffered.
+const recordCases: [string, typeof Select | typeof Tabs, object, number?][] = [
+  ["Select", Select, { options: items, focusable: false }],
+  ["Select focused", Select, { options: items, backgroundColor: "#101820", focusedBackgroundColor: "#182028" }],
+  ["Select font", Select, { options: items.slice(2), font: "tiny", backgroundColor: "#101820", focusable: false }],
+  ["Select wide name", Select, { options: wideItems, showScrollIndicator: true, selectedIndex: 5, focusable: false }],
+  [
+    "Select wide description",
+    Select,
+    { options: wideItems, showScrollIndicator: true, selectedIndex: 6, focusable: false },
+  ],
+  ["Select too short for an item", Select, { options: items, height: 1, backgroundColor: "#101820", focusable: false }],
+  ["Select translucent", Select, { options: items, font: "tiny", ...translucent }, 2],
+  ["TabSelect", Tabs, { options: [...items, ...items], selectedIndex: 5, focusable: false }],
+  ["TabSelect focused", Tabs, { options: wideItems.slice(0, 3), backgroundColor: "#101820" }],
+  ["TabSelect translucent", Tabs, { options: [...items, ...items], showUnderline: false, ...translucent }, 2],
+]
+
+test.each(recordCases)("%s records what its buffer composes", async (_, Control, options, tolerance = 0) => {
+  const errors: string[] = []
+  const onError = ({ error }: { error: Error }) => errors.push(error.message)
+  renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+  const content = Array.from({ length: 12 }, (_, i) => `${i}`.repeat(40)).join("\n")
+  const symbols = (resolveRenderLib() as unknown as { opentui: { symbols: Record<string, (...args: any[]) => any> } })
+    .opentui.symbols
+  const originals = { ...symbols }
+  let draws = 0
+  for (const name of Object.keys(originals).filter((name) => name.startsWith("ot_buffer_draw"))) {
+    symbols[name] = (...args) => (draws++, originals[name](...args))
+  }
+  for (const opacity of tolerance ? [1] : [1, 0.5]) {
+    for (const [translateX, translateY] of [
+      [0, 0],
+      [0.5, 0.5],
+      [-2.5, -1.5],
+      [-1.5, 8.5],
+    ]) {
+      const frames = []
+      for (const buffered of [true, false]) {
+        const parent = new BoxRenderable(renderer, { position: "absolute", left: 1, opacity })
+        Object.assign(parent, { translateX, translateY })
+        parent.add(
+          new TextRenderable(renderer, { position: "absolute", width: 40, content, fg: "#c0c0c0", bg: "#402010" }),
+        )
+        const node = new Control(renderer, { width: 21, height: 7, tabWidth: 7, ...options, buffered })
+        parent.add(node)
+        renderer.root.add(parent)
+        if (node.focusable) node.focus()
+        if ("selectedIndex" in options) node.setSelectedIndex(options.selectedIndex as number)
+        await setup.renderOnce()
+        node.handleKeyPress(key(Control === Select ? "down" : "right"))
+        draws = 0
+        await setup.renderOnce()
+        expect([Reflect.get(node, "frameBuffer") === null, draws === 0]).toEqual([!buffered, !buffered])
+        frames.push(
+          cells(setup.captureSpans())
+            .flat()
+            .map(([text, fg, bg]) => [text, ...(fg?.toInts() ?? []), ...bg.toInts()]),
+        )
+        parent.destroyRecursively()
+        // A failed frame must not leave the previous control's cells for the next capture.
+        await setup.renderOnce()
+      }
+      expect(errors.splice(0)).toEqual([])
+      const [a, b] = frames
+      const close = (v: string | number, w: string | number) => v === w || Math.abs(+v - +w) <= tolerance
+      if (
+        a.length !== b.length ||
+        a.some((cell, i) => cell.length !== b[i].length || cell.some((v, j) => !close(v, b[i][j])))
+      ) {
+        expect(b).toEqual(a)
+      }
+    }
+  }
+  Object.assign(symbols, originals)
+  renderer.off(CliRenderEvents.RENDER_ERROR, onError)
+})
+
+// A font cut at the top or the bottom draws the rows inside the buffer. Every call returns the laid-out size, also
+// when no row is inside.
+test.each([-1, 3, -2, 4])("renderFontToFrameBuffer at y %d draws the rows inside the buffer", (y) => {
+  const draw = (height: number, y: number) => {
+    const buffer = OptimizedBuffer.create(12, height, renderer.widthMethod, { owner: renderer.nativeScene })
+    const size = renderFontToFrameBuffer(buffer, { text: "ab", y, font: "tiny" })
+    const rows = buffer.getSpanLines().map((line) => line.spans.map((span) => span.text).join(""))
+    buffer.destroy()
+    return { size, rows }
+  }
+  const cut = draw(4, y)
+  const whole = draw(12, 6)
+  expect(cut.size).toEqual(whole.size)
+  expect(cut.rows).toEqual(cut.rows.map((_, row) => whole.rows[row - y + 6]))
 })
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
