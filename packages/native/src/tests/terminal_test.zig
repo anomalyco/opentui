@@ -995,6 +995,27 @@ test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal"
     }
 }
 
+test "environment overrides - Rex hyperlinks match exact TERM and XTVersion names" {
+    const cases = [_]struct { term: []const u8, reply: ?[]const u8 = null, hyperlinks: bool }{
+        .{ .term = "xterm-256color", .reply = "\x1bP>|rex 0.0.1793047680-g2db882\x1b\\", .hyperlinks = true },
+        .{ .term = "xterm-rex", .hyperlinks = true },
+        .{ .term = "ReX", .hyperlinks = true },
+        .{ .term = "xterm-rex-extra", .hyperlinks = false },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", case.term);
+
+        var term = Terminal.init(.{ .env_map = &env });
+        if (case.reply) |reply| {
+            term.processCapabilityResponse(reply);
+            term.checkEnvironmentOverrides();
+        }
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+    }
+}
+
 test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
     const enabled_values = [_][]const u8{ "1", "" };
     for (enabled_values) |value| {

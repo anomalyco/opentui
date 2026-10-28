@@ -1,0 +1,134 @@
+name: Setup Zig
+description: >-
+  Install the Zig version in minimum_zig_version of packages/native/build.zig.zon and put it on PATH. The archive
+  comes from the Actions cache, a community mirror, or ziglang.org, and must match the SHA-256 listed below. Sets
+  ZIG_VERSION, and points ZIG_GLOBAL_CACHE_DIR and ZIG_LOCAL_CACHE_DIR at $GITHUB_WORKSPACE/.zig-cache, the path
+  that restore-zig-cache restores.
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        version="$(sed -n 's/^[[:space:]]*\.minimum_zig_version = "\([^"]*\)",[[:space:]]*$/\1/p' packages/native/build.zig.zon)"
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) file="zig-x86_64-linux-$version.tar.xz" ;;
+          macOS-ARM64) file="zig-aarch64-macos-$version.tar.xz" ;;
+          Windows-X64) file="zig-x86_64-windows-$version.zip" ;;
+          *)
+            echo "::error::No Zig archive for $RUNNER_OS $RUNNER_ARCH"
+            exit 1
+            ;;
+        esac
+        # From https://ziglang.org/download/index.json, checked against the minisign signatures. A new Zig version
+        # needs its hashes here.
+        case "$file" in
+          zig-x86_64-linux-0.16.0.tar.xz) sha256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 ;;
+          zig-aarch64-macos-0.16.0.tar.xz) sha256=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489 ;;
+          zig-x86_64-windows-0.16.0.zip) sha256=68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e ;;
+          *)
+            echo "::error::No SHA-256 for $file (minimum_zig_version \"$version\") in .github/actions/setup-zig/action.yml"
+            exit 1
+            ;;
+        esac
+        {
+          echo "version=$version"
+          echo "file=$file"
+          echo "sha256=$sha256"
+        } >> "$GITHUB_OUTPUT"
+
+    # Every use checks the hash, so a cache entry saved by any run is safe to restore.
+    - uses: actions/cache@v5
+      with:
+        path: ${{ runner.temp }}/zig-archive
+        key: zig-archive-${{ steps.resolve.outputs.file }}
+
+    - shell: bash
+      env:
+        VERSION: ${{ steps.resolve.outputs.version }}
+        FILE: ${{ steps.resolve.outputs.file }}
+        SHA256: ${{ steps.resolve.outputs.sha256 }}
+      run: |
+        set -euo pipefail
+        temp="$RUNNER_TEMP"
+        if [ "$RUNNER_OS" = Windows ]; then
+          temp="$(cygpath -u "$temp")"
+        fi
+        archive="$temp/zig-archive/$FILE"
+        mkdir -p "$temp/zig-archive"
+
+        matches() {
+          local sum
+          if command -v sha256sum > /dev/null; then
+            sum="$(sha256sum "$archive" | cut -d' ' -f1)"
+          else
+            sum="$(shasum -a 256 "$archive" | cut -d' ' -f1)"
+          fi
+          [ "$sum" = "$SHA256" ]
+        }
+
+        if [ ! -f "$archive" ] || ! matches; then
+          # ziglang.org asks CI to download from community mirrors (https://ziglang.org/download/community-mirrors.txt)
+          # and to use ziglang.org only as the last resort. Three mirrors from a random start spread the load.
+          mirrors=(
+            https://pkg.hexops.org/zig
+            https://zigmirror.hryx.net/zig
+            https://zig.linus.dev/zig
+            https://zig.squirl.dev
+            https://zig.mirror.mschae23.de/zig
+            https://ziglang.freetls.fastly.net
+            https://zig.tilok.dev
+            https://zig-mirror.tsimnet.eu/zig
+            https://zig.karearl.com/zig
+            https://pkg.earth/zig
+            https://fs.liujiacai.net/zigbuilds
+            https://zigmirror.com
+            https://zig.chainsafe.dev
+            https://zig.savalione.com
+            https://zig.bcr.ist
+            https://zig.vortan.dev/zig
+            https://pkg.alexrp.com/zig
+          )
+          start=$((RANDOM % ${#mirrors[@]}))
+          urls=()
+          for i in 0 1 2; do
+            urls+=("${mirrors[$(((start + i) % ${#mirrors[@]}))]}/$FILE?source=github-anomalyco-opentui")
+          done
+          urls+=("https://ziglang.org/download/$VERSION/$FILE")
+          for url in "${urls[@]}"; do
+            echo "Fetching $url"
+            if curl -fsSL --connect-timeout 10 --max-time 300 -o "$archive" "$url" && matches; then
+              break
+            fi
+            echo "::warning::No valid $FILE from $url"
+            rm -f "$archive"
+          done
+          if [ ! -f "$archive" ]; then
+            echo "::error::Could not download $FILE"
+            exit 1
+          fi
+        fi
+
+        if [ "$RUNNER_OS" = Windows ]; then
+          # Windows' own tar (bsdtar) reads zip; Git Bash's GNU tar does not.
+          "$(cygpath -u "$SYSTEMROOT")/System32/tar.exe" -xf "$(cygpath -w "$archive")" -C "$(cygpath -w "$temp")"
+        else
+          tar -xJf "$archive" -C "$temp"
+        fi
+        bin="$temp/${FILE%.tar.xz}"
+        bin="${bin%.zip}"
+        "$bin/zig" version
+
+        cache="$GITHUB_WORKSPACE/.zig-cache"
+        if [ "$RUNNER_OS" = Windows ]; then
+          bin="$(cygpath -w "$bin")"
+          cache="$(cygpath -w "$cache")"
+        fi
+        echo "$bin" >> "$GITHUB_PATH"
+        {
+          echo "ZIG_VERSION=$VERSION"
+          echo "ZIG_GLOBAL_CACHE_DIR=$cache"
+          echo "ZIG_LOCAL_CACHE_DIR=$cache"
+        } >> "$GITHUB_ENV"
