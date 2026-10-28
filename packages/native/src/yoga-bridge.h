@@ -44,7 +44,10 @@ uint32_t otYogaNodeRemoveAllChildren(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeCalculateLayout(YGNodeRef node, float width, float height,
                                    uint32_t direction) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeMarkDirty(YGNodeRef node) OT_YOGA_NOEXCEPT;
-uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback) OT_YOGA_NOEXCEPT;
+// height_cap_only_clamps: the callback uses an "at most" height only to clamp
+// its result, so a size below the cap holds for a larger cap.
+uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback,
+                                  uint32_t height_cap_only_clamps) OT_YOGA_NOEXCEPT;
 void otYogaNodeInvalidateMeasure(YGNodeRef node) OT_YOGA_NOEXCEPT;
 void otYogaNodeForgetMeasurements(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) OT_YOGA_NOEXCEPT;
@@ -80,6 +83,9 @@ typedef struct {
 uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCacheAxis* height,
                                     float point_scale, uint32_t* axis_references,
                                     uint32_t* rounding_count) OT_YOGA_NOEXCEPT;
+// Returns the larger-height-cap decision for the same axes.
+uint32_t otYogaTestLargerHeightCap(const OTYogaCacheAxis* width,
+                                   const OTYogaCacheAxis* height) OT_YOGA_NOEXCEPT;
 
 #ifdef __cplusplus
 }
