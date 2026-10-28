@@ -744,6 +744,8 @@ test "Scene record and direct text draws fit text to a cell width" {
         // A tab clips cell by cell at the limit; with an ellipsis it is not kept.
         .{ .text = "ab\tc", .max_width = 3, .row = "ab xxxxxxx" },
         .{ .text = "ab\tc", .max_width = 3, .ellipsis = true, .row = "ab…xxxxxxx" },
+        // Four bytes, five cells.
+        .{ .text = "ab\tc", .max_width = 4, .ellipsis = true, .row = "ab…xxxxxxx" },
         .{ .text = "界a", .max_width = 1, .row = "xxxxxxxxxx" },
         .{ .text = "界a", .max_width = 1, .ellipsis = true, .row = "…xxxxxxxxx" },
         .{ .text = "界ab", .max_width = 2, .row = "界xxxxxxxx" },
