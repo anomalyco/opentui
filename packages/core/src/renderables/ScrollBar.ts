@@ -308,17 +308,7 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   public scrollBy(delta: number, unit: ScrollUnit = "absolute"): void {
-    const multiplier =
-      unit === "viewport"
-        ? this.viewportSize
-        : unit === "content"
-          ? this.scrollSize
-          : unit === "step"
-            ? (this.scrollStep ?? 1)
-            : 1
-
-    const resolvedDelta = multiplier * delta
-    this.scrollPosition += resolvedDelta
+    this.scrollPosition += scrollUnitSize(this, unit) * delta
   }
 
   private recalculateVisibility(): void {
@@ -495,8 +485,7 @@ export class ArrowRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    const char = this.getArrowChar()
-    buffer.drawText(char, this.x, this.y, this._foregroundColor, this._backgroundColor, this._attributes)
+    this._drawNativeBody(buffer)
   }
 
   protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
@@ -516,4 +505,14 @@ export class ArrowRenderable extends Renderable {
   private getArrowChar(): string {
     return this._arrowChars[this._direction]
   }
+}
+
+/** @internal Cells per unit of a scrollbar's `scrollBy`. */
+export function scrollUnitSize(
+  bar: { viewportSize: number; scrollSize: number; scrollStep?: number | null },
+  unit: ScrollUnit,
+): number {
+  if (unit === "viewport") return bar.viewportSize
+  if (unit === "content") return bar.scrollSize
+  return unit === "step" ? (bar.scrollStep ?? 1) : 1
 }

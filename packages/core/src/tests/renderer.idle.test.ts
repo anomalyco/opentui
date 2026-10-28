@@ -42,6 +42,12 @@ const scheduledWork: Record<string, { run: (target: TestRenderer) => void; frame
     frames: 1,
     callbacks: 1,
   },
+  // An animation tick subscription is not scheduled work; idle() resolves between its ticks.
+  "an animation tick subscription": {
+    run: (target) => void target.onAnimationTick(10, () => callbacks++),
+    frames: 0,
+    callbacks: 0,
+  },
   "a nested animation frame": {
     run: (target) =>
       void target.requestAnimationFrame(() => {

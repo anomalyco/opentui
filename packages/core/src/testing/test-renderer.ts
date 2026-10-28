@@ -19,7 +19,7 @@ export interface TestRendererOptions extends CliRendererConfig {
   otherModifiersMode?: boolean
   /** Every frame rebuilds its native preparation and paint lists instead of reusing the last frame's (`OT_SCENE_DEBUG_FULL_FRAME`). Output is unchanged. */
   nativeSceneFullFrame?: boolean
-  /** Each frame that retained paint skips or diffs partly is checked against the presented frame and, when skipped, against a repaint into a scratch buffer (`OT_SCENE_DEBUG_VERIFY`); a mismatch throws. Captures do not disturb retention. On by default. */
+  /** Each frame that retained paint skips or repaints partly is checked against the presented frame and against a full repaint into a scratch buffer (`OT_SCENE_DEBUG_VERIFY`); a mismatch throws. Captures do not disturb retention. On by default. */
   nativeSceneVerify?: boolean
 }
 export type TestRenderer = CliRenderer

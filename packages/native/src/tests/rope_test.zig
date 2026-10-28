@@ -1589,7 +1589,7 @@ test "Rope - deleteRangeByWeight" {
 
     // Delete weight range [10, 30) - removes the second item (weight 20)
     const splitter = makeWeightedSplitter();
-    try rope.replaceRangeByWeight(10, 30, .left, .left, &.{}, &splitter);
+    _ = try rope.replaceRangeByWeight(10, 30, .left, .left, &.{}, &splitter);
 
     // Should have removed weight 20
     try std.testing.expectEqual(@as(u32, 80), rope.totalWeight());
@@ -1611,7 +1611,7 @@ test "Rope - insertSliceByWeight" {
         .{ .value = 2, .weight = 20 },
     };
     const splitter = makeWeightedSplitter();
-    try rope.insertSliceByWeight(10, .left, &insert_items, &splitter);
+    _ = try rope.insertSliceByWeight(10, .left, &insert_items, &splitter);
 
     // Should have added weight 20
     try std.testing.expectEqual(@as(u32, 60), rope.totalWeight());

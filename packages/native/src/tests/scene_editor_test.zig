@@ -104,11 +104,11 @@ test "Scene editor checked preparation reports allocation failure and retries wi
     try testing.expect((try owner.sceneGetCursorState(fixture.session)).visible);
 
     const state = (try owner.raw().getSession(fixture.session)).scene.?;
-    const retained_count = state.work.items.len;
+    const retained_count = state.candidates.items.len;
     try testing.expect(retained_count != 0);
     try owner.editorSetTabColor(fixture.view, .{ 10, 20, 30, 255 });
     try testing.expect(!state.preparation_dirty);
-    try testing.expectEqual(retained_count, state.work.items.len);
+    try testing.expectEqual(retained_count, state.candidates.items.len);
     const layout_view = editor.view.getTextBufferView();
     const arena = layout_view.virtual_lines_arena;
     _ = arena.reset(.free_all);
@@ -122,7 +122,7 @@ test "Scene editor checked preparation reports allocation failure and retries wi
     try testing.expectError(error.OutOfMemory, repaint(owner, fixture.session, background, true, 0));
     try testing.expect(failing.has_induced_failure);
     try testing.expect(!(try owner.sceneGetCursorState(fixture.session)).visible);
-    try testing.expect(state.attempt == null and state.work.items.len == 0);
+    try testing.expect(state.attempt == null and state.candidates.items.len == 0);
     try testing.expectEqual(@as(usize, 0), cli.getNextBuffer().scissor_stack.items.len);
     try testing.expectEqual(@as(usize, 0), cli.getNextBuffer().opacity_stack.items.len);
 

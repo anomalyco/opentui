@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-8vcpu-ubuntu-2404]
+        os: ["${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}"]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -81,7 +81,7 @@ jobs:
   build-complete:
     name: QRCode - Build and Test
     needs: [test]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
     if: always()
     steps:
       - name: Check test results

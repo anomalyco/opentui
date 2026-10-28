@@ -115,13 +115,14 @@ The framework hooks create the timeline during framework setup. Their mount hand
 
 ## Timeline options
 
-| `TimelineOptions` field | Default | Behavior                                                     |
-| ----------------------- | ------- | ------------------------------------------------------------ |
-| `duration`              | `1000`  | Timeline cutoff in milliseconds                              |
-| `loop`                  | `false` | Restarts the timeline at its cutoff only when exactly `true` |
-| `autoplay`              | `true`  | Used by the factory and framework mount handlers             |
-| `onComplete`            | None    | Runs when a non-looping timeline reaches its cutoff          |
-| `onPause`               | None    | Runs on every `pause()` call                                 |
+| `TimelineOptions` field | Default | Behavior                                                             |
+| ----------------------- | ------- | -------------------------------------------------------------------- |
+| `duration`              | `1000`  | Timeline cutoff in milliseconds                                      |
+| `frameRate`             | Engine  | Updates per second, above 0; see [Animation ticks](#animation-ticks) |
+| `loop`                  | `false` | Restarts the timeline at its cutoff only when exactly `true`         |
+| `autoplay`              | `true`  | Used by the factory and framework mount handlers                     |
+| `onComplete`            | None    | Runs when a non-looping timeline reaches its cutoff                  |
+| `onPause`               | None    | Runs on every `pause()` call                                         |
 
 `duration: 0` falls back to `1000` because the constructor uses a truthy fallback. Use a positive finite duration.
 
@@ -309,13 +310,11 @@ Detach a renderer-owned engine before you attach it to a different renderer. A t
 
 `attach()` checks already-playing timelines and updates the renderer's live state. You do not need an explicit attach call when you use `getTimelineEngine(renderer)` or `createTimeline(options, renderer)`.
 
-The engine requests live rendering when any registered, unsynced timeline is playing and incomplete. It drops live rendering after the last such timeline stops.
+The engine schedules frames while any registered, unsynced timeline is playing and incomplete. The fastest such timeline's `frameRate` (or `engine.defaults.frameRate`, 60 by default) sets the rate. At or above the renderer's `targetFps`, the engine requests live rendering and updates timelines on every frame. Below it, the engine ticks on the shared animation clock instead and updates timelines on each tick. A `frameRate` of 0, a negative value or `NaN` throws a `RangeError`; `Infinity` always holds the loop. It stops after the last such timeline stops.
 
 `createTimeline()` never unregisters its result. A completed timeline remains in the engine set until application cleanup unregisters it.
 
 An engine can serve several components in one renderer. Do not use `clear()` for component cleanup or for one independently owned timeline.
-
-`engine.defaults.frameRate` currently exists, but the engine does not read it. Renderer frame scheduling controls update cadence.
 
 ## Cleanup
 
@@ -374,6 +373,18 @@ A thrown animation-frame callback error stops that frame. The renderer emits `re
 OpenTUI no longer installs or replaces process-global `requestAnimationFrame`, `cancelAnimationFrame`, or `window` properties. Migrate terminal applications to the renderer methods. OpenTUI does not change browser animation APIs.
 
 After each animation-frame callback and each `setFrameCallback()` callback, the renderer yields to the shared Session scheduler. Between callbacks, that scheduler runs ready work for every Session that shares it. It parks Sessions that wait for output or host replies. It cannot interrupt a synchronous JavaScript callback. Long callbacks and large timelines still delay that work.
+
+## Animation ticks
+
+`renderer.onAnimationTick(fps, callback, options?)` calls `callback(deltaTime, ticks, time)` `fps` times a second and returns the unsubscribe function. Use it for an animation slower than the renderer, such as a spinner, instead of `live: true` or a timer that calls `requestRender()`.
+
+All subscribers share one clock: due times are multiples of `1000 / fps`. One timer requests a frame at the earliest due time of the fastest subscribers; slower subscribers wait up to their tolerance past their due time, so they tick on those frames. Every frame, whatever its cause, runs each tick that is due within its tolerance, so animations at different rates share frames. Three animations at 20, 12.5, and 10 fps draw 20 frames per second, not 40.
+
+`tolerance` (milliseconds, below the interval) is how early a tick may run, and how late a slower subscriber's tick may run. It defaults to half the interval. Every window is at least 1 ms wide, because timers can fire up to 1 ms early. `deltaTime` is the time since the subscriber's previous tick and `time` is the frame's clock time, so a time-based animation draws the right value when a tick runs early. `ticks` counts the due times that the frame covers; it exceeds 1 only after a stall or above `maxFps`.
+
+Ticks run before animation-frame callbacks. A render request from a tick callback needs no extra frame. The tick timer is not scheduled work, so `renderer.idle()` resolves between ticks. A live loop runs ticks on its own frames. Renderer destruction removes every subscriber.
+
+A renderable can set `animationFps` instead. Core then calls its protected `onAnimationTick(deltaTime, ticks, time)` hook while the node is drawn: a tick after a frame that did not draw it (the node or an ancestor is hidden, a ScrollBox culls it, or it was removed) stops its clock, and its next draw starts it again. Solid's `onAnimationTick(fps, callback, options?)` and React's `useAnimationTick(fps, callback, options?)` subscribe for the component's lifetime; an `undefined` rate pauses them. React commits state updates from the callback synchronously, so they draw in the tick's frame.
 
 ## Limits and unsupported features
 

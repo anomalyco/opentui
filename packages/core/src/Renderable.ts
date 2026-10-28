@@ -170,6 +170,8 @@ export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> ex
   visible?: boolean
   buffered?: boolean
   live?: boolean
+  /** Ticks `onAnimationTick` at this rate on the renderer's shared animation clock while the node is visible. */
+  animationFps?: number
   opacity?: number
 
   // Draw-only hooks for custom decorations. They run after layout and viewport
@@ -211,6 +213,11 @@ export interface NativeRenderableIntegration {
     readonly update?: {
       readonly idle: (deltaTime: number) => void
       readonly active: (renderable: Renderable) => boolean
+    }
+    /** A scroll node's SCROLL request, asked for only while `active` holds. */
+    readonly scroll?: {
+      readonly active: (renderable: Renderable) => boolean
+      readonly notify: (renderable: Renderable) => void
     }
   }
   readonly beforeAfter?: boolean
@@ -341,6 +348,9 @@ export abstract class Renderable extends BaseRenderable {
   protected pasteHandler: ((event: PasteEvent) => void) | null = null
 
   private _live: boolean = false
+  private _animationFps: number | undefined
+  private stopAnimationTick: (() => void) | undefined
+  private animationDrawnFrame = -1
   protected _liveCount: number = 0
 
   private _sizeChangeListener: (() => void) | undefined = undefined
@@ -429,6 +439,7 @@ export abstract class Renderable extends BaseRenderable {
       if (this.buffered) {
         this.createFrameBuffer()
       }
+      this.animationFps = options.animationFps
     } catch (error) {
       try {
         this.destroyLayoutBacking()
@@ -444,6 +455,7 @@ export abstract class Renderable extends BaseRenderable {
     try {
       this.destroyLayoutBacking((run) => {
         this._isDestroyed = true
+        this.updateAnimationTick()
         Renderable.renderablesByNumber.delete(this.num)
         if (cleanup) run(() => cleanup(run))
         if (this.frameBuffer) {
@@ -541,6 +553,7 @@ export abstract class Renderable extends BaseRenderable {
           this.propagateLiveCount(-1)
         }
       }
+      this.updateAnimationTick()
 
       if (this._focused) {
         this.blur()
@@ -682,6 +695,41 @@ export abstract class Renderable extends BaseRenderable {
 
   protected onLiveCountChanged(previous: number): void {}
 
+  public get animationFps(): number | undefined {
+    return this._animationFps
+  }
+
+  public set animationFps(value: number | undefined) {
+    value ??= undefined // Frameworks clear a prop with null.
+    if (value !== undefined && !(value > 0 && value < Infinity)) {
+      throw new RangeError(`animationFps must be positive and finite, got ${value}`)
+    }
+    if (this._animationFps === value) return
+    const toggled = (this._animationFps === undefined) !== (value === undefined)
+    this._animationFps = value
+    // The update hook marks the frames that draw the node.
+    if (toggled) this.refreshNativeSceneHooks()
+    this.updateAnimationTick()
+  }
+
+  // Ticks only while the node is drawn. A hidden, culled or removed node gets no update, so the first tick after a
+  // frame without one stops the clock, and the node's next update starts it again.
+  private updateAnimationTick(): void {
+    this.stopAnimationTick?.()
+    this.stopAnimationTick = undefined
+    if (this._animationFps === undefined || !this._visible || this._isDestroyed) return
+    this.stopAnimationTick = this._ctx.onAnimationTick(this._animationFps, (deltaTime, ticks, time) => {
+      if (this.animationDrawnFrame < this._ctx.frameId - 1) {
+        this.stopAnimationTick?.()
+        this.stopAnimationTick = undefined
+        return
+      }
+      this.onAnimationTick(deltaTime, ticks, time)
+    })
+  }
+
+  protected onAnimationTick(deltaTime: number, ticks: number, time: number): void {}
+
   public handleKeyPress?(key: KeyEvent): boolean
   public handlePaste?(event: PasteEvent): void
 
@@ -746,6 +794,13 @@ export abstract class Renderable extends BaseRenderable {
 
   protected get _screenY(): number {
     return this._paintLayout?.screenY ?? this.screenY
+  }
+
+  /** @internal Record or draw the native body: at the buffer's origin when the node paints its own buffer. */
+  protected _drawNativeBody(buffer: OptimizedBuffer): void {
+    const own = buffer === this.frameBuffer
+    const [x, y] = own ? [0, 0] : [Math.trunc(this._screenX), Math.trunc(this._screenY)]
+    this._ctx.nativeScene.drawBody(this, buffer, x, y)
   }
 
   // Paint geometry is clamped to the cell range that drawing accepts; public sizes are Yoga's.
@@ -904,7 +959,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public getChildrenSortedByPrimaryAxis(): Renderable[] {
-    const axis = isRowFlexDirection(this.getFlexDirection()) ? "screenX" : "screenY"
+    const axis = this.primaryAxis === "row" ? "screenX" : "screenY"
     if (this._childrenInLayoutOrder.length < 2) return [...this._childrenInLayoutOrder]
     // Selection traverses children in screen order, including ancestor translations.
     const children = this._childrenInLayoutOrder.map((child) => ({ child, coordinate: child[axis] }))
@@ -1850,6 +1905,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   private hostUpdateFlags(onUpdate: unknown): number {
+    if (this._animationFps !== undefined) return NativeSceneHook.Update
     const update = this.nativeIntegration.lifecycle?.update
     if (update && onUpdate === update.idle) {
       return update.active(this) ? NativeSceneHook.Update : NativeSceneHook.IdleUpdate
@@ -1882,6 +1938,7 @@ export abstract class Renderable extends BaseRenderable {
         (hooks.renderAfter ? NativeSceneHook.RenderAfter : 0) |
         (this.usesNativeDrawing(hooks.renderSelf) ? 0 : NativeSceneHook.RenderSelf) |
         this.hostUpdateFlags(hooks.onUpdate) |
+        (integration.lifecycle?.scroll?.active(this) ? NativeSceneHook.Scroll : 0) |
         (resize || sizeChange || (pending.resize ?? this.listenerCount("resize")) > 0 ? NativeSceneHook.Resize : 0) |
         ((pending.layout ?? this.listenerCount(LayoutEvents.LAYOUT_CHANGED)) > 0 ? NativeSceneHook.LayoutChanged : 0)
       const generation = this._nativeSceneHookGeneration + 1n
@@ -1911,6 +1968,10 @@ export abstract class Renderable extends BaseRenderable {
     try {
       switch (request.kind) {
         case NativeSceneFrame.Update:
+          if (this._animationFps !== undefined) {
+            this.animationDrawnFrame = this._ctx.frameId
+            if (!this.stopAnimationTick) this.updateAnimationTick()
+          }
           this._hooks.onUpdate.call(this, deltaTime)
           break
         case NativeSceneFrame.Resize:
@@ -1927,6 +1988,9 @@ export abstract class Renderable extends BaseRenderable {
           break
         case NativeSceneFrame.LayoutChanged:
           this.emit(LayoutEvents.LAYOUT_CHANGED)
+          break
+        case NativeSceneFrame.Scroll:
+          this.nativeIntegration.lifecycle?.scroll?.notify(this)
           break
       }
     } finally {
@@ -2009,6 +2073,7 @@ export abstract class Renderable extends BaseRenderable {
       // Read before listeners run: one may move or clear the focus.
       const heldFocus = this._focused || this.hasFocusedDescendant
       this._isDestroyed = true
+      this.updateAnimationTick()
       run(() => this.emit(RenderableEvents.DESTROYED))
 
       if (heldFocus) run(() => this.propagateFocusChange(false))

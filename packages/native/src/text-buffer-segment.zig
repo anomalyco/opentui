@@ -5,6 +5,7 @@ const buffer = @import("buffer.zig");
 const mem_registry_mod = @import("mem-registry.zig");
 
 const utf8 = @import("utf8.zig");
+const uucode = @import("uucode");
 
 pub const RGBA = buffer.RGBA;
 pub const TextSelection = buffer.TextSelection;
@@ -436,6 +437,11 @@ pub const Segment = union(enum) {
         };
     }
 
+    /// Text without bytes, as a split can leave on one side.
+    pub fn isVoid(self: *const Segment) bool {
+        return self.* == .text and self.text.byte_start == self.text.byte_end;
+    }
+
     pub fn getBytes(self: *const Segment, mem_registry: *const MemRegistry) []const u8 {
         return switch (self.*) {
             .text => |chunk| chunk.getBytes(mem_registry),
@@ -484,6 +490,55 @@ pub const Segment = union(enum) {
         if ((left_chunk.flags & ~TextChunk.Flags.HAS_TAB) != (right_chunk.flags & ~TextChunk.Flags.HAS_TAB)) return false;
 
         return true;
+    }
+
+    /// Where a grapheme crosses the end of `left` into `right`: it is `left[tail..] ++ right[0..head]`.
+    /// Null when that junction is a grapheme break. `left` must start a grapheme.
+    pub fn findJunction(left: []const u8, right: []const u8, method: utf8.WidthMethod) ?struct { tail: u32, head: u32 } {
+        // Splits leave no text without bytes, and appends skip empty text.
+        std.debug.assert(right.len > 0);
+        if (left.len == 0) return null;
+        var pos = codepointStartBefore(left, left.len);
+        var cp = utf8.decodeUtf8Unchecked(left, pos).cp;
+        if (breaksInEveryState(cp, utf8.decodeUtf8Unchecked(right, 0).cp, method)) return null;
+        // A code point that breaks from the one before in every state starts a grapheme.
+        while (pos > 0) {
+            const prev_pos = codepointStartBefore(left, pos);
+            const prev_cp = utf8.decodeUtf8Unchecked(left, prev_pos).cp;
+            if (breaksInEveryState(prev_cp, cp, method)) break;
+            pos = prev_pos;
+            cp = prev_cp;
+        }
+        var state: uucode.grapheme.BreakState = .default;
+        var prev: ?u21 = null;
+        var tail = pos;
+        while (pos < left.len) : (prev = cp) {
+            cp = utf8.decodeUtf8Unchecked(left, pos).cp;
+            if (utf8.isGraphemeBreak(prev, cp, &state, method)) tail = pos;
+            pos += utf8.decodeUtf8Unchecked(left, pos).len;
+        }
+        var head: usize = 0;
+        while (head < right.len) : (head += utf8.decodeUtf8Unchecked(right, head).len) {
+            cp = utf8.decodeUtf8Unchecked(right, head).cp;
+            if (utf8.isGraphemeBreak(prev, cp, &state, method)) break;
+            prev = cp;
+        }
+        if (head == 0) return null;
+        return .{ .tail = @intCast(tail), .head = @intCast(head) };
+    }
+
+    fn breaksInEveryState(prev: u21, cp: u21, method: utf8.WidthMethod) bool {
+        inline for (comptime std.meta.tags(uucode.grapheme.BreakState)) |initial| {
+            var state = initial;
+            if (!utf8.isGraphemeBreak(prev, cp, &state, method)) return false;
+        }
+        return true;
+    }
+
+    fn codepointStartBefore(bytes: []const u8, end: usize) usize {
+        var pos = end - 1;
+        while (pos > 0 and bytes[pos] & 0xC0 == 0x80) pos -= 1;
+        return pos;
     }
 
     /// Boundary normalization action

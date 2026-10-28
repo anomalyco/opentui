@@ -8,6 +8,7 @@ const link = @import("link.zig");
 
 const utf8 = @import("utf8.zig");
 const event_emitter = @import("event-emitter.zig");
+const text_work = @import("text-work.zig");
 
 const UnifiedTextBuffer = tb.UnifiedTextBuffer;
 const TextChunk = seg_mod.TextChunk;
@@ -110,6 +111,10 @@ const AddBuffer = struct {
     len: usize,
     cap: usize,
     allocator: Allocator,
+    /// Every slot growth registered, so a failed edit releases those after its checkpoint in
+    /// reverse. Each growth at least doubles a capacity below 2^32, so 32 entries suffice.
+    grown: [32]struct { mem_id: u8, buffer_count: usize } = undefined,
+    grown_len: u8 = 0,
 
     fn init(allocator: Allocator, text_buffer: *UnifiedTextBuffer, initial_cap: usize) !AddBuffer {
         const mem = try allocator.alloc(u8, initial_cap);
@@ -132,7 +137,10 @@ const AddBuffer = struct {
         const new_cap = @max(self.cap * 2, need);
         const new_mem = try self.allocator.alloc(u8, new_cap);
         errdefer self.allocator.free(new_mem);
+        const buffer_count = text_buffer.mem_registry.buffers.items.len;
         const new_mem_id = try text_buffer.registerMemBuffer(new_mem, true);
+        self.grown[self.grown_len] = .{ .mem_id = new_mem_id, .buffer_count = buffer_count };
+        self.grown_len += 1;
         self.mem_id = new_mem_id;
         self.ptr = new_mem.ptr;
         self.len = 0;
@@ -151,14 +159,15 @@ const AddBuffer = struct {
         return .{ .mem_id = self.mem_id, .start = start, .end = end };
     }
 
-    /// Restores the add buffer after a failed edit and releases a slot that growth registered.
+    /// Restores the add buffer after a failed edit and releases the slots that growth registered.
     const Checkpoint = struct {
         add_buffer: AddBuffer,
-        buffer_count: usize,
 
         fn restore(checkpoint: Checkpoint, text_buffer: *UnifiedTextBuffer, add_buffer: *AddBuffer) void {
-            if (add_buffer.mem_id != checkpoint.add_buffer.mem_id) {
-                text_buffer.mem_registry.cancelLastRegistration(add_buffer.mem_id, checkpoint.buffer_count);
+            while (add_buffer.grown_len > checkpoint.add_buffer.grown_len) {
+                add_buffer.grown_len -= 1;
+                const grown = add_buffer.grown[add_buffer.grown_len];
+                text_buffer.mem_registry.cancelLastRegistration(grown.mem_id, grown.buffer_count);
             }
             add_buffer.* = checkpoint.add_buffer;
         }
@@ -209,7 +218,7 @@ pub const EditBuffer = struct {
             .cursor = .{ .row = 0, .col = 0 },
             .allocator = allocator,
             .events = event_emitter.EventEmitter(EditBufferEvent).init(allocator),
-            .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback, .mergeFn = mergeSegmentCallback },
+            .segment_splitter = .{ .ctx = self, .splitFn = splitSegmentCallback, .joinFn = joinSegmentCallback },
             .notify = notify,
         };
 
@@ -317,7 +326,7 @@ pub const EditBuffer = struct {
     }
 
     fn addCheckpoint(self: *const EditBuffer) AddBuffer.Checkpoint {
-        return .{ .add_buffer = self.add_buffer, .buffer_count = self.tb.mem_registry.buffers.items.len };
+        return .{ .add_buffer = self.add_buffer };
     }
 
     /// TODO: This method should live in text-buffer-segment.zig and the Rope should take it as comptime param
@@ -384,10 +393,45 @@ pub const EditBuffer = struct {
         }
     }
 
-    /// A grapheme can continue across the join, so widths do not add; measure the joined bytes.
-    fn mergeSegmentCallback(ctx: ?*anyopaque, left: *const Segment, right: *const Segment) Segment {
-        const edit_buf = @as(*EditBuffer, @ptrCast(@alignCast(ctx.?)));
-        return .{ .text = edit_buf.tb.createChunk(left.text.mem_id, left.text.byte_start, right.text.byte_end) };
+    /// Keeps chunk boundaries on grapheme boundaries. Contiguous text merges or splits in place;
+    /// a grapheme split across other memory is copied to the add buffer. Widths are measured
+    /// again, since a grapheme can continue across the join.
+    fn joinSegmentCallback(ctx: ?*anyopaque, left: *const Segment, right: *const Segment) error{OutOfMemory}!?UnifiedRope.Node.LeafJoin {
+        const self = @as(*EditBuffer, @ptrCast(@alignCast(ctx.?)));
+        const l = left.asText() orelse return null;
+        const r = right.asText() orelse return null;
+        const l_bytes = l.getBytes(self.tb.memRegistry());
+        const r_bytes = r.getBytes(self.tb.memRegistry());
+        if (Segment.canMerge(left, right)) {
+            const span: ?[2]u32 = if (Segment.findJunction(l_bytes, r_bytes, self.tb.widthMethod())) |at| span: {
+                const start = l.width_cols - self.tb.measureText(l_bytes[at.tail..]);
+                break :span .{ start, start + self.tb.measureText(l_bytes.ptr[at.tail .. l_bytes.len + at.head]) };
+            } else null;
+            return .{ .joined = .{ .text = self.tb.createChunk(l.mem_id, l.byte_start, r.byte_end) }, .span = span, .more = true };
+        }
+        const at = Segment.findJunction(l_bytes, r_bytes, self.tb.widthMethod()) orelse {
+            // A wcwidth cut inside a regional-indicator pair can re-pair the right piece with the next leaf.
+            const cp = utf8.decodeUtf8Unchecked(r_bytes, 0).cp;
+            return if (cp >= 0x1F1E6 and cp <= 0x1F1FF) .{ .left = left.*, .joined = right.*, .more = true } else null;
+        };
+        text_work.add(.grapheme_joins, 1);
+        const joined = if (l.mem_id == r.mem_id and l.byte_end == r.byte_start)
+            self.tb.createChunk(l.mem_id, l.byte_start + at.tail, r.byte_start + at.head)
+        else copy: {
+            const len = l_bytes.len - at.tail + at.head;
+            self.add_buffer.ensureCapacity(self.tb, len) catch return error.OutOfMemory;
+            const added = self.add_buffer.append(l_bytes[at.tail..]);
+            _ = self.add_buffer.append(r_bytes[0..at.head]);
+            text_work.add(.grapheme_join_bytes, len);
+            break :copy self.tb.createChunk(added.mem_id, added.start, added.start + @as(u32, @intCast(len)));
+        };
+        return .{
+            .left = if (at.tail > 0) .{ .text = self.tb.createChunk(l.mem_id, l.byte_start, l.byte_start + at.tail) } else null,
+            .joined = .{ .text = joined },
+            .span = .{ 0, joined.width_cols },
+            .right = if (at.head < r_bytes.len) .{ .text = self.tb.createChunk(r.mem_id, r.byte_start + at.head, r.byte_end) } else null,
+            .more = true,
+        };
     }
 
     pub fn insertText(self: *EditBuffer, bytes: []const u8) !void {
@@ -407,44 +451,14 @@ pub const EditBuffer = struct {
         var result = try self.tb.textToSegments(self.allocator, bytes, base_mem_id, base_start, false);
         defer result.segments.deinit(result.allocator);
 
-        // Calculate width after last break
-        var width_after_last_break: u32 = 0;
-        var num_breaks: usize = 0;
-        for (result.segments.items) |seg| {
-            if (seg.isBreak()) {
-                num_breaks += 1;
-                width_after_last_break = 0;
-            } else if (seg.asText()) |chunk| {
-                width_after_last_break += chunk.width_cols;
-            }
-        }
-
         // Prepare root/end-marker repairs without touching shared history.
         var candidate = self.tb.rope().*;
-        try candidate.insertSliceByWeight(insert_offset, insertBias(cursor), result.segments.items, &self.segment_splitter);
-        // A merge can change the width before the insert, but the text after it keeps its weight.
-        const end_offset = candidate.totalWeight() - (self.tb.rope().totalWeight() - insert_offset);
+        const span = try candidate.insertSliceByWeight(insert_offset, insertBias(cursor), result.segments.items, &self.segment_splitter);
+        const added_lines = iter_mod.getLineCount(&candidate) - self.tb.lineCount();
+        const end = endCursor(.{ .row = cursor.row, .col = cursor.col, .offset = insert_offset }, added_lines, &candidate, span.end);
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
-        if (num_breaks > 0) {
-            const new_row = cursor.row + @as(u32, @intCast(num_breaks));
-            const new_col = width_after_last_break;
-            const new_offset = iter_mod.coordsToOffset(self.tb.rope(), new_row, new_col) orelse 0;
-            self.cursor = .{
-                .row = new_row,
-                .col = new_col,
-                .desired_col = new_col,
-                .offset = new_offset,
-            };
-        } else {
-            const new_col = end_offset - (insert_offset - cursor.col);
-            self.cursor = .{
-                .row = cursor.row,
-                .col = new_col,
-                .desired_col = new_col,
-                .offset = end_offset,
-            };
-        }
+        self.cursor = end;
 
         self.tb.markViewsDirty();
         self.publishCursor(true);
@@ -467,19 +481,15 @@ pub const EditBuffer = struct {
         if (empty and (start.col > 0 or end_offset < rope.totalWeight() or
             rope.count() == (iter_mod.lineStart(rope, start.row) orelse return).leaf_index + 1)) return;
 
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
         var candidate = rope.*;
-        try self.replaceByWeight(&candidate, start_offset, end_offset, &.{});
+        const span = try self.replaceByWeight(&candidate, start_offset, end_offset, &.{});
         try self.autoStoreUndo();
         self.tb.rope().root = candidate.root;
 
         self.tb.markViewsDirty();
-
-        const line_count = self.tb.lineCount();
-        const clamped_row = if (start.row >= line_count) line_count -| 1 else start.row;
-        const line_width = if (line_count > 0) iter_mod.lineWidthAt(self.tb.rope(), clamped_row) else 0;
-        const clamped_col = @min(start.col, line_width);
-        const offset = iter_mod.coordsToOffset(self.tb.rope(), clamped_row, clamped_col) orelse 0;
-        self.cursor = .{ .row = clamped_row, .col = clamped_col, .desired_col = clamped_col, .offset = offset };
+        self.cursor = endCursor(.{ .row = start.row, .col = start.col, .offset = start_offset }, 0, &candidate, deletedCursorOffset(span));
 
         self.publishCursor(true);
     }
@@ -507,36 +517,20 @@ pub const EditBuffer = struct {
 
         var deleted = self.tb.rope().*;
         var inserted = deleted;
+        var start = self.getPrimaryCursor();
+        var deleted_span: UnifiedRope.JoinSpan = undefined;
+        var inserted_span: UnifiedRope.JoinSpan = undefined;
         if (has_deletion) {
-            try self.replaceByWeight(&deleted, start_offset, end_offset, &.{});
-            if (bytes.len > 0) try self.replaceByWeight(&inserted, start_offset, end_offset, segments.segments.items);
+            const coords = iter_mod.offsetToCoords(self.tb.rope(), start_offset).?;
+            start = .{ .row = coords.row, .col = coords.col, .offset = start_offset };
+            deleted_span = try self.replaceByWeight(&deleted, start_offset, end_offset, &.{});
+            if (bytes.len > 0) inserted_span = try self.replaceByWeight(&inserted, start_offset, end_offset, segments.segments.items);
+        } else if (bytes.len > 0) {
+            start.offset = iter_mod.coordsToOffset(self.tb.rope(), start.row, start.col) orelse return EditBufferError.InvalidCursor;
+            inserted_span = try inserted.insertSliceByWeight(start.offset, insertBias(start), segments.segments.items, &self.segment_splitter);
         }
-        var deleted_cursor = if (has_deletion)
-            cursorAfterDeletion(self.tb.rope(), &deleted, start_offset)
-        else
-            self.getPrimaryCursor();
-        if (!has_deletion and bytes.len > 0) {
-            deleted_cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), deleted_cursor.row, deleted_cursor.col) orelse
-                return EditBufferError.InvalidCursor;
-            try inserted.insertSliceByWeight(deleted_cursor.offset, insertBias(deleted_cursor), segments.segments.items, &self.segment_splitter);
-        }
-        var inserted_cursor = deleted_cursor;
-        for (segments.segments.items) |segment| {
-            if (segment.isBreak()) {
-                inserted_cursor.row += 1;
-                inserted_cursor.col = 0;
-            } else if (segment.asText()) |chunk| {
-                inserted_cursor.col += chunk.width_cols;
-            }
-        }
-        if (inserted_cursor.row != deleted_cursor.row) {
-            inserted_cursor.offset = iter_mod.lineStart(&inserted, inserted_cursor.row).?.weight + inserted_cursor.col;
-        } else {
-            // A merge can change the width before the insert, but the text after it keeps its weight.
-            inserted_cursor.offset = inserted.totalWeight() - (deleted.totalWeight() - deleted_cursor.offset);
-            inserted_cursor.col = inserted_cursor.offset - (deleted_cursor.offset - deleted_cursor.col);
-        }
-        inserted_cursor.desired_col = inserted_cursor.col;
+        const deleted_cursor = if (has_deletion) endCursor(start, 0, &deleted, deletedCursorOffset(deleted_span)) else start;
+        const inserted_cursor = if (bytes.len > 0) endCursor(start, iter_mod.getLineCount(&inserted) - iter_mod.getLineCount(&deleted), &inserted, inserted_span.end) else start;
 
         // Each store_undo allocates a node, a cursor-metadata buffer, and
         // at most one redo branch. Reserve both stores before either can trim
@@ -563,6 +557,19 @@ pub const EditBuffer = struct {
         self.publishCursor(true);
     }
 
+    /// The cursor at `offset` in `after`, an edit at `start` that added `added_lines` lines.
+    fn endCursor(start: Cursor, added_lines: u32, after: *const UnifiedRope, offset: u32) Cursor {
+        const row = start.row + added_lines;
+        const col = if (added_lines == 0) offset - (start.offset - start.col) else offset - iter_mod.lineStart(after, row).?.weight;
+        return .{ .row = row, .col = col, .desired_col = col, .offset = offset };
+    }
+
+    /// A deletion that joins graphemes leaves the cursor after the joined grapheme (`span.start`
+    /// would leave it before). An insert leaves it after the grapheme that holds its end.
+    fn deletedCursorOffset(span: UnifiedRope.JoinSpan) u32 {
+        return span.end;
+    }
+
     /// An insert goes before zero-width text at a line start and after it elsewhere, as in one chunk.
     fn insertBias(cursor: Cursor) UnifiedRope.Node.Bias {
         return if (cursor.col == 0) .right else .left;
@@ -570,42 +577,12 @@ pub const EditBuffer = struct {
 
     /// A weight lies on both sides of zero-weight leaves. A range takes those at its start only from a line start,
     /// and those at its end unless it ends at a line start before the text end. Inside a chunk, its split decides.
-    fn replaceByWeight(self: *EditBuffer, candidate: *UnifiedRope, start_offset: u32, end_offset: u32, segments: []const Segment) !void {
+    fn replaceByWeight(self: *EditBuffer, candidate: *UnifiedRope, start_offset: u32, end_offset: u32, segments: []const Segment) !UnifiedRope.JoinSpan {
         const rope = self.tb.rope();
         const start = iter_mod.offsetToCoords(rope, start_offset) orelse return EditBufferError.InvalidCursor;
         const end = iter_mod.offsetToCoords(rope, end_offset) orelse return EditBufferError.InvalidCursor;
         const end_bias: UnifiedRope.Node.Bias = if (end.col == 0 and end_offset < rope.totalWeight()) .right else .left;
-        try candidate.replaceRangeByWeight(start_offset, end_offset, if (start.col == 0) .right else .left, end_bias, segments, &self.segment_splitter);
-    }
-
-    fn cursorAfterDeletion(rope: *const UnifiedRope, deleted: *const UnifiedRope, offset: u32) Cursor {
-        std.debug.assert(offset <= rope.totalWeight());
-        var node = rope.root;
-        var remaining = offset;
-        var row: u32 = 0;
-        while (node.* == .branch) {
-            const branch = node.branch;
-            if (remaining < branch.left.metrics().weight()) {
-                node = branch.left;
-            } else {
-                remaining -= branch.left.metrics().weight();
-                row += branch.left.metrics().custom.newline_count;
-                node = branch.right;
-            }
-        }
-        if (remaining >= node.metrics().weight()) row += node.metrics().custom.newline_count;
-        const line_start = iter_mod.lineStart(rope, row).?.weight;
-        var clamped_offset = offset;
-        if (remaining != 0 and !node.metrics().custom.ascii_only) {
-            const line_end = if (row < deleted.root.metrics().custom.newline_count)
-                iter_mod.lineStart(deleted, row + 1).?.weight - 1
-            else
-                deleted.totalWeight();
-            clamped_offset = @min(offset, line_end);
-        }
-        std.debug.assert(line_start <= clamped_offset);
-        const col = clamped_offset - line_start;
-        return .{ .row = row, .col = col, .desired_col = col, .offset = clamped_offset };
+        return candidate.replaceRangeByWeight(start_offset, end_offset, if (start.col == 0) .right else .left, end_bias, segments, &self.segment_splitter);
     }
 
     pub fn backspace(self: *EditBuffer) !void {

@@ -423,6 +423,7 @@ typedef struct ot_scene_layout {
 #define OT_SCENE_FULL_PATH_TAINTED UINT32_C(8)
 #define OT_SCENE_FULL_PATH_UNRETAINED UINT32_C(16)
 #define OT_SCENE_FULL_PATH_OPTIONS UINT32_C(32)
+#define OT_SCENE_FULL_PATH_NON_LOCAL UINT32_C(64)
 
 /* Fields from work_frame_id on count the work of the last presented scene
  * frame: preparation, paint, and encoding. They are deterministic work
@@ -435,13 +436,15 @@ typedef struct ot_scene_layout {
  * SCREEN (forced, invalidated, or palette-changed encode), IMAGES (image
  * placements present), TAINTED (the next buffer was written outside scene
  * paint), UNRETAINED (no presented scene frame to compare with: the first
- * frame, a resize, or the frame after a recorded, failed, cancelled, or
- * unpresented frame),
- * OPTIONS (background, use_mouse, excluded_hit_num, or preserve_unwritten
- * changed). A recorded frame repaints every row. Otherwise, without a reason,
- * a frame repaints only when a painted member's inputs changed, and the encoder
- * diffs only the damage_rows rows they cover; an unchanged frame has
- * damage_rows 0 and paints nothing. After a current-buffer session lease the
+ * frame, a resize, or the frame after a failed, cancelled, or unpresented
+ * frame), OPTIONS (background, use_mouse, excluded_hit_num, or
+ * preserve_unwritten changed), NON_LOCAL (a recording clears or color-matrixes
+ * the frame). IMAGES also counts recorded image draws. Otherwise, without a
+ * reason, a frame repaints only when a painted member's inputs changed, its
+ * recording included: it clears and repaints only bands around the damage_rows
+ * rows they cover (runs one row apart merge, and a sixteenth band takes every
+ * later run, so a band can include undamaged rows), and the encoder diffs only
+ * the damage_rows rows; an unchanged frame has damage_rows 0 and paints nothing. After a current-buffer session lease the
  * encoder diffs every row, without repainting. */
 typedef struct ot_scene_stats {
     uint32_t struct_size;
@@ -771,10 +774,9 @@ ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot
     const uint8_t *title, uint32_t title_bytes, const uint8_t *bottom_title, uint32_t bottom_title_bytes);
 /* A box may filter its direct children against a root/box in the same Session.
  * The viewport handle is copied, not pinned. NULL disables filtering. A destroyed
- * viewport fails frame preparation until rebound or disabled. After a layout
- * change, or a change to a child's text, view, or hooks, all direct children
- * refresh before selection, including hidden/culled children; hidden nodes do not
- * update or resize. Fewer than 16 total children bypass overlap filtering.
+ * viewport fails frame preparation until rebound or disabled. Every direct child
+ * whose layout, text, view, or hooks changed refreshes before selection,
+ * including hidden/culled children; hidden nodes do not update or resize. Fewer than 16 total children bypass overlap filtering.
  * Bounds use the full viewport, not its border-inset paint clip. Row/reverse-row
  * use horizontal overlap; column/reverse-column use vertical overlap. Primary
  * overlap is strict, cross-axis touching is included, and padding is zero.
@@ -799,9 +801,10 @@ ot_status ot_scene_set_viewport(ot_context *, const ot_handle *node, const ot_ha
  * after which a bar may still appear but not hide. Bars paint after the box's
  * children and hit the box. Options are complete and copied. A later call
  * updates options; a changed follow recomputes stuck. stuck starts true and
- * changes only on explicit scrolls (ot_scene_scroll_to) and follow changes: it
- * is true when the offset reached the follow edge or max on that axis is at
- * most 1. Rejection preserves accepted state. */
+ * changes only on explicit scrolls (ot_scene_scroll_to, ot_scene_scroll_request),
+ * follow changes, and the solves that apply a request or an anchor: it is true
+ * when the offset reached the follow edge or max on that axis is at most 1.
+ * Rejection preserves accepted state. */
 #define OT_SCENE_SCROLL_X UINT32_C(1)
 #define OT_SCENE_SCROLL_Y UINT32_C(2)
 #define OT_SCENE_SCROLL_FOLLOW_NONE UINT32_C(0)
@@ -819,6 +822,13 @@ ot_status ot_scene_set_viewport(ot_context *, const ot_handle *node, const ot_ha
 #define OT_SCENE_SCROLL_BAR_OVERLAY UINT32_C(1)
 #define OT_SCENE_SCROLL_RELATIVE_X UINT32_C(1)
 #define OT_SCENE_SCROLL_RELATIVE_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_REAPPLY UINT32_C(4)
+#define OT_SCENE_SCROLL_REQUEST_INTO_VIEW UINT32_C(0)
+#define OT_SCENE_SCROLL_REQUEST_ANCHOR UINT32_C(1)
+#define OT_SCENE_SCROLL_REQUEST_LAYOUT UINT32_C(2)
+#define OT_SCENE_SCROLL_ALIGN_NEAREST UINT32_C(0)
+#define OT_SCENE_SCROLL_ALIGN_START UINT32_C(1)
+#define OT_SCENE_SCROLL_ALIGN_END UINT32_C(2)
 
 /* thickness is 1..255 cells and gap 0..255 cells (between content and track);
  * an inset bar's gutter is gap + thickness, an overlay bar takes none. arrows
@@ -866,12 +876,21 @@ typedef struct ot_scene_scroll_bar_state {
     double thumb_size;
 } ot_scene_scroll_bar_state;
 
-/* generation changes with every change of the other fields. */
+/* generation changes with every change of the other fields. changes holds the
+ * OT_SCENE_SCROLL_CHANGED_* bits that differed from the last report when the last
+ * SCROLL request was issued. Setting OT_SCENE_HOOK_SCROLL on a node that did not
+ * have it makes the current state the last report. */
+#define OT_SCENE_SCROLL_CHANGED_OFFSET_X UINT32_C(1)
+#define OT_SCENE_SCROLL_CHANGED_OFFSET_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_CHANGED_CONTENT UINT32_C(4)
+#define OT_SCENE_SCROLL_CHANGED_VIEWPORT UINT32_C(8)
+/* Set on the request that delivers an OT_SCENE_SCROLL_REQUEST_LAYOUT callback. */
+#define OT_SCENE_SCROLL_CHANGED_LAYOUT UINT32_C(16)
 typedef struct ot_scene_scroll_state {
     uint32_t struct_size;
     uint32_t abi_version;
     uint32_t stuck;
-    uint32_t reserved;
+    uint32_t changes;
     uint64_t generation;
     double offset[2];
     double max[2];
@@ -889,11 +908,40 @@ ot_status ot_scene_set_scroll_arrow(ot_context *, const ot_handle *node, uint32_
 /* An explicit scroll. Without RELATIVE_X/Y the values are absolute offsets; a
  * relative delta of 0 keeps an axis. Values round to whole cells and clamp to
  * the limits of the last solve; ±Infinity clamp, NaN returns
- * OT_INVALID_ARGUMENT. It recomputes stuck, marks the offset (not the sizes) as
- * reported to the host, and copies the new state to out_state unless it is NULL. During a frame
- * attempt the next round prepares at the new offset. */
+ * OT_INVALID_ARGUMENT. It recomputes stuck, moves a held anchor's row with the
+ * offset, marks the offset (not the sizes) as reported to the host, and copies
+ * the new state to out_state unless it is NULL. During a frame attempt the next
+ * round prepares at the new offset.
+ * With REAPPLY each axis it sets also keeps its target, and every solve of the
+ * next frame (the current one during an attempt, or a later one if that frame
+ * is cancelled) moves the offset to the target again, clamped to the new limits,
+ * and recomputes stuck. A relative delta adds to a pending target. A target of
+ * +Infinity, or one at or past a positive max of a laid-out node, is the end:
+ * it lands at the new max and releases a held anchor. A following view that the
+ * scroll left stuck where it asked keeps no target on the follow axis. A later
+ * scroll without REAPPLY drops pending targets. */
 ot_status ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, double y, uint32_t flags,
     ot_scene_scroll_state *out_state);
+/* Requests about a node in the scroll node's subtree, read from the last solve
+ * (OT_INVALID_ARGUMENT for a node outside it):
+ * - INTO_VIEW scrolls now so the target's rect is inside the viewport inset by
+ *   inset cells (align NEAREST moves the least, as a browser does; START puts its
+ *   start at the inset edge; END its end), and again after each solve of the next
+ *   frame, as a REAPPLY scroll does; it replaces pending targets. A target that
+ *   was never laid out scrolls only after its first solve.
+ * - ANCHOR holds the target's position in the viewport: after each solve the
+ *   offset moves with the target, clamped, and stuck is recomputed; while held,
+ *   the anchor decides the offset over sticky follow and pending requests. A
+ *   target that was never laid out holds the place its first solve gives it. An
+ *   explicit scroll moves the held row. A NULL target releases it; so does
+ *   destroying the target or moving it out of the subtree. align and inset are 0.
+ * - LAYOUT asks for one SCROLL request (OT_SCENE_SCROLL_CHANGED_LAYOUT in
+ *   changes) in the next frame, after its layout settles and before it paints,
+ *   while OT_SCENE_HOOK_SCROLL is set and the node is visible. target is NULL,
+ *   align and inset are 0.
+ * out_state follows ot_scene_scroll_to. */
+ot_status ot_scene_scroll_request(ot_context *, const ot_handle *node, uint32_t kind, const ot_handle *target,
+    uint32_t align, uint32_t inset, ot_scene_scroll_state *out_state);
 /* Pure: it never changes what an OT_SCENE_FRAME_SCROLL request reports. With
  * OT_SCENE_HOOK_SCROLL (scroll nodes only) a frame returns one SCROLL request,
  * after the node's refresh and before paint, when the offset differs from the last
@@ -1011,9 +1059,10 @@ ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_st
  * OT_INVALID_ARGUMENT, a Session without a scene OT_INVALID_PHASE, and an active
  * frame attempt, draft, or frame lease OT_FRAME_BUSY. Rejection keeps the flags.
  * Flags persist for the Session. VERIFY checks frames that retained paint skips
- * or diffs partly: next must still hold the presented frame, a partly diffed
- * frame's other rows must match it, and a skipped frame's repaint into a
- * scratch buffer must match its cells and hits. A mismatch fails the frame step
+ * or repaints partly: next must still hold the presented frame, a partly
+ * repainted frame's other rows must match it, and a full repaint into a
+ * scratch buffer must match the cells and hits of a skipped or partly
+ * repainted frame. A mismatch fails the frame step
  * with OT_INTERNAL_ERROR; VERIFY changes no other state or count. */
 ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
 /* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
@@ -2016,8 +2065,9 @@ ot_status ot_buffer_draw_text_view(ot_context *, const ot_handle *target, const 
     const ot_handle *view, int32_t x, int32_t y);
 /* Same destination rules as ot_buffer_draw_text_view. Paints synchronously with
  * the destination's current clipping and opacity, without publishing cursor state.
- * The scene-body source is a Text or Box scene node, drawn as its built-in painting
- * would draw it at x, y with the node's paint size and the current focus. */
+ * The scene-body source is a Text, Box, Slider or Arrow scene node, drawn as its
+ * built-in painting would draw it at x, y with the node's paint size and the
+ * current focus. */
 ot_status ot_buffer_draw_editor_view(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
     const ot_handle *view, int32_t x, int32_t y);
 ot_status ot_buffer_draw_scene_body(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
@@ -2208,9 +2258,12 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
 #define OT_TERMINAL_MOUSE UINT32_C(2)
 #define OT_TERMINAL_MOUSE_MOVEMENT UINT32_C(4)
 #define OT_TERMINAL_CLEAR_ON_CLOSE UINT32_C(8)
+#define OT_TERMINAL_REPLY_SENTINEL UINT32_C(16)
 
-/* flags is a combination of the four OT_TERMINAL_* option bits above. Other bits
- * must be zero. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
+/* flags is a combination of the five OT_TERMINAL_* option bits above. Other bits
+ * must be zero. REPLY_SENTINEL ends the startup query packet with DA1 (CSI c),
+ * also inside tmux, and sends no other DA1; the host waits for its reply instead
+ * of a timer. A DA1 reply then also ends the startup cursor-report probes. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
  * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
  * clears only a surface that setup or resume claimed: a close before their mode
  * packet leaves visible shell output in place. */
@@ -2234,7 +2287,7 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
- * and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
+ * 0/1 for QUERY_PIXEL_RESOLUTION (1 appends the DA1 sentinel), and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
  * PROGRAM_STATUS accept payload bytes. reserved must be zero. */
 typedef struct ot_session_control_options {
     uint32_t struct_size;
@@ -2494,6 +2547,7 @@ typedef struct ot_session_pump_result {
 #define OT_INPUT_EXPECT_REPLIES UINT32_C(1)
 #define OT_INPUT_EXPECT_KITTY_KEYBOARD UINT32_C(2)
 #define OT_INPUT_EXPECT_CURSOR_POSITION UINT32_C(4)
+#define OT_INPUT_EXPECT_SENTINEL UINT32_C(8)
 
 #define OT_INPUT_EVENTS_MIN UINT32_C(4)
 #define OT_INPUT_PAYLOAD_BYTES_MIN UINT32_C(4384)
@@ -3168,6 +3222,15 @@ ot_status ot_session_input_feed(
  * modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting and makes
  * CSI R and CSI 1 ; N R replies, since the Kitty protocol sends F3 as CSI 13 ~;
  * a session with a renderer applies its terminal's negotiated state instead.
+ * SENTINEL, which implies REPLIES, means that a DA1 reply (CSI ? ... c) ends the
+ * outstanding queries; clear it when that reply arrives. While it is set, a
+ * partial reply waits without a deadline: an OSC, DCS, or APC string that begins
+ * like one (OSC and a digit, DCS and > or a digit, APC and G), a bare CSI, OSC,
+ * DCS, or APC introducer, and a CSI of digits. A held string continues only
+ * while it matches a reply prefix, and a CSI that timed out completes only as a
+ * reply; another byte ends either one and is typed. A lone Escape still times
+ * out, and a reply that follows it is not typed; if what follows that Escape is
+ * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 

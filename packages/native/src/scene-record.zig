@@ -4,7 +4,9 @@ const c = @import("context_abi_c");
 const context = @import("context.zig");
 const buffer = @import("buffer.zig");
 const handles = @import("context-handles.zig");
-const PaintSlot = @import("scene.zig").PaintSlot;
+const scene = @import("scene.zig");
+const native = @import("native-renderable.zig");
+const PaintSlot = scene.PaintSlot;
 
 const Context = context.Context;
 
@@ -136,50 +138,68 @@ fn zeroHandle(value: c.ot_handle) bool {
     return value.context_id == 0 and value.slot == 0 and value.generation == 0;
 }
 
+/// Command record types. SLOT records frame the commands and are not one.
+pub const Command = enum(u32) { draw = 1, stack, grid, @"packed", supersample, grayscale, color_matrix, text_view, editor_view, scene_body, image, unicode };
+
+fn command(operation: u32) !Command {
+    return std.enums.fromInt(Command, operation) orelse error.InvalidOptions;
+}
+
 comptime {
     std.debug.assert(@sizeOf(usize) >= 8); // commandSize adds up to four u32 lengths.
+    // Each OT_SCENE_RECORD_<NAME> type has an equal Command tag, and each tag has a type.
+    @setEvalBranchQuota(200_000);
+    var count = 0;
+    for (@typeInfo(c).@"struct".decls) |decl| {
+        const name = if (std.mem.startsWith(u8, decl.name, "OT_SCENE_RECORD_")) decl.name["OT_SCENE_RECORD_".len..] else continue;
+        if (std.mem.eql(u8, name, "SLOT") or std.mem.eql(u8, name, "BYTES_MAX") or std.mem.startsWith(u8, name, "PHASE_") or std.mem.startsWith(u8, name, "GRAYSCALE_")) continue;
+        var lower: [name.len]u8 = undefined;
+        const tag = std.meta.stringToEnum(Command, std.ascii.lowerString(&lower, name)) orelse @compileError(decl.name ++ " has no Command tag");
+        if (@intFromEnum(tag) != @field(c, decl.name)) @compileError(decl.name ++ " differs from its Command tag");
+        count += 1;
+    }
+    if (count != std.meta.fields(Command).len) @compileError("a Command tag has no OT_SCENE_RECORD_ type");
 }
 
 /// Unpadded byte count of a command record, after checking its fixed fields.
-fn commandSize(operation: u32, body: []const u8) !usize {
+fn commandSize(operation: Command, body: []const u8) !usize {
     switch (operation) {
-        c.OT_SCENE_RECORD_DRAW => {
+        .draw => {
             const value = try fixed(c.ot_scene_record_draw, body);
             const draw = try fixed(c.ot_buffer_draw_header, body[@sizeOf(c.ot_scene_record_draw)..]);
             if (value.text_length > c.OT_BUFFER_TEXT_BYTES_MAX or value.bottom_length > c.OT_BUFFER_TEXT_BYTES_MAX or
                 (draw.operation != c.OT_BUFFER_DRAW_COMPOSE and !zeroHandle(value.source))) return error.InvalidOptions;
             return @sizeOf(c.ot_scene_record_draw) + @as(usize, draw.struct_size) + value.text_length + value.bottom_length;
         },
-        c.OT_SCENE_RECORD_STACK => return @sizeOf(c.ot_scene_record_stack),
-        c.OT_SCENE_RECORD_GRID => {
+        .stack => return @sizeOf(c.ot_scene_record_stack),
+        .grid => {
             const value = try fixed(c.ot_scene_record_grid, body);
             return @sizeOf(c.ot_scene_record_grid) + (@as(usize, value.column_count) + value.row_count) * @sizeOf(i32);
         },
-        c.OT_SCENE_RECORD_PACKED => {
+        .@"packed" => {
             const value = try fixed(c.ot_scene_record_packed, body);
             if (value.reserved != 0) return error.InvalidOptions;
             return @sizeOf(c.ot_scene_record_packed) + @as(usize, value.byte_count);
         },
-        c.OT_SCENE_RECORD_SUPERSAMPLE => {
+        .supersample => {
             const value = try fixed(c.ot_scene_record_supersample, body);
             if (value.reserved != 0) return error.InvalidOptions;
             return @sizeOf(c.ot_scene_record_supersample) + @as(usize, value.byte_count);
         },
-        c.OT_SCENE_RECORD_GRAYSCALE => {
+        .grayscale => {
             const value = try fixed(c.ot_scene_record_grayscale, body);
             const flags = c.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND | c.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND | c.OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED;
             if (value.flags & ~@as(u32, flags) != 0) return error.InvalidOptions;
             return @sizeOf(c.ot_scene_record_grayscale) + @as(usize, value.sample_count) * @sizeOf(f32);
         },
-        c.OT_SCENE_RECORD_COLOR_MATRIX => {
+        .color_matrix => {
             const value = try fixed(c.ot_scene_record_color_matrix, body);
             if (value.has_mask > 1 or (value.has_mask == 0 and value.mask_count != 0)) return error.InvalidOptions;
             return @sizeOf(c.ot_scene_record_color_matrix) + @as(usize, value.mask_count) * @sizeOf(f32);
         },
-        c.OT_SCENE_RECORD_TEXT_VIEW, c.OT_SCENE_RECORD_EDITOR_VIEW, c.OT_SCENE_RECORD_SCENE_BODY => return @sizeOf(c.ot_scene_record_view),
-        c.OT_SCENE_RECORD_IMAGE => return @sizeOf(c.ot_scene_record_image),
-        c.OT_SCENE_RECORD_UNICODE => return @sizeOf(c.ot_scene_record_unicode),
-        else => return error.InvalidOptions,
+        .text_view, .editor_view, .scene_body => return @sizeOf(c.ot_scene_record_view),
+        .image => return @sizeOf(c.ot_scene_record_image),
+        .unicode => return @sizeOf(c.ot_scene_record_unicode),
     }
 }
 
@@ -209,11 +229,129 @@ pub fn index(bytes: []const u8, slots: []const PaintSlot, segments: []Segments) 
             current.?.* = .{ .start = @intCast(offset + size), .end = @intCast(offset + size) };
         } else {
             const segment = current orelse return error.InvalidOptions;
-            if (std.mem.alignForward(usize, try commandSize(header.operation, body), 8) != size) return error.InvalidOptions;
+            if (std.mem.alignForward(usize, try commandSize(try command(header.operation), body), 8) != size) return error.InvalidOptions;
             segment.end = @intCast(offset + size);
         }
         offset += size;
     }
+}
+
+/// What one slot's recording paints, compared with the presented frame's by retained paint.
+pub const Fingerprint = struct {
+    // Hook flags, phases, command bytes, and the identity and paint epoch of each resource
+    // the commands read: equal digests play equal cells.
+    digest: u64 = 0,
+    // Rows the commands can write, before the member clip bounds them.
+    top: i64 = std.math.maxInt(i64),
+    bottom: i64 = std.math.minInt(i64),
+    // A composed buffer has no paint epoch, so the slot repaints on every frame.
+    stable: bool = true,
+    // DRAW clear and COLOR_MATRIX write outside the member clip.
+    non_local: bool = false,
+    image: bool = false,
+
+    fn rows(self: *Fingerprint, top: i64, bottom: i64) void {
+        self.top = @min(self.top, top);
+        self.bottom = @max(self.bottom, bottom);
+    }
+};
+
+/// Fingerprint an indexed slot. Each command is bounded by its own fields; a view reaches the
+/// clip bottom, and a command that names no height or fails to decode reaches the whole clip.
+pub fn fingerprint(owner: *Context, member: *const native.NativeRenderable, bytes: []const u8, segments: Segments, hooks: u32, frame_id: u64) Fingerprint {
+    const clip_bottom = std.math.maxInt(i64);
+    var result: Fingerprint = .{};
+    var hasher = std.hash.Wyhash.init(hooks);
+    const raw = owner.raw();
+    for (segments) |segment| {
+        hasher.update(std.mem.asBytes(&(segment.end - segment.start)));
+        hasher.update(bytes[segment.start..segment.end]);
+        var offset: usize = segment.start;
+        while (offset < segment.end) {
+            // index checked the framing and every fixed part.
+            const header = fixed(c.ot_scene_record_header, bytes[offset..]) catch unreachable;
+            const body = bytes[offset..][0..header.size];
+            offset += header.size;
+            switch (command(header.operation) catch unreachable) {
+                .draw => {
+                    const value = fixed(c.ot_scene_record_draw, body) catch unreachable;
+                    var draw: context.BufferDraw = undefined;
+                    bufferDrawFromC(fixed(c.ot_buffer_draw_header, body[@sizeOf(c.ot_scene_record_draw)..]) catch unreachable, &draw) catch {
+                        result.rows(std.math.minInt(i64), clip_bottom);
+                        continue;
+                    };
+                    switch (draw.operation) {
+                        .clear => result.non_local = true,
+                        .respect_alpha => {},
+                        .fill, .box => result.rows(draw.y, @as(i64, draw.y) + draw.height),
+                        .text, .cell, .cell_blend, .char => result.rows(draw.y, @as(i64, draw.y) + 1),
+                        .compose => {
+                            result.stable = false;
+                            const source = raw.getBuffer(handleFromC(value.source)) catch continue;
+                            result.rows(draw.y, @as(i64, draw.y) + source.height);
+                        },
+                    }
+                },
+                .stack => {},
+                .grid => {
+                    const value = fixed(c.ot_scene_record_grid, body) catch unreachable;
+                    const offsets: [*]align(1) const i32 = @ptrCast(body[@sizeOf(c.ot_scene_record_grid)..].ptr);
+                    if (value.row_count < 2) continue;
+                    const first = offsets[value.column_count];
+                    const last = offsets[value.column_count + value.row_count - 1];
+                    result.rows(@min(first, last), @as(i64, @max(first, last)) + 1);
+                },
+                .@"packed" => {
+                    const value = fixed(c.ot_scene_record_packed, body) catch unreachable;
+                    result.rows(value.y, @as(i64, value.y) + value.height);
+                },
+                .supersample => result.rows((fixed(c.ot_scene_record_supersample, body) catch unreachable).y, clip_bottom),
+                .grayscale => {
+                    const value = fixed(c.ot_scene_record_grayscale, body) catch unreachable;
+                    result.rows(value.y, @as(i64, value.y) + value.height);
+                },
+                .color_matrix => result.non_local = true,
+                .text_view, .editor_view, .scene_body => {
+                    const value = fixed(c.ot_scene_record_view, body) catch unreachable;
+                    result.rows(value.y, clip_bottom);
+                    // A destroyed resource plays nothing; a live one paints its epoch's cells.
+                    var state = [2]u64{ 0, 0 };
+                    var layout: scene.Layout = .{};
+                    const source = handleFromC(value.source);
+                    // A view bound to another node takes that node's size, which no epoch tracks.
+                    var bound: ?*native.NativeRenderable = null;
+                    if (header.operation == c.OT_SCENE_RECORD_TEXT_VIEW) {
+                        if (raw.getTextBufferView(source)) |view| {
+                            state = .{ view.paint_epoch, @intFromBool(view.text.buffer.getSyntaxStyle() != null) };
+                            bound = view.node;
+                        } else |_| {}
+                    } else if (header.operation == c.OT_SCENE_RECORD_EDITOR_VIEW) {
+                        if (raw.getEditorView(source)) |editor| {
+                            state = .{ editor.paint_epoch, @intFromBool(editor.edit.buffer.tb.getSyntaxStyle() != null) };
+                            bound = editor.node;
+                        } else |_| {}
+                    } else if (raw.getRenderable(source)) |node| {
+                        // A body paints at the node's paint size, with focus colors when focus lies within it.
+                        state = .{ node.scene_node.?.paint_epoch, @intFromBool(node.scene_node.?.focus_frame == frame_id) };
+                        layout = scene.getPaintLayout(node) catch .{};
+                    } else |_| {}
+                    if (bound != null and bound.? != member) result.stable = false;
+                    hasher.update(std.mem.asBytes(&state));
+                    hasher.update(std.mem.asBytes(&layout));
+                },
+                // Images take the full path, as image nodes do.
+                .image => result.image = true,
+                .unicode => {
+                    const value = fixed(c.ot_scene_record_unicode, body) catch unreachable;
+                    result.rows(value.y, @as(i64, value.y) + 1);
+                    const live = if (raw.getUnicode(handleFromC(value.unicode))) |_| true else |_| false;
+                    hasher.update(&[_]u8{@intFromBool(live)});
+                },
+            }
+        }
+    }
+    result.digest = hasher.final();
+    return result;
 }
 
 /// Play one indexed segment. The caller owns the first floor entries of the
@@ -226,7 +364,7 @@ pub fn play(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, byte
         // index validated the framing that playback walks again.
         std.debug.assert(header.size >= @sizeOf(c.ot_scene_record_header) and header.size % 8 == 0 and header.size <= segment.end - offset);
         const body = bytes[offset..][0..header.size];
-        run(owner, target, floor, header.operation, body) catch |err| switch (err) {
+        run(owner, target, floor, try command(header.operation), body) catch |err| switch (err) {
             error.StaleHandle => {},
             else => return err,
         };
@@ -234,9 +372,9 @@ pub fn play(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, byte
     }
 }
 
-fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation: u32, body: []const u8) !void {
+fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation: Command, body: []const u8) !void {
     switch (operation) {
-        c.OT_SCENE_RECORD_DRAW => {
+        .draw => {
             const value = try fixed(c.ot_scene_record_draw, body);
             const record = body[@sizeOf(c.ot_scene_record_draw)..];
             const header = try fixed(c.ot_buffer_draw_header, record);
@@ -249,7 +387,7 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
             if (draw.operation == .compose) draw.source = handleFromC(value.source);
             try owner.drawBufferOn(target, true, &draw, text, bottom);
         },
-        c.OT_SCENE_RECORD_STACK => {
+        .stack => {
             const value = try fixed(c.ot_scene_record_stack, body);
             if (value.operation > c.OT_BUFFER_STACK_CLEAR_OPACITY) return error.InvalidOptions;
             _ = try Context.bufferStackOn(target, floor, .{
@@ -261,22 +399,22 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
                 .opacity = value.opacity,
             });
         },
-        c.OT_SCENE_RECORD_GRID => {
+        .grid => {
             const value = try fixed(c.ot_scene_record_grid, body);
             const offsets: [*]const i32 = @ptrCast(@alignCast(body[@sizeOf(c.ot_scene_record_grid)..].ptr));
             try owner.drawGridOn(target, try gridFromC(&value.options), offsets[0..value.column_count], offsets[value.column_count..][0..value.row_count]);
         },
-        c.OT_SCENE_RECORD_PACKED => {
+        .@"packed" => {
             const value = try fixed(c.ot_scene_record_packed, body);
             const data = body[@sizeOf(c.ot_scene_record_packed)..][0..value.byte_count];
             try target.drawPackedBufferChecked(data, value.x, value.y, value.width, value.height);
         },
-        c.OT_SCENE_RECORD_SUPERSAMPLE => {
+        .supersample => {
             const value = try fixed(c.ot_scene_record_supersample, body);
             const data = body[@sizeOf(c.ot_scene_record_supersample)..][0..value.byte_count];
             try Context.drawSuperSampleOn(target, data, value.x, value.y, value.format, value.stride);
         },
-        c.OT_SCENE_RECORD_GRAYSCALE => {
+        .grayscale => {
             const value = try fixed(c.ot_scene_record_grayscale, body);
             const samples: [*]align(1) const f32 = @ptrCast(body[@sizeOf(c.ot_scene_record_grayscale)..].ptr);
             try target.drawGrayscaleBufferChecked(
@@ -290,31 +428,30 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
                 value.flags & c.OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED != 0,
             );
         },
-        c.OT_SCENE_RECORD_COLOR_MATRIX => {
+        .color_matrix => {
             const value = try fixed(c.ot_scene_record_color_matrix, body);
             const mask: [*]align(1) const f32 = @ptrCast(body[@sizeOf(c.ot_scene_record_color_matrix)..].ptr);
             try owner.colorMatrixOn(target, &value.matrix, if (value.has_mask != 0) mask[0..value.mask_count] else null, value.strength, value.channel);
         },
-        c.OT_SCENE_RECORD_TEXT_VIEW => {
+        .text_view => {
             const value = try fixed(c.ot_scene_record_view, body);
             try owner.drawTextViewOn(target, handleFromC(value.source), value.x, value.y);
         },
-        c.OT_SCENE_RECORD_EDITOR_VIEW => {
+        .editor_view => {
             const value = try fixed(c.ot_scene_record_view, body);
             try owner.drawEditorViewOn(target, handleFromC(value.source), value.x, value.y);
         },
-        c.OT_SCENE_RECORD_SCENE_BODY => {
+        .scene_body => {
             const value = try fixed(c.ot_scene_record_view, body);
             try owner.drawSceneBodyOn(target, handleFromC(value.source), value.x, value.y);
         },
-        c.OT_SCENE_RECORD_IMAGE => {
+        .image => {
             const value = try fixed(c.ot_scene_record_image, body);
             _ = try owner.drawImageOn(target, handleFromC(value.image), try imageDrawFromC(&value.options));
         },
-        c.OT_SCENE_RECORD_UNICODE => {
+        .unicode => {
             const value = try fixed(c.ot_scene_record_unicode, body);
             try owner.drawUnicodeOn(target, handleFromC(value.unicode), value.index, value.x, value.y, value.foreground, value.background, value.attributes);
         },
-        else => return error.InvalidOptions,
     }
 }

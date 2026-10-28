@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-8vcpu-ubuntu-2404]
+        os: ["${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}"]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -81,7 +81,7 @@ jobs:
 
   node-source:
     name: Node Source Lane
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
     defaults:
       run:
         shell: bash
@@ -128,7 +128,7 @@ jobs:
 
   packed-consumer:
     name: Packed Consumer Smoke
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
     defaults:
       run:
         shell: bash
@@ -177,7 +177,7 @@ jobs:
   build-complete:
     name: Solid - Build and Test
     needs: [bun-test, node-source, packed-consumer]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
     if: always()
     steps:
       - name: Check test results

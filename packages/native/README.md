@@ -16,10 +16,11 @@ file operations, Session deadlines, and native diagnostic clocks.
 ## API surfaces
 
 - [`src/opentui.zig`](src/opentui.zig) is the public Zig module. It exports the
-  checked `Context` API and raw Zig primitives, including `CliRenderer`,
-  `NativeRenderable`, `OptimizedBuffer`, text buffers, and pools. Callers manage
-  the lifetimes of raw primitives. Importing a raw primitive does not add Context
-  checks to it.
+  checked `Context` API and raw Zig primitives, including `NativeRenderable`,
+  `OptimizedBuffer`, text buffers, and pools. Callers manage the lifetimes of raw
+  primitives. Importing a raw primitive does not add Context checks to it. The
+  `CliRenderer` type is exported, but a renderer exists only as a Session's:
+  borrow it with `Context.raw().getSessionRenderer`.
 - [`include/opentui.h`](include/opentui.h) defines the checked `ot_*` C ABI for
   Contexts, Sessions, scenes, drawing, text, editors, styles, leases, clipboard,
   and diagnostics.

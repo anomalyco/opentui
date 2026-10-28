@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 4909e7af6ce0c4c1efdbd755103c7912c79cd90b4df5548042ff770949eb9c20
+// ABI audit SHA-256: c568a9f7759cd27ef09c18ba8069d9204ee3949c9c9d12951b590796b087901c
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -27,6 +27,7 @@ export const nativeSymbols = {
   ot_scene_set_scroll: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_set_scroll_arrow: { args: ["ptr", "buffer", "u32", "u32", "buffer", "ptr", "u32"], returns: "i32" },
   ot_scene_scroll_to: { args: ["ptr", "buffer", "f64", "f64", "u32", "ptr"], returns: "i32" },
+  ot_scene_scroll_request: { args: ["ptr", "buffer", "u32", "ptr", "u32", "u32", "ptr"], returns: "i32" },
   ot_scene_get_scroll: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_set_focus: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_scene_set_slider: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -699,7 +700,7 @@ export const nativeLayouts = {
       struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
       abi_version: { offset: 4, size: 4, alignment: 4, type: "u32" },
       stuck: { offset: 8, size: 4, alignment: 4, type: "u32" },
-      reserved: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      changes: { offset: 12, size: 4, alignment: 4, type: "u32" },
       generation: { offset: 16, size: 8, alignment: 8, type: "u64" },
       offset: { offset: 24, size: 16, alignment: 8, type: "[2]f64" },
       max: { offset: 40, size: 16, alignment: 8, type: "[2]f64" },
@@ -1745,6 +1746,7 @@ export const nativeConstants = {
   OT_SCENE_FULL_PATH_TAINTED: 8,
   OT_SCENE_FULL_PATH_UNRETAINED: 16,
   OT_SCENE_FULL_PATH_OPTIONS: 32,
+  OT_SCENE_FULL_PATH_NON_LOCAL: 64,
   OT_SCENE_HOOK_UPDATE: 1,
   OT_SCENE_HOOK_RESIZE: 2,
   OT_SCENE_HOOK_LAYOUT_CHANGED: 4,
@@ -1793,6 +1795,18 @@ export const nativeConstants = {
   OT_SCENE_SCROLL_BAR_OVERLAY: 1,
   OT_SCENE_SCROLL_RELATIVE_X: 1,
   OT_SCENE_SCROLL_RELATIVE_Y: 2,
+  OT_SCENE_SCROLL_REAPPLY: 4,
+  OT_SCENE_SCROLL_REQUEST_INTO_VIEW: 0,
+  OT_SCENE_SCROLL_REQUEST_ANCHOR: 1,
+  OT_SCENE_SCROLL_REQUEST_LAYOUT: 2,
+  OT_SCENE_SCROLL_ALIGN_NEAREST: 0,
+  OT_SCENE_SCROLL_ALIGN_START: 1,
+  OT_SCENE_SCROLL_ALIGN_END: 2,
+  OT_SCENE_SCROLL_CHANGED_OFFSET_X: 1,
+  OT_SCENE_SCROLL_CHANGED_OFFSET_Y: 2,
+  OT_SCENE_SCROLL_CHANGED_CONTENT: 4,
+  OT_SCENE_SCROLL_CHANGED_VIEWPORT: 8,
+  OT_SCENE_SCROLL_CHANGED_LAYOUT: 16,
   OT_SCENE_DEBUG_FULL_FRAME: 1,
   OT_SCENE_DEBUG_VERIFY: 2,
   OT_SESSION_OPEN: 0,
@@ -2004,6 +2018,7 @@ export const nativeConstants = {
   OT_TERMINAL_MOUSE: 2,
   OT_TERMINAL_MOUSE_MOVEMENT: 4,
   OT_TERMINAL_CLEAR_ON_CLOSE: 8,
+  OT_TERMINAL_REPLY_SENTINEL: 16,
   OT_CONTROL_CAPABILITY_RESPONSE: 1,
   OT_CONTROL_TITLE: 2,
   OT_CONTROL_MOUSE: 3,
@@ -2171,6 +2186,7 @@ export const nativeConstants = {
   OT_INPUT_EXPECT_REPLIES: 1,
   OT_INPUT_EXPECT_KITTY_KEYBOARD: 2,
   OT_INPUT_EXPECT_CURSOR_POSITION: 4,
+  OT_INPUT_EXPECT_SENTINEL: 8,
   OT_INPUT_EVENTS_MIN: 4,
   OT_INPUT_PAYLOAD_BYTES_MIN: 4384,
   OT_INPUT_TIMEOUT_NS: 20000000,

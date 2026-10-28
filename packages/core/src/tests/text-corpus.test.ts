@@ -97,13 +97,14 @@ function runRow(row: Row, method: string, failures: string[]): void {
       for (const op of row.ops) applyOp(edit, op)
       const text = edit.getText()
       const editor = own(EditorView.create(edit, row.cols ?? 80, 1 << 10))
-      editor.setWrapMode(row.wrap ?? "none")
       if (want("result") !== undefined) check("result", text === want("result"))
       if (want("line_widths"))
         check("line_widths", same(editor.getLogicalLineInfo().lineWidthCols, want("line_widths")))
       if (want("max") !== undefined) check("max", editor.getLogicalLineInfo().lineWidthColsMax === want("max"))
       const logical = editor.getLogicalLineInfo()
       check("widest", logical.lineWidthColsMax === Math.max(0, ...logical.lineWidthCols))
+      // Logical line info reports wrapped rows once a wrap mode is set.
+      editor.setWrapMode(row.wrap ?? "none")
       check("fresh", same(layout(editor.getLineInfo()), layout(view(load([text])).lineInfo)))
       if (want("stops")) {
         edit.setCursor(0, 0)

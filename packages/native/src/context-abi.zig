@@ -1143,7 +1143,7 @@ pub fn ot_session_setup_terminal(
     if (options.struct_size != @sizeOf(c.ot_session_terminal_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     const known_flags: u32 = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE |
-        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE;
+        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL;
     if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags > 31) {
         return sessionError(owner, error.InvalidOptions);
     }
@@ -1152,6 +1152,7 @@ pub fn ot_session_setup_terminal(
         .mouse = options.flags & c.OT_TERMINAL_MOUSE != 0,
         .mouse_movement = options.flags & c.OT_TERMINAL_MOUSE_MOVEMENT != 0,
         .clear_on_close = options.flags & c.OT_TERMINAL_CLEAR_ON_CLOSE != 0,
+        .reply_sentinel = options.flags & c.OT_TERMINAL_REPLY_SENTINEL != 0,
         .kitty_keyboard_flags = @intCast(options.kitty_keyboard_flags),
     }) catch |err| return sessionError(owner, err);
     return c.OT_OK;
@@ -1275,6 +1276,7 @@ pub fn ot_session_control(
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @intFromEnum(@import("session.zig").MouseMode.motion),
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => 1,
         else => 0,
     };
     if ((!payload and byte_count != 0) or options.argument > argument_max) return sessionError(owner, error.InvalidOptions);
@@ -1285,7 +1287,7 @@ pub fn ot_session_control(
         c.OT_CONTROL_MOUSE => .{ .mouse = @enumFromInt(options.argument) },
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => .{ .kitty_keyboard_flags = @intCast(options.argument) },
         c.OT_CONTROL_RESTORE_MODES => .restore_modes,
-        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .query_pixel_resolution,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .{ .query_pixel_resolution = options.argument != 0 },
         c.OT_CONTROL_QUERY_THEME_COLORS => .query_theme_colors,
         c.OT_CONTROL_RESET_BACKGROUND => .reset_background,
         c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = bytes },
@@ -1880,9 +1882,21 @@ pub fn ot_scene_scroll_to(context: ?*ContextHandle, node_ptr: ?*const c.ot_handl
     if (status != c.OT_OK) return status;
     const owner = context.?;
     const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
-    if (flags > c.OT_SCENE_SCROLL_RELATIVE_X | c.OT_SCENE_SCROLL_RELATIVE_Y) return sessionError(owner, error.InvalidOptions);
+    if (flags > c.OT_SCENE_SCROLL_RELATIVE_X | c.OT_SCENE_SCROLL_RELATIVE_Y | c.OT_SCENE_SCROLL_REAPPLY) return sessionError(owner, error.InvalidOptions);
     if (out_ptr) |out| if (checkScrollOutput(owner, out)) |rejected| return rejected;
-    const report = owner.core.sceneScrollTo(handleFromC(node.*), .{ x, y }, .{ flags & c.OT_SCENE_SCROLL_RELATIVE_X != 0, flags & c.OT_SCENE_SCROLL_RELATIVE_Y != 0 }) catch |err| return sessionError(owner, err);
+    const report = owner.core.sceneScrollTo(handleFromC(node.*), .{ x, y }, .{ flags & c.OT_SCENE_SCROLL_RELATIVE_X != 0, flags & c.OT_SCENE_SCROLL_RELATIVE_Y != 0 }, flags & c.OT_SCENE_SCROLL_REAPPLY != 0) catch |err| return sessionError(owner, err);
+    if (out_ptr) |out| out.* = report;
+    return c.OT_OK;
+}
+
+pub fn ot_scene_scroll_request(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, kind: u32, target_ptr: ?*const c.ot_handle, alignment: u32, inset: u32, out_ptr: ?*c.ot_scene_scroll_state) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (out_ptr) |out| if (checkScrollOutput(owner, out)) |rejected| return rejected;
+    const target = if (target_ptr) |ptr| handleFromC(ptr.*) else null;
+    const report = owner.core.sceneScrollRequest(handleFromC(node.*), kind, target, alignment, inset) catch |err| return sessionError(owner, err);
     if (out_ptr) |out| out.* = report;
     return c.OT_OK;
 }
@@ -3352,7 +3366,7 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         const kinds = .{
             .{ c.OT_CONTROL_CAPABILITY_RESPONSE, 0, "\x1b[?0u" }, .{ c.OT_CONTROL_TITLE, 0, "t" },
             .{ c.OT_CONTROL_MOUSE, 2, "" },                       .{ c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, 31, "" },
-            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 0, "" },
+            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 1, "" },
             .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
             .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
             .{ c.OT_CONTROL_PROGRAM_STATUS, 0, programStatus(.{
@@ -3510,13 +3524,13 @@ test "Context ABI Session setup and capability records validate before changing 
     const valid: c.ot_session_terminal_options = .{
         .struct_size = @sizeOf(c.ot_session_terminal_options),
         .abi_version = c.OT_CONTEXT_ABI_VERSION,
-        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE,
+        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL,
         .kitty_keyboard_flags = 31,
     };
     var invalid: [4]c.ot_session_terminal_options = @splat(valid);
     invalid[0].struct_size += 1;
     invalid[1].abi_version += 1;
-    invalid[2].flags |= c.OT_TERMINAL_CLEAR_ON_CLOSE << 1;
+    invalid[2].flags |= c.OT_TERMINAL_REPLY_SENTINEL << 1;
     invalid[3].kitty_keyboard_flags = 32;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_setup_terminal(context, &id, null));
     for (invalid, 0..) |options, index| {
@@ -3525,7 +3539,7 @@ test "Context ABI Session setup and capability records validate before changing 
         try std.testing.expectEqual(.uninitialized, value.getTerminalState().phase);
     }
     try std.testing.expectEqual(c.OT_OK, ot_session_setup_terminal(context, &id, &valid));
-    try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown);
+    try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown and cli.terminal.reply_sentinel);
     try std.testing.expect(value.lifecycle.mouse and !value.lifecycle.mouse_movement);
     try std.testing.expectEqual(@as(u8, 31), cli.terminal.opts.kitty_keyboard_flags);
     value.cancel();
@@ -3695,14 +3709,35 @@ test "Scene scroll ABI validates options, targets, and the scroll node's style a
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll(handle, &box, &options));
     // NaN and unknown flags reject; NULL output is allowed; a short output record rejects.
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_scroll_to(handle, &box, std.math.nan(f64), 0, 0, &state));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_scroll_to(handle, &box, 0, 0, 4, &state));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_scroll_to(handle, &box, 0, 0, 8, &state));
     try std.testing.expectEqual(c.OT_OK, ot_scene_scroll_to(handle, &box, std.math.inf(f64), 0, c.OT_SCENE_SCROLL_RELATIVE_X, null));
     state.struct_size -= 8;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_scroll(handle, &box, &state));
     state.struct_size += 8;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_scroll_to(handle, &box, 3, -1, 0, &state));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_scroll_to(handle, &box, 3, -1, c.OT_SCENE_SCROLL_REAPPLY, &state));
     try std.testing.expectEqual(@as(u32, 1), state.stuck);
     try std.testing.expectEqual([2]f64{ 0, 0 }, state.offset);
+    // Requests: the target must be in the subtree (not the node itself), INTO_VIEW needs one,
+    // LAYOUT takes none, and only INTO_VIEW takes an alignment or inset.
+    const child = handleToC(try owner.sceneCreateNode(session, 1, 4));
+    try owner.sceneMoveNode(handleFromC(child), handleFromC(box), 0);
+    for ([_]struct { c.ot_status, u32, ?*const c.ot_handle, u32, u32 }{
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, null, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &box, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &parent, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &child, 3, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, &child, 1, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 1 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, &child, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, 3, null, 0, 0 },
+        .{ c.OT_STALE_HANDLE, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, &stale, 0, 0 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &child, c.OT_SCENE_SCROLL_ALIGN_END, 2 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, &child, 0, 0 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, null, 0, 0 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0 },
+    }) |row| try std.testing.expectEqual(row[0], ot_scene_scroll_request(handle, &box, row[1], row[2], row[3], row[4], &state));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_scroll_request(handle, &parent, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0, null));
+    try owner.sceneDestroyNode(handleFromC(child));
     // The box's padding holds the gutters; content styles need a scroll node.
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_style(handle, &box, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, 0, 1, 1, 0));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &box, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, 0, 1, 1, c.OT_STYLE_CONTENT));

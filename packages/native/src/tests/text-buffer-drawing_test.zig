@@ -753,7 +753,7 @@ test "drawTextBuffer - wrapped text with offset position" {
     try std.testing.expect(cell.?.char != 32);
 }
 
-test "drawTextBuffer - clipping with scrolled view" {
+test "drawTextBuffer - visits only the lines on the buffer's and the scissor's rows" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -763,7 +763,7 @@ test "drawTextBuffer - clipping with scrolled view" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    try tb.setText("Line 1\nLine 2\nLine 3\nLine 4");
+    try tb.setText("L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nLa\nLb\nLc\nLd\nLe\nLf\nLg\nLh\nLi\nLj");
 
     var opt_buffer = try OptimizedBuffer.init(
         std.testing.allocator,
@@ -773,11 +773,35 @@ test "drawTextBuffer - clipping with scrolled view" {
     );
     defer opt_buffer.deinit();
 
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    const virtual_lines = view.getVirtualLines();
-    try std.testing.expect(virtual_lines.len >= 4);
+    // A band frame draws a 20-line text in a 1-row band: one line.
+    const cases = [_]struct { y: i32, scissor: ?[2]i32, lines: u64, first: ?u8 }{
+        .{ .y = 0, .scissor = null, .lines = 5, .first = '0' },
+        .{ .y = -3, .scissor = null, .lines = 5, .first = '3' },
+        .{ .y = 0, .scissor = .{ 2, 1 }, .lines = 1, .first = null },
+        .{ .y = -3, .scissor = .{ 4, 1 }, .lines = 1, .first = null },
+        .{ .y = 3, .scissor = .{ 0, 2 }, .lines = 0, .first = null },
+        .{ .y = 0, .scissor = .{ -2, 3 }, .lines = 1, .first = '0' },
+        .{ .y = 4, .scissor = .{ 2, 0 }, .lines = 0, .first = null },
+    };
+    for (cases) |case| {
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        if (case.scissor) |rows| try opt_buffer.pushScissorRect(0, rows[0], 20, @intCast(rows[1]));
+        defer opt_buffer.clearScissorRects();
+        const before = opt_buffer.test_text_lines;
+        opt_buffer.drawTextBuffer(view, 0, case.y);
+        try std.testing.expectEqual(case.lines, opt_buffer.test_text_lines - before);
+        if (case.first) |digit| try std.testing.expectEqual(@as(u32, digit), opt_buffer.get(1, 0).?.char);
+        // Cells outside the scissor keep the clear.
+        if (case.scissor) |rows| for (0..5) |row| {
+            const inside = @as(i32, @intCast(row)) >= rows[0] and @as(i32, @intCast(row)) < rows[0] + rows[1];
+            if (!inside) try std.testing.expectEqual(@as(u32, 32), opt_buffer.get(0, @intCast(row)).?.char);
+        };
+        if (case.scissor != null and case.lines == 1 and case.first == null) {
+            const row: u32 = @intCast(case.scissor.?[0]);
+            try std.testing.expectEqual(@as(u32, 'L'), opt_buffer.get(0, row).?.char);
+            try std.testing.expectEqual(@as(u32, @intCast(@as(i32, @intCast(row)) - case.y + '0')), opt_buffer.get(1, row).?.char);
+        }
+    }
 }
 
 test "drawTextBuffer - wrapping with very narrow width" {
@@ -1635,12 +1659,20 @@ test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as
         .{ .parts = &.{words ** 6}, .wrap = .word, .method = .wcwidth },
     };
     var drawn: [2][256]u8 = undefined;
+    // Columns 3k and 3k+1 of the first half of each line are highlighted, so offsets fall inside
+    // a span, on its edges, and past the last one.
+    const style = try ss.SyntaxStyle.init(allocator);
+    defer style.deinit();
+    const hl = try style.registerStyle("hl", ansi.rgbaFromFloats(1, 0, 0, 1), ansi.rgbaFromFloats(0, 0, 1, 1), 1);
     for (rows) |row| {
         const text = try std.mem.concat(allocator, u8, row.parts);
         defer allocator.free(text);
         const tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
         defer tb.deinit();
         for (row.parts) |part| try tb.append(part);
+        tb.setSyntaxStyle(style);
+        var col: u32 = 0;
+        while (col < tb.lineWidthAt(0) / 2) : (col += 3) try tb.addHighlight(0, col, col + 2, hl, 1, 0);
         const screens = [2]*OptimizedBuffer{
             try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
             try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
@@ -1663,6 +1695,9 @@ test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as
             const slice_tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
             defer slice_tb.deinit();
             try slice_tb.setText(text[cut..]);
+            slice_tb.setSyntaxStyle(style);
+            col = 0;
+            while (col < tb.lineWidthAt(0) / 2) : (col += 3) if (col + 2 > shift) try slice_tb.addHighlight(0, col -| shift, col + 2 - shift, hl, 1, 0);
             views[1] = try TextBufferView.init(allocator, slice_tb);
             defer views[1].deinit();
             views[1].setViewport(if (row.wrap == .none) .{ .x = 0, .y = 0, .width = width - (shift - o), .height = 1 } else .{ .x = 0, .y = 0, .width = width, .height = height });

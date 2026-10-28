@@ -27,6 +27,8 @@ pub const Counts = struct {
     /// Search steps for the first render cluster of each drawn virtual chunk.
     cluster_scan_steps: u64 = 0,
     left_skip_steps: u64 = 0,
+    /// Search steps for the style span of each drawn line's first column and truncated suffix.
+    span_search_steps: u64 = 0,
     clusters_drawn: u64 = 0,
     /// Seeks that walk from the start of a slice to a width or to a previous grapheme.
     prefix_seeks: u64 = 0,
@@ -43,6 +45,9 @@ pub const Counts = struct {
     style_registrations: u64 = 0,
     /// Context text and edit buffers that borrow a style, checked before its definitions change.
     style_dependent_visits: u64 = 0,
+    /// Graphemes rejoined across a chunk boundary, and the bytes copied to rejoin them.
+    grapheme_joins: u64 = 0,
+    grapheme_join_bytes: u64 = 0,
     /// `buildLineSpans` calls and the highlights they sort.
     line_span_builds: u64 = 0,
     line_span_highlights: u64 = 0,

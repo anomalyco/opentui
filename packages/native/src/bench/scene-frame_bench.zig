@@ -21,7 +21,7 @@ const options: scene.FrameOptions = .{
 pub const Shape = enum { ui, boxes, scroll, wrapped_scroll, scroll_node };
 
 /// A frame kind: what changes before the frame.
-pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook };
+pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook, reply_text };
 
 /// One Session with a built scene and the nodes its frame kinds change.
 pub const Scene = struct {
@@ -167,11 +167,11 @@ pub const Scene = struct {
             .glyph => try self.owner.sceneSetText(self.target, if (odd) "/" else "|"),
             .background => try self.owner.scenePatchPaint(self.target, c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ if (odd) 100 else 200, 0, 0, 255 } }),
             .scroll => if (self.scroll_node) {
-                _ = try self.owner.sceneScrollTo(self.content, .{ 0, if (odd) -1 else 1 }, .{ true, true });
+                _ = try self.owner.sceneScrollTo(self.content, .{ 0, if (odd) -1 else 1 }, .{ true, true }, false);
             } else try self.owner.scenePatchPaint(self.content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (odd) -1 else 0 }),
             .append => try self.addRow(0),
-            .update_hook, .paint_hook => if (self.frames == 2) {
-                const flags: u32 = if (change == .update_hook) c.OT_SCENE_HOOK_UPDATE else c.OT_SCENE_HOOK_RENDER_AFTER;
+            .update_hook, .paint_hook, .reply_text => if (self.frames == 2) {
+                const flags: u32 = if (change == .paint_hook) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE;
                 try self.owner.sceneSetHooks(self.target, flags, 1, 1, 1);
             },
         }
@@ -180,6 +180,11 @@ pub const Scene = struct {
             const record: ?[]const u8 = if (request != null and request.?.kind == c.OT_SCENE_FRAME_RECORD) &.{} else null;
             request = try self.owner.sceneFrameStepWithRecording(self.id, request, options, record);
             if (request.?.kind == 0) break;
+            // The reply sends the target's text again: a mark that changes nothing.
+            if (change == .reply_text and request.?.kind == c.OT_SCENE_FRAME_UPDATE) {
+                var bytes: [64]u8 = undefined;
+                try self.owner.sceneSetText(self.target, bytes[0..try self.owner.sceneGetText(self.target, &bytes)]);
+            }
         }
         _ = try self.owner.sceneFrameCommit(self.id, request.?, false);
         var bytes: [64 * 1024]u8 = undefined;
@@ -197,6 +202,7 @@ const scenarios = [_]Scenario{
     .{ .name = "ui-90 unchanged with paint hook", .shape = .ui, .size = 0, .change = .paint_hook },
     .{ .name = "boxes-10000 unchanged", .shape = .boxes, .size = 10_000, .change = .unchanged },
     .{ .name = "boxes-10000 one background", .shape = .boxes, .size = 10_000, .change = .background },
+    .{ .name = "boxes-10000 unchanged with UPDATE hook", .shape = .boxes, .size = 10_000, .change = .update_hook },
     .{ .name = "scroll-10000 unchanged", .shape = .scroll, .size = 10_000, .change = .unchanged },
     .{ .name = "scroll-10000 status glyph", .shape = .scroll, .size = 10_000, .change = .glyph },
     .{ .name = "scroll-10000 scroll by one row", .shape = .scroll, .size = 10_000, .change = .scroll },

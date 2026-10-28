@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-12vcpu-macos-15, blacksmith-8vcpu-ubuntu-2404]
+        os: [blacksmith-12vcpu-macos-15, "${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}"]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -94,7 +94,7 @@ jobs:
 
   packed-consumer:
     name: Packed Node Consumer
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
     defaults:
       run:
         shell: bash
@@ -143,7 +143,7 @@ jobs:
   build-complete:
     name: SSH - Build and Test
     needs: [test, packed-consumer]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
     if: always()
     steps:
       - name: Check test results

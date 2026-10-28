@@ -2038,21 +2038,33 @@ fn checkAppendAllocationFailures() !void {
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
     defer links.deinit();
-    for ([_]bool{ false, true }) |fail_rope| {
+    // The appends after `e` rejoin it with U+0301, so they append a new copy of `e` and the input.
+    const Source = enum { borrow, own, copy, slot };
+    const Case = struct { last: []const u8 = "", input: []const u8, source: Source, expected: []const u8 };
+    const cases = [_]Case{
+        .{ .input = "\u{754c}\r\n\ttail", .source = .borrow, .expected = "old\n\u{754c}\n\ttail" },
+        .{ .last = "e", .input = "\u{301}x", .source = .borrow, .expected = "old\ne\u{301}x" },
+        .{ .last = "e", .input = "\u{301}x", .source = .own, .expected = "old\ne\u{301}x" },
+        .{ .last = "e", .input = "\u{301}x", .source = .copy, .expected = "old\ne\u{301}x" },
+        .{ .last = "e", .input = "\u{301}x", .source = .slot, .expected = "old\ne\u{301}x" },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |fail_rope| {
         var succeeded = false;
         for (0..128) |offset| {
             var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
             const tb = try TextBuffer.init(failing.allocator(), &pool, &links, .unicode);
             defer tb.deinit();
             try tb.setText("old\n");
+            if (case.last.len > 0) try tb.append(case.last);
             try tb.rope().store_undo("base");
             try tb.append("!");
             _ = try tb.undo("last");
             try tb.addHighlight(0, 0, 1, 1, 1, 7);
+            const slot = if (case.source == .slot) try tb.registerMemBuffer(case.input, false) else 0;
             while (tb.mem_registry.buffers.items.len < @min(tb.mem_registry.buffers.capacity, 255)) {
                 _ = try tb.registerMemBuffer("unused", false);
             }
-            const input = "\u{754c}\r\n\ttail";
+            const owned = if (case.source == .own) try tb.global_allocator.dupe(u8, case.input) else &.{};
             const view = try tb.registerView();
             tb.clearViewDirty(view);
             const before = TextState.capture(tb);
@@ -2063,12 +2075,18 @@ fn checkAppendAllocationFailures() !void {
             const fault = if (fail_rope) &rope_failing else &failing;
             fault.fail_index = fault.alloc_index + offset;
             fault.resize_fail_index = fault.resize_index;
-            const result = tb.append(input);
+            const result = switch (case.source) {
+                .borrow => tb.append(case.input),
+                .own => tb.appendWithOwnership(owned, true),
+                .copy => tb.appendCopy(case.input),
+                .slot => tb.appendFromMemId(slot),
+            };
             fault.fail_index = std.math.maxInt(usize);
             fault.resize_fail_index = std.math.maxInt(usize);
             if (result) |_| {
                 succeeded = true;
             } else |err| {
+                if (case.source == .own) tb.global_allocator.free(owned);
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 try std.testing.expectEqualDeep(before, TextState.capture(tb));
                 try std.testing.expect(!tb.isViewDirty(view));
@@ -2076,13 +2094,14 @@ fn checkAppendAllocationFailures() !void {
                 continue;
             }
             var actual: [64]u8 = undefined;
-            try std.testing.expectEqualStrings("old\n\u{754c}\n\ttail", actual[0..tb.getPlainTextIntoBuffer(&actual)]);
+            try std.testing.expectEqualStrings(case.expected, actual[0..tb.getPlainTextIntoBuffer(&actual)]);
             try std.testing.expectEqual(before.epoch + 1, tb.getContentEpoch());
             try std.testing.expect(tb.isViewDirty(view));
+            try @import("text-buffer-view_test.zig").expectGraphemeBoundaries(tb);
             break;
         }
         try std.testing.expect(succeeded);
-    }
+    };
 }
 
 test "TextBuffer append allocation failure preserves state and cancels its registration" {

@@ -192,24 +192,26 @@ test "Scene geometry cache retries a failed third solve in one frame with clean 
     try f.owner.sceneSetHooks(f.root, 4, 1, 0, 0);
     const node = (try f.owner.raw().getRenderable(box)).scene_node.?;
     var request = try f.step(null, frame_options, 3, null);
-    try testing.expectEqual(@as(u32, 1), node.prepared_round);
+    try testing.expectEqual(f.state.candidates_gen, node.prepared_gen);
+    const gen = node.prepared_gen;
     const frame_id = request.frame_id;
     const epoch = request.layout_epoch;
     try dimensions(f.owner, box, 4, 1);
     request = try f.step(request, frame_options, 3, null);
     try testing.expectEqual(frame_id, request.frame_id);
     try testing.expectEqual(epoch + 1, request.layout_epoch);
-    try testing.expectEqual(@as(u32, 2), node.prepared_round);
+    try testing.expectEqual(gen + 1, node.prepared_gen);
     try testing.expectEqual(@as(f32, 3), (try f.owner.sceneGetLayout(box, false)).width);
 
     try dimensions(f.owner, box, 5, 1);
     // The slider fails preparation only after the third Yoga solve.
     try dimensions(f.owner, slider, 5, 1);
     try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStep(f.id, request, frame_options));
-    try testing.expect(f.state.attempt == null and f.state.work.items.len == 0 and f.state.feedback.items.len == 0);
+    try testing.expect(f.state.attempt == null and f.state.candidates.items.len == 0 and f.state.feedback.items.len == 0);
     try testing.expectEqual(epoch + 2, f.state.layout_epoch);
-    try testing.expectEqual(frame_id, node.prepared_frame);
-    try testing.expectEqual(@as(u32, 2), node.prepared_round);
+    // The failed walk stamped nothing, so the next one reads the third solve's geometry.
+    try testing.expectEqual(gen + 1, node.prepared_gen);
+    try testing.expectEqual(epoch + 1, node.geometry_epoch);
     var dirty: u32 = 1;
     try yoga.check(yoga.yogaNodeIsDirtyChecked((try f.owner.raw().getRenderable(f.root)).yoga_node, &dirty));
     try testing.expectEqual(@as(u32, 0), dirty);
@@ -297,7 +299,7 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try testing.expectEqual(@as(u32, 0x258c), f.cli.getNextBuffer().get(4, 0).?.char);
     try testing.expectEqual((try f.owner.raw().getRenderable(slider)).scene_node.?.token, f.draftHit(7));
     try testing.expectEqual((try f.owner.raw().getRenderable(children[10])).scene_node.?.token, f.draftHit(8));
-    try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0 and f.state.work.items.len == 0);
+    try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0);
     try testing.expect((try f.owner.raw().getRenderable(hidden)).scene_node.?.text.?.view.getViewport() == null);
 }
 

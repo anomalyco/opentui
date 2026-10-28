@@ -257,6 +257,17 @@ test "EditBuffer - text typed in pieces measures and moves like the same text se
         },
         .{ .pieces = &.{ .{ .bytes = "\u{1f468}" }, .{ .bytes = "\u{200d}" }, .{ .bytes = "\u{1f469}" }, .{ .bytes = "\u{200d}\u{1f467}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{1f1fa}" }, .{ .bytes = "\u{1f1f8}" } } },
+        // An insert whose end joins the text after it leaves the cursor after the joined grapheme.
+        .{ .pieces = &.{ .{ .bytes = "\u{e33}z" }, .{ .col = 0, .bytes = "\u{e01}" } }, .text = "\u{e01}\u{e33}z", .before = "\u{e01}\u{e33}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{1161}z" }, .{ .col = 0, .bytes = "\u{1100}" } }, .text = "\u{1100}\u{1161}z", .before = "\u{1100}\u{1161}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f1f8}\u{1f1fa}\u{1f1f8}" }, .{ .col = 0, .bytes = "\u{1f1fa}" } }, .text = "\u{1f1fa}\u{1f1f8}\u{1f1fa}\u{1f1f8}", .before = "\u{1f1fa}\u{1f1f8}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f1f8}\u{1f1fa}\u{1f1f8}" }, .{ .col = 0, .replace = true, .bytes = "\u{1f1fa}" } }, .text = "\u{1f1fa}\u{1f1f8}\u{1f1fa}\u{1f1f8}", .before = "\u{1f1fa}\u{1f1f8}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f3fb}" }, .{ .col = 0, .bytes = "\u{1f44b}" } }, .text = "\u{1f44b}\u{1f3fb}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f3fb}" }, .{ .col = 0, .replace = true, .bytes = "\u{270c}" } }, .text = "\u{270c}\u{1f3fb}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{1f3fb}" }, .{ .col = 0, .bytes = "\u{270c}" } }, .text = "\u{270c}\u{1f3fb}" },
+        // A multi-line insert that ends by joining the text after it leaves the cursor past the joined grapheme.
+        .{ .pieces = &.{ .{ .bytes = "\u{fe0f}Z" }, .{ .col = 0, .bytes = "x\n\u{263a}" } }, .text = "x\n\u{263a}\u{fe0f}Z", .before = "x\n\u{263a}\u{fe0f}" },
+        .{ .pieces = &.{ .{ .bytes = "\u{fe0f}Z" }, .{ .col = 0, .replace = true, .bytes = "x\n\u{263a}" } }, .text = "x\n\u{263a}\u{fe0f}Z", .before = "x\n\u{263a}\u{fe0f}" },
         .{ .pieces = &.{ .{ .bytes = "\u{ac01}" }, .{ .bytes = "\u{11a8}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{263a}" }, .{ .bytes = "\u{fe0f}" } } },
         .{ .pieces = &.{ .{ .bytes = "\u{65e5}" }, .{ .bytes = "\u{301}" } } },
@@ -296,6 +307,69 @@ test "EditBuffer - text typed in pieces measures and moves like the same text se
             fresh.moveRight();
         }
     };
+}
+
+test "EditBuffer - an edit that joins graphemes leaves the cursor at a stop after the joined grapheme" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // `before` is the text before the cursor. An insert ends after the grapheme that holds its end,
+    // and a deletion after the grapheme it joins. `to` ends a replaced or deleted range; `pre` is
+    // typed after `set`, so the text sits in several chunks.
+    const Op = enum { insert, replace, delete, backspace, range };
+    const Row = struct { method: utf8.WidthMethod = .unicode, set: []const u8, pre: []const Piece = &.{}, at: [2]u32, op: Op, bytes: []const u8 = "", to: [2]u32 = .{ 0, 0 }, text: []const u8, before: []const u8 };
+    const rows = [_]Row{
+        // The grapheme that holds the insert's end goes on into the next chunk; in wcwidth it widens there.
+        .{ .method = .wcwidth, .set = "\u{1f469}", .pre = &.{.{ .col = 0, .bytes = "\u{200d}" }}, .at = .{ 0, 0 }, .op = .insert, .bytes = "\u{1f468}", .text = "\u{1f468}\u{200d}\u{1f469}", .before = "\u{1f468}\u{200d}\u{1f469}" },
+        // Deleting `x` merges the contiguous typed chunks, whose junction is inside a flag.
+        .{ .set = "x\u{1f1e9}", .pre = &.{ .{ .col = 0, .bytes = "\u{1f1e6}" }, .{ .col = 2, .bytes = "\u{1f1e7}\u{1f1e8}" } }, .at = .{ 0, 1 }, .op = .delete, .text = "\u{1f1e6}\u{1f1e7}\u{1f1e8}\u{1f1e9}", .before = "\u{1f1e6}\u{1f1e7}" },
+        .{ .set = "\u{1f468}\u{1f469}", .at = .{ 0, 2 }, .op = .insert, .bytes = "\u{200d}", .text = "\u{1f468}\u{200d}\u{1f469}", .before = "\u{1f468}\u{200d}\u{1f469}" },
+        .{ .set = "\u{2764}\u{1f469}", .at = .{ 0, 1 }, .op = .insert, .bytes = "\u{200d}", .text = "\u{2764}\u{200d}\u{1f469}", .before = "\u{2764}\u{200d}\u{1f469}" },
+        .{ .set = "\u{263a}\n\u{fe0f}Z", .at = .{ 0, 1 }, .op = .replace, .bytes = "a\n", .to = .{ 1, 0 }, .text = "\u{263a}a\n\u{fe0f}Z", .before = "\u{263a}a\n" },
+        .{ .set = "\u{1f44b}x\u{1f3fb}Z", .at = .{ 0, 2 }, .op = .replace, .bytes = "y", .to = .{ 0, 3 }, .text = "\u{1f44b}y\u{1f3fb}Z", .before = "\u{1f44b}y" },
+        .{ .set = "\u{263a}\n\u{fe0f}Z", .at = .{ 0, 1 }, .op = .delete, .text = "\u{263a}\u{fe0f}Z", .before = "\u{263a}\u{fe0f}" },
+        .{ .set = "\u{263a}\n\u{fe0f}Z", .at = .{ 1, 0 }, .op = .backspace, .text = "\u{263a}\u{fe0f}Z", .before = "\u{263a}\u{fe0f}" },
+        .{ .set = "\u{263a}\n\u{fe0f}Z", .at = .{ 0, 1 }, .op = .range, .to = .{ 1, 0 }, .text = "\u{263a}\u{fe0f}Z", .before = "\u{263a}\u{fe0f}" },
+        .{ .set = "\u{1f1fa}x\u{1f1f8}z", .at = .{ 0, 1 }, .op = .delete, .text = "\u{1f1fa}\u{1f1f8}z", .before = "\u{1f1fa}\u{1f1f8}" },
+        .{ .set = "\u{1f44b}x\u{1f3fb}Z", .at = .{ 0, 3 }, .op = .backspace, .text = "\u{1f44b}\u{1f3fb}Z", .before = "\u{1f44b}\u{1f3fb}" },
+    };
+    const ignore = struct {
+        fn handle(_: *anyopaque) void {}
+    };
+    for (rows) |row| {
+        errdefer std.debug.print("row {s} {t}\n", .{ row.set, row.op });
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, row.method, null);
+        defer eb.deinit();
+        try eb.setText(row.set);
+        for (row.pre) |piece| {
+            try eb.setCursor(0, piece.col.?);
+            try eb.insertText(piece.bytes);
+        }
+        try eb.setCursor(row.at[0], row.at[1]);
+        const from = iter_mod.coordsToOffset(eb.tb.rope(), row.at[0], row.at[1]).?;
+        const to = iter_mod.coordsToOffset(eb.tb.rope(), row.to[0], row.to[1]).?;
+        switch (row.op) {
+            .insert => try eb.insertText(row.bytes),
+            .replace => try eb.replaceRange(from, to, row.bytes, .{ .ctx = eb, .handle = ignore.handle }),
+            .delete => try eb.deleteForward(),
+            .backspace => try eb.backspace(),
+            .range => try eb.deleteRange(.{ .row = row.at[0], .col = row.at[1] }, .{ .row = row.to[0], .col = row.to[1] }),
+        }
+        var out: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(row.text, out[0..eb.getText(&out)]);
+        const fresh = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, row.method, null);
+        defer fresh.deinit();
+        try fresh.setText(row.before);
+        const last_row = fresh.tb.lineCount() - 1;
+        try fresh.setCursor(last_row, fresh.tb.lineWidthAt(last_row));
+        try std.testing.expectEqualDeep(fresh.getPrimaryCursor(), eb.getPrimaryCursor());
+        // Redo restores the cursor that the edit stored.
+        _ = try eb.undo();
+        _ = try eb.redo();
+        try std.testing.expectEqualDeep(fresh.getPrimaryCursor(), eb.getPrimaryCursor());
+        // The cursor is a stop, so Backspace removes the grapheme before it.
+        try eb.backspace();
+        try std.testing.expect(eb.getText(&out) < row.text.len);
+    }
 }
 
 test "EditBuffer - word boundary and line end walks" {

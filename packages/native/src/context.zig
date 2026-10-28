@@ -828,7 +828,7 @@ pub const Context = struct {
             .host_driven_time = true,
             .logger = &self.logger,
             .remote_mode = options.remote_mode,
-            .output = .{ .feed = value.output },
+            .feed = value.output,
             .link_pool = &self.links,
             .env_map = options.env_map,
         });
@@ -1871,7 +1871,7 @@ pub const Context = struct {
     pub fn drawSceneBodyOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
         const node = try self.sceneNode(node_handle);
         const owned = node.scene_node.?;
-        if (owned.text == null and owned.kind != api.OT_SCENE_BOX) return error.WrongKind;
+        if (owned.text == null and owned.kind != api.OT_SCENE_BOX and owned.kind != api.OT_SCENE_SLIDER and owned.kind != api.OT_SCENE_ARROW) return error.WrongKind;
         if (x >= target.width or y >= target.height) return;
         const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
         try text.prepareView();
@@ -2025,8 +2025,10 @@ pub const Context = struct {
     fn freeNodeStorage(self: *Context, storage: native_renderable.NodeStorage) void {
         var children = storage.children;
         var paint_children = storage.paint_children;
+        var attention = storage.attention;
         children.deinit(self.allocator);
         paint_children.deinit(self.allocator);
+        attention.deinit(self.allocator);
         self.allocator.destroy(storage.scene_node);
         storage.node.deinit();
         self.allocator.destroy(storage.node);
@@ -2404,12 +2406,7 @@ pub const Context = struct {
             if (viewport.scene_node.?.kind > api.OT_SCENE_BOX) return error.WrongKind;
         }
         try scene.Scene.checkWritable(value);
-        if (std.meta.eql(node.viewport, viewport_handle)) return;
-        node.owner.filter_count -= @intFromBool(node.viewport != null);
-        node.owner.filter_count += @intFromBool(viewport_handle != null);
-        node.viewport = viewport_handle;
-        node.owner.preparation_dirty = true;
-        node.owner.work.clearRetainingCapacity();
+        node.owner.setViewport(value, viewport_handle);
     }
 
     pub fn sceneSetScroll(self: *Context, handle: Handle, options: scene.ScrollOptions) !void {
@@ -2431,11 +2428,22 @@ pub const Context = struct {
     }
 
     /// An explicit scroll; returns the state after it.
-    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool) !api.ot_scene_scroll_state {
+    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool, reapply: bool) !api.ot_scene_scroll_state {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.sceneMutableNode(handle);
-        try value.scene_node.?.owner.scrollTo(value, target, relative);
+        try value.scene_node.?.owner.scrollTo(value, target, relative, reapply);
+        return scene.scrollReport(value);
+    }
+
+    /// An INTO_VIEW, ANCHOR, or LAYOUT request; returns the state after it.
+    pub fn sceneScrollRequest(self: *Context, handle: Handle, kind: u32, target_handle: ?Handle, alignment: u32, inset: u32) !api.ot_scene_scroll_state {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.sceneMutableNode(handle);
+        const target = if (target_handle) |id| try self.sceneNode(id) else null;
+        if (target) |node| if (node.scene_node.?.owner != value.scene_node.?.owner) return error.WrongSession;
+        try value.scene_node.?.owner.requestScroll(&self.objects, value, kind, target, alignment, inset);
         return scene.scrollReport(value);
     }
 
@@ -2456,7 +2464,7 @@ pub const Context = struct {
         } else if (owned.focus) |accepted| {
             if (std.meta.eql(accepted, handle)) owned.focus = null;
         }
-        owned.work.clearRetainingCapacity();
+        owned.clearPreparation();
     }
 
     pub fn sceneSetHooks(self: *Context, handle: Handle, flags: u32, generation: u64, initial_width: f64, initial_height: f64) !void {
@@ -2478,7 +2486,7 @@ pub const Context = struct {
         _ = try scene.sliderThumb(options, node.resize_width, node.resize_height);
         _ = try scene.sliderThumb(options, node.layout.width, node.layout.height);
         node.control = .{ .slider = options };
-        node.owner.work.clearRetainingCapacity();
+        node.owner.clearPreparation();
     }
 
     pub fn sceneGetSliderThumb(self: *Context, handle: Handle) !scene.SliderThumb {
@@ -2504,7 +2512,7 @@ pub const Context = struct {
         if (options.text) |text| replacement.text = try self.allocator.dupe(u8, text);
         node.control.arrow.deinit(self.allocator);
         node.control = .{ .arrow = replacement };
-        node.owner.work.clearRetainingCapacity();
+        node.owner.clearPreparation();
     }
 
     pub fn sceneSetText(self: *Context, handle: Handle, bytes: []const u8) !void {
@@ -2515,8 +2523,8 @@ pub const Context = struct {
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
-        if (try self.replaceTextContent(text, bytes)) textResourceChanged(text);
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        if (try self.replaceTextContent(text, bytes)) textResourceChanged(text) else textResent(node);
+        node.scene_node.?.owner.clearPreparation();
     }
 
     pub fn validateTextBytes(tab_width: u8, bytes: []const u8, retained_bytes: u32) !void {
@@ -2534,8 +2542,8 @@ pub const Context = struct {
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
-        if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text);
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text) else textResent(node);
+        node.scene_node.?.owner.clearPreparation();
     }
 
     /// Returns whether the bytes changed.
@@ -2687,7 +2695,7 @@ pub const Context = struct {
         }
         if (measure_changed) yoga.yogaNodeMarkDirty(node.yoga_node);
         if (prepare_changed) node.scene_node.?.owner.invalidateObservation(node);
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        node.scene_node.?.owner.clearPreparation();
     }
 
     pub fn sceneSetTextSelection(self: *Context, handle: Handle, options: SceneTextSelectionOptions) !bool {
@@ -2728,7 +2736,7 @@ pub const Context = struct {
             else
                 text.view.updateLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior);
         };
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        node.scene_node.?.owner.clearPreparation();
         return changed;
     }
 
@@ -3279,9 +3287,7 @@ pub const Context = struct {
         // Each append takes a registry slot. When none is left, one owned copy of the whole
         // document replaces them all, so a long append stream copies O(n^2) bytes in total.
         if (text.buffer.mem_registry.getFreeSlots() == 0) try text.buffer.flattenMemRegistry();
-        const copy = try self.allocator.dupe(u8, bytes);
-        errdefer self.allocator.free(copy);
-        try text.buffer.appendWithOwnership(copy, true);
+        try text.buffer.appendCopy(bytes);
         text.invalidate(true);
     }
 
@@ -3844,6 +3850,11 @@ pub const Context = struct {
             scene.Scene.markObservationStale(dependent);
             next = dependent.measure_next;
         }
+    }
+
+    /// Equal bytes still rebuild the rope, so the view prepares again; the size does not change.
+    fn textResent(node: *native_renderable.NativeRenderable) void {
+        scene.Scene.markObservationStale(node);
     }
 
     fn destroyTextResource(self: *Context, text: *Text) void {
