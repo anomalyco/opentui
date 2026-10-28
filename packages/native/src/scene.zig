@@ -2947,7 +2947,9 @@ pub const Scene = struct {
         } else if (node.kind == api.OT_SCENE_IMAGE) {
             try paintImage(cli, node.control.image, cells);
         } else if (node.kind == api.OT_SCENE_VIDEO) {
-            try paintVideo(owner, cli, &node.control.video, cells);
+            // Only a video that paints cells forces the full path; VERIFY repaints the others.
+            const shown = intersection(.{ .x = x, .y = y, .width = width, .height = height }, entry.clip);
+            if (shown.width != 0 and shown.height != 0) try paintVideo(owner, cli, &node.control.video, cells);
         } else if (entry.node.surface) |source| {
             try Context.drawContextBuffer(target, source, x, y, .{});
         } else {

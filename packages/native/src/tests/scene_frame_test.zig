@@ -1002,6 +1002,26 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
 
 // A skipped commit clears next, so the next frame repaints in full although nothing changed.
 // The debug overlay draws after paint, so every frame under it encodes and repaints in full.
+// A video its parent clips away paints no cell, so frames keep their rows; VERIFY's repaint must
+// not draw it, which would put its image unclipped into the presented buffer.
+test "Scene frame retained paint keeps a clipped video out of every buffer" {
+    for ([_]bool{ false, true }) |verify| {
+        errdefer std.debug.print("verify {}\n", .{verify});
+        const f = try Fixture.init(testing.allocator, 10, 9, .{});
+        defer f.deinit();
+        if (verify) try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+        const clip = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0, 0, 4, 2);
+        try f.owner.sceneSetStyle(clip, 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+        const node = try placedAt(f, clip, c.OT_SCENE_VIDEO, 3, 0, 4, 4, 2);
+        _ = try f.owner.videoOpen(node, "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4");
+        _ = try presentWork(f, .{});
+        const kept = try presentWork(f, .{});
+        try testing.expectEqual(@as(u32, 0), kept.full_path_reasons);
+        try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().image_placements.items.len);
+        try testing.expectEqual(@as(usize, 0), f.cli.getCurrentBuffer().image_placements.items.len);
+    }
+}
+
 test "Scene frame retained paint repaints in full after a skipped commit and under the debug overlay" {
     const f = try Fixture.init(testing.allocator, 44, 14, .{});
     defer f.deinit();
