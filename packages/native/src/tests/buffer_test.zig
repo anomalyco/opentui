@@ -443,16 +443,21 @@ test "OptimizedBuffer transparent box border covers only clipped image markers" 
     defer target.deinit();
     const source = try image.createFromRgba(std.testing.allocator, &[_]u8{ 7, 8, 9, 255 }, 1, 1, 4);
     defer source.deinit();
-    try std.testing.expect(try target.drawImage(source, 1, 0, 0, 2, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try target.pushScissorRect(0, 0, 1, 1);
     const border_chars = [_]u32{ '┌', '┐', '└', '┘', '─', '│', '┬', '┴', '├', '┤', '┼' };
-
-    try target.drawBox(0, 0, 2, 1, &border_chars, .{ .top = true }, ansi.rgbColor(40, 50, 60, 0), ansi.rgbColor(10, 20, 30, 0), ansi.rgbColor(40, 50, 60, 0), false, null, 0, null, 0);
-
-    try std.testing.expect(!gp.isImageChar(target.get(0, 0).?.char));
-    try std.testing.expectEqual(ansi.rgbColor(10, 20, 30, 255), target.get(0, 0).?.bg);
-    try std.testing.expectEqual(ansi.rgbColor(40, 50, 60, 255), target.get(0, 0).?.fg);
-    try std.testing.expect(gp.isImageChar(target.get(1, 0).?.char));
+    for ([_]struct { clip_width: u32, fg_alpha: u8 }{
+        .{ .clip_width = 1, .fg_alpha = 0 },
+        .{ .clip_width = 2, .fg_alpha = 255 },
+    }) |case| {
+        target.clear(ansi.rgbColor(80, 90, 100, 255), null);
+        try std.testing.expect(try target.drawImage(source, 1, 0, 0, 2, 1, 0, 0, 0, 0, 1, 1, .auto));
+        try target.pushScissorRect(0, 0, case.clip_width, 1);
+        try target.drawBox(0, 0, 2, 1, &border_chars, .{ .top = true }, ansi.rgbColor(40, 50, 60, case.fg_alpha), ansi.rgbColor(10, 20, 30, 0), ansi.rgbColor(40, 50, 60, 0), false, null, 0, null, 0);
+        try std.testing.expect(!gp.isImageChar(target.get(0, 0).?.char));
+        try std.testing.expectEqual(ansi.rgbColor(10, 20, 30, 255), target.get(0, 0).?.bg);
+        try std.testing.expectEqual(ansi.rgbColor(40, 50, 60, 255), target.get(0, 0).?.fg);
+        try std.testing.expectEqual(case.clip_width == 1, gp.isImageChar(target.get(1, 0).?.char));
+        target.popScissorRect();
+    }
 }
 
 test "OptimizedBuffer clipped wide text does not cover image markers" {
