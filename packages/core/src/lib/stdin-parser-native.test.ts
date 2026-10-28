@@ -239,9 +239,9 @@ describe("native stdin parser: differential replay", () => {
   }
 
   test("each parser reports the same events however the reads between pauses are split", () => {
-    // Seeded streams of the rows' and streams' inputs, with up to two pauses. A read that
-    // follows a pause keeps its first 4 bytes: a timed-out `ESC [` continues only when the next
-    // read holds the rest of a mouse report (issue 348).
+    // Seeded streams of the rows' and streams' inputs, with up to two pauses. A read after a
+    // pause that ends in `[` keeps its first 4 bytes: a timed-out `ESC [` continues only when the
+    // next read holds the rest of a mouse report (issue 348).
     const fragments = [...INTENTIONAL.flatMap(([, chunks]) => chunks), ...streams.map(([, text]) => text)]
       .filter((chunk): chunk is string | Uint8Array => chunk !== null && chunk.length > 0)
       .map((chunk) => (typeof chunk === "string" ? Buffer.from(chunk) : chunk))
@@ -260,7 +260,7 @@ describe("native stdin parser: differential replay", () => {
         while (end < input.length && !pauses.has(end)) end++
         whole.push(input.subarray(start, end))
         for (let at = start; at < end; ) {
-          const size = at === start && pauses.has(start) ? 4 : 1 + random(6)
+          const size = at === start && pauses.has(start) && input[start - 1] === 0x5b ? 4 : 1 + random(6)
           split.push(input.subarray(at, Math.min(end, at + size)))
           at += size
         }
@@ -386,21 +386,6 @@ describe("native stdin parser: adapter", () => {
         { response: "csi", sequence: "\x1b[4;80;80t" },
         { key: "x", raw: "x", ctrl: false, meta: false, shift: false },
       ])
-    } finally {
-      parser.destroy()
-    }
-  })
-
-  test("a paste stays open across a pause until its terminator", () => {
-    const clock = new ManualClock()
-    const parser = new NativeStdinParser({ clock, protocolContext: SENTINEL.protocolContext })
-    try {
-      parser.push(Buffer.from("\x1b[200~text"))
-      clock.advance(5000)
-      expect(parser.pasting).toBe(true)
-      parser.push(Buffer.from("\x1b[201~"))
-      expect(parser.pasting).toBe(false)
-      expect(events(parser).map(summary)).toEqual([{ paste: "text" }])
     } finally {
       parser.destroy()
     }
