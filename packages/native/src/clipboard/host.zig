@@ -1396,6 +1396,20 @@ pub const Service = struct {
         return if (service.wayland) |wayland| wayland.takeFailure() else .protocol;
     }
 
+    // Nothing reads the Wayland socket once draining reports idle, but the compositor keeps
+    // sending a data offer for every selection change. An idle connection would collect
+    // offers until the compositor's buffer overflows, so close it and reconnect on demand.
+    fn closeIdleWayland(service: *Service) void {
+        const wayland = service.wayland orelse return;
+        if (wayland.hasWork()) return;
+        for (service.operations.items) |operation| {
+            operation.mutex.lock();
+            defer operation.mutex.unlock();
+            if (operation.status == .pending and operation.mechanism == .wayland) return;
+        }
+        service.resetWayland();
+    }
+
     fn resetWayland(service: *Service) void {
         const wayland = service.wayland orelse return;
         for (service.operations.items) |operation| {
@@ -1803,6 +1817,7 @@ pub fn drainService(objects: *handles.Table, service_handle: Handle) u8 {
             active = x11.driveProviderUnit();
         },
     }
+    service.closeIdleWayland();
     if (service.wayland) |wayland| active = active or wayland.hasWork();
     if (service.x11) |x11| active = active or x11.hasWork();
     return if (active) 1 else 0;
@@ -2451,6 +2466,42 @@ test "clipboard failed core selection progress releases operation focus" {
     try std.testing.expectEqual(clipboard_linux.Mechanism.wayland, operation.mechanism.?);
     try std.testing.expect(!operation.wayland_core_focus_acquired);
     try std.testing.expectEqual(@as(u32, 1), wayland.core_focus_users);
+}
+
+test "clipboard drain closes an idle Wayland connection and keeps a busy one" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var symbols: clipboard_linux.WaylandSymbols = undefined;
+    var service: Service = .{
+        .allocator = std.testing.allocator,
+        .objects = undefined,
+        .libraries = .{ .wayland = true },
+        .requested_wayland_seat = &.{},
+        .environment_wayland_seat = &.{},
+    };
+    defer service.operations.deinit(std.testing.allocator);
+    const wayland = try std.testing.allocator.create(clipboard_wayland.Connection);
+    wayland.* = clipboard_wayland.Connection.init(std.testing.allocator, &symbols, "", "", 1);
+    wayland.phase = .ready;
+    service.wayland = wayland;
+
+    var operation: Operation = .{
+        .allocator = std.testing.allocator,
+        .service = &service,
+        .kind = .read,
+        .mechanism = .wayland,
+    };
+    try service.operations.append(std.testing.allocator, &operation);
+    service.closeIdleWayland();
+    try std.testing.expect(service.wayland != null);
+
+    operation.status = .read;
+    wayland.output_pending = true;
+    service.closeIdleWayland();
+    try std.testing.expect(service.wayland != null);
+
+    wayland.output_pending = false;
+    service.closeIdleWayland();
+    try std.testing.expect(service.wayland == null);
 }
 
 test "clipboard Wayland fallback transitions to X11 only when available" {
