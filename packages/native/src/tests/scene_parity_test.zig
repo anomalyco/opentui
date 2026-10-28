@@ -286,7 +286,7 @@ const Stats = struct {
     arrows_beside: u32 = 0,
     /// Width changes of a shown text view node right after a recording drew its view.
     view_resizes: u32 = 0,
-    /// Box titles and border glyphs set, with a border lifted over the node above.
+    /// Reference frames' records of an on-screen box with a border, some of whose glyphs are spaces.
     framed_boxes: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
@@ -323,8 +323,6 @@ const Harness = struct {
     recorded: bool = false,
     /// A split render moved the output, so the decoder no longer follows the screen.
     split: bool = false,
-    /// The last recording drew the view of another, shown node.
-    bound_read: bool = false,
 
     fn init(random: std.Random, side: std.Random, verify: bool) !Harness {
         var twins: [2]Fixture = undefined;
@@ -419,7 +417,6 @@ const Harness = struct {
             .register => self.stats.style_changes += @intFromBool(self.viewShown()),
             .selection => self.stats.selections += 1,
             .resend => self.stats.resends += 1,
-            .box => self.stats.framed_boxes += 1,
             .palette => self.stats.palettes += 1,
             .scroll_to, .scroll_options, .scroll_request => self.stats.scroll_changes += 1,
             .raw => |value| {
@@ -888,10 +885,10 @@ const Harness = struct {
                     self.stats.records += 1;
                     self.recorded = true;
                     recordings = .{ .{}, .{} };
-                    try self.expectSameSlots(first, second, &recordings);
+                    const bound = try self.expectSameSlots(first, second, &recordings);
                     records = .{ recordings[reference].view(), recordings[candidate].view() };
                     // Paint hooks may edit what steady recordings read, or change the scene.
-                    if (self.generateRead()) |op| try self.apply(op);
+                    if (self.generateRead(bound)) |op| try self.apply(op);
                     if (self.random.uintLessThan(u32, 4) == 0) {
                         try self.reply();
                         self.stats.record_replies += 1;
@@ -1008,8 +1005,9 @@ const Harness = struct {
     }
 
     /// The RECORD snapshots must match; both twins then get the same recording, except that a box body names
-    /// each twin's own node.
-    fn expectSameSlots(self: *Harness, first: scene.FrameRequest, second: scene.FrameRequest, recordings: *[2]Recording) !void {
+    /// each twin's own node. Returns whether a steady recording drew the view of another, shown node.
+    fn expectSameSlots(self: *Harness, first: scene.FrameRequest, second: scene.FrameRequest, recordings: *[2]Recording) !bool {
+        var bound_read = false;
         const slots = [2][]const scene.PaintSlot{
             try self.twins[reference].owner.sceneFramePaintSlots(self.twins[reference].id, first),
             try self.twins[candidate].owner.sceneFramePaintSlots(self.twins[candidate].id, second),
@@ -1045,7 +1043,7 @@ const Harness = struct {
             const rare = if (index == 0) self.random.uintLessThan(u32, 64) else 64;
             self.stats.non_local_records += @intFromBool(!body and rare < 4);
             self.stats.steady_reads += @intFromBool(steady and rare >= 4);
-            if (steady and rare >= 4 and bound != null) self.bound_read = true;
+            bound_read = bound_read or (steady and rare >= 4 and bound != null);
             const view_slot = self.slotWith(.text_view);
             for (recordings, [2]context.Handle{ a.node, b.node }, 0..) |*recording, node, twin| {
                 recording.slot(@intCast(index), phase);
@@ -1075,22 +1073,22 @@ const Harness = struct {
             }
         }
         if (self.random.uintLessThan(u32, 4) == 0) self.hook_tick +%= 1;
+        return bound_read;
     }
 
     /// Five times in eight, an edit to what a steady recording reads: a highlight of the
     /// shared text, the readers, or the width of a node that shows a view. After a recording
     /// that drew that view, always its width, which no epoch tracks.
-    fn generateRead(self: *Harness) ?Op {
+    fn generateRead(self: *Harness, bound: bool) ?Op {
         const random = self.random;
-        const bound = self.bound_read;
-        self.bound_read = false;
-        self.stats.view_resizes += @intFromBool(bound);
-        return switch (if (bound) 3 else random.uintLessThan(u32, 8)) {
+        const op: ?Op = switch (if (bound) 3 else random.uintLessThan(u32, 8)) {
             0 => .{ .highlight = .{ .start = random.uintLessThan(u32, 4), .end = random.uintLessThan(u32, 8) } },
             1, 2, 4 => .{ .reader = random.int(u32) },
             3 => .{ .style = .{ .slot = self.slotWith(.text_view) orelse return null, .group = c.OT_STYLE_DIMENSION, .kind = 0, .unit = 1, .value = @floatFromInt(random.intRangeAtMost(u32, 2, 8)), .flags = 1 } },
             else => null,
         };
+        if (op) |value| self.stats.view_resizes += @intFromBool(bound and value == .style and value.style.slot == self.slotWith(.text_view) and value.style.group == c.OT_STYLE_DIMENSION and value.style.kind == 0);
+        return op;
     }
 
     /// The first slot of a kind whose resource a recording can read, past the slots that
@@ -1398,6 +1396,9 @@ const Harness = struct {
             const width = @min(x + @as(i64, @intFromFloat(cell.width)), clip.x + @as(i64, clip.width)) - @max(x, clip.x);
             const height = @min(y + @as(i64, @intFromFloat(cell.height)), clip.y + @as(i64, clip.height)) - @max(y, clip.y);
             if (width > 0 and height > 0) member_cells += @intCast(width * height);
+            if (width > 0 and height > 0 and node.kind == c.OT_SCENE_BOX and node.paint.borderSides != 0) if (node.control.box) |details| if (details.custom_border_chars) |chars| {
+                self.stats.framed_boxes += @intFromBool(std.mem.indexOfScalar(u32, &chars, ' ') != null);
+            };
         }
         try testing.expectEqual(member_cells, work.member_cells);
         // Every round refreshes every child of a bound, visible content (B2 W3).
@@ -1464,18 +1465,9 @@ fn arrowOptions(seed: u32) scene.ArrowOptions {
 /// Titles at each alignment, and border glyphs that are all spaces, or some of them.
 fn boxDetails(seed: u32) scene.BoxDetails {
     const titles = [_][]const u8{ "", "T", "title", "\u{754c}t" };
-    var chars: [11]u32 = @splat(' ');
-    if (seed & 0x800 != 0) for (&chars, 0..) |*char, index| {
-        if ((seed >> @intCast(index)) & 1 != 0) char.* = "+-|="[index % 4];
-    };
-    return .{
-        .title = titles[(seed >> 12) % 4],
-        .bottom_title = titles[(seed >> 14) % 4],
-        .title_alignment = (seed >> 16) % 3,
-        .bottom_title_alignment = (seed >> 18) % 3,
-        .title_color = if ((seed >> 20) & 1 != 0) .{ 255, 255, 0, 255 } else null,
-        .custom_border_chars = if ((seed >> 21) % 4 == 0) null else chars,
-    };
+    var chars: [11]u32 = undefined;
+    for (&chars, 0..) |*char, index| char.* = if (seed & 0x800 != 0 and (seed >> @intCast(index)) & 1 != 0) "+-|="[index % 4] else ' ';
+    return .{ .title = titles[(seed >> 12) % 4], .bottom_title = titles[(seed >> 14) % 4], .title_alignment = (seed >> 16) % 3, .bottom_title_alignment = (seed >> 18) % 3, .title_color = if ((seed >> 20) & 1 != 0) .{ 255, 255, 0, 255 } else null, .custom_border_chars = if ((seed >> 21) % 4 == 0) null else chars };
 }
 
 /// A recorded clear, a color matrix without and with a mask, or an image.
@@ -1528,7 +1520,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // writes between frames 414, shared text changes shown 456, style changes shown 177, view
     // binds 334, selections 240, equal re-sends 365, palette changes 83, frames showing a scroll
     // node with children 591, scrolls and option changes 110, SCROLL requests 26, an arrow left
-    // of the screen 1,136, a drawn view's node resized 106, framed boxes 218.
+    // of the screen 1,136, a drawn view's node resized 106, framed box records 1,252.
     const minimums: Stats = .{
         // SCROLL requests that deliver a LAYOUT request: 9 in one run.
         .scroll_layouts = 2,
@@ -1576,7 +1568,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .scroll_requests = 6,
         .arrows_beside = 280,
         .view_resizes = 26,
-        .framed_boxes = 55,
+        .framed_boxes = 313,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
