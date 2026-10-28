@@ -2432,7 +2432,7 @@ pub const OptimizedBuffer = struct {
                 var special_idx = lowerBound(render_clusters[0..@min(render_clusters.len, byte_offset)], "byte_start", byte_offset, .cluster_scan_steps);
 
                 // Left of the viewport nothing draws and marks have no base, so skip whole chunks by
-                // width and resume after the last cluster that starts left of the viewport. The loop
+                // width and resume at the last cluster that starts left of the viewport. The loop
                 // below steps over printable ASCII at one cell per byte and skips each other unit.
                 if (rendered_col_in_vline < horizontal_offset) {
                     if (horizontal_offset - rendered_col_in_vline >= vchunk.width_cols) {
@@ -2443,16 +2443,16 @@ pub const OptimizedBuffer = struct {
                     }
                     const target_col = col + (horizontal_offset - rendered_col_in_vline);
                     const lo = special_idx + lowerBound(render_clusters[special_idx..], "col_start", target_col, .left_skip_steps);
-                    if (lo > special_idx and render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len <= byte_end) {
-                        byte_offset = render_clusters[lo - 1].byte_start + render_clusters[lo - 1].byte_len;
-                        col = render_clusters[lo - 1].col_start + render_clusters[lo - 1].width_cols;
-                        special_idx = lo;
+                    if (lo > special_idx) {
+                        byte_offset = render_clusters[lo - 1].byte_start;
+                        col = render_clusters[lo - 1].col_start;
+                        special_idx = lo - 1;
                     }
                     document_cell_offset += col - vchunk.col_start_in_chunk;
                     rendered_col_in_vline += col - vchunk.col_start_in_chunk;
                 }
 
-                text_buffer_loop: while (byte_offset < byte_end) {
+                while (byte_offset < byte_end) {
                     if (rendered_col_in_vline < horizontal_offset) {
                         const gap_end = if (special_idx < render_clusters.len) @min(render_clusters[special_idx].byte_start, byte_end) else byte_end;
                         const gap = chunk_bytes[byte_offset..][0..@min(gap_end -| byte_offset, horizontal_offset - rendered_col_in_vline)];
@@ -2496,13 +2496,16 @@ pub const OptimizedBuffer = struct {
                     }
                     mark_base = null;
 
-                    if (rendered_col_in_vline < horizontal_offset) {
+                    if (rendered_col_in_vline + cluster_width_cols <= horizontal_offset) {
                         text_work.add(.left_skip_steps, 1);
                         document_cell_offset += cluster_width_cols;
                         rendered_col_in_vline += cluster_width_cols;
                         col += cluster_width_cols;
                         continue;
                     }
+                    // Nothing drew before a cluster that the viewport's left edge cuts, so it starts
+                    // left of the line's first column by its hidden part.
+                    if (rendered_col_in_vline < horizontal_offset) currentX -= @intCast(horizontal_offset - rendered_col_in_vline);
 
                     if (rendered_col_in_vline >= horizontal_offset + viewport_width) {
                         document_cell_offset += (col_end - col);
@@ -2528,8 +2531,8 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes, cluster_width_cols);
-                    if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
+                    var is_blank = !ascii and !isPrintableGlyph(grapheme_bytes, cluster_width_cols);
+                    if (!is_blank and cluster_width_cols == 1 and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));
                         rendered_col_in_vline += cluster_width_cols;
@@ -2537,24 +2540,13 @@ pub const OptimizedBuffer = struct {
                         continue;
                     }
 
+                    // A wide glyph that an edge cuts draws its visible cells as blanks in its style.
                     if (cluster_width_cols > 1 and !is_blank) {
-                        if (rendered_col_in_vline + cluster_width_cols > horizontal_offset + viewport_width or
-                            currentX < 0 or currentX + @as(i32, @intCast(cluster_width_cols)) > @as(i32, @intCast(self.width)))
-                        {
-                            document_cell_offset += cluster_width_cols;
-                            currentX += @as(i32, @intCast(cluster_width_cols));
-                            rendered_col_in_vline += cluster_width_cols;
-                            col += cluster_width_cols;
-                            continue;
-                        }
-                        for (1..cluster_width_cols) |span_offset| {
-                            if (!self.isPointInScissor(currentX + @as(i32, @intCast(span_offset)), currentY)) {
-                                document_cell_offset += cluster_width_cols;
-                                currentX += @as(i32, @intCast(cluster_width_cols));
-                                rendered_col_in_vline += cluster_width_cols;
-                                col += cluster_width_cols;
-                                continue :text_buffer_loop;
-                            }
+                        is_blank = rendered_col_in_vline < horizontal_offset or
+                            rendered_col_in_vline + cluster_width_cols > horizontal_offset + viewport_width or
+                            currentX < 0 or currentX + @as(i32, @intCast(cluster_width_cols)) > @as(i32, @intCast(self.width));
+                        for (0..cluster_width_cols) |span_offset| {
+                            if (!self.isPointInScissor(currentX + @as(i32, @intCast(span_offset)), currentY)) is_blank = true;
                         }
                     }
 
@@ -2709,7 +2701,7 @@ pub const OptimizedBuffer = struct {
                         while (tab_col < cluster_width_cols) : (tab_col += 1) {
                             if (rendered_col_in_vline + tab_col >= horizontal_offset + viewport_width) break;
                             const tab_x = currentX + @as(i32, @intCast(tab_col));
-                            if (tab_x < 0) continue;
+                            if (tab_x < 0 or rendered_col_in_vline + tab_col < horizontal_offset) continue;
                             if (tab_x >= @as(i32, @intCast(self.width))) break;
                             if (!self.isPointInScissor(tab_x, currentY)) continue;
 

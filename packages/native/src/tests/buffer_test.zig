@@ -492,107 +492,42 @@ test "OptimizedBuffer wide text is opaque when its continuation covers an image 
     try std.testing.expectEqual(@as(u8, 255), ansi.alpha(target.get(0, 0).?.bg));
 }
 
-test "OptimizedBuffer clipped wide text buffer does not cover image markers" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-    var text = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer text.deinit();
-    try text.setText("界");
-    var view = try TextBufferView.init(std.testing.allocator, text);
-    defer view.deinit();
+test "OptimizedBuffer text buffer cells cover the image markers they draw over" {
+    // A tab and a wide glyph that an edge cuts write their visible cells as blanks, which make an
+    // image cell opaque as any text does. The image covers both cells; 0 is an image cell.
+    const Case = struct { text: []const u8, x: i32 = 0, clip: ?buffer_mod.ClipRect = null, viewport: ?text_buffer_view.Viewport = null, chars: [2]u32 };
+    const cases = [_]Case{
+        .{ .text = "\u{754c}", .clip = .{ .x = 0, .y = 0, .width = 1, .height = 1 }, .chars = .{ ' ', 0 } },
+        .{ .text = "\u{754c}", .viewport = .{ .x = 0, .y = 0, .width = 1, .height = 1 }, .chars = .{ ' ', 0 } },
+        .{ .text = "\t", .clip = .{ .x = 1, .y = 0, .width = 1, .height = 1 }, .chars = .{ 0, ' ' } },
+        .{ .text = "\t", .x = -1, .chars = .{ ' ', 0 } },
+        .{ .text = "AB", .x = -1, .chars = .{ 'B', 0 } },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case={any}\n", .{case});
+        var pools = TestPools.init(std.testing.allocator);
+        defer pools.deinit();
+        var text = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer text.deinit();
+        try text.setText(case.text);
+        var view = try TextBufferView.init(std.testing.allocator, text);
+        defer view.deinit();
+        view.setViewport(case.viewport);
 
-    const target = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "clipped-wide-text-buffer" });
-    defer target.deinit();
-    const source = try image.createFromRgba(std.testing.allocator, &[_]u8{ 7, 8, 9, 255 }, 1, 1, 4);
-    defer source.deinit();
-    try std.testing.expect(try target.drawImage(source, 1, 0, 0, 2, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try target.pushScissorRect(0, 0, 1, 1);
+        const target = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+        defer target.deinit();
+        const source = try image.createFromRgba(std.testing.allocator, &[_]u8{ 7, 8, 9, 255 }, 1, 1, 4);
+        defer source.deinit();
+        try std.testing.expect(try target.drawImage(source, 1, 0, 0, 2, 1, 0, 0, 0, 0, 1, 1, .auto));
+        if (case.clip) |rect| try target.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
 
-    target.drawTextBuffer(view, 0, 0);
+        target.drawTextBuffer(view, case.x, 0);
 
-    try std.testing.expect(gp.isImageChar(target.get(0, 0).?.char));
-    try std.testing.expect(gp.isImageChar(target.get(1, 0).?.char));
-}
-
-test "OptimizedBuffer text buffer does not draw a wide grapheme past its viewport" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-    var text = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer text.deinit();
-    try text.setText("界");
-    var view = try TextBufferView.init(std.testing.allocator, text);
-    defer view.deinit();
-    view.setViewport(.{ .x = 0, .y = 0, .width = 1, .height = 1 });
-
-    const target = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "wide-text-buffer-viewport" });
-    defer target.deinit();
-    const source = try image.createFromRgba(std.testing.allocator, &[_]u8{ 7, 8, 9, 255 }, 1, 1, 4);
-    defer source.deinit();
-    try std.testing.expect(try target.drawImage(source, 1, 0, 0, 2, 1, 0, 0, 0, 0, 1, 1, .auto));
-
-    target.drawTextBuffer(view, 0, 0);
-
-    try std.testing.expect(gp.isImageChar(target.get(0, 0).?.char));
-    try std.testing.expect(gp.isImageChar(target.get(1, 0).?.char));
-}
-
-test "OptimizedBuffer text buffer tab covers image markers after its clipped start" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-    var text = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer text.deinit();
-    try text.setText("\t");
-    var view = try TextBufferView.init(std.testing.allocator, text);
-    defer view.deinit();
-
-    const target = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "clipped-text-buffer-tab" });
-    defer target.deinit();
-    const source = try image.createFromRgba(std.testing.allocator, &[_]u8{ 7, 8, 9, 255 }, 1, 1, 4);
-    defer source.deinit();
-    try std.testing.expect(try target.drawImage(source, 1, 0, 0, 2, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try target.pushScissorRect(1, 0, 1, 1);
-
-    target.drawTextBuffer(view, 0, 0);
-
-    try std.testing.expect(gp.isImageChar(target.get(0, 0).?.char));
-    try std.testing.expectEqual(@as(u32, ' '), target.get(1, 0).?.char);
-}
-
-test "OptimizedBuffer text buffer tab clips a negative draw origin" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-    var text = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer text.deinit();
-    try text.setText("\t");
-    var view = try TextBufferView.init(std.testing.allocator, text);
-    defer view.deinit();
-
-    const target = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "negative-text-buffer-tab" });
-    defer target.deinit();
-    const source = try image.createFromRgba(std.testing.allocator, &[_]u8{ 7, 8, 9, 255 }, 1, 1, 4);
-    defer source.deinit();
-    try std.testing.expect(try target.drawImage(source, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
-
-    target.drawTextBuffer(view, -1, 0);
-
-    try std.testing.expectEqual(@as(u32, ' '), target.get(0, 0).?.char);
-}
-
-test "OptimizedBuffer text buffer clips width-1 text at a negative draw origin" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-    var text = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer text.deinit();
-    try text.setText("AB");
-    var view = try TextBufferView.init(std.testing.allocator, text);
-    defer view.deinit();
-
-    const target = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "negative-width1-text" });
-    defer target.deinit();
-
-    target.drawTextBuffer(view, -1, 0);
-
-    try std.testing.expectEqual(@as(u32, 'B'), target.get(0, 0).?.char);
+        for (case.chars, 0..) |expected, x| {
+            const char = target.get(@intCast(x), 0).?.char;
+            if (expected == 0) try std.testing.expect(gp.isImageChar(char)) else try std.testing.expectEqual(expected, char);
+        }
+    }
 }
 
 test "OptimizedBuffer image-free frame buffer copy does not allocate" {
