@@ -592,7 +592,33 @@ const Culling = struct {
     selected_epoch: u64 = 0,
     selected_at: u64 = 0,
     clean_selection: u64 = 0,
+    index: ?*CullIndex = null,
 };
+
+/// A filtering parent's children in layout order, which cullCandidates searches by their local
+/// position on the main axis. Hidden children, whose layout is zeroed, and translated ones are
+/// exceptions that every query returns. Not usable when positions decrease or are beyond 2^24.
+const CullIndex = struct {
+    // Scene.layout_epoch of the build: children's local positions change only with a solve, a
+    // translation, or their parent's child list.
+    epoch: u64 = stale,
+    row: bool = false,
+    usable: bool = false,
+    // Each in-flow child with the largest end of it and the children before it.
+    entries: std.ArrayListUnmanaged(struct { child: *native.NativeRenderable, max_end: f64 }) = .empty,
+    exceptions: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
+
+    const stale = std.math.maxInt(u64);
+    const bound: f64 = 1 << 24;
+};
+
+fn staleCull(parent: *native.NativeRenderable) void {
+    if (parent.scene_node.?.culling.index) |index| index.epoch = CullIndex.stale;
+}
+
+fn mainStart(node: *const Node, row: bool) f64 {
+    return if (row) node.layout.left else node.layout.top;
+}
 
 const Work = struct {
     node: *native.NativeRenderable,
@@ -614,6 +640,8 @@ const PreparationFrame = struct {
     entered: bool = false,
     filtered: bool = false,
     filter: ?Filter = null,
+    // A filtering node's children that may overlap, when its index found them.
+    culled: ?[]*native.NativeRenderable = null,
     // The node's work entry, which a scroll node's bars repeat after its children.
     work_index: usize = 0,
 };
@@ -884,6 +912,7 @@ pub const Scene = struct {
             const previous = node.parent;
             if (previous) |old| removeChild(&old.scene_node.?.children, value);
             target.children.insertAssumeCapacity(index, value);
+            staleCull(parent);
             if (previous != parent) {
                 if (previous) |old| self.detach(value, old);
                 const siblings = target.paint_children.items;
@@ -934,6 +963,7 @@ pub const Scene = struct {
         if (node.skip.attention_index != no_slot) dropAttention(parent.scene_node.?, node.skip.attention_index);
         countBelow(parent, node.skip.update_below, node.skip.filters_below, false);
         node.parent = null;
+        staleCull(parent);
         self.markSubtree(parent);
     }
 
@@ -962,6 +992,11 @@ pub const Scene = struct {
     fn mustVisit(self: *const Scene, node: *const Node) bool {
         return node.skip.subtree != .clean or node.skip.update_below != 0 or
             (node.skip.filters_below != 0 and node.culling.clean_selection != self.selection_epoch);
+    }
+
+    /// Only its subtree's state keeps a culled child listed; any change lists it again.
+    fn onlySubtreeListed(node: *const Node) bool {
+        return node.skip.update_below == 0 and node.skip.filters_below == 0 and !node.skip.self_stale and node.placement == 0;
     }
 
     fn dropAttention(node: *Node, index: usize) void {
@@ -1041,6 +1076,11 @@ pub const Scene = struct {
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
         const node = value.scene_node.?;
         node.control.deinit(node.kind, self.allocator);
+        if (node.culling.index) |index| {
+            index.entries.deinit(self.allocator);
+            index.exceptions.deinit(self.allocator);
+            self.allocator.destroy(index);
+        }
         self.filter_count -= @intFromBool(node.filtersChildren());
         if (node.parent) |parent| {
             yoga.yogaNodeRemoveChild(parent.scene_node.?.childYoga(parent), value.yoga_node);
@@ -1160,6 +1200,7 @@ pub const Scene = struct {
         }
         if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
             self.selection_epoch +%= 1;
+            if (node.parent) |parent| staleCull(parent);
             // Refresh newly revealed descendants before paint: feedback may have skipped their
             // culling parent, and nothing else reaches it in this frame.
             if (self.attempt != null and self.filter_count != 0) self.preparation_dirty = true;
@@ -1852,11 +1893,14 @@ pub const Scene = struct {
         if (full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch)) {
             node.culling.selected_epoch = self.selection_epoch;
             const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
-            var index = node.paint_children.items.len;
+            self.scratch.clearRetainingCapacity();
+            const culled = if (filter) |bounds| try self.cullCandidates(node, bounds, origin) else null;
+            const children = culled orelse node.paint_children.items;
+            var index = children.len;
             while (index != 0) {
                 index -= 1;
                 if (builtin.is_test) self.test_feedback_child_steps += 1;
-                const child = node.paint_children.items[index];
+                const child = children[index];
                 const state = child.scene_node.?;
                 if (state.prepared_gen != self.candidates_gen) {
                     try self.deferChild(value, child);
@@ -1868,9 +1912,7 @@ pub const Scene = struct {
                     layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
                     self.frame_work.overlap_tests += 1;
                     if (!overlaps(bounds, layout)) {
-                        // Only its subtree's state keeps it listed; any change lists it again.
-                        if (!full and state.skip.attention_index != no_slot and state.skip.update_below == 0 and state.skip.filters_below == 0 and
-                            !state.skip.self_stale and state.placement == 0) dropAttention(node, state.skip.attention_index);
+                        if (!full and state.skip.attention_index != no_slot and onlySubtreeListed(state)) dropAttention(node, state.skip.attention_index);
                         continue;
                     }
                 }
@@ -1878,6 +1920,22 @@ pub const Scene = struct {
                 if (state.feedback(active) != .unseen) continue;
                 const needed = self.mustVisit(state);
                 if (full or needed) self.queueUpdate(node, state, needed);
+            }
+            if (culled == null) return;
+            // The children the index passed over do not overlap. Only listed ones can need a
+            // deferral or leave the list, as in the scan above.
+            var position: usize = 0;
+            while (position < node.skip.attention.items.len) {
+                if (builtin.is_test) self.test_feedback_child_steps += 1;
+                const child = node.skip.attention.items[position];
+                const state = child.scene_node.?;
+                if (state.prepared_gen != self.candidates_gen) {
+                    try self.deferChild(value, child);
+                } else if (state.culling.selected_at != node.culling.selected_epoch and onlySubtreeListed(state)) {
+                    dropAttention(node, position);
+                    continue;
+                }
+                position += 1;
             }
             return;
         }
@@ -3017,9 +3075,81 @@ pub const Scene = struct {
         return .{ .viewport = layout, .row = direction == api.OT_FLEX_DIRECTION_ROW or direction == api.OT_FLEX_DIRECTION_ROW_REVERSE };
     }
 
+    /// The children of a filtering parent whose children compose from `origin` that may overlap
+    /// the filter, in paint order, appended to scratch; or null, where only a test of every child
+    /// is exact: on the full path, beyond 2^24, or for children out of order on the main axis.
+    /// Within 2^24 the window's local edges and overlaps' screen sums differ by far less than the
+    /// cell of slack on each side, so every child that overlaps is a candidate.
+    fn cullCandidates(self: *Scene, node: *Node, filter: Filter, origin: [2]f64) !?[]*native.NativeRenderable {
+        const viewport = filter.viewport;
+        const at = if (filter.row) origin[0] else origin[1];
+        const low = if (filter.row) viewport.screenX else viewport.screenY;
+        const high = low + (if (filter.row) viewport.width else viewport.height);
+        if (self.forcesFullFrame() or !(@abs(at) <= CullIndex.bound and @abs(low) <= CullIndex.bound and @abs(high) <= CullIndex.bound)) return null;
+        if (node.culling.index == null) {
+            node.culling.index = try self.allocator.create(CullIndex);
+            node.culling.index.?.* = .{};
+        }
+        const index = node.culling.index.?;
+        if (index.epoch != self.layout_epoch or index.row != filter.row) try self.buildCull(node, index, filter.row);
+        if (!index.usable) return null;
+        // The window in local coordinates, a cell wider on each side.
+        const local = [2]f64{ low - at - 1, high - at + 1 };
+        const entries = index.entries.items;
+        var first: usize = 0;
+        var last = entries.len;
+        while (first < last) {
+            self.frame_work.overlap_tests += 1;
+            const middle = first + (last - first) / 2;
+            if (entries[middle].max_end > local[0]) last = middle else first = middle + 1;
+        }
+        const start = self.scratch.items.len;
+        for (entries[first..]) |entry| {
+            if (mainStart(entry.child.scene_node.?, filter.row) >= local[1]) break;
+            self.scratch.appendAssumeCapacity(entry.child);
+        }
+        self.scratch.appendSliceAssumeCapacity(index.exceptions.items);
+        const result = self.scratch.items[start..];
+        if (!std.sort.isSorted(*native.NativeRenderable, result, {}, rankLessThan)) std.mem.sort(*native.NativeRenderable, result, {}, rankLessThan);
+        return result;
+    }
+
+    /// Lists in-flow children by their start, which must not decrease, with their largest end so
+    /// far, so a tall child that starts early is found. Each child counts as an overlap test.
+    fn buildCull(self: *Scene, node: *const Node, index: *CullIndex, row: bool) !void {
+        const children = node.children.items;
+        try index.entries.ensureTotalCapacity(self.allocator, children.len);
+        try index.exceptions.ensureTotalCapacity(self.allocator, children.len / 8 + 1);
+        index.entries.clearRetainingCapacity();
+        index.exceptions.clearRetainingCapacity();
+        index.epoch = self.layout_epoch;
+        index.row = row;
+        index.usable = false;
+        var last_start = -std.math.inf(f64);
+        var max_end = last_start;
+        for (children) |child| {
+            self.frame_work.overlap_tests += 1;
+            const state = child.scene_node.?;
+            if (state.layout_flags.display_none or state.paint.translateX != 0 or state.paint.translateY != 0) {
+                if (index.exceptions.items.len == children.len / 8 + 1) return;
+                index.exceptions.appendAssumeCapacity(child);
+                continue;
+            }
+            const start = mainStart(state, row);
+            const end = start + (if (row) state.layout.width else state.layout.height);
+            if (!(start >= last_start and @abs(start) <= CullIndex.bound and @abs(end) <= CullIndex.bound)) return;
+            last_start = start;
+            max_end = @max(max_end, end);
+            index.entries.appendAssumeCapacity(.{ .child = child, .max_end = max_end });
+        }
+        index.usable = true;
+    }
+
     /// A dry walk lists what a walk would without reading geometry or changing order.
     fn prepare(self: *Scene, objects: *const handles.Table, root: *native.NativeRenderable, width: u32, height: u32, mode: enum { candidates, paint }, dry: bool, list: *std.ArrayListUnmanaged(Work)) !void {
         var stack: [yoga.depth_max]PreparationFrame = undefined;
+        // Each filtering node's candidates stay in scratch until the walk ends.
+        self.scratch.clearRetainingCapacity();
         stack[0] = .{ .node = root, .parent = .{}, .clip = .{ .x = 0, .y = 0, .width = width, .height = height }, .opacity = 1 };
         var depth: usize = 1;
         while (depth != 0) {
@@ -3117,9 +3247,11 @@ pub const Scene = struct {
                     // The candidates walked the old order, so the next frame walks again.
                     if (sortChildren(node) and mode == .paint) self.candidates.clearRetainingCapacity();
                 }
+                if (frame.filter) |filter| frame.culled = try self.cullCandidates(node, filter, .{ frame.parent.screenX, frame.parent.screenY });
                 frame.entered = true;
             }
-            if (frame.child == node.paint_children.items.len) {
+            const children = frame.culled orelse node.paint_children.items;
+            if (frame.child == children.len) {
                 if (node.scroll) |state| if (state.visible[0] or state.visible[1]) {
                     var bars = list.items[frame.work_index];
                     bars.bars = true;
@@ -3129,7 +3261,7 @@ pub const Scene = struct {
                 continue;
             }
             if (depth == stack.len) return error.YogaDepthLimit;
-            const child = node.paint_children.items[frame.child];
+            const child = children[frame.child];
             frame.child += 1;
             stack[depth] = .{ .node = child, .parent = frame.parent, .clip = frame.clip, .opacity = frame.opacity, .filtered = frame.filtered or node.filtersChildren(), .filter = frame.filter };
             depth += 1;
@@ -3388,6 +3520,10 @@ fn paintLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeR
     const b = right.scene_node.?;
     if (builtin.is_test) a.owner.test_sort_steps += 1;
     return if (a.paint.zIndex == b.paint.zIndex) a.attach_order < b.attach_order else a.paint.zIndex < b.paint.zIndex;
+}
+
+fn rankLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeRenderable) bool {
+    return left.scene_node.?.paint_rank < right.scene_node.?.paint_rank;
 }
 
 /// Returns whether the order changed.

@@ -2149,63 +2149,63 @@ test "Scene frame work counts viewport refresh and culling work" {
     const sizes = [_]u32{ 16, 256, 4096 };
     const expected = [sizes.len][std.meta.fields(Frame).len][7]u64{
         .{
-            .{ 0, 0, 22, 0, 1, 32, 19 }, // first
+            .{ 0, 0, 22, 0, 1, 32, 6 }, // first
             .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
-            .{ 0, 0, 3, 0, 1, 32, 19 }, // scroll
-            .{ 1, 0, 5, 0, 1, 32, 19 }, // grow
-            .{ 1, 0, 4, 0, 1, 16, 19 }, // options_prepare
-            .{ 0, 0, 3, 0, 1, 16, 19 }, // options_color
-            .{ 1, 0, 4, 0, 1, 16, 19 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 16, 19 }, // measure_same_text
+            .{ 0, 0, 3, 0, 1, 18, 7 }, // scroll
+            .{ 1, 0, 5, 0, 1, 34, 7 }, // grow
+            .{ 1, 0, 4, 0, 1, 9, 7 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 9, 7 }, // options_color
+            .{ 1, 0, 4, 0, 1, 9, 7 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 9, 7 }, // measure_same_text
             .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
-            .{ 16, 0, 19, 0, 1, 31, 19 }, // hidden
+            .{ 16, 0, 19, 0, 1, 31, 7 }, // hidden
             .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1, 31, 19 }, // cancelled
-            .{ 3, 0, 10, 1, 2, 31, 19 }, // stale_reply
-            .{ 3, 0, 10, 1, 2, 31, 19 }, // stale_requester
-            .{ 2, 0, 10, 1, 2, 31, 19 }, // placed_reply
+            .{ 1, 0, 4, 0, 1, 31, 7 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 31, 7 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 31, 7 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 31, 7 }, // placed_reply
             .{ 2, 67, 10, 1, 2, 0, 18 }, // destroy_reply
             .{ 1, 26, 8, 1, 2, 0, 17 }, // destroy_hidden
             .{ 14, 72, 21, 1, 1, 0, 17 }, // full_scroll
         },
         .{
-            .{ 0, 0, 262, 0, 1, 512, 259 }, // first
+            .{ 0, 0, 262, 0, 1, 280, 6 }, // first
             .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
-            .{ 0, 0, 3, 0, 1, 512, 259 }, // scroll
-            .{ 1, 0, 5, 0, 1, 512, 259 }, // grow
-            .{ 1, 0, 4, 0, 1, 256, 259 }, // options_prepare
-            .{ 0, 0, 3, 0, 1, 256, 259 }, // options_color
-            .{ 1, 0, 4, 0, 1, 256, 259 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 256, 259 }, // measure_same_text
+            .{ 0, 0, 3, 0, 1, 26, 7 }, // scroll
+            .{ 1, 0, 5, 0, 1, 282, 7 }, // grow
+            .{ 1, 0, 4, 0, 1, 13, 7 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 13, 7 }, // options_color
+            .{ 1, 0, 4, 0, 1, 13, 7 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 13, 7 }, // measure_same_text
             .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
-            .{ 256, 0, 259, 0, 1, 511, 259 }, // hidden
+            .{ 256, 0, 259, 0, 1, 279, 7 }, // hidden
             .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1, 511, 259 }, // cancelled
-            .{ 3, 0, 10, 1, 2, 511, 259 }, // stale_reply
-            .{ 3, 0, 10, 1, 2, 511, 259 }, // stale_requester
-            .{ 2, 0, 10, 1, 2, 511, 259 }, // placed_reply
-            .{ 2, 16, 9, 1, 2, 764, 258 }, // destroy_reply
-            .{ 1, 26, 7, 1, 2, 762, 257 }, // destroy_hidden
+            .{ 1, 0, 4, 0, 1, 279, 7 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 279, 7 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 279, 7 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 279, 7 }, // placed_reply
+            .{ 2, 16, 9, 1, 2, 545, 7 }, // destroy_reply
+            .{ 1, 26, 7, 1, 2, 544, 7 }, // destroy_hidden
             .{ 254, 24, 260, 1, 1, 508, 257 }, // full_scroll
         },
         .{
-            .{ 0, 0, 4102, 0, 1, 8192, 4099 }, // first
+            .{ 0, 0, 4102, 0, 1, 4128, 6 }, // first
             .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
-            .{ 0, 0, 3, 0, 1, 8192, 4099 }, // scroll
-            .{ 1, 0, 5, 0, 1, 8192, 4099 }, // grow
-            .{ 1, 0, 4, 0, 1, 4096, 4099 }, // options_prepare
-            .{ 0, 0, 3, 0, 1, 4096, 4099 }, // options_color
-            .{ 1, 0, 4, 0, 1, 4096, 4099 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 4096, 4099 }, // measure_same_text
+            .{ 0, 0, 3, 0, 1, 34, 7 }, // scroll
+            .{ 1, 0, 5, 0, 1, 4130, 7 }, // grow
+            .{ 1, 0, 4, 0, 1, 17, 7 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 17, 7 }, // options_color
+            .{ 1, 0, 4, 0, 1, 17, 7 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 17, 7 }, // measure_same_text
             .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
-            .{ 4096, 0, 4099, 0, 1, 8191, 4099 }, // hidden
+            .{ 4096, 0, 4099, 0, 1, 4127, 7 }, // hidden
             .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1, 8191, 4099 }, // cancelled
-            .{ 3, 0, 10, 1, 2, 8191, 4099 }, // stale_reply
-            .{ 3, 0, 10, 1, 2, 8191, 4099 }, // stale_requester
-            .{ 2, 0, 10, 1, 2, 8191, 4099 }, // placed_reply
-            .{ 2, 16, 9, 1, 2, 12284, 4098 }, // destroy_reply
-            .{ 1, 26, 7, 1, 2, 12282, 4097 }, // destroy_hidden
+            .{ 1, 0, 4, 0, 1, 4127, 7 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 4127, 7 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 4127, 7 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 4127, 7 }, // placed_reply
+            .{ 2, 16, 9, 1, 2, 8237, 7 }, // destroy_reply
+            .{ 1, 26, 7, 1, 2, 8236, 7 }, // destroy_hidden
             .{ 4094, 24, 4100, 1, 1, 8188, 4097 }, // full_scroll
         },
     };
@@ -2363,20 +2363,20 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 3, 209, 200, 1, 1, 0, 0, 1, 1, 87, 0, 0 } },
         .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4 } },
         .{ .shape = .ui, .size = 0, .change = .reply_text, .work = .{ 87, 87, 88, 0, 0, 30, 0, 0, 0, 3, 209, 200, 1, 0, 0, 1, 1, 1, 87, 0, 11 } },
-        .{ .shape = .scroll, .size = 100, .change = .reply_text, .work = .{ 104, 104, 5, 0, 0, 20, 0, 0, 100, 53, 10000, 10000, 50, 0, 0, 1, 1, 50, 104, 0, 6 } },
+        .{ .shape = .scroll, .size = 100, .change = .reply_text, .work = .{ 104, 55, 5, 0, 0, 20, 0, 0, 58, 53, 10000, 10000, 50, 0, 0, 1, 1, 50, 104, 0, 6 } },
         .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
         .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 1, 140, 1, 1, 0, 0, 1, 1, 0, 0, 0 } },
         .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 104, 5, 104, 1, 21, 0, 0, 200, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104, 0, 106 } },
-        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 104, 4, 0, 0, 21, 0, 0, 200, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 104, 53, 155 } },
-        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 106, 6, 106, 1, 18, 0, 0, 204, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106, 0, 109 } },
+        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 55, 5, 104, 1, 21, 0, 0, 216, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104, 0, 57 } },
+        .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 56, 4, 0, 0, 21, 0, 0, 118, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 104, 53, 107 } },
+        .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 55, 6, 106, 1, 18, 0, 0, 218, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106, 0, 59 } },
         .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         // The scroll shape as one scroll node: one node fewer, two hidden Yoga nodes read per
         // solve, a scroll is an offset without a solve, and an append follows the bottom.
         .{ .shape = .scroll_node, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
-        .{ .shape = .scroll_node, .size = 100, .change = .scroll, .work = .{ 103, 103, 3, 0, 0, 16, 0, 0, 200, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 103, 52, 153 } },
-        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 105, 4, 107, 1, 18, 0, 0, 204, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52, 108 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .scroll, .work = .{ 103, 55, 3, 0, 0, 16, 0, 0, 118, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 103, 52, 105 } },
+        .{ .shape = .scroll_node, .size = 100, .change = .append, .work = .{ 105, 54, 4, 107, 1, 18, 0, 0, 216, 52, 9950, 10000, 50, 50, 0, 0, 1, 50, 105, 52, 58 } },
         .{ .shape = .boxes, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
         .{ .shape = .scroll, .size = 100, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4 } },
         // A wide parent without a filter: 100 boxes, one with an UPDATE hook.
