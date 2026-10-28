@@ -309,7 +309,8 @@ const tableColors = { borderBackgroundColor: "#304050", selectionBg: "#605040", 
 // last one the bottom (the font's second row). The "wide" rows put a wide glyph under the scroll indicator, over the
 // transparent background; the font's "three" and the unwrapped table are wider than the node. The frame after a key
 // press, or a table's content change and selection, makes no native draw call and has no buffer unless buffered.
-const recordCases: [string, typeof Select | typeof Tabs | typeof TextTableRenderable, object, number?][] = [
+type RecordCase = [string, typeof Select | typeof Tabs | typeof TextTableRenderable, object, number?]
+const recordCases: RecordCase[] = [
   ["Select", Select, { options: items, focusable: false }],
   ["Select focused", Select, { options: items, backgroundColor: "#101820", focusedBackgroundColor: "#182028" }],
   ["Select font", Select, { options: items.slice(2), font: "tiny", backgroundColor: "#101820", focusable: false }],
@@ -342,7 +343,13 @@ const recordCases: [string, typeof Select | typeof Tabs | typeof TextTableRender
   ["TextTable translucent", TextTableRenderable, { content: table, ...tableColors, backgroundColor: "#20202080" }, 0],
 ]
 
-test.each(recordCases)("%s records what its buffer composes", async (_, Control, options, tolerance = undefined) => {
+// `tolerance` has a default so that Bun does not take a fourth parameter for a `done` callback in 3-element rows.
+const recordsComposed = async (
+  _: string,
+  Control: RecordCase[1],
+  options: object,
+  tolerance: number | undefined = undefined,
+) => {
   const errors: string[] = []
   const onError = ({ error }: { error: Error }) => errors.push(error.message)
   renderer.on(CliRenderEvents.RENDER_ERROR, onError)
@@ -351,9 +358,11 @@ test.each(recordCases)("%s records what its buffer composes", async (_, Control,
     .opentui.symbols
   const originals = { ...symbols }
   let draws = 0
+  let measures = 0
   for (const name of Object.keys(originals).filter((name) => name.startsWith("ot_buffer_draw"))) {
     symbols[name] = (...args) => (draws++, originals[name](...args))
   }
+  symbols.ot_text_buffer_view_measure = (...args) => (measures++, originals.ot_text_buffer_view_measure(...args))
   for (const opacity of tolerance === undefined ? [1, 0.5] : [1]) {
     for (const [translateX, translateY] of [
       [0, 0],
@@ -388,10 +397,11 @@ test.each(recordCases)("%s records what its buffer composes", async (_, Control,
         draws = 0
         await setup.renderOnce()
         expect([Reflect.get(node, "frameBuffer") === null, draws === 0]).toEqual([!buffered, !buffered])
-        // An unchanged frame paints the same cells.
+        // An unchanged frame paints the same cells and lays nothing out again.
         const painted = setup.captureSpans()
+        measures = 0
         await setup.renderOnce()
-        expect(setup.captureSpans()).toEqual(painted)
+        expect([setup.captureSpans(), measures]).toEqual([painted, 0])
         frames.push(
           cells(painted)
             .flat()
@@ -415,7 +425,16 @@ test.each(recordCases)("%s records what its buffer composes", async (_, Control,
   }
   Object.assign(symbols, originals)
   renderer.off(CliRenderEvents.RENDER_ERROR, onError)
-})
+}
+test.each(recordCases)("%s records what its buffer composes", recordsComposed)
+
+// Open decision: a wide glyph cut by a clip edge (here x = -1) keeps its visible half's background in the composed
+// buffer, but a recorded text view skips the whole glyph and the backdrop shows. Either native text views keep that
+// background, or invariant 1 scopes the case out.
+const clipped = Array.from({ length: 3 }, () => [chunk("界", "#203040")])
+test.todo.each([
+  ["TextTable clipped wide glyph", TextTableRenderable, { content: clipped, border: false }],
+] as RecordCase[])("%s records what its buffer composes", recordsComposed)
 
 // A font cut at the top or the bottom draws the rows inside the buffer. Every call returns the laid-out size, also
 // when no row is inside.
