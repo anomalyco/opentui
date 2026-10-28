@@ -1024,7 +1024,6 @@ pub export fn yogaNodeSetMeasureFuncChecked(node: YGNodeRef, enabled: u32) Statu
     return @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled != 0) &internalMeasureFunc else null, 0));
 }
 
-/// `height_cap_only_clamps`: the callback uses an "at most" height only to clamp its result.
 pub fn yogaNodeSetNativeMeasureFunc(node: YGNodeRef, target: ?*anyopaque, callback: ?NativeMeasureCallback, height_cap_only_clamps: bool) Status {
     if ((target == null) != (callback == null)) return .invalid_argument;
     const enabled = target != null;

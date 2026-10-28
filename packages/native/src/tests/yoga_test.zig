@@ -1160,6 +1160,12 @@ test "Yoga larger-height-cap reuse keeps every layout of random trees, texts, an
                 yoga.yogaNodeGetComputedLayout(first, &layouts[0]);
                 yoga.yogaNodeGetComputedLayout(second, &layouts[1]);
                 try std.testing.expectEqualSlices(u8, std.mem.asBytes(&layouts[1]), std.mem.asBytes(&layouts[0]));
+                // Margin, padding, and border of each edge, which only a measure call writes.
+                for (0..3) |kind| for (0..4) |edge| {
+                    var values: [2]f32 = undefined;
+                    for ([_]yoga.YGNodeRef{ first, second }, &values) |node, *out| try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(node, @intCast(kind), @intCast(edge), out));
+                    try std.testing.expectEqual(values[1], values[0]);
+                };
             }
         }
         for (&calls, leaves) |*total, twin| {
@@ -1176,8 +1182,9 @@ test "Yoga host callback owners use config context and cannot clear another owne
         fn first(node: ?*anyopaque, _: f32, _: u32, _: f32, _: u32) callconv(.c) void {
             yoga.yogaStoreMeasureResult(yoga.yogaNodeGetConfig(@ptrCast(node)), 3, 1);
         }
-        fn second(node: ?*anyopaque, _: f32, _: u32, _: f32, _: u32) callconv(.c) void {
-            yoga.yogaStoreMeasureResult(yoga.yogaNodeGetConfig(@ptrCast(node)), 7, 2);
+        // Half the offered height: a host measure may use the cap beyond clamping.
+        fn second(node: ?*anyopaque, _: f32, _: u32, height: f32, _: u32) callconv(.c) void {
+            yoga.yogaStoreMeasureResult(yoga.yogaNodeGetConfig(@ptrCast(node)), 7, if (std.math.isNan(height)) 2 else height / 2);
         }
         fn dirtyFirst(_: ?*anyopaque) callconv(.c) void {
             first_dirtied += 1;
@@ -1218,5 +1225,16 @@ test "Yoga host callback owners use config context and cannot clear another owne
     yoga.yogaNodeCalculateLayout(second_node, std.math.nan(f32), std.math.nan(f32), 1);
     yoga.yogaNodeGetComputedLayout(second_node, &layout);
     try std.testing.expectEqual(@as(f32, 7), layout.width);
+    // A larger cap measures a host leaf again.
+    const parent = try second.createNode();
+    defer yoga.yogaNodeFreeRecursive(parent);
+    const leaf = try second.createNode();
+    yoga.yogaNodeInsertChild(parent, leaf, 0);
+    yoga.yogaNodeSetMeasureFunc(leaf, true);
+    for ([_]f32{ 10, 20 }) |height| {
+        yoga.yogaNodeCalculateLayout(parent, 20, height, 1);
+        yoga.yogaNodeGetComputedLayout(leaf, &layout);
+        try std.testing.expectEqual(height / 2, layout.height);
+    }
     try std.testing.expect(yoga.yogaConfigClearCallbacks(second.ref, Host.second));
 }

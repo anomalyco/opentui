@@ -34,12 +34,11 @@
  
  namespace facebook::yoga {
  
-@@ -27,4 +28,14 @@ bool canUseCachedMeasurement(
+@@ -27,4 +28,13 @@ bool canUseCachedMeasurement(
      float marginColumn,
      const yoga::Config* config);
  
-+// OpenTUI: whether a measure function that uses an "at most" height only to
-+// clamp gives the cached size again for a larger cap at the same width.
++// OpenTUI: see Node::heightCapOnlyClamps().
 +bool canUseMeasurementForLargerHeightCap(
 +    SizingMode widthMode,
 +    float availableWidth,
@@ -84,7 +83,7 @@
  
    // Determine whether the results are already cached. We maintain a separate
    // cache for layouts and measurements. A layout operation modifies the
-@@ -2226,6 +2245,31 @@ bool calculateLayoutInternal(
+@@ -2226,6 +2245,25 @@ bool calculateLayoutInternal(
          }
        }
      }
@@ -93,22 +92,16 @@
 +    // the larger height cap cannot change. It is stored as a call's result.
 +    if (cachedResults == nullptr && node->heightCapOnlyClamps() &&
 +        !hasPercentBoxLength(node->style())) {
-+      const auto fits = [&](const CachedMeasurement& cached) {
-+        return canUseMeasurementForLargerHeightCap(
-+            widthSizingMode,
-+            availableWidth,
-+            heightSizingMode,
-+            availableHeight,
-+            cached,
-+            marginAxisColumn);
-+      };
-+      if (fits(layout->cachedLayout)) {
-+        largerHeightCap = &layout->cachedLayout;
-+      }
 +      for (size_t i = 0;
 +           largerHeightCap == nullptr && i < layout->nextCachedMeasurementsIndex;
 +           i++) {
-+        if (fits(layout->cachedMeasurements[i])) {
++        if (canUseMeasurementForLargerHeightCap(
++                widthSizingMode,
++                availableWidth,
++                heightSizingMode,
++                availableHeight,
++                layout->cachedMeasurements[i],
++                marginAxisColumn)) {
 +          largerHeightCap = &layout->cachedMeasurements[i];
 +        }
 +      }
@@ -116,7 +109,7 @@
    } else if (performLayout) {
      if (yoga::inexactEquals(
              layout->cachedLayout.availableWidth, availableWidth) &&
-@@ -2258,20 +2302,27 @@ bool calculateLayoutInternal(
+@@ -2258,20 +2296,27 @@ bool calculateLayoutInternal(
      (performLayout ? layoutMarkerData.cachedLayouts
                     : layoutMarkerData.cachedMeasures) += 1;
    } else {

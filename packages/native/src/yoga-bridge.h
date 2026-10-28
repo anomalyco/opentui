@@ -44,8 +44,6 @@ uint32_t otYogaNodeRemoveAllChildren(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeCalculateLayout(YGNodeRef node, float width, float height,
                                    uint32_t direction) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeMarkDirty(YGNodeRef node) OT_YOGA_NOEXCEPT;
-// height_cap_only_clamps: the callback uses an "at most" height only to clamp
-// its result, so a size below the cap holds for a larger cap.
 uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback,
                                   uint32_t height_cap_only_clamps) OT_YOGA_NOEXCEPT;
 void otYogaNodeInvalidateMeasure(YGNodeRef node) OT_YOGA_NOEXCEPT;
