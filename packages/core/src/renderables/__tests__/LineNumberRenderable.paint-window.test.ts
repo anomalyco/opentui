@@ -86,22 +86,24 @@ async function recordedDraws(): Promise<NativeBufferDraw[]> {
 }
 
 describe("LineNumber paint window", () => {
-  // Signs align by the glyph widths that drawing uses: a family is 2 cells in unicode and 8 in wcwidth.
+  // Signs align by the glyph widths that drawing uses: a family is 2 cells in unicode and 8 in wcwidth, a tab
+  // spans cells, and 設 is 2 cells wide.
   test("signs align by their native width, also after the width method changes", async () => {
-    setup = await createTestRenderer({ width: 16, height: 2 })
-    const text = new TextRenderable(setup.renderer, { content: "a\nb" })
+    setup = await createTestRenderer({ width: 24, height: 3 })
+    const text = new TextRenderable(setup.renderer, { content: "a\nb\nc" })
     const lineSigns = new Map([
       [0, { before: "👩‍👩‍👧‍👧" }],
       [1, { before: "+" }],
+      [2, { before: "x\ty", after: "設" }],
     ])
-    setup.renderer.root.add(new LineNumberRenderable(setup.renderer, { target: text, lineSigns }))
+    setup.renderer.root.add(new LineNumberRenderable(setup.renderer, { target: text, lineSigns, marginLeft: 2 }))
     const rows: string[] = []
     for (const unicode of ["unicode", "wcwidth"] as const) {
       setRendererCapabilities(setup.renderer, { unicode })
       await setup.renderOnce()
       rows.push(setup.captureCharFrame().split("\n")[1].trimEnd())
     }
-    expect(rows).toEqual([" + 2 b", "       + 2 b"])
+    expect(rows).toEqual(["     + 2   b", "         + 2   b"])
   })
 
   test("fractional target scrolling and ancestor translation match native cell coordinates", async () => {
