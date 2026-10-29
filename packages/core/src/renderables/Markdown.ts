@@ -2155,24 +2155,10 @@ export class MarkdownRenderable extends Renderable {
       const nextToken = blockTokens[i + 1]
       const existing = this._blockStates[blockIndex]
 
-      const shouldForceRefresh = forceTableRefresh
-
-      if (existing && existing.token === token) {
-        if (shouldForceRefresh) {
-          this.updateBlockRenderable(existing, token, blockIndex, nextToken)
-          existing.tokenRaw = token.raw
-        } else {
-          this.applyInterBlockMargin(existing, token, nextToken)
-        }
-        blockIndex++
-        continue
-      }
-
       if (existing && existing.tokenRaw === token.raw && existing.token.type === token.type) {
         existing.token = token
-        if (shouldForceRefresh) {
-          this.updateBlockRenderable(existing, token, blockIndex, nextToken)
-          existing.tokenRaw = token.raw
+        if (forceTableRefresh) {
+          this.updateBlockRenderable(existing, token, blockIndex, nextToken, true)
         } else {
           this.applyInterBlockMargin(existing, token, nextToken)
         }

@@ -1967,9 +1967,10 @@ for (const [name, options] of [
     const md = createMarkdownRenderable({
       id: `markdown-list-style-update-${name}`,
       content:
-        "Intro\n\n---\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n\n| H |\n| --- |\n| `cell` |",
+        "Intro\n\n---\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n- fenced\n  ```ts\n  const a = 1\n  ```\n\n| H |\n| --- |\n| `cell` |",
       syntaxStyle: theme(fg2),
       fg: fg1,
+      streaming: true,
       ...options,
     })
     const spans = [
@@ -1982,10 +1983,16 @@ for (const [name, options] of [
       ["cell", fg2, fg1],
     ] as const
     const colors = () => spans.map(([text]) => findSpanContaining(captureSpans(), text)?.fg?.toInts())
+    const codeBlocks = (node: Renderable): CodeRenderable[] =>
+      node instanceof CodeRenderable && node.filetype === "typescript" ? [node] : node.getChildren().flatMap(codeBlocks)
 
     renderer.root.add(md)
     await renderMarkdownRenderable(md)
     expect(colors()).toEqual(spans.map(([, before]) => before.toInts()))
+
+    md.streaming = false
+    await renderOnce()
+    expect(codeBlocks(md).map((code) => code.streaming)).not.toContain(true)
 
     md.fg = fg2
     md.syntaxStyle = theme(fg1)
