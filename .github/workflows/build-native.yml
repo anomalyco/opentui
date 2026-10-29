@@ -340,6 +340,9 @@ jobs:
             test -f "$directory/LICENSE-STB" || (echo "❌ stb notice missing from $directory" && exit 1)
             test -f "$directory/LICENSE-WUFFS" || (echo "❌ Wuffs notice missing from $directory" && exit 1)
             test -f "$directory/LICENSE-LCMS2" || (echo "❌ Little CMS notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-FFMPEG" || (echo "❌ FFmpeg notice missing from $directory" && exit 1)
+            test -f "$directory/FFMPEG-SOURCE.md" || (echo "❌ FFmpeg source notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-ZLIB" || (echo "❌ zlib notice missing from $directory" && exit 1)
           done
 
           echo ""
