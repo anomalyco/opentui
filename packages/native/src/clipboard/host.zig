@@ -826,6 +826,7 @@ pub const Service = struct {
         if (wslOperationUnsupported(libraries, operation)) {
             return service.finishOperation(operation, .unsupported);
         }
+        service.resetFailedX11();
         operation.mechanism = operation.mechanism orelse if (libraries.wayland)
             .wayland
         else if (libraries.x11)
@@ -2699,6 +2700,14 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
         try std.testing.expectEqualStrings(case.data, operation.result);
         try std.testing.expectEqual(clipboard_x11.ReadState{}, operation.x11_read);
         try std.testing.expectEqual(case.dropped, service.x11 == null);
+        if (case.other == null) continue;
+
+        // Once the pending sibling is cancelled, the next operation drops the dead connection.
+        try std.testing.expectEqual(CancelStatus.requested, other.requestCancel());
+        var text_request = [_]u8{ 0, 0, 0, 0, 10, 0, 0, 0 } ++ "text/plain".*;
+        var next: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .request = &text_request };
+        try std.testing.expectEqual(OperationStatus.unsupported, service.driveOperation(&next));
+        try std.testing.expect(service.x11 == null);
     }
 }
 
