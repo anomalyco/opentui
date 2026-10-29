@@ -284,7 +284,7 @@ pub const Connection = struct {
     fn issueSelectionBarrier(self: *Connection) ?u64 {
         std.debug.assert(self.barrier_callback == null);
         const display = self.display orelse return null;
-        const callback = self.marshal(@ptrCast(display), 0, self.symbols.wl_callback_interface, 1, 0, &.{}) orelse
+        const callback = self.marshal(@ptrCast(display), 0, self.symbols.wl_callback_interface, 1, &.{}) orelse
             return null;
         if (self.addListener(callback, &barrier_listener) != 0) {
             self.symbols.wl_proxy_destroy(callback);
@@ -364,7 +364,7 @@ pub const Connection = struct {
         @memcpy(mime_z[0..mime.len], mime);
         mime_z[mime.len] = 0;
         var arguments = [_]WlArgument{ .{ .s = mime_z[0..mime.len :0].ptr }, .{ .h = fd } };
-        _ = self.marshal(offer.proxy, if (self.core_data_device) 1 else 0, null, 1, 0, &arguments);
+        _ = self.marshal(offer.proxy, if (self.core_data_device) 1 else 0, null, 1, &arguments);
         return self.queueFlush() != .failed;
     }
 
@@ -381,7 +381,7 @@ pub const Connection = struct {
             self.allocator.destroy(provider);
             return self.selectionFailure(.provider);
         };
-        const source = self.marshal(manager, 0, &self.metadata.source, 1, 0, &.{}) orelse {
+        const source = self.marshal(manager, 0, &self.metadata.source, 1, &.{}) orelse {
             self.allocator.free(transfers);
             self.allocator.destroy(provider);
             return self.selectionFailure(.provider);
@@ -403,7 +403,7 @@ pub const Connection = struct {
             return self.selectionFailure(.provider);
         }
         var arguments = [_]WlArgument{.{ .o = source }};
-        _ = self.marshal(device, if (primary) 2 else 0, null, self.symbols.wl_proxy_get_version(device), 0, &arguments);
+        _ = self.marshal(device, if (primary) 2 else 0, null, self.symbols.wl_proxy_get_version(device), &arguments);
         if (!self.displayHealthy()) {
             self.symbols.wl_proxy_destroy(source);
             self.allocator.free(transfers);
@@ -431,7 +431,7 @@ pub const Connection = struct {
         if (primary and !self.primary_supported) return .unsupported;
         const device = self.device orelse return self.selectionFailure(.protocol);
         var arguments = [_]WlArgument{.{ .o = null }};
-        _ = self.marshal(device, if (primary) 2 else 0, null, self.symbols.wl_proxy_get_version(device), 0, &arguments);
+        _ = self.marshal(device, if (primary) 2 else 0, null, self.symbols.wl_proxy_get_version(device), &arguments);
         if (!self.displayHealthy()) return self.selectionFailure(.protocol);
         const flush_result = self.queueFlush();
         if (flush_result == .failed) {
@@ -533,7 +533,7 @@ pub const Connection = struct {
             set_max_buffer_size(display, WAYLAND_CONNECTION_BUFFER_SIZE_MAX);
         }
         self.display = display;
-        const registry = self.marshal(@ptrCast(display), 1, self.symbols.wl_registry_interface, 1, 0, &.{}) orelse
+        const registry = self.marshal(@ptrCast(display), 1, self.symbols.wl_registry_interface, 1, &.{}) orelse
             return error.RegistryFailed;
         self.registry = registry;
         if (self.addListener(registry, &registry_listener) != 0) return error.ListenerFailed;
@@ -544,7 +544,7 @@ pub const Connection = struct {
 
     fn sendSync(self: *Connection) bool {
         const display = self.display orelse return false;
-        const callback = self.marshal(@ptrCast(display), 0, self.symbols.wl_callback_interface, 1, 0, &.{}) orelse
+        const callback = self.marshal(@ptrCast(display), 0, self.symbols.wl_callback_interface, 1, &.{}) orelse
             return false;
         self.sync_callback = callback;
         return self.addListener(callback, &callback_listener) == 0 and self.queueFlush() != .failed;
@@ -623,7 +623,7 @@ pub const Connection = struct {
         @memcpy(mime_z[0..mime.len], mime);
         mime_z[mime.len] = 0;
         var arguments = [_]WlArgument{.{ .s = mime_z[0..mime.len :0].ptr }};
-        _ = self.marshal(source, 0, null, 1, 0, &arguments);
+        _ = self.marshal(source, 0, null, 1, &arguments);
         return self.displayHealthy();
     }
 
@@ -671,7 +671,8 @@ pub const Connection = struct {
     }
 
     fn destroyProtocolProxy(self: *Connection, proxy: *WlProxy, opcode: u32) void {
-        _ = self.marshal(proxy, opcode, null, self.symbols.wl_proxy_get_version(proxy), 1, &.{});
+        _ = self.marshal(proxy, opcode, null, self.symbols.wl_proxy_get_version(proxy), &.{});
+        self.symbols.wl_proxy_destroy(proxy);
     }
 
     fn destroyOffer(self: *Connection, proxy: *WlProxy) void {
@@ -696,7 +697,6 @@ pub const Connection = struct {
             0,
             self.symbols.wl_surface_interface,
             2,
-            0,
             &new_id,
         ) orelse {
             self.destroyCoreHelper();
@@ -708,7 +708,6 @@ pub const Connection = struct {
             0,
             self.symbols.wl_shell_surface_interface,
             1,
-            0,
             &shell_arguments,
         ) orelse {
             self.destroyCoreHelper();
@@ -718,9 +717,9 @@ pub const Connection = struct {
             self.destroyCoreHelper();
             return false;
         }
-        _ = self.marshal(self.helper_shell_surface.?, 3, null, 1, 0, &.{});
+        _ = self.marshal(self.helper_shell_surface.?, 3, null, 1, &.{});
         var title = [_]WlArgument{.{ .s = "OpenTUI Clipboard" }};
-        _ = self.marshal(self.helper_shell_surface.?, 8, null, 1, 0, &title);
+        _ = self.marshal(self.helper_shell_surface.?, 8, null, 1, &title);
 
         var pool_arguments = [_]WlArgument{ .{ .n = 0 }, .{ .h = fd }, .{ .i = 4 } };
         self.helper_pool = self.marshal(
@@ -728,7 +727,6 @@ pub const Connection = struct {
             0,
             self.symbols.wl_shm_pool_interface,
             1,
-            0,
             &pool_arguments,
         ) orelse {
             self.destroyCoreHelper();
@@ -747,17 +745,16 @@ pub const Connection = struct {
             0,
             self.symbols.wl_buffer_interface,
             1,
-            0,
             &buffer_arguments,
         ) orelse {
             self.destroyCoreHelper();
             return false;
         };
         var attach_arguments = [_]WlArgument{ .{ .o = self.helper_buffer.? }, .{ .i = 0 }, .{ .i = 0 } };
-        _ = self.marshal(self.helper_surface.?, 1, null, 2, 0, &attach_arguments);
+        _ = self.marshal(self.helper_surface.?, 1, null, 2, &attach_arguments);
         var damage_arguments = [_]WlArgument{ .{ .i = 0 }, .{ .i = 0 }, .{ .i = 1 }, .{ .i = 1 } };
-        _ = self.marshal(self.helper_surface.?, 2, null, 2, 0, &damage_arguments);
-        _ = self.marshal(self.helper_surface.?, 6, null, 2, 0, &.{});
+        _ = self.marshal(self.helper_surface.?, 2, null, 2, &damage_arguments);
+        _ = self.marshal(self.helper_surface.?, 6, null, 2, &.{});
         if (self.queueFlush() != .failed) return true;
         self.destroyCoreHelper();
         return false;
@@ -811,7 +808,7 @@ pub const Connection = struct {
         self.manager = manager;
         self.bound_manager_global = manager_global;
         var arguments = [_]WlArgument{ .{ .n = 0 }, .{ .o = seat.proxy } };
-        const device = self.marshal(manager, 1, &self.metadata.device, manager_version, 0, &arguments) orelse return .failed;
+        const device = self.marshal(manager, 1, &self.metadata.device, manager_version, &arguments) orelse return .failed;
         self.device = device;
         self.bound_seat_global = seat.global_name;
         if (self.addListener(device, &device_listener) != 0) return .failed;
@@ -853,7 +850,6 @@ pub const Connection = struct {
             1,
             self.symbols.wl_data_device_interface,
             1,
-            0,
             &device_arguments,
         ) orelse return .failed;
         if (self.addListener(self.device.?, &core_device_listener) != 0) return .failed;
@@ -864,7 +860,6 @@ pub const Connection = struct {
             1,
             self.symbols.wl_keyboard_interface,
             1,
-            0,
             &keyboard_arguments,
         ) orelse return .failed;
         if (self.addListener(self.keyboard.?, &keyboard_listener) != 0) return .failed;
@@ -902,7 +897,7 @@ pub const Connection = struct {
             .{ .u = version },
             .{ .n = 0 },
         };
-        return self.marshal(self.registry.?, 0, interface, version, 0, &arguments);
+        return self.marshal(self.registry.?, 0, interface, version, &arguments);
     }
 
     fn marshal(
@@ -911,13 +906,12 @@ pub const Connection = struct {
         opcode: u32,
         interface: ?*const WlInterface,
         version: u32,
-        flags: u32,
         arguments: []const WlArgument,
     ) ?*WlProxy {
         if (comptime builtin.is_test) self.test_marshal_count += 1;
         var empty: [1]WlArgument = undefined;
         const pointer: [*]WlArgument = if (arguments.len == 0) &empty else @constCast(arguments.ptr);
-        return self.symbols.wl_proxy_marshal_array_flags(proxy, opcode, interface, version, flags, pointer);
+        return self.symbols.wl_proxy_marshal_array_constructor_versioned(proxy, opcode, pointer, interface, version);
     }
 
     fn displayHealthy(self: *const Connection) bool {
@@ -1142,7 +1136,7 @@ pub const Connection = struct {
     fn shellSurfacePing(data: ?*anyopaque, shell_surface: ?*WlProxy, serial: u32) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
         var arguments = [_]WlArgument{.{ .u = serial }};
-        _ = self.marshal(shell_surface.?, 0, null, 1, 0, &arguments);
+        _ = self.marshal(shell_surface.?, 0, null, 1, &arguments);
         _ = self.queueFlush();
     }
 
@@ -1370,7 +1364,7 @@ test "Wayland seat selection treats XDG_SEAT as advisory but explicit configurat
         .events = null,
     };
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshalFailure;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshalFailure;
     symbols.wl_seat_interface = &seat_interface;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
     connection.registry = @ptrFromInt(3);
@@ -1412,18 +1406,20 @@ test "Wayland seat selection treats XDG_SEAT as advisory but explicit configurat
 
 test "Wayland core helper destroys its role before its surface" {
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
     symbols.wl_proxy_destroy = testRoleDestroy;
     symbols.wl_proxy_get_version = testProxyVersion;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
     connection.helper_surface = @ptrFromInt(1);
     connection.helper_shell_surface = @ptrFromInt(2);
-    test_role_destroyed_before_surface = false;
+    test_role_destroy_count = 0;
     test_role_connection = &connection;
 
     connection.destroyCoreHelper();
 
-    try std.testing.expect(test_role_destroyed_before_surface);
+    // Destroyed proxy and marshal count: the role first, then the surface after its request.
+    const expected = [_][2]usize{ .{ 2, 0 }, .{ 1, 1 } };
+    try std.testing.expectEqualSlices([2]usize, &expected, test_role_destroyed[0..test_role_destroy_count]);
 }
 
 test "Wayland connection setup applies the finite receive buffer cap and records an inherited socket" {
@@ -1505,7 +1501,7 @@ test "Wayland dispatch bulk-drains pending events without the 1.25 single-event 
 
 test "Wayland selection barrier orders admissions across in-flight syncs" {
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
     symbols.wl_proxy_add_listener = testAddListener;
     symbols.wl_proxy_destroy = testDestroyProxy;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
@@ -1538,14 +1534,14 @@ test "Wayland selection barrier orders admissions across in-flight syncs" {
 
 test "Wayland selection barrier reports sync issue failure to the caller" {
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshalFailure;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshalFailure;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
     connection.display = @ptrFromInt(1);
 
     try std.testing.expect(connection.requestSelectionBarrier() == null);
     try std.testing.expect(connection.barrier_callback == null);
 
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
     symbols.wl_proxy_add_listener = testAddListener;
     symbols.wl_proxy_destroy = testDestroyProxy;
     var flush_failure = Connection.init(std.testing.allocator, &symbols, "", "", 1);
@@ -1642,7 +1638,7 @@ test "Wayland fatal selection flush preserves local ownership state" {
 // Fake libwayland entry points for tests that drive a connection without a compositor.
 pub fn testSymbols() linux.WaylandSymbols {
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
     symbols.wl_proxy_add_listener = testAddListener;
     symbols.wl_proxy_destroy = testDestroyProxy;
     symbols.wl_proxy_get_version = testProxyVersion;
@@ -1672,7 +1668,8 @@ var test_display_fd: std.posix.fd_t = -1;
 var test_read_event_count: u32 = 0;
 var test_display_error_call_count: u32 = 0;
 var test_role_connection: ?*Connection = null;
-var test_role_destroyed_before_surface = false;
+var test_role_destroyed: [2][2]usize = undefined;
+var test_role_destroy_count: usize = 0;
 
 fn testSetMaxBufferSize(_: *linux.WlDisplay, size: usize) callconv(.c) void {
     test_max_buffer_size = size;
@@ -1724,27 +1721,28 @@ fn testDisplayError(_: *linux.WlDisplay) callconv(.c) c_int {
 fn testMarshal(
     _: *WlProxy,
     _: u32,
+    _: [*]WlArgument,
     _: ?*const WlInterface,
     _: u32,
-    _: u32,
-    _: [*]WlArgument,
 ) callconv(.c) ?*WlProxy {
     return @ptrFromInt(4);
 }
 
 fn testMarshalFailure(
-    _: *WlProxy,
+    proxy: *WlProxy,
     _: u32,
+    arguments: [*]WlArgument,
     _: ?*const WlInterface,
-    _: u32,
-    _: u32,
-    _: [*]WlArgument,
+    version: u32,
 ) callconv(.c) ?*WlProxy {
+    // The seat test binds global 3 through registry 3: the bind arguments must reach libwayland.
+    if (@intFromPtr(proxy) == 3) std.debug.assert(arguments[0].u == 3 and arguments[2].u == version);
     return null;
 }
 
 fn testRoleDestroy(proxy: *WlProxy) callconv(.c) void {
-    test_role_destroyed_before_surface = @intFromPtr(proxy) == 2 and test_role_connection.?.test_marshal_count == 0;
+    test_role_destroyed[test_role_destroy_count] = .{ @intFromPtr(proxy), test_role_connection.?.test_marshal_count };
+    test_role_destroy_count += 1;
 }
 
 fn testAddListener(_: *WlProxy, _: [*]const *const anyopaque, _: ?*anyopaque) callconv(.c) c_int {
@@ -1886,7 +1884,8 @@ test "Wayland core helper requires an advertised keyboard capability" {
 
 test "Wayland core focus lifecycle rejects stale and unfocused offers" {
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
+    symbols.wl_proxy_destroy = testDestroyProxy;
     symbols.wl_proxy_get_version = testProxyVersion;
     const offer: *WlProxy = @ptrFromInt(1);
     const surface: *WlProxy = @ptrFromInt(2);
@@ -1981,7 +1980,8 @@ test "Wayland bound core seat keyboard loss fails active and future acquisitions
 
 test "Wayland failed connection cancels providers and frees idle generations" {
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
+    symbols.wl_proxy_destroy = testDestroyProxy;
     symbols.wl_proxy_get_version = testProxyVersion;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
     const provider = try std.testing.allocator.create(Provider);
@@ -2004,7 +2004,8 @@ test "Wayland failed connection cancels providers and frees idle generations" {
 test "Wayland failed connection lets active transfers drain but rejects new sends" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
+    symbols.wl_proxy_destroy = testDestroyProxy;
     symbols.wl_proxy_get_version = testProxyVersion;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
     const provider = try std.testing.allocator.create(Provider);
@@ -2104,7 +2105,7 @@ test "Wayland publication reclaims cancelled providers before checking capacity"
 
 test "Wayland clear retires the current provider at the generation bound" {
     var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
     symbols.wl_proxy_destroy = testDestroyProxy;
     symbols.wl_proxy_get_version = testProxyVersion;
     var connection = testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
