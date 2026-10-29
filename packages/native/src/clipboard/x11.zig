@@ -1042,7 +1042,10 @@ pub const Connection = struct {
     pub fn pollEvent(self: *Connection) ?*linux.XcbGenericEvent {
         const connection = self.connection orelse return null;
         if (self.phase != .ready) return null;
-        return self.symbols.xcb_poll_for_event(connection);
+        const event = self.symbols.xcb_poll_for_event(connection);
+        // xcb reports a lost server only through the connection error; nothing else polls it once ready.
+        if (event == null and self.symbols.xcb_connection_has_error(connection) != 0) _ = self.fail(.connection);
+        return event;
     }
 
     pub fn handleProviderEvent(self: *Connection, event: *const linux.XcbGenericEvent) void {

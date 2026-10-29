@@ -1053,6 +1053,13 @@ describe("TextRenderable Selection", () => {
       expect(frame).toMatchSnapshot()
     })
 
+    it("draws the visible cell of a wide glyph cut at x = -1 as a blank on the glyph's background", async () => {
+      await createTextRenderable(currentRenderer, { content: "0123", bg: "#c04010", position: "absolute" })
+      await createTextRenderable(currentRenderer, { content: "界界", bg: "#2040c0", position: "absolute", left: -1 })
+      const bg = currentRenderer.currentRenderBuffer.withBuffers(({ bg }) => [...bg.slice(0, 3)].map((v) => v & 0xff))
+      expect([captureFrame().slice(0, 3), bg]).toEqual([" 界3", [32, 64, 192]])
+    })
+
     it("should render empty buffer correctly", async () => {
       await renderOnce()
       const frame = captureFrame()

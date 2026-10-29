@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: aba630642996a5d78ed3447e55168d273f7c5470c7dd30a5d45b8fe87c8ee76f
+// ABI audit SHA-256: 5e78368ddeb864750f22edad26180de614ba37a6d6ea466c07e2cf590be5b4c0
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1859,6 +1859,8 @@ export const nativeConstants = {
   OT_EDIT_POSITION_OFFSET: 4,
   OT_EDIT_POSITION_COORDS: 5,
   OT_EDIT_POSITION_LINE_START: 6,
+  OT_EDIT_POSITION_END: 7,
+  OT_EDIT_POSITION_PREV_CHAR: 8,
   OT_EDITOR_STYLE_FOREGROUND: 1,
   OT_EDITOR_STYLE_BACKGROUND: 2,
   OT_EDITOR_STYLE_ATTRIBUTES: 4,
@@ -1978,6 +1980,9 @@ export const nativeConstants = {
   OT_TERMINAL_MOUSE_MOVEMENT: 4,
   OT_TERMINAL_CLEAR_ON_CLOSE: 8,
   OT_TERMINAL_REPLY_SENTINEL: 16,
+  OT_TERMINAL_SYNC_ALWAYS: 32,
+  OT_TERMINAL_SYNC_NEVER: 64,
+  OT_TERMINAL_HOST_MULTIPLEXER: 128,
   OT_CONTROL_CAPABILITY_RESPONSE: 1,
   OT_CONTROL_TITLE: 2,
   OT_CONTROL_MOUSE: 3,

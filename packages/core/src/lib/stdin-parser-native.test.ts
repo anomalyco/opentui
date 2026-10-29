@@ -14,20 +14,28 @@ function events(parser: Parser): StdinEvent[] {
   return out
 }
 
-function parse(create: (options: StdinParserOptions) => Parser, chunks: (string | Uint8Array)[], options = {}) {
+// A null chunk is a pause: the clock passes the Escape timeout. Events drain after every step, as
+// the renderer drains them from its timeout callback.
+function parse(create: (options: StdinParserOptions) => Parser, chunks: Chunk[], options = {}) {
   const clock = new ManualClock()
   const parser = create({ armTimeouts: true, clock, timeoutMs: 20, ...options })
+  const out: StdinEvent[] = []
   try {
-    for (const chunk of chunks) parser.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
-    clock.advance(20)
-    return events(parser)
+    for (const chunk of [...chunks, null]) {
+      if (chunk === null) clock.advance(20)
+      else parser.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
+      parser.drain((event) => out.push(event))
+    }
+    return out
   } finally {
     parser.destroy()
   }
 }
 
+type Chunk = string | Uint8Array | null
 const legacy = (options: StdinParserOptions) => new StdinParser(options)
 const native = (options: StdinParserOptions) => new NativeStdinParser(options)
+const bytes = (text: string) => Buffer.from(text, "latin1")
 
 function summary(event: StdinEvent | undefined): unknown {
   if (!event) return undefined
@@ -43,106 +51,152 @@ function summary(event: StdinEvent | undefined): unknown {
   }
 }
 
+const key = (name: string, raw = name, mods = "") => ({
+  key: name,
+  raw,
+  ctrl: mods.includes("ctrl"),
+  meta: mods.includes("meta"),
+  shift: mods.includes("shift"),
+})
+const typed = (text: string) => [...text].map((char) => key(char))
+const reply = (sequence: string, protocol = "csi") => ({ response: protocol, sequence })
+const mouse = (type: string, x: number, y: number, button = 0) => ({ mouse: type, button, x, y })
+// OpenCode's renderer while a startup query batch waits for its DA1 reply (native parser only).
+const SENTINEL = { protocolContext: { privateCapabilityRepliesActive: true, replySentinelActive: true } }
+
+// Where the parsers differ on purpose, and where only the legacy parser is wrong: it is not changed
+// for its own bugs. Rows from the replay corpus name the issue they pin.
+const INTENTIONAL: Array<
+  [label: string, chunks: Chunk[], legacy: unknown[], native: unknown[], options?: StdinParserOptions]
+> = [
+  [
+    "ESC inside OSC ends the string instead of waiting for the timeout",
+    ["\x1b]11;rgb:0/0/0\x1b[A"],
+    [reply("\x1b]11;rgb:0/0/0\x1b[A", "unknown")],
+    [reply("\x1b]11;rgb:0/0/0", "unknown"), key("up", "\x1b[A")],
+  ],
+  [
+    "SGR motion with a held button is a drag without a seen press",
+    ["\x1b[<32;2;2M"],
+    [mouse("move", 1, 1)],
+    [mouse("drag", 1, 1)],
+  ],
+  ["unknown sequences are replies, not keys with an empty name", ["\x1b[h"], [key("", "\x1b[h")], [reply("\x1b[h")]],
+  ["Alt applies to every printable byte (issue 046)", ["\x1b."], [key("", "\x1b.")], [key(".", "\x1b.", "meta")]],
+  [
+    "Alt applies to UTF-8 characters (issue 047)",
+    ["\x1bé"],
+    [key("", "\x1b\ufffd"), key("", "\x1b)")],
+    [key("é", "\x1bé", "meta")],
+  ],
+  [
+    "an SGR wheel release is not a button release (issue 048)",
+    ["\x1b[<64;5;5m"],
+    [mouse("up", 4, 4)],
+    [reply("\x1b[<64;5;5m")],
+  ],
+  [
+    "an X10 coordinate past the end is cell 223, not negative (issue 049)",
+    [Uint8Array.from([0x1b, 0x5b, 0x4d, 32, 0, 40])],
+    [mouse("down", -33, 7)],
+    [mouse("down", 223, 7)],
+  ],
+  [
+    "Escape then a mouse report in one read keeps both (issue 044)",
+    ["\x1b\x1b[<35;10;5M"],
+    [key("", "\x1b\x1b[<35;10;5M")],
+    [key("escape", "\x1b"), mouse("move", 9, 4)],
+  ],
+  ["zero bytes only resolve timeouts", [new Uint8Array(0)], [key("", "")], []],
+  [
+    "X10 releases report the button pressed last",
+    ['\x1b[M"!!\x1b[M#!!'],
+    [mouse("down", 0, 0, 2), mouse("up", 0, 0)],
+    [mouse("down", 0, 0, 2), mouse("up", 0, 0, 2)],
+  ],
+  [
+    "extra mouse buttons report 8 and up instead of a left click",
+    ["\x1b[<128;1;1M\x1b[<129;1;1m"],
+    [mouse("down", 0, 0), mouse("up", 0, 0, 1)],
+    [mouse("down", 0, 0, 8), mouse("up", 0, 0, 9)],
+  ],
+  [
+    "Kitty CSI u decodes without the legacy useKittyKeyboard option",
+    ["\x1b[97;5u"],
+    [key("", "\x1b[97;5u")],
+    [key("a", "\x1b[97;5u", "ctrl")],
+    { useKittyKeyboard: false },
+  ],
+  [
+    "a reply that a pause splits stays one reply while a DA1 sentinel is out (issue 342)",
+    ["\x1b]11;rgb:0", null, "/0/0\x1b\\\x1bP>|kit", null, "ty\x1b\\\x1b_Gi=1;OK\x1b", null, "\\"],
+    [
+      reply("\x1b]11;rgb:0", "unknown"),
+      ...typed("/0/0"),
+      key("", "\x1b\\"),
+      reply("\x1bP>|kit", "unknown"),
+      ...typed("ty"),
+      key("", "\x1b\\"),
+      reply("\x1b_Gi=1;OK\x1b", "unknown"),
+      key("\\"),
+    ],
+    [reply("\x1b]11;rgb:0/0/0\x1b\\", "osc"), reply("\x1bP>|kitty\x1b\\", "dcs"), reply("\x1b_Gi=1;OK\x1b\\", "apc")],
+    SENTINEL,
+  ],
+  [
+    "a UTF-8 character that a pause splits stays one character (issue 344)",
+    [bytes("\xe2\x9c"), null, bytes("\x93")],
+    [key("b", "\x1bb", "meta"), key("\\", "\x1b\x1c", "ctrl meta"), key("s", "\x1b\x13", "ctrl meta")],
+    [key("✓")],
+  ],
+  ["a lone UTF-8 lead byte waits without a deadline (issue 344)", [bytes("\xe1")], [key("a", "\x1ba", "meta")], []],
+  [
+    "a second byte that UTF-8 rules out ends the character as eight-bit Alt keys (issue 344)",
+    [bytes("\xed\xa0\x80")],
+    [key("", "\ufffd\ufffd\ufffd")],
+    [key("m", "\x1bm", "meta"), key("space", "\x1b ", "meta"), key("space", "\x1b\x00", "ctrl meta")],
+  ],
+  [
+    "a mouse report that a pause cuts after ESC [ stays a mouse report (issue 348)",
+    ["\x1b[", null, "<0;1;1M"],
+    [reply("\x1b[", "unknown"), ...typed("<0;1;1"), key("m", "M", "shift")],
+    [mouse("down", 0, 0)],
+  ],
+  [
+    "keys the legacy parser misreads: SS3 with a modifier, Kitty code 8, F13, rxvt Ctrl+Shift, Alt+Tab",
+    ["\x1bO2P\x1b[8;5u\x1b[25~\x1b[2@\x1b\t"],
+    [
+      key("", "\x1bO2"),
+      key("p", "P", "shift"),
+      key("\b", "\x1b[8;5u", "ctrl"),
+      key("", "\x1b[25~"),
+      key("", "\x1b[2@"),
+      key("i", "\x1b\t", "ctrl meta"),
+    ],
+    [
+      key("f1", "\x1bO2P", "shift"),
+      key("backspace", "\x1b[8;5u", "ctrl"),
+      key("f13", "\x1b[25~"),
+      key("insert", "\x1b[2@", "ctrl shift"),
+      key("tab", "\x1b\t", "meta"),
+    ],
+  ],
+  [
+    "eight-bit Alt+Shift+B is not Alt+Left",
+    [bytes("\xc2x")],
+    [key("left", "\x1bB", "meta"), key("x")],
+    [key("B", "\x1bB", "meta shift"), key("x")],
+  ],
+  [
+    "SGR button 3 is not a press, and coordinate 0 is cell 0",
+    ["\x1b[<3;10;5M\x1b[<0;0;0M"],
+    [mouse("down", 9, 4), mouse("down", -1, -1)],
+    [reply("\x1b[<3;10;5M"), mouse("down", 0, 0)],
+  ],
+]
+
 describe("native stdin parser: intentional changes", () => {
-  const cases: Array<
-    [label: string, chunks: (string | Uint8Array)[], legacy: unknown[], native: unknown[], options?: StdinParserOptions]
-  > = [
-    [
-      "ESC inside OSC ends the string instead of waiting for the timeout",
-      ["\x1b]11;rgb:0/0/0\x1b[A"],
-      [{ response: "unknown", sequence: "\x1b]11;rgb:0/0/0\x1b[A" }],
-      [
-        { response: "unknown", sequence: "\x1b]11;rgb:0/0/0" },
-        { key: "up", raw: "\x1b[A", ctrl: false, meta: false, shift: false },
-      ],
-    ],
-    [
-      "SGR motion with a held button is a drag without a seen press",
-      ["\x1b[<32;2;2M"],
-      [{ mouse: "move", button: 0, x: 1, y: 1 }],
-      [{ mouse: "drag", button: 0, x: 1, y: 1 }],
-    ],
-    [
-      "unknown sequences are replies, not keys with an empty name",
-      ["\x1b[h"],
-      [{ key: "", raw: "\x1b[h", ctrl: false, meta: false, shift: false }],
-      [{ response: "csi", sequence: "\x1b[h" }],
-    ],
-    [
-      "Alt applies to every printable byte (issue 046)",
-      ["\x1b."],
-      [{ key: "", raw: "\x1b.", ctrl: false, meta: false, shift: false }],
-      [{ key: ".", raw: "\x1b.", ctrl: false, meta: true, shift: false }],
-    ],
-    [
-      "Alt applies to UTF-8 characters (issue 047)",
-      ["\x1bé"],
-      [
-        { key: "", raw: "\x1b\ufffd", ctrl: false, meta: false, shift: false },
-        { key: "", raw: "\x1b)", ctrl: false, meta: false, shift: false },
-      ],
-      [{ key: "é", raw: "\x1bé", ctrl: false, meta: true, shift: false }],
-    ],
-    [
-      "an SGR wheel release is not a button release (issue 048)",
-      ["\x1b[<64;5;5m"],
-      [{ mouse: "up", button: 0, x: 4, y: 4 }],
-      [{ response: "csi", sequence: "\x1b[<64;5;5m" }],
-    ],
-    [
-      "an X10 coordinate past the end is cell 223, not negative (issue 049)",
-      [Uint8Array.from([0x1b, 0x5b, 0x4d, 32, 0, 40])],
-      [{ mouse: "down", button: 0, x: -33, y: 7 }],
-      [{ mouse: "down", button: 0, x: 223, y: 7 }],
-    ],
-    [
-      "Escape then a mouse report in one read keeps both (issue 044)",
-      ["\x1b\x1b[<35;10;5M"],
-      [{ key: "", raw: "\x1b\x1b[<35;10;5M", ctrl: false, meta: false, shift: false }],
-      [
-        { key: "escape", raw: "\x1b", ctrl: false, meta: false, shift: false },
-        { mouse: "move", button: 0, x: 9, y: 4 },
-      ],
-    ],
-    [
-      "zero bytes only resolve timeouts",
-      [new Uint8Array(0)],
-      [{ key: "", raw: "", ctrl: false, meta: false, shift: false }],
-      [],
-    ],
-    [
-      "X10 releases report the button pressed last",
-      ['\x1b[M"!!\x1b[M#!!'],
-      [
-        { mouse: "down", button: 2, x: 0, y: 0 },
-        { mouse: "up", button: 0, x: 0, y: 0 },
-      ],
-      [
-        { mouse: "down", button: 2, x: 0, y: 0 },
-        { mouse: "up", button: 2, x: 0, y: 0 },
-      ],
-    ],
-    [
-      "extra mouse buttons report 8 and up instead of a left click",
-      ["\x1b[<128;1;1M\x1b[<129;1;1m"],
-      [
-        { mouse: "down", button: 0, x: 0, y: 0 },
-        { mouse: "up", button: 1, x: 0, y: 0 },
-      ],
-      [
-        { mouse: "down", button: 8, x: 0, y: 0 },
-        { mouse: "up", button: 9, x: 0, y: 0 },
-      ],
-    ],
-    [
-      "Kitty CSI u decodes without the legacy useKittyKeyboard option",
-      ["\x1b[97;5u"],
-      [{ key: "", raw: "\x1b[97;5u", ctrl: false, meta: false, shift: false }],
-      [{ key: "a", raw: "\x1b[97;5u", ctrl: true, meta: false, shift: false }],
-      { useKittyKeyboard: false },
-    ],
-  ]
-  for (const [label, chunks, legacyEvents, nativeEvents, options] of cases) {
+  for (const [label, chunks, legacyEvents, nativeEvents, options] of INTENTIONAL) {
     test(label, () => {
       expect(parse(legacy, chunks, options).map(summary)).toEqual(legacyEvents)
       expect(parse(native, chunks, options).map(summary)).toEqual(nativeEvents)
@@ -182,6 +236,45 @@ describe("native stdin parser: differential replay", () => {
       expect(parse(native, chunks, options).map(summary)).toEqual(parse(legacy, chunks, options).map(summary))
     })
   }
+
+  test("each parser reports the same events however the reads between pauses are split", () => {
+    // Seeded streams of the rows' and streams' inputs, with up to two pauses. A read after a
+    // pause that ends in `[` keeps its first 4 bytes: a timed-out `ESC [` continues only when the
+    // next read holds the rest of a mouse report (issue 348).
+    const fragments = [...INTENTIONAL.flatMap(([, chunks]) => chunks), ...streams.map(([, text]) => text)]
+      .filter((chunk): chunk is string | Uint8Array => chunk !== null && chunk.length > 0)
+      .map((chunk) => (typeof chunk === "string" ? Buffer.from(chunk) : chunk))
+    const contexts = [{ protocolContext: { kittyKeyboardEnabled: true } }, {}, SENTINEL]
+    let seed = 0x5eed
+    let delivered = 0
+    const random = (n: number) => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 8) % n
+    for (let run = 0; run < 1000; run++) {
+      const input = Buffer.concat(Array.from({ length: 1 + random(5) }, () => fragments[random(fragments.length)]!))
+      const pauses = new Set(Array.from({ length: random(3) }, () => 1 + random(input.length)))
+      const options = contexts[random(contexts.length)]!
+      const whole: Chunk[] = []
+      const split: Chunk[] = []
+      for (let start = 0; start < input.length; ) {
+        let end = start + 1
+        while (end < input.length && !pauses.has(end)) end++
+        whole.push(input.subarray(start, end))
+        for (let at = start; at < end; ) {
+          const size = at === start && pauses.has(start) && input[start - 1] === 0x5b ? 4 : 1 + random(6)
+          split.push(input.subarray(at, Math.min(end, at + size)))
+          at += size
+        }
+        if (pauses.has(end)) for (const chunks of [whole, split]) chunks.push(null)
+        start = end
+      }
+      for (const create of [legacy, native]) {
+        const label = `run ${run} ${create === legacy ? "legacy" : "native"} ${JSON.stringify(input.toString("latin1"))}`
+        const expected = parse(create, whole, options)
+        delivered += expected.length
+        expect(`${label} ${JSON.stringify(parse(create, split, options))}`).toBe(`${label} ${JSON.stringify(expected)}`)
+      }
+    }
+    expect(delivered).toBeGreaterThan(10_000)
+  })
 
   test("the comparator reports each difference once and bounds a stalled side", () => {
     const lines: string[] = []
