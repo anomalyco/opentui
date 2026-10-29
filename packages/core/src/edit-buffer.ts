@@ -256,11 +256,13 @@ export class EditBuffer extends EventEmitter {
     return this.position(NativeEditPositionQuery.Eol)!
   }
 
-  public getEOF(): LogicalCursor {
+  /** @internal Extmarks read the end without moving the cursor. */
+  public _getEOF(): LogicalCursor {
     return this.position(NativeEditPositionQuery.End)!
   }
 
-  public getPrevCharBoundary(): LogicalCursor {
+  /** @internal Extmarks read where Left would move without moving the cursor. */
+  public _getPrevCharBoundary(): LogicalCursor {
     return this.position(NativeEditPositionQuery.PrevChar)!
   }
 
