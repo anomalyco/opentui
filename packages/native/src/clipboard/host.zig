@@ -857,7 +857,7 @@ pub const Service = struct {
                 service.environment_wayland_seat,
                 service.max_provider_transfers,
             );
-            wayland.allow_core_data_device = libraries.is_wsl;
+            wayland.is_wsl = libraries.is_wsl;
             service.wayland = wayland;
         }
         return switch (service.wayland.?.drive()) {
@@ -2494,6 +2494,7 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         output_pending: bool = false,
         phase: enum { ready, unsupported, failed } = .ready,
         inherited_socket: bool = false,
+        connected: bool = true,
         open: bool,
     };
     const cases = [_]Case{
@@ -2507,7 +2508,8 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         .{ .name = "owned primary selection", .provider = true, .primary = true, .open = true },
         .{ .name = "selection barrier", .barrier = true, .open = true },
         .{ .name = "queued output", .output_pending = true, .open = true },
-        .{ .name = "cached unsupported probe", .phase = .unsupported, .open = true },
+        .{ .name = "unsupported registry", .phase = .unsupported, .open = false },
+        .{ .name = "failed connect", .phase = .unsupported, .connected = false, .open = false },
         .{ .name = "failed connection", .phase = .failed, .open = false },
         .{ .name = "inherited WAYLAND_SOCKET", .inherited_socket = true, .open = true },
     };
@@ -2522,7 +2524,10 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         const service = acquireService(&objects, service_handle).?;
         service.libraries = .{ .wayland = true };
         const wayland = try std.testing.allocator.create(clipboard_wayland.Connection);
-        wayland.* = clipboard_wayland.testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
+        wayland.* = if (case.connected)
+            clipboard_wayland.testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS })
+        else
+            clipboard_wayland.Connection.init(std.testing.allocator, &symbols, "", "", 1);
         service.wayland = wayland;
         if (case.provider) {
             const data = try std.testing.allocator.dupe(u8, "owned");
@@ -2557,7 +2562,7 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         try std.testing.expectEqual(@as(u8, @intFromBool(active)), drainService(&objects, service_handle));
         try std.testing.expectEqual(case.open, service.wayland != null);
         // Queued events are dispatched before a close so their offers are destroyed.
-        try std.testing.expectEqual(@intFromBool(!case.open), Dispatch.count);
+        try std.testing.expectEqual(@intFromBool(!case.open and case.connected), Dispatch.count);
     }
 }
 
@@ -2582,6 +2587,34 @@ test "clipboard Wayland fallback transitions to X11 only when available" {
     service.libraries.x11 = false;
     try std.testing.expectEqual(OperationStatus.unsupported, service.fallbackWayland(&operation, service.libraries));
     try std.testing.expectEqual(clipboard_linux.Mechanism.wayland, operation.mechanism.?);
+}
+
+test "clipboard Wayland connection takes WSL detection from the service" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const Refuse = struct {
+        fn connect(_: ?[*:0]const u8) callconv(.c) ?*clipboard_linux.WlDisplay {
+            return null;
+        }
+    };
+    var symbols = clipboard_wayland.testSymbols();
+    symbols.wl_display_connect = Refuse.connect;
+    const previous = clipboard_linux.testSwapWaylandSymbols(symbols);
+    defer _ = clipboard_linux.testSwapWaylandSymbols(previous);
+    for ([_]bool{ false, true }) |is_wsl| {
+        var service: Service = .{
+            .allocator = std.testing.allocator,
+            .objects = undefined,
+            .libraries = .{ .wayland = true, .is_wsl = is_wsl },
+            .requested_wayland_seat = &.{},
+            .environment_wayland_seat = &.{},
+        };
+        defer service.resetWayland();
+        var operation: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read };
+
+        try std.testing.expectEqual(OperationStatus.unsupported, service.driveWayland(&operation, service.libraries));
+        // The WSLg socket fallback and the core data device both follow this flag.
+        try std.testing.expectEqual(is_wsl, service.wayland.?.is_wsl);
+    }
 }
 
 test "clipboard X11 candidate failure advances to the next compatible target" {

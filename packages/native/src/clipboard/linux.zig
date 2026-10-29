@@ -452,3 +452,12 @@ test "clipboard XCB ABI types match the core protocol layouts" {
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(XcbSelectionRequestEvent));
     try std.testing.expectEqual(@as(usize, 24), @sizeOf(XcbSelectionNotifyEvent));
 }
+
+// Replaces the loaded libwayland symbols so host tests can create a connection; returns the previous ones.
+pub fn testSwapWaylandSymbols(symbols: ?WaylandSymbols) ?WaylandSymbols {
+    cache_mutex.lock();
+    defer cache_mutex.unlock();
+    const previous = wayland_cache.symbols;
+    wayland_cache.symbols = symbols;
+    return previous;
+}

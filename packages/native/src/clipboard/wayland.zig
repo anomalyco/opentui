@@ -144,7 +144,7 @@ pub const Connection = struct {
     clipboard_provider: ?*Provider = null,
     primary_provider: ?*Provider = null,
     provider_cursor: u8 = 0,
-    allow_core_data_device: bool = false,
+    is_wsl: bool = false,
     flush_outcome_override: ?FlushOutcome = null,
     test_marshal_count: u8 = 0,
     test_flush_marshal_count: u8 = 0,
@@ -445,10 +445,10 @@ pub const Connection = struct {
     }
 
     // An idle connection still receives an offer for every selection change, so the host
-    // closes it and reconnects on demand. An unsupported result binds no device and stays
-    // cached, and an inherited socket cannot be reopened after libwayland consumed it.
+    // closes it and reconnects on demand. Closing an unsupported result retries it on the next
+    // operation, and an inherited socket cannot be reopened after libwayland consumed it.
     pub fn closableWhenIdle(self: *const Connection) bool {
-        return self.phase != .unsupported and !self.inherited_socket and !self.hasWork();
+        return !self.inherited_socket and !self.hasWork();
     }
 
     // Events already read from the socket may create offer proxies. Dispatching them
@@ -525,8 +525,16 @@ pub const Connection = struct {
 
     fn start(self: *Connection) !void {
         // libwayland adopts and unsets an inherited WAYLAND_SOCKET, so record it before connecting.
-        const inherited_socket = posix_io.getEnv("WAYLAND_SOCKET") != null;
-        const display = self.symbols.wl_display_connect(null) orelse return error.ConnectFailed;
+        var inherited_socket = posix_io.getEnv("WAYLAND_SOCKET") != null;
+        // libwayland refuses a relative name without an absolute XDG_RUNTIME_DIR and logs each
+        // refusal to stderr, which is the terminal; skip the attempt instead of repeating the line.
+        const runtime_dir = posix_io.getEnv("XDG_RUNTIME_DIR") orelse "";
+        const name = posix_io.getEnv("WAYLAND_DISPLAY") orelse "";
+        const absolute = std.mem.startsWith(u8, runtime_dir, "/") or std.mem.startsWith(u8, name, "/");
+        const display = (if (inherited_socket or absolute) self.symbols.wl_display_connect(null) else null) orelse wslg: {
+            inherited_socket = false;
+            break :wslg self.connectWslg() orelse return error.ConnectFailed;
+        };
         self.inherited_socket = inherited_socket;
         // libwayland before 1.23 has no cap symbol and uses fixed-size bounded buffers instead.
         if (self.symbols.wl_display_set_max_buffer_size) |set_max_buffer_size| {
@@ -540,6 +548,16 @@ pub const Connection = struct {
         self.phase = .registry;
         if (!self.sendSync()) return error.SyncFailed;
         if (self.queueFlush() == .failed) return error.FlushFailed;
+    }
+
+    // WSLg keeps its socket here, and an XDG_RUNTIME_DIR that does not link it hides it
+    // from libwayland (anomalyco/opencode#57724, #58466).
+    fn connectWslg(self: *Connection) ?*linux.WlDisplay {
+        if (!self.is_wsl) return null;
+        const name = posix_io.getEnv("WAYLAND_DISPLAY") orelse return null;
+        var buffer: [std.fs.max_path_bytes:0]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&buffer, "/mnt/wslg/runtime-dir/{s}", .{name}) catch return null;
+        return self.symbols.wl_display_connect(path);
     }
 
     fn sendSync(self: *Connection) bool {
@@ -821,7 +839,7 @@ pub const Connection = struct {
     }
 
     fn coreDataDeviceAvailable(self: *const Connection) bool {
-        return self.allow_core_data_device and self.core_manager_global != null and
+        return self.is_wsl and self.core_manager_global != null and
             self.compositor_global != null and self.shm_global != null and self.shell_global != null;
     }
 
@@ -1422,42 +1440,87 @@ test "Wayland core helper destroys its role before its surface" {
     try std.testing.expectEqualSlices([2]usize, &expected, test_role_destroyed[0..test_role_destroy_count]);
 }
 
-test "Wayland connection setup applies the finite receive buffer cap and records an inherited socket" {
+test "Wayland connection setup caps the receive buffer, records an inherited socket, and tries WSLg on WSL" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const Environment = struct {
         extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
         extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+        var refused: enum { none, default, all } = .none;
+        var path: [64]u8 = undefined;
+        var path_length: usize = 0;
+        var count: u8 = 0;
         // Like libwayland, connecting consumes an inherited WAYLAND_SOCKET.
-        fn connect(_: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
+        fn connect(name: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
             _ = unsetenv("WAYLAND_SOCKET");
-            return @ptrFromInt(1);
+            count += 1;
+            const explicit = name orelse return if (refused == .none) @ptrFromInt(1) else null;
+            path_length = std.mem.len(explicit);
+            @memcpy(path[0..path_length], explicit[0..path_length]);
+            return if (refused == .all) null else @ptrFromInt(1);
         }
     };
+    const Case = struct {
+        // libwayland before 1.23 has no cap symbol and already uses fixed-size bounded buffers.
+        cap: bool = true,
+        inherited: bool = false,
+        refused: @TypeOf(Environment.refused) = .none,
+        wsl: bool = false,
+        progress: Progress = .pending,
+        wslg_path: []const u8 = "",
+        connects: u8 = 1,
+        runtime_dir: bool = true,
+    };
+    const wslg_path = "/mnt/wslg/runtime-dir/wayland-7";
+    const cases = [_]Case{
+        .{ .inherited = true, .runtime_dir = false },
+        .{ .cap = false },
+        .{ .refused = .default, .progress = .unsupported },
+        .{ .wsl = true },
+        .{ .refused = .default, .wsl = true, .inherited = true, .wslg_path = wslg_path, .connects = 2 },
+        .{ .refused = .all, .wsl = true, .progress = .unsupported, .wslg_path = wslg_path, .connects = 2 },
+        // libwayland would refuse the relative name and log to stderr on every operation.
+        .{ .runtime_dir = false, .wsl = true, .wslg_path = wslg_path },
+    };
+    const names = [_][*:0]const u8{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR" };
+    var saved: [names.len]?[:0]u8 = undefined;
+    for (names, &saved) |name, *value| {
+        value.* = if (posix_io.getEnv(name)) |current| try std.testing.allocator.dupeZ(u8, current) else null;
+    }
+    defer for (names, saved) |name, value| {
+        if (value) |restored| {
+            _ = Environment.setenv(name, restored, 1);
+            std.testing.allocator.free(restored);
+        } else _ = Environment.unsetenv(name);
+    };
+    try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", "wayland-7", 1));
     var symbols = testSymbols();
     symbols.wl_display_connect = Environment.connect;
-    symbols.wl_display_set_max_buffer_size = testSetMaxBufferSize;
-    var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
-    connection.flush_outcome_override = .{ .result = 0, .errno = .SUCCESS };
-    test_max_buffer_size = 0;
-    try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
-    defer _ = Environment.unsetenv("WAYLAND_SOCKET");
+    for (cases) |case| {
+        symbols.wl_display_set_max_buffer_size = if (case.cap) testSetMaxBufferSize else null;
+        var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
+        connection.is_wsl = case.wsl;
+        connection.flush_outcome_override = .{ .result = 0, .errno = .SUCCESS };
+        test_max_buffer_size = 0;
+        Environment.refused = case.refused;
+        Environment.path_length = 0;
+        Environment.count = 0;
+        if (case.runtime_dir) {
+            try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", "/run/user/test", 1));
+        } else _ = Environment.unsetenv("XDG_RUNTIME_DIR");
+        if (case.inherited) try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
+        defer _ = Environment.unsetenv("WAYLAND_SOCKET");
 
-    try connection.start();
+        try std.testing.expectEqual(case.progress, connection.drive());
 
-    try std.testing.expectEqual(@as(usize, WAYLAND_CONNECTION_BUFFER_SIZE_MAX), test_max_buffer_size);
-    try std.testing.expect(connection.inherited_socket);
-
-    // libwayland before 1.23 has no cap symbol; setup must still succeed because
-    // those versions already use fixed-size bounded connection buffers.
-    symbols.wl_display_set_max_buffer_size = null;
-    var uncapped = Connection.init(std.testing.allocator, &symbols, "", "", 1);
-    uncapped.flush_outcome_override = .{ .result = 0, .errno = .SUCCESS };
-    test_max_buffer_size = 0;
-
-    try uncapped.start();
-
-    try std.testing.expectEqual(@as(usize, 0), test_max_buffer_size);
-    try std.testing.expect(!uncapped.inherited_socket);
+        const cap: usize = if (case.cap and case.progress != .unsupported) WAYLAND_CONNECTION_BUFFER_SIZE_MAX else 0;
+        try std.testing.expectEqual(cap, test_max_buffer_size);
+        try std.testing.expectEqualStrings(case.wslg_path, Environment.path[0..Environment.path_length]);
+        // A WSLg connection is not the inherited socket, so the idle drain may close it.
+        try std.testing.expectEqual(case.inherited and case.refused == .none, connection.inherited_socket);
+        // Later drives reuse the result; only the host's idle close lets an operation connect again.
+        for (0..3) |_| _ = connection.drive();
+        try std.testing.expectEqual(case.connects, Environment.count);
+    }
 }
 
 test "Wayland dispatch drains queued callbacks up to the per-drive bound" {
@@ -1834,13 +1897,13 @@ fn testOfferConnection(proxy: *WlProxy) Connection {
 
 test "Wayland core data-device fallback is WSL-gated and read-only" {
     var connection: Connection = undefined;
-    connection.allow_core_data_device = false;
+    connection.is_wsl = false;
     connection.core_manager_global = 1;
     connection.compositor_global = 2;
     connection.shm_global = 3;
     connection.shell_global = 4;
     try std.testing.expect(!connection.coreDataDeviceAvailable());
-    connection.allow_core_data_device = true;
+    connection.is_wsl = true;
     try std.testing.expect(connection.coreDataDeviceAvailable());
 
     connection.core_data_device = true;
@@ -1874,7 +1937,7 @@ test "Wayland core helper requires an advertised keyboard capability" {
     Connection.seatCapabilities(&connection, seat_proxy, 0);
     try std.testing.expectEqual(@as(u32, 0), connection.seats[0].capabilities);
 
-    connection.allow_core_data_device = true;
+    connection.is_wsl = true;
     connection.core_manager_global = 1;
     connection.compositor_global = 2;
     connection.shm_global = 3;
