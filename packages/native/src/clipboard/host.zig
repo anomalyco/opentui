@@ -267,9 +267,7 @@ pub const Operation = struct {
             operation.platform_cancel.store(true, .release);
             if (operation.platform_terminal_request == null) operation.platform_terminal_request = .cancelled;
             operation.mutex.unlock();
-            if (!operation.service.completeQueuedPlatformOperation(operation, .cancelled)) {
-                operation.service.wakePlatformWorker();
-            }
+            _ = operation.service.completePlatformOperation(operation);
             return .requested;
         }
         defer operation.mutex.unlock();
@@ -292,6 +290,7 @@ pub const Operation = struct {
     }
 
     fn poll(operation: *Operation) OperationStatus {
+        if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) return operation.pollPlatform();
         if (!operation.joinCompletedWorker()) return .pending;
         operation.mutex.lock();
         if (operation.status != .pending) {
@@ -304,23 +303,6 @@ pub const Operation = struct {
             const status = operation.status;
             operation.mutex.unlock();
             return status;
-        }
-        if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) {
-            const now_ns = clipboard_clock.nowNs();
-            if (platformDeadlineExpired(operation, now_ns) and operation.platform_terminal_request == null and
-                !operation.platform_mutation_started.load(.acquire))
-            {
-                operation.platform_terminal_request = .timed_out;
-                operation.platform_cancel.store(true, .release);
-            }
-            if (operation.platform_terminal_request) |requested| {
-                operation.mutex.unlock();
-                if (operation.service.completeQueuedPlatformOperation(operation, requested)) return requested;
-                operation.service.wakePlatformWorker();
-                return .pending;
-            }
-            operation.mutex.unlock();
-            return .pending;
         }
         if (operation.cancel_requested) {
             if (operation.wayland_conversion_started) {
@@ -353,6 +335,21 @@ pub const Operation = struct {
         }
         operation.mutex.unlock();
         return operation.service.driveOperation(operation);
+    }
+
+    fn pollPlatform(operation: *Operation) OperationStatus {
+        operation.mutex.lock();
+        if (operation.status == .pending and operation.platform_terminal_request == null and
+            !operation.platform_mutation_started.load(.acquire) and
+            platformDeadlineExpired(operation, clipboard_clock.nowNs()))
+        {
+            operation.platform_terminal_request = .timed_out;
+            operation.platform_cancel.store(true, .release);
+        }
+        const requested = operation.platform_terminal_request != null;
+        const status = operation.status;
+        operation.mutex.unlock();
+        return if (requested) operation.service.completePlatformOperation(operation) else status;
     }
 
     pub fn isReadyToDestroy(operation: *Operation) bool {
@@ -393,8 +390,14 @@ pub const Operation = struct {
     }
 
     pub fn destroyStorage(operation: *Operation) void {
-        operation.service.removeOperation(operation);
-        operation.deinit();
+        const service = operation.service;
+        service.removeOperation(operation);
+        service.platform_mutex.lock();
+        const running = service.platform_running == operation;
+        if (running) service.platform_running_destroyed = true;
+        service.platform_mutex.unlock();
+        // The worker still reads a settled running operation; it frees it when the platform call returns.
+        if (!running) operation.deinit();
     }
 
     fn beginPlatformMutation(operation: *Operation) ?OperationStatus {
@@ -481,6 +484,8 @@ pub const Service = struct {
     platform_mutex: sync.Mutex = .{},
     platform_condition: sync.Condition = .{},
     platform_queue: std.ArrayListUnmanaged(*Operation) = .empty,
+    platform_running: ?*Operation = null,
+    platform_running_destroyed: bool = false,
     platform_thread: ?std.Thread = null,
     platform_stop: bool = false,
     platform_exited: bool = false,
@@ -518,41 +523,18 @@ pub const Service = struct {
         service.platform_mutex.unlock();
     }
 
-    fn wakePlatformWorker(service: *Service) void {
-        if (comptime builtin.os.tag != .windows and builtin.os.tag != .macos) return;
+    // A pending platform operation is queued or running. Either way it settles with its terminal
+    // request now: a queued one leaves the queue, and the worker drops a running one's late result.
+    fn completePlatformOperation(service: *Service, operation: *Operation) OperationStatus {
         service.platform_mutex.lock();
-        service.platform_condition.signal();
-        service.platform_mutex.unlock();
-    }
-
-    fn completeQueuedPlatformOperation(
-        service: *Service,
-        operation: *Operation,
-        status: OperationStatus,
-    ) bool {
-        if (comptime builtin.os.tag != .windows and builtin.os.tag != .macos and !builtin.is_test) return false;
-        service.platform_mutex.lock();
-        var found = false;
-        for (service.platform_queue.items, 0..) |candidate, index| {
-            if (candidate != operation) continue;
+        defer service.platform_mutex.unlock();
+        if (std.mem.indexOfScalar(*Operation, service.platform_queue.items, operation)) |index| {
             _ = service.platform_queue.orderedRemove(index);
-            found = true;
-            break;
         }
-        if (!found) {
-            service.platform_mutex.unlock();
-            return false;
-        }
-
         operation.mutex.lock();
-        if (operation.status == .pending) {
-            operation.platform_terminal_request = status;
-            operation.platform_cancel.store(true, .release);
-            operation.status = status;
-        }
-        operation.mutex.unlock();
-        service.platform_mutex.unlock();
-        return true;
+        defer operation.mutex.unlock();
+        if (operation.status == .pending) operation.status = operation.platform_terminal_request.?;
+        return operation.status;
     }
 
     fn platformWorker(service: *Service) void {
@@ -606,11 +588,22 @@ pub const Service = struct {
                 return;
             }
             const operation = service.platform_queue.orderedRemove(0);
+            service.platform_running = operation;
             service.platform_mutex.unlock();
             if (comptime builtin.os.tag == .windows) _ = worker.pumpMessages();
             service.executePlatformOperation(worker, operation);
+            service.finishPlatformOperation(operation);
             if (comptime builtin.os.tag == .windows) _ = worker.pumpMessages();
         }
+    }
+
+    fn finishPlatformOperation(service: *Service, operation: *Operation) void {
+        service.platform_mutex.lock();
+        const destroyed = service.platform_running_destroyed;
+        service.platform_running = null;
+        service.platform_running_destroyed = false;
+        service.platform_mutex.unlock();
+        if (destroyed) operation.deinit();
     }
 
     fn executePlatformOperation(service: *Service, worker: anytype, operation: *Operation) void {
@@ -815,9 +808,6 @@ pub const Service = struct {
     }
 
     fn driveOperation(service: *Service, operation: *Operation) OperationStatus {
-        if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) {
-            return operation.status;
-        }
         if (comptime builtin.os.tag != .linux) return service.finishOperation(operation, .unsupported);
         if (operation.kind == .read and !implementsNativeReadType(operation.request)) {
             return service.finishOperation(operation, .unsupported);
@@ -2156,7 +2146,8 @@ test "clipboard failed operations always publish a portable diagnostic" {
     try std.testing.expect(operation.diagnostic.len > 0);
 }
 
-test "clipboard queued platform terminal requests complete before worker execution" {
+test "clipboard platform operations settle at their deadline whether queued or running" {
+    try clipboard_clock.init();
     var service: Service = .{
         .allocator = std.testing.allocator,
         .objects = undefined,
@@ -2164,25 +2155,37 @@ test "clipboard queued platform terminal requests complete before worker executi
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
     };
-    var first: Operation = .{
-        .allocator = std.testing.allocator,
-        .service = &service,
-        .kind = .read,
-    };
-    var second: Operation = .{
-        .allocator = std.testing.allocator,
-        .service = &service,
-        .kind = .read,
-    };
+    defer service.operations.deinit(std.testing.allocator);
+    const now_ns = clipboard_clock.nowNs();
+    // The worker is blocked in `running`; `expired` waits behind it past its deadline.
+    const running = try std.testing.allocator.create(Operation);
+    running.* = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 1, .started_ns = now_ns - std.time.ns_per_ms };
+    var expired: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 1, .started_ns = now_ns - std.time.ns_per_ms };
+    var next: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 60_000, .started_ns = now_ns };
+    var committed: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .write, .timeout_ms = 1, .started_ns = now_ns - std.time.ns_per_ms };
+    committed.platform_mutation_started.store(true, .release);
     var queue_storage: [2]*Operation = undefined;
     service.platform_queue = .{ .items = queue_storage[0..0], .capacity = queue_storage.len };
-    service.platform_queue.appendAssumeCapacity(&first);
-    service.platform_queue.appendAssumeCapacity(&second);
+    service.platform_queue.appendAssumeCapacity(&expired);
+    service.platform_queue.appendAssumeCapacity(&next);
+    service.platform_running = running;
+    try service.operations.append(std.testing.allocator, running);
 
-    try std.testing.expect(service.completeQueuedPlatformOperation(&second, .cancelled));
-    try std.testing.expectEqual(OperationStatus.cancelled, second.status);
-    try std.testing.expectEqual(@as(usize, 1), service.platform_queue.items.len);
-    try std.testing.expect(service.platform_queue.items[0] == &first);
+    try std.testing.expectEqual(OperationStatus.timed_out, running.pollPlatform());
+    try std.testing.expectEqual(OperationStatus.timed_out, expired.pollPlatform());
+    try std.testing.expectEqual(OperationStatus.pending, next.pollPlatform());
+    try std.testing.expectEqual(OperationStatus.pending, committed.pollPlatform());
+    try std.testing.expectEqualSlices(*Operation, &.{&next}, service.platform_queue.items);
+
+    // Destroying the settled operation leaves its storage to the worker, which drops the late
+    // result and frees it when the platform call returns.
+    try std.testing.expect(running.isReadyToDestroy());
+    running.destroyStorage();
+    service.publishPlatformResultAt(running, .read, "text/plain", "late", 0, now_ns);
+    try std.testing.expectEqual(OperationStatus.timed_out, running.status);
+    try std.testing.expectEqual(@as(usize, 0), running.result.len);
+    service.finishPlatformOperation(running);
+    try std.testing.expectEqual(@as(?*Operation, null), service.platform_running);
 }
 
 test "clipboard platform result resolution enforces deadline before late read success" {
