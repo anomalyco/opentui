@@ -215,21 +215,36 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
     try testing.expectEqual(scene.Layout{}, try f.owner.sceneGetPaintLayout(try f.owner.sceneCreateNode(f.id, 1, 3)));
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
     // A scroll of a culling parent keeps the candidates: a shown row's request reports where the
-    // scroll moved it (B5d).
-    const g = try Fixture.init(testing.allocator, 8, 3, .{ .output = transport });
-    defer g.deinit();
-    const content = try g.owner.sceneCreateNode(g.id, 1, 2);
-    try g.owner.sceneMoveNode(content, g.root, 0);
-    try g.owner.sceneSetViewport(content, g.root);
-    var rows: [16]context.Handle = undefined;
-    for (&rows, 0..) |*row, index| row.* = try placedAt(g, content, 1, @intCast(3 + index), 0, @floatFromInt(index), 1, 1);
-    try g.owner.sceneSetHooks(rows[1], c.OT_SCENE_HOOK_UPDATE, 1, 1, 1);
-    for ([_]f32{ 0, -1 }) |shift| {
-        try g.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = shift });
-        const asked = try g.step(null, options, c.OT_SCENE_FRAME_UPDATE, rows[1]);
-        try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1])).screenY);
-        _ = try g.owner.sceneFrameCommit(g.id, try g.step(asked, options, c.OT_SCENE_FRAME_DONE, null), false);
-        try drain(g.owner, g.id);
+    // scroll moved it, through a scroll node's content origin and offset too, and a row no list
+    // painted reads where a later scroll moves it, between frames too (B5d).
+    for ([_]bool{ false, true }) |scroll_node| {
+        const g = try Fixture.init(testing.allocator, 8, 3, .{ .output = transport });
+        defer g.deinit();
+        const content = try g.owner.sceneCreateNode(g.id, 1, 2);
+        try g.owner.sceneSetStyle(content, 4, 1, 0, 1, 3, 1);
+        try g.owner.sceneMoveNode(content, g.root, 0);
+        if (scroll_node) try g.owner.sceneSetScroll(content, .{ .culling = true }) else try g.owner.sceneSetViewport(content, g.root);
+        var rows: [16]context.Handle = undefined;
+        for (&rows, 0..) |*row, index| {
+            row.* = try g.owner.sceneCreateNode(g.id, 1, @intCast(3 + index));
+            try g.owner.sceneSetStyle(row.*, 4, 1, 0, 1, 1, 1);
+            try g.owner.sceneSetStyle(row.*, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+            try g.owner.sceneMoveNode(row.*, content, @intCast(index));
+        }
+        try g.owner.sceneSetHooks(rows[1], c.OT_SCENE_HOOK_UPDATE, 1, 1, 1);
+        for ([_]f32{ 0, -1, -2 }) |shift| {
+            if (scroll_node) {
+                _ = try g.owner.sceneScrollTo(content, .{ 0, -shift }, .{ false, false }, false);
+            } else try g.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = shift });
+            if (shift == -2) {
+                try testing.expectEqual(@as(f64, -2), (try g.owner.sceneGetPaintLayout(rows[0])).screenY);
+                break;
+            }
+            const asked = try g.step(null, options, c.OT_SCENE_FRAME_UPDATE, rows[1]);
+            try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1])).screenY);
+            _ = try g.owner.sceneFrameCommit(g.id, try g.step(asked, options, c.OT_SCENE_FRAME_DONE, null), false);
+            try drain(g.owner, g.id);
+        }
     }
 }
 
@@ -2542,4 +2557,157 @@ test "Scene scroll node frames ask the host nothing and toggle bars a bounded nu
     const idle = try presentWork(f, .{});
     try testing.expectEqual(@as(u64, 0), idle.candidate_visits);
     try testing.expectEqual(@as(u32, 0), idle.damage_rows);
+}
+
+const Culled = enum { scroll_in_reply, read_moved, first_frame_read, solve_read, translated_read, body_after_reply, moved_out, idle_update, stale_viewport };
+
+/// H (root child 0), V (`shown` rows tall, clipping), its content with V as the viewport and 16
+/// one-cell rows at list[3..19], and G (list[19]) in row `row`.
+fn culledScene(f: Fixture, list: []context.Handle, shown: f32, row: usize) !void {
+    try feedbackNode(f, list, 0, c.OT_SCENE_BOX, f.root, 0);
+    try feedbackNode(f, list, 1, c.OT_SCENE_BOX, f.root, 1);
+    try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, shown, 1);
+    try f.owner.sceneSetStyle(list[1], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+    try feedbackNode(f, list, 2, c.OT_SCENE_BOX, list[1], 0);
+    try f.owner.sceneSetStyle(list[2], 4, 1, 0, c.OT_UNIT_AUTO, 0, 1);
+    try f.owner.sceneSetViewport(list[2], list[1]);
+    for (3..19) |index| try feedbackNode(f, list, index, c.OT_SCENE_BOX, list[2], @intCast(index - 3));
+    try feedbackNode(f, list, 19, c.OT_SCENE_BOX, list[3 + row], 0);
+}
+
+/// One frame; logs each request with the paint layout the C ABI reads for it, and with `reply`
+/// answers as the case says. A RECORD gets H's recording of G's body.
+fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std.ArrayListUnmanaged([5]u64), reply: bool) !void {
+    var request = try f.owner.sceneFrameStep(f.id, null, options);
+    while (request.kind != c.OT_SCENE_FRAME_DONE) {
+        if (request.kind == c.OT_SCENE_FRAME_RECORD) {
+            var recording: Recording = .{};
+            recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+            recording.append(c.ot_scene_record_view{ .header = .{ .size = 0, .operation = c.OT_SCENE_RECORD_SCENE_BODY }, .source = .{ .context_id = list[19].context_id, .slot = list[19].slot, .generation = list[19].generation }, .x = 0, .y = 0 }, &.{});
+            request = try f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view());
+            continue;
+        }
+        const read = case == .first_frame_read or case == .solve_read or case == .translated_read;
+        const painted = try f.owner.sceneGetPaintLayout(if (read) list[19] else request.node);
+        try log.append(testing.allocator, .{ request.kind, request.num, request.layout_epoch, @bitCast(@as(f64, painted.width)), @bitCast(painted.screenY) });
+        if (reply and std.meta.eql(request.node, list[0])) switch (case) {
+            .scroll_in_reply => try f.owner.sceneSetScroll(list[19], .{}),
+            .read_moved => {
+                try f.owner.sceneMoveNode(list[19], list[6], 0);
+                _ = try f.owner.sceneGetPaintLayout(list[19]);
+            },
+            .moved_out => try f.owner.sceneMoveNode(list[19], list[20], 0),
+            .idle_update => try feedbackHook(f, list[19], c.OT_SCENE_HOOK_UPDATE),
+            else => {},
+        };
+        if (reply and case == .body_after_reply and std.meta.eql(request.node, list[19])) {
+            try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 7, 1);
+            try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 0 });
+        }
+        request = try f.owner.sceneFrameStep(f.id, request, options);
+    }
+    _ = try f.owner.sceneFrameCommit(f.id, request, false);
+    try drain(f.owner, f.id);
+}
+
+// Replies and reads around subtrees the walk left out, against the forced full-frame twin: a
+// reply adds a scroll node inside a shown row, moves a node into one and reads its paint layout,
+// or moves an unprepared node out of a culled row; paint layout read in the first frame, after a
+// solve or a translation, and in a later round's scene body; a reply gives an idle-update node in
+// a shown row UPDATE; a destroyed viewport in a culled row.
+test "Scene culled subtrees follow replies and reads as the full walk does" {
+    for (std.enums.values(Culled)) |case| {
+        errdefer std.debug.print("case {t}\n", .{case});
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
+        defer for (twins) |f| f.deinit();
+        var logs: [2]std.ArrayListUnmanaged([5]u64) = .{ .empty, .empty };
+        defer for (&logs) |*log| log.deinit(testing.allocator);
+        var results: [2]anyerror!void = undefined;
+        for (twins, &logs, &results, 0..) |f, *log, *result, twin| {
+            try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
+            var list: [22]context.Handle = undefined;
+            const row: usize = switch (case) {
+                .first_frame_read, .stale_viewport => 7,
+                .solve_read => 3,
+                .body_after_reply => 2,
+                .moved_out => 15,
+                else => 0,
+            };
+            try culledScene(f, &list, if (case == .solve_read) 4 else 2, row);
+            try feedbackHook(f, list[0], if (case == .body_after_reply) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE);
+            switch (case) {
+                .first_frame_read => try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 6, 1),
+                .body_after_reply => {
+                    try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 4, 1);
+                    try f.owner.sceneSetPaint(list[19], .{ .borderSides = c.OT_BORDER_ALL });
+                    try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 8, 1);
+                },
+                .moved_out => {
+                    try feedbackNode(f, &list, 20, c.OT_SCENE_BOX, f.root, 2);
+                    try f.owner.sceneSetStyle(list[20], 4, 0, 0, 1, 3, 1);
+                    try f.owner.sceneSetStyle(list[19], 4, 0, 0, c.OT_UNIT_AUTO, 0, 1);
+                },
+                .stale_viewport => {
+                    try feedbackNode(f, &list, 20, c.OT_SCENE_BOX, list[19], 0);
+                    try feedbackNode(f, &list, 21, c.OT_SCENE_BOX, f.root, 2);
+                    try f.owner.sceneSetViewport(list[19], list[21]);
+                },
+                // A scroll node below keeps a translation from keeping the candidates.
+                .translated_read => try f.owner.sceneSetScroll(list[18], .{}),
+                else => {},
+            }
+            const g_hooks: u32 = switch (case) {
+                .idle_update => c.OT_SCENE_HOOK_IDLE_UPDATE,
+                .body_after_reply, .moved_out => c.OT_SCENE_HOOK_UPDATE,
+                else => 0,
+            };
+            if (g_hooks != 0) try feedbackHook(f, list[19], g_hooks);
+            if (case != .first_frame_read) try culledFrame(f, case, &list, log, false);
+            switch (case) {
+                .read_moved, .body_after_reply, .translated_read => try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -2 }),
+                .solve_read => {
+                    try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, 2, 1);
+                    try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 7, 1);
+                },
+                .stale_viewport => try f.owner.sceneDestroyNode(list[21]),
+                else => {},
+            }
+            // The next frame walks the candidates again, or keeps them for the scroll.
+            if (case != .read_moved and case != .solve_read and case != .translated_read) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_OPACITY, .{ .opacity = 0.5 });
+            result.* = culledFrame(f, case, &list, log, true);
+        }
+        results[0] catch |err| {
+            try testing.expectError(err, results[1]);
+            continue;
+        };
+        try results[1];
+        try testing.expectEqualSlices([5]u64, logs[0].items, logs[1].items);
+        try twins[0].expectSameCells(twins[1]);
+    }
+}
+
+// A viewport inside another culling parent's culled row bounds its filtering parent where it
+// lies, as the full walk reads it (B5d).
+test "Scene viewport inside a culled row filters as the full walk does" {
+    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 4, .{}), try Fixture.init(testing.allocator, 4, 4, .{}) };
+    defer for (twins) |f| f.deinit();
+    for (twins, 0..) |f, twin| {
+        try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else 0);
+        const viewport = try placedAt(f, f.root, c.OT_SCENE_BOX, 10, 0, 0, 4, 1);
+        const content = try placedAt(f, viewport, c.OT_SCENE_BOX, 11, 0, 0, 4, 16);
+        try f.owner.sceneSetViewport(content, viewport);
+        var other_viewport: context.Handle = undefined;
+        for (0..16) |i| {
+            const row = try placedAt(f, content, c.OT_SCENE_BOX, @intCast(20 + i), 0, @floatFromInt(i), 4, 1);
+            if (i == 2) other_viewport = try placedAt(f, row, c.OT_SCENE_BOX, 40, 0, 0, 4, 1);
+        }
+        const other_content = try placedAt(f, f.root, c.OT_SCENE_BOX, 41, 0, 0, 4, 16);
+        try f.owner.sceneSetViewport(other_content, other_viewport);
+        for (0..16) |i| {
+            const row = try placedAt(f, other_content, c.OT_SCENE_BOX, @intCast(50 + i), 0, @floatFromInt(i), 4, 1);
+            try f.owner.sceneSetPaint(row, .{ .background = .{ 99, 0, 0, 255 } });
+        }
+        _ = try presentStepped(f, NoReply{});
+    }
+    try twins[0].expectSameCells(twins[1]);
 }

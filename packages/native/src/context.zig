@@ -2198,6 +2198,7 @@ pub const Context = struct {
         // Detachment is also used by child-first wrapper cleanup after cancellation.
         const node = if (parent_handle == null) try self.sceneNode(handle) else try self.sceneMutableNode(handle);
         const parent = if (parent_handle) |id| try self.sceneNode(id) else null;
+        try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
         try node.scene_node.?.owner.move(node, parent, index);
     }
 
@@ -2409,6 +2410,7 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         const node = try self.sceneMutableNode(handle);
+        try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
         try node.scene_node.?.owner.setHooks(node, flags, generation, initial_width, initial_height);
     }
 

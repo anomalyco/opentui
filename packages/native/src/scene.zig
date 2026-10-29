@@ -530,10 +530,10 @@ pub const Node = struct {
     prepared_gen: u64 = 0,
     // Scene.candidates_gen when a walk or a preparation went through the node's children.
     subtree_gen: u64 = 0,
-    // Scene.members_gen of the paint list that painted the node, and the frame whose paint
-    // layout read it again (getPaintLayout).
+    // Scene.members_gen of the paint list that painted the node, and the request during which
+    // paint layout read it again (getPaintLayout).
     painted_gen: u64 = 0,
-    read_frame: u64 = 0,
+    read_request: u64 = 0,
     feedback_id: u64 = 0,
     feedback_state: FeedbackState = .unseen,
     placement: u64 = 0,
@@ -587,8 +587,7 @@ const Skip = struct {
     attention_index: u32 = no_slot,
     update_below: u32 = 0,
     filters_below: u32 = 0,
-    // Scroll nodes: the walk prepares a culled child's subtree that holds one, so scroll state
-    // resolves after every solve and LAYOUT requests reach it.
+    // Scroll nodes; the walk goes through a culled child's subtree that holds one.
     scrolls_below: u32 = 0,
     // Clean: every node feedback would visit in the subtree needs nothing, for the selection of
     // Culling.clean_selection. Culled and hidden nodes keep their own state.
@@ -662,11 +661,10 @@ const PreparationFrame = struct {
     child: usize = 0,
     entered: bool = false,
     filtered: bool = false,
-    // The candidates walk lists the node's children but not their subtrees, or stops at the node.
+    // The candidates walk stops below the node's children, or at the node.
     stops_children: bool = false,
     stops: bool = false,
-    // In prepareSubtree, which leaves a node a reply moved or created since the round's solve
-    // to the next round, as the walk would.
+    // prepareSubtree leaves nodes Yoga has not laid out to the next round.
     preparing: bool = false,
     filter: ?Filter = null,
     // A filtering node's children that may overlap, when its index found them.
@@ -676,7 +674,6 @@ const PreparationFrame = struct {
 };
 
 const no_slot = std.math.maxInt(u32);
-// prepare and prepareSubtree call each other, so one of them names its errors.
 const PrepareError = yoga.Error || error{ ContextLimit, ObjectLimit, WrongContext, WrongKind, StaleHandle, WrongSession, InvalidOptions, InvalidDimensions };
 const cull_children_min = 16;
 
@@ -770,8 +767,11 @@ pub const Scene = struct {
     members: std.ArrayListUnmanaged(Work) = .empty,
     // Advances with each candidates walk, which clears both lists first.
     candidates_gen: u64 = 0,
-    // Advances with each paint list, and when a moved culling parent drops the list.
+    // Advances with each paint list, each solve, and each change between frames that drops the
+    // list.
     members_gen: u64 = 0,
+    // Advances with each host request.
+    last_request: u64 = 0,
     last_feedback_id: u64 = 0,
     feedback: std.ArrayListUnmanaged(Feedback) = .empty,
     paint_members: std.ArrayListUnmanaged(PaintMember) = .empty,
@@ -1649,6 +1649,8 @@ pub const Scene = struct {
     pub fn clearPreparation(self: *Scene) void {
         self.candidates.clearRetainingCapacity();
         self.members.clearRetainingCapacity();
+        // A change between frames moves what the list painted; a RECORD reply's does not.
+        if (self.attempt == null) self.members_gen += 1;
     }
 
     pub fn cancelFrame(self: *Scene) void {
@@ -1938,7 +1940,7 @@ pub const Scene = struct {
         node.selected_frame = active.frame_id;
         if (full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch)) {
             node.culling.selected_epoch = self.selection_epoch;
-            const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
+            const origin = if (filter != null) childOrigin(node, try composedLayout(value, .prepared)) else [2]f64{ 0, 0 };
             self.scratch.clearRetainingCapacity();
             const culled = if (filter) |bounds| try self.cullCandidates(node, bounds, origin) else null;
             const children = culled orelse node.paint_children.items;
@@ -2124,6 +2126,7 @@ pub const Scene = struct {
         if (active.requests == active.options.max_host_requests) return error.FrameRequestLimit;
         active.requests += 1;
         active.request_id = std.math.add(u64, active.request_id, 1) catch return error.RequestLimit;
+        self.last_request += 1;
         const result: FrameRequest = .{
             .session = self.session,
             .root = active.root,
@@ -2236,6 +2239,7 @@ pub const Scene = struct {
         // Every solve, a measurement-only one too, invalidates the geometry nodes hold.
         self.layout_epoch = epoch;
         self.selection_epoch +%= 1;
+        self.members_gen += 1;
         self.layout_width = cli.width;
         self.layout_height = cli.height;
         self.layout_pending = true;
@@ -2321,7 +2325,6 @@ pub const Scene = struct {
         std.debug.assert(node.prepared_gen == self.candidates_gen);
         node.subtree_gen = self.candidates_gen;
         if (!node.layout_flags.prepared_visible or node.paint_children.items.len == 0) return;
-        std.debug.assert(node.skip.scrolls_below == 0);
         // The list holds no node of a culled subtree, so its room for every node holds this one;
         // only the stamps stay.
         if (builtin.is_test) self.test_subtree_preparations += 1;
@@ -2330,6 +2333,18 @@ pub const Scene = struct {
         const start: PreparationFrame = .{ .node = value, .parent = node.layout, .clip = .{ .x = 0, .y = 0, .width = 0, .height = 0 }, .opacity = 1, .entered = true, .filtered = true, .preparing = true };
         try self.prepare(objects, start, .candidates, false, &self.candidates);
         for (self.candidates.items[listed..]) |entry| self.stampEntry(entry, true);
+    }
+
+    /// Before a reply moves or hooks a node in a subtree the round's walk left out, prepares
+    /// that subtree, so the change meets what a full walk would have left.
+    pub fn prepareOmitted(self: *Scene, objects: *const handles.Table, value: *native.NativeRenderable) !void {
+        if (self.attempt == null) return;
+        while (value.scene_node.?.prepared_gen != self.candidates_gen) {
+            var row = value.scene_node.?.parent orelse return;
+            while (row.scene_node.?.prepared_gen != self.candidates_gen) row = row.scene_node.?.parent orelse return;
+            if (row.scene_node.?.subtree_gen == self.candidates_gen) return;
+            try self.prepareSubtree(objects, row);
+        }
     }
 
     fn stampCandidates(self: *Scene, phases: bool) void {
@@ -2755,7 +2770,7 @@ pub const Scene = struct {
                     .hooks = hooks,
                     .hook_generation = node.hook_generation,
                     .layout = cellLayout(entry.layout),
-                    .public_layout = composedLayout(entry.node, true) catch null,
+                    .public_layout = composedLayout(entry.node, .observed) catch null,
                     .clip = entry.clip,
                     .opacity = entry.opacity,
                 });
@@ -3126,9 +3141,9 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         if (!node.filtersChildren()) return null;
         const layout = if (node.scroll) |state|
-            scrollViewport(state, try composedLayout(value, false))
+            scrollViewport(state, try composedLayout(value, .prepared))
         else
-            try composedLayout(try self.viewportNode(objects, node.viewport.?), false);
+            try composedLayout(try self.viewportNode(objects, node.viewport.?), .solved);
         // The cutoff includes hidden children and changes selection, not refresh ordering.
         if (node.children.items.len < cull_children_min and layout.width > 0 and layout.height > 0) return null;
         var direction: u32 = 0;
@@ -3292,7 +3307,7 @@ pub const Scene = struct {
                     node.layout_flags.clips_children = overflow != api.OT_OVERFLOW_VISIBLE;
                 }
                 // After its clipping, which paint applies when it takes the child.
-                if (frame.stops and node.skip.scrolls_below == 0) {
+                if (frame.stops and node.skip.scrolls_below == 0 and node.skip.filters_below == 0) {
                     depth -= 1;
                     continue;
                 }
@@ -3475,49 +3490,31 @@ pub fn scrollReport(value: *const native.NativeRenderable) !api.ot_scene_scroll_
 /// Public geometry advances at legacy preparation points, separately from completed
 /// paint layout. Accepted transforms and ancestry still compose immediately.
 pub fn getLayout(value: *const native.NativeRenderable) !Layout {
-    return composedLayout(value, true);
+    return composedLayout(value, .observed);
 }
 
 /// Where the latest paint list painted the node. The walks prepare a culled subtree only where
-/// it shows, so a node the list did not paint reads its geometry again, once per frame: a hook
-/// reads its request's geometry after its own changes.
+/// it shows, so a node the list did not paint reads its solved geometry again; while a host
+/// request is pending, the first read holds, so a hook reads its request's geometry after its
+/// own changes.
 pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
     const node = value.scene_node.?;
-    if (node.painted_gen != node.owner.members_gen and node.read_frame != node.owner.last_frame_id) {
-        node.layout = try readLayout(value);
-        node.read_frame = node.owner.last_frame_id;
+    const owner = node.owner;
+    if (node.painted_gen == owner.members_gen) return cellLayout(node.layout);
+    const pending = if (owner.attempt) |active| active.pending != null else false;
+    if (pending and node.read_request == owner.last_request) return cellLayout(node.layout);
+    const layout = try composedLayout(value, .solved);
+    // A node Yoga has not laid out keeps the stamp a walk reuses.
+    if (pending and layout.width != 0) {
+        node.layout = layout;
+        node.read_request = owner.last_request;
     }
-    return cellLayout(node.layout);
+    return cellLayout(layout);
 }
 
-/// The latest solved geometry, composed as the walks compose it, with current translations and
-/// scroll offsets. A node Yoga has not laid out since it was created or moved has no cells.
-fn readLayout(value: *const native.NativeRenderable) !Layout {
-    var nodes: [yoga.depth_max]*const native.NativeRenderable = undefined;
-    var count: usize = 0;
-    var origin = [2]f64{ 0, 0 };
-    var cursor: ?*const native.NativeRenderable = value;
-    while (cursor) |current| : (cursor = current.scene_node.?.parent) {
-        if (count == nodes.len) return error.YogaDepthLimit;
-        nodes[count] = current;
-        count += 1;
-    }
-    var layout: Layout = undefined;
-    while (count != 0) {
-        count -= 1;
-        const node = nodes[count].scene_node.?;
-        var computed: yoga.ExternalYogaLayout = undefined;
-        try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(nodes[count].yoga_node, &computed));
-        if (count == 0 and (std.math.isNan(computed.width) or std.math.isNan(computed.height))) return .{};
-        layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = @max(computed.width, 1), .height = @max(computed.height, 1) };
-        layout.screenX = origin[0] + @as(f64, layout.left) + node.paint.translateX;
-        layout.screenY = origin[1] + @as(f64, layout.top) + node.paint.translateY;
-        origin = childOrigin(node, layout);
-    }
-    return layout;
-}
-
-fn composedLayout(value: *const native.NativeRenderable, comptime observed: bool) !Layout {
+/// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
+/// one. A solved node Yoga has not laid out since it was created or moved has no cells.
+fn composedLayout(value: *const native.NativeRenderable, comptime source: enum { observed, prepared, solved }) !Layout {
     var ancestors: [yoga.depth_max]*const native.NativeRenderable = undefined;
     var count: usize = 0;
     var cursor: ?*const native.NativeRenderable = value;
@@ -3526,13 +3523,18 @@ fn composedLayout(value: *const native.NativeRenderable, comptime observed: bool
         ancestors[count] = node;
         count += 1;
     }
-    var result = if (observed) value.scene_node.?.observed_layout else value.scene_node.?.layout;
+    var result = try localLayout(value, source);
+    if (source == .solved) {
+        if (std.math.isNan(result.width) or std.math.isNan(result.height)) return .{};
+        result.width = @max(result.width, 1);
+        result.height = @max(result.height, 1);
+    }
     result.screenX = 0;
     result.screenY = 0;
     while (count != 0) {
         count -= 1;
         const node = ancestors[count].scene_node.?;
-        const layout = if (observed) node.observed_layout else node.layout;
+        const layout = try localLayout(ancestors[count], source);
         result.screenX = result.screenX + @as(f64, layout.left) + node.paint.translateX;
         result.screenY = result.screenY + @as(f64, layout.top) + node.paint.translateY;
         if (count != 0) {
@@ -3542,6 +3544,15 @@ fn composedLayout(value: *const native.NativeRenderable, comptime observed: bool
         }
     }
     return result;
+}
+
+fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) !Layout {
+    const node = value.scene_node.?;
+    if (source == .observed) return node.observed_layout;
+    if (source == .prepared) return node.layout;
+    var computed: yoga.ExternalYogaLayout = undefined;
+    try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
+    return .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
 }
 
 /// Where a parent's children compose from: its screen position, plus a scroll node's viewport
