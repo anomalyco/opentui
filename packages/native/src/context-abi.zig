@@ -1141,8 +1141,10 @@ pub fn ot_session_setup_terminal(
     const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
     if (options.struct_size != @sizeOf(c.ot_session_terminal_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    const sync_flags: u32 = c.OT_TERMINAL_SYNC_ALWAYS | c.OT_TERMINAL_SYNC_NEVER;
     const known_flags: u32 = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE |
-        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL;
+        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL | sync_flags |
+        c.OT_TERMINAL_HOST_MULTIPLEXER;
     if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags > 31) {
         return sessionError(owner, error.InvalidOptions);
     }
@@ -1152,6 +1154,13 @@ pub fn ot_session_setup_terminal(
         .mouse_movement = options.flags & c.OT_TERMINAL_MOUSE_MOVEMENT != 0,
         .clear_on_close = options.flags & c.OT_TERMINAL_CLEAR_ON_CLOSE != 0,
         .reply_sentinel = options.flags & c.OT_TERMINAL_REPLY_SENTINEL != 0,
+        .host_multiplexer = options.flags & c.OT_TERMINAL_HOST_MULTIPLEXER != 0,
+        .synchronized_output = switch (options.flags & sync_flags) {
+            0 => .auto,
+            c.OT_TERMINAL_SYNC_ALWAYS => .always,
+            c.OT_TERMINAL_SYNC_NEVER => .never,
+            else => return sessionError(owner, error.InvalidOptions),
+        },
         .kitty_keyboard_flags = @intCast(options.kitty_keyboard_flags),
     }) catch |err| return sessionError(owner, err);
     return c.OT_OK;
@@ -3523,14 +3532,16 @@ test "Context ABI Session setup and capability records validate before changing 
     const valid: c.ot_session_terminal_options = .{
         .struct_size = @sizeOf(c.ot_session_terminal_options),
         .abi_version = c.OT_CONTEXT_ABI_VERSION,
-        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL,
+        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE |
+            c.OT_TERMINAL_REPLY_SENTINEL | c.OT_TERMINAL_SYNC_NEVER | c.OT_TERMINAL_HOST_MULTIPLEXER,
         .kitty_keyboard_flags = 31,
     };
-    var invalid: [4]c.ot_session_terminal_options = @splat(valid);
+    var invalid: [5]c.ot_session_terminal_options = @splat(valid);
     invalid[0].struct_size += 1;
     invalid[1].abi_version += 1;
-    invalid[2].flags |= c.OT_TERMINAL_REPLY_SENTINEL << 1;
+    invalid[2].flags |= c.OT_TERMINAL_HOST_MULTIPLEXER << 1;
     invalid[3].kitty_keyboard_flags = 32;
+    invalid[4].flags |= c.OT_TERMINAL_SYNC_ALWAYS | c.OT_TERMINAL_SYNC_NEVER;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_setup_terminal(context, &id, null));
     for (invalid, 0..) |options, index| {
         const expected = if (index == 1) c.OT_UNSUPPORTED_VERSION else c.OT_INVALID_ARGUMENT;
@@ -3541,6 +3552,7 @@ test "Context ABI Session setup and capability records validate before changing 
     try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown and cli.terminal.reply_sentinel);
     try std.testing.expect(value.lifecycle.mouse and !value.lifecycle.mouse_movement);
     try std.testing.expectEqual(@as(u8, 31), cli.terminal.opts.kitty_keyboard_flags);
+    try std.testing.expect(cli.terminal.synchronized_output == .never and cli.terminal.multiplexer_on_host);
     value.cancel();
 }
 

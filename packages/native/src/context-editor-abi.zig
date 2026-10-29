@@ -122,10 +122,11 @@ pub fn ot_edit_buffer_history(context: ?*Owner, id: ?*const c.ot_handle, redo: u
 pub fn ot_edit_buffer_get_position(context: ?*Owner, id: ?*const c.ot_handle, query: u32, a: u32, b: u32, out: ?*c.ot_edit_position) callconv(.c) c.ot_status {
     const owner = admit(context, true) catch |err| return fail(context, err);
     _ = record(c.ot_edit_position, out) catch |err| return fail(owner, err);
-    if (query > c.OT_EDIT_POSITION_LINE_START or (query < c.OT_EDIT_POSITION_OFFSET and a != 0) or
+    if (query > c.OT_EDIT_POSITION_PREV_CHAR or ((query < c.OT_EDIT_POSITION_OFFSET or query > c.OT_EDIT_POSITION_LINE_START) and a != 0) or
         (query != c.OT_EDIT_POSITION_COORDS and b != 0)) return fail(owner, error.InvalidOptions);
     const value = edit(owner, id) catch |err| return fail(owner, err);
     const rope = value.buffer.tb.rope();
+    const at = if (query == c.OT_EDIT_POSITION_END) rope.totalWeight() else a;
     if (query == c.OT_EDIT_POSITION_NEXT_WORD or query == c.OT_EDIT_POSITION_PREV_WORD)
         prepareWordLine(value) catch |err| return fail(owner, err);
     const cursor: ?eb.Cursor = switch (query) {
@@ -133,7 +134,8 @@ pub fn ot_edit_buffer_get_position(context: ?*Owner, id: ?*const c.ot_handle, qu
         c.OT_EDIT_POSITION_NEXT_WORD => value.buffer.getNextWordBoundary(),
         c.OT_EDIT_POSITION_PREV_WORD => value.buffer.getPrevWordBoundary(),
         c.OT_EDIT_POSITION_EOL => value.buffer.getEOL(),
-        c.OT_EDIT_POSITION_OFFSET => if (iter.offsetToCoords(rope, a)) |pos| .{ .row = pos.row, .col = pos.col, .offset = a } else null,
+        c.OT_EDIT_POSITION_OFFSET, c.OT_EDIT_POSITION_END => if (iter.offsetToCoords(rope, at)) |pos| .{ .row = pos.row, .col = pos.col, .offset = at } else null,
+        c.OT_EDIT_POSITION_PREV_CHAR => value.buffer.getPrevCharBoundary(),
         c.OT_EDIT_POSITION_COORDS, c.OT_EDIT_POSITION_LINE_START => if (iter.coordsToOffset(rope, a, b)) |offset| .{ .row = a, .col = b, .offset = offset } else null,
         else => unreachable,
     };
@@ -640,7 +642,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
     const tabs = try std.testing.allocator.alloc(u8, (std.math.maxInt(u32) - 1) / 254 + 1);
     defer std.testing.allocator.free(tabs);
     @memset(tabs, '\t');
-    for (0..27) |row| {
+    for (0..28) |row| {
         const status = switch (row) {
             0 => ot_edit_buffer_set_tab_width(&owner, &edit_id, 256),
             1 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_DEBUG_ROPE + 1, 0),
@@ -653,7 +655,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             7 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "a\x0c\xff", 3, 1),
             8 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "\x00\xc2", 2),
             9 => ot_editor_view_set_placeholder(&owner, &view_id, "\xc2\x85\x80", 3, &chunks, 0),
-            10 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_LINE_START + 1, 0, 0, &position),
+            10 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_PREV_CHAR + 1, 0, 0, &position),
             11 => ot_edit_buffer_get_range(&owner, &edit_id, 2, 0, 0, 0, 1, &bytes, bytes.len, &count),
             12 => ot_edit_buffer_set_defaults(&owner, &edit_id, 0, &style),
             13 => ot_edit_buffer_highlight(&owner, &edit_id, c.OT_EDIT_HIGHLIGHT_CLEAR_ALL + 1, 0, null),
@@ -670,6 +672,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             24 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 256, &count),
             25 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 0, null),
             26 => ot_edit_measure_text(&owner, tabs.ptr, @intCast(tabs.len), c.OT_WIDTH_METHOD_UNICODE, 255, &count),
+            27 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_END, 1, 0, &position),
             else => unreachable,
         };
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);

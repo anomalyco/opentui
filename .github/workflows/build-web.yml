@@ -34,7 +34,10 @@ jobs:
         working-directory: packages/web
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
