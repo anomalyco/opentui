@@ -2857,7 +2857,8 @@ test "renderer - pinned split scrollback repaints live native images after appen
 }
 
 test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2026 or runs in a multiplexer" {
-    const Reply = enum { reported, not_reported, pending };
+    // `sentinel`: width probes disabled, 2026 not reported, and the DA1 sentinel ends the batch.
+    const Reply = enum { reported, not_reported, pending, sentinel };
     const Multiplexer = enum { none, tmux, screen };
     const Mode = terminal_mod.SynchronizedOutput;
     for ([_]bool{ false, true }) |remote| for (std.enums.values(Multiplexer)) |multiplexer| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
@@ -2865,22 +2866,26 @@ test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2
         var pools = TestPools.init(std.testing.allocator);
         defer pools.deinit();
         // tmux answers XTVERSION itself; screen is known from STY.
-        const screen_env = [_]test_renderer_mod.TestEnvVar{.{ .key = "STY", .value = "1.pts-0.host" }};
-        const env: []const test_renderer_mod.TestEnvVar = if (multiplexer == .screen) &screen_env else &.{};
+        const screen = test_renderer_mod.TestEnvVar{ .key = "STY", .value = "1.pts-0.host" };
+        const no_probes = test_renderer_mod.TestEnvVar{ .key = "OPENTUI_FORCE_EXPLICIT_WIDTH", .value = "0" };
+        const env_all = [_]test_renderer_mod.TestEnvVar{ no_probes, screen };
+        const env = env_all[@intFromBool(reply != .sentinel)..if (multiplexer == .screen) 2 else 1];
         var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env);
         defer test_renderer.deinit();
         const term = &test_renderer.renderer.terminal;
         term.opts.remote_mode = if (remote) .remote else .local;
         term.synchronized_output = mode;
+        term.reply_sentinel = reply == .sentinel;
         var writer = DiscardTerminalWriter{};
         try term.queryTerminalSend(&writer);
-        // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report.
+        // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report
+        // or the DA1 sentinel. A pending reply has only the cursor report, which precedes DECRQM.
         if (multiplexer == .tmux) term.processCapabilityResponse("\x1bP>|tmux 3.8\x1b\\");
-        if (reply != .pending) term.processCapabilityResponse("\x1b[3;1R");
+        term.processCapabilityResponse("\x1b[3;1R");
         if (reply == .reported) term.processCapabilityResponse("\x1b[?2026;2$y");
-        if (reply != .pending) term.processCapabilityResponse("\x1b[1;1R");
+        if (reply != .pending) term.processCapabilityResponse(if (reply == .sentinel) "\x1b[?62;22c" else "\x1b[1;1R");
 
-        const dropped = remote and reply != .pending and (reply == .not_reported or multiplexer != .none);
+        const dropped = remote and reply != .pending and (reply != .reported or multiplexer != .none);
         const envelope = mode == .always or (mode == .auto and !dropped);
         _ = test_renderer.renderer.resetSplitScrollback(1, 1);
         var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });

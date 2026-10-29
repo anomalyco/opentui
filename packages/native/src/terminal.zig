@@ -1374,6 +1374,7 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     if (device_attributes and self.reply_sentinel) {
         self.startup_cursor_query_pending = false;
         self.explicit_width_probe_reports_pending = 0;
+        self.sync_reply_settled = true;
     }
 
     // Parse xtversion response: ESC P > | name version ESC \
