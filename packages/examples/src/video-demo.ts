@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 
-import { dirname, resolve } from "node:path"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { basename, dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import {
   BoxRenderable,
   CliRenderEvents,
@@ -41,6 +44,16 @@ let message = "Ready"
 let directory = process.cwd()
 let browseRequest = 0
 let resumeAfterBrowse = false
+
+// FFmpeg opens only real files: a compiled binary embeds the clip in Bun's virtual file system, and a Node
+// bundle names it relative to the bundle.
+function dragonFile(): string {
+  const path = resolve(dirname(fileURLToPath(import.meta.url)), dragonPath as string)
+  if (!/\$bunfs|^B:[\\/]~BUN/i.test(path)) return path
+  const file = join(tmpdir(), basename(path))
+  if (!existsSync(file)) writeFileSync(file, readFileSync(path))
+  return file
+}
 
 function formatTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds))
@@ -130,7 +143,7 @@ export async function run(renderer: CliRenderer): Promise<void> {
   rendererDestroyHandler = () => destroy(renderer)
   renderer.on(CliRenderEvents.DESTROY, rendererDestroyHandler)
   renderer.start()
-  const source = process.argv.slice(2).find((argument) => !argument.startsWith("-")) ?? (dragonPath as string)
+  const source = process.argv.slice(2).find((argument) => !argument.startsWith("-")) ?? dragonFile()
 
   root = new BoxRenderable(renderer, { id: "video-demo", width: "100%", height: "100%", flexDirection: "column" })
   video = new VideoRenderable(renderer, {
