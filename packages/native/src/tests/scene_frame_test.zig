@@ -3,6 +3,7 @@ const testing = std.testing;
 const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
+const yoga = @import("../yoga.zig");
 const c = @import("context_abi_c");
 const ansi = @import("../ansi.zig");
 const Recording = @import("scene_record_test.zig").Recording;
@@ -2141,77 +2142,78 @@ test "Scene feedback passes keep the round and request counts at the limits" {
 
 // A viewport of 4 x 2 cells over a column of N one-line text rows; 2 rows show. Each row is
 // one frame kind; columns are viewport child refreshes, visibility steps, view preparations,
-// host requests, layout rounds, overlap tests, and paint visits of that frame. Only rows whose
-// layout, text, or view changed refresh, culled ones too; a frame that walks prepares the three
-// boxes' views (B5b). A selection tests every row, and so does a paint walk.
+// host requests, layout rounds, text measure callbacks, overlap tests, and paint visits of that
+// frame. Only rows whose layout, text, or view changed refresh, culled ones too; a frame that
+// walks prepares the three boxes' views (B5b). A row that grows the column measures no other
+// row again. A selection tests every row, and so does a paint walk.
 test "Scene frame work counts viewport refresh and culling work" {
     const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, measure_same_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, placed_reply, destroy_reply, destroy_hidden, full_scroll };
     const sizes = [_]u32{ 16, 256, 4096 };
-    const expected = [sizes.len][std.meta.fields(Frame).len][7]u64{
+    const expected = [sizes.len][std.meta.fields(Frame).len][8]u64{
         .{
-            .{ 0, 0, 22, 0, 1, 32, 6 }, // first
-            .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
-            .{ 0, 0, 3, 0, 1, 18, 7 }, // scroll
-            .{ 1, 0, 5, 0, 1, 34, 7 }, // grow
-            .{ 1, 0, 4, 0, 1, 9, 7 }, // options_prepare
-            .{ 0, 0, 3, 0, 1, 9, 7 }, // options_color
-            .{ 1, 0, 4, 0, 1, 9, 7 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 9, 7 }, // measure_same_text
-            .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
-            .{ 16, 0, 19, 0, 1, 31, 7 }, // hidden
-            .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1, 31, 7 }, // cancelled
-            .{ 3, 0, 10, 1, 2, 31, 7 }, // stale_reply
-            .{ 3, 0, 10, 1, 2, 31, 7 }, // stale_requester
-            .{ 2, 0, 10, 1, 2, 31, 7 }, // placed_reply
-            .{ 2, 67, 10, 1, 2, 0, 18 }, // destroy_reply
-            .{ 1, 26, 8, 1, 2, 0, 17 }, // destroy_hidden
-            .{ 14, 72, 21, 1, 1, 0, 17 }, // full_scroll
+            .{ 0, 0, 22, 0, 1, 16, 32, 6 }, // first
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // unchanged
+            .{ 0, 0, 3, 0, 1, 0, 18, 7 }, // scroll
+            .{ 1, 0, 5, 0, 1, 0, 34, 7 }, // grow
+            .{ 1, 0, 4, 0, 1, 0, 9, 7 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 0, 9, 7 }, // options_color
+            .{ 1, 0, 4, 0, 1, 0, 9, 7 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 0, 9, 7 }, // measure_same_text
+            .{ 1, 0, 1, 0, 1, 0, 0, 0 }, // editor_cursor
+            .{ 16, 0, 19, 0, 1, 0, 31, 7 }, // hidden
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // hidden_unchanged
+            .{ 1, 0, 4, 0, 1, 0, 31, 7 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 0, 31, 7 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 0, 31, 7 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 0, 31, 7 }, // placed_reply
+            .{ 2, 67, 10, 1, 2, 0, 0, 18 }, // destroy_reply
+            .{ 1, 26, 8, 1, 2, 0, 0, 17 }, // destroy_hidden
+            .{ 14, 72, 21, 1, 1, 0, 0, 17 }, // full_scroll
         },
         .{
-            .{ 0, 0, 262, 0, 1, 280, 6 }, // first
-            .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
-            .{ 0, 0, 3, 0, 1, 26, 7 }, // scroll
-            .{ 1, 0, 5, 0, 1, 282, 7 }, // grow
-            .{ 1, 0, 4, 0, 1, 13, 7 }, // options_prepare
-            .{ 0, 0, 3, 0, 1, 13, 7 }, // options_color
-            .{ 1, 0, 4, 0, 1, 13, 7 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 13, 7 }, // measure_same_text
-            .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
-            .{ 256, 0, 259, 0, 1, 279, 7 }, // hidden
-            .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1, 279, 7 }, // cancelled
-            .{ 3, 0, 10, 1, 2, 279, 7 }, // stale_reply
-            .{ 3, 0, 10, 1, 2, 279, 7 }, // stale_requester
-            .{ 2, 0, 10, 1, 2, 279, 7 }, // placed_reply
-            .{ 2, 16, 9, 1, 2, 545, 7 }, // destroy_reply
-            .{ 1, 26, 7, 1, 2, 544, 7 }, // destroy_hidden
-            .{ 254, 24, 260, 1, 1, 508, 257 }, // full_scroll
+            .{ 0, 0, 262, 0, 1, 256, 280, 6 }, // first
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // unchanged
+            .{ 0, 0, 3, 0, 1, 0, 26, 7 }, // scroll
+            .{ 1, 0, 5, 0, 1, 0, 282, 7 }, // grow
+            .{ 1, 0, 4, 0, 1, 0, 13, 7 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 0, 13, 7 }, // options_color
+            .{ 1, 0, 4, 0, 1, 0, 13, 7 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 0, 13, 7 }, // measure_same_text
+            .{ 1, 0, 1, 0, 1, 0, 0, 0 }, // editor_cursor
+            .{ 256, 0, 259, 0, 1, 0, 279, 7 }, // hidden
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // hidden_unchanged
+            .{ 1, 0, 4, 0, 1, 0, 279, 7 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 0, 279, 7 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 0, 279, 7 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 0, 279, 7 }, // placed_reply
+            .{ 2, 16, 9, 1, 2, 0, 545, 7 }, // destroy_reply
+            .{ 1, 26, 7, 1, 2, 0, 544, 7 }, // destroy_hidden
+            .{ 254, 24, 260, 1, 1, 0, 508, 257 }, // full_scroll
         },
         .{
-            .{ 0, 0, 4102, 0, 1, 4128, 6 }, // first
-            .{ 0, 0, 0, 0, 1, 0, 0 }, // unchanged
-            .{ 0, 0, 3, 0, 1, 34, 7 }, // scroll
-            .{ 1, 0, 5, 0, 1, 4130, 7 }, // grow
-            .{ 1, 0, 4, 0, 1, 17, 7 }, // options_prepare
-            .{ 0, 0, 3, 0, 1, 17, 7 }, // options_color
-            .{ 1, 0, 4, 0, 1, 17, 7 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 17, 7 }, // measure_same_text
-            .{ 1, 0, 1, 0, 1, 0, 0 }, // editor_cursor
-            .{ 4096, 0, 4099, 0, 1, 4127, 7 }, // hidden
-            .{ 0, 0, 0, 0, 1, 0, 0 }, // hidden_unchanged
-            .{ 1, 0, 4, 0, 1, 4127, 7 }, // cancelled
-            .{ 3, 0, 10, 1, 2, 4127, 7 }, // stale_reply
-            .{ 3, 0, 10, 1, 2, 4127, 7 }, // stale_requester
-            .{ 2, 0, 10, 1, 2, 4127, 7 }, // placed_reply
-            .{ 2, 16, 9, 1, 2, 8237, 7 }, // destroy_reply
-            .{ 1, 26, 7, 1, 2, 8236, 7 }, // destroy_hidden
-            .{ 4094, 24, 4100, 1, 1, 8188, 4097 }, // full_scroll
+            .{ 0, 0, 4102, 0, 1, 4096, 4128, 6 }, // first
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // unchanged
+            .{ 0, 0, 3, 0, 1, 0, 34, 7 }, // scroll
+            .{ 1, 0, 5, 0, 1, 0, 4130, 7 }, // grow
+            .{ 1, 0, 4, 0, 1, 0, 17, 7 }, // options_prepare
+            .{ 0, 0, 3, 0, 1, 0, 17, 7 }, // options_color
+            .{ 1, 0, 4, 0, 1, 0, 17, 7 }, // measure_text
+            .{ 1, 0, 4, 0, 1, 0, 17, 7 }, // measure_same_text
+            .{ 1, 0, 1, 0, 1, 0, 0, 0 }, // editor_cursor
+            .{ 4096, 0, 4099, 0, 1, 0, 4127, 7 }, // hidden
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // hidden_unchanged
+            .{ 1, 0, 4, 0, 1, 0, 4127, 7 }, // cancelled
+            .{ 3, 0, 10, 1, 2, 0, 4127, 7 }, // stale_reply
+            .{ 3, 0, 10, 1, 2, 0, 4127, 7 }, // stale_requester
+            .{ 2, 0, 10, 1, 2, 0, 4127, 7 }, // placed_reply
+            .{ 2, 16, 9, 1, 2, 0, 8237, 7 }, // destroy_reply
+            .{ 1, 26, 7, 1, 2, 0, 8236, 7 }, // destroy_hidden
+            .{ 4094, 24, 4100, 1, 1, 0, 8188, 4097 }, // full_scroll
         },
     };
     // VERIFY changes no count.
     for ([_]bool{ false, true }) |verify| {
-        var all: [sizes.len][std.meta.fields(Frame).len][7]u64 = undefined;
+        var all: [sizes.len][std.meta.fields(Frame).len][8]u64 = undefined;
         for (sizes, &all) |n, *actual| {
             const f = try Fixture.init(testing.allocator, 8, 4, .{ .limits = .{ .object_capacity = 8192 } });
             defer f.deinit();
@@ -2244,6 +2246,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             }
             const culled = rows[n / 2];
             for (std.enums.values(Frame)) |frame| {
+                const measures = yoga.test_native_measures;
                 const w = switch (frame) {
                     .first, .unchanged, .hidden_unchanged => try presentWork(f, .{}),
                     .scroll => blk: {
@@ -2339,7 +2342,7 @@ test "Scene frame work counts viewport refresh and culling work" {
                         break :blk try presentStepped(f, NoReply{});
                     },
                 };
-                actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds, w.overlap_tests, w.paint_visits };
+                actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds, yoga.test_native_measures - measures, w.overlap_tests, w.paint_visits };
             }
         }
         try testing.expectEqual(expected, all);

@@ -12,6 +12,8 @@ export const MAX_STATE_CHANGE_FLUSH_ITERATIONS = 1000
 export interface NotificationService<TTarget extends object, TEvent extends KeymapEvent> {
   runWithStateChangeBatch<T>(fn: () => T): T
   queueStateChange(options?: { invalidateCaches?: boolean }): void
+  /** Runs right before each `state` event. */
+  onStateEvent(listener: () => void): void
   emitWarning(code: string, warning: unknown, message: string): void
   emitError(code: string, error: unknown, message: string): void
   reportListenerError(name: HookName, error: unknown): void
@@ -53,6 +55,8 @@ export function createNotificationService<TTarget extends object, TEvent extends
     events.emit("error", { code, message, error })
   }
 
+  let beforeStateEvent: (() => void) | undefined
+
   const flushStateChange = (): void => {
     if (!state.stateChangePending || state.stateChangeDepth > 0 || state.flushingStateChange) {
       return
@@ -76,6 +80,7 @@ export function createNotificationService<TTarget extends object, TEvent extends
 
         iterations += 1
         state.stateChangePending = false
+        beforeStateEvent?.()
         hooks.emit("state")
       }
     } finally {
@@ -110,6 +115,9 @@ export function createNotificationService<TTarget extends object, TEvent extends
       if (state.stateChangeDepth === 0 && !state.flushingStateChange) {
         flushStateChange()
       }
+    },
+    onStateEvent(listener) {
+      beforeStateEvent = listener
     },
     emitWarning,
     emitError,

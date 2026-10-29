@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Renderable } from "@opentui/core"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
 import * as addons from "@opentui/keymap/addons"
-import { stringifyKeySequence } from "@opentui/keymap"
+import { KEYMAP_EXTENSION_CONTEXT, stringifyKeySequence } from "@opentui/keymap"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import {
   KeymapProvider,
@@ -13,6 +13,8 @@ import {
 } from "@opentui/keymap/solid"
 import { render, type JSX } from "@opentui/solid"
 import { Show, createSignal, onCleanup } from "solid-js"
+import { createStore } from "solid-js/store"
+import { formatCommandBindings } from "@opentui/keymap/extras"
 import { createDiagnosticHarness } from "../../tests/diagnostic-harness.js"
 
 const diagnostics = createDiagnosticHarness()
@@ -127,18 +129,19 @@ describe("solid keymap hooks", () => {
       setTick = setTickSignal
 
       const offCommands = manager.registerLayer({ commands: [{ name: "probe", run() {} }] })
-      const original = manager.registerLayer.bind(manager)
-      manager.registerLayer = ((layer) => {
+      const layers = manager[KEYMAP_EXTENSION_CONTEXT]().layers
+      const original = layers.replaceLayer
+      layers.replaceLayer = (slot, layer) => {
         registerCalls += 1
-        return original(layer)
-      }) as typeof manager.registerLayer
+        return original(slot, layer)
+      }
 
       useBindings(() => ({
         bindings: [{ key: "x", cmd: "probe" }],
       }))
 
       onCleanup(() => {
-        manager.registerLayer = original
+        layers.replaceLayer = original
         offCommands()
       })
 
@@ -153,6 +156,81 @@ describe("solid keymap hooks", () => {
     await Bun.sleep(0)
 
     expect(registerCalls).toBe(1)
+  })
+
+  test("useBindings updates that leave layers unchanged do not rerun keymap selectors", async () => {
+    const [tick, setTick] = createSignal(0)
+    const [key, setKey] = createSignal("x")
+    let selectorRuns = 0
+
+    function App() {
+      for (const name of ["first", "second", "third"]) {
+        useBindings(() => {
+          tick()
+          return { commands: [{ name, run() {} }], bindings: [{ key: name === "first" ? key() : "y", cmd: name }] }
+        })
+      }
+
+      const entries = useKeymapSelector((keymap) => {
+        selectorRuns += 1
+        return keymap.getCommandEntries()
+      })
+
+      return <text>{`${entries().length}`}</text>
+    }
+
+    testSetup = await testRender(() => <App />, { width: 20, height: 6 })
+    const runs = [selectorRuns]
+
+    setTick(1)
+    await Bun.sleep(0)
+    runs.push(selectorRuns)
+
+    setKey("z")
+    await Bun.sleep(0)
+    runs.push(selectorRuns)
+
+    expect(runs.map((count) => count - runs[0]!)).toEqual([0, 0, 1])
+  })
+
+  test("useBindings layers built from a Solid store follow store changes", async () => {
+    const calls: string[] = []
+    const [store, setStore] = createStore({
+      spread: { name: "spread", title: "one", run: () => void calls.push("spread one") },
+      proxy: { name: "proxy", title: "one", run: () => void calls.push("proxy one") },
+      keys: { spread: "x", proxy: "y" },
+    })
+    let labels!: () => string
+
+    function App() {
+      // A plain copy of store data, and the store proxy itself, which is not plain data.
+      useBindings(() => ({ commands: [{ ...store.spread }], bindings: [{ key: store.keys.spread, cmd: "spread" }] }))
+      useBindings(() => ({ commands: [store.proxy], bindings: [{ key: store.keys.proxy, cmd: "proxy" }] }))
+      labels = useKeymapSelector((keymap) =>
+        keymap
+          .getCommandEntries()
+          .map(({ command, bindings }) => `${command.name}:${command.title}:${formatCommandBindings(bindings)}`)
+          .sort()
+          .join(" "),
+      )
+      return <text>{labels()}</text>
+    }
+
+    testSetup = await testRender(() => <App />, { width: 40, height: 6 })
+    const seen = [labels()]
+    setStore("spread", "title", "two")
+    setStore("proxy", "title", "two")
+    setStore("keys", "spread", "z")
+    await Bun.sleep(0)
+    seen.push(labels())
+    setStore("spread", "run", () => () => void calls.push("spread two"))
+    setStore("proxy", "run", () => () => void calls.push("proxy two"))
+    await Bun.sleep(0)
+    testSetup.mockInput.pressKey("z")
+    testSetup.mockInput.pressKey("y")
+
+    expect(seen).toEqual(["proxy:one:y spread:one:x", "proxy:two:y spread:two:z"])
+    expect(calls).toEqual(["spread two", "proxy two"])
   })
 
   test("useBindings supports declarative release bindings", async () => {
