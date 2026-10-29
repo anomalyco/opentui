@@ -145,6 +145,8 @@ Use [Clipboard](/docs/core-concepts/clipboard) when the application must read or
 
 Return `true` to consume that sequence. Return `false` to continue through remaining handlers and, for keys, `KeyEvent` delivery.
 
+The renderer consumes terminal replies to its own queries, such as capability and theme color replies, before handlers added with `addInputHandler` run. Use `prependInputHandler` to observe them.
+
 Raw terminal encodings vary. Prefer `KeyEvent` unless you must integrate an unsupported terminal protocol.
 
 The Kitty keyboard protocol improves modifier and release reporting when supported. Read [Terminal capabilities](/docs/reference/terminal-capabilities) before depending on those fields.

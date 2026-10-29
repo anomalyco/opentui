@@ -49,7 +49,6 @@ pub const io = io_threaded.io();
 const text_buffer_view_bench = @import("bench/text-buffer-view_bench.zig");
 const edit_buffer_bench = @import("bench/edit-buffer_bench.zig");
 const rope_bench = @import("bench/rope_bench.zig");
-const rope_markers_bench = @import("bench/rope-markers_bench.zig");
 const text_buffer_coords_bench = @import("bench/text-buffer-coords_bench.zig");
 const text_buffer_tab_width_bench = @import("bench/text-buffer-tab-width_bench.zig");
 const styled_text_bench = @import("bench/styled-text_bench.zig");
@@ -66,10 +65,17 @@ const renderer_overhead_bench = @import("bench/renderer-overhead_bench.zig");
 const buffer_image_overlap_bench = @import("bench/buffer-image-overlap_bench.zig");
 const image_operations_bench = @import("bench/image-operations_bench.zig");
 const renderer_output_bench = @import("bench/renderer-output_bench.zig");
+const scene_frame_bench = @import("bench/scene-frame_bench.zig");
+
+// Only the names of these three are used here; `bench-isolated.zig` compiles their code as its own unit.
+extern fn opentui_bench_renderer_image(bool, bool, [*]const u8, usize) callconv(.c) bench_utils.UnitStatus;
+extern fn opentui_bench_buffer_cell_drawing(bool, bool, [*]const u8, usize) callconv(.c) bench_utils.UnitStatus;
+extern fn opentui_bench_buffer_image_overlap(bool, bool, [*]const u8, usize) callconv(.c) bench_utils.UnitStatus;
 
 const BenchModule = struct {
     name: []const u8,
-    run: *const fn (std.Io, std.mem.Allocator, bool, ?[]const u8) anyerror![]bench_utils.BenchResult,
+    run: ?bench_utils.RunFn = null,
+    unit: ?bench_utils.UnitFn = null,
 };
 
 fn matchesFilter(bench_name: []const u8, filter: ?[]const u8) bool {
@@ -104,7 +110,6 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = text_buffer_view_bench.benchName, .run = text_buffer_view_bench.run },
         .{ .name = edit_buffer_bench.benchName, .run = edit_buffer_bench.run },
         .{ .name = rope_bench.benchName, .run = rope_bench.run },
-        .{ .name = rope_markers_bench.benchName, .run = rope_markers_bench.run },
         .{ .name = text_buffer_coords_bench.benchName, .run = text_buffer_coords_bench.run },
         .{ .name = text_buffer_tab_width_bench.benchName, .run = text_buffer_tab_width_bench.run },
         .{ .name = styled_text_bench.benchName, .run = styled_text_bench.run },
@@ -115,12 +120,13 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = text_chunk_render_clusters_bench.benchName, .run = text_chunk_render_clusters_bench.run },
         .{ .name = editor_view_bench.benchName, .run = editor_view_bench.run },
         .{ .name = terminal_image_bench.benchName, .run = terminal_image_bench.run },
-        .{ .name = renderer_image_bench.benchName, .run = renderer_image_bench.run },
-        .{ .name = buffer_cell_drawing_bench.benchName, .run = buffer_cell_drawing_bench.run },
+        .{ .name = renderer_image_bench.benchName, .unit = opentui_bench_renderer_image },
+        .{ .name = buffer_cell_drawing_bench.benchName, .unit = opentui_bench_buffer_cell_drawing },
         .{ .name = renderer_overhead_bench.benchName, .run = renderer_overhead_bench.run },
-        .{ .name = buffer_image_overlap_bench.benchName, .run = buffer_image_overlap_bench.run },
+        .{ .name = buffer_image_overlap_bench.benchName, .unit = opentui_bench_buffer_image_overlap },
         .{ .name = image_operations_bench.benchName, .run = image_operations_bench.run },
         .{ .name = renderer_output_bench.benchName, .run = renderer_output_bench.run },
+        .{ .name = scene_frame_bench.benchName, .run = scene_frame_bench.run },
     };
 
     var args_arena = std.heap.ArenaAllocator.init(allocator);
@@ -184,30 +190,16 @@ pub fn main(init: std.process.Init) !void {
     for (benchmarks) |bench| {
         if (!matchesFilter(bench.name, filter)) continue;
 
-        // Use arena for results only - benchmark modules manage their own temp memory
-        var results_arena = std.heap.ArenaAllocator.init(allocator);
-        defer results_arena.deinit();
-
-        const timer = bench_utils.BenchTimer.start(process_io);
-        const results = try bench.run(process_io, results_arena.allocator(), show_mem, bench_filter);
-        const elapsed_ns = timer.read();
-
-        if (results.len == 0) continue;
-
-        if (!json_output) {
-            try stdout.print("\n=== {s} Benchmarks ===\n\n", .{bench.name});
+        const ran = if (bench.unit) |unit| ran: {
             try stdout.flush();
-        }
-
-        if (json_output) {
-            try bench_utils.printResultsJson(stdout, results, bench.name);
-        } else {
-            try bench_utils.printResults(stdout, results);
-            const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
-            try stdout.print("\n  Overall time: {d:.2}ms\n", .{elapsed_ms});
-        }
-
-        ran_any = true;
+            const unit_filter = bench_filter orelse "";
+            break :ran switch (unit(json_output, show_mem, unit_filter.ptr, unit_filter.len)) {
+                .empty => false,
+                .ran => true,
+                .failed => return error.BenchFailed,
+            };
+        } else try bench_utils.runCategory(process_io, allocator, stdout, bench.name, bench.run.?, json_output, show_mem, bench_filter);
+        if (ran) ran_any = true;
     }
 
     if (!ran_any) {

@@ -254,14 +254,7 @@ export const DOC_MANIFEST = {
     canonicalSection: "Extend / Custom UI",
     primaryNav: false,
     status: "Advanced",
-    searchSymbols: [
-      "BaseRenderable",
-      "Renderable",
-      "render",
-      "measure",
-      "nativeIntegration",
-      "defineNativeIntegration",
-    ],
+    searchSymbols: ["BaseRenderable", "Renderable", "render", "measure", "nativeIntegration", "refreshHooks"],
     related: ["core-concepts/renderables", "core-concepts/lifecycle", "bindings/react", "bindings/solid"],
   }),
 
@@ -770,14 +763,7 @@ export const DOC_MANIFEST = {
   }),
   "native/core": page("native", 5, "How Core uses native", "internals", {
     status: "Maintained Core integration",
-    searchSymbols: [
-      "NativeScene",
-      "NativeSession",
-      "ResourceContext",
-      "NativeResourceOwner",
-      "BufferAccess",
-      "nativeSceneWorkBudget",
-    ],
+    searchSymbols: ["NativeScene", "NativeSession", "ResourceContext", "NativeResourceOwner", "BufferAccess"],
     related: [
       "native/overview",
       "core-concepts/rendering-pipeline",

@@ -4,7 +4,12 @@ const abi = @import("context-abi.zig");
 const ctx = @import("context.zig");
 const eb = @import("edit-buffer.zig");
 const iter = @import("text-buffer-iterators.zig");
+const text_work = @import("text-work.zig");
 const Owner = abi.ContextHandle;
+
+comptime {
+    std.debug.assert(c.OT_STYLE_RUN_FLAG == @import("syntax-style.zig").id_limit);
+}
 
 /// Validates admission only; checked Context methods acquire their own mutation guard.
 pub fn admit(context: ?*Owner, read: bool) !*Owner {
@@ -46,13 +51,9 @@ fn view(owner: *Owner, id: ?*const c.ot_handle) !*ctx.Editor {
     return owner.core.raw().getEditorView(abi.handleFromC((id orelse return error.InvalidOptions).*));
 }
 
-pub const prepareBuffer = ctx.Context.prepareTextBuffer;
-
 fn prepareWordLine(value: *ctx.Edit) !void {
-    try prepareBuffer(value.buffer.tb);
     const rope = value.buffer.tb.rope();
-    const marker = rope.getMarker(.linestart, value.buffer.getPrimaryCursor().row) orelse return;
-    var index = marker.leaf_index + 1;
+    var index = (iter.lineStart(rope, value.buffer.getPrimaryCursor().row) orelse return).leaf_index + 1;
     while (index < rope.count()) : (index += 1) {
         const segment = rope.get(index).?;
         if (segment.isBreak() or segment.isLineStart()) break;
@@ -121,11 +122,11 @@ pub fn ot_edit_buffer_history(context: ?*Owner, id: ?*const c.ot_handle, redo: u
 pub fn ot_edit_buffer_get_position(context: ?*Owner, id: ?*const c.ot_handle, query: u32, a: u32, b: u32, out: ?*c.ot_edit_position) callconv(.c) c.ot_status {
     const owner = admit(context, true) catch |err| return fail(context, err);
     _ = record(c.ot_edit_position, out) catch |err| return fail(owner, err);
-    if (query > c.OT_EDIT_POSITION_LINE_START or (query < c.OT_EDIT_POSITION_OFFSET and a != 0) or
+    if (query > c.OT_EDIT_POSITION_PREV_CHAR or ((query < c.OT_EDIT_POSITION_OFFSET or query > c.OT_EDIT_POSITION_LINE_START) and a != 0) or
         (query != c.OT_EDIT_POSITION_COORDS and b != 0)) return fail(owner, error.InvalidOptions);
     const value = edit(owner, id) catch |err| return fail(owner, err);
-    prepareBuffer(value.buffer.tb) catch |err| return fail(owner, err);
     const rope = value.buffer.tb.rope();
+    const at = if (query == c.OT_EDIT_POSITION_END) rope.totalWeight() else a;
     if (query == c.OT_EDIT_POSITION_NEXT_WORD or query == c.OT_EDIT_POSITION_PREV_WORD)
         prepareWordLine(value) catch |err| return fail(owner, err);
     const cursor: ?eb.Cursor = switch (query) {
@@ -133,7 +134,8 @@ pub fn ot_edit_buffer_get_position(context: ?*Owner, id: ?*const c.ot_handle, qu
         c.OT_EDIT_POSITION_NEXT_WORD => value.buffer.getNextWordBoundary(),
         c.OT_EDIT_POSITION_PREV_WORD => value.buffer.getPrevWordBoundary(),
         c.OT_EDIT_POSITION_EOL => value.buffer.getEOL(),
-        c.OT_EDIT_POSITION_OFFSET => if (iter.offsetToCoords(rope, a)) |pos| .{ .row = pos.row, .col = pos.col, .offset = a } else null,
+        c.OT_EDIT_POSITION_OFFSET, c.OT_EDIT_POSITION_END => if (iter.offsetToCoords(rope, at)) |pos| .{ .row = pos.row, .col = pos.col, .offset = at } else null,
+        c.OT_EDIT_POSITION_PREV_CHAR => value.buffer.getPrevCharBoundary(),
         c.OT_EDIT_POSITION_COORDS, c.OT_EDIT_POSITION_LINE_START => if (iter.coordsToOffset(rope, a, b)) |offset| .{ .row = a, .col = b, .offset = offset } else null,
         else => unreachable,
     };
@@ -202,6 +204,7 @@ pub fn ot_editor_view_get_viewport(context: ?*Owner, id: ?*const c.ot_handle, ou
     const owner = admit(context, true) catch |err| return fail(context, err);
     _ = record(c.ot_editor_viewport, out) catch |err| return fail(owner, err);
     const value = view(owner, id) catch |err| return fail(owner, err);
+    if (value.view.follow_pending) value.prepareView() catch |err| return fail(owner, err);
     const vp = value.view.getViewport() orelse return fail(owner, error.InvalidOptions);
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_viewport), .abi_version = c.OT_CONTEXT_ABI_VERSION, .x = vp.x, .y = vp.y, .width = vp.width, .height = vp.height };
     return c.OT_OK;
@@ -349,6 +352,13 @@ test "Context editor selection query avoids preparation and preserves checked re
     try std.testing.expect(!failing.has_induced_failure);
     try std.testing.expect(editor.view.text_buffer_view.virtual_lines_dirty);
     try std.testing.expectEqualDeep(viewport, editor.view.getViewport());
+    // With no scroll due, the viewport read and the scroll margin do not lay out either.
+    var read = std.mem.zeroes(c.ot_editor_viewport);
+    read.struct_size = @sizeOf(c.ot_editor_viewport);
+    read.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_get_viewport(&owner, &handle, &read));
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_set_scroll_margin(&owner, &handle, 0.25));
+    try std.testing.expect(!failing.has_induced_failure);
 
     var text: [7]u8 = undefined;
     var count: u32 = 0;
@@ -430,7 +440,6 @@ pub fn ot_editor_view_measure(context: ?*Owner, id: ?*const c.ot_handle, width: 
     _ = record(c.ot_editor_measure, out) catch |err| return fail(owner, err);
     if (width > std.math.maxInt(i32) or height > std.math.maxInt(i32)) return fail(owner, error.InvalidOptions);
     const value = view(owner, id) catch |err| return fail(owner, err);
-    prepareBuffer(value.view.text_buffer_view.text_buffer) catch |err| return fail(owner, err);
     const measured = value.view.text_buffer_view.measureForDimensions(width, height) catch |err| return fail(owner, err);
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_measure), .abi_version = c.OT_CONTEXT_ABI_VERSION, .line_count = measured.line_count, .width_cols_max = measured.width_cols_max };
     return c.OT_OK;
@@ -465,7 +474,7 @@ pub fn highlightFromC(operation: u32, argument: u32, highlight: ?*const c.ot_edi
         ((operation == c.OT_EDIT_HIGHLIGHT_ADD_RANGE or operation == c.OT_EDIT_HIGHLIGHT_CLEAR_ALL) and argument != 0) or
         ((operation <= c.OT_EDIT_HIGHLIGHT_ADD_RANGE) != (highlight != null)) or
         (operation == c.OT_EDIT_HIGHLIGHT_REMOVE_REF and argument > 65535)) return error.InvalidOptions;
-    if (highlight) |h| if (h.priority > 255 or h.ref > 65535) return error.InvalidOptions;
+    if (highlight) |h| if (h.priority > 255 or h.ref > 65535 or h.style_id & c.OT_STYLE_RUN_FLAG != 0) return error.InvalidOptions;
     const range: ctx.TextHighlight.Range = if (highlight) |h| .{
         .start = h.start,
         .end = h.end,
@@ -581,7 +590,7 @@ test "Context checked history matches ABI metadata cursor and observer order" {
             try std.testing.expectEqual(@as(usize, 0), count);
             try std.testing.expectEqual(@as(u8, 0xaa), bytes[0]);
         } else {
-            try std.testing.expectEqualSlices(ctx.EditEvent, &.{ .cursor_changed, .history_cursor_changed }, events[0..count]);
+            try std.testing.expectEqualSlices(ctx.EditEvent, &.{ .cursor_changed, .content_changed, .history_cursor_changed }, events[0..count]);
             try std.testing.expectEqual(error.ContextBusy, probe.rejection.?);
         }
         const first = (try owner.core.raw().getEditBuffer(direct)).buffer;
@@ -633,7 +642,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
     const tabs = try std.testing.allocator.alloc(u8, (std.math.maxInt(u32) - 1) / 254 + 1);
     defer std.testing.allocator.free(tabs);
     @memset(tabs, '\t');
-    for (0..27) |row| {
+    for (0..28) |row| {
         const status = switch (row) {
             0 => ot_edit_buffer_set_tab_width(&owner, &edit_id, 256),
             1 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_DEBUG_ROPE + 1, 0),
@@ -646,7 +655,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             7 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "a\x0c\xff", 3, 1),
             8 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "\x00\xc2", 2),
             9 => ot_editor_view_set_placeholder(&owner, &view_id, "\xc2\x85\x80", 3, &chunks, 0),
-            10 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_LINE_START + 1, 0, 0, &position),
+            10 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_PREV_CHAR + 1, 0, 0, &position),
             11 => ot_edit_buffer_get_range(&owner, &edit_id, 2, 0, 0, 0, 1, &bytes, bytes.len, &count),
             12 => ot_edit_buffer_set_defaults(&owner, &edit_id, 0, &style),
             13 => ot_edit_buffer_highlight(&owner, &edit_id, c.OT_EDIT_HIGHLIGHT_CLEAR_ALL + 1, 0, null),
@@ -663,6 +672,7 @@ test "Context editor ABI rejects malformed arguments without side effects" {
             24 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 256, &count),
             25 => ot_edit_measure_text(&owner, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 0, null),
             26 => ot_edit_measure_text(&owner, tabs.ptr, @intCast(tabs.len), c.OT_WIDTH_METHOD_UNICODE, 255, &count),
+            27 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_END, 1, 0, &position),
             else => unreachable,
         };
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);
@@ -694,33 +704,81 @@ test "Context history-preserving set_text needs no registry slot per call" {
     }
 }
 
-test "Context editor accepted deletion does not return a later layout allocation failure" {
+test "Context editor edits defer layout to the first viewport read, which reports its failure" {
     var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
     owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
     defer owner.core.deinit() catch unreachable;
     const edit_id = try owner.core.createEditBuffer(.unicode);
-    try owner.core.editSetText(edit_id, "abcdef", false);
+    try owner.core.editSetText(edit_id, "abcdef\n1\n2\n3\n4\n5", false);
     const view_id = try owner.core.createEditorView(edit_id, 4, 2);
+    const other_id = try owner.core.createEditorView(edit_id, 4, 2);
     const editor = try owner.core.raw().getEditorView(view_id);
     editor.view.setWrapMode(.char);
+    (try owner.core.raw().getEditorView(other_id)).view.setWrapMode(.char);
     editor.view.setSelection(0, 3, null, null);
-    try editor.prepareView();
-    const handle: c.ot_handle = .{ .context_id = view_id.context_id, .slot = view_id.slot, .generation = view_id.generation };
+    const handle = abi.handleToC(view_id);
     const arena = editor.view.text_buffer_view.virtual_lines_arena;
     const allocator = arena.child_allocator;
     var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
     arena.child_allocator = failing.allocator();
     defer arena.child_allocator = allocator;
-    const status = ot_editor_view_command(&owner, &handle, c.OT_EDITOR_DELETE_SELECTION, 0);
-    var text: [16]u8 = undefined;
-    const actual = text[0..editor.edit.buffer.getText(&text)];
-    if (status == c.OT_OK) {
-        try std.testing.expectEqualStrings("def", actual);
-    } else {
-        try std.testing.expectEqualStrings("abcdef", actual);
+    // Edits, cursor commands, and settings with no scroll due do no layout, so a layout that
+    // would fail cannot fail them; the view's lines are stale (dirty) throughout.
+    _ = text_work.take();
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_command(&owner, &handle, c.OT_EDITOR_WRAP_MODE, c.OT_SCENE_WRAP_CHAR));
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_command(&owner, &handle, c.OT_EDITOR_TAB_INDICATOR, 0));
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_command(&owner, &handle, c.OT_EDITOR_DELETE_SELECTION, 0));
+    for (0..10) |offset| {
+        // Input's value setter: replace the text, then set `cursorOffset`.
+        try owner.core.editInsertText(edit_id, "x");
+        try std.testing.expectEqual(c.OT_OK, ot_editor_view_command(&owner, &handle, c.OT_EDITOR_CURSOR_OFFSET, @intCast(offset)));
     }
-    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expectEqual(@as(u64, 0), text_work.take().layouts);
+    try owner.core.editCommand(edit_id, .{ .goto_line = 5 });
+    var text: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("xxxxxxxxxxdef\n1\n2\n3\n4\n5", text[0..editor.edit.buffer.getText(&text)]);
+    var select = std.mem.zeroes(c.ot_editor_selection);
+    select.struct_size = @sizeOf(c.ot_editor_selection);
+    select.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    select.operation = c.OT_EDITOR_SELECT_LOCAL;
+    select.flags = c.OT_SCENE_TEXT_FOREGROUND;
+    select.foreground = .{ 256, 0, 0, 255 };
+    var changed: u32 = 0;
+    // Arguments are checked before the due scroll lays out.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_editor_view_select(&owner, &handle, &select, &changed));
+    try std.testing.expect(!failing.has_induced_failure);
+
+    var viewport = std.mem.zeroes(c.ot_editor_viewport);
+    viewport.struct_size = @sizeOf(c.ot_editor_viewport);
+    viewport.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const unchanged = viewport;
+    try std.testing.expectEqual(c.OT_OUT_OF_MEMORY, ot_editor_view_get_viewport(&owner, &handle, &viewport));
+    try std.testing.expectEqualDeep(unchanged, viewport);
+    try std.testing.expectEqual(c.OT_OUT_OF_MEMORY, ot_editor_view_set_scroll_margin(&owner, &handle, 0.5));
+    try std.testing.expectEqual(@as(f32, 0.15), editor.view.scroll_margin);
+    // A direct read whose layout fails keeps the viewport, and the scroll stays due.
+    try std.testing.expectEqual(@as(u32, 0), editor.view.getViewport().?.y);
+    arena.child_allocator = allocator;
+
+    // The first read scrolls like any other read: compare with a view that a cursor query settled.
+    var position = std.mem.zeroes(c.ot_editor_position);
+    position.struct_size = @sizeOf(c.ot_editor_position);
+    position.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const other = abi.handleToC(other_id);
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_get_position(&owner, &other, c.OT_EDITOR_POSITION_CURSOR, &position));
+    try std.testing.expectEqual(c.OT_OK, ot_editor_view_get_viewport(&owner, &handle, &viewport));
+    try std.testing.expectEqual(@as(u32, 7), viewport.y);
+    const settled = (try owner.core.raw().getEditorView(other_id)).view.text_buffer_view.getViewport().?;
+    try std.testing.expectEqual(settled.y, viewport.y);
+
+    // Local selection coordinates are checked against the viewport after the due scroll (y 7).
+    try owner.core.editorSetViewport(view_id, .{ .x = 0, .y = 0, .width = 4, .height = 2 }, false, false);
+    try owner.core.editCommand(edit_id, .{ .goto_line = 5 });
+    select.flags = 0;
+    select.anchor_y = std.math.maxInt(i32) - 2;
+    select.focus_y = select.anchor_y;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_editor_view_select(&owner, &handle, &select, &changed));
 }
 
 test "Context editor placeholder ABI rejects malformed chunks and preserves styled input" {

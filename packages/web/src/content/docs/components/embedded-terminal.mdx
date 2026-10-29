@@ -157,7 +157,7 @@ The renderer starts host selection before it dispatches the mouse event. Encoded
 
 The renderable is always buffered and composes dirty rows into its private buffer. Wide graphemes use their grid width. Bold, dim, italic, underline, blink, hidden, and strikethrough map to cell attributes. Inverse style and selection swap foreground and background.
 
-The paint path does not compose child Kitty graphics or Sixel images. It draws the character grid only.
+The paint path does not compose child Kitty graphics or Sixel images. It draws the character grid only. The terminal does not advertise Kitty graphics or the Ghostty glyph protocol: it ignores their commands, sends no reply, and keeps no image or glyph data, so a program that probes for support uses its text fallback.
 
 While the renderable has focus, the host cursor follows the emulator cursor. It takes the bar, block, or underline style. Hollow block becomes block. It takes blink and RGB cursor color when present. A wide-glyph tail shifts the host cursor one cell left.
 

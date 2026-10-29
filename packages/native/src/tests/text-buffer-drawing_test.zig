@@ -7,6 +7,7 @@ const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ss = @import("../syntax-style.zig");
+const utf8 = @import("../utf8.zig");
 
 const TextBuffer = text_buffer.TextBuffer;
 const TextBufferView = text_buffer_view.TextBufferView;
@@ -752,7 +753,7 @@ test "drawTextBuffer - wrapped text with offset position" {
     try std.testing.expect(cell.?.char != 32);
 }
 
-test "drawTextBuffer - clipping with scrolled view" {
+test "drawTextBuffer - visits only the lines on the buffer's and the scissor's rows" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -762,7 +763,7 @@ test "drawTextBuffer - clipping with scrolled view" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    try tb.setText("Line 1\nLine 2\nLine 3\nLine 4");
+    try tb.setText("L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nLa\nLb\nLc\nLd\nLe\nLf\nLg\nLh\nLi\nLj");
 
     var opt_buffer = try OptimizedBuffer.init(
         std.testing.allocator,
@@ -772,11 +773,35 @@ test "drawTextBuffer - clipping with scrolled view" {
     );
     defer opt_buffer.deinit();
 
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    const virtual_lines = view.getVirtualLines();
-    try std.testing.expect(virtual_lines.len >= 4);
+    // A band frame draws a 20-line text in a 1-row band: one line.
+    const cases = [_]struct { y: i32, scissor: ?[2]i32, lines: u64, first: ?u8 }{
+        .{ .y = 0, .scissor = null, .lines = 5, .first = '0' },
+        .{ .y = -3, .scissor = null, .lines = 5, .first = '3' },
+        .{ .y = 0, .scissor = .{ 2, 1 }, .lines = 1, .first = null },
+        .{ .y = -3, .scissor = .{ 4, 1 }, .lines = 1, .first = null },
+        .{ .y = 3, .scissor = .{ 0, 2 }, .lines = 0, .first = null },
+        .{ .y = 0, .scissor = .{ -2, 3 }, .lines = 1, .first = '0' },
+        .{ .y = 4, .scissor = .{ 2, 0 }, .lines = 0, .first = null },
+    };
+    for (cases) |case| {
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        if (case.scissor) |rows| try opt_buffer.pushScissorRect(0, rows[0], 20, @intCast(rows[1]));
+        defer opt_buffer.clearScissorRects();
+        const before = opt_buffer.test_text_lines;
+        opt_buffer.drawTextBuffer(view, 0, case.y);
+        try std.testing.expectEqual(case.lines, opt_buffer.test_text_lines - before);
+        if (case.first) |digit| try std.testing.expectEqual(@as(u32, digit), opt_buffer.get(1, 0).?.char);
+        // Cells outside the scissor keep the clear.
+        if (case.scissor) |rows| for (0..5) |row| {
+            const inside = @as(i32, @intCast(row)) >= rows[0] and @as(i32, @intCast(row)) < rows[0] + rows[1];
+            if (!inside) try std.testing.expectEqual(@as(u32, 32), opt_buffer.get(0, @intCast(row)).?.char);
+        };
+        if (case.scissor != null and case.lines == 1 and case.first == null) {
+            const row: u32 = @intCast(case.scissor.?[0]);
+            try std.testing.expectEqual(@as(u32, 'L'), opt_buffer.get(0, row).?.char);
+            try std.testing.expectEqual(@as(u32, @intCast(@as(i32, @intCast(row)) - case.y + '0')), opt_buffer.get(1, row).?.char);
+        }
+    }
 }
 
 test "drawTextBuffer - wrapping with very narrow width" {
@@ -1024,11 +1049,10 @@ test "owned styled text - basic rendering with single chunk" {
     var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
-    const styled = try owned_styled.replace(tb, null, &.{.{
+    _ = try owned_styled.replace(tb, null, &.{.{
         .text = "Hello World",
         .fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0),
     }});
-    defer styled.style.deinit();
 
     var out_buffer: [100]u8 = undefined;
     const written = tb.getPlainTextIntoBuffer(&out_buffer);
@@ -1045,11 +1069,10 @@ test "owned styled text - multiple chunks render correctly" {
     defer tb.deinit();
 
     const fg_color = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const styled = try owned_styled.replace(tb, null, &.{
+    _ = try owned_styled.replace(tb, null, &.{
         .{ .text = "Hello ", .fg = fg_color },
         .{ .text = "World", .fg = fg_color },
     });
-    defer styled.style.deinit();
 
     var out_buffer: [100]u8 = undefined;
     const written = tb.getPlainTextIntoBuffer(&out_buffer);
@@ -1615,38 +1638,88 @@ test "loadFile - registered file content survives text replacement" {
     try std.testing.expectEqualStrings(test_content, out_buffer[0..tb.getPlainTextIntoBuffer(&out_buffer)]);
 }
 
-test "drawTextBuffer - horizontal viewport offset renders correctly without wrapping" {
-    var pools = TestPools.init(std.testing.allocator);
+test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as a fresh draw of its visible slice" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
     defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789ABCDEFGHIJ");
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 5, .y = 0, .width = 10, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var out_buffer: [100]u8 = undefined;
-    const written = try opt_buffer.writeResolvedChars(&out_buffer, false);
-    const result = out_buffer[0..written];
-
-    try std.testing.expect(std.mem.startsWith(u8, result, "56789ABCDE"));
+    const width = 10;
+    const height = 3;
+    const mixed = "ab\u{754c}c\u{1f600}d\te\u{301}f\u{1}g\u{200b}h";
+    const words = "\u{754c}\u{754c}e\u{301} ab\tc \u{1f600}d xyz\u{1}w \u{1f468}\u{200d}\u{1f469} ";
+    const rows = [_]struct { parts: []const []const u8, method: utf8.WidthMethod = .unicode, control: utf8.ControlDisplay = .hidden, wrap: WrapMode = .none, at_5: ?[]const u8 = null }{
+        .{ .parts = &.{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"}, .at_5 = "56789ABCDE   " },
+        .{ .parts = &.{mixed ** 3} },
+        .{ .parts = &.{mixed ** 3}, .control = .notation },
+        .{ .parts = &.{mixed ** 3}, .method = .wcwidth },
+        .{ .parts = &.{ "\u{754c}\u{754c}a", "\tbcdefghijk", "e\u{301}xyz\u{754c}", "0123456789" } },
+        .{ .parts = &.{"\t\t\t\t\t\u{1f468}\u{200d}\u{1f469}" ++ (mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char },
+        .{ .parts = &.{"abcdefghij\u{200b}k\u{1f468}\u{200d}\u{1f469}xyz" ** 4}, .wrap = .char, .method = .wcwidth },
+        .{ .parts = &.{(mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char, .control = .notation },
+        .{ .parts = &.{words ** 6}, .wrap = .word },
+        .{ .parts = &.{words ** 6}, .wrap = .word, .method = .wcwidth },
+    };
+    var drawn: [2][256]u8 = undefined;
+    // Columns 3k and 3k+1 of the first half of each line are highlighted, so offsets fall inside
+    // a span, on its edges, and past the last one.
+    const style = try ss.SyntaxStyle.init(allocator);
+    defer style.deinit();
+    const hl = try style.registerStyle("hl", ansi.rgbaFromFloats(1, 0, 0, 1), ansi.rgbaFromFloats(0, 0, 1, 1), 1);
+    for (rows) |row| {
+        const text = try std.mem.concat(allocator, u8, row.parts);
+        defer allocator.free(text);
+        const tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
+        defer tb.deinit();
+        for (row.parts) |part| try tb.append(part);
+        tb.setSyntaxStyle(style);
+        var col: u32 = 0;
+        while (col < tb.lineWidthAt(0) / 2) : (col += 3) try tb.addHighlight(0, col, col + 2, hl, 1, 0);
+        const screens = [2]*OptimizedBuffer{
+            try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
+            try OptimizedBuffer.init(allocator, width + 3, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = row.method }),
+        };
+        defer for (screens) |screen| screen.deinit();
+        var views = [2]*TextBufferView{ try TextBufferView.init(allocator, tb), undefined };
+        defer views[0].deinit();
+        views[0].setWrapMode(row.wrap);
+        views[0].setWrapWidth(if (row.wrap == .none) null else width);
+        views[0].setViewport(.{ .x = 0, .y = 0, .width = width, .height = height });
+        const offsets = if (row.wrap == .none) tb.lineWidthAt(0) + 1 else views[0].getVirtualLineCount();
+        for (0..offsets) |offset| {
+            const o: u32 = @intCast(offset);
+            views[0].setViewport(if (row.wrap == .none) .{ .x = o, .y = 0, .width = width, .height = 1 } else .{ .x = 0, .y = o, .width = width, .height = height });
+            // Unwrapped, the slice starts after a grapheme that the left edge cuts and draws after
+            // its visible cells. Those are blanks in its style, which the cut-glyph test checks.
+            const pos = utf8.findPosByWidth(text, o, tb.tabWidth(), row.control, false, true, row.method);
+            const first = views[0].getVirtualLines()[0];
+            const cut, const shift = if (row.wrap == .none) .{ pos.byte_offset, pos.columns_used } else .{ first.chunks.items[0].byte_start_in_chunk, first.document_cell_offset };
+            const slice_tb = try TextBuffer.initWithOptions(allocator, &pools.graphemes, &pools.links, row.method, .{ .control_display = row.control });
+            defer slice_tb.deinit();
+            try slice_tb.setText(text[cut..]);
+            slice_tb.setSyntaxStyle(style);
+            col = 0;
+            while (col < tb.lineWidthAt(0) / 2) : (col += 3) if (col + 2 > shift) try slice_tb.addHighlight(0, col -| shift, col + 2 - shift, hl, 1, 0);
+            views[1] = try TextBufferView.init(allocator, slice_tb);
+            defer views[1].deinit();
+            views[1].setViewport(if (row.wrap == .none) .{ .x = 0, .y = 0, .width = width - (shift - o), .height = 1 } else .{ .x = 0, .y = 0, .width = width, .height = height });
+            const blanks = if (row.wrap == .none) shift - o else 0;
+            for (views, screens, &drawn, [2]u32{ 0, shift }, [2]u32{ 0, blanks }) |view, screen, *chars, from, x| {
+                view.setWrapMode(row.wrap);
+                view.setWrapWidth(if (row.wrap == .none) null else width);
+                view.setTabIndicator('>');
+                view.setSelection(7 -| from, 19 -| from, .{ 1, 2, 3, 4 }, null);
+                screen.clear(.{ 0, 0, 0, 1 }, 32);
+                screen.drawTextBuffer(view, @intCast(x), 0);
+                for (0..blanks) |blank| screen.set(@intCast(blank), 0, screens[0].get(@intCast(blank), 0).?);
+                @memset(chars, 0);
+                _ = try screen.writeResolvedChars(chars, false);
+            }
+            if (o == 5) if (row.at_5) |expected| try std.testing.expectEqualStrings(expected, drawn[0][0..expected.len]);
+            try std.testing.expectEqualSlices(u8, &drawn[1], &drawn[0]);
+            try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.fg), std.mem.sliceAsBytes(screens[0].buffer.fg));
+            try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.bg), std.mem.sliceAsBytes(screens[0].buffer.bg));
+            try std.testing.expectEqualSlices(u32, screens[1].buffer.attributes, screens[0].buffer.attributes);
+        }
+    }
 }
 
 test "drawTextBuffer - horizontal viewport offset with multiple lines" {
@@ -1718,132 +1791,6 @@ test "drawTextBuffer - combined horizontal and vertical viewport offsets" {
 
     try std.testing.expect(std.mem.find(u8, result, "KLMNOPQRST") != null);
     try std.testing.expect(std.mem.find(u8, result, "UVWXYZ0123") != null);
-}
-
-test "drawTextBuffer - horizontal viewport stops rendering at viewport width" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 5, .y = 0, .width = 10, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var out_buffer: [100]u8 = undefined;
-    const written = try opt_buffer.writeResolvedChars(&out_buffer, false);
-    const result = out_buffer[0..written];
-
-    try std.testing.expectEqualStrings("56789ABCDE", result[0..10]);
-
-    const cell_9 = opt_buffer.get(9, 0);
-    try std.testing.expect(cell_9 != null);
-    try std.testing.expectEqual(@as(u32, 'E'), cell_9.?.char);
-}
-
-test "drawTextBuffer - horizontal viewport with small buffer renders only viewport width" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 10, .y = 0, .width = 5, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        20,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    const cell_0 = opt_buffer.get(0, 0);
-    try std.testing.expect(cell_0 != null);
-    try std.testing.expectEqual(@as(u32, 'K'), cell_0.?.char);
-
-    const cell_4 = opt_buffer.get(4, 0);
-    try std.testing.expect(cell_4 != null);
-    try std.testing.expectEqual(@as(u32, 'O'), cell_4.?.char);
-
-    const cell_5 = opt_buffer.get(5, 0);
-    try std.testing.expect(cell_5 != null);
-    try std.testing.expectEqual(@as(u32, 32), cell_5.?.char);
-
-    const cell_6 = opt_buffer.get(6, 0);
-    try std.testing.expect(cell_6 != null);
-    try std.testing.expectEqual(@as(u32, 32), cell_6.?.char);
-}
-
-test "drawTextBuffer - horizontal viewport width limits rendering (efficiency test)" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    var long_line: std.ArrayListUnmanaged(u8) = .empty;
-    defer long_line.deinit(std.testing.allocator);
-    try long_line.appendNTimes(std.testing.allocator, 'A', 1000);
-
-    try tb.setText(long_line.items);
-
-    view.setWrapMode(.none);
-    view.setWrapWidth(null);
-    view.setViewport(.{ .x = 100, .y = 0, .width = 10, .height = 1 });
-
-    var opt_buffer = try OptimizedBuffer.init(
-        std.testing.allocator,
-        50,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawTextBuffer(view, 0, 0);
-
-    var non_space_count: u32 = 0;
-    var i: u32 = 0;
-    while (i < 50) : (i += 1) {
-        if (opt_buffer.get(i, 0)) |cell| {
-            if (cell.char == 'A') {
-                non_space_count += 1;
-            }
-        }
-    }
-
-    try std.testing.expectEqual(@as(u32, 10), non_space_count);
 }
 
 test "drawTextBuffer - overwriting wide grapheme with ASCII leaves no ghost chars" {
@@ -2418,6 +2365,68 @@ test "drawTextBuffer - wide glyph skips every crossed highlight boundary" {
     try std.testing.expectEqualDeep(green_color, output.get(2, 0).?.fg);
 }
 
+test "drawTextBuffer - a wide glyph cut by an edge draws the cells that two spaces draw" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const url = try pools.links.acquire("https://example.com");
+    defer pools.links.decref(url) catch unreachable;
+    // Each row cuts one cluster at an edge; `shown` puts spaces in its place. The buffer is 6 cells wide.
+    const Row = struct { text: []const u8, shown: []const u8, x: i32 = 0, clip: ?buffer.ClipRect = null, viewport: ?text_buffer_view.Viewport = null };
+    const rows = [_]Row{
+        .{ .text = "界a", .shown = "  a", .x = -1 },
+        .{ .text = "a界", .shown = "a  ", .x = 4 },
+        .{ .text = "界a", .shown = "  a", .x = 1, .clip = .{ .x = 2, .y = 0, .width = 4, .height = 1 } },
+        .{ .text = "a界", .shown = "a  ", .x = 1, .clip = .{ .x = 0, .y = 0, .width = 3, .height = 1 } },
+        .{ .text = "a界b", .shown = "a  b", .x = 1, .clip = .{ .x = 0, .y = 0, .width = 2, .height = 1 } },
+        .{ .text = "a界b", .shown = "a  b", .viewport = .{ .x = 0, .y = 0, .width = 2, .height = 1 } },
+        .{ .text = "界a界b", .shown = "  a  b", .x = 1, .viewport = .{ .x = 1, .y = 0, .width = 3, .height = 1 } },
+        .{ .text = "a\tb", .shown = "a  b", .viewport = .{ .x = 2, .y = 0, .width = 4, .height = 1 } },
+        .{ .text = "\u{1f44d}\u{1f3fd}a", .shown = "  a", .x = 1, .viewport = .{ .x = 1, .y = 0, .width = 3, .height = 1 } },
+    };
+    const syntax = try ss.SyntaxStyle.init(allocator);
+    defer syntax.deinit();
+    const green = try syntax.registerStyle("green", null, ansi.rgbColor(20, 200, 100, 255), 0);
+    // A highlighted span's background differs from the default one.
+    const Style = struct { bg: ?RGBA = ansi.rgbColor(32, 64, 192, 255), attributes: u32 = 0, select: bool = false, highlight: bool = false };
+    const styles = [_]Style{ .{}, .{ .bg = null }, .{ .attributes = ansi.TextAttributes.setLinkId(ansi.TextAttributes.UNDERLINE, url) }, .{ .bg = null, .select = true }, .{ .highlight = true } };
+    const screens = [2]*OptimizedBuffer{
+        try OptimizedBuffer.init(allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links }),
+        try OptimizedBuffer.init(allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links }),
+    };
+    defer for (screens) |screen| screen.deinit();
+    for (rows) |row| for (styles) |style| {
+        errdefer std.debug.print("text={s} style={any}\n", .{ row.text, style });
+        var drawn: [2][64]u8 = undefined;
+        for (screens, [2][]const u8{ row.text, row.shown }, &drawn) |screen, text, *chars| {
+            const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
+            defer tb.deinit();
+            try tb.setText(text);
+            tb.setDefaultBg(style.bg);
+            tb.setDefaultAttributes(style.attributes);
+            tb.setSyntaxStyle(syntax);
+            if (style.highlight) try tb.addHighlight(0, 0, 8, green, 1, 0);
+            const view = try TextBufferView.init(allocator, tb);
+            defer view.deinit();
+            view.setWrapMode(.none);
+            view.setViewport(row.viewport);
+            if (style.select) view.setSelection(0, 8, ansi.rgbColor(200, 180, 0, 255), null);
+            // The backdrop holds a wide glyph and is opaque, so a skipped cell shows through.
+            screen.clear(ansi.rgbColor(192, 64, 16, 255), null);
+            try screen.drawText("01界45", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+            if (row.clip) |rect| try screen.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
+            defer screen.clearScissorRects();
+            screen.drawTextBuffer(view, row.x, 0);
+            @memset(chars, 0);
+            _ = try screen.writeResolvedChars(chars, false);
+        }
+        try std.testing.expectEqualStrings(&drawn[1], &drawn[0]);
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.fg), std.mem.sliceAsBytes(screens[0].buffer.fg));
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.bg), std.mem.sliceAsBytes(screens[0].buffer.bg));
+        try std.testing.expectEqualSlices(u32, screens[1].buffer.attributes, screens[0].buffer.attributes);
+    };
+}
+
 test "owned styled text - scalar-split grapheme keeps the following token color" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -2427,13 +2436,12 @@ test "owned styled text - scalar-split grapheme keeps the following token color"
     inline for (.{ .wcwidth, .unicode, .no_zwj, .unicode_wide }) |method| {
         const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
         defer tb.deinit();
-        const styled = try owned_styled.replace(tb, null, &.{
+        _ = try owned_styled.replace(tb, null, &.{
             .{ .text = "👩", .fg = red },
             .{ .text = "\u{200d}", .fg = red },
             .{ .text = "💻", .fg = red },
             .{ .text = "X", .fg = green },
         });
-        defer styled.style.deinit();
         const view = try TextBufferView.init(std.testing.allocator, tb);
         defer view.deinit();
         const output = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = method });
@@ -2468,14 +2476,13 @@ test "owned styled text - highlight positioning with Unicode text" {
     const fg_normal = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
     const bg_highlight = ansi.rgbaFromFloats(0.0, 1.0, 0.0, 1.0); // Green background
 
-    const styled = try owned_styled.replace(tb, null, &.{
+    _ = try owned_styled.replace(tb, null, &.{
         .{ .text = text_part1, .fg = fg_normal },
         .{ .text = text_part2, .fg = fg_normal },
         .{ .text = text_part3, .fg = fg_normal },
         .{ .text = text_part4, .fg = fg_normal, .bg = bg_highlight },
         .{ .text = text_part5, .fg = fg_normal },
     });
-    defer styled.style.deinit();
 
     // Verify the text content
     var out_buffer: [100]u8 = undefined;
@@ -2756,7 +2763,7 @@ test "drawTextBuffer - owned styled text with multiple colors and horizontal scr
     const blue_color = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
     const yellow_color = ansi.rgbaFromFloats(1.0, 1.0, 0.0, 1.0);
 
-    const styled = try owned_styled.replace(tb, null, &.{
+    _ = try owned_styled.replace(tb, null, &.{
         .{ .text = "const", .fg = red_color },
         .{ .text = " x = ", .fg = white_color },
         .{ .text = "function", .fg = green_color },
@@ -2766,7 +2773,6 @@ test "drawTextBuffer - owned styled text with multiple colors and horizontal scr
         .{ .text = "2", .fg = yellow_color },
         .{ .text = "; }", .fg = white_color },
     });
-    defer styled.style.deinit();
 
     view.setWrapMode(.none);
     view.setWrapWidth(null);

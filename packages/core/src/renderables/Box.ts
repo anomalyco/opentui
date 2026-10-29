@@ -1,5 +1,5 @@
 import { Gutter } from "../yoga.js"
-import { type RenderableOptions, Renderable } from "../Renderable.js"
+import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import {
   type BorderCharacters,
@@ -49,11 +49,10 @@ function borderMask(sides: BorderSidesConfig): number {
 }
 
 export class BoxRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "box",
     body: { native: this.prototype.renderSelf },
-    construction: "prototype",
-  })
+  }
   protected _backgroundColor: RGBA
   protected _border: boolean | BorderSides[]
   protected _borderStyle: BorderStyle
@@ -315,36 +314,9 @@ export class BoxRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    const hasBorder = this.borderSides.top || this.borderSides.right || this.borderSides.bottom || this.borderSides.left
-    const hasVisibleFill = this.shouldFill && this._backgroundColor.a > 0
-    // Many boxes are used only for layout. Skip drawBox entirely when a box
-    // would not draw pixels so wrapper nodes do not pay the FFI/native cost.
-    if (!hasBorder && !hasVisibleFill) {
-      return
-    }
-
-    const hasFocusWithin = this._focusable && (this._focused || this._hasFocusedDescendant)
-    const currentBorderColor = hasFocusWithin ? this._focusedBorderColor : this._borderColor
-    const screenX = Math.trunc(this._screenX)
-    const screenY = Math.trunc(this._screenY)
-
-    buffer.drawBox({
-      x: screenX,
-      y: screenY,
-      width: this.width,
-      height: this.height,
-      borderStyle: this._borderStyle,
-      customBorderChars: this._customBorderChars,
-      border: this._border,
-      borderColor: currentBorderColor,
-      backgroundColor: this._backgroundColor,
-      shouldFill: this.shouldFill,
-      title: this._title,
-      titleColor: this._titleColor ?? currentBorderColor,
-      titleAlignment: this._titleAlignment,
-      bottomTitle: this._bottomTitle,
-      bottomTitleAlignment: this._bottomTitleAlignment,
-    })
+    // A layout-only box records nothing; native would draw nothing for it either.
+    if (borderMask(this.borderSides) === 0 && !(this._shouldFill && this._backgroundColor.a > 0)) return
+    this._drawNativeBody(buffer)
   }
 
   public get shouldFill(): boolean {

@@ -1,4 +1,4 @@
-import { BaseRenderable } from "../Renderable.js"
+import { BaseRenderable, type NativeRenderableIntegration } from "../Renderable.js"
 import { stringToStyledText, StyledText } from "../lib/styled-text.js"
 import { type TextChunk } from "../text-buffer.js"
 import { RGBA } from "../lib/RGBA.js"
@@ -11,10 +11,10 @@ export interface TextOptions extends TextBufferOptions {
 }
 
 export class TextRenderable extends TextBufferRenderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...TextBufferRenderable.nativeIntegration,
     lineInfo: true,
-  })
+  }
   private _text!: StyledText | string
 
   // TODO: The TextRenderable is currently juggling both a StyledText and a RootTextNodeRenderable.

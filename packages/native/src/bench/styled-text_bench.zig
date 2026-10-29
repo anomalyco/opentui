@@ -28,7 +28,6 @@ fn rgba(r: f32, g: f32, b: f32, a: f32) RGBA {
 fn commitOwnedStyledText(
     tb: *TextBuffer,
     allocator: std.mem.Allocator,
-    style: *SyntaxStyle,
     parts: []const Part,
 ) !void {
     var total_len: usize = 0;
@@ -38,17 +37,15 @@ fn commitOwnedStyledText(
     const ranges = try allocator.alloc(text_buffer_mod.OwnedStyledChunk, parts.len);
     defer allocator.free(ranges);
     var offset: usize = 0;
-    for (parts, ranges, 0..) |part, *range, i| {
+    for (parts, ranges) |part, *range| {
         @memcpy(text[offset..][0..part.text.len], part.text);
-        var name_buf: [16]u8 = undefined;
-        const name = std.fmt.bufPrint(&name_buf, "{d}", .{i}) catch unreachable;
         range.* = .{
             .byte_count = @intCast(part.text.len),
-            .style_id = try style.registerStyle(name, part.fg, null, part.attributes),
+            .style = .{ .fg = part.fg, .bg = null, .attributes = part.attributes },
         };
         offset += part.text.len;
     }
-    _ = try tb.replaceOwnedStyledText(text, null, style, ranges, null);
+    _ = try tb.replaceOwnedStyledText(text, null, ranges, null);
 }
 
 fn benchSetStyledTextOperations(
@@ -87,12 +84,10 @@ fn benchSetStyledTextOperations(
             for (0..5) |_| {
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
                 const timer = bench_utils.BenchTimer.start(io);
-                try commitOwnedStyledText(tb, allocator, style, &parts);
+                try commitOwnedStyledText(tb, allocator, &parts);
                 stats.record(timer.read());
-                if (tb.getHighlightCount() != parts.len or style.getStyleCount() != parts.len)
+                if (tb.getHighlightCount() != parts.len or tb.run_styles.count() != 2)
                     return error.MissingTokenHighlights;
             }
             try results.append(allocator, .{
@@ -119,13 +114,10 @@ fn benchSetStyledTextOperations(
             for (0..iterations) |_| {
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
-
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
                 const parts = [_]Part{.{ .text = text, .fg = fg_color }};
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try commitOwnedStyledText(tb, allocator, style, &parts);
+                try commitOwnedStyledText(tb, allocator, &parts);
                 stats.record(timer.read());
             }
 
@@ -157,9 +149,6 @@ fn benchSetStyledTextOperations(
             for (0..iterations) |_| {
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
-
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
                 const parts = [_]Part{
                     .{ .text = "Red ", .fg = red },
                     .{ .text = "Green ", .fg = green },
@@ -170,7 +159,7 @@ fn benchSetStyledTextOperations(
                 };
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try commitOwnedStyledText(tb, allocator, style, &parts);
+                try commitOwnedStyledText(tb, allocator, &parts);
                 stats.record(timer.read());
             }
 
@@ -200,9 +189,6 @@ fn benchSetStyledTextOperations(
             for (0..iterations) |_| {
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
-
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
                 const parts = [_]Part{
                     .{ .text = "const", .fg = keyword_color },
                     .{ .text = " " },
@@ -215,7 +201,7 @@ fn benchSetStyledTextOperations(
                 };
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try commitOwnedStyledText(tb, allocator, style, &parts);
+                try commitOwnedStyledText(tb, allocator, &parts);
                 stats.record(timer.read());
             }
 
@@ -243,13 +229,10 @@ fn benchSetStyledTextOperations(
             for (0..iterations) |_| {
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
-
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
                 const parts = [_]Part{.{ .text = text, .fg = color }} ** 10;
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try commitOwnedStyledText(tb, allocator, style, &parts);
+                try commitOwnedStyledText(tb, allocator, &parts);
                 stats.record(timer.read());
             }
 
@@ -274,9 +257,6 @@ fn benchSetStyledTextOperations(
             for (0..iterations) |_| {
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
-
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
                 const parts = [_]Part{
                     .{ .text = "Normal " },
                     .{ .text = "Bold ", .attributes = 1 },
@@ -286,7 +266,7 @@ fn benchSetStyledTextOperations(
                 };
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try commitOwnedStyledText(tb, allocator, style, &parts);
+                try commitOwnedStyledText(tb, allocator, &parts);
                 stats.record(timer.read());
             }
 
@@ -479,11 +459,8 @@ fn benchHighlightOperations(
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
-                const style = try SyntaxStyle.init(allocator);
-                defer style.deinit();
-
                 const timer = bench_utils.BenchTimer.start(io);
-                try commitOwnedStyledText(tb, allocator, style, parts.items);
+                try commitOwnedStyledText(tb, allocator, parts.items);
                 stats.record(timer.read());
             }
 

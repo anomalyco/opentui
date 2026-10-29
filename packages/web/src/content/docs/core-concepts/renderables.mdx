@@ -177,7 +177,7 @@ Neither operation destroys `detail`. Set `visible = true` to show a hidden child
 
 Renderables participate in the [Yoga-based layout model](/docs/core-concepts/layout). Their computed `x`, `y`, `width`, and `height` can change after layout or terminal resize.
 
-`zIndex` changes sibling paint and hit-test order without changing layout order. A new child paints after its existing siblings that have the same `zIndex`. Siblings with the same `zIndex` keep their previous paint order, so restoring a changed `zIndex` does not restore the child's original paint position. Moving a child to a new index in the same parent changes its layout position, not its paint order. `translateX` and `translateY` move drawing and hit bounds without changing the Yoga result.
+`zIndex` changes sibling paint and hit-test order without changing layout order. Siblings with the same `zIndex` paint in the order they were added to the parent, so restoring a changed `zIndex` restores the child's paint position. Moving a child to a new index in the same parent changes its layout position, not its paint order. `translateX` and `translateY` move drawing and hit bounds without changing the Yoga result.
 
 `opacity` applies to the node and its descendants. `overflow: "hidden"` or `"scroll"` clips rendering and mouse hit bounds to the node.
 

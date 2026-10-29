@@ -4,7 +4,7 @@
   "type": "module",
   "dependencies": {
     "jimp": "1.6.1",
-    "solid-js": "1.9.12",
+    "solid-js": "1.9.16",
     "three": "0.177.0",
     "bun-webgpu": "0.1.7"
   }

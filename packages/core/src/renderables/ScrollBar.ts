@@ -1,7 +1,12 @@
 import type { OptimizedBuffer } from "../buffer.js"
 import { parseColor, RGBA, type ColorInput } from "../lib/index.js"
 import type { KeyEvent } from "../lib/KeyHandler.js"
-import { Renderable, RenderableEvents, type RenderableOptions } from "../Renderable.js"
+import {
+  Renderable,
+  RenderableEvents,
+  type RenderableOptions,
+  type NativeRenderableIntegration,
+} from "../Renderable.js"
 import type { RenderContext, Timeout } from "../types.js"
 import type { NativeSceneArrowOptions } from "../zig.js"
 import { type BoxOptions } from "./Box.js"
@@ -18,11 +23,10 @@ export interface ScrollBarOptions extends RenderableOptions<ScrollBarRenderable>
 export type ScrollUnit = "absolute" | "viewport" | "content" | "step"
 
 export class ScrollBarRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...Renderable.nativeIntegration,
     kind: "box",
-    construction: "prototype",
-  })
+  }
 
   public readonly slider: SliderRenderable
   public readonly startArrow: ArrowRenderable
@@ -92,7 +96,7 @@ export class ScrollBarRenderable extends Renderable {
   set scrollPosition(value: number) {
     if (this.isDestroyed) return
     this.assertMutable()
-    const newPosition = Math.round(Math.min(Math.max(0, value ?? 0), this.scrollSize - this.viewportSize))
+    const newPosition = Math.round(Math.max(0, Math.min(value ?? 0, this.scrollSize - this.viewportSize)))
     if (!Number.isFinite(newPosition)) {
       throw new RangeError("Scene scroll positions must be finite numbers")
     }
@@ -304,17 +308,7 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   public scrollBy(delta: number, unit: ScrollUnit = "absolute"): void {
-    const multiplier =
-      unit === "viewport"
-        ? this.viewportSize
-        : unit === "content"
-          ? this.scrollSize
-          : unit === "step"
-            ? (this.scrollStep ?? 1)
-            : 1
-
-    const resolvedDelta = multiplier * delta
-    this.scrollPosition += resolvedDelta
+    this.scrollPosition += scrollUnitSize(this, unit) * delta
   }
 
   private recalculateVisibility(): void {
@@ -381,11 +375,10 @@ const defaultArrowForeground = RGBA.fromValues(1, 1, 1, 1)
 const defaultArrowBackground = RGBA.fromValues(0, 0, 0, 0)
 
 export class ArrowRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "arrow",
     body: { native: this.prototype.renderSelf },
-    construction: "prototype",
-  })
+  }
 
   private _direction: "up" | "down" | "left" | "right"
   private _foregroundColor: RGBA
@@ -492,8 +485,7 @@ export class ArrowRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    const char = this.getArrowChar()
-    buffer.drawText(char, this.x, this.y, this._foregroundColor, this._backgroundColor, this._attributes)
+    this._drawNativeBody(buffer)
   }
 
   protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
@@ -513,4 +505,14 @@ export class ArrowRenderable extends Renderable {
   private getArrowChar(): string {
     return this._arrowChars[this._direction]
   }
+}
+
+/** @internal Cells per unit of a scrollbar's `scrollBy`. */
+export function scrollUnitSize(
+  bar: { viewportSize: number; scrollSize: number; scrollStep?: number | null },
+  unit: ScrollUnit,
+): number {
+  if (unit === "viewport") return bar.viewportSize
+  if (unit === "content") return bar.scrollSize
+  return unit === "step" ? (bar.scrollStep ?? 1) : 1
 }

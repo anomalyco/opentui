@@ -158,6 +158,7 @@ Text metadata distinguishes UTF-8 bytes from summed line widths, which exclude s
 Selected-text reads do not prepare virtual lines, follow the cursor, or change the viewport.
 Coordinate-based edit ranges can prepare the document's marker cache.
 View line queries can prepare wrapping. Editor info queries follow the cursor only when you request that behavior.
+Cursor changes, from edits or moves, do not lay out an editor. They make a scroll to the cursor due, and the next viewport, cursor, or line query, view call, or frame applies it. The viewport query can therefore lay out text and fail with `OT_OUT_OF_MEMORY`, but only while a scroll is due.
 
 One `ot_styled_text_chunk` record supplies scene text, shared replacements, replacement batches, and editor placeholders.
 The record can identify URL bytes. `ot_scene_set_styled_text` accepts those bytes through the same operation.

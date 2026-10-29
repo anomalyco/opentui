@@ -296,7 +296,6 @@ const Stream = struct {
     input_ended: u32 = 0,
     cancel_requested: u32 = 0,
     decoder_stop_requested: u32 = 0,
-    decoder_abort: bool = false,
     probe_active: bool = true,
     probe_bytes: usize = 0,
     max_probe_bytes: usize,
@@ -789,16 +788,12 @@ fn readStreamInput(stream: *Stream, buffer_out: ?*anyopaque, bytes_to_read: usiz
             @atomicLoad(u32, &stream.input_ended, .acquire) == 0 and
             @atomicLoad(u32, &stream.cancel_requested, .acquire) == 0 and
             @atomicLoad(u32, &stream.decoder_stop_requested, .acquire) == 0 and
-            !stream.decoder_abort)
+            (!stream.probe_active or stream.probe_bytes < stream.max_probe_bytes))
         {
-            if (stream.probe_active and stream.probe_bytes >= stream.max_probe_bytes) {
-                stream.decoder_abort = true;
-                break;
-            }
             stream.input_condition.waitUncancelable(io, &stream.input_lock);
         }
 
-        if (decoderExitRequested(stream) or stream.decoder_abort) break;
+        if (decoderExitRequested(stream)) break;
         if (stream.input_count == 0 and @atomicLoad(u32, &stream.input_ended, .acquire) != 0) break;
 
         var copy_count = @min(bytes_to_read - total_read, stream.input_count);
@@ -806,7 +801,9 @@ fn readStreamInput(stream: *Stream, buffer_out: ?*anyopaque, bytes_to_read: usiz
             const probe_remaining = stream.max_probe_bytes - stream.probe_bytes;
             copy_count = @min(copy_count, probe_remaining);
             if (copy_count == 0) {
-                stream.decoder_abort = true;
+                // Fail only when a read asks past the budget, not after returning the last budgeted bytes.
+                // The input lock orders the failure with writeStream and restartStream.
+                if (total_read == 0) failStream(stream);
                 break;
             }
         }
@@ -826,7 +823,7 @@ fn readStreamInput(stream: *Stream, buffer_out: ?*anyopaque, bytes_to_read: usiz
 
     if (bytes_read_out != null) bytes_read_out[0] = total_read;
     if (total_read > 0) return c.MA_SUCCESS;
-    if (decoderExitRequested(stream) or stream.decoder_abort) return c.MA_CANCELLED;
+    if (decoderExitRequested(stream)) return c.MA_CANCELLED;
     return c.MA_AT_END;
 }
 
@@ -878,7 +875,8 @@ fn streamDecoderWorker(stream: *Stream) void {
 
     stream.input_lock.lockUncancelable(io);
     stream.probe_active = false;
-    if (decoderExitRequested(stream)) {
+    // A decoder can start after a read past the probe budget failed the stream; it must not publish readiness.
+    if (decoderExitRequested(stream) or loadStreamState(stream) == StreamState.failed) {
         stream.input_lock.unlock(io);
         return;
     }
@@ -1890,7 +1888,7 @@ pub fn writeStream(
     defer stream.input_lock.unlock(io);
     if (@atomicLoad(u32, &stream.input_ended, .acquire) != 0 or
         @atomicLoad(u32, &stream.cancel_requested, .acquire) != 0 or
-        stream.decoder_abort or isTerminalStreamState(loadStreamState(stream)))
+        isTerminalStreamState(loadStreamState(stream)))
     {
         return Status.err_invalid;
     }
@@ -1975,7 +1973,6 @@ pub fn restartStream(engine: *Engine, stream_id: u32) i32 {
     stream.input_count = 0;
     @atomicStore(u32, &stream.input_ended, 0, .release);
     @atomicStore(u32, &stream.decoder_finished, 0, .release);
-    stream.decoder_abort = false;
     stream.probe_active = true;
     stream.probe_bytes = 0;
     @atomicStore(i32, &stream.error_code, 0, .release);

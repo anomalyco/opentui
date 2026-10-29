@@ -1,4 +1,5 @@
 const std = @import("std");
+const nextPaintEpoch = @import("utils.zig").nextPaintEpoch;
 const api = @import("context_abi_c");
 const handles = @import("context-handles.zig");
 const grapheme = @import("grapheme.zig");
@@ -6,6 +7,7 @@ const link = @import("link.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
+const input_parser = @import("input-parser.zig");
 const scene = @import("scene.zig");
 const native_span_feed = @import("native-span-feed.zig");
 const buf = @import("buffer.zig");
@@ -16,6 +18,7 @@ const text_buffer_view = @import("text-buffer-view.zig");
 const logger = @import("logger.zig");
 const utf8 = @import("utf8.zig");
 const syntax_style = @import("syntax-style.zig");
+const text_work = @import("text-work.zig");
 const edit_buffer = @import("edit-buffer.zig");
 const editor_view = @import("editor-view.zig");
 const ansi = @import("ansi.zig");
@@ -230,8 +233,12 @@ pub const Editor = struct {
     previous: ?*Editor = null,
     next: ?*Editor = null,
     node: ?*native_renderable.NativeRenderable = null,
+    // Taken at creation and by every mutation gate, so retained paint repaints the bound node,
+    // including when the editor is destroyed.
+    paint_epoch: u64,
 
     pub fn checkMutable(self: *Editor) yoga.Error!void {
+        self.paint_epoch = nextPaintEpoch();
         if (self.node) |node| try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         var next = self.view.measure_dependents;
         while (next) |node| : (next = node.measure_next) try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
@@ -242,26 +249,22 @@ pub const Editor = struct {
         while (next) |node| : (next = node.measure_next) yoga.yogaNodeInvalidateMeasure(node.yoga_node);
         if (self.node) |node| {
             yoga.yogaNodeInvalidateMeasure(node.yoga_node);
-            node.scene_node.?.owner.preparation_dirty = true;
-            node.scene_node.?.owner.work.clearRetainingCapacity();
+            node.scene_node.?.owner.invalidateObservation(node);
         }
     }
 
     pub fn invalidatePreparation(self: *Editor) void {
         if (self.node) |node| {
             // Idle frames reuse geometry but still prepare the view and follow its cursor.
-            if (node.scene_node.?.owner.attempt == null) return;
-            node.scene_node.?.owner.preparation_dirty = true;
-            node.scene_node.?.owner.work.clearRetainingCapacity();
+            if (node.scene_node.?.owner.attempt == null) return scene.Scene.markObservationStale(node);
+            node.scene_node.?.owner.invalidateObservation(node);
         }
     }
 
     pub fn prepareView(self: *Editor) !void {
-        try Context.prepareTextBuffer(self.edit.buffer.tb);
-        if (self.view.text_buffer_view.text_buffer != self.edit.buffer.tb)
-            try Context.prepareTextBuffer(self.view.text_buffer_view.text_buffer);
         _ = self.view.text_buffer_view.getVirtualLines();
         if (self.view.text_buffer_view.virtual_lines_dirty) return error.OutOfMemory;
+        self.view.settle();
     }
 };
 
@@ -269,7 +272,6 @@ pub const SharedText = struct {
     handle: Handle,
     buffer: *text_buffer.UnifiedTextBuffer,
     input_mem_id: u8,
-    owned_style: ?*syntax_style.SyntaxStyle = null,
     views: ?*TextView = null,
     pool_next: ?*SharedText = null,
 
@@ -278,9 +280,10 @@ pub const SharedText = struct {
         while (next) |view| : (next = view.next) try view.checkMutable();
     }
 
-    pub fn invalidate(self: *SharedText) void {
+    /// The Yoga measure depends on the bytes and layout options, never on styles or highlights.
+    pub fn invalidate(self: *SharedText, measure: bool) void {
         var next = self.views;
-        while (next) |view| : (next = view.next) view.invalidate();
+        while (next) |view| : (next = view.next) if (measure) view.invalidate() else view.invalidatePreparation();
     }
 
     fn reclaimAppendBuffers(self: *SharedText) void {
@@ -302,8 +305,12 @@ pub const TextView = struct {
     previous: ?*TextView = null,
     next: ?*TextView = null,
     node: ?*native_renderable.NativeRenderable = null,
+    // Taken at creation and by every mutation gate, so retained paint repaints the bound node,
+    // including when the view is destroyed.
+    paint_epoch: u64,
 
     pub fn checkMutable(self: *TextView) yoga.Error!void {
+        self.paint_epoch = nextPaintEpoch();
         if (self.node) |node| try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         var next = self.view.measure_dependents;
         while (next) |node| : (next = node.measure_next) try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
@@ -316,10 +323,7 @@ pub const TextView = struct {
     }
 
     pub fn invalidatePreparation(self: *TextView) void {
-        if (self.node) |node| {
-            node.scene_node.?.owner.preparation_dirty = true;
-            node.scene_node.?.owner.work.clearRetainingCapacity();
-        }
+        if (self.node) |node| node.scene_node.?.owner.invalidateObservation(node);
     }
 
     pub fn prepareView(self: *TextView) !void {
@@ -445,7 +449,6 @@ pub const Text = struct {
     buffer: *text_buffer.UnifiedTextBuffer,
     view: *text_buffer_view.UnifiedTextBufferView,
     input_mem_id: ?u8 = null,
-    owned_style: ?*syntax_style.SyntaxStyle = null,
     initial_viewport: ?text_buffer_view.Viewport = null,
     // Retain logical changes even when both positions truncate to the same cell.
     scroll_x: f64 = 0,
@@ -630,6 +633,8 @@ pub const Context = struct {
             .yoga_config = undefined,
         };
         try self.yoga_config.init(allocator, options.yoga_callbacks);
+        // Scene children must round inside their parents; public configs keep upstream rounding.
+        yoga.configSetRoundsPositionsFromAbsoluteEdges(self.yoga_config.ref, 1);
         self.yoga_config.setLogger(&self.logger);
         return self;
     }
@@ -822,7 +827,7 @@ pub const Context = struct {
             .host_driven_time = true,
             .logger = &self.logger,
             .remote_mode = options.remote_mode,
-            .output = .{ .feed = value.output },
+            .feed = value.output,
             .link_pool = &self.links,
             .env_map = options.env_map,
         });
@@ -868,6 +873,8 @@ pub const Context = struct {
         if (value.frame_end_offset != null or attached.pendingPresentation != null) {
             return error.PresentationPending;
         }
+        // Raw cell access may write either buffer.
+        if (which == .next) attached.leaveRetained() else attached.current_written = true;
         return self.acquireBufferLease(switch (which) {
             .current => attached.getCurrentBuffer(),
             .next => attached.getNextBuffer(),
@@ -887,6 +894,7 @@ pub const Context = struct {
             return error.PresentationPending;
         }
         const source = try self.getBuffer(source_handle);
+        attached.leaveRetained();
         const target = attached.getNextBuffer();
         try drawContextBuffer(target, source, x, y, .{});
     }
@@ -955,7 +963,22 @@ pub const Context = struct {
         const value = try self.getSession(handle);
         try value.checkOpen();
         const attached = value.renderer orelse return error.RendererNotAttached;
-        attached.dumpHitGrid();
+        const timestamp = std.Io.Clock.now(.real, self.io).toSeconds();
+        var filename_buf: [64]u8 = undefined;
+        const filename = std.fmt.bufPrint(&filename_buf, "hitgrid_{d}.txt", .{timestamp}) catch return;
+        const file = std.Io.Dir.cwd().createFile(self.io, filename, .{}) catch return;
+        defer file.close(self.io);
+        var file_buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(self.io, &file_buffer);
+        const writer = &file_writer.interface;
+        for (0..attached.height) |y| {
+            for (0..attached.width) |x| {
+                const token = if (value.scene) |owned| owned.hitToken(attached, @intCast(x), @intCast(y)) else 0;
+                writer.writeByte(if (token == 0) '.' else '0' + @as(u8, @intCast(token % 10))) catch return;
+            }
+            writer.writeByte('\n') catch return;
+        }
+        writer.flush() catch {};
     }
 
     pub fn renderSession(self: *Context, handle: Handle, force: bool) Error!session.RenderStatus {
@@ -989,6 +1012,24 @@ pub const Context = struct {
         return (try self.getSession(handle)).pump(now_ns, work_budget);
     }
 
+    pub fn sessionInputFeed(self: *Context, handle: Handle, bytes: []const u8, now_ns: u64, sink: *input_parser.Sink) Error!session.InputFeed {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return (try self.getSession(handle)).feedInput(bytes, now_ns, sink);
+    }
+
+    pub fn sessionInputExpect(self: *Context, handle: Handle, expect: input_parser.Expectations) Error!void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        try (try self.getSession(handle)).setInputExpectations(expect);
+    }
+
+    pub fn sessionInputReset(self: *Context, handle: Handle, keep_reply: bool) Error!void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        try (try self.getSession(handle)).resetInput(keep_reply);
+    }
+
     pub fn getSessionTerminalState(self: *Context, handle: Handle) Error!session.TerminalState {
         return (try self.getSession(handle)).getTerminalState();
     }
@@ -1010,18 +1051,14 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getSession(handle);
         try value.checkResizing();
-        const yielded = if (value.scene) |owned| owned.isYielded() else false;
-        if (!yielded) try value.checkLayoutIdle();
+        try value.checkLayoutIdle();
         const attached = value.renderer orelse return error.RendererNotAttached;
         const cells = std.math.mul(u32, width, height) catch return error.InvalidDimensions;
         if (width == 0 or height == 0 or cells > self.render_cells_max) return error.InvalidDimensions;
         // Only a pending frame depends on geometry; the renderer rejects it.
         std.debug.assert((value.frame_end_offset != null) == (attached.pendingPresentation != null));
-        const changed = attached.width != width or attached.height != height;
         try attached.resize(width, height);
-        if (yielded and changed) {
-            value.cancelSceneFrame();
-        } else if (value.scene) |owned| owned.requalifyPainted(attached);
+        if (value.scene) |owned| owned.requalifyPainted(attached);
     }
 
     pub fn writeSession(self: *Context, handle: Handle, bytes: []const u8) Error!void {
@@ -1296,7 +1333,7 @@ pub const Context = struct {
         try target.checkImageResources();
         if (x < 0 or y < 0 or x >= target.width or y >= target.height) return;
         const char = source.chars[index].char;
-        const width = grapheme.encodedCharWidth(char);
+        const width: u32 = source.chars[index].width;
         if (width > target.width - @as(u32, @intCast(x))) return;
         for (0..width) |offset| {
             if (!target.isPointInScissor(x + @as(i32, @intCast(offset)), y)) return;
@@ -1824,16 +1861,18 @@ pub const Context = struct {
         try target.drawEditorViewChecked(editor.view, x, y);
     }
 
-    pub fn drawSceneText(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
+    pub fn drawSceneBody(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        try self.drawSceneTextOn(try self.bufferDrawTarget(handle, frame), node_handle, x, y);
+        try self.drawSceneBodyOn(try self.bufferDrawTarget(handle, frame), node_handle, x, y);
     }
 
-    pub fn drawSceneTextOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
+    pub fn drawSceneBodyOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
         const node = try self.sceneNode(node_handle);
-        const text = node.scene_node.?.text orelse return error.WrongKind;
+        const owned = node.scene_node.?;
+        if (owned.text == null and owned.kind != api.OT_SCENE_BOX and owned.kind != api.OT_SCENE_SLIDER and owned.kind != api.OT_SCENE_ARROW) return error.WrongKind;
         if (x >= target.width or y >= target.height) return;
+        const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
         try text.prepareView();
         try target.drawTextBufferChecked(text.view, x, y);
     }
@@ -1985,8 +2024,10 @@ pub const Context = struct {
     fn freeNodeStorage(self: *Context, storage: native_renderable.NodeStorage) void {
         var children = storage.children;
         var paint_children = storage.paint_children;
+        var attention = storage.attention;
         children.deinit(self.allocator);
         paint_children.deinit(self.allocator);
+        attention.deinit(self.allocator);
         self.allocator.destroy(storage.scene_node);
         storage.node.deinit();
         self.allocator.destroy(storage.node);
@@ -2001,6 +2042,13 @@ pub const Context = struct {
     fn sceneMutableNode(self: *Context, handle: Handle) !*native_renderable.NativeRenderable {
         const node = try self.sceneNode(handle);
         try (try self.getSession(node.scene_node.?.owner.session)).checkOpen();
+        return node;
+    }
+
+    /// For setters of what a node paints; a rejected change only repaints the node.
+    fn scenePaintNode(self: *Context, handle: Handle) !*native_renderable.NativeRenderable {
+        const node = try self.sceneMutableNode(handle);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
         return node;
     }
 
@@ -2039,14 +2087,14 @@ pub const Context = struct {
     pub fn sceneSetBoxDetails(self: *Context, handle: Handle, details: scene.BoxDetails) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         try value.scene_node.?.owner.setBoxDetails(value, details);
     }
 
     pub fn sceneSetImage(self: *Context, handle: Handle, source_handle: ?Handle, fit: image.Fit, protocol: image.RenderProtocol, buffer_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         if (node.scene_node.?.kind != api.OT_SCENE_IMAGE) return error.WrongKind;
         try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         const source = if (source_handle) |id| try self.getImage(id) else null;
@@ -2063,7 +2111,7 @@ pub const Context = struct {
     pub fn sceneSetSurface(self: *Context, handle: Handle, buffer_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         if (node.scene_node.?.kind != api.OT_SCENE_CUSTOM) return error.WrongKind;
         try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
         const source = if (buffer_handle) |id| try self.getBuffer(id) else null;
@@ -2075,7 +2123,7 @@ pub const Context = struct {
     pub fn sceneSetEditorView(self: *Context, handle: Handle, view_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_EDITOR) return error.WrongKind;
         const editor = if (view_handle) |id| try self.getEditorView(id) else null;
@@ -2086,14 +2134,13 @@ pub const Context = struct {
         if (node.editor) |previous| previous.node = null;
         node.editor = editor;
         if (editor) |view| view.node = value;
-        node.owner.preparation_dirty = true;
-        node.owner.work.clearRetainingCapacity();
+        node.owner.invalidateObservation(value);
     }
 
     pub fn sceneSetEditorOptions(self: *Context, handle: Handle, options: scene.EditorOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_EDITOR) return error.WrongKind;
         if (options.style > 3 or (options.mouse_pointer > api.OT_MOUSE_POINTER_MAX and
@@ -2105,7 +2152,7 @@ pub const Context = struct {
     pub fn sceneSetTextView(self: *Context, handle: Handle, view_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_TEXT_VIEW) return error.WrongKind;
         const text_view = if (view_handle) |id| try self.getTextBufferView(id) else null;
@@ -2116,14 +2163,13 @@ pub const Context = struct {
         if (node.control.text_view.view) |previous| previous.node = null;
         node.control.text_view.view = text_view;
         if (text_view) |view| view.node = value;
-        node.owner.preparation_dirty = true;
-        node.owner.work.clearRetainingCapacity();
+        node.owner.invalidateObservation(value);
     }
 
     pub fn sceneSetTextViewPaint(self: *Context, handle: Handle, enabled: bool) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_TEXT_VIEW) return error.WrongKind;
         node.control.text_view.paint = enabled;
@@ -2172,10 +2218,13 @@ pub const Context = struct {
         flags: u32,
     ) !void {
         std.debug.assert(self.mutating);
+        const content = flags & api.OT_STYLE_CONTENT != 0;
+        const yoga_flags = flags & ~@as(u32, api.OT_STYLE_CONTENT);
         if (group > api.OT_STYLE_DIMENSION or
             group == api.OT_STYLE_BORDER or
-            (group != api.OT_STYLE_DIMENSION and flags != api.OT_STYLE_FLAGS_NONE) or
-            flags > api.OT_STYLE_DISABLE_FLEX_SHRINK)
+            (group != api.OT_STYLE_DIMENSION and yoga_flags != api.OT_STYLE_FLAGS_NONE) or
+            yoga_flags > api.OT_STYLE_DISABLE_FLEX_SHRINK or
+            (content and group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY))
         {
             return error.InvalidOptions;
         }
@@ -2193,13 +2242,24 @@ pub const Context = struct {
         if (group == api.OT_STYLE_ENUM and
             (kind >= scene_style_enum_maxima.len or value > @as(f32, @floatFromInt(scene_style_enum_maxima[kind])))) return error.InvalidOptions;
         const node = try self.sceneMutableNode(handle);
+        const scroll = node.scene_node.?.scroll;
+        if (content and scroll == null) return error.WrongKind;
+        // A scroll node's own padding holds its bar gutters.
+        if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
+        const target = if (content) scroll.?.content_node else node.yoga_node;
         try yoga.check(switch (group) {
-            api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(node.yoga_node, kind, @intFromFloat(value)),
-            api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(node.yoga_node, kind, value),
-            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(node.yoga_node, kind, edge, unit, value),
-            api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(node.yoga_node, kind, unit, value, flags),
+            api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, @intFromFloat(value)),
+            api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(target, kind, value),
+            // Finite summed edges and gaps saturate so Yoga's f32 sums stay finite; NaN still unsets.
+            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(target, kind, edge, unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
+            api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
+        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
+            node.scene_node.?.owner.visibility_epoch +%= 1;
+            // A shown child's refresh prepares its view although its layout did not change.
+            scene.Scene.markObservationStale(node);
+        }
     }
 
     pub fn sceneGetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32) !scene.StyleValue {
@@ -2274,18 +2334,57 @@ pub const Context = struct {
         const value = try self.sceneMutableNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_BOX) return error.WrongKind;
+        if (node.scroll != null) return error.InvalidOptions;
         if (viewport_handle) |id| {
             const viewport = try self.sceneNode(id);
             if (viewport.scene_node.?.owner != node.owner) return error.WrongSession;
             if (viewport.scene_node.?.kind > api.OT_SCENE_BOX) return error.WrongKind;
         }
         try scene.Scene.checkWritable(value);
-        if (std.meta.eql(node.viewport, viewport_handle)) return;
-        node.owner.filter_count -= @intFromBool(node.viewport != null);
-        node.owner.filter_count += @intFromBool(viewport_handle != null);
-        node.viewport = viewport_handle;
-        node.owner.preparation_dirty = true;
-        node.owner.work.clearRetainingCapacity();
+        node.owner.setViewport(value, viewport_handle);
+    }
+
+    pub fn sceneSetScroll(self: *Context, handle: Handle, options: scene.ScrollOptions) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.scenePaintNode(handle);
+        try value.scene_node.?.owner.setScroll(&self.yoga_config, value, options);
+    }
+
+    pub fn sceneSetScrollArrow(self: *Context, handle: Handle, axis: u32, end: u32, options: scene.ArrowOptions) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.scenePaintNode(handle);
+        if (options.attributes & ~@import("ansi.zig").TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
+        try buf.validateColor(options.foreground);
+        try buf.validateColor(options.background);
+        if (options.text) |text| try buf.validateTextInput(text);
+        try value.scene_node.?.owner.setScrollArrow(value, axis, end, options);
+    }
+
+    /// An explicit scroll; returns the state after it.
+    pub fn sceneScrollTo(self: *Context, handle: Handle, target: [2]f64, relative: [2]bool, reapply: bool) !api.ot_scene_scroll_state {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.sceneMutableNode(handle);
+        try value.scene_node.?.owner.scrollTo(value, target, relative, reapply);
+        return scene.scrollReport(value);
+    }
+
+    /// An INTO_VIEW, ANCHOR, or LAYOUT request; returns the state after it.
+    pub fn sceneScrollRequest(self: *Context, handle: Handle, kind: u32, target_handle: ?Handle, alignment: u32, inset: u32) !api.ot_scene_scroll_state {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.sceneMutableNode(handle);
+        const target = if (target_handle) |id| try self.sceneNode(id) else null;
+        if (target) |node| if (node.scene_node.?.owner != value.scene_node.?.owner) return error.WrongSession;
+        try value.scene_node.?.owner.requestScroll(&self.objects, value, kind, target, alignment, inset);
+        return scene.scrollReport(value);
+    }
+
+    pub fn sceneGetScroll(self: *Context, handle: Handle) !api.ot_scene_scroll_state {
+        try self.checkSceneRead();
+        return scene.scrollReport(try self.sceneNode(handle));
     }
 
     pub fn sceneSetFocus(self: *Context, handle: Handle, focused: bool) !void {
@@ -2300,7 +2399,7 @@ pub const Context = struct {
         } else if (owned.focus) |accepted| {
             if (std.meta.eql(accepted, handle)) owned.focus = null;
         }
-        owned.work.clearRetainingCapacity();
+        owned.clearPreparation();
     }
 
     pub fn sceneSetHooks(self: *Context, handle: Handle, flags: u32, generation: u64, initial_width: f64, initial_height: f64) !void {
@@ -2313,7 +2412,7 @@ pub const Context = struct {
     pub fn sceneSetSlider(self: *Context, handle: Handle, options: scene.SliderOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_SLIDER) return error.WrongKind;
         try buf.validateColor(options.foreground);
@@ -2322,7 +2421,7 @@ pub const Context = struct {
         _ = try scene.sliderThumb(options, node.resize_width, node.resize_height);
         _ = try scene.sliderThumb(options, node.layout.width, node.layout.height);
         node.control = .{ .slider = options };
-        node.owner.work.clearRetainingCapacity();
+        node.owner.clearPreparation();
     }
 
     pub fn sceneGetSliderThumb(self: *Context, handle: Handle) !scene.SliderThumb {
@@ -2336,7 +2435,7 @@ pub const Context = struct {
     pub fn sceneSetArrow(self: *Context, handle: Handle, options: scene.ArrowOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
+        const value = try self.scenePaintNode(handle);
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_ARROW) return error.WrongKind;
         if (options.direction > 3 or options.attributes & ~@import("ansi.zig").TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
@@ -2348,25 +2447,19 @@ pub const Context = struct {
         if (options.text) |text| replacement.text = try self.allocator.dupe(u8, text);
         node.control.arrow.deinit(self.allocator);
         node.control = .{ .arrow = replacement };
-        node.owner.work.clearRetainingCapacity();
+        node.owner.clearPreparation();
     }
 
     pub fn sceneSetText(self: *Context, handle: Handle, bytes: []const u8) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
-        try self.replaceTextContent(text, bytes);
-        textResourceChanged(text);
-        if (text.owned_style) |style| {
-            text.buffer.setSyntaxStyle(null);
-            text.owned_style = null;
-            style.deinit();
-        }
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        if (try self.replaceTextContent(text, bytes)) textResourceChanged(text) else textResent(node);
+        node.scene_node.?.owner.clearPreparation();
     }
 
     pub fn validateTextBytes(tab_width: u8, bytes: []const u8, retained_bytes: u32) !void {
@@ -2380,32 +2473,30 @@ pub const Context = struct {
     pub fn sceneSetStyledText(self: *Context, handle: Handle, bytes: []const u8, chunks: []const StyledTextChunk) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
-        try self.replaceStyledTextResource(text, bytes, chunks);
-        textResourceChanged(text);
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        if (try self.replaceStyledTextResource(text, bytes, chunks)) textResourceChanged(text) else textResent(node);
+        node.scene_node.?.owner.clearPreparation();
     }
 
-    fn replaceStyledTextResource(self: *Context, text: anytype, bytes: []const u8, chunks: []const StyledTextChunk) !void {
+    /// Returns whether the bytes changed.
+    fn replaceStyledTextResource(self: *Context, text: anytype, bytes: []const u8, chunks: []const StyledTextChunk) !bool {
         var prepared: PreparedStyledTextResource = undefined;
         try self.prepareStyledTextResource(&prepared, text, bytes, chunks);
         defer prepared.deinit(self.allocator);
-        self.commitStyledTextResource(&prepared, text);
+        return self.commitStyledTextResource(&prepared, text);
     }
 
     const PreparedStyledTextResource = struct {
         buffer: text_buffer.UnifiedTextBuffer.PreparedOwnedStyledText = undefined,
         buffer_ready: bool = false,
         bytes: ?[]const u8 = null,
-        style: ?*syntax_style.SyntaxStyle = null,
         links: link.LinkTracker,
 
         fn deinit(prepared: *PreparedStyledTextResource, allocator: std.mem.Allocator) void {
             if (prepared.buffer_ready) prepared.buffer.deinit();
-            if (prepared.style) |style| style.deinit();
             if (prepared.bytes) |bytes| allocator.free(bytes);
             prepared.links.deinit();
         }
@@ -2424,20 +2515,13 @@ pub const Context = struct {
             offset += chunk.byte_count;
         }
         if (offset != bytes.len) return error.InvalidOptions;
-        const retained_style: ?*syntax_style.SyntaxStyle = if (@TypeOf(text) == *SharedText and text.owned_style == null)
-            if (text.buffer.getSyntaxStyle()) |style| @constCast(style) else null
-        else
-            null;
-        if (retained_style) |retained| try self.checkStyleDependents(retained);
         prepared.* = .{ .links = link.LinkTracker.init(self.allocator, &self.links) };
         errdefer prepared.deinit(self.allocator);
-        const style = if (retained_style) |retained| try retained.prepareDefinitions() else try syntax_style.SyntaxStyle.init(self.allocator);
-        prepared.style = style;
         const ranges = try self.allocator.alloc(text_buffer.OwnedStyledChunk, chunks.len);
         defer self.allocator.free(ranges);
         offset = 0;
         var range_count: usize = 0;
-        for (chunks, 0..) |chunk, index| {
+        for (chunks) |chunk| {
             if (chunk.byte_count == 0) continue;
             var attributes = chunk.attributes;
             if (chunk.link_url) |url| {
@@ -2450,47 +2534,31 @@ pub const Context = struct {
                 }
             }
             offset += chunk.byte_count;
-            var name_bytes: [20]u8 = undefined;
-            const name = if (retained_style != null)
-                try std.fmt.bufPrint(&name_bytes, "chunk{d}", .{index})
-            else
-                try std.fmt.bufPrint(&name_bytes, "{d}", .{index});
-            const register_chunk = if (retained_style != null)
-                text.buffer.measureText(bytes[offset - chunk.byte_count .. offset]) > 0
-            else
-                chunk.foreground != null or chunk.background != null or attributes != 0;
             ranges[range_count] = .{
                 .byte_count = chunk.byte_count,
-                .style_id = if (register_chunk)
-                    try style.registerStyle(name, chunk.foreground, chunk.background, attributes)
-                else
-                    0,
+                .style = .{ .fg = chunk.foreground, .bg = chunk.background, .attributes = attributes },
             };
             range_count += 1;
         }
         const copy = try self.allocator.dupe(u8, bytes);
         prepared.bytes = copy;
-        if (retained_style != null) try style.retainLinks(&self.links);
-        try text.buffer.prepareOwnedStyledText(&prepared.buffer, copy, text.input_mem_id, style, ranges[0..range_count], &prepared.links, retained_style);
+        text_work.add(.styled_text_sets, 1);
+        text_work.add(.styled_text_bytes, copy.len);
+        try text.buffer.prepareOwnedStyledText(&prepared.buffer, copy, text.input_mem_id, ranges[0..range_count], &prepared.links);
         prepared.buffer_ready = true;
     }
 
-    fn commitStyledTextResource(self: *Context, prepared: *PreparedStyledTextResource, text: anytype) void {
+    fn commitStyledTextResource(_: *Context, prepared: *PreparedStyledTextResource, text: anytype) bool {
+        const changed = !holdsBytes(text, prepared.bytes.?);
         text.input_mem_id = prepared.buffer.commit();
         prepared.bytes = null;
-        if (prepared.buffer.retained_style) |retained| self.invalidateStyleDependents(retained);
-        if (prepared.buffer.retained_style == null) {
-            const previous = text.owned_style;
-            text.owned_style = prepared.style;
-            prepared.style = null;
-            if (previous) |old| old.deinit();
-        }
+        return changed;
     }
 
     pub fn sceneSetTextOptions(self: *Context, handle: Handle, options: scene.TextOptions) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.sceneMutableNode(handle);
+        const node = try self.scenePaintNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         if (options.attributes & ~@import("ansi.zig").TextAttributes.ATTRIBUTE_BASE_MASK != 0 or
             options.first_line_offset > std.math.maxInt(i32) or
@@ -2561,8 +2629,8 @@ pub const Context = struct {
             text.view.setWrapWidth(if (viewport.width > 0) viewport.width else null);
         }
         if (measure_changed) yoga.yogaNodeMarkDirty(node.yoga_node);
-        if (prepare_changed) node.scene_node.?.owner.preparation_dirty = true;
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        if (prepare_changed) node.scene_node.?.owner.invalidateObservation(node);
+        node.scene_node.?.owner.clearPreparation();
     }
 
     pub fn sceneSetTextSelection(self: *Context, handle: Handle, options: SceneTextSelectionOptions) !bool {
@@ -2575,6 +2643,7 @@ pub const Context = struct {
         // Reset participates in wrapper cleanup after Session cancellation and
         // must not depend on Yoga health or allocate view caches.
         const node = if (options.operation == api.OT_SCENE_TEXT_SELECTION_RESET) try self.sceneNode(handle) else try self.sceneMutableNode(handle);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
         const text = node.scene_node.?.text orelse return error.WrongKind;
         const changed = if (options.operation == api.OT_SCENE_TEXT_SELECTION_RESET) reset: {
             const had_selection = text.view.getSelection() != null;
@@ -2594,8 +2663,6 @@ pub const Context = struct {
             if (text.buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
             // The legacy view methods cannot report allocation failures. Prepare
             // their caches first so no failing work follows selection publication.
-            // markerCount swallows rebuild OOM; the rope metrics do not allocate.
-            if (text.buffer.rope().markerCount(.linestart) != text.buffer.lineCount()) return error.OutOfMemory;
             try text.prepareView();
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
             const behavior: text_buffer_view.SelectionBehavior = @enumFromInt(options.behavior);
@@ -2604,7 +2671,7 @@ pub const Context = struct {
             else
                 text.view.updateLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior);
         };
-        node.scene_node.?.owner.work.clearRetainingCapacity();
+        node.scene_node.?.owner.clearPreparation();
         return changed;
     }
 
@@ -2647,7 +2714,6 @@ pub const Context = struct {
         const offsets: @FieldType(TextRange, "offsets") = switch (range) {
             .offsets => |offsets| offsets,
             .coords => |coords| result: {
-                try prepareTextBuffer(buffer);
                 const iter = @import("text-buffer-iterators.zig");
                 break :result .{
                     .start = iter.coordsToOffset(buffer.rope(), coords.start_row, coords.start_col) orelse return 0,
@@ -2799,30 +2865,23 @@ pub const Context = struct {
         const owned = value.scene orelse return error.SceneNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         if (attached.width > std.math.maxInt(i32) or attached.height > std.math.maxInt(i32)) return error.InvalidDimensions;
-        errdefer {
-            attached.getNextBuffer().clear(attached.backgroundColor, null);
-            @memset(attached.nextHitGrid, 0);
-        }
+        errdefer attached.clearSkippedFrameState();
         const result = try owned.frameStep(self, attached, null, .{
             .background = background,
             .use_mouse = use_mouse,
             .excluded_hit_num = excluded_hit_num,
             .max_layout_rounds = 8,
             .max_host_requests = 65536,
-        }, false);
+        }, false, null);
         std.debug.assert(result.kind == api.OT_SCENE_FRAME_DONE);
         return result;
     }
 
     pub fn sceneFrameStep(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions) !scene.FrameRequest {
-        return self.sceneFrameStepWithRecording(session_handle, previous, options, std.math.maxInt(u32), null);
+        return self.sceneFrameStepWithRecording(session_handle, previous, options, null);
     }
 
-    pub fn sceneFrameStepWorkBudgeted(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32) !scene.FrameRequest {
-        return self.sceneFrameStepWithRecording(session_handle, previous, options, max_work_items, null);
-    }
-
-    pub fn sceneFrameStepWithRecording(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32, recording: ?[]const u8) !scene.FrameRequest {
+    pub fn sceneFrameStepWithRecording(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, recording: ?[]const u8) !scene.FrameRequest {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.getSession(session_handle);
@@ -2832,7 +2891,7 @@ pub const Context = struct {
         const owned = value.scene orelse return error.SceneNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         if (attached.width > std.math.maxInt(i32) or attached.height > std.math.maxInt(i32)) return error.InvalidDimensions;
-        return owned.frameStepWorkBudgeted(self, attached, previous, options, true, max_work_items, recording);
+        return owned.frameStep(self, attached, previous, options, true, recording);
     }
 
     pub fn sceneFramePaintSlots(self: *Context, session_handle: Handle, frame: scene.FrameRequest) ![]const scene.PaintSlot {
@@ -2852,6 +2911,7 @@ pub const Context = struct {
         if (!painted.destination.matches(attached.getNextBuffer())) return error.StaleFrame;
         if (self.lease_count >= self.lease_count_max) return error.LeaseLimit;
         try self.objects.checkCapacity();
+        attached.taint(renderer.FrameWork.full_path_tainted);
         const access = try self.allocator.create(FrameBufferLease);
         errdefer self.allocator.destroy(access);
         const target = switch (which) {
@@ -2892,6 +2952,7 @@ pub const Context = struct {
         const access = try owned.checkPainted(frame);
         const target = attached.getNextBuffer();
         if (!access.destination.matches(target)) return error.StaleFrame;
+        attached.taint(renderer.FrameWork.full_path_tainted);
         return target;
     }
 
@@ -2918,12 +2979,23 @@ pub const Context = struct {
         const attached = value.renderer orelse return error.RendererNotAttached;
         const owned = value.scene orelse return error.SceneNotAttached;
         if (x < 0 or y < 0) return 0;
-        const token = attached.checkHit(@intCast(x), @intCast(y));
+        const token = owned.hitToken(attached, @intCast(x), @intCast(y));
         const handle = owned.tokens.get(token) orelse return 0;
         const node = self.objects.get(handle, .native_renderable, native_renderable.NativeRenderable) catch return 0;
         const state = node.scene_node orelse return 0;
         if (state.owner != owned or state.token != token) return 0;
         return state.num;
+    }
+
+    pub fn sceneSetDebugFlags(self: *Context, session_handle: Handle, flags: u32) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = try self.getSession(session_handle);
+        try value.checkOpen();
+        const owned = value.scene orelse return error.SceneNotAttached;
+        if (flags & ~@as(u32, api.OT_SCENE_DEBUG_FULL_FRAME | api.OT_SCENE_DEBUG_VERIFY) != 0) return error.InvalidOptions;
+        try value.checkFrameIdle();
+        owned.debug_flags = flags;
     }
 
     pub fn sceneGetStats(self: *Context, session_handle: Handle) !renderer.RenderStatsSnapshot {
@@ -3015,9 +3087,9 @@ pub const Context = struct {
         return value;
     }
 
-    /// The caller has destroyed every view and the owned style.
+    /// The caller has destroyed every view.
     fn releaseSharedTextStorage(self: *Context, value: *SharedText) void {
-        std.debug.assert(value.views == null and value.owned_style == null);
+        std.debug.assert(value.views == null);
         if (!self.closing and self.shared_text_pool_count < @min(self.objects.slots.len, text_pool_count_max)) {
             value.buffer.retireStorage();
             const bytes = @sizeOf(SharedText) + value.buffer.retainedStorageBytes();
@@ -3052,7 +3124,7 @@ pub const Context = struct {
         const view = try text_buffer_view.UnifiedTextBufferView.init(self.allocator, text.buffer);
         errdefer view.deinit();
         const handle = try self.objects.insert(.text_buffer_view, value);
-        value.* = .{ .handle = handle, .text = text, .view = view, .next = text.views };
+        value.* = .{ .handle = handle, .text = text, .view = view, .next = text.views, .paint_epoch = nextPaintEpoch() };
         if (text.views) |next| next.previous = value;
         text.views = value;
         return handle;
@@ -3069,14 +3141,9 @@ pub const Context = struct {
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
-        try self.replaceTextContent(text, bytes);
+        const changed = try self.replaceTextContent(text, bytes);
         text.reclaimAppendBuffers();
-        if (text.owned_style) |style| {
-            text.buffer.setSyntaxStyle(null);
-            text.owned_style = null;
-            style.deinit();
-        }
-        text.invalidate();
+        text.invalidate(changed);
     }
 
     pub fn textBufferSetStyledText(self: *Context, handle: Handle, bytes: []const u8, chunks: []const StyledTextChunk) !void {
@@ -3084,9 +3151,9 @@ pub const Context = struct {
         defer self.mutating = false;
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
-        try self.replaceStyledTextResource(text, bytes, chunks);
+        const changed = try self.replaceStyledTextResource(text, bytes, chunks);
         text.reclaimAppendBuffers();
-        text.invalidate();
+        text.invalidate(changed);
     }
 
     pub const text_replacement_count_max = 256;
@@ -3121,7 +3188,7 @@ pub const Context = struct {
             };
             const text = try self.getTextBuffer(replacement.buffer);
             const dependent = try self.getTextBufferView(replacement.view);
-            if (dependent.text != text or text.buffer.getSyntaxStyle() != text.owned_style) return error.InvalidOptions;
+            if (dependent.text != text) return error.InvalidOptions;
             for (views[0..index]) |previous| if (previous.text == text) return error.InvalidOptions;
             try text.checkMutable();
             views[index] = dependent;
@@ -3137,10 +3204,10 @@ pub const Context = struct {
         }
         for (prepared, 0..) |*candidate, index| {
             const text = views[index].text;
-            self.commitStyledTextResource(candidate, text);
+            const changed = self.commitStyledTextResource(candidate, text);
             text.reclaimAppendBuffers();
             views[index].view.resetLocalSelection();
-            text.invalidate();
+            text.invalidate(changed);
             output[index] = .{ .text_length = text.buffer.getLength(), .byte_count = text.buffer.getByteSize() };
         }
     }
@@ -3155,10 +3222,8 @@ pub const Context = struct {
         // Each append takes a registry slot. When none is left, one owned copy of the whole
         // document replaces them all, so a long append stream copies O(n^2) bytes in total.
         if (text.buffer.mem_registry.getFreeSlots() == 0) try text.buffer.flattenMemRegistry();
-        const copy = try self.allocator.dupe(u8, bytes);
-        errdefer self.allocator.free(copy);
-        try text.buffer.appendWithOwnership(copy, true);
-        text.invalidate();
+        try text.buffer.appendCopy(bytes);
+        text.invalidate(true);
     }
 
     pub fn textBufferClear(self: *Context, handle: Handle, reset: bool) !void {
@@ -3174,7 +3239,7 @@ pub const Context = struct {
         } else {
             try text.buffer.clear();
         }
-        text.invalidate();
+        text.invalidate(true);
     }
 
     pub fn textBufferSetSyntaxStyle(self: *Context, handle: Handle, style_handle: ?Handle) !void {
@@ -3183,13 +3248,9 @@ pub const Context = struct {
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
         const style = if (style_handle) |id| try self.getSyntaxStyle(id) else null;
+        text.buffer.style_binding.dependent = .{ .text = text };
         text.buffer.setSyntaxStyle(style);
-        if (text.buffer.getSyntaxStyle() != style) return error.OutOfMemory;
-        if (text.owned_style) |previous| {
-            text.owned_style = null;
-            previous.deinit();
-        }
-        text.invalidate();
+        text.invalidate(false);
     }
 
     pub fn textBufferSetDefaults(self: *Context, handle: Handle, options: TextDefaults) !void {
@@ -3198,7 +3259,7 @@ pub const Context = struct {
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
         try setBufferDefaults(text.buffer, options);
-        text.invalidate();
+        text.invalidate(false);
     }
 
     pub fn editBufferSetTabWidth(self: *Context, handle: Handle, width: u8) !void {
@@ -3218,7 +3279,7 @@ pub const Context = struct {
         try text.checkMutable();
         try text.buffer.checkTabWidth(width);
         text.buffer.setTabWidth(width);
-        text.invalidate();
+        text.invalidate(true);
     }
 
     pub fn textBufferHighlight(self: *Context, handle: Handle, operation: TextHighlight) !void {
@@ -3227,7 +3288,7 @@ pub const Context = struct {
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
         try highlightBuffer(text.buffer, operation);
-        text.invalidate();
+        text.invalidate(false);
     }
 
     pub fn textViewSetViewport(self: *Context, handle: Handle, viewport: text_buffer_view.Viewport, size_only: bool) !void {
@@ -3245,7 +3306,7 @@ pub const Context = struct {
             });
             view.view.setViewportSize(viewport.width, viewport.height);
         } else view.view.setViewport(viewport);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn textViewCommand(self: *Context, handle: Handle, command: TextViewCommand) !void {
@@ -3270,7 +3331,10 @@ pub const Context = struct {
             .truncate => |enabled| view.view.setTruncate(enabled),
             .text_align => |alignment| view.view.setTextAlign(alignment),
         }
-        view.invalidate();
+        switch (command) {
+            .wrap_width, .wrap_mode, .first_line_offset => view.invalidate(),
+            .tab_indicator, .truncate, .text_align => view.invalidatePreparation(),
+        }
     }
 
     pub fn textViewSetTabColor(self: *Context, handle: Handle, color: ?buf.RGBA) !void {
@@ -3280,7 +3344,7 @@ pub const Context = struct {
         try view.checkMutable();
         if (color) |rgba| try buf.validateColor(rgba);
         view.view.setTabIndicatorColor(color);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn textViewSelect(self: *Context, handle: Handle, options: TextSelection) !bool {
@@ -3331,7 +3395,7 @@ pub const Context = struct {
         const view = try editor_view.EditorView.init(self.allocator, edit.buffer, width, height);
         errdefer view.deinit();
         const handle = try self.objects.insert(.editor_view, value);
-        value.* = .{ .handle = handle, .edit = edit, .view = view, .next = edit.views };
+        value.* = .{ .handle = handle, .edit = edit, .view = view, .next = edit.views, .paint_epoch = nextPaintEpoch() };
         if (edit.views) |next| next.previous = value;
         edit.views = value;
         return handle;
@@ -3364,37 +3428,19 @@ pub const Context = struct {
         if (definition.fg) |color| try buf.validateColor(color);
         if (definition.bg) |color| try buf.validateColor(color);
         const style = try self.getSyntaxStyle(handle);
-        try self.checkStyleDependents(style);
-        const id = try style.registerStyleDefinition(name, definition);
-        self.invalidateStyleDependents(style);
-        return id;
+        // Paint resolves styles from the table every frame, so borrowers need no invalidation.
+        try checkStyleDependents(style);
+        return style.registerStyleDefinition(name, definition);
     }
 
-    fn checkStyleDependents(self: *Context, style: *const syntax_style.SyntaxStyle) !void {
-        // Buffers subscribe before borrowing a style; construction has no dependents to scan.
-        const listeners = style.emitter.listeners.get(.Destroy) orelse return;
-        if (listeners.items.len == 0) return;
-        for (self.objects.slots) |slot| {
-            if (slot.kind == .edit_buffer and slot.ptr != null) {
-                const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.tb.getSyntaxStyle() == style) try dependent.checkMutable();
-            } else if (slot.kind == .text_buffer and slot.ptr != null) {
-                const dependent: *SharedText = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.getSyntaxStyle() == style) try dependent.checkMutable();
-            }
-        }
-    }
-
-    fn invalidateStyleDependents(self: *Context, style: *const syntax_style.SyntaxStyle) void {
-        const listeners = style.emitter.listeners.get(.Destroy) orelse return;
-        if (listeners.items.len == 0) return;
-        for (self.objects.slots) |slot| {
-            if (slot.kind == .edit_buffer and slot.ptr != null) {
-                const dependent: *Edit = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.tb.getSyntaxStyle() == style) dependent.invalidate();
-            } else if (slot.kind == .text_buffer and slot.ptr != null) {
-                const dependent: *SharedText = @ptrCast(@alignCast(slot.ptr.?));
-                if (dependent.buffer.getSyntaxStyle() == style) dependent.invalidate();
+    fn checkStyleDependents(style: *const syntax_style.SyntaxStyle) !void {
+        var next = style.borrowers;
+        while (next) |borrower| : (next = borrower.next) {
+            if (borrower.dependent != .none) text_work.add(.style_dependent_visits, 1);
+            switch (borrower.dependent) {
+                .none => {},
+                .text => |text| try @as(*SharedText, @ptrCast(@alignCast(text))).checkMutable(),
+                .edit => |edit| try @as(*Edit, @ptrCast(@alignCast(edit))).checkMutable(),
             }
         }
     }
@@ -3405,8 +3451,8 @@ pub const Context = struct {
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
         const style = if (style_handle) |id| try self.getSyntaxStyle(id) else null;
+        edit.buffer.tb.style_binding.dependent = .{ .edit = edit };
         edit.buffer.tb.setSyntaxStyle(style);
-        if (edit.buffer.tb.getSyntaxStyle() != style) return error.OutOfMemory;
         edit.invalidate();
     }
 
@@ -3462,7 +3508,6 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        try prepareTextBuffer(edit.buffer.tb);
         switch (command) {
             .delete_forward => try edit.buffer.deleteForward(),
             .backspace => try edit.buffer.backspace(),
@@ -3509,7 +3554,7 @@ pub const Context = struct {
         try validateViewport(viewport);
         try view.prepareView();
         if (size_only) view.view.setViewportSize(viewport.width, viewport.height) else view.view.setViewport(viewport, move_cursor);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn editorSetScrollMargin(self: *Context, handle: Handle, margin: f32) !void {
@@ -3518,8 +3563,9 @@ pub const Context = struct {
         if (!std.math.isFinite(margin)) return error.InvalidOptions;
         const view = try self.getEditorView(handle);
         try view.edit.checkMutable();
+        if (view.view.follow_pending) try view.prepareView();
         view.view.setScrollMargin(margin);
-        view.invalidate();
+        view.invalidatePreparation();
     }
 
     pub fn editorCommand(self: *Context, handle: Handle, command: EditorCommand) !void {
@@ -3529,7 +3575,12 @@ pub const Context = struct {
         // Cursor commands synchronously update every view of the edit buffer.
         try view.edit.checkMutable();
         if (command == .tab_indicator) try validateTabIndicator(command.tab_indicator);
-        try view.prepareView();
+        // Cursor and text changes only make a scroll due; visual moves need the layout.
+        switch (command) {
+            .move_up, .move_down, .goto_line_end => try view.prepareView(),
+            .wrap_mode => if (view.view.follow_pending) try view.prepareView(),
+            .delete_selection, .cursor_offset, .tab_indicator => {},
+        }
         switch (command) {
             .move_up => view.view.moveUpVisual(),
             .move_down => view.view.moveDownVisual(),
@@ -3540,7 +3591,7 @@ pub const Context = struct {
             .tab_indicator => |indicator| view.view.setTabIndicator(indicator),
         }
         switch (command) {
-            .wrap_mode, .tab_indicator => view.invalidate(),
+            .wrap_mode => view.invalidate(),
             else => view.invalidatePreparation(),
         }
     }
@@ -3566,7 +3617,7 @@ pub const Context = struct {
     pub fn editorPrepareView(self: *Context, handle: Handle, follow_cursor: bool) !*Editor {
         try self.checkSceneRead();
         const view = try self.getEditorView(handle);
-        if (follow_cursor) view.view.updateBeforeRender();
+        if (follow_cursor) _ = view.view.updateCursorBeforeRender();
         try view.prepareView();
         return view;
     }
@@ -3603,23 +3654,15 @@ pub const Context = struct {
             view.invalidate();
             return;
         }
-        const style = try syntax_style.SyntaxStyle.init(self.allocator);
-        errdefer style.deinit();
         const ranges = try self.allocator.alloc(text_buffer.OwnedStyledChunk, chunks.len);
         defer self.allocator.free(ranges);
-        for (chunks, ranges, 0..) |chunk, *range, index| {
-            var name_buffer: [10]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buffer, "{d}", .{index}) catch unreachable;
-            range.* = .{ .byte_count = chunk.byte_count, .style_id = try style.registerStyle(name, chunk.foreground, chunk.background, chunk.attributes) };
+        for (chunks, ranges) |chunk, *range| {
+            range.* = .{ .byte_count = chunk.byte_count, .style = .{ .fg = chunk.foreground, .bg = chunk.background, .attributes = chunk.attributes } };
         }
         const copy = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(copy);
-        try view.view.setPlaceholderOwnedStyledText(copy, style, ranges, null);
+        try view.view.setPlaceholderOwnedStyledText(copy, ranges, null);
         view.invalidate();
-    }
-
-    pub fn prepareTextBuffer(buffer: *text_buffer.UnifiedTextBuffer) !void {
-        if (buffer.rope().markerCount(.linestart) != buffer.lineCount()) return error.OutOfMemory;
     }
 
     fn setBufferDefaults(buffer: *text_buffer.UnifiedTextBuffer, options: TextDefaults) !void {
@@ -3633,7 +3676,6 @@ pub const Context = struct {
     }
 
     fn highlightBuffer(buffer: *text_buffer.UnifiedTextBuffer, operation: TextHighlight) !void {
-        try prepareTextBuffer(buffer);
         switch (operation) {
             .add_line => |line| {
                 const h = line.range;
@@ -3666,6 +3708,7 @@ pub const Context = struct {
         if (options.foreground) |color| try buf.validateColor(color);
         if (options.background) |color| try buf.validateColor(color);
         if (local) {
+            if (is_editor and value.view.follow_pending) try value.prepareView();
             if (view.getViewport()) |viewport| {
                 const x = if (view.wrap_mode == .none) std.math.cast(i32, viewport.x) orelse return error.InvalidOptions else 0;
                 const y = std.math.cast(i32, viewport.y) orelse return error.InvalidOptions;
@@ -3677,7 +3720,6 @@ pub const Context = struct {
             if (buffer.lineWidthColsMax() > std.math.maxInt(i32)) return error.InvalidOptions;
         }
         if (options.operation != .reset and options.operation != .local_reset) {
-            if (!is_editor) try prepareTextBuffer(buffer);
             try value.prepareView();
         }
         const fg = options.foreground;
@@ -3715,26 +3757,44 @@ pub const Context = struct {
         self.edit_event_userdata = userdata;
     }
 
-    fn replaceTextContent(self: *Context, text: anytype, bytes: []const u8) !void {
+    /// Returns whether the bytes changed.
+    fn replaceTextContent(self: *Context, text: anytype, bytes: []const u8) !bool {
+        const changed = !holdsBytes(text, bytes);
         const copy = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(copy);
         // Owned scene/shared text excludes registrations borrowed from the rope arena.
         text.input_mem_id = try text.buffer.replaceOwnedText(copy, text.input_mem_id);
+        return changed;
+    }
+
+    /// Replacements put the whole text in the `input_mem_id` slot. The rope holds exactly those
+    /// bytes when it has no other slot and the byte counts agree. An append adds a slot. A clear
+    /// leaves a stale slot and a flatten drops the slot's line breaks; both make the counts
+    /// differ whenever the slot is not the text.
+    fn holdsBytes(text: anytype, bytes: []const u8) bool {
+        const registry = &text.buffer.mem_registry;
+        const current = registry.get(@as(?u8, text.input_mem_id) orelse return false).?;
+        return registry.buffers.items.len == 1 and text.buffer.getByteSize() == bytes.len and std.mem.eql(u8, current, bytes);
     }
 
     fn textResourceChanged(text: *Text) void {
         var next = text.view.measure_dependents;
         while (next) |dependent| {
+            // A dependent without a Yoga measure function does not solve, so mark its refresh stale.
             yoga.yogaNodeMarkDirty(dependent.yoga_node);
+            scene.Scene.markObservationStale(dependent);
             next = dependent.measure_next;
         }
+    }
+
+    /// Equal bytes still rebuild the rope, so the view prepares again; the size does not change.
+    fn textResent(node: *native_renderable.NativeRenderable) void {
+        scene.Scene.markObservationStale(node);
     }
 
     fn destroyTextResource(self: *Context, text: *Text) void {
         text.view.retireStorage();
         text.buffer.retireStorage();
-        if (text.owned_style) |style| style.deinit();
-        text.owned_style = null;
         if (!self.closing and self.text_pool_count < @min(self.objects.slots.len, text_pool_count_max)) {
             const bytes = @sizeOf(Text) + text.buffer.retainedStorageBytes() + text.view.retainedStorageBytes();
             if (bytes <= text_storage_bytes_max and bytes <= text_pool_bytes_max - self.text_pool_bytes) {
@@ -3751,7 +3811,6 @@ pub const Context = struct {
     fn freeTextStorage(self: *Context, text: *Text) void {
         text.view.deinit();
         text.buffer.deinit();
-        if (text.owned_style) |style| style.deinit();
         self.allocator.destroy(text);
     }
 
@@ -3826,8 +3885,6 @@ pub const Context = struct {
                 while (value.views) |view| self.destroyToken(self.objects.beginDestroy(view.handle) catch unreachable);
                 // Detach the buffer from its style before the style goes away.
                 value.buffer.setSyntaxStyle(null);
-                if (value.owned_style) |style| style.deinit();
-                value.owned_style = null;
                 self.releaseSharedTextStorage(value);
             },
             .text_buffer_view => {
@@ -3835,8 +3892,7 @@ pub const Context = struct {
                 if (value.node) |node| {
                     node.setMeasureTargetPreservingProvider(.none, node.scene_node.?.measure_overridden) catch unreachable;
                     node.scene_node.?.control.text_view.view = null;
-                    node.scene_node.?.owner.preparation_dirty = true;
-                    node.scene_node.?.owner.work.clearRetainingCapacity();
+                    node.scene_node.?.owner.invalidateObservation(node);
                 }
                 if (value.previous) |previous| previous.next = value.next else value.text.views = value.next;
                 if (value.next) |next| next.previous = value.previous;
@@ -3854,8 +3910,7 @@ pub const Context = struct {
                 if (value.node) |node| {
                     node.setMeasureTargetPreservingProvider(.none, node.scene_node.?.measure_overridden) catch unreachable;
                     node.scene_node.?.editor = null;
-                    node.scene_node.?.owner.preparation_dirty = true;
-                    node.scene_node.?.owner.work.clearRetainingCapacity();
+                    node.scene_node.?.owner.invalidateObservation(node);
                 }
                 if (value.previous) |previous| previous.next = value.next else value.edit.views = value.next;
                 if (value.next) |next| next.previous = value.previous;

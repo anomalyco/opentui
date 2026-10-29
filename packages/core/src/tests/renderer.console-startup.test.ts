@@ -706,11 +706,6 @@ test("CliRenderer leaving split-footer aborts an in-flight startup CPR reply", a
 
     expect(keypresses).toEqual([])
   } finally {
-    if ((renderer as any).capabilityTimeoutId !== null) {
-      clock.clearTimeout((renderer as any).capabilityTimeoutId)
-      ;(renderer as any).capabilityTimeoutId = null
-    }
-
     if ((renderer as any).splitStartupSeedTimeoutId !== null) {
       clock.clearTimeout((renderer as any).splitStartupSeedTimeoutId)
       ;(renderer as any).splitStartupSeedTimeoutId = null
@@ -854,7 +849,9 @@ for (const [name, screenMode, change, dimensions, output] of [
     change(renderer)
     await renderer.nativeScene.driver.idle()
 
-    expect(writes.map((write) => write.output).join("")).toBe(output)
+    // Sentinel mode (native parser) ends the pixel query batch with DA1.
+    const sentinel = (renderer as any).replySentinel ? "\x1b[c" : ""
+    expect(writes.map((write) => write.output).join("")).toBe(output.replace("\x1b[14t", "\x1b[14t" + sentinel))
     for (const write of writes) {
       expect(write.dimensions).toEqual([dimensions, dimensions, dimensions, dimensions])
     }

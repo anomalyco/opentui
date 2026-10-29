@@ -8,9 +8,11 @@ const yoga = @import("../yoga.zig");
 const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const scene = @import("../scene.zig");
+const c = @import("context_abi_c");
 
 test {
     _ = @import("scene_editor_test.zig");
+    _ = @import("scene_scroll_test.zig");
 }
 
 const frame_options: scene.FrameOptions = .{
@@ -142,10 +144,10 @@ test "Scene empty boxes skip paint setup but retain hits and descendant clipping
     try testing.expect(red > 0 and red < 200);
     try testing.expectEqual(black, next.get(3, 0).?.bg);
     try testing.expectEqual(black, next.get(4, 0).?.bg);
-    try testing.expectEqual(@as(u32, 0), f.cli.nextHitGrid[3]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(child)).scene_node.?.token, f.cli.nextHitGrid[2]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(parent)).scene_node.?.token, f.cli.nextHitGrid[8]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(peer)).scene_node.?.token, f.cli.nextHitGrid[4]);
+    try testing.expectEqual(@as(u32, 0), f.draftHit(3));
+    try testing.expectEqual((try f.owner.raw().getRenderable(child)).scene_node.?.token, f.draftHit(2));
+    try testing.expectEqual((try f.owner.raw().getRenderable(parent)).scene_node.?.token, f.draftHit(8));
+    try testing.expectEqual((try f.owner.raw().getRenderable(peer)).scene_node.?.token, f.draftHit(4));
 
     try f.owner.sceneSetPaint(peer, .{ .background = .{ 0, 200, 0, 255 } });
     try repaint(f.owner, f.id, frame_options.background, true, 0);
@@ -154,39 +156,69 @@ test "Scene empty boxes skip paint setup but retain hits and descendant clipping
     try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().opacity_stack.items.len);
 }
 
+test "Scene hit walk answers what a grid overwritten in paint order holds" {
+    var prng = std.Random.DefaultPrng.init(0x316);
+    const random = prng.random();
+    var hits: [24]scene.Hit = undefined;
+    var grid: [9 * 5]u32 = undefined;
+    for (0..2000) |_| {
+        const count = random.uintAtMost(usize, hits.len);
+        @memset(&grid, 0);
+        for (hits[0..count], 0..) |*hit, index| {
+            const x = random.uintLessThan(u32, 9);
+            const y = random.uintLessThan(u32, 5);
+            // Ties between tokens and full or one-cell rects are common.
+            hit.* = .{ .x = x, .y = y, .width = random.intRangeAtMost(u32, 1, 9 - x), .height = random.intRangeAtMost(u32, 1, 5 - y), .token = random.intRangeAtMost(u32, 1, 4) + @as(u32, @intCast(index % 2)) };
+            for (hit.y..hit.y + hit.height) |row| @memset(grid[row * 9 + hit.x ..][0..hit.width], hit.token);
+        }
+        for (grid, 0..) |token, cell| {
+            const found = scene.topmostHit(hits[0..count], @intCast(cell % 9), @intCast(cell / 9));
+            try testing.expectEqual(token, if (found) |index| hits[index].token else 0);
+        }
+    }
+}
+
 test "Scene geometry cache retries a failed third solve in one frame with clean Yoga" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const box = try f.owner.sceneCreateNode(f.id, 1, 2);
     try dimensions(f.owner, box, 3, 1);
     try f.owner.sceneMoveNode(box, f.root, 0);
+    const slider = try f.owner.sceneCreateNode(f.id, 3, 3);
+    try dimensions(f.owner, slider, 4, 1);
+    // The thumb offset of this accepted value fits width 4 and overflows at width 5.
+    try f.owner.sceneSetSlider(slider, .{ .max = 1, .value = 4e307, .viewport_size = 1 });
+    try f.owner.sceneMoveNode(slider, f.root, 1);
     try f.owner.sceneSetHooks(f.root, 4, 1, 0, 0);
     const node = (try f.owner.raw().getRenderable(box)).scene_node.?;
     var request = try f.step(null, frame_options, 3, null);
-    try testing.expectEqual(@as(u32, 1), node.prepared_round);
+    try testing.expectEqual(f.state.candidates_gen, node.prepared_gen);
+    const gen = node.prepared_gen;
     const frame_id = request.frame_id;
     const epoch = request.layout_epoch;
     try dimensions(f.owner, box, 4, 1);
     request = try f.step(request, frame_options, 3, null);
     try testing.expectEqual(frame_id, request.frame_id);
     try testing.expectEqual(epoch + 1, request.layout_epoch);
-    try testing.expectEqual(@as(u32, 2), node.prepared_round);
+    try testing.expectEqual(gen + 1, node.prepared_gen);
     try testing.expectEqual(@as(f32, 3), (try f.owner.sceneGetLayout(box, false)).width);
 
     try dimensions(f.owner, box, 5, 1);
-    // This accepted transform fails preparation only after the third Yoga solve.
-    try f.owner.sceneSetPaint(box, .{ .translateX = 2147483648 });
-    try testing.expectError(error.InvalidDimensions, f.owner.sceneFrameStep(f.id, request, frame_options));
-    try testing.expect(f.state.attempt == null and f.state.work.items.len == 0 and f.state.feedback.items.len == 0);
+    // The slider fails preparation only after the third Yoga solve.
+    try dimensions(f.owner, slider, 5, 1);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneFrameStep(f.id, request, frame_options));
+    try testing.expect(f.state.attempt == null and f.state.candidates.items.len == 0 and f.state.feedback.items.len == 0);
     try testing.expectEqual(epoch + 2, f.state.layout_epoch);
-    try testing.expectEqual(frame_id, node.prepared_frame);
-    try testing.expectEqual(@as(u32, 2), node.prepared_round);
+    // The failed walk stamped nothing, so the next one reads the third solve's geometry.
+    try testing.expectEqual(gen + 1, node.prepared_gen);
+    try testing.expectEqual(epoch + 1, node.geometry_epoch);
     var dirty: u32 = 1;
     try yoga.check(yoga.yogaNodeIsDirtyChecked((try f.owner.raw().getRenderable(f.root)).yoga_node, &dirty));
     try testing.expectEqual(@as(u32, 0), dirty);
     try testing.expectEqual(@as(f32, 4), (try f.owner.sceneGetLayout(box, false)).width);
 
     try f.owner.sceneSetPaint(box, .{ .background = .{ 200, 0, 0, 255 } });
+    try f.owner.sceneSetSlider(slider, .{});
     request = try f.step(null, frame_options, 3, null);
     try testing.expectEqual(frame_id + 1, request.frame_id);
     try testing.expectEqual(epoch + 2, request.layout_epoch);
@@ -194,8 +226,8 @@ test "Scene geometry cache retries a failed third solve in one frame with clean 
     try testing.expectEqual(@as(u32, 0), (try f.owner.sceneFrameStep(f.id, request, frame_options)).kind);
     try testing.expectEqual(@as(f32, 5), (try f.owner.sceneGetLayout(box, false)).width);
     try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(4, 0).?.bg);
-    try testing.expectEqual(node.token, f.cli.nextHitGrid[4]);
-    try testing.expectEqual(@as(u32, 0), f.cli.nextHitGrid[5]);
+    try testing.expectEqual(node.token, f.draftHit(4));
+    try testing.expectEqual(@as(u32, 0), f.draftHit(5));
     try f.owner.sceneFrameCancel(f.id, request.frame_id);
     try testing.expectEqual(@as(u32, 0), (try f.owner.sceneFrameStep(f.id, null, frame_options)).kind);
 }
@@ -234,12 +266,18 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try dimensions(f.owner, slider, 2, 1);
     try f.owner.sceneSetSlider(slider, .{ .value = 50 });
     try f.owner.sceneMoveNode(slider, children[10], 0);
+    // Feedback skips a hidden viewport child: no update request and no text view refresh.
+    const hidden = try f.owner.sceneCreateNode(f.id, 2, 4);
+    try f.owner.sceneSetText(hidden, "hidden");
+    try f.owner.sceneSetStyle(hidden, 0, 9, 0, 0, 1, 0);
+    try f.owner.sceneMoveNode(hidden, content, 16);
     try f.owner.sceneSetPaint(content, .{ .translateY = -20 });
     try repaint(f.owner, f.id, frame_options.background, true, 0);
     try f.owner.sceneSetPaint(content, .{});
     try repaint(f.owner, f.id, frame_options.background, true, 0);
     try dimensions(f.owner, slider, 8, 1);
     for (children) |child| try f.owner.sceneSetHooks(child, 1, 1, 10, 2);
+    try f.owner.sceneSetHooks(hidden, 1, 1, 0, 0);
     try f.owner.sceneSetHooks(slider, 3, 1, 2, 1);
     try f.owner.sceneFrameCancel(f.id, f.state.last_frame_id);
     var request = try f.step(null, frame_options, 1, children[0]);
@@ -259,27 +297,35 @@ test "Scene viewport late reveal settles Slider refresh and resize feedback befo
     try testing.expectEqual(@as(f32, 8), layout.width);
     try testing.expectEqual(@as(f64, 0), layout.screenY);
     try testing.expectEqual(@as(u32, 0x258c), f.cli.getNextBuffer().get(4, 0).?.char);
-    try testing.expectEqual((try f.owner.raw().getRenderable(slider)).scene_node.?.token, f.cli.nextHitGrid[7]);
-    try testing.expectEqual((try f.owner.raw().getRenderable(children[10])).scene_node.?.token, f.cli.nextHitGrid[8]);
-    try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0 and f.state.work.items.len == 0);
+    try testing.expectEqual((try f.owner.raw().getRenderable(slider)).scene_node.?.token, f.draftHit(7));
+    try testing.expectEqual((try f.owner.raw().getRenderable(children[10])).scene_node.?.token, f.draftHit(8));
+    try testing.expect(f.state.attempt == null and f.state.feedback.items.len == 0);
+    try testing.expect((try f.owner.raw().getRenderable(hidden)).scene_node.?.text.?.view.getViewport() == null);
 }
 
 fn viewportAllocationFailures(allocator: std.mem.Allocator) !void {
-    const f = try Fixture.init(allocator, 8, 4, .{ .limits = .{ .object_capacity = 20 } });
+    const f = try Fixture.init(allocator, 8, 4, .{ .limits = .{ .object_capacity = 24 } });
     defer f.deinit();
+    // A scroll node owns two Yoga nodes and its state; a child moves into its content node.
+    const scroll = try f.owner.sceneCreateNode(f.id, 1, 4);
+    try f.owner.sceneSetScroll(scroll, .{ .culling = true });
+    try f.owner.sceneSetScrollArrow(scroll, 1, 0, .{ .text = "^" });
+    try f.owner.sceneMoveNode(scroll, f.root, 0);
+    try f.owner.sceneMoveNode(try f.owner.sceneCreateNode(f.id, 2, 5), scroll, 0);
+    try f.owner.sceneSetHooks(scroll, c.OT_SCENE_HOOK_SCROLL, 1, 0, 0);
     const content = try f.owner.sceneCreateNode(f.id, 1, 2);
     try dimensions(f.owner, content, 8, 32);
-    try f.owner.sceneMoveNode(content, f.root, 0);
+    try f.owner.sceneMoveNode(content, f.root, 1);
     var children: [16]context.Handle = undefined;
     try filterChildren(f.owner, f.id, content, &children);
     const text = try f.owner.sceneCreateNode(f.id, 2, 3);
-    try f.owner.sceneSetText(text, "wrapped text");
+    try f.owner.sceneSetText(text, "e\xcc\x81 wrapped text");
     try f.owner.sceneMoveNode(text, children[0], 0);
     try f.owner.sceneSetViewport(content, f.root);
     try f.owner.sceneSetFocus(text, true);
     try f.owner.sceneSetHooks(children[0], 3, 1, 0, 0);
     var request: ?scene.FrameRequest = null;
-    for (0..3) |_| {
+    for (0..4) |_| {
         request = try f.owner.sceneFrameStep(f.id, request, frame_options);
         if (request.?.kind == 0) break;
     } else return error.TestUnexpectedResult;
@@ -405,6 +451,27 @@ test "Scene selected text copies exact bytes without allocating" {
     try testing.expect(!failing.has_induced_failure);
 }
 
+test "Scene cell layout keeps in-range axes and the truncated visible cells of the rest" {
+    const inf = std.math.inf(f64);
+    const nan = std.math.nan(f64);
+    // start, size -> clamped start, size. Paint covers trunc(start) .. trunc(start) + trunc(size).
+    for ([_][4]f64{
+        .{ -2147483648, 2147483520, -2147483648, 2147483520 },
+        .{ 2.5, 3.75, 2.5, 3.75 },
+        .{ -3e9 + 2.5, 3e9, -4194304, 4194307 },
+        .{ -2e9, 3e9, -4194304, 8388608 },
+        .{ 1e9, 2e9, 4194303, 1 },
+        .{ -3e9, 1e10, -4194304, 8388608 },
+        .{ nan, 4, -4194304, 1 },
+        .{ 5, nan, 5, 1 },
+        .{ -inf, inf, -4194304, 1 },
+        .{ 3, inf, 3, 4194301 },
+    }) |row| {
+        const cells = scene.cellLayout(.{ .screenX = row[0], .width = @floatCast(row[1]) });
+        try testing.expectEqual([2]f64{ row[2], row[3] }, [2]f64{ cells.screenX, cells.width });
+    }
+}
+
 test "Scene text fully clipped coordinates never enter signed drawing arithmetic" {
     const f = try Fixture.init(testing.allocator, 4, 2, .{});
     defer f.deinit();
@@ -412,10 +479,15 @@ test "Scene text fully clipped coordinates never enter signed drawing arithmetic
     try f.owner.sceneSetText(text, "offscreen");
     try dimensions(f.owner, text, 3, 1);
     try f.owner.sceneMoveNode(text, f.root, 0);
-    try f.owner.sceneSetPaint(text, .{ .translateY = std.math.minInt(i32) });
-    try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, true, 0);
-    for (f.cli.getNextBuffer().buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
-    for (f.cli.nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
+    const max = std.math.floatMax(f32);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPaint(text, .{ .translateX = @as(f64, max) * 2 }));
+    // Translations beyond the i32 cell range clamp instead of failing the frame.
+    for ([_][2]f64{ .{ 0, std.math.minInt(i32) }, .{ 0, std.math.maxInt(i32) }, .{ -max, 0 }, .{ max, -max } }) |translate| {
+        try f.owner.sceneSetPaint(text, .{ .translateX = translate[0], .translateY = translate[1] });
+        try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, true, 0);
+        for (f.cli.getNextBuffer().buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
+        try testing.expectEqual(@as(usize, 0), f.state.hits.items.len);
+    }
 }
 
 test "Scene owns and iteratively destroys registered nodes including detached boxes" {

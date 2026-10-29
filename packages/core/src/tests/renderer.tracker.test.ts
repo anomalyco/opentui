@@ -269,9 +269,7 @@ for (const { stdin, suspended, flushes } of inputFlushCases) {
 
 // Invalid configuration fails before the renderer takes streams, listeners, or a supplied Session.
 const invalidConfigs: Array<[name: string, config: CliRendererConfig, error: string]> = [
-  ["a zero work budget", { nativeSceneWorkBudget: 0 }, "nativeSceneWorkBudget must be a positive u32"],
-  ["a fractional work budget", { nativeSceneWorkBudget: 1.5 }, "nativeSceneWorkBudget must be a positive u32"],
-  ["a work budget above u32", { nativeSceneWorkBudget: 2 ** 32 }, "nativeSceneWorkBudget must be a positive u32"],
+  ["the removed work budget", { nativeSceneWorkBudget: 1 } as never, "nativeSceneWorkBudget was removed"],
   ["an unknown Kitty transport", { kittyImageTransport: "ftp" as never }, "Invalid kittyImageTransport"],
   ["a non-finite footer", { screenMode: "split-footer", footerHeight: NaN }, "footerHeight must be a finite number"],
   ["an empty footer", { screenMode: "split-footer", footerHeight: 0 }, "footerHeight must be greater than 0"],

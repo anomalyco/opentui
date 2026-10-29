@@ -26,7 +26,7 @@ The build puts the header and libraries in `lib/<target>/` inside the native wor
 On Linux x86_64 with glibc, that directory is `lib/x86_64-linux/`.
 The C commands below use that target.
 
-The C application binary interface (ABI) is experimental and currently uses `OT_CONTEXT_ABI_VERSION == 1`.
+The C application binary interface (ABI) is experimental and currently uses `OT_CONTEXT_ABI_VERSION == 2`.
 Use the header, library, and bindings from the same revision.
 The version number can stay the same between development revisions that are not compatible.
 The native workspace is private. It is not an npm package that you can install.
@@ -270,7 +270,7 @@ static ot_status submit_frame(ot_context *context, const ot_handle *session, uin
     ot_scene_frame_request request = {RECORD(ot_scene_frame_request)};
     ot_scene_frame_geometry geometry = {RECORD(ot_scene_frame_geometry)};
     ot_status status = ot_scene_frame_step_with_geometry(context, session, NULL, &options,
-        UINT32_MAX, NULL, 0, &request, &geometry);
+        NULL, 0, &request, &geometry);
     if (status != OT_OK) return status;
     if (request.kind != OT_SCENE_FRAME_RECORD) return OT_UNSUPPORTED_RESOURCE;
 
@@ -299,7 +299,7 @@ static ot_status submit_frame(ot_context *context, const ot_handle *session, uin
         .bytes = "!",
     };
     status = ot_scene_frame_step_with_geometry(context, session, &request, &options,
-        UINT32_MAX, (const uint8_t *)&recording, sizeof recording, &request, &geometry);
+        (const uint8_t *)&recording, sizeof recording, &request, &geometry);
     if (status != OT_OK) return status;
     return ot_scene_frame_commit(context, session, &request, 0, outcome);
 }
@@ -320,7 +320,6 @@ The text is one byte, so the record ends with three zero padding bytes.
 
 `max_layout_rounds = 8` and `max_host_requests = 64` are limits that this example chooses.
 The C interface has no defaults for them. Zero returns `OT_INVALID_ARGUMENT`.
-The `UINT32_MAX` work quota (`max_work_items`) selects synchronous preparation from the start.
 
 Recorded commands use cell coordinates in the Session's next buffer and draw inside the slot's clip.
 The coordinates here are fixed for this 12-by-3 area. A dynamic layout can use the slot's paint geometry.

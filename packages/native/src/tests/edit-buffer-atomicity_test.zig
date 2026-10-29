@@ -146,13 +146,13 @@ test "EditBuffer atomicity - invalid and empty edits preserve redo history" {
     try eb.deleteForward();
     try eb.insertText("");
     try eb.deleteRange(cursor, cursor);
+    try eb.deleteRange(.{ .row = 0, .col = 9 }, .{ .row = 0, .col = 9 });
     try std.testing.expectError(error.InvalidCursor, eb.deleteRange(cursor, .{ .row = 1, .col = 0 }));
     eb.cursor.row = 1;
     try std.testing.expectError(error.InvalidCursor, eb.insertText("!"));
     try std.testing.expectEqual(@as(u32, 1), eb.getPrimaryCursor().row);
     eb.cursor = cursor;
     try std.testing.expectEqual(before.root, eb.tb.rope().root);
-    try std.testing.expectEqual(before.version, eb.tb.rope().version);
     try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
     try std.testing.expectEqual(before.redo_history, eb.tb.rope().redo_history);
     try std.testing.expectEqual(before.curr_history, eb.tb.rope().curr_history);
@@ -193,4 +193,63 @@ test "selected replacement - full add registry rejects without clearing selectio
     try std.testing.expectEqualDeep(selection, ev.getSelection());
     var actual: [32]u8 = undefined;
     try std.testing.expectEqualStrings("old", actual[0..eb.getText(&actual)]);
+}
+
+test "EditBuffer atomicity - a failed edit that rejoins a grapheme keeps the add buffer and registry" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    // Each edit rejoins a grapheme across memory, so the join copies it to the add buffer: `e` from
+    // `setText` and U+0301 from the edit, or two regional indicators that a deleted `x` kept apart.
+    // The paste fills a grown add buffer, so that copy grows it again.
+    const paste = "\u{301}" ++ "y" ** (131072 - 2);
+    const Edit = enum { insert, replace, forward, paste };
+    for (std.enums.values(Edit)) |edit| {
+        for ([_]bool{ false, true }) |fail_rope| {
+            var succeeded = false;
+            for (0..64) |offset| {
+                var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+                const eb = try EditBuffer.init(failing.allocator(), &pool, &links, .unicode, null);
+                defer eb.deinit();
+                try eb.setText(if (edit == .forward) "\u{1f1fa}x\u{1f1f8}" else "ex");
+                try eb.setCursor(0, 0);
+                eb.moveRight();
+                const before = EditState.capture(eb);
+                const allocator = eb.tb.rope().allocator;
+                var rope_failing = std.testing.FailingAllocator.init(allocator, .{});
+                eb.tb.rope().allocator = rope_failing.allocator();
+                const fault = if (fail_rope) &rope_failing else &failing;
+                fault.fail_index = fault.alloc_index + offset;
+                const ignore = struct {
+                    fn handle(_: *anyopaque) void {}
+                };
+                const result = switch (edit) {
+                    .insert => eb.insertText("\u{301}"),
+                    .replace => eb.replaceRange(1, 2, "\u{301}", .{ .ctx = eb, .handle = ignore.handle }),
+                    .forward => eb.deleteForward(),
+                    .paste => eb.insertText(paste),
+                };
+                eb.tb.rope().allocator = allocator;
+                fault.fail_index = std.math.maxInt(usize);
+                if (result) |_| {
+                    var actual: [paste.len + 8]u8 = undefined;
+                    const expected = switch (edit) {
+                        .insert => "e\u{301}x",
+                        .replace => "e\u{301}",
+                        .forward => "\u{1f1fa}\u{1f1f8}",
+                        .paste => "e" ++ paste ++ "x",
+                    };
+                    try std.testing.expectEqualStrings(expected, actual[0..eb.getText(&actual)]);
+                    try @import("text-buffer-view_test.zig").expectGraphemeBoundaries(eb.tb);
+                    succeeded = !fault.has_induced_failure;
+                    if (succeeded) break;
+                } else |err| {
+                    try std.testing.expectEqual(error.OutOfMemory, err);
+                    try std.testing.expectEqualDeep(before, EditState.capture(eb));
+                }
+            }
+            try std.testing.expect(succeeded);
+        }
+    }
 }

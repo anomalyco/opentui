@@ -116,8 +116,11 @@ console.log(native.nativeFrameCount, native.cellsUpdated)
 | `nativeAverageFrameTime` | Average native frame interval, in microseconds                      |
 | `nativeRenderTime`       | Latest native diff and encode time, in microseconds, when available |
 | `nativeStdoutWriteTime`  | Latest native output write, in microseconds, when available         |
+| `frameWork`              | Work counts of the latest presented scene frame                     |
 
 An unchanged native frame can increment `nativeFrameCount` while `cellsUpdated` is `0`. A forced repaint can count the full render surface. Cell updates are terminal cells, not bytes, code points, graphemes, or renderable nodes.
+
+`frameWork` counts work, not time: nodes visited in preparation (`candidateVisits`, `paintVisits`), Yoga solves and geometry reads, viewport child refreshes and overlap tests, members painted and their cells, cells and hit-grid cells cleared and written, and rows compared or diffed by the encoder. `workFrameId` names the counted frame. Cancelled, skipped, and failed frames do not change it. The counts are deterministic, so tests can assert them exactly, but their values change between versions as the renderer does less work.
 
 ## Combined renderer statistics
 

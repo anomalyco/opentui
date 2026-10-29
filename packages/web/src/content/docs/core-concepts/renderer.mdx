@@ -66,6 +66,18 @@ Custom `stdout` uses Session-owned ordered output and defaults to `remote: true`
 Set `forwardEnvKeys` only for values that the remote terminal should inherit. Read [Terminal capabilities](/docs/reference/terminal-capabilities) and [Environment variables](/docs/reference/env-vars) for forwarding rules.
 Read [How Core uses native](/docs/native/core#complete-output-and-release-resources) for Session output ownership and completion.
 
+## Synchronized output
+
+OpenTUI wraps each frame in synchronized output (`CSI ? 2026 h` … `CSI ? 2026 l`), so the terminal shows the frame whole. `synchronizedOutput` controls this:
+
+| Value      | Behavior                                                                                                                                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `"auto"`   | Default. Wraps every frame, except in a remote session (`remote`, or SSH or mosh detected) whose app runs inside tmux, screen or Zellij on its own host, or whose terminal answered the startup queries without reporting mode 2026. |
+| `"always"` | Wraps every frame.                                                                                                                                                                                                                   |
+| `"never"`  | Never wraps a frame.                                                                                                                                                                                                                 |
+
+tmux answers the mode query from its own state, not the client terminal's, and it redraws every line an update touched when the update ends. When the multiplexer sits between the app and a slow link, those redraws cost bytes on every frame, so `"auto"` leaves the wrapper out, and the multiplexer may then show partial frames. Set `"always"` to keep it. OpenTUI detects that multiplexer from `TMUX`, `STY` or `ZELLIJ` in the app's own process environment, and only when it renders to `process.stdout`. A multiplexer on the client's side of the link, a custom `stdout`, and the `environment` option never count. Frames sent before the terminal's replies arrive keep the wrapper.
+
 ## Choose a render schedule
 
 The initial control state is demand-driven. Tree mutations call `requestRender()` and schedule a one-shot frame.
@@ -95,16 +107,6 @@ A registered `Timeline` owns its live request when the timeline engine is attach
 `suspend()` releases active terminal input modes and stops rendering. `resume()` restores the control state that existed before suspension.
 
 Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedulerState()` reports running, rendering, and scheduled-work state for diagnostics.
-
-### Cooperative frames
-
-Set `nativeSceneWorkBudget` to a positive unsigned 32-bit integer to let a frame yield to the event loop during preparation. The budget counts preparation visits, view-preparation entries, and feedback records between yields. Without this option, preparation does not yield.
-
-If a change made while the frame waits at a yield affects layout, preparation restarts once. The rest of that frame runs without yields.
-
-The budget does not limit elapsed time or cells. Yoga, sibling sorting, publication of the prepared tree, painting, and output encoding still run synchronously. Painting runs in one native call and never yields, so no event-loop work can change the scene while native code paints. The scheduler also cannot interrupt an application callback.
-
-A resize can change the renderer size while a frame waits at a yield. Core then cancels that frame attempt and starts a new one at the new size. The new attempt keeps all accepted changes and the side effects of callbacks that already ran. Cancellation does not roll anything back. Output that the Session already queued keeps its order and its completion tracking.
 
 Use the renderer-owned [animation APIs](/docs/application-apis/animation#animation-callbacks) rather than process-global animation callbacks when you host multiple sessions.
 

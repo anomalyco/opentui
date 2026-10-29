@@ -72,6 +72,10 @@ uint32_t otYogaConfigCreate(YGConfigRef* out) noexcept {
   return checked([&] { *out = YGConfigNew(); });
 }
 
+void otYogaConfigSetRoundsPositionsFromAbsoluteEdges(YGConfigRef config, uint32_t enabled) noexcept {
+  facebook::yoga::resolveRef(config)->setRoundsPositionsFromAbsoluteEdges(enabled != 0);
+}
+
 int otYogaFormatLog(uint8_t* out, uint32_t capacity, const char* format, va_list args) noexcept {
   try {
     return std::vsnprintf(reinterpret_cast<char*>(out), capacity, format, args);

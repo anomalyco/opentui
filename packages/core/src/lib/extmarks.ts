@@ -104,7 +104,7 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
       if (hasSelection) {
@@ -133,7 +133,7 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
       if (hasSelection) {
@@ -170,9 +170,9 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       this.originalMoveUpVisual()
-      const newOffset = this.editorView.getVisualCursor().offset
+      const newOffset = this.editBuffer.getCursorPosition().offset
 
       const virtualExtmark = this.findVirtualExtmarkContaining(newOffset)
       if (virtualExtmark) {
@@ -200,9 +200,9 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       this.originalMoveDownVisual()
-      const newOffset = this.editorView.getVisualCursor().offset
+      const newOffset = this.editBuffer.getCursorPosition().offset
 
       const virtualExtmark = this.findVirtualExtmarkContaining(newOffset)
       if (virtualExtmark) {
@@ -225,7 +225,7 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
       if (hasSelection) {
@@ -262,7 +262,7 @@ export class ExtmarksController {
           return
         }
 
-        const currentOffset = this.editorView.getVisualCursor().offset
+        const currentOffset = this.editBuffer.getCursorPosition().offset
         const hadSelection = this.editorView.hasSelection()
 
         if (currentOffset === 0 || hadSelection) {
@@ -278,23 +278,22 @@ export class ExtmarksController {
           const startCursor = this.offsetToPosition(virtualExtmark.start)
           const endCursor = this.offsetToPosition(virtualExtmark.end)
           const deleteOffset = virtualExtmark.start
-          const deleteLength = virtualExtmark.end - virtualExtmark.start
 
-          this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+          const change = this.measureChange(() =>
+            this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col),
+          )
           this.saveSnapshot()
           this.deleteExtmarkById(virtualExtmark.id)
-          this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
+          this.shiftExtmarks(deleteOffset, change)
 
           return
         }
 
-        this.originalDeleteCharBackward()
+        // The deletion starts at the cursor stop before, which a grapheme it joins can move the cursor past.
+        const deleteOffset = this.editBuffer._getPrevCharBoundary().offset
+        const change = this.measureChange(() => this.originalDeleteCharBackward())
         this.saveSnapshot()
-        const deleteOffset = this.editBuffer.getCursorPosition().offset
-        const deleteLength = currentOffset - deleteOffset
-        if (deleteLength > 0) {
-          this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
-        }
+        this.shiftExtmarks(deleteOffset, change)
       })
 
     this.editBuffer.deleteChar = (): void =>
@@ -304,7 +303,7 @@ export class ExtmarksController {
           return
         }
 
-        const currentOffset = this.editorView.getVisualCursor().offset
+        const currentOffset = this.editBuffer.getCursorPosition().offset
         const hadSelection = this.editorView.hasSelection()
 
         if (hadSelection) {
@@ -320,25 +319,20 @@ export class ExtmarksController {
           const startCursor = this.offsetToPosition(virtualExtmark.start)
           const endCursor = this.offsetToPosition(virtualExtmark.end)
           const deleteOffset = virtualExtmark.start
-          const deleteLength = virtualExtmark.end - virtualExtmark.start
 
-          this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+          const change = this.measureChange(() =>
+            this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col),
+          )
           this.saveSnapshot()
           this.deleteExtmarkById(virtualExtmark.id)
-          this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
+          this.shiftExtmarks(deleteOffset, change)
 
           return
         }
 
-        const deleteEndOffset = this.getNextCursorOffset(currentOffset)
-        const deleteLength = deleteEndOffset - currentOffset
-
-        this.originalDeleteChar()
+        const change = this.measureChange(() => this.originalDeleteChar())
         this.saveSnapshot()
-
-        if (deleteLength > 0) {
-          this.adjustExtmarksAfterDeletion(currentOffset, deleteLength)
-        }
+        this.shiftExtmarks(currentOffset, change)
       })
 
     this.editBuffer.deleteRange = (startLine: number, startCol: number, endLine: number, endCol: number): void =>
@@ -348,13 +342,10 @@ export class ExtmarksController {
           return
         }
 
-        const startOffset = this.positionToOffset(startLine, startCol)
-        const endOffset = this.positionToOffset(endLine, endCol)
-        const length = endOffset - startOffset
-
-        this.originalDeleteRange(startLine, startCol, endLine, endCol)
+        const startOffset = Math.min(this.positionToOffset(startLine, startCol), this.positionToOffset(endLine, endCol))
+        const change = this.measureChange(() => this.originalDeleteRange(startLine, startCol, endLine, endCol))
         this.saveSnapshot()
-        this.adjustExtmarksAfterDeletion(startOffset, length)
+        this.shiftExtmarks(startOffset, change)
       })
 
     this.editBuffer.deleteLine = (): void =>
@@ -386,13 +377,10 @@ export class ExtmarksController {
           return
         }
 
-        const currentOffset = this.editorView.getVisualCursor().offset
-        this.originalInsertText(text)
+        const currentOffset = this.editBuffer.getCursorPosition().offset
+        const change = this.measureChange(() => this.originalInsertText(text))
         this.saveSnapshot()
-        const insertLength = this.editBuffer.getCursorPosition().offset - currentOffset
-        if (insertLength > 0) {
-          this.adjustExtmarksAfterInsertion(currentOffset, insertLength)
-        }
+        this.shiftExtmarks(currentOffset, change)
       })
 
     this.editBuffer.insertChar = (char: string): void =>
@@ -402,13 +390,10 @@ export class ExtmarksController {
           return
         }
 
-        const currentOffset = this.editorView.getVisualCursor().offset
-        this.originalInsertChar(char)
+        const currentOffset = this.editBuffer.getCursorPosition().offset
+        const change = this.measureChange(() => this.originalInsertChar(char))
         this.saveSnapshot()
-        const insertLength = this.editBuffer.getCursorPosition().offset - currentOffset
-        if (insertLength > 0) {
-          this.adjustExtmarksAfterInsertion(currentOffset, insertLength)
-        }
+        this.shiftExtmarks(currentOffset, change)
       })
 
     this.editBuffer.setText = (text: string): void => {
@@ -455,7 +440,7 @@ export class ExtmarksController {
           return
         }
 
-        const currentOffset = this.editorView.getVisualCursor().offset
+        const currentOffset = this.editBuffer.getCursorPosition().offset
         this.originalNewLine()
         this.saveSnapshot()
         this.adjustExtmarksAfterInsertion(currentOffset, 1)
@@ -468,18 +453,18 @@ export class ExtmarksController {
         if (this.destroyed) return this.originalEditorViewReplaceSelectedText(text)
         const selection = this.editorView.getSelection()
         const deleteOffset = selection ? Math.min(selection.start, selection.end) : 0
-        const deleteLength = selection ? Math.abs(selection.end - selection.start) : 0
         const cursorOffset = this.editBuffer.getCursorPosition().offset
-        const result = this.originalEditorViewReplaceSelectedText(text)
+        let result!: ReturnType<typeof this.originalEditorViewReplaceSelectedText>
+        const change = this.measureChange(() => (result = this.originalEditorViewReplaceSelectedText(text)))
         const insertOffset = result.deleted ? deleteOffset : cursorOffset
+        const insertLength = result.inserted ? this.editBuffer.getCursorPosition().offset - insertOffset : 0
         if (result.deleted) {
           this.saveSnapshot()
-          if (deleteLength > 0) this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength, false)
+          this.shiftExtmarks(deleteOffset, change - insertLength, false)
         }
         if (result.inserted) this.saveSnapshot()
-        const insertLength = this.editBuffer.getCursorPosition().offset - insertOffset
-        if (insertLength > 0) this.adjustExtmarksAfterInsertion(insertOffset, insertLength, false)
-        if (deleteLength > 0 || insertLength > 0) this.updateHighlights()
+        this.shiftExtmarks(insertOffset, insertLength, false)
+        if (change !== 0 || insertLength !== 0) this.updateHighlights()
         return result
       })
 
@@ -498,14 +483,9 @@ export class ExtmarksController {
         }
 
         const deleteOffset = Math.min(selection.start, selection.end)
-        const deleteLength = Math.abs(selection.end - selection.start)
-
-        this.originalEditorViewDeleteSelectedText()
+        const change = this.measureChange(() => this.originalEditorViewDeleteSelectedText())
         this.saveSnapshot()
-
-        if (deleteLength > 0) {
-          this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
-        }
+        this.shiftExtmarks(deleteOffset, change)
       })
   }
 
@@ -586,11 +566,16 @@ export class ExtmarksController {
     return this.editBuffer.positionToOffset(row, col)
   }
 
-  private getNextCursorOffset(currentOffset: number): number {
-    this.originalMoveCursorRight()
-    const nextOffset = this.editorView.getVisualCursor().offset
-    this.originalSetCursorByOffset(currentOffset)
-    return nextOffset
+  /** Cells an edit adds to the document, negative when it removes them. A grapheme rejoined across the edit changes widths, so measure the end. */
+  private measureChange(edit: () => void): number {
+    const before = this.editBuffer._getEOF().offset
+    edit()
+    return this.editBuffer._getEOF().offset - before
+  }
+
+  private shiftExtmarks(offset: number, change: number, updateHighlights = true): void {
+    if (change > 0) this.adjustExtmarksAfterInsertion(offset, change, updateHighlights)
+    else if (change < 0) this.adjustExtmarksAfterDeletion(offset, -change, updateHighlights)
   }
 
   private updateHighlights(): void {

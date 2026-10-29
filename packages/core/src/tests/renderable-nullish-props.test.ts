@@ -16,10 +16,6 @@ const excludedClasses: Record<string, string> = {
 
 // Key: `prop` for every class, or `Class.prop`. None of these accepted a nullish write on `main` either, unless noted.
 const excludedProps: Record<string, string> = {
-  renderSelf: "paint hook method, not a prop",
-  onResize: "layout hook method, not a prop",
-  onLayoutResize: "layout hook method, not a prop",
-  onUpdate: "lifecycle method: a nullish write restores the base no-op, not a subclass override",
   keyBindings: "list without a default",
   traits: "editor traits without a default",
   cursorStyle: "style object without a default",
@@ -32,6 +28,7 @@ const excludedProps: Record<string, string> = {
   "SelectRenderable.font": "font lookup without a default",
   "SliderRenderable.orientation": "required option (setter new on this branch)",
   "ArrowRenderable.direction": "required option without a default; main stored it raw, this branch rejects it",
+  "ScrollBoxRenderable.overflow": "always hidden: the box clips like its viewport",
   "TimeToFirstDrawRenderable.fg": "frame fails at paint (file has no owner unit)",
   "TimeToFirstDrawRenderable.color": "frame fails at paint (file has no owner unit)",
   "EmbeddedTerminalRenderable.focusable": "accepted, but the constructor sets focus, not the class default (U24)",

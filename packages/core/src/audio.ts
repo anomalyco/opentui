@@ -1183,12 +1183,7 @@ export class AudioStream<M = AudioStreamMetadata> extends EventEmitter<AudioStre
     }
     if (this.lifecycleController.signal.aborted) return false
     const status = this.lib.audioEndStream(this.engine, this.nativeStreamId!)
-    if (status !== 0) {
-      const nativeError = this.snapshotError(this.readNativeStats())
-      if (nativeError?.context.action === "decoder") throw nativeError
-      const context: AudioStreamErrorContext = { action: "end", status }
-      throw new AudioStreamError(`Audio stream end failed: ${status}`, context)
-    }
+    if (status !== 0) throw this.nativeCallError("end", status)
     if (!(await decoderReady) || this.lifecycleController.signal.aborted) return false
     if (!(await this.awaitEnded(attempt))) return false
     await this.stopSource(attempt)
@@ -1325,10 +1320,7 @@ export class AudioStream<M = AudioStreamMetadata> extends EventEmitter<AudioStre
         const context: AudioStreamErrorContext = { action: "write" }
         throw new AudioStreamError("Audio stream write failed", context, cause)
       }
-      if (accepted < 0) {
-        const context: AudioStreamErrorContext = { action: "write", status: accepted }
-        throw new AudioStreamError(`Audio stream write failed: ${accepted}`, context)
-      }
+      if (accepted < 0) throw this.nativeCallError("write", accepted)
       offset += accepted
       if (accepted === 0 || ++attempt.writeBatches >= 32) {
         // Yield across chunk boundaries as well as on backpressure so fast sources remain cancellable.
@@ -1337,6 +1329,13 @@ export class AudioStream<M = AudioStreamMetadata> extends EventEmitter<AudioStre
         await waitForDelay(accepted === 0 ? STREAM_POLL_INTERVAL_MS : 0, attempt.controller.signal)
       }
     }
+  }
+
+  // Native writes and ends reject once the decoder fails, so the decoder failure is the cause to report.
+  private nativeCallError(action: "write" | "end", status: number): AudioStreamError {
+    const nativeError = this.snapshotError(this.readNativeStats())
+    if (nativeError?.context.action === "decoder") return nativeError
+    return new AudioStreamError(`Audio stream ${action} failed: ${status}`, { action, status })
   }
 
   private resolveConnection(

@@ -8,6 +8,11 @@ const text_buffer_view = @import("../text-buffer-view.zig");
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
 const OptimizedBuffer = @import("../buffer.zig").OptimizedBuffer;
+const EncodedUnicode = @import("../encoded-unicode.zig").EncodedUnicode;
+const expectGraphemeBoundaries = @import("text-buffer-view_test.zig").expectGraphemeBoundaries;
+const TestRenderer = @import("test-renderer.zig").TestRenderer;
+const ansi = @import("../ansi.zig");
+const ghostty_vt = @import("../ghostty-vt.zig");
 const Value = std.json.Value;
 const gpa = std.testing.allocator;
 
@@ -54,6 +59,7 @@ const Run = struct {
         const tb = try TextBuffer.initWithOptions(gpa, &self.pools.graphemes, &self.pools.links, self.method, .{ .control_display = control });
         tb.setTabWidth(@intCast(self.int("tab", 4)));
         for (parts) |part| try tb.append(part);
+        try expectGraphemeBoundaries(tb);
         return tb;
     }
 
@@ -219,6 +225,7 @@ fn runRow(run: Run) !void {
         eb = e;
         e.getTextBuffer().setTabWidth(@intCast(run.int("tab", 4)));
         for (ops.array.items) |op| try applyOp(e, op.array.items);
+        try expectGraphemeBoundaries(e.getTextBuffer());
         break :blk e.getTextBuffer();
     } else try run.load(parts.items);
     defer if (eb == null) tb.deinit();
@@ -236,6 +243,7 @@ fn runRow(run: Run) !void {
         try run.check("line_widths", ok);
     }
     if (run.get("max")) |m| try run.check("max", tb.lineWidthColsMax() == m.integer);
+    try run.check("widest", try widestHolds(tb));
     if (run.get("result")) |r| try run.check("result", std.mem.eql(u8, text, r.string));
     const joined = try std.mem.concat(run.arena, u8, parts.items);
     try layoutChecks(run, tb, if (eb != null) text else joined, eb != null or parts.items.len > 1);
@@ -256,6 +264,65 @@ fn runRow(run: Run) !void {
         v.setViewport(.{ .x = @intCast(case.array.items[0].integer), .y = 0, .width = run.int("cols", 80), .height = 1 });
         try run.check("draw_at", std.mem.eql(u8, try drawRows(run, v, run.int("cols", 80), 1), try joinRows(run.arena, case.array.items[1..])));
     };
+    if (row.get("draw_text") != null) {
+        const v = try run.view(tb, null);
+        defer v.deinit();
+        const encoded = try EncodedUnicode.init(gpa, &run.pools.graphemes, text, run.method);
+        defer encoded.deinit(gpa, &run.pools.graphemes);
+        // At cols too, so a glyph that does not fit at the right edge is left out by every drawer.
+        for ([_]u32{ 80, run.int("cols", 80) }) |width| {
+            const screen = try OptimizedBuffer.init(gpa, width, 1, .{ .pool = &run.pools.graphemes, .link_pool = &run.pools.links, .width_method = run.method });
+            defer screen.deinit();
+            // The rows keep their trailing blanks, so a glyph drawn in other columns shows.
+            var rows: [3][]const u8 = undefined;
+            for (&rows, 0..) |*drawn, i| {
+                screen.clear(.{ 0, 0, 0, 1 }, 32);
+                if (i == 0) screen.drawTextBuffer(v, 0, 0) else if (i == 1) try screen.drawText(text, 0, 0, .{ 1, 1, 1, 1 }, null, 0) else {
+                    // An encodeUnicode caller puts each glyph after the one before; one that does not fit is not drawn.
+                    var x: u32 = 0;
+                    for (encoded.chars) |char| {
+                        if (x + char.width <= width) screen.drawChar(char.char, x, 0, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 1 }, 0);
+                        x += char.width;
+                    }
+                }
+                const raw = try run.arena.alloc(u8, screen.getRealCharSize());
+                drawn.* = raw[0..try screen.writeResolvedChars(raw, false)];
+            }
+            try run.check("draw_text", std.mem.eql(u8, rows[0], rows[1]));
+            try run.check("encode", std.mem.eql(u8, rows[0], rows[2]));
+        }
+    }
+    if (row.get("overdraw") != null) {
+        const v = try run.view(tb, null);
+        defer v.deinit();
+        const encoded = try EncodedUnicode.init(gpa, &run.pools.graphemes, text, run.method);
+        defer encoded.deinit(gpa, &run.pools.graphemes);
+        const screen = try OptimizedBuffer.init(gpa, 80, 1, .{ .pool = &run.pools.graphemes, .link_pool = &run.pools.links, .width_method = run.method });
+        defer screen.deinit();
+        var same = true;
+        // A mark (X or the two-cell 中) clears each glyph it covers: the row equals the other glyphs, then the mark.
+        for (0..utf8.calculateTextWidth(text, 4, .hidden, false, run.method)) |x| for ([_]struct { []const u8, u32 }{ .{ "X", 1 }, .{ "\u{4e2d}", 2 } }) |mark| {
+            var rows: [2][]const u8 = undefined;
+            for (&rows, 0..) |*drawn, i| {
+                screen.clear(.{ 0, 0, 0, 1 }, 32);
+                if (i == 0) screen.drawTextBuffer(v, 0, 0) else {
+                    var glyph_x: u32 = 0;
+                    for (encoded.chars) |char| {
+                        if (glyph_x + char.width <= x or glyph_x >= x + mark[1]) screen.drawChar(char.char, glyph_x, 0, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 1 }, 0);
+                        glyph_x += char.width;
+                    }
+                }
+                try screen.drawText(mark[0], @intCast(x), 0, .{ 1, 1, 1, 1 }, null, 0);
+                const raw = try run.arena.alloc(u8, screen.getRealCharSize());
+                drawn.* = raw[0..try screen.writeResolvedChars(raw, false)];
+            }
+            same = same and std.mem.eql(u8, rows[0], rows[1]);
+        };
+        try run.check("overdraw", same);
+        if (run.method == .wcwidth or run.method == .unicode) for ([_]bool{ false, true }) |explicit| {
+            try run.check("terminal", try terminalShowsFrames(run, text, explicit));
+        };
+    }
     if (run.get("select")) |cases| for (cases.array.items) |case| {
         const v = try run.view(tb, null);
         defer v.deinit();
@@ -288,6 +355,39 @@ fn runRow(run: Run) !void {
     if (row.get("split") != null) try splitChecks(run, joined);
 }
 
+/// For each cell x of the text, renders a forced frame of the text, then diff frames with X over x, in other
+/// colors, and empty. libghostty-vt reads the output (mode 2027 off for wcwidth, on for unicode) and must show
+/// each frame as drawn.
+fn terminalShowsFrames(run: Run, text: []const u8, explicit_cursor_positioning: bool) !bool {
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    var test_renderer = try TestRenderer.create(gpa, 80, 1, &run.pools.graphemes, &run.pools.links);
+    defer test_renderer.deinit();
+    const cli = test_renderer.renderer;
+    cli.terminal.caps.unicode = run.method;
+    cli.terminal.caps.explicit_cursor_positioning = explicit_cursor_positioning;
+    cli.syncWidthMethod();
+    var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, gpa, .{ .cols = 80, .rows = 1 });
+    defer terminal.deinit(gpa);
+    var stream = terminal.vtStream();
+    defer stream.deinit();
+    stream.nextSlice(if (run.method == .wcwidth) "\x1b[?2027l" else "\x1b[?2027h");
+    var shown = true;
+    for (0..utf8.calculateTextWidth(text, 4, .hidden, false, run.method)) |x| for (0..4) |frame| {
+        const next = cli.getNextBuffer();
+        if (frame < 3) try next.drawText(text, 0, 0, if (frame == 2) black else white, if (frame == 2) white else black, 0);
+        if (frame == 1) try next.drawText("X", @intCast(x), 0, white, black, 0);
+        const written = test_renderer.memory.bytes.items.len;
+        _ = test_renderer.render(frame == 0);
+        stream.nextSlice(test_renderer.memory.bytes.items[written..]);
+        const screen = try terminal.plainString(run.arena);
+        const raw = try run.arena.alloc(u8, cli.currentRenderBuffer.getRealCharSize());
+        const drawn = raw[0..try cli.currentRenderBuffer.writeResolvedChars(raw, false)];
+        shown = shown and std.mem.eql(u8, std.mem.trimEnd(u8, screen, " "), std.mem.trimEnd(u8, drawn, " "));
+    };
+    return shown;
+}
+
 fn applyOp(e: *EditBuffer, op: []const Value) !void {
     const name = op[0].string;
     if (std.mem.eql(u8, name, "repeat")) {
@@ -306,12 +406,24 @@ fn applyOp(e: *EditBuffer, op: []const Value) !void {
     } else return error.UnknownOp;
 }
 
+/// The widest-line metric equals the widest line, unwrapped measure included, however the chunks fall.
+fn widestHolds(tb: *TextBuffer) !bool {
+    var widest: u32 = 0;
+    for (0..tb.lineCount()) |row| widest = @max(widest, tb.lineWidthAt(@intCast(row)));
+    const v = try TextBufferView.init(gpa, tb);
+    defer v.deinit();
+    v.setWrapMode(.none);
+    const measured = try v.measureForDimensions(80, 1 << 20);
+    return tb.lineWidthColsMax() == widest and measured.width_cols_max == widest and measured.line_count == tb.lineCount();
+}
+
 /// Every split of the text into 2 or 3 chunks at code-point boundaries lays out like one chunk.
 fn splitChecks(run: Run, text: []const u8) !void {
     var cuts: std.ArrayList(usize) = .empty;
     var pos: usize = 0;
     while (pos < text.len) : (pos += utf8.decodeUtf8Unchecked(text, pos).len) if (pos > 0) try cuts.append(run.arena, pos);
     var same = true;
+    var widest = true;
     for (cuts.items) |a| for (cuts.items) |b| {
         if (b < a) continue;
         const parts: []const []const u8 = if (a == b) &.{ text[0..a], text[a..] } else &.{ text[0..a], text[a..b], text[b..] };
@@ -325,8 +437,10 @@ fn splitChecks(run: Run, text: []const u8) !void {
         const f = try run.view(fresh, cols);
         defer f.deinit();
         same = same and std.mem.eql(u8, try layoutKey(run.arena, v, tb), try layoutKey(run.arena, f, fresh));
+        widest = widest and try widestHolds(tb);
     };
     try run.check("split", same);
+    try run.check("widest", widest);
 }
 
 /// Rows use only known keys, exactly one input, and known width methods; `bug` entries name a check that can be reversed.
@@ -339,7 +453,7 @@ fn validate(row: std.json.ObjectMap, keys: []const Value) !void {
     for (bugs(row)) |entry| {
         const fields = entry.array.items;
         if (fields.len < 2 or fields.len > 3) return error.BugEntry;
-        for ([_][]const u8{ "retain", "chunk_widths", "fit", "measure", "resize" }) |never| if (std.mem.eql(u8, fields[0].string, never)) return error.BugEntry;
+        for ([_][]const u8{ "retain", "chunk_widths", "fit", "measure", "resize", "widest" }) |never| if (std.mem.eql(u8, fields[0].string, never)) return error.BugEntry;
         if (fields.len == 3) try names.appendSlice(gpa, fields[2].array.items);
     }
     for (names.items) |name| _ = std.meta.stringToEnum(utf8.WidthMethod, name.string) orelse return error.UnknownMethod;
@@ -375,8 +489,8 @@ test "text corpus: every row gives its expected result in every width method" {
                 if (@as(anyerror, err) != error.CorpusMismatch) return err;
                 failed = true;
             };
-            // Every entry that names this method must have reversed a check that ran.
-            for (bugs(row.object), run.exercised) |entry, used| if (run.covers(entry) and !used) {
+            // Every entry that names this method must have reversed a check that ran; only TypeScript runs text.
+            for (bugs(row.object), run.exercised) |entry, used| if (run.covers(entry) and !used and !std.mem.eql(u8, entry.array.items[0].string, "text")) {
                 std.debug.print("{s} {s}: bug entry {s} never ran\n", .{ row.object.get("id").?.string, @tagName(method), entry.array.items[0].string });
                 failed = true;
             };

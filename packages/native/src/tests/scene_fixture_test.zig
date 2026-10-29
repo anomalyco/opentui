@@ -3,6 +3,8 @@ const context = @import("../context.zig");
 const session = @import("../session.zig");
 const scene = @import("../scene.zig");
 const renderer = @import("../renderer.zig");
+const buffer = @import("../buffer.zig");
+const gp = @import("../grapheme.zig");
 
 /// Starts a fresh draft for paint/layout assertions, cancelling any preceding capture.
 pub fn repaint(owner: *context.Context, id: context.Handle, background: @import("../buffer.zig").RGBA, use_mouse: bool, excluded_hit_num: u32) !void {
@@ -58,21 +60,30 @@ pub const Fixture = struct {
     pub fn expectSameCells(self: Fixture, actual: Fixture) !void {
         const expected = self.cli.getNextBuffer().buffer;
         const cells = actual.cli.getNextBuffer().buffer;
-        try std.testing.expectEqualSlices(u32, expected.char, cells.char);
+        try expectSameChars(self.cli.getNextBuffer(), actual.cli.getNextBuffer());
         try std.testing.expectEqualSlices([4]u16, expected.fg, cells.fg);
         try std.testing.expectEqualSlices([4]u16, expected.bg, cells.bg);
         try std.testing.expectEqualSlices(u32, expected.attributes, cells.attributes);
-        try std.testing.expectEqualSlices(u32, self.cli.nextHitGrid, actual.cli.nextHitGrid);
+        try std.testing.expectEqualSlices(scene.Hit, self.state.hits.items, actual.state.hits.items);
     }
 
-    /// Acknowledges every request unchanged until the attempt paints, and returns DONE.
-    pub fn drive(self: Fixture, previous: ?scene.FrameRequest, options: scene.FrameOptions, budget: u32) !scene.FrameRequest {
-        var request = previous;
-        for (0..1024) |_| {
-            const next = try self.owner.sceneFrameStepWorkBudgeted(self.id, request, options, budget);
-            if (next.kind == 0) return next;
-            request = next;
-        }
-        return error.TestUnexpectedResult;
+    /// The draft frame's hit token at a cell index of the screen.
+    pub fn draftHit(self: Fixture, index: usize) u32 {
+        const hits = self.state.hits.items;
+        const found = scene.topmostHit(hits, @intCast(index % self.cli.width), @intCast(index / self.cli.width)) orelse return 0;
+        return hits[found].token;
     }
 };
+
+/// Equal characters, with grapheme clusters compared by their bytes: each Session's pool
+/// numbers clusters in its own order, and a retained frame keeps old numbers alive longer.
+pub fn expectSameChars(expected: *const buffer.OptimizedBuffer, actual: *const buffer.OptimizedBuffer) !void {
+    for (expected.buffer.char, actual.buffer.char) |left, right| {
+        if (!gp.isClusterChar(left) or !gp.isClusterChar(right)) {
+            try std.testing.expectEqual(left, right);
+            continue;
+        }
+        try std.testing.expectEqual(left & ~gp.GRAPHEME_ID_MASK, right & ~gp.GRAPHEME_ID_MASK);
+        try std.testing.expectEqualStrings(try expected.pool.get(gp.graphemeIdFromChar(left)), try actual.pool.get(gp.graphemeIdFromChar(right)));
+    }
+}

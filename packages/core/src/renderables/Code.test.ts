@@ -8,6 +8,8 @@ import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import { BoxRenderable } from "./Box.js"
 import { TextAttributes, type CapturedFrame } from "../types.js"
 import { StyledText } from "../lib/styled-text.js"
+import { resolveRenderLib } from "../zig.js"
+import { MarkdownRenderable } from "./Markdown.js"
 
 let currentRenderer: TestRenderer
 let syntaxStyle: SyntaxStyle
@@ -303,6 +305,83 @@ test("CodeRenderable - coalesces streaming updates while highlighting", async ()
   mockClient.resolveHighlightOnce()
   await highlightingDone
   expect(codeRenderable.isHighlighting).toBe(false)
+})
+
+// Pins the work of streaming today; a change that removes work updates these numbers in the same commit.
+test("content work: each streamed delta sends the whole text to the highlighter and to native text", async () => {
+  const symbols = (resolveRenderLib() as unknown as { opentui: { symbols: Record<string, (...args: any[]) => any> } })
+    .opentui.symbols
+  const fence = Array.from({ length: 6 }, (_, i) => `  const value${i} = compute(input.items[${i}])`)
+  const doc = ["The renderer replaces the whole buffer.", "", "## Findings", "", "- first", "- second", ""]
+    .concat("```typescript", fence, "```", "", "Send deltas instead of snapshots.", "")
+    .join("\n")
+  const rows = {
+    code: (options: any) =>
+      new CodeRenderable(currentRenderer, { ...options, filetype: "markdown", drawUnstyledText: false }),
+    markdown: (options: any) => new MarkdownRenderable(currentRenderer, { ...options, internalBlockMode: "top-level" }),
+  }
+  // Calls and bytes by mode and by every native symbol that takes bytes. Text arrives as Uint8Array (handles and
+  // chunk records are wider arrays); the output read fills a Uint8Array, so it is left out. Native objects created
+  // count as calls with no bytes.
+  const work: Record<string, number[]> = {}
+  let mode = ""
+  const count = (name: string, bytes: number) => {
+    if (!mode) return
+    const entry = (work[`${mode} ${name}`] ??= [0, 0])
+    entry[0]++
+    entry[1] += bytes
+  }
+  const originals = { ...symbols }
+  for (const [name, original] of Object.entries(originals)) {
+    if (typeof original !== "function" || name === "ot_session_read_output") continue
+    symbols[name] = (...args) => {
+      if (name.endsWith("_create")) count(name, 0)
+      for (const arg of args) if (arg instanceof Uint8Array) count(name, arg.length)
+      return original(...args)
+    }
+  }
+  try {
+    for (const [name, create] of Object.entries(rows)) {
+      const mockClient = new MockTreeSitterClient()
+      mockClient.setMockResult({ highlights: [[0, 1, "keyword"]] })
+      const target = create({ content: "", syntaxStyle, streaming: true, treeSitterClient: mockClient, width: "100%" })
+      currentRenderer.root.add(target)
+      await renderOnce()
+      mode = name
+      // The document is ASCII, so highlighter units are bytes. A new highlighter request must be counted here too.
+      const highlightOnce = mockClient.highlightOnce.bind(mockClient)
+      mockClient.highlightOnce = (content, filetype) => (
+        count("highlightOnce", content.length), highlightOnce(content, filetype)
+      )
+      for (let end = 32; end < doc.length + 32; end += 32) {
+        target.content = doc.slice(0, end)
+        await renderOnce()
+        // Finish each highlight before the next delta, so the counts do not depend on timing.
+        for (let pass = 0; pass < 8 && mockClient.isHighlighting(); pass++) {
+          mockClient.resolveAllHighlightOnce()
+          await new Promise<void>((resolve) => setImmediate(resolve))
+          await renderOnce()
+        }
+        expect(mockClient.isHighlighting()).toBe(false)
+      }
+      mode = ""
+      target.destroyRecursively()
+    }
+  } finally {
+    Object.assign(symbols, originals)
+  }
+  // 12 deltas of 32 bytes: Code sends the 371-byte document 6.7 times over; Markdown resends its open block.
+  expect(doc.length).toBe(371)
+  expect(work).toEqual({
+    "code highlightOnce": [12, 2483],
+    "code ot_text_buffer_set_styled_text": [12, 2483],
+    "markdown highlightOnce": [16, 1362],
+    "markdown ot_text_buffer_set_styled_text": [28, 1566],
+    "markdown ot_scene_set_styled_text": [2, 4],
+    "markdown ot_text_buffer_set_text": [1, 10],
+    "markdown ot_text_buffer_create": [6, 0],
+    "markdown ot_text_buffer_view_create": [6, 0],
+  })
 })
 
 test("CodeRenderable - removing filetype shows the latest unstyled streaming content", async () => {
@@ -1608,19 +1687,12 @@ test("CodeRenderable - onHighlight callback can add custom highlights", async ()
 
   expect(codeRenderable.plainText).toBe("const message = 'hello';")
 
-  // Verify both the original keyword highlight and the custom highlight are applied
+  // Both the original keyword highlight and the custom highlight are styled ranges that draw their colors.
   const lineHighlights = codeRenderable.getLineHighlights(0)
-  expect(lineHighlights.length).toBeGreaterThanOrEqual(2)
-
-  // Check keyword highlight exists with the correct styleId
-  const keywordStyleId = syntaxStyle.getStyleId("keyword")
-  const keywordHighlight = lineHighlights.find((h) => h.styleId === keywordStyleId)
-  expect(keywordHighlight).toBeDefined()
-
-  // Check custom highlight exists with the correct styleId
-  const customStyleId = syntaxStyle.getStyleId("custom.highlight")
-  const customHighlight = lineHighlights.find((h) => h.styleId === customStyleId)
-  expect(customHighlight).toBeDefined()
+  expect(lineHighlights.find((h) => h.start === 0 && h.end === 5)?.styleId).toBeGreaterThan(0)
+  expect(lineHighlights.find((h) => h.start === 6 && h.end === 13)?.styleId).toBeGreaterThan(0)
+  expect(findSpanContaining(captureSpans(), "const")?.fg?.toInts()).toEqual(RGBA.fromValues(0, 0, 1, 1).toInts())
+  expect(findSpanContaining(captureSpans(), "message")?.fg?.toInts()).toEqual(RGBA.fromValues(1, 0, 0, 1).toInts())
 })
 
 test("CodeRenderable - onHighlight callback returning undefined uses original highlights", async () => {
@@ -1751,13 +1823,10 @@ test("CodeRenderable - onHighlight callback supports async functions", async () 
   expect(asyncCallbackCompleted).toBe(true)
   expect(codeRenderable.plainText).toBe("const message = 'hello';")
 
-  // Verify the async highlight was applied
+  // The async highlight is a styled range that draws its color.
   const lineHighlights = codeRenderable.getLineHighlights(0)
-  expect(lineHighlights.length).toBeGreaterThanOrEqual(2)
-
-  const asyncStyleId = syntaxStyle.getStyleId("async.highlight")
-  const asyncHighlight = lineHighlights.find((h) => h.styleId === asyncStyleId && h.start === 6 && h.end === 13)
-  expect(asyncHighlight).toBeDefined()
+  expect(lineHighlights.find((h) => h.start === 6 && h.end === 13)?.styleId).toBeGreaterThan(0)
+  expect(findSpanContaining(captureSpans(), "message")?.fg?.toInts()).toEqual(RGBA.fromValues(0, 1, 0, 1).toInts())
 })
 
 test("CodeRenderable - streaming mode caches highlights between updates", async () => {

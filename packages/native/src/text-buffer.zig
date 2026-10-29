@@ -11,6 +11,7 @@ const ansi = @import("ansi.zig");
 const link = @import("link.zig");
 
 const utf8 = @import("utf8.zig");
+const text_work = @import("text-work.zig");
 
 const logger = @import("logger.zig");
 
@@ -33,10 +34,17 @@ pub const SyntaxStyle = ss.SyntaxStyle;
 
 pub const TextBuffer = UnifiedTextBuffer;
 
-/// Consecutive nonempty ranges of the copied text, with caller-prepared style IDs.
+pub const StyleDefinition = ss.StyleDefinition;
+pub const no_style: StyleDefinition = .{ .fg = null, .bg = null, .attributes = 0 };
+/// Style ids with this bit index the buffer's run styles; the rest are SyntaxStyle ids.
+pub const run_style_flag = ss.id_limit;
+/// Run styles by value; a ref is `run_style_flag | (index + 1)`.
+pub const RunStyles = std.AutoArrayHashMapUnmanaged(StyleDefinition, void);
+
+/// Consecutive nonempty ranges of the copied text, with their style values.
 pub const OwnedStyledChunk = struct {
     byte_count: u32,
-    style_id: u32,
+    style: StyleDefinition = no_style,
 };
 
 // A static empty document, so releasing a rope never allocates. Every buffer shares
@@ -60,7 +68,7 @@ pub const UnifiedTextBuffer = struct {
     logger: *const logger.Logger,
 
     _rope: UnifiedRope,
-    syntax_style: ?*const SyntaxStyle,
+    style_binding: ss.Borrower,
 
     pool: *gp.GraphemePool,
     link_pool: *link.LinkPool,
@@ -83,6 +91,10 @@ pub const UnifiedTextBuffer = struct {
     line_highlights: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Highlight)),
     line_spans: std.ArrayListUnmanaged(std.ArrayListUnmanaged(StyleSpan)),
     internal_highlight_count: usize,
+    /// Styles of styled text, replaced with it; the attached SyntaxStyle is never written.
+    run_styles: RunStyles,
+    /// clear() released the run styles' link refs while their highlights stay.
+    run_links_retired: bool,
     highlight_batch_depth: u32,
     dirty_span_lines: std.AutoHashMap(usize, void),
 
@@ -155,7 +167,7 @@ pub const UnifiedTextBuffer = struct {
 
     /// Accessor: get line width at a given row.
     pub fn lineWidthAt(self: *const Self, row: u32) u32 {
-        return iter_mod.lineWidthAt(@constCast(&self._rope), row);
+        return iter_mod.lineWidthAt(&self._rope, row);
     }
 
     /// Accessor: get maximum line width across all lines.
@@ -164,11 +176,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn getGraphemeWidthAt(self: *const Self, row: u32, col: u32) u32 {
-        return iter_mod.getGraphemeWidthAt(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
+        return iter_mod.getGraphemeWidthAt(&self._rope, &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
     }
 
     pub fn getPrevGraphemeWidth(self: *const Self, row: u32, col: u32) u32 {
-        return iter_mod.getPrevGraphemeWidth(@constCast(&self._rope), &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
+        return iter_mod.getPrevGraphemeWidth(&self._rope, &self.mem_registry, row, col, self.tab_width, self.control_display, self.width_method);
     }
 
     pub fn textEndOffset(self: *const Self) u32 {
@@ -176,7 +188,7 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn graphemeBoundsAtOffset(self: *const Self, offset: u32) ?struct { start: u32, end: u32 } {
-        const rope_ptr = @constCast(&self._rope);
+        const rope_ptr = &self._rope;
         const coords = iter_mod.offsetToCoords(rope_ptr, offset) orelse return null;
         const bounds = iter_mod.getGraphemeBoundsAt(
             rope_ptr,
@@ -192,7 +204,7 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn cursorUnitBoundsAtOffset(self: *const Self, offset: u32) ?struct { start: u32, end: u32 } {
-        const rope_ptr = @constCast(&self._rope);
+        const rope_ptr = &self._rope;
         const coords = iter_mod.offsetToCoords(rope_ptr, offset) orelse return null;
         const bounds = iter_mod.getCursorUnitBoundsAt(
             rope_ptr,
@@ -296,7 +308,7 @@ pub const UnifiedTextBuffer = struct {
             .io = options.io,
             .logger = options.logger,
             ._rope = init_rope,
-            .syntax_style = null,
+            .style_binding = .{},
             .pool = pool,
             .link_pool = link_pool,
             .link_tracker = null,
@@ -309,6 +321,8 @@ pub const UnifiedTextBuffer = struct {
             .line_highlights = .empty,
             .line_spans = .empty,
             .internal_highlight_count = 0,
+            .run_styles = .empty,
+            .run_links_retired = false,
             .highlight_batch_depth = 0,
             .dirty_span_lines = dirty_span_lines,
             .tab_width = 2,
@@ -332,10 +346,7 @@ pub const UnifiedTextBuffer = struct {
     /// The caller has retired all views. Keep controls and empty registration
     /// tables; the dormant rope must not be read before reinitStorage.
     pub fn retireStorage(self: *Self) void {
-        if (self.syntax_style) |style| {
-            (@constCast(style)).offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-        }
-        self.syntax_style = null;
+        self.style_binding.bind(null);
 
         self.view_dirty_flags.clearRetainingCapacity();
         self.free_view_ids.clearRetainingCapacity();
@@ -362,6 +373,7 @@ pub const UnifiedTextBuffer = struct {
             tracker.deinit();
         }
         self.link_tracker = null;
+        self.dropRunStyles();
 
         self.layout_cache.clear();
         self.mem_registry.clear();
@@ -370,10 +382,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn reinitStorage(self: *Self, width_method: utf8.WidthMethod) TextBufferError!void {
-        std.debug.assert(self.next_view_id == 0 and self.syntax_style == null and self.link_tracker == null);
+        std.debug.assert(self.next_view_id == 0 and self.style_binding.style == null and self.link_tracker == null);
         // retireStorage left only capacity behind.
         std.debug.assert(self.mem_registry.buffers.items.len == 0 and self.view_dirty_flags.items.len == 0);
         std.debug.assert(self.line_highlights.items.len == 0 and self.line_spans.items.len == 0);
+        std.debug.assert(self.run_styles.count() == 0 and self.run_styles.capacity() == 0);
         const registry = self.mem_registry;
         const view_dirty_flags = self.view_dirty_flags;
         const free_view_ids = self.free_view_ids;
@@ -505,8 +518,6 @@ pub const UnifiedTextBuffer = struct {
                 .allocator = self.allocator,
                 .empty_leaf = &empty_document_sentinel,
                 .config = previous.config,
-                .version = previous.version,
-                .marker_cache = UnifiedRope.MarkerCache.init(self.allocator),
             };
         }
         self.markAllViewsDirty();
@@ -525,6 +536,7 @@ pub const UnifiedTextBuffer = struct {
         }
         self.line_highlights.clearRetainingCapacity();
         self.internal_highlight_count = 0;
+        self.dropRunStyles();
 
         for (self.line_spans.items) |*span_list| {
             span_list.deinit(self.global_allocator);
@@ -536,7 +548,6 @@ pub const UnifiedTextBuffer = struct {
         self.arena.* = replacement_arena;
         self._rope = replacement_rope;
         self._rope.allocator = self.allocator;
-        self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
 
         self.mem_registry.clear();
 
@@ -562,31 +573,39 @@ pub const UnifiedTextBuffer = struct {
         self.default_attributes = null;
     }
 
-    fn onSyntaxStyleDestroyed(ctx_ptr: *anyopaque) void {
-        const self = @as(*Self, @ptrCast(@alignCast(ctx_ptr)));
-        self.syntax_style = null;
-    }
-
-    pub fn setSyntaxStyle(self: *Self, syntax_style: ?*const SyntaxStyle) void {
-        if (self.syntax_style == syntax_style) return;
-
-        if (syntax_style) |style| {
-            (@constCast(style)).onDestroy(@ptrCast(self), onSyntaxStyleDestroyed) catch return;
-        }
-        if (self.syntax_style) |prev| {
-            (@constCast(prev)).offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-        }
-        self.syntax_style = syntax_style;
+    pub fn setSyntaxStyle(self: *Self, syntax_style: ?*SyntaxStyle) void {
+        self.style_binding.bind(syntax_style);
     }
 
     pub fn getSyntaxStyle(self: *const Self) ?*const SyntaxStyle {
-        return self.syntax_style;
+        return self.style_binding.style;
     }
 
     fn clearLinkRefs(self: *Self) void {
         if (self.link_tracker) |*tracker| {
             tracker.clear();
         }
+        // Map keys stay as they are: stripping links could make two keys equal.
+        self.run_links_retired = self.run_styles.count() > 0;
+    }
+
+    fn dropRunStyles(self: *Self) void {
+        self.run_styles.deinit(self.global_allocator);
+        self.run_styles = .empty;
+        self.run_links_retired = false;
+    }
+
+    /// Resolves a span or highlight style: run refs through the run styles, the rest through the
+    /// attached SyntaxStyle.
+    pub fn resolveStyle(self: *const Self, id: u32) ?StyleDefinition {
+        if (id == 0) return null;
+        if (id & run_style_flag == 0) return (self.style_binding.style orelse return null).resolveById(id);
+        const index = id & ~run_style_flag;
+        // Run refs come only from this buffer's styled text, which replaces them with the map.
+        std.debug.assert(index != 0 and index <= self.run_styles.count());
+        var definition = self.run_styles.keys()[index - 1];
+        if (self.run_links_retired) definition.attributes = ansi.TextAttributes.setLinkId(definition.attributes, 0);
+        return definition;
     }
 
     /// Set the text content using SIMD-optimized line break detection
@@ -630,25 +649,24 @@ pub const UnifiedTextBuffer = struct {
         return self.replaceTextInternal(text, mem_id, true, &replacement_arena);
     }
 
-    /// Consume registry-allocator bytes only on success, borrowing a fresh caller-owned style.
+    /// Consume registry-allocator bytes only on success.
     /// The caller validates UTF-8 and bounds, retaining all inputs on failure.
     /// Success moves prepared link ownership into the buffer and empties the input tracker.
     pub fn replaceOwnedStyledText(
         self: *Self,
         text: []const u8,
         mem_id: ?u8,
-        style: *SyntaxStyle,
         chunks: []const OwnedStyledChunk,
         prepared_links: ?*link.LinkTracker,
     ) TextBufferError!u8 {
         var prepared: PreparedOwnedStyledText = undefined;
-        try self.prepareOwnedStyledText(&prepared, text, mem_id, style, chunks, prepared_links, null);
+        try self.prepareOwnedStyledText(&prepared, text, mem_id, chunks, prepared_links);
         defer prepared.deinit();
         return prepared.commit();
     }
 
     /// The arena's address must remain stable from preparation through commit or abort.
-    /// Text, style and links remain caller-owned until commit; deinit also handles abort.
+    /// Text and links remain caller-owned until commit; deinit also handles abort.
     pub const PreparedOwnedStyledText = struct {
         buffer: *Self,
         arena: std.heap.ArenaAllocator,
@@ -660,16 +678,12 @@ pub const UnifiedTextBuffer = struct {
         mem_id: u8 = undefined,
         previous_buffer_count: usize,
         registration_pending: bool = false,
-        style: *SyntaxStyle,
+        run_styles: RunStyles = .empty,
         links: ?*link.LinkTracker,
-        retained_style: ?*SyntaxStyle,
-        listener_registered: bool = false,
 
         pub fn deinit(prepared: *PreparedOwnedStyledText) void {
             const self = prepared.buffer;
-            if (prepared.listener_registered) {
-                prepared.style.offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
-            }
+            prepared.run_styles.deinit(self.global_allocator);
             if (prepared.registration_pending) {
                 self.mem_registry.cancelLastRegistration(prepared.mem_id, prepared.previous_buffer_count);
             }
@@ -682,19 +696,12 @@ pub const UnifiedTextBuffer = struct {
 
         pub fn commit(prepared: *PreparedOwnedStyledText) u8 {
             const self = prepared.buffer;
-            if (prepared.retained_style) |retained| {
-                retained.publishDefinitions(prepared.style);
-            } else {
-                std.debug.assert(prepared.listener_registered);
-                self.setSyntaxStyle(null);
-                self.syntax_style = prepared.style;
-                prepared.listener_registered = false;
-            }
+            std.mem.swap(RunStyles, &self.run_styles, &prepared.run_styles);
+            self.run_links_retired = false;
             self.layout_cache.clear();
             std.mem.swap(std.heap.ArenaAllocator, self.arena, &prepared.arena);
             self._rope = prepared.rope;
             self._rope.allocator = self.allocator;
-            self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
             std.mem.swap(@TypeOf(self.line_highlights), &self.line_highlights, &prepared.highlights);
             std.mem.swap(@TypeOf(self.line_spans), &self.line_spans, &prepared.spans);
             self.internal_highlight_count = prepared.internal_count;
@@ -718,16 +725,10 @@ pub const UnifiedTextBuffer = struct {
         prepared: *PreparedOwnedStyledText,
         text: []const u8,
         mem_id: ?u8,
-        style: *SyntaxStyle,
         chunks: []const OwnedStyledChunk,
         prepared_links: ?*link.LinkTracker,
-        retained_style: ?*SyntaxStyle,
     ) TextBufferError!void {
-        if (self.syntax_style == style) return TextBufferError.InvalidId;
-        if (retained_style != null and self.syntax_style != retained_style) return TextBufferError.InvalidId;
-        const style_links: ?*link.LinkTracker = if (retained_style != null) if (style.link_tracker) |*tracker| tracker else null else null;
-        for ([_]?*link.LinkTracker{ prepared_links, style_links }) |maybe_tracker| {
-            const tracker = maybe_tracker orelse continue;
+        if (prepared_links) |tracker| {
             if (tracker.pool != self.link_pool) return TextBufferError.InvalidId;
             if (self.link_tracker) |*current| {
                 if (tracker == current) return TextBufferError.InvalidId;
@@ -740,19 +741,14 @@ pub const UnifiedTextBuffer = struct {
                 if (refs == 0) return TextBufferError.InvalidId;
             }
         }
-        var definitions = style.id_to_style.valueIterator();
-        while (definitions.next()) |definition| {
-            const id = ansi.TextAttributes.getLinkId(definition.attributes);
-            if (id == 0) continue;
-            const tracker = (if (retained_style != null) style_links else prepared_links) orelse return TextBufferError.InvalidId;
-            if (!tracker.used_ids.contains(id)) return TextBufferError.InvalidId;
-        }
         var byte_count: usize = 0;
         for (chunks) |chunk| {
             if (chunk.byte_count == 0 or chunk.byte_count > text.len - byte_count) {
                 return TextBufferError.InvalidIndex;
             }
-            if (chunk.style_id != 0 and style.resolveById(chunk.style_id) == null) {
+            // Every link a run style draws is held by the tracker that commit moves into the buffer.
+            const link_id = ansi.TextAttributes.getLinkId(chunk.style.attributes);
+            if (link_id != 0 and !(prepared_links orelse return TextBufferError.InvalidId).used_ids.contains(link_id)) {
                 return TextBufferError.InvalidId;
             }
             byte_count += chunk.byte_count;
@@ -764,9 +760,7 @@ pub const UnifiedTextBuffer = struct {
             .arena = std.heap.ArenaAllocator.init(self.global_allocator),
             .text = text,
             .previous_buffer_count = self.mem_registry.buffers.items.len,
-            .style = style,
             .links = prepared_links,
-            .retained_style = retained_style,
         };
         errdefer prepared.deinit();
         const reuse = if (mem_id) |id| self.mem_registry.get(id) != null else false;
@@ -820,8 +814,6 @@ pub const UnifiedTextBuffer = struct {
             result.segments.items,
             self._rope.config,
         );
-        prepared.rope.version = self._rope.version;
-        prepared.rope.version += 1;
 
         const highlights = &prepared.highlights;
         const spans = &prepared.spans;
@@ -857,7 +849,8 @@ pub const UnifiedTextBuffer = struct {
                     const byte_end = byte_offset + chunk.byte_count;
                     const char_pos = width_cursor.columns;
                     remaining_cols = width_cursor.advanceTo(byte_end) - char_pos;
-                    style_id = chunk.style_id;
+                    // A chunk without width draws nothing, so it interns no style.
+                    style_id = if (remaining_cols == 0) 0 else try internRunStyle(&prepared.run_styles, self.global_allocator, chunk.style);
                     byte_offset = byte_end;
                 }
                 if (remaining_cols == 0) break;
@@ -889,12 +882,15 @@ pub const UnifiedTextBuffer = struct {
         }
 
         prepared.internal_count = internal_count;
-        // Reserve the permanent listener without detaching the accepted style.
-        // Abort must unregister it before the candidate style emits Destroy.
-        if (prepared.retained_style == null) {
-            prepared.style.onDestroy(@ptrCast(self), onSyntaxStyleDestroyed) catch return TextBufferError.OutOfMemory;
-            prepared.listener_registered = true;
-        }
+    }
+
+    /// Equal values share one ref; a style that sets nothing is no style (0).
+    fn internRunStyle(run_styles: *RunStyles, allocator: Allocator, style: StyleDefinition) TextBufferError!u32 {
+        if (std.meta.eql(style, no_style)) return 0;
+        const entry = run_styles.getOrPut(allocator, style) catch return TextBufferError.OutOfMemory;
+        if (!entry.found_existing) text_work.add(.style_registrations, 1);
+        std.debug.assert(entry.index < run_style_flag - 1);
+        return run_style_flag | @as(u32, @intCast(entry.index + 1));
     }
 
     /// `text` starts at `byte_offset` in slot `mem_id`. A replacement publishes `text` as the
@@ -916,17 +912,9 @@ pub const UnifiedTextBuffer = struct {
         var result = try self.textToSegments(self.global_allocator, text, mem_id, byte_offset, true);
         defer result.segments.deinit(result.allocator);
         // The segments are the document. Do not build an empty rope just to replace it.
-        // Candidate copies must not query this rope's shared marker cache.
-        const candidate = if (replacement_arena) |arena| blk: {
-            var next = try UnifiedRope.from_sliceWithConfig(
-                arena.allocator(),
-                result.segments.items,
-                self._rope.config,
-            );
-            next.version = self._rope.version;
-            next.version += 1;
-            break :blk next;
-        } else blk: {
+        const candidate = if (replacement_arena) |arena|
+            try UnifiedRope.from_sliceWithConfig(arena.allocator(), result.segments.items, self._rope.config)
+        else blk: {
             var next = self._rope;
             try next.setSegments(result.segments.items);
             break :blk next;
@@ -961,13 +949,12 @@ pub const UnifiedTextBuffer = struct {
             std.mem.swap(std.heap.ArenaAllocator, self.arena, arena);
             self._rope = candidate;
             self._rope.allocator = self.allocator;
-            self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
         } else {
             if (replacement_owned != null) self._rope.clear_history();
             self._rope.root = candidate.root;
-            self._rope.version = candidate.version;
         }
         self.internal_highlight_count = 0;
+        self.dropRunStyles();
         std.mem.swap(@TypeOf(self.line_highlights), &self.line_highlights, &highlights);
         std.mem.swap(@TypeOf(self.line_spans), &self.line_spans, &spans);
         // Replacement flushes pending spans even inside a highlight transaction.
@@ -985,16 +972,51 @@ pub const UnifiedTextBuffer = struct {
 
     /// Owned bytes use the registry allocator and transfer only on success.
     pub fn appendWithOwnership(self: *Self, text: []const u8, owned: bool) TextBufferError!void {
+        return self.appendBytes(text, if (owned) .own else .borrow);
+    }
+
+    /// Append a copy of `text`, which the caller keeps.
+    pub fn appendCopy(self: *Self, text: []const u8) TextBufferError!void {
+        return self.appendBytes(text, .copy);
+    }
+
+    const AppendSource = union(enum) { borrow, own, copy, slot: u8 };
+
+    /// A grapheme that the last chunk and `text` split moves whole into the appended bytes, so
+    /// the chunk boundary stays a grapheme boundary. Its tail then precedes `text` in a new owned
+    /// copy, as every `.copy` append does.
+    fn appendBytes(self: *Self, text: []const u8, source: AppendSource) TextBufferError!void {
         if (text.len == 0) {
-            if (owned) self.global_allocator.free(text);
+            if (source == .own) self.global_allocator.free(text);
             return;
         }
+        var candidate = self._rope;
+        var tail: []const u8 = &.{};
+        const last_index = candidate.count() -| 1;
+        if (candidate.get(last_index)) |last| if (last.asText()) |chunk| {
+            const bytes = chunk.getBytes(&self.mem_registry);
+            if (Segment.findJunction(bytes, text, self.width_method)) |at| {
+                tail = bytes[at.tail..];
+                text_work.add(.grapheme_joins, 1);
+                if (at.tail == 0) try candidate.delete(last_index) else try candidate.replace(last_index, .{ .text = self.createChunk(chunk.mem_id, chunk.byte_start, chunk.byte_start + at.tail) });
+            }
+        };
+        const copied = source == .copy or tail.len > 0;
+        if (tail.len > 0) text_work.add(.grapheme_join_bytes, if (source == .copy) tail.len else tail.len + text.len);
+        if (!copied and source == .slot) return self.appendInternal(&candidate, source.slot, text);
 
+        const data = if (copied) try self.global_allocator.alloc(u8, tail.len + text.len) else text;
+        errdefer if (copied) self.global_allocator.free(data);
+        if (copied) {
+            @memcpy(@constCast(data[0..tail.len]), tail);
+            @memcpy(@constCast(data[tail.len..]), text);
+        }
         const previous_buffer_count = self.mem_registry.buffers.items.len;
-        const mem_id = try self.mem_registry.register(text, false);
+        const mem_id = try self.mem_registry.register(data, false);
         errdefer self.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
-        try self.appendInternal(mem_id, text);
-        self.mem_registry.buffers.items[mem_id].owned = owned;
+        try self.appendInternal(&candidate, mem_id, data);
+        self.mem_registry.buffers.items[mem_id].owned = copied or source == .own;
+        if (copied and source == .own) self.global_allocator.free(text);
     }
 
     /// Copy every chunk's bytes, in document order, into one owned slot 0 and rebuild the rope
@@ -1030,16 +1052,14 @@ pub const UnifiedTextBuffer = struct {
 
         var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
         defer replacement_arena.deinit();
-        var candidate = UnifiedRope.from_sliceWithConfig(replacement_arena.allocator(), segments, self._rope.config) catch
+        const candidate = UnifiedRope.from_sliceWithConfig(replacement_arena.allocator(), segments, self._rope.config) catch
             return TextBufferError.OutOfMemory;
-        candidate.version = self._rope.version +% 1;
         self.mem_registry.buffers.ensureTotalCapacity(self.global_allocator, 1) catch return TextBufferError.OutOfMemory;
 
         self.layout_cache.clear();
         std.mem.swap(std.heap.ArenaAllocator, self.arena, &replacement_arena);
         self._rope = candidate;
         self._rope.allocator = self.allocator;
-        self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
         self.mem_registry.clear();
         self.mem_registry.buffers.appendAssumeCapacity(.{ .data = bytes, .owned = true, .active = true });
         self.markAllViewsDirty();
@@ -1048,26 +1068,20 @@ pub const UnifiedTextBuffer = struct {
     /// Append text from a pre-registered memory ID
     pub fn appendFromMemId(self: *Self, mem_id: u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
-        try self.appendInternal(mem_id, text);
+        try self.appendBytes(text, .{ .slot = mem_id });
     }
 
     /// Internal append that doesn't register memory
-    fn appendInternal(self: *Self, mem_id: u8, text: []const u8) TextBufferError!void {
-        if (text.len == 0) {
-            return;
-        }
-
+    fn appendInternal(self: *Self, candidate: *UnifiedRope, mem_id: u8, text: []const u8) TextBufferError!void {
         // The rope's boundary rewrite will handle normalization at join points
         var result = try self.textToSegments(self.global_allocator, text, mem_id, 0, false);
         defer result.segments.deinit(result.allocator);
 
         // Canonical appends preserve the leading linestart, but public rope edits
         // can remove it. Stage the root until fallible end-marker repair finishes.
-        // insert_slice changes only root/version; history and caches remain shared.
-        var candidate = self._rope;
+        // insert_slice changes only the root; history remains shared.
         try candidate.insert_slice(candidate.count(), result.segments.items);
         self._rope.root = candidate.root;
-        self._rope.version = candidate.version;
 
         self.markAllViewsDirty();
     }
@@ -1406,6 +1420,8 @@ pub const UnifiedTextBuffer = struct {
     }
 
     fn buildLineSpans(self: *const Self, highlights: []const Highlight, spans: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
+        text_work.add(.line_span_builds, 1);
+        text_work.add(.line_span_highlights, highlights.len);
         spans.clearRetainingCapacity();
         // Collect all boundary columns
         const Event = struct {
@@ -1520,45 +1536,60 @@ pub const UnifiedTextBuffer = struct {
         }
         // Highlight offsets exclude newlines, unlike rope weights and offsetToCoords.
         // Seek by line end so empty lines at the starting boundary are skipped too.
-        var line_idx = self.firstLineEndingAfter(char_start, line_count);
-        while (line_idx < line_count) : (line_idx += 1) {
-            const marker = self._rope.getMarker(.linestart, line_idx) orelse break;
-            const line_start = marker.global_weight - line_idx;
-            if (line_start >= char_end) break;
-            const width = iter_mod.lineWidthAt(&self._rope, line_idx);
-            const col_start = char_start -| line_start;
-            const col_end = @min(char_end - line_start, width);
-            if (col_start < col_end) {
-                try additions.ensureUnusedCapacity(self.global_allocator, 1);
-                additions.appendAssumeCapacity(try self.prepareHighlight(line_idx, .{
-                    .col_start = col_start,
-                    .col_end = col_end,
-                    .style_id = style_id,
-                    .priority = priority,
-                    .hl_ref = hl_ref,
-                    .internal = false,
-                }));
-            }
-            if (line_start + width >= char_end) break;
-        }
-        try self.commitHighlights(additions.items);
-    }
+        const first_row = iter_mod.firstLineEndingAfter(&self._rope, char_start);
+        const first = iter_mod.lineStart(&self._rope, first_row).?;
+        // One walk over the covered leaves: each break ends a line.
+        const Walk = struct {
+            buffer: *Self,
+            additions: *std.ArrayListUnmanaged(HighlightAddition),
+            highlight: Highlight,
+            char_start: u32,
+            char_end: u32,
+            row: u32,
+            line_weight: u32,
+            weight: u32,
+            done: bool = false,
 
-    /// Returns the first line whose newline-excluded end offset is past `offset`.
-    fn firstLineEndingAfter(self: *Self, offset: u32, line_count: u32) u32 {
-        var left: u32 = 0;
-        var right: u32 = line_count;
-        while (left < right) {
-            const mid = left + (right - left) / 2;
-            const marker = self._rope.getMarker(.linestart, mid) orelse return left;
-            const line_end = marker.global_weight - mid + iter_mod.lineWidthAt(&self._rope, mid);
-            if (line_end <= offset) {
-                left = mid + 1;
-            } else {
-                right = mid;
+            fn visit(ctx: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
+                const walk: *@This() = @ptrCast(@alignCast(ctx));
+                text_work.add(.highlight_leaves, 1);
+                if (!segment.isBreak()) {
+                    walk.weight += segment.measure().weight();
+                    return .{};
+                }
+                walk.endLine() catch |err| return .{ .err = err };
+                walk.row += 1;
+                walk.weight += 1;
+                walk.line_weight = walk.weight;
+                return .{ .keep_walking = !walk.done };
             }
-        }
-        return left;
+
+            fn endLine(walk: *@This()) TextBufferError!void {
+                const line_start = walk.line_weight - walk.row;
+                const width = walk.weight - walk.line_weight;
+                walk.done = line_start + width >= walk.char_end;
+                if (line_start >= walk.char_end) return;
+                var highlight = walk.highlight;
+                highlight.col_start = walk.char_start -| line_start;
+                highlight.col_end = @min(walk.char_end - line_start, width);
+                if (highlight.col_start >= highlight.col_end) return;
+                try walk.additions.ensureUnusedCapacity(walk.buffer.global_allocator, 1);
+                walk.additions.appendAssumeCapacity(try walk.buffer.prepareHighlight(walk.row, highlight));
+            }
+        };
+        var walk: Walk = .{
+            .buffer = self,
+            .additions = &additions,
+            .highlight = .{ .col_start = 0, .col_end = 0, .style_id = style_id, .priority = priority, .hl_ref = hl_ref, .internal = false },
+            .char_start = char_start,
+            .char_end = char_end,
+            .row = first_row,
+            .line_weight = first.weight,
+            .weight = first.weight,
+        };
+        self._rope.walk_from(first.leaf_index, &walk, Walk.visit) catch |err| return @as(TextBufferError, @errorCast(err));
+        if (!walk.done) try walk.endLine();
+        try self.commitHighlights(additions.items);
     }
 
     /// Remove all highlights with a specific reference ID

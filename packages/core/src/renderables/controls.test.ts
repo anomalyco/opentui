@@ -1,17 +1,25 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import type { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer } from "../buffer.js"
+import type { Renderable } from "../Renderable.js"
+import { RGBA } from "../lib/RGBA.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
+import type { CapturedFrame } from "../types.js"
+import { NativePaintRecorder } from "../zig.js"
 import { BoxRenderable } from "./Box.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
+import { LineNumberRenderable } from "./LineNumberRenderable.js"
 import { ArrowRenderable, ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
 import { SliderRenderable } from "./Slider.js"
 import { TabSelectRenderable } from "./TabSelect.js"
+import { TextRenderable } from "./Text.js"
+import { TextareaRenderable } from "./Textarea.js"
+import { TimeToFirstDrawRenderable } from "./TimeToFirstDraw.js"
 
 const clock = new ManualClock()
 let setup: TestRendererSetup
@@ -153,15 +161,18 @@ test("TabSelect paints the visible tabs, the underline, the description, and scr
 })
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
-// (updateAutoScroll, then a 100 ms frame), or `press|move|release:x,y` (left button, then a frame). Each step records
-// scrollTop,scrollLeft and a "!" prefix when a key is not handled; an auto step adds "-" when auto-scroll stopped.
+// (updateAutoScroll, then a 100 ms frame), `press|move|release:x,y` (left button, then a frame), or `grow:h,ch`
+// (`growx:w,cw`) to set the box's height and its child's height (widths) in one frame, `wait:ms` (advance the clock,
+// then a frame), or `destroy` (`destroy:change`: on the bar's next change). Each step records scrollTop,scrollLeft and
+// a "!" prefix when a key is not handled; an auto step adds "-" when auto-scroll stopped. Once the box is destroyed, a
+// step records its pending timers.
 // Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
 const scrolling: [string, object, string, string][] = [
   [
     "keys",
     { scrollX: true },
     "down j up k right l left h pagedown pageup end home a",
-    "2,0 4,0 2,0 0,0 0,4 0,8 0,4 0,0 5,0 0,0 90,0 0,0 !0,0",
+    "2,0 4,0 2,0 0,0 0,4 0,8 0,4 0,0 5,0 1,0 91,0 0,0 !0,0",
   ],
   ["keys without scrollX", {}, "right l end", "0,0 0,0 90,0"],
   [
@@ -171,6 +182,17 @@ const scrolling: [string, object, string, string][] = [
     "1,0 0,0 0,1 0,0 0,1 0,0",
   ],
   ["arrows", { scrollbarOptions: { showArrows: true } }, "arrow:end arrow:end arrow:start", "5,0 10,0 5,0"],
+  // A held arrow repeats after 500 ms, then every 200 ms, until it is released or the box is destroyed.
+  ...[
+    ["release:19,9", "5,0 10,0 12,0 12,0 12,0"],
+    ["destroy", "5,0 10,0 12,0 timers 0 timers 0"],
+    ["destroy:change", "5,0 10,0 12,0 12,0 timers 0"],
+  ].map(([end, expected]): [string, object, string, string] => [
+    `held arrow, then ${end}`,
+    { scrollbarOptions: { showArrows: true } },
+    `press:19,9 wait:500 wait:200 ${end} wait:200`,
+    expected,
+  ]),
   [
     "auto-scroll",
     { scrollX: true },
@@ -178,21 +200,55 @@ const scrolling: [string, object, string, string][] = [
     "10,10 17,10 20,10 21,10 15,10 15,3 15,10 15,10-",
   ],
   ["auto-scroll without scrollX", {}, "#10 auto:0,5", "10,0 10,0-"],
+  // Content shorter than the viewport and narrower than its padded width: no step moves, and no position is negative.
+  [
+    "content that fits",
+    { scrollX: true, contentOptions: { minHeight: 0 }, viewportOptions: { paddingRight: 3 }, child: { height: 3 } },
+    "#100 down end right wheel:down shift+wheel:down",
+    "0,0 0,0 0,0 0,0 0,0 0,0",
+  ],
   // The thumb in column 19 owns the drag even when the first motion report is off it; a later drag from the
   // content across the bar does not scroll.
   ...["19", "18"].map((x): [string, object, string, string] => [
     `thumb drag, first report at column ${x}`,
     {},
     `press:19,0 move:${x},2 move:19,4 release:${x},4 press:5,5 move:19,5 move:19,8 release:19,8`,
-    "0,0 19,0 38,0 38,0 38,0 38,0 38,0 38,0",
+    "0,0 20,0 40,0 40,0 40,0 40,0 40,0 40,0",
   ]),
+  // The box and its content growing in one frame clamp against that frame's range, not a stale one (338).
+  ["same-frame growth keeps the position", { child: { width: 10, height: 15 } }, "#5 grow:20,25", "5,0 5,0"],
+  ["same-frame growth clamps to the new range", { child: { width: 10, height: 15 } }, "#5 grow:20,22", "5,0 2,0"],
+  [
+    "same-frame horizontal growth keeps the position",
+    { scrollX: true, child: { width: 25, height: 5 } },
+    "#5 growx:30,35",
+    "0,5 0,5",
+  ],
+  [
+    "same-frame growth keeps a sticky reader away from the edge",
+    { stickyScroll: true, stickyStart: "bottom", child: { width: 10, height: 15 } },
+    "#2 grow:20,25",
+    "2,0 2,0",
+  ],
+  // Vertical viewport padding leaves the whole content reachable (321).
+  ["viewport padding", { viewportOptions: { paddingTop: 2 }, child: { height: 20 } }, "end", "12,0"],
+  ["viewport padding on both edges", { viewportOptions: { paddingY: 2 }, child: { height: 20 } }, "end", "14,0"],
+  [
+    "viewport padding on both sides",
+    { scrollX: true, viewportOptions: { paddingX: 2 }, child: { width: 40, height: 5 } },
+    "#100",
+    "0,24",
+  ],
 ]
 
 test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
-  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10, ...options })
-  scroll.add(new BoxRenderable(renderer, { width: 100, height: 100 }))
+  const { child = { width: 100, height: 100 }, ...rest } = options as { child?: object }
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10, ...rest })
+  const content = new BoxRenderable(renderer, child)
+  scroll.add(content)
   renderer.root.add(scroll)
   await setup.renderOnce()
+  const timers = clock.pendingTimerCount
   const trace: string[] = []
   for (const step of steps.split(" ")) {
     const [kind, arg] = step.split(":")
@@ -201,26 +257,199 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
     else if (kind.endsWith("wheel"))
       await setup.mockMouse.scroll(5, 5, arg as "up", { modifiers: { shift: kind !== "wheel" } })
     else if (kind === "arrow") {
-      const arrow = arg === "end" ? scroll.verticalScrollBar.endArrow : scroll.verticalScrollBar.startArrow
-      await setup.mockMouse.click(arrow.x, arrow.y)
+      const bar = scroll.verticalScrollBar
+      await setup.mockMouse.click(bar.x, arg === "end" ? bar.y + bar.height - 1 : bar.y)
+    } else if (kind === "grow" || kind === "growx") {
+      const [size, child] = arg.split(",").map(Number)
+      if (kind === "grow") [scroll.height, content.height] = [size, child]
+      else [scroll.width, content.width] = [size, child]
+      await setup.renderOnce()
     } else if (kind === "auto") {
       scroll.updateAutoScroll(...(arg.split(",").map(Number) as [number, number]))
       clock.advance(100)
       await setup.renderOnce()
       if (!scroll.live) token = "-"
+    } else if (kind === "wait" || kind === "destroy") {
+      if (kind === "wait") clock.advance(Number(arg))
+      else if (arg) scroll.verticalScrollBar.once("change", () => scroll.destroyRecursively())
+      else scroll.destroyRecursively()
+      await setup.renderOnce()
     } else if (kind === "press" || kind === "move" || kind === "release") {
       const [x, y] = arg.split(",").map(Number)
       await setup.mockMouse[kind === "press" ? "pressDown" : kind === "move" ? "moveTo" : "release"](x, y)
       await setup.renderOnce()
     } else if (!scroll.handleKeyPress(key(step))) token = "!"
-    expect([scroll.content.translateX + scroll.scrollLeft, scroll.content.translateY + scroll.scrollTop]).toEqual([
-      0, 0,
-    ])
+    if (scroll.isDestroyed) {
+      trace.push(`timers ${clock.pendingTimerCount - timers}`)
+      continue
+    }
+    // One position: the bars and the content's origin agree with scrollTop and scrollLeft.
+    const { viewport, wrapper } = scroll
+    expect([
+      wrapper.height - scroll.height,
+      wrapper.width - viewport.width,
+      scroll.horizontalScrollBar.scrollPosition - scroll.scrollLeft,
+      scroll.verticalScrollBar.scrollPosition - scroll.scrollTop,
+      scroll.content.x + scroll.scrollLeft - viewport.x - viewport.paddingLeft,
+      scroll.content.y + scroll.scrollTop - viewport.y - viewport.paddingTop,
+    ]).toEqual([0, 0, 0, 0, 0, 0])
     trace.push(
       token === "!" ? `!${scroll.scrollTop},${scroll.scrollLeft}` : `${scroll.scrollTop},${scroll.scrollLeft}${token}`,
     )
   }
   expect(trace.join(" ")).toBe(expected)
+})
+
+// Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling, and the
+// SCROLL request comes only while a part has a listener (`listen` adds a content "resize" and a bar "change" listener;
+// it hears changes from then on). Listeners of events a part does not emit ask for nothing. The counts of the events
+// follow the trace.
+test("ScrollBox host requests per frame", async () => {
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
+  for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
+  renderer.root.add(scroll)
+  await setup.renderOnce()
+  const steps: Record<string, () => unknown> = {
+    idle: () => {},
+    scroll: () => scroll.scrollBy(3),
+    wheel: () => setup.mockMouse.scroll(5, 5, "down"),
+    append: () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    auto: () => (scroll.updateAutoScroll(10, 9), clock.advance(100)),
+    stop: () => scroll.stopAutoScroll(),
+    listen: () => (scroll.content.on("resize", resized), scroll.verticalScrollBar.on("change", changed)),
+    "append+listeners": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    "idle+listeners": () => {},
+    "scroll+listeners": () => scroll.scrollBy(3),
+    unlisten: () => (scroll.content.off("resize", resized), scroll.verticalScrollBar.off("change", changed)),
+    "append again": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    unsupported: () => (scroll.content.on("change", changed), scroll.verticalScrollBar.on("resize", resized)),
+    "append unsupported": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+  }
+  let events = ""
+  const resized = () => (events += "r")
+  const changed = () => (events += "c")
+  const trace: string[] = []
+  for (const [name, step] of Object.entries(steps)) {
+    await step()
+    renderer.requestRender()
+    await setup.renderOnce()
+    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}`)
+    events = ""
+  }
+  expect(trace.join(" ")).toBe(
+    "idle:0 scroll:0 wheel:0 append:0 auto:1 stop:0 listen:0 append+listeners:1r idle+listeners:0 " +
+      "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0",
+  )
+})
+
+// Wheel steps over an inner scroller in an outer ScrollBox (scrolled to 5, rows 5..8 show the inner node). A step
+// belongs to the innermost scroller that can still move that way, which keeps its acceleration and fractional
+// remainder; at its edge, or on an axis it cannot scroll, the step reaches the outer box. `x` is a horizontal-only
+// ScrollBox (as in a wide formula inside a transcript); `textx` and `textareax` hold 40-cell lines without wrapping.
+// The outer box also scrolls sideways. Columns: inner start, steps (`grow` adds four rows to an inner ScrollBox), the
+// inner offset and the outer box's top,left after the steps, and the inner box's acceleration per step.
+type InnerKind = "scrollbox" | "x" | "text" | "textarea" | "textx" | "textareax"
+type ChainRow = [InnerKind, number, string, number, string, number[]?]
+const chaining: ChainRow[] = [
+  ...(["scrollbox", "text", "textarea"] as const).flatMap((kind): ChainRow[] => [
+    [kind, 0, "down", 1, "5,0"],
+    [kind, 0, "up", 0, "4,0"],
+    [kind, 3, "down", 4, "5,0"],
+    [kind, 3, "up", 2, "5,0"],
+    [kind, 6, "down", 6, "6,0"],
+    [kind, 6, "up", 5, "5,0"],
+    [kind, 3, "shift+down", 3, "5,1"],
+  ]),
+  ["x", 0, "down", 0, "6,0"],
+  ["x", 0, "shift+down", 1, "5,0"],
+  ["x", 40, "shift+down", 40, "5,1"],
+  ...(["textx", "textareax"] as const).flatMap((kind): ChainRow[] => [
+    [kind, 0, "right", 1, "5,0"],
+    [kind, 0, "shift+down", 1, "5,0"],
+    [kind, 20, "right", 20, "5,1"],
+  ]),
+  // A reversal drops the remainder left by an accelerated step, so the step still moves the inner box.
+  ["scrollbox", 3, "down,up", 4, "5,0", [2.5, 1]],
+  // Half-cell steps add up in the inner box only.
+  ["scrollbox", 3, "down,down,down,down", 5, "5,0", [0.5]],
+  // Steps the inner box cannot take do not tick its acceleration.
+  ["x", 0, "down,down,shift+down", 1, "7,0", [1, 5, 9]],
+  // An edge clamp drops the remainder; after growth the next half step only adds up.
+  ["scrollbox", 5, "down,grow,down", 6, "5,0", [2.5, 0.6]],
+]
+
+// A rest parameter keeps the callback's arity at zero, so rows without an acceleration do not look like a `done` test.
+test.each(chaining)("wheel chaining over an inner %s at %d, %s", async (...row: ChainRow) => {
+  const [kind, start, steps, inner, outer, accel] = row
+  const wide = kind === "textx" || kind === "textareax"
+  const lines = Array.from({ length: 10 }, (_, i) => `line ${i}` + (wide ? " " + "x".repeat(33) : "")).join("\n")
+  const outerBox = new ScrollBoxRenderable(renderer, { width: 30, height: 10, scrollX: true })
+  const filler = () => new BoxRenderable(renderer, { width: 40, height: 1, flexShrink: 0 })
+  for (let i = 0; i < 5; i++) outerBox.add(filler())
+  let tick = 0
+  const scrollAcceleration = accel && { tick: () => accel[Math.min(tick++, accel.length - 1)], reset: () => {} }
+  const size = { width: 20, height: 4, flexShrink: 0, ...(wide ? { wrapMode: "none" as const } : {}) }
+  const node =
+    kind === "scrollbox" || kind === "x"
+      ? new ScrollBoxRenderable(renderer, { ...size, scrollX: kind === "x", scrollY: kind !== "x", scrollAcceleration })
+      : kind === "text" || kind === "textx"
+        ? new TextRenderable(renderer, { ...size, content: lines })
+        : new TextareaRenderable(renderer, { ...size, initialValue: lines })
+  const rows = (count: number) => {
+    if (!(node instanceof ScrollBoxRenderable)) return
+    for (let i = 0; i < count; i++) node.add(new BoxRenderable(renderer, { width: kind === "x" ? 60 : 10, height: 1 }))
+  }
+  rows(10)
+  outerBox.add(node)
+  for (let i = 0; i < 30; i++) outerBox.add(filler())
+  renderer.root.add(outerBox)
+  await setup.renderOnce()
+  outerBox.scrollTop = 5
+  const offset = () =>
+    node instanceof ScrollBoxRenderable
+      ? kind === "x"
+        ? node.scrollLeft
+        : node.scrollTop
+      : node instanceof TextRenderable
+        ? wide
+          ? node.scrollX
+          : node.scrollY
+        : node.editorView.getViewport()[wide ? "offsetX" : "offsetY"]
+  if (node instanceof ScrollBoxRenderable) node.scrollTo(kind === "x" ? { x: start, y: 0 } : start)
+  else if (node instanceof TextRenderable) node[wide ? "scrollX" : "scrollY"] = start
+  else if (wide) {
+    // The editor keeps its cursor in view, so put it where the sideways offset can move without hiding it.
+    node.setCursor(0, start + 5)
+    node.editorView.setViewport(start, 0, node.width, node.height, false)
+  } else node.editorView.setViewport(0, start, node.width, node.height, true)
+  await setup.renderOnce()
+  expect([offset(), `${outerBox.scrollTop},${outerBox.scrollLeft}`]).toEqual([start, "5,0"])
+  for (const step of steps.split(",")) {
+    if (step === "grow") rows(4)
+    else {
+      const [modifier, direction] = step.includes("+") ? step.split("+") : ["", step]
+      await setup.mockMouse.scroll(2, 1, direction as "down", { modifiers: { shift: modifier === "shift" } })
+    }
+    await setup.renderOnce()
+  }
+  expect([offset(), `${outerBox.scrollTop},${outerBox.scrollLeft}`]).toEqual([inner, outer])
+})
+
+// Only a scroller inside the current one keeps it from taking a step: a listener that passes the same event to a
+// sibling box (scroll sync) scrolls both.
+test("wheel event passed on to a sibling ScrollBox scrolls both", async () => {
+  const row = new BoxRenderable(renderer, { flexDirection: "row", width: 40, height: 4 })
+  const [left, right] = [0, 1].map(() => {
+    const box = new ScrollBoxRenderable(renderer, { width: 20, height: 4 })
+    for (let i = 0; i < 10; i++) box.add(new BoxRenderable(renderer, { height: 1 }))
+    row.add(box)
+    return box
+  })
+  left.onMouseScroll = (event) => right.processMouseEvent(event)
+  renderer.root.add(row)
+  await setup.renderOnce()
+  await setup.mockMouse.scroll(2, 1, "down")
+  expect([left.scrollTop, right.scrollTop]).toEqual([1, 1])
 })
 
 // A subclass that overrides renderSelf paints through the JS fallback, which must match the native paint, also at
@@ -237,36 +466,109 @@ const paintCases: [string, typeof BoxRenderable, object][] = [
   ],
   ["Box focused", BoxRenderable, { border: true, shouldFill: false, backgroundColor: "#ff0000", focusable: true }],
   ["Box layout-only", BoxRenderable, {}],
+  ["Box fill only", BoxRenderable, { backgroundColor: "#203040" }],
+  // A focused child gives a focusable box its focused border and title color.
+  ["Box focus-within", BoxRenderable, { border: true, focusable: true, title: "f", focusWithin: true }],
+  // 328: a buffered box draws at its buffer's origin; only the JS control is buffered.
+  ["Box buffered", BoxRenderable, { border: true, title: "b", backgroundColor: "#203040", buffered: true }],
 ]
 
-test.each(paintCases)("%s JS fallback paint matches native paint", async (_, Native, options) => {
+test.each(paintCases)("%s JS fallback paint matches native paint", async (name, Native, options) => {
   let jsPaints = 0
+  const errors: string[] = []
+  const onError = ({ error }: { error: Error }) => errors.push(error.message)
+  renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+  // Recording bytes per frame: a box that draws nothing must record nothing.
+  let recorded = 0
+  const end = NativePaintRecorder.prototype.end
+  NativePaintRecorder.prototype.end = function (this: NativePaintRecorder) {
+    recorded += this.recording?.length ?? 0
+    end.call(this)
+  }
   const Js = class extends Native {
     protected override renderSelf(buffer: OptimizedBuffer): void {
       jsPaints++
       super.renderSelf(buffer)
     }
   }
-  for (const [translateX, translateY] of [
-    [0, 0],
-    [0.5, 0.5],
-    [-1.5, -0.5],
-  ]) {
-    const frames: unknown[] = []
-    for (const Control of [Native, Js]) {
+  for (const translateX of [0, 0.5, -1.5, -2.5]) {
+    const translateY = translateX < 0 ? translateX + 1 : translateX
+    const frames: CapturedFrame[] = []
+    for (const Control of [Js, Native]) {
       const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
       Object.assign(parent, { translateX, translateY })
-      const node = new Control(renderer, { width: 9, height: 4, ...options })
+      const node = new Control(renderer, {
+        width: 9,
+        height: 4,
+        ...options,
+        buffered: Control === Js && "buffered" in options,
+      })
       parent.add(node)
       renderer.root.add(parent)
-      if (node.focusable) node.focus()
+      if ("focusWithin" in options) {
+        const child = new BoxRenderable(renderer, { focusable: true, width: 1, height: 1 })
+        node.add(child)
+        child.focus()
+      } else if (node.focusable) node.focus()
       await setup.renderOnce()
       frames.push(setup.captureSpans())
       parent.destroyRecursively()
+      // A failed frame must not leave the previous control's cells for the next capture.
+      await setup.renderOnce()
     }
-    expect(frames[1]).toEqual(frames[0])
+    expect(errors.splice(0)).toEqual([])
+    expect(frames[0]).toEqual(frames[1])
+    if ("focusWithin" in options) {
+      const corner = frames[1].lines.flatMap((line) => line.spans).find((span) => span.text.includes("f"))
+      expect(corner?.fg.toInts()).toEqual([0, 170, 255, 255])
+    }
   }
-  expect(jsPaints).toBe(3)
+  renderer.off(CliRenderEvents.RENDER_ERROR, onError)
+  NativePaintRecorder.prototype.end = end
+  expect(jsPaints).toBe(4)
+  if (name === "Box layout-only") expect(recorded).toBe(0)
+})
+
+const hostPaintCases: [string, () => Renderable][] = [
+  ["TimeToFirstDraw", () => new TimeToFirstDrawRenderable(renderer, { width: 20, label: "t", precision: 0 })],
+  [
+    "LineNumber with a content line color",
+    () =>
+      new LineNumberRenderable(renderer, {
+        target: new TextRenderable(renderer, { content: "a\nb\nc" }),
+        width: 8,
+        lineColors: new Map([[1, "#203040"]]),
+      }),
+  ],
+]
+
+// A host body paints at the truncated screen position, as native bodies do. Screen x -3.5 and y -0.5
+// truncate toward zero, unlike floor; at -3.5 the LineNumber and its children all sit left of 0.
+test.each(hostPaintCases)("%s paints at a fractional position", async (_, create) => {
+  const errors: string[] = []
+  const onError = ({ error }: { error: Error }) => errors.push(error.message)
+  renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+  const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
+  parent.add(create())
+  renderer.root.add(parent)
+  const capture = async (translateX: number, translateY: number) => {
+    Object.assign(parent, { translateX, translateY })
+    await setup.renderOnce()
+    return setup.captureSpans()
+  }
+  for (const [x, y] of [
+    [0.5, 0],
+    [-1.5, 0],
+    [0, 0.5],
+    [0, -1.5],
+    [-5.5, 0],
+  ]) {
+    const frame = await capture(x, y)
+    expect(errors.splice(0)).toEqual([])
+    expect(frame.lines[Math.trunc(1 + y)].spans.some((span) => span.text.trim() !== "")).toBe(true)
+    expect(frame).toEqual(await capture(Math.trunc(2 + x) - 2, Math.trunc(1 + y) - 1))
+  }
+  renderer.off(CliRenderEvents.RENDER_ERROR, onError)
 })
 
 // As on `main`, controls and graphemes longer than a cell holds are accepted when set and skipped when drawn.
@@ -302,9 +604,24 @@ test("a nullish scrollbar visible write restores visibility that follows the scr
   Object.assign(bar, { scrollSize: 10, viewportSize: 20, visible: true })
   Object.assign(bar, { visible: null })
   expect(bar.visible).toBe(false)
+  // The range is below zero, so every write clamps to 0.
+  bar.scrollPosition = 3
+  expect([bar.scrollPosition, bar.slider.value]).toEqual([0, 0])
   bar.scrollSize = 30
   expect(bar.visible).toBe(true)
   bar.destroyRecursively()
+})
+
+test("refreshHooks() binds a frameBuffer field that replaces the surface", async () => {
+  const frame = new FrameBufferRenderable(renderer, { width: 6, height: 1 })
+  const replacement = OptimizedBuffer.create(6, 1, renderer.widthMethod, { owner: renderer.nativeScene })
+  replacement.drawText("NEWBUF", 0, 0, RGBA.fromInts(255, 255, 255))
+  Object.defineProperty(frame, "frameBuffer", { value: replacement, writable: true, configurable: true })
+  frame.refreshHooks()
+  renderer.root.add(frame)
+  await setup.renderOnce()
+  expect(setup.captureCharFrame().split("\n")[0].slice(0, 6)).toBe("NEWBUF")
+  replacement.destroy()
 })
 
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.

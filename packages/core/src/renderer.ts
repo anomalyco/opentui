@@ -10,6 +10,8 @@ import { ImageRenderable } from "./renderables/Image.js"
 import { TextRenderable } from "./renderables/Text.js"
 import {
   DebugOverlayCorner,
+  type AnimationTickCallback,
+  type AnimationTickOptions,
   type CursorStyleOptions,
   type MousePointerStyle,
   type ProgramStatus,
@@ -31,6 +33,7 @@ import {
   type NativeRenderStats,
   type RenderLib,
   type ContextBufferHandle,
+  type SynchronizedOutput,
 } from "./zig.js"
 import { NativeSession } from "./NativeSession.js"
 import { NativeScene } from "./NativeScene.js"
@@ -57,11 +60,13 @@ import { calculateRenderGeometry } from "./lib/render-geometry.js"
 import { stringWidth } from "./platform/runtime.js"
 import {
   isCapabilityResponse,
+  isExplicitWidthReport,
   isPixelResolutionResponse,
   parsePixelResolution,
 } from "./lib/terminal-capability-detection.js"
 import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
 import { StdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser.js"
+import { NativeStdinParser, StdinShadowComparator } from "./lib/stdin-parser-native.js"
 import { matchesKeyBinding } from "./lib/keybinding.internal.js"
 import { RendererThemeMode } from "./renderer-theme-mode.js"
 
@@ -107,6 +112,22 @@ registerEnvVar({
   default: false,
 })
 
+registerEnvVar({
+  name: "OTUI_NATIVE_INPUT_PARSER",
+  description: "Parse stdin with the experimental native input parser unless experimental_nativeInput is set.",
+  type: "boolean",
+  default: false,
+})
+
+registerEnvVar({
+  name: "OTUI_NATIVE_INPUT_SHADOW",
+  description: "Also run the other stdin parser and log one line for each event that differs.",
+  type: "boolean",
+  default: false,
+})
+
+type RendererStdinParser = StdinParser | NativeStdinParser
+
 export type KittyImageTransport = "raw" | "zlib" | "file"
 const KITTY_IMAGE_TRANSPORTS: KittyImageTransport[] = ["raw", "zlib", "file"]
 
@@ -122,8 +143,6 @@ export interface KittyImageTransportStatus {
 export interface CliRendererConfig {
   /** Transfer this driver's ownership after attachment succeeds. Requires the same stdout. */
   nativeSession?: NativeSession
-  /** Opt-in native preparation/feedback items per turn. Yoga, painting, and encoding remain synchronous. */
-  nativeSceneWorkBudget?: number
   // Read input from this stream. Defaults to process.stdin. Any `Readable`
   // works; capabilities like `setRawMode` are duck-typed and used when present.
   stdin?: NodeJS.ReadStream
@@ -145,6 +164,12 @@ export interface CliRendererConfig {
   // native startup auto-detects SSH/mosh sessions; custom stdout feed output
   // defaults to remote because it is not connected to the host TTY directly.
   remote?: boolean
+
+  // Wrap each frame in synchronized output (DEC mode 2026) so the terminal shows it whole.
+  // "auto" (the default) leaves it out for a remote session whose terminal did not report mode
+  // 2026 or whose app runs inside tmux, screen or Zellij on its own host, between the app and the
+  // link, where it costs bytes on the link. "always" and "never" force it.
+  synchronizedOutput?: SynchronizedOutput
 
   // Raw is the default. File requires a local terminal with medium and upload ACK support.
   kittyImageTransport?: KittyImageTransport
@@ -226,8 +251,11 @@ export interface CliRendererConfig {
   // Run these input handlers before the built-in handlers.
   prependInputHandlers?: ((sequence: string) => boolean)[]
 
-  // Cap the stdin parser buffer size in bytes. Defaults to 64 MB.
+  // Cap the stdin parser buffer size in bytes. Defaults to 64 MB. The native parser is bounded and ignores it.
   stdinParserMaxBufferBytes?: number
+
+  // Parse stdin with the experimental native input parser. Defaults to OTUI_NATIVE_INPUT_PARSER.
+  experimental_nativeInput?: boolean
 
   // Use a custom clock for timers and tests.
   clock?: Clock
@@ -547,6 +575,7 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
     resolution: PixelResolution | null,
     capabilities: TerminalCapabilities | null,
     private readonly nativeOwner: NativeSession,
+    public readonly clock: Clock,
   ) {
     super()
     this.width = width
@@ -633,6 +662,9 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
   public setMousePointer(_shape: MousePointerStyle): void {}
   public requestLive(): void {}
   public dropLive(): void {}
+  public onAnimationTick(): () => void {
+    return () => {}
+  }
   public getSelection(): Selection | null {
     return null
   }
@@ -714,6 +746,22 @@ const KITTY_FLAG_REPORT_TEXT = 0b10000 // Report text associated with key events
 
 const DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES = 64 * 1024 * 1024
 const NATIVE_PALETTE_QUERY_SIZE = 16
+// The one reply clock: a peer that never answers DA1 gives no event that ends its batch.
+const REPLY_BACKSTOP_MS = 5000
+// Bounds the queries that a terminal ignoring CSI 14 t leaves unanswered.
+const PIXEL_QUERIES_MAX = 4
+const DA1_REPLY = /^\x1b\[\?[\d;]*c$/
+
+/**
+ * Queries written by one renderer call. Terminals answer in order, so in sentinel mode the packet ends with DA1 and
+ * the DA1 reply ends the batch. A batch whose reply never comes ends at its backstop.
+ */
+interface ReplyBatch {
+  kind: "startup" | "pixel"
+  backstop: TimerHandle | null
+  // A suspension or a paste may have taken its DA1 reply, so its backstop is no miss.
+  excused: boolean
+}
 
 /**
  * Kitty Keyboard Protocol configuration options
@@ -903,6 +951,19 @@ export enum RendererControlState {
 
 const CLICK_REPEAT_INTERVAL_MS = 500
 
+// Timers can fire up to about 1 ms before clock.now() reaches their delay, so every tick window is at least this wide.
+const ANIMATION_TIMER_SLACK_MS = 1
+
+interface AnimationTicker {
+  fps: number
+  /** The tick window in ms × fps. Due times are next × 1000 / fps; a frame at `time` covers every due index up to
+   * floor((time × fps + window) / 1000). Counting in these units keeps the default window (500) exact. */
+  window: number
+  next: number
+  last: number
+  callback: AnimationTickCallback
+}
+
 export class CliRenderer extends EventEmitter implements RenderContext {
   private static animationFrameId = 0
   private lib: RenderLib
@@ -920,6 +981,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private nativeResizeWait: Promise<void> | null = null
   private nativeKittyKeyboardFlags = 0
   private kittyTransportMode: KittyImageTransport = "raw"
+  private readonly synchronizedOutput?: SynchronizedOutput
   private kittyTransportTimer: TimerHandle | null = null
   private _lastSceneTimeMs = 0
 
@@ -969,6 +1031,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private backgroundColor: RGBA = RGBA.fromInts(0, 0, 0, 0)
   private waitingForPixelResolution: boolean = false
   private pixelResolutionRequeryPending: boolean = false
+  // Pixel replies still owed; each consumes one.
+  private unansweredPixelQueries = 0
+  private replyBatches: ReplyBatch[] = []
+  // Native parser and no missed DA1 reply yet. After a miss, batches carry no DA1 and end at their backstop.
+  private replySentinel = false
   public readonly clock: Clock
 
   private rendering: boolean = false
@@ -985,6 +1052,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private immediateRerenderRequested: boolean = false
 
   private liveRequestCounter: number = 0
+  private animationTickers = new Set<AnimationTicker>()
+  private animationTimer: TimerHandle | null = null
   private _controlState: RendererControlState = RendererControlState.IDLE
 
   private frameCallbacks: ((deltaTime: number) => Promise<void>)[] = []
@@ -1007,7 +1076,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _console: TerminalConsole
   private _resolution: PixelResolution | null = null
   private _keyHandler: InternalKeyHandler
-  private stdinParser: StdinParser | null = null
+  private stdinParser: RendererStdinParser | null = null
+  // OTUI_NATIVE_INPUT_SHADOW: the other parser sees the same input; its events are only compared.
+  private stdinShadow: { parser: RendererStdinParser; comparator: StdinShadowComparator } | null = null
   private readonly oscSubscribers = new Set<(sequence: string) => void>()
   private hasLoggedStdinParserError = false
 
@@ -1017,7 +1088,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private resizeTimeoutId: TimerHandle | null = null
   private pendingResizeSawDifferentSize = false
-  private capabilityTimeoutId: TimerHandle | null = null
   private terminalKeepAliveTimer: ReturnType<typeof setInterval> | null = null
   private xtVersionWaiters = new Set<() => void>()
   private splitStartupSeedTimeoutId: TimerHandle | null = null
@@ -1160,14 +1230,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }).bind(this)
 
   private nativeProcessExitHandler = (): void => {
-    if (!this.nativeSession || this.nativeSession.disposed) return
-    const restored = this.nativeSession.restoreOnExit()
+    // A disposed Session cannot restore, but raw mode must still go off.
+    const disposed = this.nativeSession.disposed
+    const restored = !disposed && this.nativeSession.restoreOnExit()
     try {
+      this.leaveRawMode()
       this.destroy()
       if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
     } finally {
       this.nativeSession.dispose()
-      if (!restored && this._terminalIsSetup) {
+      if (!disposed && !restored && this._terminalIsSetup) {
         console.error("Native scene output cancelled at process exit; terminal restoration did not complete")
       }
     }
@@ -1225,11 +1297,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._usesProcessStdout = stdout === process.stdout
     this.realStdoutWrite = stdout.write
 
-    const workBudget = config.nativeSceneWorkBudget
-    if (workBudget !== undefined && (!Number.isInteger(workBudget) || workBudget <= 0 || workBudget > 0xffff_ffff)) {
-      throw new Error("nativeSceneWorkBudget must be a positive u32")
+    if ((config as { nativeSceneWorkBudget?: unknown }).nativeSceneWorkBudget !== undefined) {
+      throw new Error("nativeSceneWorkBudget was removed: frames always paint synchronously")
     }
     this.kittyTransportMode = config.kittyImageTransport ?? "raw"
+    this.synchronizedOutput = config.synchronizedOutput
     const transportCode = KITTY_IMAGE_TRANSPORTS.indexOf(this.kittyTransportMode)
     if (transportCode < 0) throw new TypeError("Invalid kittyImageTransport")
     const useMemoryBufferedOutput = config.bufferedOutput === "memory"
@@ -1289,11 +1361,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         .finally(() => this.nativeDestroyWait!.promise)
         .finally(() => {
           if (this.nativeSession.error && !this.nativeSession.disposed) this.nativeSession.dispose()
+          this.leaveRawMode()
+          this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler)
           if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
           this.releaseStreamLease()
         })
       void this.nativeClosed.catch(() => {})
-      this.nativeScene = new NativeScene(this.nativeSession, this, config.nativeSceneWorkBudget)
+      this.nativeScene = new NativeScene(this.nativeSession, this)
       this.nativeSession.setKittyImageTransport(transportCode)
     } catch (error) {
       // A supplied Session transfers only after attachRenderer succeeds.
@@ -1411,23 +1485,42 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.addExitListeners()
 
       const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES
-      this.stdinParser = new StdinParser({
-        timeoutMs: 20,
-        maxPendingBytes: stdinParserMaxBufferBytes,
-        armTimeouts: true,
-        onTimeoutFlush: () => {
-          this.drainStdinParser()
-        },
-        useKittyKeyboard: useKittyForParsing,
-        protocolContext: {
+      const createStdinParser = (native: boolean, onTimeoutFlush: () => void): RendererStdinParser => {
+        const protocolContext = {
           kittyKeyboardEnabled: useKittyForParsing,
           privateCapabilityRepliesActive: false,
           pixelResolutionQueryActive: false,
           explicitWidthCprActive: false,
           startupCursorCprActive: false,
-        },
-        clock: this.clock,
-      })
+        }
+        if (native) {
+          return new NativeStdinParser({
+            armTimeouts: true,
+            onTimeoutFlush,
+            protocolContext,
+            clock: this.clock,
+            session: { lib: this.lib, context: this.nativeSession.context, session: this.nativeSession.session },
+          })
+        }
+        return new StdinParser({
+          timeoutMs: 20,
+          maxPendingBytes: stdinParserMaxBufferBytes,
+          armTimeouts: true,
+          onTimeoutFlush,
+          useKittyKeyboard: useKittyForParsing,
+          protocolContext,
+          clock: this.clock,
+        })
+      }
+      const nativeInput = config.experimental_nativeInput ?? env.OTUI_NATIVE_INPUT_PARSER
+      this.stdinParser = createStdinParser(nativeInput, () => this.drainStdinParser())
+      this.replySentinel = this.stdinParser instanceof NativeStdinParser
+      if (env.OTUI_NATIVE_INPUT_SHADOW) {
+        this.stdinShadow = {
+          parser: createStdinParser(!nativeInput, () => this.drainStdinShadow()),
+          comparator: new StdinShadowComparator(nativeInput ? "native" : "legacy", (line) => console.warn(line)),
+        }
+      }
 
       this._console = new TerminalConsole(this, {
         ...(config.consoleOptions ?? {}),
@@ -1443,12 +1536,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._openConsoleOnError = config.openConsoleOnError ?? process.env.NODE_ENV !== "production"
       this._onDestroy = config.onDestroy
 
-      this.setupInput()
       process.on("exit", this.nativeProcessExitHandler)
-      void this.nativeSession.closed.then(
-        () => this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler),
-        () => this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler),
-      )
+      this.setupInput()
       void this.nativeSession.closed.catch((error) => {
         if (this._isDestroyed) return
         try {
@@ -2084,6 +2173,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       renderer.resolution,
       renderer.capabilities,
       renderer.nativeSession,
+      renderer.clock,
     )
     let firstLineOffsetOwner: Renderable | null = null
     const renderContext = Object.create(snapshotContext) as RenderContext
@@ -2425,6 +2515,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resolution,
       this.capabilities,
       this.nativeSession,
+      this.clock,
     )
     let snapshot: ScrollbackSnapshot | undefined
     let renderFailed = false
@@ -2715,6 +2806,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resolution,
       this.capabilities,
       this.nativeSession,
+      this.clock,
     )
     const commits: ExternalOutputCommit[] = []
     let snapshotRoot: RootRenderable | undefined
@@ -2823,7 +2915,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private abortSplitStartupCursorSeed(): void {
     this.clearSplitStartupCursorSeed()
-    this.stdinParser?.abortPendingStartupCursorCpr()
+    // A native parser reports a stale CPR as a reply that processCapabilitySequence ignores.
+    for (const parser of this.legacyStdinParsers()) parser.abortPendingStartupCursorCpr()
     this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
   }
 
@@ -3161,7 +3254,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     this._useMouse = false
     this.capturedRenderable = undefined
-    this.stdinParser?.resetMouseState()
+    for (const parser of this.legacyStdinParsers()) parser.resetMouseState()
   }
 
   public enableKittyKeyboard(flags: number = 0b00011): void {
@@ -3192,11 +3285,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     const startupCursorCprActive = this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
     this.pendingSplitStartupCursorSeed = startupCursorCprActive
-    this.updateStdinParserProtocolContext({
-      privateCapabilityRepliesActive: true,
-      explicitWidthCprActive: true,
-      startupCursorCprActive,
-    })
+    this.updateStdinParserProtocolContext({ startupCursorCprActive })
+    const startup = this.admitReplyBatch("startup")
     try {
       await this.trackNativeTerminalTransition(
         this.nativeSession.setupTerminal({
@@ -3205,6 +3295,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           mouseMovement: this.enableMouseMovement,
           kittyKeyboardFlags: this.nativeKittyKeyboardFlags,
           clearOnClose: this.clearOnShutdown,
+          replySentinel: this.replySentinel,
+          synchronizedOutput: this.synchronizedOutput,
+          // Only process stdout passes through a multiplexer on this host; forwarded and client env never count.
+          hostMultiplexer: this._usesProcessStdout && !!(process.env.TMUX || process.env.STY || process.env.ZELLIJ),
         }),
         () => {
           if (this._isDestroyed) return
@@ -3216,7 +3310,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       )
     } catch (error) {
       this.abortSplitStartupCursorSeed()
-      this.updateStdinParserProtocolContext({ privateCapabilityRepliesActive: false, explicitWidthCprActive: false })
+      this.endReplyBatch(startup)
       throw error
     }
     if (this._isDestroyed) return
@@ -3230,25 +3324,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     }
 
-    this.capabilityTimeoutId = this.clock.setTimeout(() => {
-      this.capabilityTimeoutId = null
-      this.clearSplitStartupCursorSeed()
-
-      if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
-        this.requestRender()
-      }
-
-      this.removeInputHandler(this.capabilityHandler)
-      this.updateStdinParserProtocolContext(
-        {
-          privateCapabilityRepliesActive: false,
-          explicitWidthCprActive: false,
-          startupCursorCprActive: false,
-        },
-        true,
-      )
-      this.resolveXtVersionWaiters()
-    }, 5000)
+    this.armReplyBackstop(startup)
 
     if (this.pendingSplitStartupCursorSeed) {
       if (this.splitStartupSeedTimeoutId !== null) {
@@ -3276,6 +3352,62 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this.shouldSyncNativePaletteState()) {
       this.refreshPalette()
     }
+  }
+
+  private get startupRepliesPending(): boolean {
+    return this.replyBatches.some((batch) => batch.kind === "startup")
+  }
+
+  /** Call when the Session has accepted the batch's packet. */
+  private admitReplyBatch(kind: ReplyBatch["kind"]): ReplyBatch {
+    // An earlier excused batch may take this batch's DA1 reply.
+    const batch = { kind, backstop: null, excused: this.replyBatches.some((earlier) => earlier.excused) }
+    this.replyBatches.push(batch)
+    this.syncReplyContext(false)
+    return batch
+  }
+
+  /** Call once the batch's output has drained, so output backpressure cannot cause a miss. */
+  private armReplyBackstop(batch: ReplyBatch): void {
+    if (!this.replyBatches.includes(batch) || batch.backstop !== null) return
+    if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) return
+    batch.backstop = this.clock.setTimeout(() => {
+      batch.backstop = null
+      // A paste still open may hold the DA1 reply as payload.
+      const pasting = this.stdinParser instanceof NativeStdinParser && this.stdinParser.pasting
+      this.replySentinel &&= batch.excused || pasting
+      this.endReplyBatch(batch)
+    }, REPLY_BACKSTOP_MS)
+  }
+
+  private endReplyBatch(batch: ReplyBatch): void {
+    const index = this.replyBatches.indexOf(batch)
+    if (index < 0) return
+    this.replyBatches.splice(index, 1)
+    if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
+    if (batch.kind === "startup") {
+      this.clearSplitStartupCursorSeed()
+      if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") this.requestRender()
+      this.resolveXtVersionWaiters()
+    } else if (!this.replyBatches.some((other) => other.kind === "pixel")) {
+      // Release the re-query guard; a late reply still answers its query (issue 346).
+      this.waitingForPixelResolution = false
+    }
+    this.syncReplyContext(true)
+  }
+
+  private syncReplyContext(drain: boolean): void {
+    const startup = this.startupRepliesPending
+    this.updateStdinParserProtocolContext(
+      {
+        privateCapabilityRepliesActive: startup,
+        explicitWidthCprActive: startup,
+        ...(startup ? {} : { startupCursorCprActive: false }),
+        pixelResolutionQueryActive: this.waitingForPixelResolution,
+        replySentinelActive: this.replySentinel && this.replyBatches.length > 0,
+      },
+      drain,
+    )
   }
 
   private trackNativeTerminalTransition(transition: Promise<void>, complete?: () => void): Promise<void> {
@@ -3312,6 +3444,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } catch (error) {
       this.handleStdinParserFailure(error)
     }
+    try {
+      this.stdinShadow?.parser.push(data)
+      this.drainStdinShadow()
+    } catch (error) {
+      console.warn("[stdin-shadow] parser failure", error)
+    }
   }).bind(this)
 
   public addInputHandler(handler: (sequence: string) => boolean): void {
@@ -3329,7 +3467,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private updateStdinParserProtocolContext(patch: Partial<StdinParserProtocolContext>, drain = false): void {
     if (!this.stdinParser) return
     this.stdinParser.updateProtocolContext(patch)
+    this.stdinShadow?.parser.updateProtocolContext(patch)
     if (drain) this.drainStdinParser()
+    this.drainStdinShadow()
+  }
+
+  private legacyStdinParsers(): StdinParser[] {
+    return [this.stdinParser, this.stdinShadow?.parser].filter((parser) => parser instanceof StdinParser)
   }
 
   public subscribeOsc(handler: (sequence: string) => void): () => void {
@@ -3340,10 +3484,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private processCapabilitySequence(sequence: string, hasCursorReport: boolean): boolean {
-    const hasStandardCapabilitySignature = isCapabilityResponse(sequence)
+    const hasStandardCapabilitySignature =
+      isCapabilityResponse(sequence) || (hasCursorReport && isExplicitWidthReport(sequence))
     const shouldProcessAsCapability =
       hasStandardCapabilitySignature ||
-      (hasCursorReport && (this.capabilityTimeoutId !== null || this.nativeTerminalTransition !== null))
+      (hasCursorReport && (this.startupRepliesPending || this.nativeTerminalTransition !== null))
 
     if (!shouldProcessAsCapability) {
       return false
@@ -3356,15 +3501,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // A rejected reply is consumed without being applied. Throwing would reset the parser and drop later input.
       return error.status !== NativeStatus.InvalidPhase
     }
+    const previous = JSON.stringify(this._capabilities)
     this._capabilities = this.nativeSession.getCapabilities()
     if (this._capabilities?.terminal?.from_xtversion) {
       this.resolveXtVersionWaiters()
     }
-    if (hasStandardCapabilitySignature) {
+    if (JSON.stringify(this._capabilities) !== previous) {
       this.forceFullRepaintRequested = true
       this.requestRender()
+      this.emit(CliRenderEvents.CAPABILITIES, this._capabilities)
     }
-    this.emit(CliRenderEvents.CAPABILITIES, this._capabilities)
 
     const hadPendingSplitStartupCursorSeed = this.pendingSplitStartupCursorSeed
 
@@ -3440,8 +3586,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!this.stdinParser) return
 
     this.stdinParser.drain((event) => {
+      this.stdinShadow?.comparator.primary(event)
       this.handleStdinEvent(event)
     })
+  }
+
+  private drainStdinShadow(): void {
+    const shadow = this.stdinShadow
+    shadow?.parser.drain((event) => shadow.comparator.shadow(event))
   }
 
   private handleStdinEvent(event: StdinEvent): void {
@@ -3463,6 +3615,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           throw error
         }
       }
+    }
+    // Before the handler chain, so that no application handler takes a sentinel, and also while suspended.
+    if (
+      event.type === "response" &&
+      this.replySentinel &&
+      this.replyBatches.length > 0 &&
+      DA1_REPLY.test(event.sequence)
+    ) {
+      const batch = this.replyBatches[0]!
+      this.endReplyBatch(batch)
+      // Only the startup batch asks DA1 a question of its own (Sixel).
+      if (batch.kind === "startup") this.processCapabilitySequence(event.sequence, false)
+      return
     }
     if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
       if (event.type === "response" && isPixelResolutionResponse(event.sequence)) {
@@ -3486,6 +3651,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.dispatchSequenceHandlers(event.raw)
         return
       case "paste":
+        // Pasted text may hold a DA1 reply that never pops a batch.
+        for (const batch of this.replyBatches) batch.excused = true
         this._keyHandler.processPaste(event.bytes, event.metadata)
         return
       case "response":
@@ -3514,6 +3681,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     try {
       this.stdinParser?.reset()
+      this.stdinShadow?.parser.reset()
     } catch (resetError) {
       console.error("stdin parser reset failed after parser error", resetError)
     }
@@ -3529,33 +3697,33 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     this.addInputHandler((sequence: string) => {
-      if (isPixelResolutionResponse(sequence) && this.waitingForPixelResolution) {
-        this.waitingForPixelResolution = false
-        if (this.pixelResolutionRequeryPending) {
-          this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false })
-          this.queryPixelResolution()
-          return true
-        }
-        try {
-          const resolution = parsePixelResolution(sequence)
-          if (resolution) {
-            this.lib.sessionSetImageResolution(
-              this.nativeSession.context,
-              this.nativeSession.session,
-              this._terminalWidth,
-              this._terminalHeight,
-              resolution.width,
-              resolution.height,
-            )
-            this._resolution = resolution
-            this.requestRender()
-          }
-        } finally {
-          this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false }, true)
-        }
+      if (!isPixelResolutionResponse(sequence) || this.unansweredPixelQueries === 0) return false
+      // Applied in arrival order, so an unanswered query never holds back a later reply.
+      this.unansweredPixelQueries--
+      this.waitingForPixelResolution = false
+      if (this.pixelResolutionRequeryPending) {
+        this.syncReplyContext(false)
+        this.queryPixelResolution()
         return true
       }
-      return false
+      try {
+        const resolution = parsePixelResolution(sequence)
+        if (resolution) {
+          this.lib.sessionSetImageResolution(
+            this.nativeSession.context,
+            this.nativeSession.session,
+            this._terminalWidth,
+            this._terminalHeight,
+            resolution.width,
+            resolution.height,
+          )
+          this._resolution = resolution
+          this.requestRender()
+        }
+      } finally {
+        this.syncReplyContext(true)
+      }
+      return true
     })
     this.addInputHandler(this.capabilityHandler)
     this.addInputHandler(this.focusHandler)
@@ -3754,9 +3922,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lastOverRenderableNum = source.num
       this.capturedRenderable = undefined
       // Dropping the renderable needs to push another frame when the renderer is not live
-      // to update the hit grid, otherwise capturedRenderable won't be in the hit grid and will not receive mouse events
+      // to update the hits, otherwise capturedRenderable won't be in the hits and will not receive mouse events
       this.requestRender()
-      // A source does not drop onto itself or its subtree; until that frame the hit grid still holds the source.
+      // A source does not drop onto itself or its subtree; until that frame the presented hits still hold the source.
       if (maybeRenderable && this.isWithinContainer(maybeRenderable, source)) return true
       if (maybeRenderable) {
         this.sendMouseEvent(maybeRenderable, new MouseEvent(maybeRenderable, { ...mouseEvent, type: "drop", source }))
@@ -3787,8 +3955,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   /**
-   * Recheck hover state after hit grid changes.
-   * Called after render when native code detects the hit grid changed.
+   * Recheck hover state against the hits of the frame just presented.
+   * Called after every rendered frame.
    * Fires out/over events if the element under the cursor changed.
    */
   private recheckHoverState(): void {
@@ -3975,18 +4143,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       !this._terminalIsSetup ||
       this._controlState === RendererControlState.EXPLICIT_SUSPENDED ||
       this.waitingForPixelResolution ||
+      this.unansweredPixelQueries >= PIXEL_QUERIES_MAX ||
       this.pixelResolutionRetry
     )
       return
-    this.pixelResolutionRequeryPending = false
-    this.waitingForPixelResolution = true
-    this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: true })
     try {
-      this.nativeSession.control({ kind: "query-pixel-resolution" })
+      this.nativeSession.control({ kind: "query-pixel-resolution", sentinel: this.replySentinel })
+      this.pixelResolutionRequeryPending = false
+      this.waitingForPixelResolution = true
+      this.unansweredPixelQueries++
+      const batch = this.admitReplyBatch("pixel")
+      void this.nativeSession.idle().then(
+        () => this.armReplyBackstop(batch),
+        () => {},
+      )
     } catch (error) {
-      this.waitingForPixelResolution = false
-      this.pixelResolutionRequeryPending = true
-      this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false })
       if (!(error instanceof NativeError)) throw error
       if (error.status === NativeStatus.InvalidPhase) return
       if (error.status !== NativeStatus.OutputBackpressure && error.status !== NativeStatus.OutputBusy) throw error
@@ -4070,10 +4241,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       )
     }
 
-    if (nextGeometry.renderWidth !== this.width || nextGeometry.renderHeight !== this.height) {
-      this.nativeScene.restartPaint()
-    }
-
     this._terminalWidth = width
     this._terminalHeight = height
     this._splitHeight = nextGeometry.effectiveFooterHeight
@@ -4084,7 +4251,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.lib.sessionSetImageResolution(this.nativeSession.context, this.nativeSession.session, 0, 0, 0, 0)
 
     this.capturedRenderable = undefined
-    this.stdinParser?.resetMouseState()
+    for (const parser of this.legacyStdinParsers()) parser.resetMouseState()
 
     if (splitFooterActive) {
       this.forceFullRepaintRequested = true
@@ -4305,6 +4472,69 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this.animationRequest.delete(handle)) this.dropLive()
   }
 
+  /** Calls `callback` `fps` times a second on a clock that all subscribers share. Due times are multiples of
+   * 1000 / fps, so equal rates tick together; one timer requests a frame at the earliest due time, and every frame,
+   * whatever its cause, runs each tick that is due within its tolerance. Returns the unsubscribe function. */
+  public onAnimationTick(fps: number, callback: AnimationTickCallback, options: AnimationTickOptions = {}): () => void {
+    const interval = 1000 / fps
+    const { tolerance } = options
+    if (!(interval > 0 && interval < Infinity)) throw new RangeError(`fps must be positive and finite, got ${fps}`)
+    if (tolerance !== undefined && !(tolerance >= 0 && tolerance < interval)) {
+      throw new RangeError(`tolerance must be at least 0 and below the interval (${interval} ms), got ${tolerance}`)
+    }
+    if (this._isDestroyed) return () => {}
+    const now = this.clock.now()
+    // The default tolerance is half the interval: 500 in window units.
+    const window = Math.max(tolerance === undefined ? 500 : tolerance * fps, ANIMATION_TIMER_SLACK_MS * fps)
+    // The first due time is the first one out of reach, so a new subscriber never ticks in the frame it joins.
+    const ticker = { fps, window, next: Math.floor((now * fps + window) / 1000) + 1, last: now, callback }
+    this.animationTickers.add(ticker)
+    this.scheduleAnimationTick()
+    return () => {
+      if (this.animationTickers.delete(ticker)) this.scheduleAnimationTick()
+    }
+  }
+
+  // An app-level timer like any other, not scheduled work: idle() resolves between ticks. The fastest subscribers
+  // request frames at their due times; slower ones only at the end of their window, so they share those frames.
+  private scheduleAnimationTick(): void {
+    if (this.animationTimer !== null) this.clock.clearTimeout(this.animationTimer)
+    this.animationTimer = null
+    let fastest = 0
+    for (const ticker of this.animationTickers) fastest = Math.max(fastest, ticker.fps)
+    let due = Infinity
+    for (const ticker of this.animationTickers) {
+      const late = ticker.fps === fastest ? 0 : ticker.window
+      due = Math.min(due, (ticker.next * 1000 + late) / ticker.fps)
+    }
+    if (due === Infinity) return
+    this.animationTimer = this.clock.setTimeout(
+      () => {
+        this.animationTimer = null
+        this.requestRender()
+      },
+      Math.max(0, due - this.clock.now()),
+    )
+  }
+
+  private runAnimationTicks(time: number): void {
+    if (this.animationTickers.size === 0) return
+    for (const ticker of this.animationTickers) {
+      const reach = Math.floor((time * ticker.fps + ticker.window) / 1000)
+      if (reach < ticker.next) continue
+      const ticks = reach + 1 - ticker.next
+      const deltaTime = Math.max(0, time - ticker.last)
+      ticker.next = reach + 1
+      ticker.last = time
+      try {
+        ticker.callback(deltaTime, ticks, time)
+      } catch (error) {
+        console.error("Error in animation tick callback:", error)
+      }
+    }
+    this.scheduleAnimationTick()
+  }
+
   private yieldFrame(): Promise<void> {
     if (!this.canRender) return Promise.resolve()
     return new Promise((resolve) => {
@@ -4431,21 +4661,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._controlState = RendererControlState.EXPLICIT_SUSPENDED
     this._cancelPaletteDetection?.(new Error("Cannot detect palette while renderer is suspended"))
     this.resolveXtVersionWaiters()
-    this.nativeScene.interruptPaint()
     this.halt(false)
 
     this.clearSplitStartupCursorSeed()
 
     this.disableMouse()
     this.removeExitListeners()
-    this.updateStdinParserProtocolContext({
-      privateCapabilityRepliesActive: false,
-      pixelResolutionQueryActive: this.waitingForPixelResolution,
-      explicitWidthCprActive: false,
-      startupCursorCprActive: false,
-    })
-    if (this.stdinParser?.hasPendingPixelResolutionResponse()) this.stdinParser.pausePendingTimeout()
-    else this.stdinParser?.reset()
+    for (const batch of [...this.replyBatches]) {
+      if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
+      batch.backstop = null
+      batch.excused = true
+      // Clock mode keeps main's suspension, which ends the startup window.
+      if (!this.replySentinel && batch.kind === "startup") this.endReplyBatch(batch)
+    }
+    // Drained while suspended: what this update resolves is stale and must not wait for resume.
+    this.updateStdinParserProtocolContext({ startupCursorCprActive: false }, true)
+    this.pauseStdinParsers(false)
     this.stdin.removeListener("data", this.stdinListener)
     this.stopTerminalKeepAlive()
 
@@ -4462,6 +4693,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public resume(): Promise<void> {
     if (
       !this._terminalIsSetup ||
+      this._isDestroyed ||
       this.nativeTerminalTransition ||
       this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
     ) {
@@ -4473,6 +4705,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         kind: "clear-transition",
       })
     }
+    // Raw mode is on before the Session writes the bytes that turn mouse reports back on.
+    try {
+      this.stdin.setRawMode?.(true)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    this.addExitListeners()
     const resumed = this.trackNativeTerminalTransition(this.nativeSession.resume(), () => {
       if (this._isDestroyed) return
       if (this.pendingSplitFooterTransition) this.setPendingSplitFooterTransition(this.pendingSplitFooterTransition)
@@ -4490,19 +4729,33 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return resumed
   }
 
-  private finishResume(): void {
-    if (this.stdin.setRawMode) {
-      this.stdin.setRawMode(true)
+  // Legacy parsers drop pending input unless it may be a pixel reply. Native parsers stop
+  // input time instead, so stale bytes drained on resume can complete a unit (docs §11.5).
+  private pauseStdinParsers(resuming: boolean): void {
+    for (const parser of [this.stdinParser, this.stdinShadow?.parser]) {
+      if (parser instanceof NativeStdinParser) resuming ? parser.resume() : parser.suspend()
+      else if (parser?.hasPendingPixelResolutionResponse()) parser.pausePendingTimeout()
+      else parser?.reset()
     }
+  }
 
+  private finishResume(): void {
     let drained: Buffer | string | null
     while ((drained = this.stdin.read()) !== null) this.stdinListener(drained)
-    if (this.stdinParser?.hasPendingPixelResolutionResponse()) this.stdinParser.pausePendingTimeout()
-    else this.stdinParser?.reset()
+    // A unit still pending is stale: resume keeps what it keeps without these batches (main's suspension) and
+    // drops the rest. The batches then hold again for replies that come after resume.
+    this.updateStdinParserProtocolContext(
+      {
+        privateCapabilityRepliesActive: false,
+        explicitWidthCprActive: false,
+        replySentinelActive: false,
+      },
+      true,
+    )
+    this.pauseStdinParsers(true)
     this.stdin.on("data", this.stdinListener)
     this.stdin.resume()
     this.startTerminalKeepAlive()
-    this.addExitListeners()
 
     this._useMouse = this._suspendedMouseEnabled
 
@@ -4514,8 +4767,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.startKittyTransportPolling()
     this.nativeSession.startKittyFileProbe()
     this._controlState = this._previousControlState
+    // Replies to batches written before suspension may still come; their batches keep their holds for one backstop.
+    for (const batch of this.replyBatches) this.armReplyBackstop(batch)
+    this.syncReplyContext(false)
     if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
-    this.stdinParser?.resumePendingTimeout()
+    for (const parser of this.legacyStdinParsers()) parser.resumePendingTimeout()
     this.applyPendingNativeResize()
 
     if (
@@ -4591,6 +4847,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.animationRequest.clear()
     this.frameCallbacks = []
     this.liveRequestCounter = 0
+    this.animationTickers.clear()
+    this.scheduleAnimationTick()
     this.immediateRerenderRequested = false
 
     if (this._usesProcessStdout) {
@@ -4606,10 +4864,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resizeTimeoutId = null
     }
 
-    if (this.capabilityTimeoutId !== null) {
-      this.clock.clearTimeout(this.capabilityTimeoutId)
-      this.capabilityTimeoutId = null
+    for (const batch of this.replyBatches) {
+      if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
     }
+    this.replyBatches = []
 
     this.clearSplitStartupCursorSeed()
 
@@ -4626,15 +4884,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.waitingForPixelResolution = false
     this.pixelResolutionRequeryPending = false
     try {
-      this.updateStdinParserProtocolContext(
-        {
-          privateCapabilityRepliesActive: false,
-          pixelResolutionQueryActive: false,
-          explicitWidthCprActive: false,
-          startupCursorCprActive: false,
-        },
-        true,
-      )
+      this.syncReplyContext(true)
     } catch (error) {
       // Draining can run a user input handler. Reset its pending input, but do
       // not let that failure strand the remaining teardown or its completion.
@@ -4645,13 +4895,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.removeCleanupListener(this.stdin, "data", this.stdinListener)
     this.stopTerminalKeepAlive()
-    if (this.stdin.setRawMode) {
-      try {
-        this.stdin.setRawMode(false)
-      } catch (e) {
-        console.error("Error disabling raw mode during destroy:", e)
-      }
-    }
     try {
       this.stdin.pause()
     } catch (e) {
@@ -4716,6 +4959,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.stdinParser?.destroy()
     this.stdinParser = null
+    this.stdinShadow?.parser.destroy()
+    this.stdinShadow?.comparator.flush()
+    this.stdinShadow = null
     this.oscSubscribers.clear()
     try {
       this._console?.destroy()
@@ -4759,6 +5005,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Resolve any pending idle() calls
     this.nativeDestroyWait?.resolve()
     this.resolveIdleIfNeeded()
+  }
+
+  // Leave raw mode only after restoration stops mouse reports, so a cooked tty cannot echo them.
+  private leaveRawMode(): void {
+    try {
+      this.stdin.setRawMode?.(false)
+    } catch (e) {
+      console.error("Error disabling raw mode:", e)
+    }
   }
 
   private releaseStreamLease(): void {
@@ -4819,6 +5074,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.renderStats.frameCount++
       const overallStart = performance.now()
 
+      // The paint below draws what tick callbacks change, so their requests need no extra frame.
+      const requestedBeforeTicks = this.immediateRerenderRequested
+      this.runAnimationTicks(now)
+      this.immediateRerenderRequested = requestedBeforeTicks
+
       const animationFrameEnd = CliRenderer.animationFrameId
       const animationRequestStart = performance.now()
       for (const [id, callback] of this.animationRequest) {
@@ -4858,12 +5118,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const sceneStart = performance.now()
       const requestedBeforeScene = this.immediateRerenderRequested
       try {
-        const painting = this.nativeScene.paint(deltaTime, () => ({
+        this.nativeScene.paint(deltaTime, () => ({
           background: this.backgroundColor,
           useMouse: this._useMouse,
           excludedHitNum: this.capturedRenderable?.num ?? 0,
         }))
-        if (painting) await painting
       } catch (error) {
         // Failed feedback must not schedule its own retry. The error handler can request one explicitly.
         this.immediateRerenderRequested = requestedBeforeScene
@@ -4899,7 +5158,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.renderStats.fps = this.currentFps
 
         if (nativeStatus === "rendered") {
-          // Check if hit grid changed and recheck hover state if needed
+          // The presented frame's hits may have moved under the pointer.
           if (this._useMouse) {
             this.recheckHoverState()
           }
@@ -5436,7 +5695,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private waitForXtVersion(): Promise<void> {
-    if (this.capabilityTimeoutId === null || this._capabilities?.terminal?.from_xtversion) {
+    if (!this.startupRepliesPending || this._capabilities?.terminal?.from_xtversion) {
       return Promise.resolve()
     }
 

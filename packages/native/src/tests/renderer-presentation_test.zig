@@ -5,6 +5,7 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ansi = @import("../ansi.zig");
 const image = @import("../image.zig");
+const test_renderer = @import("test-renderer.zig");
 
 const Fixture = struct {
     pool: gp.GraphemePool,
@@ -12,8 +13,11 @@ const Fixture = struct {
     env: std.process.Environ.Map,
     feed: *feed_mod.Stream,
     cli: *renderer.CliRenderer,
+    out: [4096]u8,
+    delivered: []const u8,
 
     fn init(self: *Fixture) !void {
+        self.delivered = &.{};
         self.pool = gp.GraphemePool.init(std.testing.allocator);
         errdefer self.pool.deinit();
         self.links = link.LinkPool.init(std.testing.allocator);
@@ -30,23 +34,33 @@ const Fixture = struct {
         });
         errdefer self.feed.destroy();
         self.cli = try renderer.CliRenderer.createWithOptions(std.testing.allocator, 4, 2, &self.pool, .{
-            .output = .{ .feed = self.feed },
+            .feed = self.feed,
             .link_pool = &self.links,
             .env_map = &self.env,
         });
     }
 
     fn deinit(self: *Fixture) void {
-        self.cli.destroy();
+        self.cli.destroyStorage();
         self.feed.destroy();
         self.env.deinit();
         self.links.deinit();
         self.pool.deinit();
     }
 
+    /// Paints a frame as a scene draft would: from a cleared buffer, with work that names its hits.
     fn paint(self: *Fixture, text: []const u8, hit: u32) !void {
+        self.cli.getNextBuffer().clear(self.cli.backgroundColor, null);
         try self.cli.getNextBuffer().drawText(text, 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
-        self.cli.addToHitGrid(0, 0, 4, 2, hit);
+        self.cli.scene_work = .{ .work_frame_id = hit };
+    }
+
+    /// Render as a Session does: deliver the bytes to `delivered`, then acknowledge.
+    fn render(self: *Fixture, force: bool) !renderer.RenderStatus {
+        var sink = test_renderer.FixedSink.init(&self.out);
+        const status = try test_renderer.renderPresented(self.cli, force, &sink);
+        self.delivered = sink.bytes();
+        return status;
     }
 
     fn drain(self: *Fixture, bytes: []u8) ![]const u8 {
@@ -64,16 +78,18 @@ test "renderer batches frame encoding before feed admission" {
     try fixture.init();
     defer fixture.deinit();
     try fixture.paint("text", 11);
-    try std.testing.expectEqual(.rendered, fixture.cli.render(true));
-    try std.testing.expectEqual(@as(usize, 1), fixture.cli.backend.feed.frameWriteCount);
-    var bytes: [4096]u8 = undefined;
-    try std.testing.expect(std.mem.find(u8, try fixture.drain(&bytes), "text") != null);
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
+    try std.testing.expectEqual(@as(usize, 1), fixture.cli.backend.frameWriteCount);
+    try std.testing.expect(std.mem.find(u8, fixture.delivered, "text") != null);
 
     try fixture.paint("text", 11);
-    try std.testing.expectEqual(.rendered, fixture.cli.render(false));
-    try std.testing.expectEqual(@as(usize, 0), fixture.cli.backend.feed.frameWriteCount);
+    try std.testing.expectEqual(.rendered, try fixture.render(false));
+    try std.testing.expectEqual(@as(usize, 0), fixture.cli.backend.frameWriteCount);
     try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
 
+    // Raw frames from here on: they start from a cleared next buffer.
+    fixture.cli.scene_work = null;
+    fixture.cli.getNextBuffer().clear(fixture.cli.backgroundColor, null);
     const cleared_char = fixture.cli.getNextBuffer().buffer.char[0];
     try fixture.cli.resize(140, 44);
     for (0..44) |y| {
@@ -81,30 +97,30 @@ test "renderer batches frame encoding before feed admission" {
             try fixture.cli.getNextBuffer().drawText("X", @intCast(x), @intCast(y), ansi.rgbColor(@intCast(x), @intCast(y), 0, 255), null, 0);
         }
     }
-    try std.testing.expectEqual(.failed, fixture.cli.render(true));
-    try std.testing.expect(fixture.cli.backend.feed.frameWriteCount > 1);
+    try std.testing.expectEqual(.failed, try fixture.render(true));
+    try std.testing.expect(fixture.cli.backend.frameWriteCount > 1);
     try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
     try std.testing.expectEqual(@as(usize, 0), fixture.feed.staged_bytes);
     try std.testing.expectEqual(cleared_char, fixture.cli.getNextBuffer().buffer.char[0]);
 
     try fixture.cli.resize(4, 2);
     try fixture.paint("text", 11);
-    try std.testing.expectEqual(.rendered, fixture.cli.render(true));
-    try std.testing.expect(std.mem.find(u8, try fixture.drain(&bytes), "text") != null);
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
+    try std.testing.expect(std.mem.find(u8, fixture.delivered, "text") != null);
 }
 
-test "renderer presentation publishes only on completion and preserves legacy render" {
+test "renderer presentation publishes only on completion" {
     var fixture: Fixture = undefined;
     try fixture.init();
     defer fixture.deinit();
     const cli = fixture.cli;
     var bytes: [4096]u8 = undefined;
     try fixture.paint("old", 11);
-    try std.testing.expectEqual(.rendered, cli.render(true));
-    try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
+    try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
     try std.testing.expectEqual(@as(u64, 1), cli.getRenderStats().frameCount);
-    try std.testing.expect(fixture.feed.getStats().outstanding_bytes > 0);
-    _ = try fixture.drain(&bytes);
+    try std.testing.expect(std.mem.find(u8, fixture.delivered, "old") != null);
+    try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
     const previous_stats = cli.getRenderStats();
 
     const value = try image.createFromRgba(std.testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
@@ -112,7 +128,7 @@ test "renderer presentation publishes only on completion and preserves legacy re
     try fixture.paint("new", 22);
     try std.testing.expect(try cli.getNextBuffer().drawImage(value, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     try std.testing.expectEqual(.rendered, try cli.renderDeferred(true));
-    try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
     try std.testing.expectEqualDeep(previous_stats, cli.getRenderStats());
     try std.testing.expectEqual(@as(usize, 0), cli.currentImages.items.len);
     try std.testing.expectEqual(@as(usize, 1), cli.pendingImages.items.len);
@@ -126,10 +142,10 @@ test "renderer presentation publishes only on completion and preserves legacy re
     try std.testing.expect(std.mem.find(u8, try fixture.drain(&bytes), "new") != null);
 
     // Releasing feed storage is not a presentation acknowledgement.
-    try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
     try std.testing.expectEqualDeep(previous_stats, cli.getRenderStats());
     try cli.completePresentation(.presented);
-    try std.testing.expectEqual(@as(u32, 22), cli.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 22), cli.presented_hits_frame);
     try std.testing.expectEqual(@as(u64, 2), cli.getRenderStats().frameCount);
     try std.testing.expectEqual(@as(u32, 8), cli.getRenderStats().cellsUpdated);
     try std.testing.expectEqual(@as(usize, 1), cli.currentImages.items.len);
@@ -143,10 +159,10 @@ test "renderer presentation publishes only on completion and preserves legacy re
     try std.testing.expect(try cli.getNextBuffer().drawImage(value, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     try std.testing.expectEqual(.rendered, try cli.renderDeferred(false));
     try std.testing.expectEqual(@as(u64, 0), fixture.feed.getStats().outstanding_bytes);
-    try std.testing.expectEqual(@as(u32, 22), cli.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 22), cli.presented_hits_frame);
     try std.testing.expectEqualDeep(completed_stats, cli.getRenderStats());
     try cli.completePresentation(.presented);
-    try std.testing.expectEqual(@as(u32, 33), cli.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 33), cli.presented_hits_frame);
     try std.testing.expectEqual(@as(u32, 0), cli.getRenderStats().cellsUpdated);
     try cli.resize(8, 4);
 }
@@ -162,9 +178,8 @@ test "renderer shutdown image serialization is checked and does not publish" {
     inline for (.{ .kitty, .blocks, .sixel, .kitty }, 0..) |protocol, index| {
         try std.testing.expect(try cli.getNextBuffer().drawImage(value, 1, index, 0, 1, 1, 1, 1, 0, 0, 1, 1, protocol));
     }
-    try std.testing.expectEqual(.rendered, cli.render(true));
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
     var bytes: [4096]u8 = undefined;
-    _ = try fixture.drain(&bytes);
     try std.testing.expectEqual(@as(usize, 4), cli.currentImages.items.len);
     const previous_images = cli.currentImages.items[0..4].*;
     const previous_stats = cli.getRenderStats();
@@ -208,8 +223,7 @@ test "renderer presentation failure retains published state and forbids implicit
         if (restore_image) {
             try std.testing.expect(try cli.getNextBuffer().drawImage(old_image, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
         }
-        try std.testing.expectEqual(.rendered, cli.render(true));
-        _ = try fixture.drain(&bytes);
+        try std.testing.expectEqual(.rendered, try fixture.render(true));
         const previous_stats = cli.getRenderStats();
 
         try fixture.paint("BAD", 22);
@@ -222,7 +236,7 @@ test "renderer presentation failure retains published state and forbids implicit
         try std.testing.expect(fixture.feed.hasPendingSpans());
         _ = try fixture.drain(&bytes); // The host discards the unacknowledged suffix.
         try cli.completePresentation(.failed);
-        try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
+        try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
         try std.testing.expectEqualDeep(previous_stats, cli.getRenderStats());
         try std.testing.expectEqual(@as(usize, @intFromBool(restore_image)), cli.currentImages.items.len);
         if (restore_image) try std.testing.expectEqual(@as(u32, 1), cli.currentImages.items[0].image_handle);
@@ -231,19 +245,14 @@ test "renderer presentation failure retains published state and forbids implicit
 
         try fixture.paint("retry", 33);
         try std.testing.expectError(error.PresentationFailed, cli.renderDeferred(false));
-        try std.testing.expectEqual(.failed, cli.render(true));
-        try std.testing.expectEqual(.failed, cli.repaintSplitFooter(2, true).status);
-        const split = cli.commitSplitFooterSnapshotBatched(cli.getNextBuffer(), 4, false, true, 2, true, true, true);
-        try std.testing.expectEqual(.failed, split.status);
+        const snapshots = [_]renderer.SplitSnapshot{.{ .snapshot = cli.getNextBuffer(), .row_columns = 4 }};
+        try std.testing.expectError(error.PresentationFailed, cli.renderSplitDeferred(.{ .snapshots = &snapshots, .pinned_render_offset = 2, .paint_footer = true, .suspended = false }, true));
         var writer: std.Io.Writer = .fixed(&bytes);
         try std.testing.expectError(error.PresentationFailed, cli.prepareRenderFrameWithWriter(&writer, true, false));
         try std.testing.expectError(error.PresentationFailed, cli.resize(8, 4));
-        cli.setupTerminal(true);
-        cli.resumeRenderer();
-        try std.testing.expect(!cli.terminalSetup);
         try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
         try std.testing.expectEqual(@as(usize, 0), (try fixture.drain(&bytes)).len);
-        try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
+        try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
         try std.testing.expectEqualDeep(previous_stats, cli.getRenderStats());
     }
 }
@@ -256,7 +265,7 @@ test "renderer presentation rejects active output and callback reentry" {
         fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
             if (event != @intFromEnum(feed_mod.EventId.DataAvailable)) return;
             const cli = target.?;
-            cli.backend.feed.feed.setCallback(null);
+            cli.backend.feed.setCallback(null);
             _ = cli.renderDeferred(false) catch |err| {
                 rejected = err;
                 return;
@@ -273,18 +282,17 @@ test "renderer presentation rejects active output and callback reentry" {
     fixture.feed.setCallback(&Probe.notify);
     try std.testing.expectError(error.IncompatibleOutput, cli.renderDeferred(false));
     try fixture.feed.attach();
-    try fixture.paint("old", 11);
-    try std.testing.expectEqual(.rendered, cli.render(true));
+    try fixture.feed.writeAtomic("raw");
     try std.testing.expectEqual(@as(?anyerror, error.IncompatibleOutput), Probe.rejected);
-    try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
     try std.testing.expectError(error.NoPendingPresentation, cli.completePresentation(.presented));
 
-    cli.backend.feed.beginFrame();
-    var writer = cli.backend.feed.writer();
+    cli.backend.beginFrame();
+    var writer = cli.backend.writer();
     try writer.writeAll("prefix");
     try std.testing.expectError(error.IncompatibleOutput, cli.renderDeferred(false));
-    try std.testing.expectEqualStrings("prefix", cli.backend.feed.frameBytes.items);
-    cli.backend.feed.cancelFrame();
+    try std.testing.expectEqualStrings("prefix", cli.backend.frameBytes.items);
+    cli.backend.failFrame();
+    try std.testing.expectEqual(.failed, cli.backend.endFrame());
 }
 
 test "renderer presentation skipped admission has no completion" {
@@ -294,8 +302,7 @@ test "renderer presentation skipped admission has no completion" {
     const cli = fixture.cli;
     var bytes: [4096]u8 = undefined;
     try fixture.paint("old", 11);
-    try std.testing.expectEqual(.rendered, cli.render(true));
-    _ = try fixture.drain(&bytes);
+    try std.testing.expectEqual(.rendered, try fixture.render(true));
     const previous_stats = cli.getRenderStats();
     const blocker = [_]u8{'x'} ** 4096;
     // A full queue skips before encoding; one free chunk skips after encoding.
@@ -304,7 +311,7 @@ test "renderer presentation skipped admission has no completion" {
         try fixture.paint("new", 22);
         try std.testing.expectEqual(.skipped, try cli.renderDeferred(true));
         try std.testing.expectError(error.NoPendingPresentation, cli.completePresentation(.presented));
-        try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
+        try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
         try std.testing.expectEqualDeep(previous_stats, cli.getRenderStats());
         try std.testing.expectEqualStrings(blocker[0..size], try fixture.drain(&bytes));
     }
@@ -312,7 +319,7 @@ test "renderer presentation skipped admission has no completion" {
     try std.testing.expectEqual(.rendered, try cli.renderDeferred(false));
     _ = try fixture.drain(&bytes);
     try cli.completePresentation(.presented);
-    try std.testing.expectEqual(@as(u32, 22), cli.checkHit(0, 0));
+    try std.testing.expectEqual(@as(u64, 22), cli.presented_hits_frame);
 }
 
 test "renderer presentation cancellation and storage destruction release pending work" {
@@ -321,10 +328,8 @@ test "renderer presentation cancellation and storage destruction release pending
         try fixture.init();
         defer fixture.deinit();
         const cli = fixture.cli;
-        var bytes: [4096]u8 = undefined;
         try fixture.paint("old", 11);
-        try std.testing.expectEqual(.rendered, cli.render(true));
-        _ = try fixture.drain(&bytes);
+        try std.testing.expectEqual(.rendered, try fixture.render(true));
         const previous_stats = cli.getRenderStats();
         const value = try image.createFromRgba(std.testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
         defer value.deinit();
@@ -332,11 +337,11 @@ test "renderer presentation cancellation and storage destruction release pending
         try std.testing.expect(try cli.getNextBuffer().drawImage(value, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
         try std.testing.expectEqual(.rendered, try cli.renderDeferred(true));
         if (cancel) {
-            cli.performShutdownSequence();
+            try cli.completePresentation(.failed);
             try std.testing.expectError(error.NoPendingPresentation, cli.completePresentation(.presented));
             try std.testing.expectError(error.PresentationFailed, cli.renderDeferred(false));
         }
-        try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
+        try std.testing.expectEqual(@as(u64, 11), cli.presented_hits_frame);
         try std.testing.expectEqualDeep(previous_stats, cli.getRenderStats());
     }
 }

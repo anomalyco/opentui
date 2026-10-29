@@ -1027,6 +1027,7 @@ pub fn yogaNodeSetNativeMeasureFunc(node: YGNodeRef, target: ?*anyopaque, callba
     const ctx = getContext(node).?;
     const result: Status = @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled) &internalNativeMeasureFunc else null));
     if (result != .ok) return result;
+    c.YGNodeSetNodeType(node, c.YGNodeTypeDefault);
     ctx.native_measure_target = target;
     ctx.native_measure_callback = callback;
     return .ok;
@@ -1088,6 +1089,7 @@ pub fn yogaNodeHasContext(node: YGNodeConstRef) bool {
     return getContext(node) != null;
 }
 
+pub const configSetRoundsPositionsFromAbsoluteEdges = c.otYogaConfigSetRoundsPositionsFromAbsoluteEdges;
 pub const testFailAfter = c.otYogaTestFailAfter;
 pub const testAllocationCount = c.otYogaTestAllocationCount;
 pub const testContentsChildCount = c.otYogaTestContentsChildCount;
