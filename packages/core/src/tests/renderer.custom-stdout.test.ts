@@ -1877,6 +1877,23 @@ const suspendInSplit = async (renderer: CliRenderer, stdout: CollectingStdout) =
   stdout.write(Buffer.from([0xa9]))
   await renderer.resume()
 }
+const pendingModeInSplit = async (renderer: CliRenderer, stdout: CollectingStdout) => {
+  await renderer.suspend()
+  const resuming = renderer.resume()
+  renderer.footerHeight = 5
+  stdout.write(lead)
+  passthrough(renderer)
+  stdout.write(Buffer.from([0xa9]))
+  await resuming
+}
+const processExit = (renderer: CliRenderer) => {
+  let flushed = 0
+  renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, () => flushed++)
+  renderer.nativeScene.driver.restoreOnExit()
+  renderer.destroy()
+  renderer.nativeScene.driver.dispose()
+  expect(flushed).toBe(0)
+}
 const sessionClose = async (renderer: CliRenderer) => {
   const closing = renderer.nativeScene.driver.close()
   renderer.destroy()
@@ -1912,6 +1929,8 @@ test.each<[string, StdoutStep[], string]>([
   ["replay reset after a lead byte", ["a", lead, (renderer) => renderer.resetSplitFooterForReplay(), "b"], "a\ufffd|b"],
   ["destroy after a lead byte", ["a", lead, destroy], "a\ufffd|"],
   ["split across suspend during a deferred passthrough", ["a", passthrough, suspendInSplit], "a|caf\u00e9"],
+  ["passthrough during a pending native mode", [pendingModeInSplit], "|\u00e9"],
+  ["exit after a lead byte", [lead, processExit], ""],
   ["destroy after the session closes", ["a", lead, sessionClose], ""],
   ["output failure after a lead byte", ["a", lead, outputFailure], ""],
 ])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {

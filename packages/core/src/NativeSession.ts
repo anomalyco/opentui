@@ -339,7 +339,7 @@ export class NativeSession {
 
   /** The Session takes native work: it has not failed and is not closing or exiting. */
   get open(): boolean {
-    return !this._error && !this.stopped && !this.closeRequested && !this.exiting
+    return !this._error && !this.closeRequested && !this.exiting
   }
 
   usesOutput(sink: Writable): boolean {
