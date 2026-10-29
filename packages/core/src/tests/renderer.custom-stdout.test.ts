@@ -1851,6 +1851,8 @@ const splitBytes = (text: string, at: number, ...between: StdoutStep[]): StdoutS
   const bytes = Buffer.from(text)
   return [bytes.subarray(0, at), ...between, bytes.subarray(at)]
 }
+const unknownEncoding = (_renderer: CliRenderer, stdout: CollectingStdout) =>
+  expect(() => stdout.write("x", "bogus" as BufferEncoding)).toThrow("Unknown encoding")
 
 test.each<[string, StdoutStep[], string]>([
   ["Uint8Array", [new TextEncoder().encode("hello-u8\n")], "hello-u8"],
@@ -1861,6 +1863,8 @@ test.each<[string, StdoutStep[], string]>([
   ["2-byte split", splitBytes("caf\u00e9", 4), "caf\u00e9"],
   ["3-byte split", splitBytes("\u4e00", 1), "\u4e00"],
   ["4-byte split", splitBytes("\u{10437}", 1), "\u{10437}"],
+  ["empty string inside a split", splitBytes("\u00e9", 1, ""), "\u00e9"],
+  ["unknown encoding inside a split", splitBytes("\u00e9", 1, unknownEncoding), "\u00e9"],
   ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
 ])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {
   const stdout = createCollectingStdout(80, 24)
