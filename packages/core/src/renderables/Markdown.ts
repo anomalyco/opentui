@@ -2037,7 +2037,8 @@ export class MarkdownRenderable extends Renderable {
         existing &&
         existing.canUpdateInPlace &&
         existing.token.type === block.token.type &&
-        this.canUpdateBlockRenderable(existing.renderable, block.token)
+        (block.token.type !== "table" ||
+          block.token.rows.length > 0 === existing.renderable instanceof TextTableRenderable)
       ) {
         if (this._renderNode) {
           const custom = this.createTopLevelCustomRenderable(block, blockIndex)
@@ -2099,16 +2100,6 @@ export class MarkdownRenderable extends Renderable {
       const removed = this._blockStates.pop()!
       removed.renderable.destroyRecursively()
     }
-  }
-
-  private canUpdateBlockRenderable(renderable: Renderable, token: MarkedToken): boolean {
-    if (token.type === "code") return renderable instanceof CodeRenderable
-
-    if (token.type === "table") return renderable instanceof TextTableRenderable
-    if (token.type === "blockquote") return renderable instanceof BoxRenderable
-    if (token.type === "list") return renderable instanceof BoxRenderable
-    if (token.type === "hr") return renderable instanceof BoxRenderable
-    return renderable instanceof CodeRenderable
   }
 
   private updateBlocks(forceTableRefresh: boolean = false): void {
