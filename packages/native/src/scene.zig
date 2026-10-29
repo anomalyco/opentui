@@ -525,8 +525,15 @@ pub const Node = struct {
     observed_round: u32 = 0,
     // Scene.layout_epoch when node.layout took the solved geometry; a new node never did.
     geometry_epoch: u64 = std.math.maxInt(u64),
-    // Scene.candidates_gen of the walk that listed the node.
+    // Scene.candidates_gen of the walk that listed the node, or of the preparation of its
+    // culling parent's child (prepareSubtree).
     prepared_gen: u64 = 0,
+    // Scene.candidates_gen when a walk or a preparation went through the node's children.
+    subtree_gen: u64 = 0,
+    // Scene.members_gen of the paint list that painted the node, and the frame whose paint
+    // layout read it again (getPaintLayout).
+    painted_gen: u64 = 0,
+    read_frame: u64 = 0,
     feedback_id: u64 = 0,
     feedback_state: FeedbackState = .unseen,
     placement: u64 = 0,
@@ -544,6 +551,19 @@ pub const Node = struct {
 
     pub fn filtersChildren(self: *const Node) bool {
         return self.viewport != null or (self.scroll != null and self.scroll.?.options.culling);
+    }
+
+    /// A filtering node that may cull: the candidates walk lists its children but not their
+    /// subtrees, which selection and paint prepare where they show (prepareSubtree).
+    fn culls(self: *const Node) bool {
+        return self.filtersChildren() and self.children.items.len >= cull_children_min;
+    }
+
+    /// Whether the node's children may move with the candidates kept: the walk listed them but
+    /// not their subtrees, and nothing reads the positions it listed there (sameEntries). A scroll
+    /// node below would report stale screen geometry; `scrolls` is the node's own count.
+    fn keepsCandidates(self: *const Node, scrolls: u32) bool {
+        return self.culls() and self.skip.scrolls_below == scrolls;
     }
 
     fn feedback(self: *const Node, active: *const Attempt) FeedbackState {
@@ -567,6 +587,9 @@ const Skip = struct {
     attention_index: u32 = no_slot,
     update_below: u32 = 0,
     filters_below: u32 = 0,
+    // Scroll nodes: the walk prepares a culled child's subtree that holds one, so scroll state
+    // resolves after every solve and LAYOUT requests reach it.
+    scrolls_below: u32 = 0,
     // Clean: every node feedback would visit in the subtree needs nothing, for the selection of
     // Culling.clean_selection. Culled and hidden nodes keep their own state.
     subtree: enum(u8) { clean, running, stale } = .stale,
@@ -639,6 +662,12 @@ const PreparationFrame = struct {
     child: usize = 0,
     entered: bool = false,
     filtered: bool = false,
+    // The candidates walk lists the node's children but not their subtrees, or stops at the node.
+    stops_children: bool = false,
+    stops: bool = false,
+    // In prepareSubtree, which leaves a node a reply moved or created since the round's solve
+    // to the next round, as the walk would.
+    preparing: bool = false,
     filter: ?Filter = null,
     // A filtering node's children that may overlap, when its index found them.
     culled: ?[]*native.NativeRenderable = null,
@@ -647,6 +676,9 @@ const PreparationFrame = struct {
 };
 
 const no_slot = std.math.maxInt(u32);
+// prepare and prepareSubtree call each other, so one of them names its errors.
+const PrepareError = yoga.Error || error{ ContextLimit, ObjectLimit, WrongContext, WrongKind, StaleHandle, WrongSession, InvalidOptions, InvalidDimensions };
+const cull_children_min = 16;
 
 /// A prepared member of a recorded frame. Handles survive the host's record batch.
 const PaintMember = struct {
@@ -738,6 +770,8 @@ pub const Scene = struct {
     members: std.ArrayListUnmanaged(Work) = .empty,
     // Advances with each candidates walk, which clears both lists first.
     candidates_gen: u64 = 0,
+    // Advances with each paint list, and when a moved culling parent drops the list.
+    members_gen: u64 = 0,
     last_feedback_id: u64 = 0,
     feedback: std.ArrayListUnmanaged(Feedback) = .empty,
     paint_members: std.ArrayListUnmanaged(PaintMember) = .empty,
@@ -801,6 +835,8 @@ pub const Scene = struct {
     test_record_lookups: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     // Child entries that feedback scans.
     test_feedback_child_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    // Culled children's subtrees prepared where selection or paint took them.
+    test_subtree_preparations: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     pub fn init(allocator: std.mem.Allocator, config: *yoga.Config, session: handles.Handle) !*Scene {
         const self = try allocator.create(Scene);
@@ -920,7 +956,7 @@ pub const Scene = struct {
                 node.paint_rank = if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
                 target.paint_children.appendAssumeCapacity(value);
                 node.parent = parent;
-                countBelow(parent, node.skip.update_below, node.skip.filters_below, true);
+                countBelow(parent, node.skip.update_below, node.skip.filters_below, node.skip.scrolls_below, true);
             }
         } else {
             if (index != 0) return error.YogaInvalidArgument;
@@ -961,23 +997,25 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         removeChild(&parent.scene_node.?.paint_children, value);
         if (node.skip.attention_index != no_slot) dropAttention(parent.scene_node.?, node.skip.attention_index);
-        countBelow(parent, node.skip.update_below, node.skip.filters_below, false);
+        countBelow(parent, node.skip.update_below, node.skip.filters_below, node.skip.scrolls_below, false);
         node.parent = null;
         staleCull(parent);
         self.markSubtree(parent);
     }
 
-    fn countBelow(start: *native.NativeRenderable, updates: u32, filters: u32, comptime add: bool) void {
+    fn countBelow(start: *native.NativeRenderable, updates: u32, filters: u32, scrolls: u32, comptime add: bool) void {
         var cursor: ?*native.NativeRenderable = start;
         while (cursor) |value| : (cursor = value.scene_node.?.parent) {
             const node = value.scene_node.?;
             if (add) {
                 node.skip.update_below += updates;
                 node.skip.filters_below += filters;
+                node.skip.scrolls_below += scrolls;
                 attend(value);
             } else {
                 node.skip.update_below -= updates;
                 node.skip.filters_below -= filters;
+                node.skip.scrolls_below -= scrolls;
             }
         }
     }
@@ -1198,19 +1236,19 @@ pub const Scene = struct {
             // The paint list sorts the children before it paints them.
             if (node.parent) |parent| parent.scene_node.?.sort_dirty = true;
         }
-        if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
+        const translated = node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY;
+        if (translated) {
             self.selection_epoch +%= 1;
             if (node.parent) |parent| staleCull(parent);
             // Refresh newly revealed descendants before paint: feedback may have skipped their
             // culling parent, and nothing else reaches it in this frame.
             if (self.attempt != null and self.filter_count != 0) self.preparation_dirty = true;
         }
-        if (self.attempt != null or node.paint.zIndex != paint.zIndex or
-            node.paint.opacity != paint.opacity or node.paint.translateX != paint.translateX or
-            node.paint.translateY != paint.translateY or node.paint.borderSides != paint.borderSides)
+        if (self.attempt != null or node.paint.zIndex != paint.zIndex or node.paint.opacity != paint.opacity or
+            node.paint.borderSides != paint.borderSides or (translated and !node.keepsCandidates(0)))
         {
             self.clearPreparation();
-        }
+        } else if (translated) self.dropMembers();
         if (!std.meta.eql(node.paint, paint)) node.paint_epoch = nextPaintEpoch();
         node.paint = paint;
     }
@@ -1274,8 +1312,8 @@ pub const Scene = struct {
         // A new listener hears changes from now on, not the ones nobody heard.
         if (flags & ~node.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0) node.scroll.?.reported = node.scroll.?.observed();
         const updates = [2]bool{ node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0, flags & api.OT_SCENE_HOOK_UPDATE != 0 };
-        if (updates[0] and !updates[1]) countBelow(value, 1, 0, false);
-        if (updates[1] and !updates[0]) countBelow(value, 1, 0, true);
+        if (updates[0] and !updates[1]) countBelow(value, 1, 0, 0, false);
+        if (updates[1] and !updates[0]) countBelow(value, 1, 0, 0, true);
         if (stamped) node.update_frame = self.attempt.?.frame_id;
         node.hook_flags = flags;
         node.hook_generation = generation;
@@ -1319,6 +1357,7 @@ pub const Scene = struct {
             created.* = .{ .viewport_node = viewport_node, .content_node = content_node, .options = .{ .axes = ~options.axes } };
             node.scroll = created;
             self.scroll_count += 1;
+            countBelow(value, 0, 0, 1, true);
             break :blk created;
         };
         const previous = state.options;
@@ -1359,7 +1398,7 @@ pub const Scene = struct {
         const filters = value.scene_node.?.filtersChildren();
         if (filters != filtered) {
             self.filter_count = self.filter_count + @intFromBool(filters) - @intFromBool(filtered);
-            if (filters) countBelow(value, 0, 1, true) else countBelow(value, 0, 1, false);
+            if (filters) countBelow(value, 0, 1, 0, true) else countBelow(value, 0, 1, 0, false);
             // Culled children the selection set aside need the list again.
             if (!filters) for (value.scene_node.?.children.items) |child| attend(child);
         }
@@ -1470,9 +1509,16 @@ pub const Scene = struct {
         if (std.meta.eql(before[0], state.offset)) return;
         node.paint_epoch = nextPaintEpoch();
         self.selection_epoch +%= 1;
+        if (self.attempt == null and node.keepsCandidates(1)) return self.dropMembers();
         // Children move; in an attempt the next round prepares and culls at the new offset.
         self.preparation_dirty = true;
         self.clearPreparation();
+    }
+
+    /// The paint list goes and paint layout stops reporting its positions.
+    fn dropMembers(self: *Scene) void {
+        self.members.clearRetainingCapacity();
+        self.members_gen += 1;
     }
 
     /// `target`'s rect in the content coordinates of the scroll node `box`, from the last solve,
@@ -1917,6 +1963,8 @@ pub const Scene = struct {
                     }
                 }
                 state.culling.selected_at = node.culling.selected_epoch;
+                // Before the need test: what the preparation finds changed is a need.
+                if (state.subtree_gen != self.candidates_gen) try self.prepareSubtree(objects, child);
                 if (state.feedback(active) != .unseen) continue;
                 const needed = self.mustVisit(state);
                 if (full or needed) self.queueUpdate(node, state, needed);
@@ -1943,6 +1991,7 @@ pub const Scene = struct {
             }
             if (state.feedback(active) != .unseen or !self.mustVisit(state)) continue;
             if (filter != null and state.culling.selected_at != node.culling.selected_epoch) continue;
+            if (state.subtree_gen != self.candidates_gen) try self.prepareSubtree(objects, child);
             self.queueUpdate(node, state, true);
         }
         self.orderBatch(self.feedback.items[start..], .rank);
@@ -1979,11 +2028,13 @@ pub const Scene = struct {
         try self.members.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
         if (self.hook_count == 0 and self.filter_count == 0 and self.candidates.items.len != 0) {
             for (self.candidates.items) |entry| if (entry.visible) self.members.appendAssumeCapacity(entry);
-        } else if (root) |value| try self.prepare(objects, value, cli.width, cli.height, .paint, false, &self.members);
+        } else if (root) |value| try self.prepare(objects, rootFrame(value, cli), .paint, false, &self.members);
         // Paint layout reports where this frame paints.
+        self.members_gen += 1;
         for (self.members.items) |entry| {
             entry.node.scene_node.?.layout.screenX = entry.layout.screenX;
             entry.node.scene_node.?.layout.screenY = entry.layout.screenY;
+            entry.node.scene_node.?.painted_gen = self.members_gen;
         }
     }
 
@@ -2235,7 +2286,8 @@ pub const Scene = struct {
         }
         if (phases) {
             // Prepass, filtered refresh, and selected updates never hold simultaneous batches for one parent.
-            const capacity = std.math.mul(usize, self.candidates.items.len, 5) catch return error.ObjectLimit;
+            // Feedback also visits culled subtrees that selection prepares, which the list leaves out.
+            const capacity = std.math.mul(usize, self.count + self.scroll_count, 5) catch return error.ObjectLimit;
             try self.feedback.ensureTotalCapacity(self.allocator, capacity);
         }
         // Kept candidates keep their stamps: their generation is still current.
@@ -2258,35 +2310,56 @@ pub const Scene = struct {
     fn walkCandidates(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root: *native.NativeRenderable) !void {
         self.candidates_gen += 1;
         self.attempt.?.walked = true;
-        try self.prepare(objects, root, cli.width, cli.height, .candidates, false, &self.candidates);
+        try self.prepare(objects, rootFrame(root, cli), .candidates, false, &self.candidates);
+    }
+
+    /// Prepares the subtree of a culling parent's child that selection or paint takes, which the
+    /// candidates walk left out, as the walk prepares what it lists: geometry read where a solve
+    /// changed it, stamps, and a mark where a box differs from its observation.
+    fn prepareSubtree(self: *Scene, objects: *const handles.Table, value: *native.NativeRenderable) PrepareError!void {
+        const node = value.scene_node.?;
+        std.debug.assert(node.prepared_gen == self.candidates_gen);
+        node.subtree_gen = self.candidates_gen;
+        if (!node.layout_flags.prepared_visible or node.paint_children.items.len == 0) return;
+        std.debug.assert(node.skip.scrolls_below == 0);
+        // The list holds no node of a culled subtree, so its room for every node holds this one;
+        // only the stamps stay.
+        if (builtin.is_test) self.test_subtree_preparations += 1;
+        const listed = self.candidates.items.len;
+        defer self.candidates.items.len = listed;
+        const start: PreparationFrame = .{ .node = value, .parent = node.layout, .clip = .{ .x = 0, .y = 0, .width = 0, .height = 0 }, .opacity = 1, .entered = true, .filtered = true, .preparing = true };
+        try self.prepare(objects, start, .candidates, false, &self.candidates);
+        for (self.candidates.items[listed..]) |entry| self.stampEntry(entry, true);
     }
 
     fn stampCandidates(self: *Scene, phases: bool) void {
-        const active = &self.attempt.?;
         for (self.candidates.items) |entry| {
-            if (entry.bars) continue;
-            if (builtin.is_test) self.test_stamp_steps += 1;
-            const node = entry.node.scene_node.?;
-            node.layout = entry.layout;
-            node.geometry_epoch = self.layout_epoch;
-            node.prepared_gen = self.candidates_gen;
-            node.layout_flags.prepared_visible = entry.visible;
-            // An observed node's resize size is its observed one; a new node is stale anyway.
-            if (phases and !sameBox(entry.layout, node.observed_layout)) markObservationStale(entry.node);
-            if (!phases) {
-                if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
-                // With hooks, hidden roots never enter refresh; placed hidden children still do.
-                if (self.hook_count != 0 and !entry.visible and node.parent == null) continue;
-                node.observed_layout = entry.layout;
-                node.resize_width = entry.layout.width;
-                node.resize_height = entry.layout.height;
-                node.observed_frame = active.frame_id;
-                node.observed_round = active.rounds;
-                node.placement = 0;
-                node.layout_flags.needs_layout = false;
-                node.skip.self_stale = false;
-            }
+            if (!entry.bars) self.stampEntry(entry, phases);
         }
+    }
+
+    inline fn stampEntry(self: *Scene, entry: Work, phases: bool) void {
+        const active = &self.attempt.?;
+        if (builtin.is_test) self.test_stamp_steps += 1;
+        const node = entry.node.scene_node.?;
+        node.layout = entry.layout;
+        node.geometry_epoch = self.layout_epoch;
+        node.prepared_gen = self.candidates_gen;
+        node.layout_flags.prepared_visible = entry.visible;
+        // An observed node's resize size is its observed one; a new node is stale anyway.
+        if (phases and !sameBox(entry.layout, node.observed_layout)) markObservationStale(entry.node);
+        if (phases) return;
+        if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
+        // With hooks, hidden roots never enter refresh; placed hidden children still do.
+        if (self.hook_count != 0 and !entry.visible and node.parent == null) return;
+        node.observed_layout = entry.layout;
+        node.resize_width = entry.layout.width;
+        node.resize_height = entry.layout.height;
+        node.observed_frame = active.frame_id;
+        node.observed_round = active.rounds;
+        node.placement = 0;
+        node.layout_flags.needs_layout = false;
+        node.skip.self_stale = false;
     }
 
     /// OT_SCENE_DEBUG_VERIFY on a round that keeps its lists: fresh walks list the same
@@ -2298,12 +2371,12 @@ pub const Scene = struct {
         var fresh: std.ArrayListUnmanaged(Work) = .empty;
         defer fresh.deinit(self.allocator);
         try fresh.ensureTotalCapacity(self.allocator, self.count + self.scroll_count);
-        try self.prepare(objects, root, cli.width, cli.height, .candidates, true, &fresh);
-        if (!sameEntries(fresh.items, self.candidates.items)) return error.RetainedMismatch;
+        try self.prepare(objects, rootFrame(root, cli), .candidates, true, &fresh);
+        if (!sameEntries(fresh.items, self.candidates.items, true)) return error.RetainedMismatch;
         if (self.members.items.len == 0) return;
         fresh.clearRetainingCapacity();
-        try self.prepare(objects, root, cli.width, cli.height, .paint, true, &fresh);
-        if (!sameEntries(fresh.items, self.members.items)) return error.RetainedMismatch;
+        try self.prepare(objects, rootFrame(root, cli), .paint, true, &fresh);
+        if (!sameEntries(fresh.items, self.members.items, false)) return error.RetainedMismatch;
     }
 
     /// OT_SCENE_DEBUG_VERIFY before paint: feedback refreshed every painted member that changed,
@@ -3057,7 +3130,7 @@ pub const Scene = struct {
         else
             try composedLayout(try self.viewportNode(objects, node.viewport.?), false);
         // The cutoff includes hidden children and changes selection, not refresh ordering.
-        if (node.children.items.len < 16 and layout.width > 0 and layout.height > 0) return null;
+        if (node.children.items.len < cull_children_min and layout.width > 0 and layout.height > 0) return null;
         var direction: u32 = 0;
         try yoga.check(yoga.yogaNodeStyleGetEnumChecked(node.childYoga(value), api.OT_STYLE_ENUM_FLEX_DIRECTION, &direction));
         return .{ .viewport = layout, .row = direction == api.OT_FLEX_DIRECTION_ROW or direction == api.OT_FLEX_DIRECTION_ROW_REVERSE };
@@ -3133,12 +3206,14 @@ pub const Scene = struct {
         index.usable = true;
     }
 
-    /// A dry walk lists what a walk would without reading geometry or changing order.
-    fn prepare(self: *Scene, objects: *const handles.Table, root: *native.NativeRenderable, width: u32, height: u32, mode: enum { candidates, paint }, dry: bool, list: *std.ArrayListUnmanaged(Work)) !void {
+    /// Walks from the root's frame, or from an entered child for prepareSubtree. A dry walk
+    /// lists what a walk would without reading geometry or changing order.
+    fn prepare(self: *Scene, objects: *const handles.Table, start: PreparationFrame, mode: enum { candidates, paint }, dry: bool, list: *std.ArrayListUnmanaged(Work)) !void {
         var stack: [yoga.depth_max]PreparationFrame = undefined;
-        // Each filtering node's candidates stay in scratch until the walk ends.
-        self.scratch.clearRetainingCapacity();
-        stack[0] = .{ .node = root, .parent = .{}, .clip = .{ .x = 0, .y = 0, .width = width, .height = height }, .opacity = 1 };
+        // Each filtering node's candidates stay in scratch until the walk ends. A candidates walk
+        // culls nothing, so it may run within a selection or a paint walk.
+        if (mode == .paint) self.scratch.clearRetainingCapacity();
+        stack[0] = start;
         var depth: usize = 1;
         while (depth != 0) {
             const frame = &stack[depth - 1];
@@ -3167,6 +3242,10 @@ pub const Scene = struct {
                     var computed: yoga.ExternalYogaLayout = undefined;
                     self.frame_work.geometry_reads += 1;
                     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
+                    if (frame.preparing and (std.math.isNan(computed.width) or std.math.isNan(computed.height))) {
+                        depth -= 1;
+                        continue;
+                    }
                     layout = .{
                         .left = computed.left,
                         .top = computed.top,
@@ -3207,12 +3286,19 @@ pub const Scene = struct {
                     depth -= 1;
                     continue;
                 }
-                frame.parent = layout;
                 if (refresh_layout) {
                     var overflow: u32 = 0;
                     try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_OVERFLOW, &overflow));
                     node.layout_flags.clips_children = overflow != api.OT_OVERFLOW_VISIBLE;
                 }
+                // After its clipping, which paint applies when it takes the child.
+                if (frame.stops and node.skip.scrolls_below == 0) {
+                    depth -= 1;
+                    continue;
+                }
+                frame.parent = layout;
+                // A culled child's subtree is prepared where paint first takes it.
+                if (mode == .paint and !dry and node.subtree_gen != self.candidates_gen) try self.prepareSubtree(objects, value);
                 if (node.scroll) |state| {
                     const origin = childOrigin(node, layout);
                     frame.parent.screenX = origin[0];
@@ -3236,6 +3322,8 @@ pub const Scene = struct {
                     if (sortChildren(node) and mode == .paint) self.candidates.clearRetainingCapacity();
                 }
                 if (frame.filter) |filter| frame.culled = try self.cullCandidates(node, filter, .{ frame.parent.screenX, frame.parent.screenY });
+                if (mode == .candidates and !dry) node.subtree_gen = self.candidates_gen;
+                frame.stops_children = mode == .candidates and !self.forcesFullFrame() and node.culls();
                 frame.entered = true;
             }
             const children = frame.culled orelse node.paint_children.items;
@@ -3251,7 +3339,7 @@ pub const Scene = struct {
             if (depth == stack.len) return error.YogaDepthLimit;
             const child = children[frame.child];
             frame.child += 1;
-            stack[depth] = .{ .node = child, .parent = frame.parent, .clip = frame.clip, .opacity = frame.opacity, .filtered = frame.filtered or node.filtersChildren(), .filter = frame.filter };
+            stack[depth] = .{ .node = child, .parent = frame.parent, .clip = frame.clip, .opacity = frame.opacity, .filtered = frame.filtered or node.filtersChildren(), .stops = frame.stops_children, .preparing = frame.preparing, .filter = frame.filter };
             depth += 1;
         }
     }
@@ -3390,8 +3478,43 @@ pub fn getLayout(value: *const native.NativeRenderable) !Layout {
     return composedLayout(value, true);
 }
 
+/// Where the latest paint list painted the node. The walks prepare a culled subtree only where
+/// it shows, so a node the list did not paint reads its geometry again, once per frame: a hook
+/// reads its request's geometry after its own changes.
 pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
-    return cellLayout(value.scene_node.?.layout);
+    const node = value.scene_node.?;
+    if (node.painted_gen != node.owner.members_gen and node.read_frame != node.owner.last_frame_id) {
+        node.layout = try readLayout(value);
+        node.read_frame = node.owner.last_frame_id;
+    }
+    return cellLayout(node.layout);
+}
+
+/// The latest solved geometry, composed as the walks compose it, with current translations and
+/// scroll offsets. A node Yoga has not laid out since it was created or moved has no cells.
+fn readLayout(value: *const native.NativeRenderable) !Layout {
+    var nodes: [yoga.depth_max]*const native.NativeRenderable = undefined;
+    var count: usize = 0;
+    var origin = [2]f64{ 0, 0 };
+    var cursor: ?*const native.NativeRenderable = value;
+    while (cursor) |current| : (cursor = current.scene_node.?.parent) {
+        if (count == nodes.len) return error.YogaDepthLimit;
+        nodes[count] = current;
+        count += 1;
+    }
+    var layout: Layout = undefined;
+    while (count != 0) {
+        count -= 1;
+        const node = nodes[count].scene_node.?;
+        var computed: yoga.ExternalYogaLayout = undefined;
+        try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(nodes[count].yoga_node, &computed));
+        if (count == 0 and (std.math.isNan(computed.width) or std.math.isNan(computed.height))) return .{};
+        layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = @max(computed.width, 1), .height = @max(computed.height, 1) };
+        layout.screenX = origin[0] + @as(f64, layout.left) + node.paint.translateX;
+        layout.screenY = origin[1] + @as(f64, layout.top) + node.paint.translateY;
+        origin = childOrigin(node, layout);
+    }
+    return layout;
 }
 
 fn composedLayout(value: *const native.NativeRenderable, comptime observed: bool) !Layout {
@@ -3434,6 +3557,10 @@ fn scrollViewport(state: *const ScrollState, box: Layout) Layout {
     viewport.screenX = box.screenX + viewport.left;
     viewport.screenY = box.screenY + viewport.top;
     return viewport;
+}
+
+fn rootFrame(root: *native.NativeRenderable, cli: *const renderer.CliRenderer) PreparationFrame {
+    return .{ .node = root, .parent = .{}, .clip = .{ .x = 0, .y = 0, .width = cli.width, .height = cli.height }, .opacity = 1 };
 }
 
 fn cellClip(layout: Layout) buffer.ClipRect {
@@ -3526,13 +3653,23 @@ fn sortChildren(node: *Node) bool {
     return true;
 }
 
-/// Every field counts; layouts compare bitwise, so NaN layouts are equal.
-fn sameEntries(first: []const Work, second: []const Work) bool {
+/// Every field counts; layouts compare bitwise, so NaN layouts are equal. In kept candidates, a
+/// culling node that moved left its own and its subtree's positions and clips behind, which only
+/// paint layout reads, again (getPaintLayout); a scroll node's stay exact for its report.
+fn sameEntries(first: []const Work, second: []const Work, comptime kept: bool) bool {
     comptime std.debug.assert(@sizeOf(Layout) == 6 * @sizeOf(f32) + 2 * @sizeOf(f64));
     if (first.len != second.len) return false;
     for (first, second) |a, b| {
-        if (!std.mem.eql(u8, std.mem.asBytes(&a.layout), std.mem.asBytes(&b.layout))) return false;
-        var rest = .{ a, b };
+        var rest = [2]Work{ a, b };
+        const node = a.node.scene_node.?;
+        if (kept and (a.filtered or node.filtersChildren()) and node.scroll == null) {
+            for (&rest) |*entry| {
+                entry.layout.screenX = 0;
+                entry.layout.screenY = 0;
+                entry.clip = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            }
+        }
+        if (!std.mem.eql(u8, std.mem.asBytes(&rest[0].layout), std.mem.asBytes(&rest[1].layout))) return false;
         rest[0].layout = .{};
         rest[1].layout = .{};
         if (!std.meta.eql(rest[0], rest[1])) return false;

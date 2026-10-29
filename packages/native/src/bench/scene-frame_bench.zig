@@ -208,6 +208,8 @@ const scenarios = [_]Scenario{
     .{ .name = "scroll-10000 scroll by one row", .shape = .scroll, .size = 10_000, .change = .scroll },
     .{ .name = "scroll-10000 append", .shape = .scroll, .size = 10_000, .change = .append },
     .{ .name = "scroll-1000-w6d2 unchanged", .shape = .wrapped_scroll, .size = 1000, .change = .unchanged },
+    .{ .name = "scroll-1000-w6d2 status glyph", .shape = .wrapped_scroll, .size = 1000, .change = .glyph },
+    .{ .name = "scroll-1000-w6d2 scroll by one row", .shape = .wrapped_scroll, .size = 1000, .change = .scroll },
     .{ .name = "scroll-node-10000 unchanged", .shape = .scroll_node, .size = 10_000, .change = .unchanged },
     .{ .name = "scroll-node-10000 scroll by one row", .shape = .scroll_node, .size = 10_000, .change = .scroll },
     .{ .name = "scroll-node-10000 append", .shape = .scroll_node, .size = 10_000, .change = .append },

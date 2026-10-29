@@ -270,6 +270,8 @@ const Stats = struct {
     scroll_changes: u32 = 0,
     scroll_requests: u32 = 0,
     scroll_layouts: u32 = 0,
+    /// Frames that prepared a culled row's subtree where it showed (B5d).
+    subtree_preparations: u32 = 0,
     /// Folds every candidate frame's work counts, to check that a seed replays identically.
     digest: u64 = 0,
 };
@@ -1060,6 +1062,7 @@ const Harness = struct {
             for (self.twins) |twin| try twin.owner.sceneFrameCancel(twin.id, twin.state.painted.?.ticket.frame_id);
         }
         const stamps = self.twins[candidate].state.test_stamp_steps;
+        const preparations = self.twins[candidate].state.test_subtree_preparations;
         self.recorded = false;
         // Late in a run, since the decoder cannot follow a split's scrollback: a split render
         // before the frame without one, and the frame presented by a split render.
@@ -1137,6 +1140,7 @@ const Harness = struct {
         self.stats.reused += @intFromBool(work.candidate_visits == 0);
         // A frame that keeps its candidates keeps their stamps too (B5a).
         if (work.candidate_visits == 0) try testing.expectEqual(stamps, self.twins[candidate].state.test_stamp_steps);
+        self.stats.subtree_preparations += @intFromBool(self.twins[candidate].state.test_subtree_preparations != preparations);
         self.stats.skipped += @intFromBool(work.damage_rows == 0);
         self.stats.partial += @intFromBool(work.damage_rows != 0 and work.damage_rows < self.twins[candidate].cli.height);
         self.stats.banded += @intFromBool(work.damage_rows != 0 and work.cells_cleared < @as(u64, self.twins[candidate].cli.width) * self.twins[candidate].cli.height);
@@ -1417,7 +1421,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // after paint 2,802, raw writes between frames 406, shared text changes shown 449, style
     // changes shown 235, view binds 367, selections 224, equal re-sends 462, palette changes 96,
     // frames showing a scroll node with children 983, scrolls and option changes 151, SCROLL
-    // requests 4.
+    // requests 4, and frames that prepared a culled row's subtree where it showed 68.
     const minimums: Stats = .{
         // SCROLL requests that deliver a LAYOUT request: 13 in one run.
         .scroll_layouts = 3,
@@ -1461,6 +1465,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .scroll_frames = 300,
         .scroll_changes = 42,
         .scroll_requests = 2,
+        .subtree_preparations = 17,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
