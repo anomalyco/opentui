@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: fea6b4e49f2427eb479a7f6d096dfec74dccf77d8b2e197b82ae1f4915885942
+// ABI audit SHA-256: d846729b81d7c2dac52b994f989222e0f40dd2a66fcd85c2ee4c74ace42fd649
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1167,7 +1167,7 @@ export const nativeLayouts = {
     },
   },
   ot_buffer_draw_text_record: {
-    size: 44,
+    size: 48,
     alignment: 4,
     fields: {
       header: { offset: 0, size: 16, alignment: 4, type: "ot_buffer_draw_header" },
@@ -1176,6 +1176,7 @@ export const nativeLayouts = {
       attributes: { offset: 24, size: 4, alignment: 4, type: "u32" },
       foreground: { offset: 28, size: 8, alignment: 2, type: "[4]u16" },
       background: { offset: 36, size: 8, alignment: 2, type: "[4]u16" },
+      max_width: { offset: 44, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_buffer_draw_cell: {
@@ -2005,6 +2006,7 @@ export const nativeConstants = {
   OT_BUFFER_DRAW_HAS_BACKGROUND: 1,
   OT_BUFFER_DRAW_HAS_SOURCE_WIDTH: 2,
   OT_BUFFER_DRAW_HAS_SOURCE_HEIGHT: 4,
+  OT_BUFFER_DRAW_FIT_ELLIPSIS: 16,
   OT_BUFFER_STACK_DEPTH_MAX: 256,
   OT_BUFFER_STACK_GET_OPACITY: 0,
   OT_BUFFER_STACK_PUSH_SCISSOR: 1,

@@ -36,9 +36,16 @@ pub fn drawHeader(comptime T: type, operation: u32) c.ot_buffer_draw_header {
     return .{ .struct_size = @sizeOf(T), .abi_version = c.OT_CONTEXT_ABI_VERSION, .operation = operation, .flags = 0 };
 }
 
+/// White text; the black background applies with OT_BUFFER_DRAW_HAS_BACKGROUND.
+fn textRecord(x: i32, y: i32, max_width: u32, flags: u32) c.ot_buffer_draw_text_record {
+    var header = drawHeader(c.ot_buffer_draw_text_record, c.OT_BUFFER_DRAW_TEXT);
+    header.flags = flags;
+    return .{ .header = header, .x = x, .y = y, .attributes = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 }, .max_width = max_width };
+}
+
 /// Builds an 8-byte aligned paint recording.
 pub const Recording = struct {
-    bytes: [2048]u8 align(8) = undefined,
+    bytes: [8192]u8 align(8) = undefined,
     len: usize = 0,
 
     pub fn slot(self: *Recording, index: u32, phase: u32) void {
@@ -46,14 +53,7 @@ pub const Recording = struct {
     }
 
     pub fn text(self: *Recording, value: []const u8, x: i32, y: i32) void {
-        self.draw(c.ot_buffer_draw_text_record{
-            .header = drawHeader(c.ot_buffer_draw_text_record, c.OT_BUFFER_DRAW_TEXT),
-            .x = x,
-            .y = y,
-            .attributes = 0,
-            .foreground = .{ 255, 255, 255, 255 },
-            .background = .{ 0, 0, 0, 0 },
-        }, null, value, "");
+        self.draw(textRecord(x, y, 0, 0), null, value, "");
     }
 
     pub fn fill(self: *Recording, x: i32, y: i32, width: u32, background: [4]u16) void {
@@ -699,6 +699,7 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
     valid.stack(c.OT_BUFFER_STACK_PUSH_SCISSOR, 1, 3, 1);
     valid.slot(1, c.OT_SCENE_RECORD_PHASE_AFTER);
     valid.text("ok", 5, 2);
+    valid.draw(textRecord(4, 3, 5, c.OT_BUFFER_DRAW_HAS_BACKGROUND | c.OT_BUFFER_DRAW_FIT_ELLIPSIS), null, "\u{8a2d}\u{5b9a}\u{3068}", "");
     try f.owner.sceneFrameCancel(f.id, (try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &valid)).frame_id);
     for (0..512) |seed| {
         var prng = std.Random.DefaultPrng.init(seed);
@@ -719,6 +720,88 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
             try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_DONE), done.kind);
             try f.owner.sceneFrameCancel(f.id, done.frame_id);
         }
+    }
+}
+
+// A fitted text draw writes no cell at or past x + max_width, never splits a glyph, and puts "…" right
+// after the kept glyphs only when it cut the text. Each row draws over x cells, so a blank cell shows
+// where a tab drew. Rows decode as ot_buffer_draw does and draw into an owned buffer, and play as a
+// recorded DRAW; both give the row.
+test "Scene record and direct text draws fit text to a cell width" {
+    const Row = struct { text: []const u8, x: i32 = 0, max_width: u32, ellipsis: bool = false, scissor: bool = false, legacy: bool = false, row: []const u8 };
+    const rows = [_]Row{
+        .{ .text = "abcdef", .max_width = 4, .row = "abcdxxxxxx" },
+        .{ .text = "abcde", .max_width = 4, .ellipsis = true, .row = "abc…xxxxxx" },
+        .{ .text = "abcd", .max_width = 4, .ellipsis = true, .row = "abcdxxxxxx" },
+        .{ .text = "設定とオプション", .max_width = 8, .row = "設定とオxx" },
+        .{ .text = "設定とオプション", .max_width = 8, .ellipsis = true, .row = "設定と…xxx" },
+        .{ .text = "設定", .max_width = 4, .ellipsis = true, .row = "設定xxxxxx" },
+        .{ .text = "abcdef😀xy", .max_width = 7, .row = "abcdefxxxx" },
+        .{ .text = "abcdef😀xy", .max_width = 8, .ellipsis = true, .row = "abcdef…xxx" },
+        // A ZWJ family and a combining mark stay whole.
+        .{ .text = "a👨‍👩‍👧b", .max_width = 3, .ellipsis = true, .row = "a…xxxxxxxx" },
+        .{ .text = "e\u{301}abc", .max_width = 3, .ellipsis = true, .row = "e\u{301}a…xxxxxxx" },
+        // A tab clips cell by cell at the limit; with an ellipsis it is not kept.
+        .{ .text = "ab\tc", .max_width = 3, .row = "ab xxxxxxx" },
+        .{ .text = "ab\tc", .max_width = 3, .ellipsis = true, .row = "ab…xxxxxxx" },
+        // Four bytes, five cells.
+        .{ .text = "ab\tc", .max_width = 4, .ellipsis = true, .row = "ab…xxxxxxx" },
+        .{ .text = "界a", .max_width = 1, .row = "xxxxxxxxxx" },
+        .{ .text = "界a", .max_width = 1, .ellipsis = true, .row = "…xxxxxxxxx" },
+        .{ .text = "界ab", .max_width = 2, .row = "界xxxxxxxx" },
+        .{ .text = "界ab", .max_width = 2, .ellipsis = true, .row = "…xxxxxxxxx" },
+        // Cells left of column 0 and right of the target count toward the limit.
+        .{ .text = "abcdef", .x = -2, .max_width = 5, .ellipsis = true, .row = "cd…xxxxxxx" },
+        .{ .text = "設定とオプション", .x = -1, .max_width = 5, .ellipsis = true, .row = "x定…xxxxxx" },
+        .{ .text = "abcdefghijkl", .x = 8, .max_width = 5, .ellipsis = true, .row = "xxxxxxxxab" },
+        .{ .text = "abcdef", .max_width = 5, .ellipsis = true, .scissor = true, .row = "xbcxxxxxxx" },
+        // No limit: max_width 0, or a record from before max_width.
+        .{ .text = "abcdefghijkl", .max_width = 0, .row = "abcdefghij" },
+        .{ .text = "abcdefghijkl", .max_width = 5, .legacy = true, .row = "abcdefghij" },
+    };
+    const width = 10;
+    const f = try Fixture.init(testing.allocator, width, rows.len, .{ .output = transport });
+    defer f.deinit();
+    try f.owner.sceneSetHooks(try placed(f, c.OT_SCENE_CUSTOM, 2, 0, 0, width), c.OT_SCENE_HOOK_RENDER_AFTER, 1, width, 1);
+    const direct = try f.owner.createBuffer(width, rows.len, .{});
+    const target = try f.owner.raw().getBuffer(direct);
+    var recording: Recording = .{};
+    recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+    for (rows, 0..) |row, index| {
+        const y: i32 = @intCast(index);
+        var record = textRecord(row.x, y, row.max_width, c.OT_BUFFER_DRAW_HAS_BACKGROUND | @as(u32, if (row.ellipsis) c.OT_BUFFER_DRAW_FIT_ELLIPSIS else 0));
+        if (row.legacy) record.header.struct_size = @offsetOf(c.ot_buffer_draw_text_record, "max_width");
+        recording.text("x" ** width, 0, y);
+        try f.owner.drawBufferText(direct, "x" ** width, 0, y, .{ 255, 255, 255, 255 }, null, 0);
+        if (row.scissor) {
+            recording.append(c.ot_scene_record_stack{ .header = recordHeader(c.OT_SCENE_RECORD_STACK), .operation = c.OT_BUFFER_STACK_PUSH_SCISSOR, .x = 1, .y = y, .width = 2, .height = 1, .opacity = 1 }, &.{});
+            try target.pushScissorRect(1, y, 2, 1);
+        }
+        if (row.legacy) recording.draw(std.mem.asBytes(&record)[0..@offsetOf(c.ot_buffer_draw_text_record, "max_width")].*, null, row.text, "") else recording.draw(record, null, row.text, "");
+        var draw: context.BufferDraw = undefined;
+        try scene_record.bufferDrawFromC(&record.header, &draw);
+        try f.owner.drawBuffer(direct, null, &draw, row.text, "");
+        if (row.scissor) {
+            recording.stack(c.OT_BUFFER_STACK_POP_SCISSOR, 0, 0, 1);
+            target.popScissorRect();
+        }
+    }
+    const done = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &recording);
+    var text: [1024]u8 = undefined;
+    for ([_]*const @import("../buffer.zig").OptimizedBuffer{ target, f.cli.getNextBuffer() }) |cells| {
+        var lines = std.mem.splitScalar(u8, text[0..try cells.writeResolvedChars(&text, true)], '\n');
+        for (rows) |row| {
+            errdefer std.debug.print("row={any}\n", .{row});
+            try testing.expectEqualStrings(row.row, lines.next().?);
+        }
+    }
+    try f.owner.sceneFrameCancel(f.id, done.frame_id);
+    // Other sizes, other flags, and an ellipsis without a limit are rejected.
+    for ([_][2]u32{ .{ 40, 0 }, .{ 52, 0 }, .{ 48, 32 }, .{ 48, c.OT_BUFFER_DRAW_FIT_ELLIPSIS } }) |invalid| {
+        var record = textRecord(0, 0, 0, invalid[1]);
+        record.header.struct_size = invalid[0];
+        var draw: context.BufferDraw = undefined;
+        try testing.expectError(error.InvalidOptions, scene_record.bufferDrawFromC(&record.header, &draw));
     }
 }
 
