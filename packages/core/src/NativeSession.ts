@@ -616,8 +616,10 @@ export class NativeSession {
       }
       // The stdout writer: wait for its running copy without a limit, then deliver the rest
       // through it, so a non-blocking fd waits for room instead of giving up.
-      let viaWriter = this.stdoutWriter
-      if (viaWriter) this.lib.sessionPostStdout(this.context, this.session, 0, true)
+      // A copy posted but never picked up comes back unwritten: drain from then on, without a new thread.
+      let viaWriter =
+        this.stdoutWriter &&
+        (this.lib.sessionPostStdout(this.context, this.session, 0, true).written > 0 || !this.stdoutPost)
       this.stdoutPost = null
       // The first pump stops admission. Only the bounded retained queue and native
       // restoration remain; neither user callbacks nor scheduled turns run here.
@@ -817,12 +819,9 @@ export class NativeSession {
       if (this.stdoutWriter) {
         const now = this.scheduler.now()
         try {
+          // A copy just started is polled on the next turn.
           this.postStdout(now, true)
-          if (this.stdoutPost) {
-            const deadline = this.pollDeadline(now)
-            if (deadline === 0n) this.schedule()
-            else this.schedule(deadline)
-          } else this.schedule()
+          this.schedule()
           return
         } catch (error) {
           if (!(error instanceof NativeError) || error.status !== NativeStatus.UnsupportedResource) throw error
