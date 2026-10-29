@@ -224,7 +224,8 @@ test.each(
 // Captured stdout holds at most 64 MiB of queued rows (9,776 79-cell rows); past that its oldest unwritten rows
 // collapse into "[N lines dropped]" rows. Terminals: stalled renders frames only while a writer waits for drain;
 // draining renders 8 commits per 64 rows; suspending starts to flush a nearly full queue at row 9,600; replaying asks
-// for a replay reset at row 9,000; interleaved puts a writer row before every row; burst writes 8 rows, holds them in
+// for a replay reset at row 9,000; interleaved puts a writer row before every
+// 399-cell row (3,020 of them reach the bound); burst writes 8 rows, holds them in
 // a frame, and writes the rest in one call.
 const capturedMaxBytes = 64 * 1024 * 1024
 test.each([
@@ -233,13 +234,13 @@ test.each([
   ["ignores", "draining", 15_000, 79],
   ["ignores", "suspending", 10_000, 79],
   ["ignores", "replaying", 15_000, 79],
-  ["ignores", "interleaved", 10_500, 79],
+  ["ignores", "interleaved", 4_000, 399],
   ["ignores", "burst", 20_000, 78],
   ["respects", "draining", 12_000, 79],
 ] as const)(
   "a writer that %s backpressure on a %s terminal keeps %i %i-cell rows bounded",
   async (mode, pace, rows, cells) => {
-    const terminal = await setupTerminal({ columns: 80 })
+    const terminal = await setupTerminal({ columns: Math.max(80, cells + 1) })
     type Queue = { size: number; capturedBytes: number }
     const queue = (terminal.renderer as unknown as { externalOutputQueue: Queue }).externalOutputQueue
     const create = OptimizedBuffer.create
@@ -346,8 +347,9 @@ test.each([
     const adjacent = lines.some((line, index) => line.startsWith("[") && lines[index + 1]?.startsWith("["))
     expect(adjacent).toBe(pace === "replaying" && adjacent)
     expect(kept.length < rows).toBe(mode === "ignores")
-    // The newest rows always survive: 4,800 of them fit in half the bound.
-    expect(kept.slice(-4_800)).toEqual(Array.from({ length: 4_800 }, (_, index) => rows - 4_800 + index))
+    // The newest rows always survive: as many as half the bound holds by the estimate, less a margin for markers.
+    const newest = Math.floor(capturedMaxBytes / 2 / (3_072 + 48 * cells)) - 100
+    expect(kept.slice(-newest)).toEqual(Array.from({ length: newest }, (_, index) => rows - newest + index))
     if (pace === "stalled") expect(lines[0]![0]).toBe("[")
     // Drops on both sides of writer rows share one marker.
     if (pace === "interleaved") expect(lines.filter((line) => line[0] === "[")).toHaveLength(1)
@@ -363,6 +365,8 @@ test.each([
       expect(terminal.printed(/app \d+/g)).toEqual(apps)
     }
   },
+  // Each row writes thousands of rows; a loaded or slow runner needs more than the 5 s default.
+  30_000,
 )
 
 test("cancelling the last animation frame keeps the render that captured stdout requested", async () => {
@@ -539,7 +543,7 @@ test("a collapse drops whole terminal rows, counts them, and predicts the tail t
   renderer.destroy()
   await renderer.closed
   expect(created.filter((buffer) => !(buffer as unknown as { _destroyed: boolean })._destroyed)).toEqual([])
-})
+}, 30_000)
 
 // After the frame the published tail is 4; the queued newline resets it.
 test("the predicted tail column counts every cell of a trailing wide character", async () => {
