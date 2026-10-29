@@ -51,7 +51,9 @@ In split-footer mode, `renderer.width` and `renderer.height` describe the footer
 
 The renderer also supplies structured scrollback writers and surfaces. Use the canonical [custom renderables guide](/docs/extend/custom-renderables) for off-screen rendering and the [Buffer API](/docs/reference/buffer-api) for buffer ownership.
 
-Captured writes, writer snapshots, and surface commits wait in one queue until frames present them, in order. Captured stdout is never refused. One writer snapshot or surface commit larger than the Session output capacity divided by 24 bytes (about 349,000 cells by default) throws.
+Captured writes, writer snapshots, and surface commits wait in one queue until frames present them, in order. One writer snapshot or surface commit larger than the Session output capacity divided by 24 bytes (about 349,000 cells by default) throws.
+
+Captured stdout is bounded; writer snapshots and surface commits are not. Each captured row counts about 3 KiB plus 48 bytes per cell toward a 64 MiB bound, about 9,700 rows at 80 columns. From half the bound, `stdout.write()` returns `false` until frames take the queue below half again; then `stdout` emits `'drain'`. A refused writer that waits for `'drain'` therefore waits for the terminal, but `'drain'` events that the terminal stream emits for its own writes wake it too, so the backpressure is advisory. A write that takes the queue past the bound returns `false` and drops the oldest captured rows that no frame has started to write, down to half the bound, in whole terminal rows. The dropped rows become one `[N lines dropped]` row where the first of them was, where N counts terminal rows; writer rows between them stay, after it. Drops on the two sides of a pending replay reset get one row each, so no row spans its clear. The row is an `external_output` event. A later overflow adds to that row while it is still queued. After `destroy()`, a refused writer gets `'drain'` once the queued rows and the terminal restore are written.
 
 ## Custom streams
 
