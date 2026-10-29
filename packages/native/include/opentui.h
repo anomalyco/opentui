@@ -1490,6 +1490,8 @@ ot_status ot_edit_buffer_history(ot_context *, const ot_handle *, uint32_t redo,
 #define OT_EDIT_POSITION_OFFSET UINT32_C(4)
 #define OT_EDIT_POSITION_COORDS UINT32_C(5)
 #define OT_EDIT_POSITION_LINE_START UINT32_C(6)
+#define OT_EDIT_POSITION_END UINT32_C(7)
+#define OT_EDIT_POSITION_PREV_CHAR UINT32_C(8)
 typedef struct ot_edit_position {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1499,7 +1501,8 @@ typedef struct ot_edit_position {
     uint32_t offset;
 } ot_edit_position;
 /* a is offset, row, or line for OFFSET, COORDS, LINE_START; b is col for COORDS.
- * Other inputs are zero. Invalid positions return valid=0 and zero coordinates. */
+ * Other inputs are zero. Invalid positions return valid=0 and zero coordinates.
+ * END is the text's end, PREV_CHAR where MOVE_LEFT would go; no query moves the cursor. */
 ot_status ot_edit_buffer_get_position(ot_context *, const ot_handle *, uint32_t query,
     uint32_t a, uint32_t b, ot_edit_position *out_position);
 /* by_coords=0 uses start_col/end_col as offsets and requires zero rows;
@@ -2201,11 +2204,19 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
 #define OT_TERMINAL_MOUSE_MOVEMENT UINT32_C(4)
 #define OT_TERMINAL_CLEAR_ON_CLOSE UINT32_C(8)
 #define OT_TERMINAL_REPLY_SENTINEL UINT32_C(16)
+#define OT_TERMINAL_SYNC_ALWAYS UINT32_C(32)
+#define OT_TERMINAL_SYNC_NEVER UINT32_C(64)
+#define OT_TERMINAL_HOST_MULTIPLEXER UINT32_C(128)
 
-/* flags is a combination of the five OT_TERMINAL_* option bits above. Other bits
+/* flags is a combination of the eight OT_TERMINAL_* option bits above. Other bits
  * must be zero. REPLY_SENTINEL ends the startup query packet with DA1 (CSI c),
  * also inside tmux, and sends no other DA1; the host waits for its reply instead
- * of a timer. A DA1 reply then also ends the startup cursor-report probes. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
+ * of a timer. A DA1 reply then also ends the startup cursor-report probes.
+ * Frames are wrapped in synchronized output (DEC mode 2026) unless the terminal
+ * is remote and, once its replies passed the 2026 query (a width-probe report
+ * or DA1), either did not report the mode or HOST_MULTIPLEXER is set: the host
+ * runs inside tmux, screen or Zellij between the app and the link.
+ * SYNC_ALWAYS or SYNC_NEVER (not both) forces the wrapper on or off. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
  * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
  * clears only a surface that setup or resume claimed: a close before their mode
  * packet leaves visible shell output in place. */
