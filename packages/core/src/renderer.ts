@@ -1961,6 +1961,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error('externalOutputMode "capture-stdout" requires screenMode "split-footer"')
     }
 
+    if (mode === "passthrough") this.flushStdoutDecoder()
     if (this._isDestroyed) {
       // A destroyed renderer cannot paint captured rows, so it never captures stdout again.
       this.pendingExternalOutputMode = null
@@ -1989,7 +1990,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private applyExternalOutputMode(mode: ExternalOutputMode): void {
     this._externalOutputMode = mode
     this.stdout.write = mode === "capture-stdout" ? this.interceptStdoutWrite : this.realStdoutWrite
-    this.stdoutDecoder.end()
   }
 
   private afterExternalOutputModeChanged(previousMode: ExternalOutputMode, mode: ExternalOutputMode): void {
@@ -2035,6 +2035,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private applyPendingExternalOutputModeIfReady(): void {
     if (this.rendering) return
     const pendingMode = this.pendingExternalOutputMode
+    if (pendingMode === "passthrough") this.flushStdoutDecoder()
     if (
       pendingMode === null ||
       (this.externalOutputQueue.size > 0 && !(pendingMode === "capture-stdout" && this._screenMode === "split-footer"))
@@ -2840,6 +2841,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } finally {
       runCleanups([() => snapshotRoot?.destroyRecursively(), () => snapshotContext.destroy()])
     }
+  }
+
+  private flushStdoutDecoder(): void {
+    const text = this.stdoutDecoder.end()
+    if (text && !this.nativeSession.error) this.interceptStdoutWrite(text)
   }
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {

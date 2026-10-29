@@ -1851,8 +1851,13 @@ const splitBytes = (text: string, at: number, ...between: StdoutStep[]): StdoutS
   const bytes = Buffer.from(text)
   return [bytes.subarray(0, at), ...between, bytes.subarray(at)]
 }
+const passthrough = (renderer: CliRenderer) => (renderer.externalOutputMode = "passthrough")
 const unknownEncoding = (_renderer: CliRenderer, stdout: CollectingStdout) =>
   expect(() => stdout.write("x", "bogus" as BufferEncoding)).toThrow("Unknown encoding")
+const outputFailure = async (renderer: CliRenderer, stdout: CollectingStdout) => {
+  stdout.emit("error", new Error("terminal gone"))
+  await expect(renderer.closed).rejects.toThrow("terminal gone")
+}
 
 test.each<[string, StdoutStep[], string]>([
   ["Uint8Array", [new TextEncoder().encode("hello-u8\n")], "hello-u8"],
@@ -1866,6 +1871,10 @@ test.each<[string, StdoutStep[], string]>([
   ["empty string inside a split", splitBytes("\u00e9", 1, ""), "\u00e9"],
   ["unknown encoding inside a split", splitBytes("\u00e9", 1, unknownEncoding), "\u00e9"],
   ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
+  ["passthrough after a lead byte", [Buffer.from([0xc3]), passthrough], "\ufffd"],
+  ["lead byte after deferred passthrough", ["a", passthrough, Buffer.from([0xc3])], "a\ufffd"],
+  ["destroy after a lead byte", ["a", Buffer.from([0xc3]), (renderer) => renderer.destroy()], "a\ufffd"],
+  ["output failure after a lead byte", ["a", Buffer.from([0xc3]), outputFailure], ""],
 ])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {
   const stdout = createCollectingStdout(80, 24)
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
@@ -1884,8 +1893,8 @@ test.each<[string, StdoutStep[], string]>([
     else if (Array.isArray(step)) stdout.write(step[0], step[1] as BufferEncoding)
     else stdout.write(step)
   }
-  await renderer.idle()
-  await renderer.nativeScene.driver.idle()
+  await renderer.idle().catch(() => {})
+  await renderer.nativeScene.driver.idle().catch(() => {})
 
   expect(stdout.text().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")).toContain(expected)
 })
