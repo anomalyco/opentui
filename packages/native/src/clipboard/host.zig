@@ -394,7 +394,7 @@ pub const Operation = struct {
         service.removeOperation(operation);
         service.platform_mutex.lock();
         const running = service.platform_running == operation;
-        if (running) service.platform_running_destroyed = true;
+        if (running) service.platform_running = null;
         service.platform_mutex.unlock();
         // The worker still reads a settled running operation; it frees it when the platform call returns.
         if (!running) operation.deinit();
@@ -485,7 +485,6 @@ pub const Service = struct {
     platform_condition: sync.Condition = .{},
     platform_queue: std.ArrayListUnmanaged(*Operation) = .empty,
     platform_running: ?*Operation = null,
-    platform_running_destroyed: bool = false,
     platform_thread: ?std.Thread = null,
     platform_stop: bool = false,
     platform_exited: bool = false,
@@ -599,9 +598,9 @@ pub const Service = struct {
 
     fn finishPlatformOperation(service: *Service, operation: *Operation) void {
         service.platform_mutex.lock();
-        const destroyed = service.platform_running_destroyed;
+        // destroyStorage clears the pointer when it hands a running operation to the worker.
+        const destroyed = service.platform_running == null;
         service.platform_running = null;
-        service.platform_running_destroyed = false;
         service.platform_mutex.unlock();
         if (destroyed) operation.deinit();
     }
@@ -2185,6 +2184,8 @@ test "clipboard platform operations settle at their deadline whether queued or r
     try std.testing.expectEqual(OperationStatus.timed_out, running.status);
     try std.testing.expectEqual(@as(usize, 0), running.result.len);
     service.finishPlatformOperation(running);
+    service.platform_running = &next;
+    service.finishPlatformOperation(&next);
     try std.testing.expectEqual(@as(?*Operation, null), service.platform_running);
 }
 
