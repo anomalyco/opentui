@@ -1492,6 +1492,7 @@ fn expectSameObservations(twins: [2]Fixture, nodes: [2][]context.Handle) !void {
         for ([_]bool{ false, true }) |raw| {
             try testing.expectEqual(try twins[0].owner.sceneGetLayout(first, raw), try twins[1].owner.sceneGetLayout(second, raw));
         }
+        try testing.expectEqual(try twins[0].owner.sceneGetPaintLayout(first), try twins[1].owner.sceneGetPaintLayout(second));
         const states = .{ (try twins[0].owner.raw().getRenderable(first)).scene_node.?, (try twins[1].owner.raw().getRenderable(second)).scene_node.? };
         // Composition reads only the box; refresh copies the paint position too.
         inline for (.{ "left", "top", "right", "bottom", "width", "height" }) |name| {
@@ -1586,7 +1587,8 @@ test "Scene feedback runs children that replies mark in a later pass of the roun
 // changes, and an unrelated translate makes a full selection set its row aside: only the
 // culling change's mark, and listing set-aside rows again, reach it (VERIFY).
 test "Scene feedback reaches the children of culled rows when culling stops" {
-    for ([_]bool{ false, true }) |scroll_node| for ([_]bool{ false, true }) |tall| {
+    // Or when a scroll reveals rows 10 and 11, whose subtrees no walk prepared since the solve.
+    for ([_]bool{ false, true }) |scroll_node| for ([_]bool{ false, true }) |tall| for ([_]bool{ false, true }) |reveal| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 6, 4, .{}), try Fixture.init(testing.allocator, 6, 4, .{}) };
         defer for (twins) |f| f.deinit();
         var nodes: [2][43]context.Handle = undefined;
@@ -1638,7 +1640,11 @@ test "Scene feedback reaches the children of culled rows when culling stops" {
                 if (tall and frame == 2) try f.owner.sceneSetTextOptions(list[24], .{ .truncate = true });
                 if (tall and frame == 3) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 1 });
                 if (frame == if (tall) @as(usize, 4) else 2) {
-                    if (scroll_node) try f.owner.sceneSetScroll(list[1], .{}) else try f.owner.sceneSetViewport(list[2], null);
+                    if (reveal and scroll_node) {
+                        _ = try f.owner.sceneScrollTo(list[1], .{ 0, 10 }, .{ false, false }, false);
+                    } else if (reveal) {
+                        try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -10 });
+                    } else if (scroll_node) try f.owner.sceneSetScroll(list[1], .{}) else try f.owner.sceneSetViewport(list[2], null);
                 }
                 log.clearRetainingCapacity();
                 try feedbackFrame(f, .{ .reply = .later, .n = 0, .expected = &.{} }, &list, false, log);
@@ -1647,7 +1653,7 @@ test "Scene feedback reaches the children of culled rows when culling stops" {
             try expectSameObservations(twins, .{ &nodes[0], &nodes[1] });
         }
         // The last frame resized every row's child that culling hid from the resize frame.
-        if (!tall) try testing.expect(logs[1].items.len >= 16);
+        if (!tall) try testing.expect(logs[1].items.len >= @as(usize, if (reveal) 2 else 16));
     };
 }
 
@@ -2375,6 +2381,8 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 104, 56, 4, 0, 0, 21, 0, 0, 118, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 104, 53, 107 } },
         .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 55, 6, 106, 1, 18, 0, 0, 218, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106, 0, 59 } },
         .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
+        // Rows inside two boxes each: a scroll walks every row's subtree.
+        .{ .shape = .wrapped_scroll, .size = 20, .change = .scroll, .work = .{ 70, 68, 10, 0, 0, 46, 0, 0, 50, 66, 3831, 10000, 50, 20, 0, 0, 1, 50, 70, 69, 57 } },
         // The scroll shape as one scroll node: one node fewer, two hidden Yoga nodes read per
         // solve, a scroll is an offset without a solve, and an append follows the bottom.
         .{ .shape = .scroll_node, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
