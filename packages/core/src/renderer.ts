@@ -2850,12 +2850,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
     const resolvedCallback = typeof encoding === "function" ? encoding : callback
-    const resolvedEncoding = typeof encoding === "string" ? (encoding as BufferEncoding) : undefined
-    // Decode the bytes a terminal would receive; a split UTF-8 sequence waits for the write that completes it.
-    const bytes = chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk ?? ""), resolvedEncoding)
-    const text = this.stdoutDecoder.write(bytes)
 
     if (this._externalOutputMode === "capture-stdout" && this._screenMode === "split-footer" && this._splitHeight > 0) {
+      // Decode the bytes a terminal would receive; a split UTF-8 sequence waits for the write that completes it.
+      const bytes = ArrayBuffer.isView(chunk)
+        ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+        : Buffer.from(String(chunk ?? ""), Buffer.isEncoding(encoding) ? encoding : undefined)
+      const text = this.stdoutDecoder.write(bytes)
       // Capture mode intentionally diverts stdout into split commit snapshots
       // instead of writing directly to process stdout. Native flushing will append
       // and repaint in one controlled frame, which is what avoids footer flicker.
