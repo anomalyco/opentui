@@ -48,12 +48,19 @@ pub fn bufferDrawFromC(header: *const c.ot_buffer_draw_header, draw: *context.Bu
             draw.background = record.background;
         },
         .text => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_text_record, header, c.OT_BUFFER_DRAW_HAS_BACKGROUND);
+            const Record = c.ot_buffer_draw_text_record;
+            // A record without max_width, as bindings built before it was added send, has no limit.
+            const fitted = header.struct_size == @sizeOf(Record);
+            if (!fitted and header.struct_size != @offsetOf(Record, "max_width")) return error.InvalidOptions;
+            if (header.flags & ~@as(u32, c.OT_BUFFER_DRAW_HAS_BACKGROUND | c.OT_BUFFER_DRAW_FIT_ELLIPSIS) != 0) return error.InvalidOptions;
+            const record: *const Record = @ptrCast(header);
             draw.x = record.x;
             draw.y = record.y;
             draw.attributes = record.attributes;
             draw.foreground = record.foreground;
             if (header.flags & c.OT_BUFFER_DRAW_HAS_BACKGROUND != 0) draw.background = record.background;
+            draw.fit = .{ .max_width = if (fitted) record.max_width else 0, .ellipsis = header.flags & c.OT_BUFFER_DRAW_FIT_ELLIPSIS != 0 };
+            if (draw.fit.ellipsis and draw.fit.max_width == 0) return error.InvalidOptions;
         },
         .cell, .cell_blend, .char => {
             const record = try bufferDrawRecord(c.ot_buffer_draw_cell, header, 0);

@@ -1842,6 +1842,126 @@ test("suspend resolves idle waiters when an output-idle render was scheduled", a
   expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("captured-before-suspend"))
 })
 
+type StdoutStep =
+  | string
+  | ArrayBufferView
+  | [string, string]
+  | ((renderer: CliRenderer, stdout: CollectingStdout) => unknown)
+const splitBytes = (text: string, at: number, ...between: StdoutStep[]): StdoutStep[] => {
+  const bytes = Buffer.from(text)
+  return [bytes.subarray(0, at), ...between, bytes.subarray(at)]
+}
+const lead = Buffer.from([0xc3])
+const passthrough = (renderer: CliRenderer) => (renderer.externalOutputMode = "passthrough")
+const destroy = (renderer: CliRenderer) => renderer.destroy()
+const capture = (renderer: CliRenderer) => (renderer.externalOutputMode = "capture-stdout")
+const passthroughInFrame = (renderer: CliRenderer, stdout: CollectingStdout) =>
+  renderer.requestAnimationFrame(() => {
+    passthrough(renderer)
+    stdout.write(Buffer.from([0xa9]))
+  })
+const savedWriteWhileOff = (renderer: CliRenderer, stdout: CollectingStdout) => {
+  const write = stdout.write
+  passthrough(renderer)
+  write.call(stdout, lead)
+  capture(renderer)
+}
+const outputFailure = async (renderer: CliRenderer, stdout: CollectingStdout) => {
+  stdout.emit("error", new Error("terminal gone"))
+  await expect(renderer.closed).rejects.toThrow("terminal gone")
+}
+const suspendInSplit = async (renderer: CliRenderer, stdout: CollectingStdout) => {
+  const suspending = renderer.suspend()
+  stdout.write(Buffer.from("caf\u00e9").subarray(0, 4))
+  await suspending
+  stdout.write(Buffer.from([0xa9]))
+  await renderer.resume()
+}
+const pendingModeInSplit = async (renderer: CliRenderer, stdout: CollectingStdout) => {
+  await renderer.suspend()
+  const resuming = renderer.resume()
+  renderer.footerHeight = 5
+  stdout.write(lead)
+  passthrough(renderer)
+  stdout.write(Buffer.from([0xa9]))
+  await resuming
+}
+const processExit = (renderer: CliRenderer) => {
+  let flushed = 0
+  renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, () => flushed++)
+  renderer.nativeScene.driver.restoreOnExit()
+  renderer.destroy()
+  renderer.nativeScene.driver.dispose()
+  expect(flushed).toBe(0)
+}
+const sessionClose = async (renderer: CliRenderer) => {
+  const closing = renderer.nativeScene.driver.close()
+  renderer.destroy()
+  await Promise.allSettled([closing, renderer.closed])
+}
+
+test.each<[string, StdoutStep[], string]>([
+  ["Uint8Array view", [new TextEncoder().encode("\u00e9-view-tail\n").subarray(1, 7)], "\ufffd-view"],
+  [
+    "other views",
+    [new Uint16Array([0x6968]), new Int8Array([-61]), new DataView(Buffer.from("x\u00e9").buffer, 2, 1)],
+    "hi\u00e9",
+  ],
+  ["base64", [[Buffer.from("hello-b64\n").toString("base64"), "BASE64"]], "hello-b64"],
+  ["latin1", [["\u00e9", "latin1"], "x"], "\ufffdx"],
+  ["2-byte split across a frame", splitBytes("caf\u00e9", 4, (renderer) => renderer.idle()), "caf\u00e9"],
+  ["3-byte split", splitBytes("\u4e00", 1), "\u4e00"],
+  ["4-byte split", splitBytes("\u{10437}", 1), "\u{10437}"],
+  ["empty writes inside a split", splitBytes("\u00e9", 1, "", null as never, ["", ""], ["", "bogus"]), "\u00e9"],
+  ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
+  ["capture set again inside a split", splitBytes("\u00e9", 1, capture), "\u00e9"],
+  ["split across a deferred passthrough", splitBytes("caf\u00e9", 4, passthrough), "caf\u00e9"],
+  ["passthrough set in a frame inside a split", [lead, passthroughInFrame], "\u00e9"],
+  [
+    "split across a cancelled passthrough",
+    splitBytes("caf\u00e9", 4, passthrough, capture, (renderer) => renderer.idle()),
+    "caf\u00e9",
+  ],
+  ["saved write while capture is off", [savedWriteWhileOff, Buffer.from([0xa9]), "b"], "\ufffdb"],
+  ["passthrough after a lead byte", [lead, passthrough], "\ufffd"],
+  ["lead byte after deferred passthrough", ["a", passthrough, lead], "a\ufffd"],
+  ["suspend after a lead byte", ["a", lead, (renderer) => renderer.suspend(), destroy], "a\ufffd|"],
+  ["replay reset after a lead byte", ["a", lead, (renderer) => renderer.resetSplitFooterForReplay(), "b"], "a\ufffd|b"],
+  ["destroy after a lead byte", ["a", lead, destroy], "a\ufffd|"],
+  ["split across suspend during a deferred passthrough", ["a", passthrough, suspendInSplit], "a|caf\u00e9"],
+  ["passthrough during a pending native mode", [pendingModeInSplit], "|\u00e9"],
+  ["exit after a lead byte", [lead, processExit], ""],
+  ["destroy after the session closes", ["a", lead, sessionClose], ""],
+  ["output failure after a lead byte", ["a", lead, outputFailure], ""],
+])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {
+  const stdout = createCollectingStdout(80, 24)
+  const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
+    screenMode: "split-footer",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  await renderer.setupTerminal()
+  renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
+  await renderer.idle()
+  stdout.clear()
+
+  for (const step of steps) {
+    if (typeof step === "function") await step(renderer, stdout)
+    else if (Array.isArray(step)) stdout.write(step[0], step[1] as BufferEncoding)
+    else stdout.write(step)
+  }
+  await renderer.idle().catch(() => {})
+  await renderer.nativeScene.driver.idle().catch(() => {})
+
+  const shown = stdout
+    .text()
+    .replace(/\x1b\[[0-3]?J/g, "|")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?>]*[ -/]*[@-~]/g, "")
+    .trim()
+  expect(shown).toBe(expected)
+})
+
 // ---- Dimension fallback ----
 
 test.each([

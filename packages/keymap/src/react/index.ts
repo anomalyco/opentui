@@ -8,10 +8,10 @@ import {
   type KeySequencePart,
   type TargetMode,
 } from "../index.js"
+import { createLayerSlot } from "../services/extension-context.js"
 import {
   createElement,
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -105,72 +105,37 @@ export function useBindings<TRenderable extends Renderable = Renderable>(
 ): void {
   const keymap = useKeymap()
   const layer = useMemo(createLayer, deps)
-  const layerRef = useRef(layer)
-  const disposeRef = useRef<(() => void) | undefined>(undefined)
-  const registeredLayerRef = useRef<UseBindingsLayer<TRenderable> | undefined>(undefined)
-  const registeredTargetModeRef = useRef<TargetMode | undefined>(undefined)
-  const registeredTargetRef = useRef<Renderable | undefined>(undefined)
-
-  layerRef.current = layer
-
-  const unregister = useCallback(() => {
-    disposeRef.current?.()
-    disposeRef.current = undefined
-    registeredLayerRef.current = undefined
-    registeredTargetModeRef.current = undefined
-    registeredTargetRef.current = undefined
-  }, [])
-
-  useEffect(() => {
-    const currentLayer = layerRef.current
-    const hasExplicitTarget = currentLayer.targetRef !== undefined
-    const explicitTarget = resolveBindingsTarget(currentLayer.targetRef)
-    const nextTargetMode = currentLayer.targetMode ?? (hasExplicitTarget ? "focus-within" : undefined)
-    const nextTarget = nextTargetMode ? explicitTarget : undefined
-
-    if (!hasExplicitTarget && nextTargetMode) {
-      throw new Error("useBindings local bindings need a targetRef")
-    }
-
-    if (
-      registeredLayerRef.current === currentLayer &&
-      registeredTargetModeRef.current === nextTargetMode &&
-      registeredTargetRef.current === nextTarget
-    ) {
-      return
-    }
-
-    unregister()
-
-    if (!nextTarget && nextTargetMode) {
-      registeredLayerRef.current = currentLayer
-      registeredTargetModeRef.current = nextTargetMode
-      registeredTargetRef.current = undefined
-      return
-    }
-
-    const { targetRef: _targetRef, targetMode: _targetMode, ...baseLayer } = currentLayer
-    disposeRef.current = keymap.registerLayer(
-      !nextTargetMode
-        ? {
-            ...baseLayer,
-          }
-        : {
-            ...baseLayer,
-            target: nextTarget!,
-            targetMode: nextTargetMode,
-          },
-    )
-    registeredLayerRef.current = currentLayer
-    registeredTargetModeRef.current = nextTargetMode
-    registeredTargetRef.current = nextTarget
-  })
+  const replaceLayer = useMemo(() => createLayerSlot(keymap), [keymap])
+  const registeredRef = useRef<{ layer: typeof layer; targetMode?: TargetMode; target?: Renderable } | undefined>(
+    undefined,
+  )
 
   useEffect(() => {
     return () => {
-      unregister()
+      replaceLayer(undefined)
+      registeredRef.current = undefined
     }
-  }, [unregister])
+  }, [replaceLayer])
+
+  useEffect(() => {
+    const hasExplicitTarget = layer.targetRef !== undefined
+    const explicitTarget = resolveBindingsTarget(layer.targetRef)
+    const targetMode = layer.targetMode ?? (hasExplicitTarget ? "focus-within" : undefined)
+    const target = targetMode ? explicitTarget : undefined
+
+    if (!hasExplicitTarget && targetMode) {
+      throw new Error("useBindings local bindings need a targetRef")
+    }
+
+    const registered = registeredRef.current
+    if (registered?.layer === layer && registered.targetMode === targetMode && registered.target === target) {
+      return
+    }
+
+    registeredRef.current = { layer, targetMode, target }
+    const { targetRef: _targetRef, targetMode: _targetMode, ...baseLayer } = layer
+    replaceLayer(targetMode ? target && { ...baseLayer, target, targetMode } : baseLayer)
+  })
 }
 
 /**
