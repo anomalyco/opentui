@@ -1183,13 +1183,11 @@ const Harness = struct {
         const f = self.twins[candidate];
         var order: [node_count_max]usize = undefined;
         const count = self.model.paintOrder(&order, 0, root_slot);
-        if (f.state.candidates.items.len == 0 or f.state.members.items.len == 0 or f.state.filter_count != 0) return;
+        if (f.state.members.items.len == 0 or f.state.filter_count != 0) return;
         // A reply after paint changed layout or a view: the next frame prepares again.
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked((try f.owner.raw().getRenderable(self.handle(candidate, root_slot))).yoga_node, &dirty));
         if (dirty != 0 or f.state.preparation_dirty) return;
-        // A z-index change after its parent sorted in this frame sorts in the next one.
-        for (f.state.members.items) |entry| if (entry.node.scene_node.?.sort_dirty) return;
         var painted: usize = 0;
         for (f.state.members.items) |entry| {
             if (entry.node.scene_node.?.kind == c.OT_SCENE_ROOT or !entry.visible or entry.bars) continue;

@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Renderable } from "@opentui/core"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
-import { stringifyKeySequence } from "@opentui/keymap"
+import { KEYMAP_EXTENSION_CONTEXT, stringifyKeySequence } from "@opentui/keymap"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import {
   KeymapProvider,
@@ -159,14 +159,15 @@ describe("React keymap hooks", () => {
       }, [manager])
 
       useEffect(() => {
-        const original = manager.registerLayer.bind(manager)
-        manager.registerLayer = ((layer) => {
+        const layers = manager[KEYMAP_EXTENSION_CONTEXT]().layers
+        const original = layers.replaceLayer
+        layers.replaceLayer = (slot, layer) => {
           registerCalls += 1
-          return original(layer)
-        }) as typeof manager.registerLayer
+          return original(slot, layer)
+        }
 
         return () => {
-          manager.registerLayer = original
+          layers.replaceLayer = original
         }
       }, [manager])
 
@@ -187,6 +188,39 @@ describe("React keymap hooks", () => {
     await testSetup.renderOnce()
 
     expect(registerCalls).toBe(1)
+  })
+
+  test("useBindings moves its layer when the provided keymap changes", async () => {
+    let first!: ReturnType<typeof useKeymap>
+    let second!: ReturnType<typeof useKeymap>
+    let setSecond!: Dispatch<SetStateAction<boolean>>
+
+    function Probe() {
+      useBindings(() => ({ commands: [{ name: "probe", run() {} }] }))
+      return <text>probe</text>
+    }
+
+    function App() {
+      first = useKeymap()
+      const [useSecond, setUseSecond] = useState(false)
+      setSecond = setUseSecond
+      return (
+        <KeymapProvider keymap={useSecond ? second : first}>
+          <Probe />
+        </KeymapProvider>
+      )
+    }
+
+    await act(async () => {
+      testSetup = await testRender(<App />, { width: 20, height: 6 })
+    })
+    second = diagnostics.trackKeymap(createDefaultOpenTuiKeymap(testSetup.renderer))
+    act(() => {
+      setSecond(true)
+    })
+
+    const names = (keymap: typeof first) => keymap.getCommands({ visibility: "registered" }).map(({ name }) => name)
+    expect([names(first), names(second)]).toEqual([[], ["probe"]])
   })
 
   test("useBindings supports declarative release bindings", async () => {

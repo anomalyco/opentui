@@ -518,7 +518,14 @@ type BufferDrawColors = { foreground?: RGBA; background?: RGBA }
 export type NativeBufferDraw =
   | { operation: "clear"; background?: RGBA }
   | (BufferDrawPosition & { operation: "fill"; width?: number; height?: number; background?: RGBA })
-  | (BufferDrawPosition & BufferDrawColors & { operation: "text"; text?: string; attributes?: number })
+  | (BufferDrawPosition &
+      BufferDrawColors & {
+        operation: "text"
+        text?: string
+        attributes?: number
+        maxWidth?: number
+        ellipsis?: boolean
+      })
   | (BufferDrawPosition &
       BufferDrawColors & { operation: "cell" | "cellBlend" | "char"; char?: number; attributes?: number })
   | (BufferDrawPosition &
@@ -1589,8 +1596,10 @@ function encodeBufferDrawRecord(
       const fields = nativeLayouts.ot_buffer_draw_text_record.fields
       encodeDrawPosition(signed, fields, options, base)
       words[word + fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
-      if (encodeDrawColors(colors, fields, options, base))
-        words[word + header.flags.offset / 4] = nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND
+      words[word + fields.max_width.offset / 4] = toSafeFFIU32Length(options.maxWidth ?? 0, "Buffer text width")
+      words[word + header.flags.offset / 4] =
+        (encodeDrawColors(colors, fields, options, base) ? nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND : 0) |
+        (options.ellipsis ? nativeConstants.OT_BUFFER_DRAW_FIT_ELLIPSIS : 0)
       break
     }
     case "cell":

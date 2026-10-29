@@ -73,8 +73,9 @@ pub const NativeRenderable = struct {
     pub fn setMeasureTargetPreservingProvider(self: *NativeRenderable, target: MeasureTarget, preserve_provider: bool) native_yoga.Error!void {
         std.debug.assert((self.measure_dependents == null) == (self.measure_target == .none));
         try native_yoga.check(if (preserve_provider) native_yoga.nodeTeardownStatus(self.yoga_node) else switch (target) {
-            .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null),
-            else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure),
+            .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null, false),
+            // `measure` clamps to the height cap and otherwise ignores it.
+            else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure, true),
         });
         const invalidate = self.context_owned and (target != .none or self.measure_target != .none);
         if (self.measure_dependents) |head| {

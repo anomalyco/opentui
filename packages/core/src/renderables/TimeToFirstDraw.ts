@@ -3,32 +3,19 @@ import { parseColor, RGBA, type ColorInput } from "../lib/RGBA.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import type { RenderContext } from "../types.js"
 
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+const transparent = RGBA.fromValues(0, 0, 0, 0)
 
-function measureCellWidth(buffer: OptimizedBuffer, text: string): number {
+/** The cells that drawTextFit keeps of text within maxWidth: printable ASCII is one cell per byte. */
+function fittedWidth(buffer: OptimizedBuffer, text: string, maxWidth: number): number {
+  if (/^[\x20-\x7e]*$/.test(text)) return Math.min(text.length, maxWidth)
   const encoded = buffer.encodeUnicode(text)
-  if (!encoded) return 0
-
-  try {
-    return encoded.data.reduce((width, glyph) => width + glyph.width, 0)
-  } finally {
-    buffer.freeUnicode(encoded)
+  let width = 0
+  for (const glyph of encoded.data) {
+    if (width + glyph.width > maxWidth) break
+    width += glyph.width
   }
-}
-
-function truncateToCellWidth(buffer: OptimizedBuffer, text: string, maxWidth: number): { text: string; width: number } {
-  let visibleText = ""
-  let visibleWidth = 0
-
-  for (const { segment } of graphemeSegmenter.segment(text)) {
-    const segmentWidth = measureCellWidth(buffer, segment)
-    if (visibleWidth + segmentWidth > maxWidth) break
-
-    visibleText += segment
-    visibleWidth += segmentWidth
-  }
-
-  return { text: visibleText, width: visibleWidth }
+  buffer.freeUnicode(encoded)
+  return width
 }
 
 export interface TimeToFirstDrawOptions extends RenderableOptions<TimeToFirstDrawRenderable> {
@@ -105,11 +92,10 @@ export class TimeToFirstDrawRenderable extends Renderable {
 
     const content = `${this.label}: ${this._runtimeMs.toFixed(this.precision)}ms`
     const maxWidth = Math.max(this.width, 1)
-    const visibleContent = truncateToCellWidth(buffer, content, maxWidth)
     const [x, y] = this._paintOrigin(buffer)
-    const centeredX = x + Math.max(0, Math.floor((maxWidth - visibleContent.width) / 2))
+    const width = fittedWidth(buffer, content, maxWidth)
 
-    buffer.drawText(visibleContent.text, centeredX, y, this.textColor)
+    buffer.drawTextFit(content, x + Math.floor((maxWidth - width) / 2), y, width, this.textColor, transparent)
   }
 
   private normalizePrecision(value: number): number {
