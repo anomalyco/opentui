@@ -2490,20 +2490,20 @@ pub const Scene = struct {
         var matched: usize = 0;
         var cursor: ?Work = null;
         // Rows of every member whose inputs changed, before and after, and of every member that left.
-        var list: PaintList = .{ .scene = self, .objects = objects, .recording = recording, .refresh_views = refresh_views };
-        while (list.next()) |item| {
-            const entry, const phases = item;
+        // A scroll node's record covers its bars: their inputs change its paint epoch.
+        if (recording) |bytes| {
+            var list: PaintList = .{ .scene = self, .objects = objects, .recording = bytes, .refresh_views = refresh_views };
+            while (list.next()) |item| {
+                const entry, const phases = item;
+                if (self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
+                if (!entry.bars) matched += self.record(owner, cli, entry, phases, &reasons);
+            }
+        } else for (self.members.items) |entry| {
+            // Paint-mode preparation never appends hidden members.
+            std.debug.assert(entry.visible);
+            if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT) continue;
             if (self.focusedEditor(entry.node.scene_node.?)) cursor = entry;
-            // A scroll node's record covers its bars: their inputs change its paint epoch.
-            if (entry.bars) continue;
-            self.record(owner, cli, entry, phases, &reasons);
-            if (reasons != 0) continue;
-            const current = self.records.items[self.records.items.len - 1];
-            const old = self.recordOf(entry.node.scene_node.?, self.presented_records_frame, self.presented_records.items);
-            matched += @intFromBool(old != null);
-            if (old != null and current.stable and old.?.stable and std.meta.eql(old.?.inputs, current.inputs)) continue;
-            self.damage.setRangeValue(.{ .start = current.top, .end = current.bottom }, true);
-            if (old) |previous| self.damageRows(previous);
+            if (!entry.bars) matched += self.record(owner, cli, entry, .{}, &reasons);
         }
         self.frame_work.full_path_reasons |= reasons;
         if (reasons != 0) return .{ .all, cursor };
@@ -2559,7 +2559,9 @@ pub const Scene = struct {
         return null;
     }
 
-    fn record(self: *Scene, owner: *Context, cli: *const renderer.CliRenderer, entry: Work, phases: Phases, reasons: *u32) void {
+    /// Records a member and damages its rows if its inputs changed; 1 if it matched a presented record.
+    /// Inline, so a frame without hooks folds its constant phases' fingerprint away.
+    inline fn record(self: *Scene, owner: *Context, cli: *const renderer.CliRenderer, entry: Work, phases: Phases, reasons: *u32) usize {
         const node = entry.node.scene_node.?;
         if (node.kind == api.OT_SCENE_IMAGE) reasons.* |= renderer.FrameWork.full_path_images;
         const cells = cellLayout(entry.layout);
@@ -2619,6 +2621,13 @@ pub const Scene = struct {
                 .record_digest = print.digest,
             },
         });
+        if (reasons.* != 0) return 0;
+        const current = self.records.items[self.records.items.len - 1];
+        const old = self.recordOf(node, self.presented_records_frame, self.presented_records.items);
+        if (old != null and current.stable and old.?.stable and std.meta.eql(old.?.inputs, current.inputs)) return 1;
+        self.damage.setRangeValue(.{ .start = current.top, .end = current.bottom }, true);
+        if (old) |previous| self.damageRows(previous);
+        return @intFromBool(old != null);
     }
 
     /// The presented frame stays: no cells, hits, or rows change.
@@ -2745,39 +2754,30 @@ pub const Scene = struct {
         hooks: u32 = 0,
     };
 
-    /// The frame's paint list in paint order: the visible members, or the RECORD snapshot with
-    /// each slot's recording, without the members its hooks destroyed.
+    /// The RECORD snapshot in paint order, with each slot's recording, without the members its
+    /// hooks destroyed.
     const PaintList = struct {
         scene: *const Scene,
         objects: *const handles.Table,
-        recording: ?[]const u8,
+        recording: []const u8,
         refresh_views: bool,
         index: usize = 0,
 
-        fn next(self: *PaintList) ?struct { Work, Phases } {
+        inline fn next(self: *PaintList) ?struct { Work, Phases } {
             const scene = self.scene;
-            while (true) {
-                const index = self.index;
+            while (self.index < scene.paint_members.items.len) {
+                const member = scene.paint_members.items[self.index];
                 self.index += 1;
-                const bytes = self.recording orelse {
-                    if (index >= scene.members.items.len) return null;
-                    const entry = scene.members.items[index];
-                    // Paint-mode preparation never appends hidden members.
-                    std.debug.assert(entry.visible);
-                    if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT) return .{ entry, .{} };
-                    continue;
-                };
-                if (index >= scene.paint_members.items.len) return null;
-                const member = scene.paint_members.items[index];
                 const value = self.objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
                 std.debug.assert(value.scene_node.?.owner == scene);
                 const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or self.refresh_views, .bars = member.bars };
                 return .{ entry, if (member.slot == no_slot) .{} else .{
-                    .recording = bytes,
+                    .recording = self.recording,
                     .segments = scene.segments.items[member.slot],
                     .hooks = scene.paint_slots.items[member.slot].hooks,
                 } };
             }
+            return null;
         }
     };
 
@@ -2794,20 +2794,12 @@ pub const Scene = struct {
 
     /// Paints every member, or on a band frame each member on the bands its record's rows meet.
     fn paintMembers(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool, banded: bool) !void {
-        var list: PaintList = .{ .scene = self, .objects = &owner.objects, .recording = recording, .refresh_views = refresh_views };
         const bands: []const Band = if (banded) self.bands[0..self.band_count] else &whole_screen;
-        var index: usize = 0;
-        while (list.next()) |item| {
-            const entry, const phases = item;
-            var rows = whole_screen[0];
-            if (banded) {
-                // Records follow the paint list; a bars entry paints inside its scroll node's record.
-                const found = if (entry.bars) self.recordOf(entry.node.scene_node.?, self.records_frame, self.records.items).? else self.records.items[index];
-                std.debug.assert(found.token == entry.node.scene_node.?.token);
-                rows = .{ .top = found.top, .bottom = found.bottom };
-            }
-            index += @intFromBool(!entry.bars);
-            try self.paintMember(owner, cli, entry, options, phases, bands, rows);
+        if (recording) |bytes| {
+            var list: PaintList = .{ .scene = self, .objects = &owner.objects, .recording = bytes, .refresh_views = refresh_views };
+            while (list.next()) |item| try self.paintMember(owner, cli, item[0], options, item[1], bands, banded);
+        } else for (self.members.items) |entry| {
+            if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT) try self.paintMember(owner, cli, entry, options, .{}, bands, banded);
         }
     }
 
@@ -2817,8 +2809,11 @@ pub const Scene = struct {
 
     /// Paints a member on each band that meets its rows, scissored to the band, and adds its
     /// hits once, so a band frame's hits equal a full frame's.
-    fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases, bands: []const Band, rows: Band) !void {
+    fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases, bands: []const Band, banded: bool) !void {
         const node = entry.node.scene_node.?;
+        // A band frame paints a member on its record's rows; a bars entry on its scroll node's.
+        const found = if (banded) self.recordOf(node, self.records_frame, self.records.items).? else null;
+        const rows: Band = if (found) |value| .{ .top = value.top, .bottom = value.bottom } else whole_screen[0];
         if (entry.bars) return self.paintBars(cli, entry, options, bands, rows);
         const cells = cellLayout(entry.layout);
         const painted = intersection(.{
