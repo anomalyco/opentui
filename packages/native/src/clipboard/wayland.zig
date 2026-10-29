@@ -1447,9 +1447,11 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         var refused: enum { none, default, all } = .none;
         var path: [64]u8 = undefined;
         var path_length: usize = 0;
+        var count: u8 = 0;
         // Like libwayland, connecting consumes an inherited WAYLAND_SOCKET.
         fn connect(name: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
             _ = unsetenv("WAYLAND_SOCKET");
+            count += 1;
             const explicit = name orelse return if (refused == .none) @ptrFromInt(1) else null;
             path_length = std.mem.len(explicit);
             @memcpy(path[0..path_length], explicit[0..path_length]);
@@ -1464,14 +1466,16 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         wsl: bool = false,
         progress: Progress = .pending,
         wslg_path: []const u8 = "",
+        connects: u8 = 1,
     };
     const wslg_path = "/mnt/wslg/runtime-dir/wayland-7";
     const cases = [_]Case{
         .{ .inherited = true },
         .{ .cap = false },
         .{ .refused = .default, .progress = .unsupported },
-        .{ .refused = .default, .wsl = true, .inherited = true, .wslg_path = wslg_path },
-        .{ .refused = .all, .wsl = true, .progress = .unsupported, .wslg_path = wslg_path },
+        .{ .wsl = true },
+        .{ .refused = .default, .wsl = true, .inherited = true, .wslg_path = wslg_path, .connects = 2 },
+        .{ .refused = .all, .wsl = true, .progress = .unsupported, .wslg_path = wslg_path, .connects = 2 },
     };
     const saved_display = posix_io.getEnv("WAYLAND_DISPLAY");
     const saved = if (saved_display) |value| try std.testing.allocator.dupeZ(u8, value) else null;
@@ -1492,6 +1496,7 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         test_max_buffer_size = 0;
         Environment.refused = case.refused;
         Environment.path_length = 0;
+        Environment.count = 0;
         if (case.inherited) try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
         defer _ = Environment.unsetenv("WAYLAND_SOCKET");
 
@@ -1502,6 +1507,9 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         try std.testing.expectEqualStrings(case.wslg_path, Environment.path[0..Environment.path_length]);
         // A WSLg connection is not the inherited socket, so the idle drain may close it.
         try std.testing.expectEqual(case.inherited and case.refused == .none, connection.inherited_socket);
+        // Later drives reuse the result; only the host's idle close lets an operation connect again.
+        for (0..3) |_| _ = connection.drive();
+        try std.testing.expectEqual(case.connects, Environment.count);
     }
 }
 
