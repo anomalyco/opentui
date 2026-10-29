@@ -2646,6 +2646,7 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
     const Case = struct {
         name: []const u8,
         kind: OperationKind = .read,
+        mime: []const u8 = "text/plain",
         read: clipboard_x11.ReadState = .{},
         data: []const u8 = "",
         wsl: bool = false,
@@ -2660,6 +2661,7 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
     const cases = [_]Case{
         .{ .name = "final refusal", .read = .{ .phase = .refused, .window = 42 }, .status = .empty, .diagnostic = "" },
         .{ .name = "zero-byte text", .read = .{ .phase = .ready }, .status = .read, .diagnostic = "" },
+        .{ .name = "zero-byte png", .read = .{ .phase = .ready }, .mime = "image/png", .status = .empty, .diagnostic = "" },
         .{ .name = "WSL zero-byte text", .read = .{ .phase = .ready }, .wsl = true, .status = .empty, .diagnostic = "" },
         .{ .name = "WSL text", .read = .{ .phase = .ready }, .data = "x", .wsl = true, .status = .read, .diagnostic = "" },
         .{ .name = "request, live connection", .diagnostic = conversion },
@@ -2703,7 +2705,7 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
             .request = &request,
             .mechanism = .x11,
             .implemented_candidate_attempted = true,
-            .result_mime = try std.testing.allocator.dupe(u8, "text/plain"),
+            .result_mime = try std.testing.allocator.dupe(u8, case.mime),
             .x11_read = case.read,
             .x11_targets = .{0} ** 6,
             .x11_target_count = 1,
