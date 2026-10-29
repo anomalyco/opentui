@@ -88,7 +88,7 @@ export function markExternal(value: unknown, depth = 0): void {
 // identity; other arrays and plain objects (made by the compile, frozen ones too) by their enumerable
 // string-keyed data properties; primitives by value. Two functions without own properties are equal: for a
 // forwarder, `moves` gets its new target; otherwise the new function goes into the kept container, unless
-// the slot cannot be written or the container was made non-extensible, which makes the data unequal.
+// it is frozen, sealed or non-extensible, which makes the data unequal.
 // Anything else, or data deeper than 32, is unequal.
 export function sameCompiledData(
   left: unknown,
@@ -118,7 +118,7 @@ export function sameCompiledData(
       const cell = forwardTargets.get(before.value)
       const nextCell = forwardTargets.get(after.value as object)
       if (cell && nextCell) moves.push([cell, "target", nextCell.target])
-      else if (!cell && before.writable && Object.isExtensible(left)) moves.push([left, key, after.value])
+      else if (!cell && Object.isExtensible(left)) moves.push([left, key, after.value])
       else return false
       return true
     })

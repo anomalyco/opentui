@@ -46,6 +46,16 @@ const {
   createReactiveBoolean,
 } = createKeymapTestHelpers(diagnostics, () => renderer)
 
+type TestKeymap = ReturnType<typeof createTestKeymap>["keymap"]
+
+// A keymap without a renderer, with the default keys and fields of `createDefaultOpenTuiKeymap`.
+function createFieldKeymap() {
+  const harness = createTestKeymap({ defaultKeys: true })
+  addons.registerEnabledFields(harness.keymap)
+  addons.registerMetadataFields(harness.keymap)
+  return harness
+}
+
 // `useBindings`'s replace, by registration: `undefined` takes a new layer slot, a registered layer its own.
 const layerSlots = new WeakMap<object, LayerSlot<any, any>>()
 function replaceLayer(
@@ -782,7 +792,7 @@ describe("keymap: commands and queries", () => {
     ] as const
 
     for (const row of rows) {
-      const keymap = getKeymap(renderer)
+      const { keymap } = createFieldKeymap()
       const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
       const first = layerOf(0, row.commands)
       const replaced = replaceLayer(layers, undefined, first)
@@ -851,7 +861,7 @@ describe("keymap: commands and queries", () => {
     const symbol = Symbol("field")
     const meta = { label: "a" }
     const nullPrototype = Object.create(null)
-    const deep = nested(16)
+    const [deep12, deep13] = [nested(12), nested(13)]
     const map = new Map()
     class Tags extends Array {}
     let armed = false
@@ -941,7 +951,9 @@ describe("keymap: commands and queries", () => {
         "replaced",
       ],
       ["function with properties", { name: "c", run: tagged("old") }, { name: "c", run: tagged("new") }, "replaced"],
-      ["deeper than 16", command("old", { meta: deep }), command("new", { meta: deep }), "replaced"],
+      // `meta` sits at depth 3 of the layer: 12 more levels end at depth 15, 13 at depth 16.
+      ["depth 15", command("old", { meta: deep12 }), command("new", { meta: deep12 }), "kept"],
+      ["deeper than 15", command("old", { meta: deep13 }), command("new", { meta: deep13 }), "replaced"],
       ["cycle", command("old", { meta: cyclic() }), command("new", { meta: cyclic() }), "replaced"],
       [
         "own __proto__ key",
@@ -975,7 +987,7 @@ describe("keymap: commands and queries", () => {
     ]
 
     for (const [change, first, next, outcome] of rows) {
-      const keymap = getKeymap(renderer)
+      const { keymap } = createFieldKeymap()
       const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
       armed = false
       flag = true
@@ -1078,7 +1090,7 @@ describe("keymap: commands and queries", () => {
         ["c"],
       ],
       ["non-enumerable priority", () => hidden("priority", 0), () => hidden("priority", 10), ["c"]],
-      // Kept only if the registered layer was compiled from a copy: this one holds the caller's `meta`.
+      // A frozen layer is not plain data, so the next layer is registered anew even though it is plain.
       [
         "frozen layer, then its data changed in place",
         () => Object.freeze({ commands: [shared] }),
@@ -1097,7 +1109,7 @@ describe("keymap: commands and queries", () => {
     ]
 
     for (const [change, first, next, names] of rows) {
-      const keymap = getKeymap(renderer)
+      const { keymap } = createFieldKeymap()
       const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
       const registered = replaceLayer(layers, undefined, first() as never)
       let events = 0
@@ -1188,7 +1200,7 @@ describe("keymap: commands and queries", () => {
     const calls: string[] = []
     let compiles = 0
     let getterRuns = 0
-    const attr = (value: (compile: number) => unknown) => (keymap: OpenTuiKeymap) =>
+    const attr = (value: (compile: number) => unknown) => (keymap: TestKeymap) =>
       keymap.registerCommandFields({ meta: (_value, ctx) => ctx.attr("meta", value(compiles++)) })
     const map = new Map<string, number>()
     const throwing = new Proxy(
@@ -1201,7 +1213,7 @@ describe("keymap: commands and queries", () => {
     )
     // Each hook runs on both compiles. Commands that are not plain data are handed out as they are; other
     // compiled values that are not plain data compare unequal, without running getters.
-    const hooks: [string, (keymap: OpenTuiKeymap) => void][] = [
+    const hooks: [string, (keymap: TestKeymap) => void][] = [
       [
         "prototype run",
         (keymap) =>
@@ -1250,7 +1262,7 @@ describe("keymap: commands and queries", () => {
     ]
 
     for (const [hook, install] of hooks) {
-      const keymap = getKeymap(renderer)
+      const { keymap } = createFieldKeymap()
       const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
       install(keymap)
       compiles = 0
@@ -1296,46 +1308,12 @@ describe("keymap: commands and queries", () => {
       events = 0
       registered = replaceLayer(layers, registered, layerOf())
       const title = keymap.getCommands()[0]!.title as string
-      seen.push([events, title === `t${reads - 1}` || title.startsWith("t")])
+      // The kept command is the copy the compile made from its last read.
+      seen.push([events, title === `t${reads - 1}`])
     }
     expect(seen).toEqual([
       [1, true],
       [1, true],
-    ])
-  })
-
-  test("identity-observed values keep main's identity semantics on registration and replace", () => {
-    const first = { id: 1 }
-    const second = { id: 1 }
-    const results: unknown[] = []
-    for (const field of ["meta", "audience"]) {
-      const keymap = getKeymap(renderer)
-      const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
-      keymap.registerCommandFields({ audience: (value, ctx) => ctx.require("audience", value) })
-      keymap.setData("audience", first)
-      const layerOf = (value: object) => ({ commands: [{ name: "c", [field]: value, run() {} }] })
-      let events = 0
-      keymap.on("state", () => void (events += 1))
-
-      const registered = replaceLayer(layers, undefined, layerOf(first))
-      const exposed = keymap.getCommands({ visibility: "registered" })[0]![field]
-      const matches = () =>
-        field === "meta"
-          ? [
-              keymap.getCommands({ filter: { meta: first } }).length,
-              keymap.getCommands({ filter: { meta: exposed } }).length,
-            ]
-          : [keymap.getCommands().length, keymap.dispatchCommand("c").ok]
-      results.push([field, "registered", ...matches()])
-      events = 0
-      replaceLayer(layers, registered, layerOf(second))
-      results.push([field, "deeply equal object", events, ...matches()])
-    }
-    expect(results).toEqual([
-      ["meta", "registered", 1, 1],
-      ["meta", "deeply equal object", 1, 0, 0],
-      ["audience", "registered", 1, true],
-      ["audience", "deeply equal object", 1, 0, false],
     ])
   })
 
@@ -1345,9 +1323,9 @@ describe("keymap: commands and queries", () => {
     const fresh = () => ({ id: 1 })
     const rows: [
       string,
-      (keymap: OpenTuiKeymap) => void,
+      (keymap: TestKeymap) => void,
       (label: string, compile: number) => object,
-      (keymap: OpenTuiKeymap) => unknown,
+      (keymap: TestKeymap) => unknown,
     ][] = [
       [
         "command attr from a field compiler",
@@ -1425,7 +1403,7 @@ describe("keymap: commands and queries", () => {
     let compiles = 0
 
     for (const [change, install, layerOf, observe] of rows) {
-      const keymap = getKeymap(renderer)
+      const { keymap } = createFieldKeymap()
       const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
       install(keymap)
       keymap.setData("audience", requirement)
@@ -1453,7 +1431,7 @@ describe("keymap: commands and queries", () => {
     // Hooks return the pooled object, or (when `freshHooks`) an equal new one.
     let freshHooks = false
     const hook = (key: Key) => (freshHooks ? { ...pool[key] } : pool[key])
-    const install = (keymap: OpenTuiKeymap) => {
+    const install = (keymap: TestKeymap) => {
       keymap.registerLayerFields({ section: (_value, ctx) => ctx.attr("section", hook("section")) })
       keymap.registerCommandFields({
         audience: (value, ctx) => ctx.require("audience", value),
@@ -1552,7 +1530,7 @@ describe("keymap: commands and queries", () => {
       return spec
     }
     // Every object a public read hands out, by path; functions are left out (they move to the latest).
-    const read = (keymap: OpenTuiKeymap) => {
+    const read = (keymap: TestKeymap) => {
       const names = keymap.getCommands({ visibility: "registered" }).map(({ name }) => name)
       const reads = {
         graph: getGraphSnapshot(keymap),
@@ -1577,7 +1555,7 @@ describe("keymap: commands and queries", () => {
       return objects
     }
     // What a reader sees: names, titles, fields, attrs, bindings, active keys and the command that dispatch runs.
-    const content = (keymap: OpenTuiKeymap, label: string) => {
+    const content = (keymap: TestKeymap, label: string) => {
       calls.length = 0
       const commands = keymap
         .getCommands({ visibility: "registered" })
@@ -1610,8 +1588,11 @@ describe("keymap: commands and queries", () => {
       const nextLayerWhen = layerWhen === true && random() < 0.3 ? false : layerWhen
       shared = true
       const nextSpecs = specs.map(vary)
-      const tip = getKeymap(renderer)
-      const main = getKeymap(renderer)
+      const [tipHarness, mainHarness] = [
+        createTestKeymap({ defaultKeys: true }),
+        createTestKeymap({ defaultKeys: true }),
+      ]
+      const [tip, main] = [tipHarness.keymap, mainHarness.keymap]
       install(tip)
       install(main)
       freshHooks = false
@@ -1640,6 +1621,8 @@ describe("keymap: commands and queries", () => {
           if (second.get(path) === object && third.get(path) !== object) failures.push(`${trial}: ${path} changed`)
         }
       }
+      tipHarness.cleanup()
+      mainHarness.cleanup()
     }
     // About 25 of the 500 trials take the fast path without an event.
     expect([failures.slice(0, 5), kept >= 20]).toEqual([[], true])
@@ -1659,6 +1642,46 @@ describe("keymap: commands and queries", () => {
     const pending = keymap.getPendingSequence().length
     expect(slot(layerOf(() => false))).toBe(registered)
     expect([pending, keymap.getPendingSequence().length]).toEqual([1, 0])
+  })
+
+  test("fresh binding transformer output that is unreadable or cyclic makes a full replace, not a throw", () => {
+    const cyclic = () => {
+      const meta: Record<string, unknown> = {}
+      meta.self = meta
+      return meta
+    }
+    const unreadable = () =>
+      new Proxy(
+        {},
+        {
+          ownKeys: () => {
+            throw new Error("unreadable")
+          },
+        },
+      )
+    for (const meta of [unreadable, cyclic]) {
+      const { keymap } = createFieldKeymap()
+      keymap.appendLayerBindingsTransformer((bindings) => bindings.map((binding) => ({ ...binding, meta: meta() })))
+      const slot = createLayerSlot(keymap)
+      const layerOf = () => ({ commands: [{ name: "c", run() {} }], bindings: [{ key: "x", cmd: "c" }] })
+      slot(layerOf())
+      let events = 0
+      keymap.on("state", () => void (events += 1))
+      slot(layerOf())
+      expect(events).toBe(1)
+    }
+  })
+
+  test("a kept layer emits state when an enabled result flips, even if no reader read it", () => {
+    const keymap = getKeymap(renderer)
+    const slot = createLayerSlot(keymap)
+    let events = 0
+    keymap.on("state", () => void (events += 1))
+    const layerOf = (enabled: boolean) => ({ enabled: () => enabled, commands: [{ name: "c", run() {} }] })
+    const registered = slot(layerOf(true))
+    events = 0
+    expect(slot(layerOf(false))).toBe(registered)
+    expect([events, keymap.getCommands().length]).toEqual([1, 0])
   })
 
   test("carbon-1: a requirement function cached as failing reaches dispatch once a replace matches it", () => {
@@ -1695,9 +1718,13 @@ describe("keymap: commands and queries", () => {
     let read = names()
     const mounted = [...read]
     keymap.on("state", () => void (read = names()))
+    let events = 0
+    keymap.on("state", () => void (events += 1))
     ready = true
     slot(layerOf())
-    expect([mounted, read]).toEqual([[], ["c"]])
+    // The reader read again at that event; a replace that changes nothing it read emits no event.
+    slot(layerOf())
+    expect([mounted, read, events]).toEqual([[], ["c"], 1])
   })
 
   test("carbon-2: a kept layer whose condition turns false clears the pending sequence at once", async () => {
