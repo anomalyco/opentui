@@ -1060,7 +1060,6 @@ pub const Connection = struct {
             seat.capabilities = capabilities;
             const has_keyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD != 0;
             if (self.core_data_device and self.bound_seat_global == seat.global_name and had_keyboard and !has_keyboard) {
-                self.core_focus_lost = true;
                 _ = self.fail(.protocol);
             }
             return;
