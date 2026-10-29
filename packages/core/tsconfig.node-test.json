@@ -126,6 +126,7 @@
     "src/tests/native-backed-measurement-lifecycle.test.ts",
     "src/tests/native-backed-measurement-parity.test.ts",
     "src/tests/native-wrapper-cleanup.test.ts",
+    "src/tests/native-session.sim.test.ts",
     "src/tests/native-session.test.ts",
     "src/tests/context-editors.test.ts",
     "src/tests/context-text-resources.test.ts",
