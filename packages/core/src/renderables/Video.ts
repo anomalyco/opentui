@@ -362,7 +362,7 @@ export class VideoRenderable extends Renderable {
   }
 
   public seek(time: number): void {
-    const target = toMicroseconds(Math.max(0, time), "Video time")
+    const target = toMicroseconds(time, "Video time")
     if (!this._metadata || this.isDestroyed) return
     if (!this.control((native) => native.lib.videoSeek(native.context, native.node, target))) return
     const position = this.currentTime

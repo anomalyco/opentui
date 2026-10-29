@@ -49,6 +49,10 @@ describe("VideoRenderable", () => {
     expect(video.live).toBe(false)
     await setup.renderOnce()
     expect(setup.captureCharFrame().trim().length).toBeGreaterThan(0)
+    video.destroy()
+    renderer.root.add(new VideoRenderable(renderer, { source: SILENT, width: 20, height: 6, buffered: true }))
+    await setup.renderOnce()
+    expect(setup.captureCharFrame().trim().length).toBeGreaterThan(0)
   })
 
   test("play keeps the renderer live and pause holds the position", async () => {
@@ -105,6 +109,7 @@ describe("VideoRenderable", () => {
     expect(video.currentTime).toBe(video.duration)
     video.seekBy(-video.duration * 2)
     expect(video.currentTime).toBe(0)
+    expect(() => video.seek(-Infinity)).toThrow(RangeError)
   })
 
   test("open failures report the native detail", async () => {
