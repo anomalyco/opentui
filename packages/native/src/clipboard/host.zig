@@ -2589,6 +2589,34 @@ test "clipboard Wayland fallback transitions to X11 only when available" {
     try std.testing.expectEqual(clipboard_linux.Mechanism.wayland, operation.mechanism.?);
 }
 
+test "clipboard Wayland connection takes WSL detection from the service" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const Refuse = struct {
+        fn connect(_: ?[*:0]const u8) callconv(.c) ?*clipboard_linux.WlDisplay {
+            return null;
+        }
+    };
+    var symbols = clipboard_wayland.testSymbols();
+    symbols.wl_display_connect = Refuse.connect;
+    const previous = clipboard_linux.testSwapWaylandSymbols(symbols);
+    defer _ = clipboard_linux.testSwapWaylandSymbols(previous);
+    for ([_]bool{ false, true }) |is_wsl| {
+        var service: Service = .{
+            .allocator = std.testing.allocator,
+            .objects = undefined,
+            .libraries = .{ .wayland = true, .is_wsl = is_wsl },
+            .requested_wayland_seat = &.{},
+            .environment_wayland_seat = &.{},
+        };
+        defer service.resetWayland();
+        var operation: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read };
+
+        try std.testing.expectEqual(OperationStatus.unsupported, service.driveWayland(&operation, service.libraries));
+        // The WSLg socket fallback and the core data device both follow this flag.
+        try std.testing.expectEqual(is_wsl, service.wayland.?.is_wsl);
+    }
+}
+
 test "clipboard X11 candidate failure advances to the next compatible target" {
     var symbols: clipboard_linux.XcbSymbols = undefined;
     var fake_connection: u8 = 0;
