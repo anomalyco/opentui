@@ -13,20 +13,19 @@ export interface KeymapExtensionContext<TTarget extends object, TEvent extends K
   conditions: ConditionService<TTarget, TEvent>
   catalog: CommandCatalogService<TTarget, TEvent>
   activation: ActivationService<TTarget, TEvent>
-  layers: Pick<LayerService<TTarget, TEvent>, "replaceLayer">
+  layers: Pick<LayerService<TTarget, TEvent>, "createSlot" | "replaceLayer">
 }
 
 export interface KeymapExtensionProvider<TTarget extends object, TEvent extends KeymapEvent> {
   [KEYMAP_EXTENSION_CONTEXT](): KeymapExtensionContext<TTarget, TEvent>
 }
 
-// Holds one layer registration that the adapters' `useBindings` replace on every update.
+// Holds one layer registration, in the mount order of the slot's creation, that the adapters' `useBindings`
+// replace on every update.
 export function createLayerSlot<TTarget extends object, TEvent extends KeymapEvent>(
   keymap: KeymapExtensionProvider<TTarget, TEvent>,
-): (layer: Layer<TTarget, TEvent> | undefined) => void {
+): (layer: Layer<TTarget, TEvent> | undefined) => RegisteredLayer<TTarget, TEvent> | undefined {
   const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
-  let registered: RegisteredLayer<TTarget, TEvent> | undefined
-  return (layer) => {
-    registered = layers.replaceLayer(registered, layer)
-  }
+  const slot = layers.createSlot()
+  return (layer) => layers.replaceLayer(slot, layer)
 }

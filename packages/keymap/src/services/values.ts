@@ -62,6 +62,12 @@ export function collectExternal<T>(objects: WeakSet<object>, compile: () => T): 
   }
 }
 
+// Marks a value a field compiler supplied (a requirement or an attr) as external, a function too: the keymap
+// compares requirements with `Object.is` and hands attrs out as they are.
+export function markSupplied(value: unknown): void {
+  if (typeof value === "function" || (typeof value === "object" && value !== null)) external?.add(value)
+}
+
 // Marks a supplied value and the arrays and plain objects inside it as external.
 export function markExternal(value: unknown, depth = 0): void {
   if (!external || typeof value !== "object" || value === null || external.has(value)) return
@@ -78,12 +84,12 @@ export function markExternal(value: unknown, depth = 0): void {
 }
 
 // Whether new compiled layer data equals the kept data, so the kept layer can stay whole. Reads property
-// descriptors only, so no getter runs. Objects in `external` (supplied by the caller or a hook) compare by
+// descriptors only, so no getter runs. Values in `external` (supplied by the caller or a hook) compare by
 // identity; other arrays and plain objects (made by the compile, frozen ones too) by their enumerable
 // string-keyed data properties; primitives by value. Two functions without own properties are equal: for a
 // forwarder, `moves` gets its new target; otherwise the new function goes into the kept container, unless
-// the slot cannot be written, which makes the data unequal. Anything else, or data deeper than 32, is
-// unequal.
+// the slot cannot be written or the container was made non-extensible, which makes the data unequal.
+// Anything else, or data deeper than 32, is unequal.
 export function sameCompiledData(
   left: unknown,
   right: unknown,
@@ -92,9 +98,9 @@ export function sameCompiledData(
   depth = 0,
 ): boolean {
   if (Object.is(left, right)) return true
+  if (external.has(left as object) || external.has(right as object)) return false
   if (typeof left === "function") return typeof right === "function" && isPlainFunction(left) && isPlainFunction(right)
   if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false
-  if (external.has(left) || external.has(right)) return false
   if (!isContainer(left) || !isContainer(right) || Array.isArray(left) !== Array.isArray(right)) return false
   if (depth >= COMPILED_DEPTH_MAX) return false
 
@@ -112,7 +118,7 @@ export function sameCompiledData(
       const cell = forwardTargets.get(before.value)
       const nextCell = forwardTargets.get(after.value as object)
       if (cell && nextCell) moves.push([cell, "target", nextCell.target])
-      else if (!cell && before.writable) moves.push([left, key, after.value])
+      else if (!cell && before.writable && Object.isExtensible(left)) moves.push([left, key, after.value])
       else return false
       return true
     })

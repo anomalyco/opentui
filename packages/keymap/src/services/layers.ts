@@ -53,10 +53,6 @@ function compiledData<TTarget extends object, TEvent extends KeymapEvent>(layer:
   return compiled
 }
 
-function hasConditions(target: RuntimeMatchable): boolean {
-  return target.requires.length > 0 || target.matchers.length > 0
-}
-
 function conditionTargets<TTarget extends object, TEvent extends KeymapEvent>(
   layer: RegisteredLayer<TTarget, TEvent>,
 ): RuntimeMatchable[] {
@@ -109,10 +105,17 @@ export interface LayerDiagnostics<TTarget extends object, TEvent extends KeymapE
   analyzeLayer(options: AnalyzeLayerOptions<TTarget, TEvent>): void
 }
 
+// One mount position that `replaceLayer` keeps a layer in; its order is reserved when it is created.
+export interface LayerSlot<TTarget extends object, TEvent extends KeymapEvent> {
+  readonly order: number
+  layer?: RegisteredLayer<TTarget, TEvent>
+}
+
 export interface LayerService<TTarget extends object, TEvent extends KeymapEvent> {
   registerLayer(layer: Layer<TTarget, TEvent>): () => void
+  createSlot(): LayerSlot<TTarget, TEvent>
   replaceLayer(
-    previous: RegisteredLayer<TTarget, TEvent> | undefined,
+    slot: LayerSlot<TTarget, TEvent>,
     layer: Layer<TTarget, TEvent> | undefined,
   ): RegisteredLayer<TTarget, TEvent> | undefined
   applyTokenState(nextTokens: Map<string, ResolvedKeyToken>): void
@@ -127,11 +130,8 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
   activation: ActivationService<TTarget, TEvent>,
   options: LayersOptions<TTarget, TEvent>,
 ): LayerService<TTarget, TEvent> {
-  // Layers that `replaceLayer` registered from plain data, and the last condition result (requirements and
-  // matchers together) of each of their layer, commands and bindings that `state` listeners have seen, at
-  // registration or at the last event.
+  // Layers that `replaceLayer` registered from plain data.
   const plainLayers = new WeakSet<RegisteredLayer<TTarget, TEvent>>()
-  const seenConditions = new WeakMap<RuntimeMatchable, boolean>()
   // Gives function binding commands a forwarder, so snapshots that copy them (active keys) stay current.
   const forwardBindingCommands = (bindings: readonly BindingState<TTarget, TEvent>[]): void => {
     for (const binding of bindings) {
@@ -140,16 +140,6 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
       if (binding.run) binding.run = binding.command
     }
   }
-
-  const recordConditions = (layer: RegisteredLayer<TTarget, TEvent>): void => {
-    for (const target of conditionTargets(layer)) {
-      if (hasConditions(target)) seenConditions.set(target, conditions.matchesConditions(target))
-    }
-  }
-
-  notify.onStateEvent(() => {
-    for (const layer of state.layers) if (plainLayers.has(layer)) recordConditions(layer)
-  })
 
   const registerLayer = (layer: Layer<TTarget, TEvent>): (() => void) => {
     return notify.runWithStateChangeBatch(() => {
@@ -160,44 +150,36 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
     })
   }
 
-  // Replaces `previous` in one state batch, in its position: precedence follows mount order. A plain-data
-  // layer that compiles to data equal to `previous` (see `keptMoves`) keeps `previous` whole, so nothing the
-  // API hands out changes; only its functions move to the new ones, and `state` fires only if a condition
-  // result (requirements and matchers) differs from the one listeners have seen. Anything else takes the full replace. The decision uses
-  // the compiled layer, so what it compares is what queries and dispatch use.
+  // Replaces the slot's layer in one state batch, in the slot's order: precedence follows mount order. A
+  // plain-data layer that compiles to data equal to the slot's layer (see `keptMoves`) keeps that layer whole,
+  // so nothing the API hands out changes; only its functions move to the new ones (see `refreshLayer`).
+  // Anything else takes the full replace. The decision uses the compiled layer, so what it compares is what
+  // queries and dispatch use.
   const replaceLayer = (
-    previous: RegisteredLayer<TTarget, TEvent> | undefined,
+    slot: LayerSlot<TTarget, TEvent>,
     layer: Layer<TTarget, TEvent> | undefined,
   ): RegisteredLayer<TTarget, TEvent> | undefined => {
     return notify.runWithStateChangeBatch(() => {
-      const kept = previous && state.layers.has(previous) ? previous : undefined
+      const kept = slot.layer && state.layers.has(slot.layer) ? slot.layer : undefined
       const plain = layer !== undefined && isPlainData(layer, "target")
       const external = new WeakSet<object>()
       const next = collectExternal(external, () => {
         markExternal(layer)
-        return layer && compileLayer(layer, plain, kept?.order)
+        return layer && compileLayer(layer, plain, slot.order)
       })
       const moves = kept && next && plain ? keptMoves(kept, next, external) : undefined
-      if (kept && next && moves) {
-        refreshLayer(kept, next, moves)
+      if (kept && moves) {
+        refreshLayer(kept, moves)
         return kept
       }
 
-      const position = kept ? [...state.layers].indexOf(kept) : -1
-      if (previous) unregisterLayer(previous)
+      if (slot.layer) unregisterLayer(slot.layer)
+      // Set before the batch ends, so a `state` listener that replaces the slot again sees this layer.
+      slot.layer = next
       if (!next) return undefined
 
+      if (plain) plainLayers.add(next)
       addLayer(next)
-      if (plain) {
-        plainLayers.add(next)
-        recordConditions(next)
-      }
-      if (position >= 0) {
-        // `state.layers` keeps registration order, which the "registered" command view reports.
-        const layers = [...state.layers].filter((layer) => layer !== next)
-        layers.splice(position, 0, next)
-        state.layers = new Set(layers)
-      }
       return next
     })
   }
@@ -223,7 +205,7 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
   const compileLayer = (
     layer: Layer<TTarget, TEvent>,
     ownCommands: boolean,
-    keptOrder?: number,
+    slotOrder?: number,
   ): RegisteredLayer<TTarget, TEvent> | undefined => {
     const target = layer.target
     if (target && options.host.isTargetDestroyed(target)) {
@@ -254,7 +236,7 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
       return undefined
     }
 
-    const order = keptOrder ?? state.order++
+    const order = slotOrder ?? state.order++
     const bindingStates = options.compiler.compileBindings(sourceBindings, state.tokens, target, order, fields)
     if (ownCommands) forwardBindingCommands(bindingStates.bindings)
 
@@ -286,6 +268,11 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
     updateCacheBlockers(registeredLayer)
 
     state.layers.add(registeredLayer)
+    // A slot reserves its order when it is created, so its layer can come after newer ones; `state.layers`
+    // stays in order, which the "registered" command view reports.
+    if (registeredLayer.order < state.order - 1) {
+      state.layers = new Set([...state.layers].sort((left, right) => left.order - right.order))
+    }
     state.sortedLayers = [...state.sortedLayers, registeredLayer].sort(compareLayers)
     attachReactiveMatchers(registeredLayer)
     for (const command of registeredLayer.commands) {
@@ -309,28 +296,29 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
     notify.queueStateChange()
   }
 
-  // Keeps `previous` whole: nothing that the API hands out changes. Only the function slots and forwarder
-  // targets in `moves` take the new functions.
-  const refreshLayer = (
-    previous: RegisteredLayer<TTarget, TEvent>,
-    next: RegisteredLayer<TTarget, TEvent>,
-    moves: readonly [object, string, unknown][],
-  ): void => {
-    // Any moved function can feed a condition (a matcher, a requirement value), so every condition is evaluated
-    // once with the new functions; a result that differs from the last one listeners saw is a state change.
-    const nextTargets = conditionTargets(next)
-    let changed = false
-    conditionTargets(previous).forEach((target, index) => {
-      const fresh = nextTargets[index]!
-      if (!hasConditions(fresh)) return
-      const result = conditions.matchesConditions(fresh)
-      changed ||= seenConditions.get(target) !== result
-      seenConditions.set(target, result)
-    })
+  // The results of `targets` as readers get them, as in `seenResults` (1 false, 2 true): the commands and
+  // bindings of a disabled layer are not evaluated (0).
+  const readResults = (layer: RegisteredLayer<TTarget, TEvent>, targets: readonly RuntimeMatchable[]): number[] => {
+    const enabled = targets.length > 0 && conditions.matchesConditions(layer)
+    return targets.map((target) =>
+      target === layer ? (enabled ? 2 : 1) : enabled ? (conditions.matchesConditions(target) ? 2 : 1) : 0,
+    )
+  }
 
+  // Keeps `layer` whole: nothing that the API hands out changes, only the function slots and forwarder targets
+  // in `moves` take the new functions. Requirement values cannot move (they compare by identity), so only
+  // matchers can change a result. A reader can hold the old functions' result or any result read since the
+  // last `state` event: if one differs from the new result, readers get a `state` event, and a pending
+  // sequence through a condition that turned false is cleared at once.
+  const refreshLayer = (layer: RegisteredLayer<TTarget, TEvent>, moves: readonly [object, string, unknown][]): void => {
+    const targets = conditionTargets(layer).filter((target) => target.matchers.length > 0)
+    const seen = targets.map((target) => conditions.seenResults(target))
+    const before = readResults(layer, targets)
     for (const [container, key, value] of moves) (container as Record<string, unknown>)[key] = value
+    const after = readResults(layer, targets)
 
-    if (changed) notify.queueStateChange()
+    if (!options.host.isDestroyed) activation.ensureValidPendingSequence()
+    if (after.some((result, index) => ((seen[index]! | before[index]!) & ~result) !== 0)) notify.queueStateChange()
   }
 
   const applyTokenState = (nextTokens: Map<string, ResolvedKeyToken>): void => {
@@ -676,5 +664,7 @@ export function createLayerService<TTarget extends object, TEvent extends Keymap
     }
   }
 
-  return { registerLayer, replaceLayer, applyTokenState, recompileBindings, cleanup }
+  const createSlot = (): LayerSlot<TTarget, TEvent> => ({ order: state.order++ })
+
+  return { registerLayer, createSlot, replaceLayer, applyTokenState, recompileBindings, cleanup }
 }

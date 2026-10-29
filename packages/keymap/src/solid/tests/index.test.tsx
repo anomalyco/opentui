@@ -131,9 +131,9 @@ describe("solid keymap hooks", () => {
       const offCommands = manager.registerLayer({ commands: [{ name: "probe", run() {} }] })
       const layers = manager[KEYMAP_EXTENSION_CONTEXT]().layers
       const original = layers.replaceLayer
-      layers.replaceLayer = (previous, layer) => {
+      layers.replaceLayer = (slot, layer) => {
         registerCalls += 1
-        return original(previous, layer)
+        return original(slot, layer)
       }
 
       useBindings(() => ({

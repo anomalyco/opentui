@@ -98,24 +98,19 @@ The default dependency list is `[]`.
 Include every prop or state value that changes the returned layer. If reevaluation returns a different layer object,
 the hook replaces the registered layer with it. An unrelated render keeps the existing layer.
 
-The hook replaces its layer in one update, so `state` listeners see one change. The replaced layer keeps its
-position: among layers of the same priority, precedence follows mount order, and only a newly mounted layer goes
-on top. Earlier versions moved a re-registered layer to the top.
+The hook replaces its layer in one update, so `state` listeners see one change. The layer keeps the position of its
+hook: among layers of the same priority, precedence follows mount order, also while the layer is empty or waits for
+a target. Earlier versions moved a re-registered layer to the top.
 
-If the layer is plain data and differs from the registered one only in its functions, such as fresh `run` or
-`enabled` closures, the hook keeps the registered layer. Plain data means plain objects, arrays and primitives with
-enumerable string keys, and functions without properties of their own, from the layer object down; no class
-instances, `Map`s, getters, symbol or `__proto__` keys, or frozen or sealed objects. A store proxy that reports
-getters is registered anew; spread it to pass plain data. Object values that the keymap hands back or matches by
-identity must be the same objects as before: command fields, command and binding attrs, and requirement data, also
-when a field compiler produces them. Command filters and `require` match them by identity, so a new object, even an
-equal one, registers the layer anew, and an object changed in place does not. Binding keys and the layer, command
-and binding objects themselves compare by content. When the layer is kept, nothing the keymap has handed out
-changes: command objects and binding commands read earlier stay the same and call the new functions, and a pending
-key sequence continues. `state` is emitted only if an `enabled` condition gives a different result from the one
-listeners last saw; other function results, such as a `title` function, are not compared. Commands of such a layer
-are returned as keymap-owned objects, not as the objects passed in. Any other layer, and any layer with a reactive
-matcher, is replaced as a new registration in the same position.
+If the new layer is plain data (plain objects, arrays, primitives, and functions without own properties; no class
+instances, `Map`s, getters, symbol keys, or frozen or sealed objects) and differs only in its functions, the hook
+keeps the registered layer: nothing the keymap handed out changes, and commands, binding commands and `enabled`
+checks call the new functions. A store proxy that reports getters is not plain data; spread it. Values that the
+keymap hands back or matches by identity (command fields, attrs, and `require` values, functions too) must be the
+same as before; a new one, even an equal one, registers the layer anew. `state` is emitted only if an `enabled`
+result differs from the old functions' result or from one read since the last `state` event, and a pending key
+sequence through a layer that turned off is cleared. Commands of a kept layer are keymap-owned objects. Any other
+layer, and any layer with a reactive matcher, is replaced as a new registration in the same position.
 
 The layer can include Core fields such as `priority`, `bindings`, and `commands`.
 It can also include fields from installed addons, such as `enabled`.

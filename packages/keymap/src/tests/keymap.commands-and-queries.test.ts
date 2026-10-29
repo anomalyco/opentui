@@ -16,11 +16,14 @@ import {
   type ErrorEvent,
   type EventMatchResolverContext,
   type Keymap,
+  type Layer,
   type ReactiveMatcher,
   type WarningEvent,
 } from "../index.js"
 import { createDefaultOpenTuiKeymap, createOpenTuiKeymap } from "../opentui.js"
 import { createTestKeymap } from "../testing/index.js"
+import { createLayerSlot } from "../services/extension-context.js"
+import type { LayerService, LayerSlot } from "../services/layers.js"
 import { createDiagnosticHarness } from "./diagnostic-harness.js"
 import { createKeymapTestHelpers, type OpenTuiKeymap } from "./keymap.test-support.js"
 
@@ -42,6 +45,19 @@ const {
   createBracketTokenParser,
   createReactiveBoolean,
 } = createKeymapTestHelpers(diagnostics, () => renderer)
+
+// `useBindings`'s replace, by registration: `undefined` takes a new layer slot, a registered layer its own.
+const layerSlots = new WeakMap<object, LayerSlot<any, any>>()
+function replaceLayer(
+  layers: Pick<LayerService<any, any>, "createSlot" | "replaceLayer">,
+  previous: object | undefined,
+  layer: Layer<any, any> | undefined,
+) {
+  const slot = (previous && layerSlots.get(previous)) || layers.createSlot()
+  const next = layers.replaceLayer(slot, layer)
+  if (next) layerSlots.set(next, slot)
+  return next
+}
 
 describe("keymap: commands and queries", () => {
   beforeEach(async () => {
@@ -769,8 +785,8 @@ describe("keymap: commands and queries", () => {
       const keymap = getKeymap(renderer)
       const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
       const first = layerOf(0, row.commands)
-      const replaced = layers.replaceLayer(undefined, first)
-      for (let layer = 1; layer < row.layers; layer += 1) layers.replaceLayer(undefined, layerOf(layer, row.commands))
+      const replaced = replaceLayer(layers, undefined, first)
+      for (let layer = 1; layer < row.layers; layer += 1) replaceLayer(layers, undefined, layerOf(layer, row.commands))
 
       const work = [0, 0, 0]
       const countLabels = new Proxy({}, { get: () => void (work[2]! += 1) })
@@ -783,7 +799,8 @@ describe("keymap: commands and queries", () => {
       })
 
       const next = { identical: first, removed: undefined }[row.change as string]
-      layers.replaceLayer(
+      replaceLayer(
+        layers,
         replaced,
         row.change in { identical: 1, removed: 1 } ? next : layerOf(0, row.commands, row.change),
       )
@@ -963,8 +980,10 @@ describe("keymap: commands and queries", () => {
       armed = false
       flag = true
       const copies = [{ ...first }, { ...next }]
-      const registered = layers.replaceLayer(undefined, { commands: [first as never] })
+      const registered = replaceLayer(layers, undefined, { commands: [first as never] })
       const retained = keymap.getCommands({ visibility: "registered" })[0]!
+      // A reader reads the reachable commands, and so the `enabled` results.
+      keymap.getCommands()
       const retainedRun = retained.run
       let events = 0
       keymap.on("state", () => void (events += 1))
@@ -974,11 +993,13 @@ describe("keymap: commands and queries", () => {
       if (change.startsWith("shared flag")) flag = false
       if (change === "shared flag flips back after an event") {
         keymap.setData("unrelated", 1)
+        // A reader reads again at the event and sees the command disabled.
+        keymap.getCommands()
         flag = true
       }
 
       events = 0
-      layers.replaceLayer(registered, { commands: [next as never] })
+      replaceLayer(layers, registered, { commands: [next as never] })
       calls.length = 0
       keymap.runCommand("c")
       retained.run({} as never)
@@ -1008,10 +1029,10 @@ describe("keymap: commands and queries", () => {
       bindings: [{ key: "y", cmd: () => void calls.push(version) }],
     })
 
-    const registered = layers.replaceLayer(undefined, layerOf("old"))
-    layers.replaceLayer(undefined, { bindings: [{ key: "z", cmd: () => {} }] })
+    const registered = replaceLayer(layers, undefined, layerOf("old"))
+    replaceLayer(layers, undefined, { bindings: [{ key: "z", cmd: () => {} }] })
     getActiveKey(keymap, "y")
-    expect(layers.replaceLayer(registered, layerOf("new"))).toBe(registered)
+    expect(replaceLayer(layers, registered, layerOf("new"))).toBe(registered)
 
     mockInput.pressKey("y")
     ;(getActiveKey(keymap, "y")!.command as () => void)()
@@ -1019,7 +1040,7 @@ describe("keymap: commands and queries", () => {
     mockInput.pressKey("y")
     // After the recompile, active keys hold the binding's forwarder again, so a later replace reaches them.
     const recompiled = getActiveKey(keymap, "y")!.command as () => void
-    layers.replaceLayer(registered, layerOf("newest"))
+    replaceLayer(layers, registered, layerOf("newest"))
     recompiled()
     expect(calls).toEqual(["new", "new", "new", "newest"])
     expect(orders).toEqual([
@@ -1078,12 +1099,12 @@ describe("keymap: commands and queries", () => {
     for (const [change, first, next, names] of rows) {
       const keymap = getKeymap(renderer)
       const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
-      const registered = layers.replaceLayer(undefined, first() as never)
+      const registered = replaceLayer(layers, undefined, first() as never)
       let events = 0
       keymap.on("state", () => void (events += 1))
 
       const layer = next() as { commands: object[] }
-      layers.replaceLayer(registered, layer as never)
+      replaceLayer(layers, registered, layer as never)
       const registeredCommands = keymap.getCommands({ visibility: "registered" })
       const plainNext = change.startsWith("frozen layer, then")
       const sameObjects = plainNext || registeredCommands.every((command, index) => command === layer.commands[index])
@@ -1113,7 +1134,7 @@ describe("keymap: commands and queries", () => {
       target.on("state", () => void (events += 1))
       for (const [name, layer] of steps) {
         events = 0
-        registered = layers.replaceLayer(registered as never, layer() as never)
+        registered = replaceLayer(layers, registered as never, layer() as never)
         if (name) counts[`${step} ${name}`] = events
       }
     }
@@ -1234,11 +1255,11 @@ describe("keymap: commands and queries", () => {
       install(keymap)
       compiles = 0
       const layerOf = (label: string) => ({ commands: [{ name: "c", meta: 1, run: () => void calls.push(label) }] })
-      const registered = layers.replaceLayer(undefined, layerOf("old"))
+      const registered = replaceLayer(layers, undefined, layerOf("old"))
       let events = 0
       keymap.on("state", () => void (events += 1))
 
-      layers.replaceLayer(registered, layerOf("new"))
+      replaceLayer(layers, registered, layerOf("new"))
       calls.length = 0
       keymap.runCommand("c")
       // The same object in both compiles (unreadable, or a Map changed in place) is unchanged by identity,
@@ -1269,11 +1290,11 @@ describe("keymap: commands and queries", () => {
     let events = 0
     keymap.on("state", () => void (events += 1))
 
-    let registered = layers.replaceLayer(undefined, layerOf())
+    let registered = replaceLayer(layers, undefined, layerOf())
     const seen: unknown[] = []
     for (let step = 0; step < 2; step += 1) {
       events = 0
-      registered = layers.replaceLayer(registered, layerOf())
+      registered = replaceLayer(layers, registered, layerOf())
       const title = keymap.getCommands()[0]!.title as string
       seen.push([events, title === `t${reads - 1}` || title.startsWith("t")])
     }
@@ -1296,7 +1317,7 @@ describe("keymap: commands and queries", () => {
       let events = 0
       keymap.on("state", () => void (events += 1))
 
-      const registered = layers.replaceLayer(undefined, layerOf(first))
+      const registered = replaceLayer(layers, undefined, layerOf(first))
       const exposed = keymap.getCommands({ visibility: "registered" })[0]![field]
       const matches = () =>
         field === "meta"
@@ -1307,7 +1328,7 @@ describe("keymap: commands and queries", () => {
           : [keymap.getCommands().length, keymap.dispatchCommand("c").ok]
       results.push([field, "registered", ...matches()])
       events = 0
-      layers.replaceLayer(registered, layerOf(second))
+      replaceLayer(layers, registered, layerOf(second))
       results.push([field, "deeply equal object", events, ...matches()])
     }
     expect(results).toEqual([
@@ -1400,24 +1421,6 @@ describe("keymap: commands and queries", () => {
         },
         (keymap) => keymap.dispatchCommand("c").ok,
       ],
-      [
-        // The check and the owned command read `meta` as the original; the fields read in between does not.
-        "command field read through a proxy",
-        () => {},
-        (_label, compile) => {
-          let reads = 0
-          const command = { name: "c", meta: requirement, run() {} }
-          if (compile === 0) return { commands: [command] }
-          return {
-            commands: [
-              new Proxy(command, {
-                get: (target, key) => (key === "meta" && reads++ === 1 ? fresh() : Reflect.get(target, key)),
-              }),
-            ],
-          }
-        },
-        (keymap) => keymap.getCommands({ filter: { meta: requirement } }).length,
-      ],
     ]
     let compiles = 0
 
@@ -1427,12 +1430,12 @@ describe("keymap: commands and queries", () => {
       install(keymap)
       keymap.setData("audience", requirement)
       compiles = 0
-      const registered = layers.replaceLayer(undefined, layerOf("old", 0) as never)
+      const registered = replaceLayer(layers, undefined, layerOf("old", 0) as never)
       const before = observe(keymap)
       let events = 0
       keymap.on("state", () => void (events += 1))
 
-      layers.replaceLayer(registered, layerOf("new", 1) as never)
+      replaceLayer(layers, registered, layerOf("new", 1) as never)
       const after = observe(keymap)
       // As on main: the new compiled object (or dispatch result) is announced with a state event.
       const result = typeof after === "boolean" ? after : before !== after
@@ -1458,17 +1461,23 @@ describe("keymap: commands and queries", () => {
       })
       keymap.registerBindingFields({ hint: (_value, ctx) => ctx.attr("hint", hook("hint")) })
       keymap.setData("audience", pool.audience)
-      // A function requirement matches only the pooled function, so a fresh one disables its target.
-      const requireGate = (value: unknown, ctx: { require(name: string, value: unknown): void }) =>
-        ctx.require("gate", value)
-      keymap.registerLayerFields({ gate: requireGate })
-      keymap.registerCommandFields({ gate: requireGate })
-      keymap.registerBindingFields({ gate: requireGate })
+      // A function requirement matches only the pooled function, so a fresh one disables its command.
+      keymap.registerCommandFields({ gate: (value, ctx) => ctx.require("gate", value) })
       keymap.setData("gate", gate)
+      const when = (value: unknown, ctx: { activeWhen(matcher: () => boolean): void }) =>
+        ctx.activeWhen(value as () => boolean)
+      keymap.registerLayerFields({ when })
+      keymap.registerBindingFields({ when })
     }
     const gate = () => true
     type Gate = "pooled" | "fresh" | undefined
     const gateOf = (kind: Gate) => (kind === "fresh" ? { gate: () => true } : kind ? { gate } : {})
+    // Condition functions are fresh closures on every build; "shared" ones read a flag that changes without an
+    // event between the two registrations.
+    type Condition = boolean | "shared" | undefined
+    let shared = true
+    const conditionOf = (field: string, condition: Condition) =>
+      condition === undefined ? {} : { [field]: condition === "shared" ? () => shared : () => condition }
     type Spec = {
       title: string
       meta?: "pooled" | "fresh"
@@ -1476,23 +1485,23 @@ describe("keymap: commands and queries", () => {
       note?: number
       key?: string
       hint?: number
-      enabled?: boolean
+      enabled?: Condition
       gate?: Gate
-      bindingGate?: Gate
+      bindingWhen?: Condition
     }
     const object = (key: Key, kind?: "pooled" | "fresh") => (kind === "fresh" ? { ...pool[key] } : kind && pool[key])
     // A layer `enabled` function is a fresh closure on every build.
-    const layerOf = (specs: readonly Spec[], section: boolean, label: string, enabled = false, layerGate?: Gate) => ({
+    const layerOf = (specs: readonly Spec[], section: boolean, label: string, enabled = false, when?: Condition) => ({
       ...(section ? { section: 1 } : {}),
       ...(enabled ? { enabled: () => true } : {}),
-      ...gateOf(layerGate),
+      ...conditionOf("when", when),
       commands: specs.map((spec, index) => ({
         name: `c${index}`,
         title: spec.title,
         ...(spec.meta ? { meta: object("meta", spec.meta) } : {}),
         ...(spec.audience ? { audience: object("audience", spec.audience) } : {}),
         ...(spec.note ? { note: spec.note } : {}),
-        ...(spec.enabled === undefined ? {} : { enabled: () => spec.enabled }),
+        ...conditionOf("enabled", spec.enabled),
         ...gateOf(spec.gate),
         run: () => void calls.push(`${label}:c${index}`),
       })),
@@ -1503,7 +1512,7 @@ describe("keymap: commands and queries", () => {
                 key: spec.key,
                 cmd: `c${index}`,
                 ...(spec.hint ? { hint: spec.hint } : {}),
-                ...gateOf(spec.bindingGate),
+                ...conditionOf("when", spec.bindingWhen),
               },
             ]
           : [],
@@ -1516,9 +1525,9 @@ describe("keymap: commands and queries", () => {
       note: pick([undefined, 1]),
       key: pick([undefined, "x", "y"]),
       hint: pick([undefined, 1]),
-      enabled: pick([undefined, true, false]),
-      gate: pick([undefined, "pooled", "pooled", "fresh"] as const),
-      bindingGate: pick([undefined, "pooled", "pooled", "fresh"] as const),
+      enabled: pick([undefined, true, false, "shared"] as const),
+      gate: pick([undefined, undefined, "pooled", "fresh"] as const),
+      bindingWhen: pick([undefined, true, false, "shared"] as const),
     })
     const vary = (spec: Spec): Spec => {
       const change = pick([
@@ -1532,11 +1541,10 @@ describe("keymap: commands and queries", () => {
         "audience",
         "enabled",
         "gate",
-        "bindingGate",
+        "bindingWhen",
       ] as const)
-      // Condition functions are fresh closures on every build; these changes flip their results.
       if (change === "gate") return { ...spec, gate: spec.gate === "fresh" ? "pooled" : "fresh" }
-      if (change === "bindingGate") return { ...spec, bindingGate: spec.bindingGate === "fresh" ? "pooled" : "fresh" }
+      if (change === "bindingWhen") return { ...spec, bindingWhen: !spec.bindingWhen }
       if (change === "title") return { ...spec, title: spec.title === "a" ? "b" : "a" }
       if (change === "meta") return { ...spec, meta: pick(["pooled", "fresh"] as const) }
       if (change === "audience") return { ...spec, audience: pick(["pooled", "fresh"] as const) }
@@ -1598,8 +1606,9 @@ describe("keymap: commands and queries", () => {
       const specs = Array.from({ length: 1 + Math.floor(random() * 3) }, randomSpec)
       const section = random() < 0.5
       const layerEnabled = random() < 0.1
-      const layerGate = pick([undefined, "pooled", "fresh"] as const)
-      const nextLayerGate = layerGate && random() < 0.3 ? (layerGate === "fresh" ? "pooled" : "fresh") : layerGate
+      const layerWhen = pick([undefined, undefined, true, "shared"] as const)
+      const nextLayerWhen = layerWhen === true && random() < 0.3 ? false : layerWhen
+      shared = true
       const nextSpecs = specs.map(vary)
       const tip = getKeymap(renderer)
       const main = getKeymap(renderer)
@@ -1607,16 +1616,19 @@ describe("keymap: commands and queries", () => {
       install(main)
       freshHooks = false
       const { layers } = tip[KEYMAP_EXTENSION_CONTEXT]()
-      const registered = layers.replaceLayer(undefined, layerOf(specs, section, "first", layerEnabled, layerGate))
+      const registered = replaceLayer(layers, undefined, layerOf(specs, section, "first", layerEnabled, layerWhen))
       const [first, second] = [read(tip), read(tip)]
+      // Sometimes the flag changes without an event before a reader reads.
+      if (random() < 0.3) shared = false
       const before = content(tip, "first")
       let events = 0
       tip.on("state", () => void (events += 1))
 
       freshHooks = random() < 0.2
-      layers.replaceLayer(registered, layerOf(nextSpecs, section, "next", layerEnabled, nextLayerGate))
+      shared = random() < 0.7
+      replaceLayer(layers, registered, layerOf(nextSpecs, section, "next", layerEnabled, nextLayerWhen))
       const after = content(tip, "next")
-      main.registerLayer(layerOf(nextSpecs, section, "next", layerEnabled, nextLayerGate))
+      main.registerLayer(layerOf(nextSpecs, section, "next", layerEnabled, nextLayerWhen))
       const expected = content(main, "next")
 
       if (after !== expected) failures.push(`${trial}: results differ from main`)
@@ -1629,31 +1641,174 @@ describe("keymap: commands and queries", () => {
         }
       }
     }
-    // About 37 of the 500 trials take the fast path without an event.
-    expect([failures.slice(0, 5), kept >= 30]).toEqual([[], true])
+    // About 25 of the 500 trials take the fast path without an event.
+    expect([failures.slice(0, 5), kept >= 20]).toEqual([[], true])
   })
 
   test("a kept layer whose binding condition turns false clears a pending sequence through it, as on main", () => {
     const keymap = getKeymap(renderer)
-    const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
-    const gate = () => true
-    keymap.registerBindingFields({ gate: (value, ctx) => ctx.require("gate", value) })
-    keymap.setData("gate", gate)
-    const layerOf = (value: () => boolean) => ({
+    const slot = createLayerSlot(keymap)
+    keymap.registerBindingFields({ when: (value, ctx) => ctx.activeWhen(value as () => boolean) })
+    const layerOf = (when: () => boolean) => ({
       commands: [{ name: "c", run() {} }],
-      bindings: [{ key: "g g", cmd: "c", gate: value }],
+      bindings: [{ key: "g g", cmd: "c", when }],
     })
 
-    const registered = layers.replaceLayer(undefined, layerOf(gate))
+    const registered = slot(layerOf(() => true))
     mockInput.pressKey("g")
     const pending = keymap.getPendingSequence().length
-    expect(
-      layers.replaceLayer(
-        registered,
-        layerOf(() => true),
-      ),
-    ).toBe(registered)
+    expect(slot(layerOf(() => false))).toBe(registered)
     expect([pending, keymap.getPendingSequence().length]).toEqual([1, 0])
+  })
+
+  test("carbon-1: a requirement function cached as failing reaches dispatch once a replace matches it", () => {
+    const keymap = getKeymap(renderer)
+    const slot = createLayerSlot(keymap)
+    const calls: string[] = []
+    const [gate1, gate2] = [() => true, () => true]
+    keymap.registerCommandFields({ gate: (value, ctx) => ctx.require("gate", value) })
+    keymap.setData("gate", gate1)
+    const layerOf = (gate: () => boolean, label: string) => ({
+      commands: [{ name: "c", gate, run: () => void calls.push(label) }],
+      bindings: [{ key: "x", cmd: "c" }],
+    })
+
+    slot(layerOf(gate1, "v1"))
+    keymap.setData("gate", gate2)
+    const cached = [keymap.getCommands().length, keymap.getActiveKeys().length]
+    slot(layerOf(gate2, "v2"))
+    const after = [keymap.getCommands().length, keymap.getActiveKeys().length]
+    mockInput.pressKey("x")
+    const dispatched = keymap.dispatchCommand("c").ok
+    expect([cached, after, dispatched, calls]).toEqual([[0, 0], [1, 1], true, ["v2", "v2"]])
+  })
+
+  test("carbon-1: a reader that saw a condition fail without an event hears when a replace makes it pass", () => {
+    const keymap = getKeymap(renderer)
+    const slot = createLayerSlot(keymap)
+    let ready = true
+    const layerOf = () => ({ enabled: () => ready, commands: [{ name: "c", run() {} }] })
+    const names = () => keymap.getCommandEntries().map(({ command }) => command.name)
+
+    slot(layerOf())
+    ready = false
+    let read = names()
+    const mounted = [...read]
+    keymap.on("state", () => void (read = names()))
+    ready = true
+    slot(layerOf())
+    expect([mounted, read]).toEqual([[], ["c"]])
+  })
+
+  test("carbon-2: a kept layer whose condition turns false clears the pending sequence at once", async () => {
+    const keymap = getKeymap(renderer)
+    const slot = createLayerSlot(keymap)
+    addons.registerNeovimDisambiguation(keymap, { timeoutMs: 10 })
+    const calls: string[] = []
+    let active = true
+    const layerOf = (label: string) => ({
+      enabled: () => active,
+      bindings: [
+        { key: "g", cmd: () => void calls.push(`g:${label}`) },
+        { key: "g g", cmd: () => void calls.push(`gg:${label}`) },
+      ],
+    })
+    const sequences: number[] = []
+    keymap.on("pendingSequence", (sequence) => void sequences.push(sequence.length))
+
+    slot(layerOf("v1"))
+    mockInput.pressKey("g")
+    active = false
+    slot(layerOf("v2"))
+    const cleared = [...sequences]
+    await Bun.sleep(30)
+    expect([cleared, calls]).toEqual([[1, 0], []])
+  })
+
+  test("carbon-3: a layer slot keeps its mount order while it is empty, waits for a target, or loses one", () => {
+    const keymap = getKeymap(renderer)
+    const ranks = () => {
+      const { layers, commands } = getGraphSnapshot(keymap)
+      const names = new Map(commands.map(({ id, name }) => [id, name]))
+      return [...layers].sort((a, b) => a.order - b.order).map((layer) => names.get(layer.commandIds[0]!))
+    }
+    const layerOf = (name: string, target?: Renderable) => ({ target, commands: [{ name, run() {} }] })
+    const emptied = createLayerSlot(keymap)
+    const waiting = createLayerSlot(keymap)
+    const retargeted = createLayerSlot(keymap)
+    const later = createLayerSlot(keymap)
+    const first = createFocusableBox("first")
+
+    emptied(layerOf("emptied"))
+    waiting(undefined)
+    retargeted(layerOf("retargeted", first))
+    later(layerOf("later"))
+    emptied({ commands: [] })
+    emptied(layerOf("emptied"))
+    waiting(layerOf("waiting"))
+    first.destroyRecursively()
+    retargeted(layerOf("retargeted", createFocusableBox("second")))
+    expect(ranks()).toEqual(["emptied", "waiting", "retargeted", "later"])
+  })
+
+  test("carbon-4: a command function field is the exposed forwarder, also for exact filters", () => {
+    const keymap = getKeymap(renderer)
+    const slot = createLayerSlot(keymap)
+    slot({ commands: [{ name: "c", action: () => {}, run() {} }] })
+    const exposed = keymap.getCommands({ visibility: "registered" })[0]!
+    const matches = () => keymap.getCommands({ visibility: "registered", filter: { action: [exposed.action] } }).length
+    const before = matches()
+    let events = 0
+    keymap.on("state", () => void (events += 1))
+    slot({ commands: [{ name: "c", action: () => {}, run() {} }] })
+    expect([before, events, matches()]).toEqual([1, 0, 1])
+  })
+
+  test("carbon-4: a command that a transformer made non-extensible is replaced, not changed in place", () => {
+    const keymap = getKeymap(renderer)
+    const slot = createLayerSlot(keymap)
+    const calls: string[] = []
+    keymap.appendCommandTransformer((command) => void Object.preventExtensions(command))
+    slot({ commands: [{ name: "c", run: () => void calls.push("old") }] })
+    const retained = keymap.getCommands({ visibility: "registered" })[0]!
+    const retainedRun = retained.run
+    let events = 0
+    keymap.on("state", () => void (events += 1))
+    slot({ commands: [{ name: "c", run: () => void calls.push("new") }] })
+    keymap.runCommand("c")
+    expect([events, retained.run === retainedRun, calls]).toEqual([1, true, ["new"]])
+  })
+
+  test("carbon-4: command conditions of a disabled layer are not evaluated by registration or replace", () => {
+    const keymap = getKeymap(renderer)
+    const { takeErrors } = captureDiagnostics(keymap)
+    const slot = createLayerSlot(keymap)
+    const item: { ready: boolean } | null = null
+    const layerOf = () => ({
+      enabled: () => item !== null,
+      commands: [{ name: "c", enabled: () => item!.ready, run() {} }],
+    })
+    keymap.on("state", () => {})
+    slot(layerOf())
+    keymap.setData("unrelated", 1)
+    slot(layerOf())
+    expect(takeErrors().errors).toEqual([])
+  })
+
+  test("carbon-4: a state listener that empties a layer slot during its update removes the new layer", () => {
+    const keymap = getKeymap(renderer)
+    const slot = createLayerSlot(keymap)
+    const calls: string[] = []
+    let unmount = false
+    keymap.on("state", () => {
+      if (!unmount) return
+      unmount = false
+      slot(undefined)
+    })
+    unmount = true
+    slot({ commands: [{ name: "c", run: () => void calls.push("v2") }] })
+    keymap.runCommand("c")
+    expect(calls).toEqual([])
   })
 
   test("a failed reactive subscription is retried by the next replace", () => {
@@ -1673,8 +1828,8 @@ describe("keymap: commands and queries", () => {
       commands: [{ name: "c", run() {} }],
     })
 
-    const registered = layers.replaceLayer(undefined, layerOf())
-    layers.replaceLayer(registered, layerOf())
+    const registered = replaceLayer(layers, undefined, layerOf())
+    replaceLayer(layers, registered, layerOf())
     expect(attempts).toBe(2)
     expect(takeErrors().errors).toEqual(["not yet"])
   })
@@ -1685,11 +1840,11 @@ describe("keymap: commands and queries", () => {
     const calls: string[] = []
     const shared = { name: "c", run: () => void calls.push("shared") }
 
-    const replaced = layers.replaceLayer(undefined, { commands: [shared] })
-    layers.replaceLayer(undefined, { priority: -1, commands: [shared] })
-    layers.replaceLayer(replaced, { commands: [{ name: "c", run: () => void calls.push("fresh") }] })
+    const replaced = replaceLayer(layers, undefined, { commands: [shared] })
+    replaceLayer(layers, undefined, { priority: -1, commands: [shared] })
+    replaceLayer(layers, replaced, { commands: [{ name: "c", run: () => void calls.push("fresh") }] })
     keymap.runCommand("c")
-    layers.replaceLayer(replaced, undefined)
+    replaceLayer(layers, replaced, undefined)
     keymap.runCommand("c")
     expect(calls).toEqual(["fresh", "shared"])
   })

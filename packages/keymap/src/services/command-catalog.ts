@@ -953,6 +953,7 @@ function normalizeCommands<TTarget extends object, TEvent extends KeymapEvent>(
       // A compiled command that is not plain data (a transformer can make one) is handed out as it is.
       const owned = options.owned && isPlainData(command)
       if (!owned) command.name = normalizedName
+      const exposed = owned ? ownCommand(command, normalizedName) : command
 
       for (const [fieldName, value] of Object.entries(fields)) {
         if (value === undefined) {
@@ -977,14 +978,14 @@ function normalizeCommands<TTarget extends object, TEvent extends KeymapEvent>(
       }
 
       const commandState: CommandState<TTarget, TEvent> = {
-        command,
-        fields,
+        command: exposed,
+        // Field compilers read the registered values; queries read the exposed command's.
+        fields: owned ? getCommandFields(exposed) : fields,
         attrs: Object.keys(attrs).length === 0 ? undefined : attrs,
         requires: Object.entries(mergedRequires),
         matchers,
       }
 
-      if (owned) commandState.command = ownCommand(command, normalizedName)
       seen.add(commandState.command.name)
       normalizedCommands.push(commandState)
     } catch (error) {
