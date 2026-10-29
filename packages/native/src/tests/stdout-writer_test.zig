@@ -84,9 +84,12 @@ test "Session stdout writer completes output only after write(2) returns, in ord
     try testing.expectEqual(session.PostResult{}, try value.postStdout(PipeWriter, create, 65_536, false));
     // R3: one writer, and one buffer, for every hand-over.
     try testing.expectEqual(held, value.stdout_post.?.ptr);
-    // Destroying a drained Session stops and joins its idle writer.
+    // Destroying a drained Session stops and joins its idle writer before it returns.
     try owner.destroy(id);
-    waitThreadsGone();
+    if (stdout_writer.live_threads.load(.acquire) != 0) {
+        @as(*PipeWriter, @ptrCast(@alignCast(held))).abandon();
+        return error.TestUnexpectedResult;
+    }
 }
 
 test "Session stdout writer refuses a host ticket's output, and an unsupported writer consumes nothing" {
