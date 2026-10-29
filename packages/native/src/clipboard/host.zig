@@ -2166,9 +2166,9 @@ test "clipboard platform operations settle at their deadline whether queued or r
     committed.platform_mutation_started.store(true, .release);
     var queue_storage: [3]*Operation = undefined;
     service.platform_queue = .{ .items = queue_storage[0..0], .capacity = queue_storage.len };
+    service.platform_queue.appendAssumeCapacity(&next);
     service.platform_queue.appendAssumeCapacity(&expired);
     service.platform_queue.appendAssumeCapacity(&cancelled);
-    service.platform_queue.appendAssumeCapacity(&next);
     service.platform_running = running;
     try service.operations.append(std.testing.allocator, running);
 
