@@ -53,6 +53,15 @@ pub const RemoteMode = enum(u8) {
     remote,
 };
 
+/// Wraps frames in DEC mode 2026 (synchronized output). `auto` leaves it out only for a remote
+/// endpoint whose replies have passed the 2026 query without reporting the mode: tmux honors the
+/// mode without reporting it, and redraws every touched line at each update's end.
+pub const SynchronizedOutput = enum(u8) {
+    auto,
+    always,
+    never,
+};
+
 pub const ImageProtocol = enum(u8) {
     auto,
     kitty,
@@ -219,6 +228,9 @@ startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
 /// The host ends each query batch with DA1 and waits for its reply (sentinel mode).
 reply_sentinel: bool = false,
+synchronized_output: SynchronizedOutput = .auto,
+/// A reply ordered after the DECRQM 2026 query arrived, so `caps.sync` is final.
+sync_reply_settled: bool = false,
 unicode_wide_locked: ?bool = null,
 host_env_hyperlinks: bool = false,
 hyperlinks_override: ?bool = null,
@@ -1345,6 +1357,8 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         } else if (self.explicit_width_probe_reports_pending > 0) {
             const probe_index = 2 - self.explicit_width_probe_reports_pending;
             self.explicit_width_probe_reports_pending -= 1;
+            // Terminals answer in order, and the probes follow the capability queries.
+            self.sync_reply_settled = true;
 
             if (row == 1 and probe_index == 0 and col == 2) {
                 self.caps.explicit_width = true;
@@ -1501,6 +1515,14 @@ fn isHyperlinkHostEnv(env_map: *const std.process.Environ.Map) bool {
         return parsed >= 5202;
     }
     return false;
+}
+
+pub fn synchronizedOutput(self: *const Terminal) bool {
+    return switch (self.synchronized_output) {
+        .always => true,
+        .never => false,
+        .auto => self.caps.sync or !self.remote or !self.sync_reply_settled,
+    };
 }
 
 pub fn getCapabilities(self: *Terminal) Capabilities {

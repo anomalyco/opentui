@@ -66,6 +66,18 @@ Custom `stdout` uses Session-owned ordered output and defaults to `remote: true`
 Set `forwardEnvKeys` only for values that the remote terminal should inherit. Read [Terminal capabilities](/docs/reference/terminal-capabilities) and [Environment variables](/docs/reference/env-vars) for forwarding rules.
 Read [How Core uses native](/docs/native/core#complete-output-and-release-resources) for Session output ownership and completion.
 
+## Synchronized output
+
+OpenTUI wraps each frame in synchronized output (`CSI ? 2026 h` … `CSI ? 2026 l`), so the terminal shows the frame whole. `synchronizedOutput` controls this:
+
+| Value      | Behavior                                                                                                                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `"auto"`   | Default. Wraps every frame, except in a remote session (`remote`, or SSH or mosh detected) whose terminal answered the startup queries without reporting mode 2026, such as tmux over SSH. |
+| `"always"` | Wraps every frame.                                                                                                                                                                         |
+| `"never"`  | Never wraps a frame.                                                                                                                                                                       |
+
+tmux honors the mode without reporting it, and it redraws every line an update touched when the update ends. Over a slow link those redraws cost bytes on every frame. Frames sent before the terminal's replies arrive keep the wrapper.
+
 ## Choose a render schedule
 
 The initial control state is demand-driven. Tree mutations call `requestRender()` and schedule a one-shot frame.

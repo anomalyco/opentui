@@ -14,6 +14,7 @@ const test_renderer_mod = @import("test-renderer.zig");
 const terminal_image_test = @import("terminal-image_test.zig");
 const owned_styled = @import("owned-styled-text.zig");
 const native_span_feed = @import("../native-span-feed.zig");
+const terminal_mod = @import("../terminal.zig");
 
 const CliRenderer = renderer.CliRenderer;
 const TextBuffer = text_buffer.TextBuffer;
@@ -2853,6 +2854,51 @@ test "renderer - pinned split scrollback repaints live native images after appen
     const append_index = std.mem.find(u8, output, "line") orelse return error.TestUnexpectedResult;
     const placement_index = std.mem.find(u8, output, "\x1b_Ga=p") orelse return error.TestUnexpectedResult;
     try std.testing.expect(placement_index > append_index);
+}
+
+test "renderer - frames carry the sync envelope unless a remote endpoint never reported 2026" {
+    const Reply = enum { reported, not_reported, pending };
+    const Mode = terminal_mod.SynchronizedOutput;
+    for ([_]bool{ false, true }) |remote| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
+        errdefer std.debug.print("remote={} reply={t} mode={t}\n", .{ remote, reply, mode });
+        var pools = TestPools.init(std.testing.allocator);
+        defer pools.deinit();
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        const term = &test_renderer.renderer.terminal;
+        term.opts.remote_mode = if (remote) .remote else .local;
+        term.synchronized_output = mode;
+        var writer = DiscardTerminalWriter{};
+        try term.queryTerminalSend(&writer);
+        // Replies come in query order: the startup cursor report, DECRQM, then the width probe's report.
+        if (reply != .pending) term.processCapabilityResponse("\x1b[3;1R");
+        if (reply == .reported) term.processCapabilityResponse("\x1b[?2026;2$y");
+        if (reply != .pending) term.processCapabilityResponse("\x1b[1;1R");
+
+        const envelope = mode == .always or (mode == .auto and !(remote and reply == .not_reported));
+        _ = test_renderer.renderer.resetSplitScrollback(1, 1);
+        var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+        defer snapshot.deinit();
+        try snapshot.drawText("line", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+        const snapshots = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 4, .start_on_new_line = false, .trailing_newline = true }};
+        // A full frame and a split frame without footer paint close the envelope in different places.
+        for (0..2) |frame| {
+            try test_renderer.renderer.getNextBuffer().drawText("ab", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+            const status = if (frame == 0) test_renderer.render(true) else test_renderer.renderSplit(.{
+                .snapshots = &snapshots,
+                .pinned_render_offset = 1,
+                .paint_footer = false,
+                .suspended = false,
+            }, false);
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, status);
+            const output = test_renderer.lastOutput();
+            try std.testing.expect(output.len != 0);
+            try std.testing.expectEqual(envelope, std.mem.startsWith(u8, output, ansi.ANSI.syncSet));
+            try std.testing.expectEqual(envelope, std.mem.endsWith(u8, output, ansi.ANSI.syncReset));
+            try std.testing.expectEqual(@intFromBool(envelope), std.mem.count(u8, output, ansi.ANSI.syncSet));
+            try std.testing.expectEqual(@intFromBool(envelope), std.mem.count(u8, output, ansi.ANSI.syncReset));
+        }
+    };
 }
 
 test "renderer - split scrollback materializes image fallback cells" {

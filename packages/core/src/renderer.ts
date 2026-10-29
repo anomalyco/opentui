@@ -32,6 +32,7 @@ import {
   type NativeRenderStats,
   type RenderLib,
   type ContextBufferHandle,
+  type SynchronizedOutput,
 } from "./zig.js"
 import { NativeSession } from "./NativeSession.js"
 import { NativeScene } from "./NativeScene.js"
@@ -162,6 +163,11 @@ export interface CliRendererConfig {
   // native startup auto-detects SSH/mosh sessions; custom stdout feed output
   // defaults to remote because it is not connected to the host TTY directly.
   remote?: boolean
+
+  // Wrap each frame in synchronized output (DEC mode 2026) so the terminal shows it whole.
+  // "auto" (the default) leaves it out for a remote terminal that did not report mode 2026,
+  // such as tmux over SSH, where it costs bytes on the link. "always" and "never" force it.
+  synchronizedOutput?: SynchronizedOutput
 
   // Raw is the default. File requires a local terminal with medium and upload ACK support.
   kittyImageTransport?: KittyImageTransport
@@ -973,6 +979,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private nativeResizeWait: Promise<void> | null = null
   private nativeKittyKeyboardFlags = 0
   private kittyTransportMode: KittyImageTransport = "raw"
+  private readonly synchronizedOutput: SynchronizedOutput
   private kittyTransportTimer: TimerHandle | null = null
   private _lastSceneTimeMs = 0
 
@@ -1291,6 +1298,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("nativeSceneWorkBudget was removed: frames always paint synchronously")
     }
     this.kittyTransportMode = config.kittyImageTransport ?? "raw"
+    this.synchronizedOutput = config.synchronizedOutput ?? "auto"
     const transportCode = KITTY_IMAGE_TRANSPORTS.indexOf(this.kittyTransportMode)
     if (transportCode < 0) throw new TypeError("Invalid kittyImageTransport")
     const useMemoryBufferedOutput = config.bufferedOutput === "memory"
@@ -3268,6 +3276,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           kittyKeyboardFlags: this.nativeKittyKeyboardFlags,
           clearOnClose: this.clearOnShutdown,
           replySentinel: this.replySentinel,
+          synchronizedOutput: this.synchronizedOutput,
         }),
         () => {
           if (this._isDestroyed) return

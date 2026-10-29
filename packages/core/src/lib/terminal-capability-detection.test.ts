@@ -7,6 +7,8 @@ import {
 } from "./terminal-capability-detection.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
+import { Writable } from "node:stream"
+import type { SynchronizedOutput } from "../zig.js"
 
 describe("isCapabilityResponse", () => {
   test("detects DECRPM responses", () => {
@@ -244,4 +246,51 @@ describe("renderer capabilities event", () => {
       expect(late.keys).toEqual(experimental_nativeInput ? ["\x1b[1;2R", "\x1b[1;5R", ...typed] : typed)
     })
   }
+})
+
+describe("synchronized output", () => {
+  // Replies come in query order: the startup cursor report, DECRQM 2026 when reported, then the width probe's report.
+  async function frame(remote: boolean, synchronizedOutput: SynchronizedOutput | undefined, reported: boolean) {
+    const writes: string[] = []
+    const stdout = new Writable({
+      write(chunk, _encoding, callback) {
+        writes.push(Buffer.from(chunk).toString())
+        callback()
+      },
+    }) as NodeJS.WriteStream
+    const options = { width: 4, height: 2, stdout, bufferedOutput: "stdout", remote, synchronizedOutput } as const
+    const { renderer, renderOnce } = await createTestRenderer({ ...options, clock: new ManualClock() })
+    try {
+      await renderer.setupTerminal()
+      for (const reply of ["\x1b[3;1R", ...(reported ? ["\x1b[?2026;2$y"] : []), "\x1b[1;1R"]) {
+        renderer.stdin.emit("data", Buffer.from(reply))
+      }
+      await renderer.nativeScene!.driver.idle()
+      writes.length = 0
+      await renderOnce()
+      return writes.join("")
+    } finally {
+      renderer.destroy()
+    }
+  }
+
+  // The native table covers every combination; these rows cover the option and the host's reply routing.
+  const rows: [remote: boolean, mode: SynchronizedOutput | undefined, reported: boolean, envelope: boolean][] = [
+    [true, undefined, false, false],
+    [true, undefined, true, true],
+    [false, undefined, false, true],
+    [true, "always", false, true],
+    [false, "never", true, false],
+  ]
+  for (const [remote, mode, reported, envelope] of rows) {
+    test(`remote ${remote}, ${mode ?? "default"}, 2026 ${reported ? "reported" : "not reported"}`, async () => {
+      const output = await frame(remote, mode, reported)
+      expect(output.length).toBeGreaterThan(0)
+      expect([output.startsWith("\x1b[?2026h"), output.includes("\x1b[?2026l")]).toEqual([envelope, envelope])
+    })
+  }
+
+  test("an unknown mode is rejected", async () => {
+    await expect(frame(false, "sometimes" as SynchronizedOutput, false)).rejects.toThrow(TypeError)
+  })
 })
