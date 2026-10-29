@@ -1851,7 +1851,10 @@ const splitBytes = (text: string, at: number, ...between: StdoutStep[]): StdoutS
   const bytes = Buffer.from(text)
   return [bytes.subarray(0, at), ...between, bytes.subarray(at)]
 }
+const lead = Buffer.from([0xc3])
 const passthrough = (renderer: CliRenderer) => (renderer.externalOutputMode = "passthrough")
+const destroy = (renderer: CliRenderer) => renderer.destroy()
+const capture = (renderer: CliRenderer) => (renderer.externalOutputMode = "capture-stdout")
 const unknownEncoding = (_renderer: CliRenderer, stdout: CollectingStdout) =>
   expect(() => stdout.write("x", "bogus" as BufferEncoding)).toThrow("Unknown encoding")
 const outputFailure = async (renderer: CliRenderer, stdout: CollectingStdout) => {
@@ -1860,21 +1863,20 @@ const outputFailure = async (renderer: CliRenderer, stdout: CollectingStdout) =>
 }
 
 test.each<[string, StdoutStep[], string]>([
-  ["Uint8Array", [new TextEncoder().encode("hello-u8\n")], "hello-u8"],
-  ["Uint8Array view", [new TextEncoder().encode("\u00e9-view\n").subarray(1)], "\ufffd-view"],
-  ["base64", [[Buffer.from("hello-b64\n").toString("base64"), "base64"]], "hello-b64"],
-  ["upper-case HEX", [["6869", "HEX"]], "hi"],
+  ["Uint8Array view", [new TextEncoder().encode("\u00e9-view-tail\n").subarray(1, 7)], "\ufffd-view"],
+  ["base64", [[Buffer.from("hello-b64\n").toString("base64"), "BASE64"]], "hello-b64"],
   ["latin1", [["\u00e9", "latin1"], "x"], "\ufffdx"],
-  ["2-byte split", splitBytes("caf\u00e9", 4), "caf\u00e9"],
+  ["2-byte split across a frame", splitBytes("caf\u00e9", 4, (renderer) => renderer.idle()), "caf\u00e9"],
   ["3-byte split", splitBytes("\u4e00", 1), "\u4e00"],
   ["4-byte split", splitBytes("\u{10437}", 1), "\u{10437}"],
-  ["empty string inside a split", splitBytes("\u00e9", 1, ""), "\u00e9"],
+  ["empty writes inside a split", splitBytes("\u00e9", 1, "", null as never), "\u00e9"],
   ["unknown encoding inside a split", splitBytes("\u00e9", 1, unknownEncoding), "\u00e9"],
   ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
-  ["passthrough after a lead byte", [Buffer.from([0xc3]), passthrough], "\ufffd"],
-  ["lead byte after deferred passthrough", ["a", passthrough, Buffer.from([0xc3])], "a\ufffd"],
-  ["destroy after a lead byte", ["a", Buffer.from([0xc3]), (renderer) => renderer.destroy()], "a\ufffd"],
-  ["output failure after a lead byte", ["a", Buffer.from([0xc3]), outputFailure], ""],
+  ["capture set again inside a split", splitBytes("\u00e9", 1, capture), "\u00e9"],
+  ["passthrough after a lead byte", [lead, passthrough], "\ufffd"],
+  ["lead byte after deferred passthrough", ["a", passthrough, lead], "a\ufffd"],
+  ["destroy after a lead byte", ["a", lead, destroy], "a\ufffd|"],
+  ["output failure after a lead byte", ["a", lead, outputFailure], ""],
 ])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {
   const stdout = createCollectingStdout(80, 24)
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
@@ -1896,7 +1898,12 @@ test.each<[string, StdoutStep[], string]>([
   await renderer.idle().catch(() => {})
   await renderer.nativeScene.driver.idle().catch(() => {})
 
-  expect(stdout.text().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")).toContain(expected)
+  const shown = stdout
+    .text()
+    .replace(/\x1b\[[0-3]?J/g, "|")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?>]*[ -/]*[@-~]/g, "")
+    .trim()
+  expect(shown).toBe(expected)
 })
 
 // ---- Dimension fallback ----
