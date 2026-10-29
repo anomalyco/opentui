@@ -184,7 +184,7 @@ describe("renderer capabilities event", () => {
 
 describe("synchronized output", () => {
   // Replies come in query order: the startup cursor report, DECRQM 2026, the width probe's report, then DA1.
-  async function frame(config: Partial<CliRendererConfig>, reported: boolean, lateMs = 0) {
+  async function frame(config: Partial<CliRendererConfig>, reported: boolean, lateMs = 0, host = false) {
     let output = ""
     const stdout = new Writable({
       write(chunk, _encoding, callback) {
@@ -202,6 +202,8 @@ describe("synchronized output", () => {
       ...config,
     })
     try {
+      // A pending setup keeps its first options, so this one carries the host flag through the binding.
+      if (host) void renderer.nativeScene!.driver.setupTerminal({ hostMultiplexer: host })
       await renderer.setupTerminal()
       clock.advance(lateMs)
       for (const reply of ["\x1b[3;1R", ...(reported ? ["\x1b[?2026;2$y"] : []), "\x1b[1;1R", "\x1b[?62;22c"]) {
@@ -219,20 +221,22 @@ describe("synchronized output", () => {
   // The native table covers every combination; these rows cover the option, the reply routing, and the host's
   // multiplexer: a custom stdout never passes through the TMUX in process.env, and a client's TMUX never counts.
   const client = { remote: true, environment: { TMUX: "/tmp/laptop,1,0" } }
-  const rows: [config: Partial<CliRendererConfig>, reported: boolean, envelope: boolean, lateMs?: number][] = [
+  // [config, 2026 reported, envelope, lateMs, host multiplexer]
+  const rows: [Partial<CliRendererConfig>, boolean, boolean, number?, boolean?][] = [
     [{ remote: true }, false, false],
     [client, true, true],
     [{ remote: true, synchronizedOutput: "always" }, false, true],
     [{ remote: false, synchronizedOutput: "never" }, true, false],
     [{ remote: true, experimental_nativeInput: false }, false, false, 5100],
     [{ remote: true, experimental_nativeInput: true }, false, false, 5100],
+    [{ remote: true }, true, false, 0, true],
   ]
   test("frames carry the envelope by option, reply and host", async () => {
     const tmux = process.env.TMUX
     process.env.TMUX = "/tmp/host,1,0"
     try {
-      for (const [config, reported, envelope, lateMs] of rows) {
-        const output = await frame(config, reported, lateMs)
+      for (const [config, reported, envelope, lateMs, host] of rows) {
+        const output = await frame(config, reported, lateMs, host)
         expect(output.length).toBeGreaterThan(0)
         const seen = [output.startsWith("\x1b[?2026h"), output.includes("\x1b[?2026l")]
         expect([JSON.stringify(config), lateMs, seen]).toEqual([JSON.stringify(config), lateMs, [envelope, envelope]])
@@ -255,9 +259,12 @@ describe("synchronized output", () => {
     process.env.STY = "1.pts-0.host"
     try {
       const options = { stdout: process.stdout, remote: true, forwardEnvKeys: ["SSH_CONNECTION"] }
-      const { renderer } = await createTestRenderer({ ...options, clock: new ManualClock() })
-      await renderer.setupTerminal()
-      renderer.destroy()
+      const { renderer, dispose } = await createTestRenderer({ ...options, clock: new ManualClock() })
+      try {
+        await renderer.setupTerminal()
+      } finally {
+        await dispose()
+      }
       expect(seen).toEqual([true])
     } finally {
       lib.sessionSetupTerminal = setup
