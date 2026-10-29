@@ -530,6 +530,8 @@ describe("EditBuffer", () => {
       const eol = buffer.getEOL()
       expect(eol.row).toBe(1)
       expect(eol.col).toBe(5)
+      expect(buffer.getEOF()).toMatchObject({ row: 2, col: 4, offset: 16 })
+      expect(buffer.getPrevCharBoundary()).toMatchObject({ row: 0, col: 5, offset: 5 })
     })
 
     it("should handle empty lines", () => {

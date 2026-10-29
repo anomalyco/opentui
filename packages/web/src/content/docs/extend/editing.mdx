@@ -127,18 +127,18 @@ click maps to the painted character. Reset the matching form when the selection 
 
 `EditBuffer.create(widthMethod, owner)` creates editable native text storage with one primary cursor.
 
-| Group               | API                                                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| Replace content     | `setText`, `setTextOwned`, `replaceText`, `replaceTextOwned`, `clear`                                  |
-| Insert and delete   | `insertChar`, `insertText`, `deleteChar`, `deleteCharBackward`, `deleteRange`, `newLine`, `deleteLine` |
-| Move                | `moveCursorLeft`, `moveCursorRight`, `moveCursorUp`, `moveCursorDown`, `gotoLine`                      |
-| Set cursor          | `setCursor`, `setCursorToLineCol`, `setCursorByOffset`                                                 |
-| Read cursor         | `getCursorPosition`, `getNextWordBoundary`, `getPrevWordBoundary`, `getEOL`                            |
-| Convert coordinates | `offsetToPosition`, `positionToOffset`, `getLineStartOffset`, `measureText`                            |
-| Read text           | `getText`, `getTextRange`, `getTextRangeByCoords`, `getLineCount`                                      |
-| History             | `undo`, `redo`, `canUndo`, `canRedo`, `clearHistory`                                                   |
-| Style               | Default-style, syntax-style, and highlight methods shared with `TextBuffer`                            |
-| Diagnostics         | `debugLogRope` writes the native rope structure to the debug logger                                    |
+| Group               | API                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Replace content     | `setText`, `setTextOwned`, `replaceText`, `replaceTextOwned`, `clear`                                        |
+| Insert and delete   | `insertChar`, `insertText`, `deleteChar`, `deleteCharBackward`, `deleteRange`, `newLine`, `deleteLine`       |
+| Move                | `moveCursorLeft`, `moveCursorRight`, `moveCursorUp`, `moveCursorDown`, `gotoLine`                            |
+| Set cursor          | `setCursor`, `setCursorToLineCol`, `setCursorByOffset`                                                       |
+| Read cursor         | `getCursorPosition`, `getNextWordBoundary`, `getPrevWordBoundary`, `getPrevCharBoundary`, `getEOL`, `getEOF` |
+| Convert coordinates | `offsetToPosition`, `positionToOffset`, `getLineStartOffset`, `measureText`                                  |
+| Read text           | `getText`, `getTextRange`, `getTextRangeByCoords`, `getLineCount`                                            |
+| History             | `undo`, `redo`, `canUndo`, `canRedo`, `clearHistory`                                                         |
+| Style               | Default-style, syntax-style, and highlight methods shared with `TextBuffer`                                  |
+| Diagnostics         | `debugLogRope` writes the native rope structure to the debug logger                                          |
 
 `setText()` resets history and the native add buffer. `replaceText()` creates an undo point. All replacement methods
 copy text into native-owned memory. The `Owned` variants retain the same public behavior without a borrowed-memory path.

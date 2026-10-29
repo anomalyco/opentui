@@ -211,6 +211,8 @@ export enum NativeEditPositionQuery {
   Offset = 4,
   Coords = 5,
   LineStart = 6,
+  End = 7,
+  PrevChar = 8,
 }
 
 export enum NativeEditorStyleMask {

@@ -256,6 +256,14 @@ export class EditBuffer extends EventEmitter {
     return this.position(NativeEditPositionQuery.Eol)!
   }
 
+  public getEOF(): LogicalCursor {
+    return this.position(NativeEditPositionQuery.End)!
+  }
+
+  public getPrevCharBoundary(): LogicalCursor {
+    return this.position(NativeEditPositionQuery.PrevChar)!
+  }
+
   public offsetToPosition(offset: number): { row: number; col: number } | null {
     const result = this.position(NativeEditPositionQuery.Offset, offset)
     return result && { row: result.row, col: result.col }
