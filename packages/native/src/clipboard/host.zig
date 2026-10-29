@@ -2161,17 +2161,20 @@ test "clipboard platform operations settle at their deadline whether queued or r
     running.* = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 1, .started_ns = now_ns - std.time.ns_per_ms };
     var expired: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 1, .started_ns = now_ns - std.time.ns_per_ms };
     var next: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 60_000, .started_ns = now_ns };
+    var cancelled: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read, .timeout_ms = 60_000, .started_ns = now_ns, .platform_terminal_request = .cancelled };
     var committed: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .write, .timeout_ms = 1, .started_ns = now_ns - std.time.ns_per_ms };
     committed.platform_mutation_started.store(true, .release);
-    var queue_storage: [2]*Operation = undefined;
+    var queue_storage: [3]*Operation = undefined;
     service.platform_queue = .{ .items = queue_storage[0..0], .capacity = queue_storage.len };
     service.platform_queue.appendAssumeCapacity(&expired);
+    service.platform_queue.appendAssumeCapacity(&cancelled);
     service.platform_queue.appendAssumeCapacity(&next);
     service.platform_running = running;
     try service.operations.append(std.testing.allocator, running);
 
     try std.testing.expectEqual(OperationStatus.timed_out, running.pollPlatform());
     try std.testing.expectEqual(OperationStatus.timed_out, expired.pollPlatform());
+    try std.testing.expectEqual(OperationStatus.cancelled, cancelled.pollPlatform());
     try std.testing.expectEqual(OperationStatus.pending, next.pollPlatform());
     try std.testing.expectEqual(OperationStatus.pending, committed.pollPlatform());
     try std.testing.expectEqualSlices(*Operation, &.{&next}, service.platform_queue.items);
