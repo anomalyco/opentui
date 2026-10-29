@@ -76,8 +76,6 @@ pub const ShutdownStatus = enum(u8) {
 
 const READ_MIME_COUNT_MAX: u32 = 64;
 const READ_MIME_ESSENCE_BYTES_MAX: u32 = 255;
-// Bounds within-operation restarts when a chosen offer's source vanishes mid-read.
-const WAYLAND_READ_STALE_RETRY_MAX: u8 = 2;
 const OPERATIONS_MAX_DEFAULT: u32 = 16;
 const PROVIDER_TRANSFERS_MAX_DEFAULT: u32 = 16;
 const ResultKind = enum { mime, data, diagnostic };
@@ -1063,7 +1061,7 @@ pub const Service = struct {
         if (operation.result_mime.len > 0) operation.allocator.free(operation.result_mime);
         operation.result_mime = &.{};
         operation.transfer_data.clearRetainingCapacity();
-        if (operation.wayland_stale_retry_count < WAYLAND_READ_STALE_RETRY_MAX) {
+        if (operation.wayland_stale_retry_count < clipboard_wayland.READ_RETRY_MAX) {
             operation.wayland_stale_retry_count += 1;
             operation.wayland_barrier_serial = 0;
             operation.preference_offset = 4;
@@ -2439,6 +2437,121 @@ test "clipboard Wayland BMP worker cancellation beats late conversion publicatio
     try std.testing.expectEqual(OperationStatus.cancelled, operation.status);
     try std.testing.expect(!operation.wayland_conversion_started);
     try std.testing.expectEqual(@as(usize, 0), operation.result.len);
+}
+
+test "clipboard core read restarts after focus loss a bounded number of times" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const Fake = struct {
+        var helper_count: u8 = 0;
+        // Offer n is proxy 0x100 + n, and its receive writes n, so the result names the offer read.
+        fn marshal(
+            proxy: *clipboard_linux.WlProxy,
+            opcode: u32,
+            _: ?*const clipboard_linux.WlInterface,
+            _: u32,
+            flags: u32,
+            arguments: [*]clipboard_linux.WlArgument,
+        ) callconv(.c) ?*clipboard_linux.WlProxy {
+            const address = @intFromPtr(proxy);
+            if (address == 5 and opcode == 0) helper_count += 1;
+            if (address > 0x100 and opcode == 1 and flags == 0) {
+                _ = posix_io.write(arguments[1].h, &.{@intCast(address - 0x100)}) catch unreachable;
+            }
+            return @ptrFromInt(4);
+        }
+        fn offer(id: u8) *clipboard_linux.WlProxy {
+            return @ptrFromInt(0x100 + @as(usize, id));
+        }
+    };
+    const Event = union(enum) { enter, leave, offer: u8, selection: ?u8, barrier_done };
+    // The WSLg trace: the selection is replaced while the barrier waits, then focus leaves.
+    const replaced = [_]Event{ .enter, .{ .offer = 'a' }, .{ .selection = 'a' } } ++
+        [_]Event{ .{ .selection = null }, .{ .offer = 'b' }, .{ .selection = 'b' } };
+    const refocused = [_]Event{ .leave, .enter, .{ .offer = 'c' }, .{ .selection = 'c' } };
+    const Case = struct {
+        name: []const u8,
+        events: []const Event,
+        status: OperationStatus,
+        result: []const u8 = "",
+        helpers: u8,
+    };
+    const cases = [_]Case{
+        .{ .name = "replaced offer", .events = &(replaced ++ .{.barrier_done}), .status = .read, .result = "b", .helpers = 1 },
+        .{
+            .name = "focus lost after a replaced offer",
+            .events = &(replaced ++ refocused ++ .{.barrier_done}),
+            .status = .read,
+            .result = "c",
+            .helpers = 2,
+        },
+        .{
+            .name = "focus churn beyond the bound",
+            .events = &(replaced ++ refocused ++ refocused ++ .{.leave}),
+            .status = .failed,
+            .helpers = 1 + clipboard_wayland.READ_RETRY_MAX,
+        },
+    };
+    var symbols = clipboard_wayland.testSymbols();
+    symbols.wl_proxy_marshal_array_flags = Fake.marshal;
+    var request: [18]u8 = @splat(0);
+    std.mem.writeInt(u32, request[0..4], 1, .little);
+    std.mem.writeInt(u32, request[4..8], 10, .little);
+    request[8..18].* = "text/plain".*;
+    // The reads share one connection, so each must start with the full restart budget.
+    var wayland = clipboard_wayland.testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
+    defer wayland.deinit();
+    wayland.core_data_device = true;
+    wayland.compositor = @ptrFromInt(5);
+    wayland.shell = @ptrFromInt(6);
+    wayland.shm = @ptrFromInt(7);
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.name});
+        Fake.helper_count = 0;
+        var service: Service = .{
+            .allocator = std.testing.allocator,
+            .objects = undefined,
+            .libraries = .{ .wayland = true, .x11 = true, .is_wsl = true },
+            .wayland = &wayland,
+            .requested_wayland_seat = &.{},
+            .environment_wayland_seat = &.{},
+        };
+        var operation: Operation = .{
+            .allocator = std.testing.allocator,
+            .service = &service,
+            .kind = .read,
+            .request = &request,
+            .mechanism = .wayland,
+            .max_bytes = 16,
+        };
+        defer operation.transfer_data.deinit(std.testing.allocator);
+        defer if (operation.result.len > 0) std.testing.allocator.free(operation.result);
+        defer if (operation.result_mime.len > 0) std.testing.allocator.free(operation.result_mime);
+        const Connection = clipboard_wayland.Connection;
+        var status = service.driveWaylandRead(&operation);
+        for (case.events) |event| {
+            switch (event) {
+                .enter => Connection.keyboardEnter(&wayland, null, 0, wayland.helper_surface, null),
+                .leave => Connection.keyboardLeave(&wayland, null, 0, wayland.helper_surface),
+                .offer => |id| {
+                    Connection.deviceDataOffer(&wayland, null, Fake.offer(id));
+                    Connection.offerMime(&wayland, Fake.offer(id), "text/plain");
+                },
+                .selection => |id| Connection.deviceSelection(&wayland, null, if (id) |value| Fake.offer(value) else null),
+                .barrier_done => Connection.barrierDone(&wayland, wayland.barrier_callback, 0),
+            }
+            try std.testing.expectEqual(OperationStatus.pending, status);
+            status = service.driveWaylandRead(&operation);
+        }
+        // The transfer takes one poll for its bytes and one for end of file.
+        var polls: u8 = 0;
+        while (status == .pending and polls < 2) : (polls += 1) status = service.driveWaylandRead(&operation);
+        try std.testing.expectEqual(case.status, status);
+        try std.testing.expectEqualStrings(case.result, operation.result);
+        try std.testing.expectEqual(case.helpers, Fake.helper_count);
+        try std.testing.expectEqual(clipboard_linux.Mechanism.wayland, operation.mechanism.?);
+        try std.testing.expect(!operation.wayland_core_focus_acquired);
+        try std.testing.expectEqual(@as(u32, 0), wayland.core_focus_users);
+    }
 }
 
 test "clipboard failed core selection progress releases operation focus" {
