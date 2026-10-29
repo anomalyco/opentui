@@ -9,6 +9,14 @@ const stdout_writer = @import("../stdout-writer.zig");
 const PipeWriter = stdout_writer.Writer(stdout_writer.FdSink, stdout_writer.ThreadRunner(null));
 const options: session.Options = .{ .chunk_size = 4096, .chunk_count = 16, .span_capacity = 16 };
 
+const pipe = struct {
+    fn open() ![2]std.posix.fd_t {
+        return stdout_writer.testPipe(4096);
+    }
+}.open;
+const readExactly = stdout_writer.readExactly;
+const waitThreadsGone = stdout_writer.waitThreadsGone;
+
 const PipeCreate = struct {
     fd: std.posix.fd_t,
     unsupported: bool = false,
@@ -18,27 +26,6 @@ const PipeCreate = struct {
         return PipeWriter.create(testing.allocator, .{ .fd = self.fd }, .{});
     }
 };
-
-fn pipe() ![2]std.posix.fd_t {
-    var fds: [2]std.posix.fd_t = undefined;
-    if (std.c.pipe(&fds) != 0) return error.Pipe;
-    // F_SETPIPE_SZ: one 4 KiB hand-over fills the pipe.
-    _ = std.c.fcntl(fds[1], 1031, @as(c_int, 4096));
-    return fds;
-}
-
-fn readExactly(fd: std.posix.fd_t, out: []u8) !void {
-    var done: usize = 0;
-    while (done < out.len) {
-        const rc = std.c.read(fd, out[done..].ptr, out.len - done);
-        if (rc <= 0) return error.ShortRead;
-        done += @intCast(rc);
-    }
-}
-
-fn waitThreadsGone() void {
-    while (stdout_writer.live_threads.load(.acquire) != 0) std.Thread.yield() catch {};
-}
 
 /// Collects until the copy in flight is written.
 fn collect(value: *session.Session, create: PipeCreate) !u32 {
@@ -54,7 +41,6 @@ test "Session stdout writer completes output only after write(2) returns, in ord
     const owner = try context.Context.init(testing.allocator, std.Io.failing, .{});
     defer owner.deinit() catch unreachable;
     const id = try owner.createSession(options);
-    defer owner.cancelSession(id) catch unreachable;
     const value = try owner.raw().getSession(id);
     const fds = try pipe();
     defer for (fds) |fd| {
@@ -69,6 +55,7 @@ test "Session stdout writer completes output only after write(2) returns, in ord
     try testing.expectEqual(session.PostResult{}, try value.postStdout(PipeWriter, create, 0, true));
     const first = try value.postStdout(PipeWriter, create, 65_536, false);
     try testing.expect(first.in_flight and first.written == 0);
+    const held = value.stdout_post.?.ptr;
     // The copy is the writer's: no host read, drain or completion touches it (R29).
     var copy: [16]u8 = undefined;
     try testing.expectError(error.Busy, owner.readOutput(id, &copy));
@@ -95,6 +82,11 @@ test "Session stdout writer completes output only after write(2) returns, in ord
     try testing.expectEqualSlices(u8, &expected, &read);
     try testing.expect(value.isDrained());
     try testing.expectEqual(session.PostResult{}, try value.postStdout(PipeWriter, create, 65_536, false));
+    // R3: one writer, and one buffer, for every hand-over.
+    try testing.expectEqual(held, value.stdout_post.?.ptr);
+    // Destroying a drained Session stops and joins its idle writer.
+    try owner.destroy(id);
+    waitThreadsGone();
 }
 
 test "Session stdout writer refuses a host ticket's output, and an unsupported writer consumes nothing" {
@@ -175,14 +167,6 @@ test "Session cancel with the writer stuck in write(2) returns at once; the thre
     waitThreadsGone();
 }
 
-/// A writer whose thread never runs: the exit wait takes its copy back.
-const Parked = struct {
-    pub const threaded = false;
-    pub const hook = null;
-
-    pub fn waitChange(_: Parked, _: anytype, _: stdout_writer.State, _: bool) void {}
-};
-
 const Unwritten = struct {
     pub fn write(_: Unwritten, _: []const u8) stdout_writer.SinkError!usize {
         unreachable;
@@ -191,7 +175,7 @@ const Unwritten = struct {
     pub fn waitWritable(_: Unwritten) void {}
 };
 
-const ParkedWriter = stdout_writer.Writer(Unwritten, Parked);
+const ParkedWriter = stdout_writer.Writer(Unwritten, stdout_writer.Parked);
 
 test "Session exit wait takes back a copy the writer never picked up, for the synchronous drain" {
     const owner = try context.Context.init(testing.allocator, std.Io.failing, .{});

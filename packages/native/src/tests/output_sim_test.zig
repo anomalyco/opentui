@@ -70,6 +70,8 @@ const Stats = struct {
     /// Writer mode: polls that found the copy still in flight, and copies taken back at exit.
     writer_polls: u64 = 0,
     writer_reclaims: u32 = 0,
+    /// Writers created while the run ends: exit after a take-back starts no new thread.
+    exit_writers: u32 = 0,
     /// I12: a collect that left the writer idle while output was queued.
     writer_idle_gaps: u32 = 0,
     keys_sent: u64 = 0,
@@ -1246,8 +1248,15 @@ const Sim = struct {
         // The writer: wait for the running copy without a limit, then deliver the rest through it.
         var via_writer = self.env.output_mode == .writer and self.sessionValue().stdout_post != null;
         if (via_writer) {
-            _ = self.sessionValue().postStdout(SimWriter, SimCreate{ .sim = self }, 0, true) catch return false;
+            const posted = self.sessionValue().pending_post;
+            const done = self.sessionValue().postStdout(SimWriter, SimCreate{ .sim = self }, 0, true) catch return false;
             self.syncWriter();
+            if (self.inner_error) |err| return err;
+            // A copy the thread never picked up came back: drain from here, without a new writer.
+            if (posted and done.written == 0) {
+                self.stats.writer_reclaims += 1;
+                via_writer = false;
+            }
         }
         while (true) {
             const status = owner.raw().getSession(self.f.id) catch unreachable;
@@ -1483,6 +1492,7 @@ const SimCreate = struct {
     sim: *Sim,
 
     pub fn create(self: SimCreate) error{UnsupportedResource}!*SimWriter {
+        if (self.sim.phase == .ending) self.sim.stats.exit_writers += 1;
         return SimWriter.create(gpa, .{ .sim = self.sim }, .{ .sim = self.sim });
     }
 };
@@ -1697,6 +1707,7 @@ fn expectMinimums(name: []const u8, mode: presets.OutputMode, total: Stats) !voi
         // The thread stops; every exit takes the posted copy back and still restores (R8).
         try testing.expectEqual(total.runs, total.exits);
         try testing.expectEqual(total.runs, total.writer_reclaims);
+        try testing.expectEqual(@as(u32, 0), total.exit_writers);
         return;
     }
     try testing.expect(total.presented > 0 and total.commits >= total.presented);

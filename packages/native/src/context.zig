@@ -1098,7 +1098,7 @@ pub const Context = struct {
     const StdoutCreate = struct {
         pub fn create(_: StdoutCreate) error{UnsupportedResource}!*stdout_writer.StdoutWriter {
             if (comptime !stdout_writer.supported) return error.UnsupportedResource;
-            if (!stdout_writer.stdoutSupported() or !stdout_writer.ensurePinned()) return error.UnsupportedResource;
+            if (!stdout_writer.stdoutSupported() or !stdout_writer.pinLibrary()) return error.UnsupportedResource;
             return stdout_writer.StdoutWriter.create(std.heap.c_allocator, .{ .fd = 1 }, .{});
         }
     };

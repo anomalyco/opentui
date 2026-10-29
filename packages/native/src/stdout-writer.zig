@@ -238,7 +238,9 @@ pub fn Writer(comptime Sink: type, comptime Runner: type) type {
                 }
                 if (state == .stop or !self.pick()) return;
                 var step: Step = .more;
-                while (step == .more) step = self.writeStep();
+                // After an abandon only a write already inside the kernel may finish: a write
+                // that returned (EAGAIN, EINTR, a partial count) starts no new one.
+                while (step == .more and self.state.load(.acquire) != .stop) step = self.writeStep();
                 if (Runner.hook) |hook| hook();
                 if (!self.publish(step == .written)) {
                     self.allocator.destroy(self);
@@ -266,8 +268,7 @@ pub fn pinLibrary() bool {
             defer context.index += 1;
             for (info.phdr[0..info.phnum]) |phdr| {
                 if (phdr.type != .LOAD) continue;
-                const start = info.addr + phdr.vaddr;
-                if (context.address >= start and context.address < start + phdr.memsz) {
+                if (segmentHolds(info.addr, phdr.vaddr, phdr.memsz, context.address)) {
                     context.found = .{ .index = context.index, .name = info.name };
                     return error.Found;
                 }
@@ -280,18 +281,11 @@ pub fn pinLibrary() bool {
     return std.c.dlopen(name, .{ .NOW = true, .NOLOAD = true, .NODELETE = true }) != null;
 }
 
-var pinned: std.atomic.Value(u8) = .init(0);
-
-/// The first call pins; later calls report its result.
-pub fn ensurePinned() bool {
-    switch (pinned.load(.acquire)) {
-        1 => return true,
-        2 => return false,
-        else => {},
-    }
-    const result: u8 = if (pinLibrary()) 1 else 2;
-    pinned.store(result, .release);
-    return result == 1;
+/// Whether a loaded segment holds `address`. The ELF load bias is modular: a prelinked vDSO
+/// or a library mapped below its link address wraps it, so the sum wraps too.
+fn segmentHolds(bias: usize, vaddr: usize, size: usize, address: usize) bool {
+    const start = bias +% vaddr;
+    return address >= start and address - start < size;
 }
 
 /// Only a terminal on a supported platform gets a writer: pipes and files keep the
@@ -302,10 +296,11 @@ pub fn stdoutSupported() bool {
 }
 
 // Real-thread tests. They import only std, so TSan runs them as one file:
-// zig test -fsanitize-thread -target x86_64-linux-gnu -lc src/stdout-writer.zig
+// zig test -fllvm -fsanitize-thread -target x86_64-linux-gnu -lc src/stdout-writer.zig
+// (without -fllvm the default backend ignores -fsanitize-thread).
 const testing = std.testing;
 
-fn testPipe(capacity: c_int) ![2]std.posix.fd_t {
+pub fn testPipe(capacity: c_int) ![2]std.posix.fd_t {
     var fds: [2]std.posix.fd_t = undefined;
     if (std.c.pipe(&fds) != 0) return error.Pipe;
     // F_SETPIPE_SZ: a small pipe fills with one hand-over.
@@ -313,11 +308,11 @@ fn testPipe(capacity: c_int) ![2]std.posix.fd_t {
     return fds;
 }
 
-fn closeAll(fds: [2]std.posix.fd_t) void {
+pub fn closeAll(fds: [2]std.posix.fd_t) void {
     for (fds) |fd| _ = std.c.close(fd);
 }
 
-fn readExactly(fd: std.posix.fd_t, out: []u8) !void {
+pub fn readExactly(fd: std.posix.fd_t, out: []u8) !void {
     var done: usize = 0;
     while (done < out.len) {
         const rc = std.c.read(fd, out[done..].ptr, out.len - done);
@@ -344,29 +339,12 @@ const scribbling: std.mem.Allocator = .{ .ptr = undefined, .vtable = &.{
     }.free,
 } };
 
-fn waitThreadsGone() void {
+pub fn waitThreadsGone() void {
     while (live_threads.load(.acquire) != 0) std.Thread.yield() catch {};
 }
 
 fn waitState(state: *const std.atomic.Value(State), wanted: State) void {
     while (state.load(.acquire) != wanted) std.Thread.yield() catch {};
-}
-
-test "stdout writer writes one hand-over through a full pipe, then publishes it" {
-    if (!supported) return error.SkipZigTest;
-    const fds = try testPipe(4096);
-    defer closeAll(fds);
-    const writer = try StdoutWriter.create(testing.allocator, .{ .fd = fds[1] }, .{});
-    for (writer.buffer[0..20_000], 0..) |*byte, index| byte.* = @truncate(index *% 7);
-    writer.start(20_000);
-    // The pipe holds 4 KiB: the thread waits in write(2), and the owner sees the copy busy.
-    try testing.expectEqual(Outcome.busy, writer.collect());
-    var read: [20_000]u8 = undefined;
-    try readExactly(fds[0], &read);
-    try testing.expectEqual(Outcome.written, writer.waitCollect(std.time.ns_per_s));
-    try testing.expectEqualSlices(u8, writer.buffer[0..20_000], &read);
-    writer.abandon();
-    waitThreadsGone();
 }
 
 const Script = struct {
@@ -536,22 +514,53 @@ test "stdout writer survives posts raced against abandons without a park" {
     _ = std.c.close(fds[0]);
 }
 
-const Parked = struct {
+/// A runner whose thread never runs: the exit wait takes its copy back.
+pub const Parked = struct {
     pub const threaded = false;
     pub const hook = null;
 
     pub fn waitChange(_: Parked, _: anytype, _: State, _: bool) void {}
 };
 
-test "stdout writer takes back a copy its thread never picked up" {
-    const writer = try Writer(Script, Parked).create(testing.allocator, undefined, .{});
-    writer.start(3);
-    try testing.expectEqual(Outcome.reclaimed, writer.waitCollect(0));
-    writer.release();
-}
-
 test "stdout writer needs no pin for code in the main executable" {
     if (!supported) return error.SkipZigTest;
     // The test binary holds this code itself; glibc's dlopen(RTLD_NOLOAD) of an executable fails.
     try testing.expect(pinLibrary());
+}
+
+test "stdout writer starts no new write after an abandon, on a full non-blocking pipe" {
+    if (!supported) return error.SkipZigTest;
+    const fds = try testPipe(4096);
+    defer closeAll(fds);
+    _ = std.c.fcntl(fds[1], std.posix.F.SETFL, @as(c_int, @bitCast(std.posix.O{ .NONBLOCK = true })));
+    _ = std.c.fcntl(fds[0], std.posix.F.SETFL, @as(c_int, @bitCast(std.posix.O{ .NONBLOCK = true })));
+    var fill: [4096]u8 = undefined;
+    @memset(&fill, 'f');
+    while (std.c.write(fds[1], &fill, fill.len) > 0) {}
+    const writer = try StdoutWriter.create(testing.allocator, .{ .fd = fds[1] }, .{});
+    @memset(writer.buffer[0..4096], 'S');
+    writer.start(4096);
+    waitState(&writer.state, .writing);
+    try std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(30), .clock = .awake }, io());
+    writer.abandon();
+    var stale: usize = 0;
+    var buffer: [4096]u8 = undefined;
+    for (0..50) |_| {
+        while (true) {
+            const rc = std.c.read(fds[0], &buffer, buffer.len);
+            if (rc <= 0) break;
+            for (buffer[0..@intCast(rc)]) |byte| stale += @intFromBool(byte == 'S');
+        }
+        try std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(2), .clock = .awake }, io());
+    }
+    waitThreadsGone();
+    try testing.expectEqual(@as(usize, 0), stale);
+}
+
+test "stdout writer finds its segment when the load bias wraps, as a prelinked vDSO's does" {
+    // dlpi_addr is the modular bias: actual address minus p_vaddr.
+    const vaddr: usize = 0xffffffffff700000;
+    const actual: usize = 0x7fff_f7fc_0000;
+    try testing.expect(segmentHolds(actual -% vaddr, vaddr, 0x2000, actual + 0x10));
+    try testing.expect(!segmentHolds(actual -% vaddr, vaddr, 0x2000, actual + 0x2000));
 }
