@@ -341,6 +341,12 @@ const recordCases: RecordCase[] = [
   ["TextTable background", TextTableRenderable, { content: table, ...tableColors, backgroundColor: "#101820" }, 0],
   ["TextTable unwrapped", TextTableRenderable, { content: table, wrapMode: "none", backgroundColor: "#101820" }, 0],
   ["TextTable translucent", TextTableRenderable, { content: table, ...tableColors, backgroundColor: "#20202080" }, 0],
+  // A clip edge (x = -1) cuts the wide glyph; its visible half keeps its background.
+  [
+    "TextTable clipped wide glyph",
+    TextTableRenderable,
+    { content: Array.from({ length: 3 }, () => [chunk("界", "#203040")]), border: false },
+  ],
 ]
 
 // `tolerance` has a default so that Bun does not take a fourth parameter for a `done` callback in 3-element rows.
@@ -427,14 +433,6 @@ const recordsComposed = async (
   renderer.off(CliRenderEvents.RENDER_ERROR, onError)
 }
 test.each(recordCases)("%s records what its buffer composes", recordsComposed)
-
-// A wide glyph cut by a clip edge (here x = -1) keeps its visible half's background in the composed buffer, but a
-// recorded text view skips the whole glyph and the backdrop shows. This row becomes a normal test once the native
-// fix that keeps that background (record 370) is in this branch's base.
-const clipped = Array.from({ length: 3 }, () => [chunk("界", "#203040")])
-test.todo.each([
-  ["TextTable clipped wide glyph", TextTableRenderable, { content: clipped, border: false }],
-] as RecordCase[])("%s records what its buffer composes", recordsComposed)
 
 // A font cut at the top or the bottom draws the rows inside the buffer. Every call returns the laid-out size, also
 // when no row is inside.
