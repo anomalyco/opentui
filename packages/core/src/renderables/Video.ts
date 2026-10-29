@@ -142,7 +142,8 @@ export class VideoRenderable extends Renderable {
     const native = this.native()
     try {
       const info = native.lib.videoOpen(native.context, native.node, value ?? "")
-      if (value === undefined) return
+      // An empty path closes the player, like no source.
+      if (!value) return
       this._playRequested = false
       this._metadata = {
         width: info.width,
@@ -171,6 +172,7 @@ export class VideoRenderable extends Renderable {
         if (play && pauses === this._pauses) this.onPlay?.()
       })
     } catch (error) {
+      this._metadata = null
       this._playRequested = false
       const detail = this.errorDetail("")
       this.afterOpen(value, () => this.reportError(error, detail))

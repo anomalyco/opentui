@@ -74,7 +74,7 @@ await render(() => <video source="./clip.mp4" autoplay loop style={{ width: 60, 
 
 | Member              | Type                               | Description                                                                     |
 | ------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
-| `source`            | `string \| undefined`              | MP4 file path                                                                   |
+| `source`            | `string \| undefined`              | MP4 file path. An empty string closes the player                                |
 | `fit`               | `"fit" \| "cover" \| "fill"`       | Destination sizing. Defaults to `"fit"`                                         |
 | `autoplay`          | `boolean`                          | Plays each source once it opens                                                 |
 | `loop`              | `boolean`                          | Restarts at the end                                                             |

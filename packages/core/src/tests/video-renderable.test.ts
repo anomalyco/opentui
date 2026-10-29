@@ -118,6 +118,26 @@ describe("VideoRenderable", () => {
     expect(errors[0].message.length).toBeGreaterThan("ot_video_open failed: VideoFailed".length)
   })
 
+  test("an empty source and a failed setup leave no source open", async () => {
+    const errors: string[] = []
+    const video = new VideoRenderable(renderer, { source: "", onError: (error) => errors.push(error.message) })
+    expect([video.ready, video.playing, video.currentTime]).toEqual([false, false, 0])
+    await Promise.resolve()
+    expect(errors).toEqual([])
+    const lib = renderer.nativeScene.videoNode(video).lib
+    const setLoop = spyOn(lib, "videoSetLoop").mockImplementation(() => {
+      throw new Error("loop failed")
+    })
+    try {
+      video.source = SILENT
+    } finally {
+      setLoop.mockRestore()
+    }
+    expect([video.ready, video.playing, video.currentTime]).toEqual([false, false, 0])
+    await Promise.resolve()
+    expect(errors).toEqual(["loop failed"])
+  })
+
   test("play retries a failed open and reports its failure again", async () => {
     const errors: Error[] = []
     const video = new VideoRenderable(renderer, {
