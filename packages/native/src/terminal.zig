@@ -54,8 +54,8 @@ pub const RemoteMode = enum(u8) {
 };
 
 /// Wraps frames in DEC mode 2026 (synchronized output). Once the startup replies have passed the
-/// 2026 query, `auto` leaves it out for a remote endpoint that did not report the mode or that runs
-/// inside tmux or screen.
+/// 2026 query, `auto` leaves it out for a remote endpoint that did not report the mode or whose app
+/// runs inside tmux, screen or Zellij on its own host.
 pub const SynchronizedOutput = enum(u8) {
     auto,
     always,
@@ -231,6 +231,7 @@ reply_sentinel: bool = false,
 synchronized_output: SynchronizedOutput = .auto,
 /// A reply ordered after the DECRQM 2026 query arrived, so `caps.sync` is final.
 sync_reply_settled: bool = false,
+multiplexer_on_host: bool = false,
 unicode_wide_locked: ?bool = null,
 host_env_hyperlinks: bool = false,
 hyperlinks_override: ?bool = null,
@@ -709,6 +710,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     }
 
     const env_map = self.opts.env_map orelse return;
+    self.multiplexer_on_host = env_map.get("TMUX") != null or env_map.get("STY") != null or env_map.get("ZELLIJ") != null;
 
     if (self.opts.remote_mode == .auto) {
         self.remote = self.remote or isRemoteSessionEnv(env_map);
@@ -1522,10 +1524,9 @@ pub fn synchronizedOutput(self: *const Terminal) bool {
     return switch (self.synchronized_output) {
         .always => true,
         .never => false,
-        // tmux answers DECRQM 2026 from its own state, not the client terminal's, and redraws every
-        // touched line when an update ends. Over a remote link that redraw costs more than partial frames.
-        .auto => !self.remote or !self.sync_reply_settled or
-            (self.caps.sync and self.multiplexer != .tmux and self.multiplexer != .screen),
+        // A multiplexer on the app's host answers DECRQM 2026 from its own state and redraws every touched
+        // line when an update ends; between the app and a slow link that redraw costs more than partial frames.
+        .auto => !self.remote or !self.sync_reply_settled or (self.caps.sync and !self.multiplexer_on_host),
     };
 }
 

@@ -2856,21 +2856,32 @@ test "renderer - pinned split scrollback repaints live native images after appen
     try std.testing.expect(placement_index > append_index);
 }
 
-test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2026 or runs in a multiplexer" {
+test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2026 or runs under a host multiplexer" {
     // `sentinel`: width probes disabled, 2026 not reported, and the DA1 sentinel ends the batch.
     const Reply = enum { reported, not_reported, pending, sentinel };
-    const Multiplexer = enum { none, tmux, screen };
+    // A multiplexer on the app's host names itself in the app's environment.
+    const host_env = [_]?test_renderer_mod.TestEnvVar{
+        null,
+        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0" },
+        .{ .key = "STY", .value = "1.pts-0.host" },
+        .{ .key = "ZELLIJ", .value = "0" },
+    };
     const Mode = terminal_mod.SynchronizedOutput;
-    for ([_]bool{ false, true }) |remote| for (std.enums.values(Multiplexer)) |multiplexer| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
-        errdefer std.debug.print("remote={} multiplexer={t} reply={t} mode={t}\n", .{ remote, multiplexer, reply, mode });
+    for ([_]bool{ false, true }) |remote| for (host_env) |host| for ([_]bool{ false, true }) |xtversion| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
+        errdefer std.debug.print("remote={} host={s} xtversion={} reply={t} mode={t}\n", .{ remote, if (host) |v| v.key else "none", xtversion, reply, mode });
         var pools = TestPools.init(std.testing.allocator);
         defer pools.deinit();
-        // tmux answers XTVERSION itself; screen is known from STY.
-        const screen = test_renderer_mod.TestEnvVar{ .key = "STY", .value = "1.pts-0.host" };
-        const no_probes = test_renderer_mod.TestEnvVar{ .key = "OPENTUI_FORCE_EXPLICIT_WIDTH", .value = "0" };
-        const env_all = [_]test_renderer_mod.TestEnvVar{ no_probes, screen };
-        const env = env_all[@intFromBool(reply != .sentinel)..if (multiplexer == .screen) 2 else 1];
-        var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env);
+        var env: [2]test_renderer_mod.TestEnvVar = undefined;
+        var env_len: usize = 0;
+        if (host) |value| {
+            env[env_len] = value;
+            env_len += 1;
+        }
+        if (reply == .sentinel) {
+            env[env_len] = .{ .key = "OPENTUI_FORCE_EXPLICIT_WIDTH", .value = "0" };
+            env_len += 1;
+        }
+        var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env[0..env_len]);
         defer test_renderer.deinit();
         const term = &test_renderer.renderer.terminal;
         term.opts.remote_mode = if (remote) .remote else .local;
@@ -2879,13 +2890,14 @@ test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2
         var writer = DiscardTerminalWriter{};
         try term.queryTerminalSend(&writer);
         // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report
-        // or the DA1 sentinel. A pending reply has only the cursor report, which precedes DECRQM.
-        if (multiplexer == .tmux) term.processCapabilityResponse("\x1bP>|tmux 3.8\x1b\\");
+        // or the DA1 sentinel. A pending reply has only the cursor report, which precedes DECRQM. A tmux on either
+        // side of the link answers XTVERSION, so the answer alone does not drop the envelope.
+        if (xtversion) term.processCapabilityResponse("\x1bP>|tmux 3.8\x1b\\");
         term.processCapabilityResponse("\x1b[3;1R");
         if (reply == .reported) term.processCapabilityResponse("\x1b[?2026;2$y");
         if (reply != .pending) term.processCapabilityResponse(if (reply == .sentinel) "\x1b[?62;22c" else "\x1b[1;1R");
 
-        const dropped = remote and reply != .pending and (reply != .reported or multiplexer != .none);
+        const dropped = remote and reply != .pending and (reply != .reported or host != null);
         const envelope = mode == .always or (mode == .auto and !dropped);
         _ = test_renderer.renderer.resetSplitScrollback(1, 1);
         var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });

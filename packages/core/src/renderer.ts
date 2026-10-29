@@ -166,8 +166,8 @@ export interface CliRendererConfig {
 
   // Wrap each frame in synchronized output (DEC mode 2026) so the terminal shows it whole.
   // "auto" (the default) leaves it out for a remote session whose terminal did not report mode
-  // 2026 or that runs inside tmux or screen, where it costs bytes on the link. "always" and
-  // "never" force it.
+  // 2026 or whose app runs inside tmux, screen or Zellij on its own host, between the app and the
+  // link, where it costs bytes on the link. "always" and "never" force it.
   synchronizedOutput?: SynchronizedOutput
 
   // Raw is the default. File requires a local terminal with medium and upload ACK support.

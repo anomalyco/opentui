@@ -2213,7 +2213,7 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
  * of a timer. A DA1 reply then also ends the startup cursor-report probes.
  * Frames are wrapped in synchronized output (DEC mode 2026) unless the terminal
  * is remote and, once its replies passed the 2026 query, either did not report
- * the mode or is tmux or screen.
+ * the mode or the app's environment names a multiplexer (TMUX, STY, ZELLIJ).
  * SYNC_ALWAYS or SYNC_NEVER (not both) forces the wrapper on or off. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
  * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
  * clears only a surface that setup or resume claimed: a close before their mode
