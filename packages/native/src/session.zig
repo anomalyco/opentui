@@ -150,6 +150,8 @@ pub const TerminalOptions = struct {
     clear_on_close: bool = true,
     /// End the startup query batch with DA1 instead of sending DA1 mid-batch.
     reply_sentinel: bool = false,
+    synchronized_output: terminal.SynchronizedOutput = .auto,
+    host_multiplexer: bool = false,
 };
 
 pub const TerminalPhase = enum(u8) {
@@ -653,6 +655,8 @@ pub const Session = struct {
         value.useAlternateScreen = options.use_alternate_screen;
         value.clearOnShutdown = options.clear_on_close;
         value.terminal.reply_sentinel = options.reply_sentinel;
+        value.terminal.synchronized_output = options.synchronized_output;
+        value.terminal.multiplexer_on_host = options.host_multiplexer;
         value.terminal.opts.kitty_keyboard_flags = options.kitty_keyboard_flags;
         self.lifecycle = .{
             .phase = .setting_up,

@@ -978,7 +978,7 @@ pub const CliRenderer = struct {
                 self.clampSplitSurfaceOffset(previous_offset, options.pinned_render_offset);
             redraw_footer = redraw_footer or previous_offset != self.renderOffset;
             if (options.snapshots.len != 0) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
                 if (!options.suspended) self.applyPendingSplitFooterTransition(writer, &frame_started);
                 for (options.snapshots) |commit| {
@@ -1000,7 +1000,7 @@ pub const CliRenderer = struct {
                     ansi.ANSI.moveToOutput(writer, 1, self.renderOffset + 1) catch b.failFrame();
                     writer.writeAll(ansi.ANSI.showCursor) catch b.failFrame();
                 }
-                writer.writeAll(ansi.ANSI.syncReset) catch b.failFrame();
+                if (self.terminal.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncReset) catch b.failFrame();
             }
             writer.flush() catch b.failFrame();
         }
@@ -1075,7 +1075,7 @@ pub const CliRenderer = struct {
         }
 
         if (!frame_started.*) {
-            beginRenderFrame(writer);
+            self.beginRenderFrame(writer);
             frame_started.* = true;
         }
 
@@ -1652,8 +1652,8 @@ pub const CliRenderer = struct {
         return redraw_footer;
     }
 
-    fn beginRenderFrame(writer: anytype) void {
-        writer.writeAll(ansi.ANSI.syncSet) catch {};
+    fn beginRenderFrame(self: *const CliRenderer, writer: anytype) void {
+        if (self.terminal.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncSet) catch {};
         writer.writeAll(ansi.ANSI.hideCursor) catch {};
     }
 
@@ -2430,7 +2430,7 @@ pub const CliRenderer = struct {
 
         if ((images_changed or should_force) and (self.hasCommittedProtocol(.kitty) or self.hasNextProtocol(.kitty))) {
             if (!frame_started) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
             }
             // The frame outcome decides the transport: output pressure keeps it enabled.
@@ -2527,7 +2527,7 @@ pub const CliRenderer = struct {
                         continue;
                     }
                     if (!frame_started) {
-                        beginRenderFrame(writer);
+                        self.beginRenderFrame(writer);
                         frame_started = true;
                     }
                     if (clearRunY != y or clearRunEnd != x) {
@@ -2555,7 +2555,7 @@ pub const CliRenderer = struct {
                 }
 
                 if (!frame_started) {
-                    beginRenderFrame(writer);
+                    self.beginRenderFrame(writer);
                     frame_started = true;
                 }
 
@@ -2662,7 +2662,7 @@ pub const CliRenderer = struct {
         }
         if (sixel_dirty) {
             if (!frame_started) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
             }
             if (hyperlinksEnabled and currentLinkId != 0) {
@@ -2735,7 +2735,7 @@ pub const CliRenderer = struct {
 
         if (hyperlinksEnabled and currentLinkId != 0) {
             if (!frame_started) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
             }
             writer.writeAll("\x1b]8;;\x1b\\") catch {};
@@ -2795,7 +2795,7 @@ pub const CliRenderer = struct {
 
             if (needsCursorRestore) {
                 if (!frame_started) {
-                    beginRenderFrame(writer);
+                    self.beginRenderFrame(writer);
                     frame_started = true;
                 }
 
@@ -2818,7 +2818,7 @@ pub const CliRenderer = struct {
             self.lastCursorVisible = true;
         } else {
             if (!frame_started and (self.lastCursorVisible == null or self.lastCursorVisible.?)) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
                 writer.writeAll(ansi.ANSI.hideCursor) catch {};
             }
@@ -2834,7 +2834,7 @@ pub const CliRenderer = struct {
         const mousePointer = self.terminal.getMousePointer();
         if (!self.mousePointerStateValid or mousePointer != self.lastMousePointerStyle) {
             if (!frame_started) {
-                beginRenderFrame(writer);
+                self.beginRenderFrame(writer);
                 frame_started = true;
             }
             ansi.ANSI.setMousePointerOutput(writer, mousePointer.toName()) catch {};
@@ -2843,7 +2843,7 @@ pub const CliRenderer = struct {
         }
 
         // Only close sync if we opened it. This keeps true no-op frames empty.
-        if (frame_started) {
+        if (frame_started and self.terminal.synchronizedOutput()) {
             writer.writeAll(ansi.ANSI.syncReset) catch {};
         }
 

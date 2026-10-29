@@ -29,7 +29,7 @@ jobs:
   prepare:
     name: Prepare Release
     if: ${{ !contains(github.ref_name, 'snapshot') }}
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       release: ${{ steps.extract.outputs.release }}
       version: ${{ steps.extract.outputs.version }}
@@ -178,7 +178,7 @@ jobs:
     name: Validate Version
     if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: prepare
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       - name: Checkout code
@@ -289,7 +289,7 @@ jobs:
     name: Sign Windows DLL Artifacts
     if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: [prepare, build-native]
-    runs-on: ${{ vars.OPENTUI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    runs-on: blacksmith-8vcpu-windows-2025
     permissions:
       id-token: write
       contents: read
@@ -452,7 +452,7 @@ jobs:
   snapshot-prepare:
     name: Prepare NPM Snapshot
     if: ${{ contains(github.ref_name, 'snapshot') }}
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.version.outputs.version }}
 
@@ -496,7 +496,7 @@ jobs:
     name: Wait for npm
     if: ${{ needs.prepare.outputs.release == 'true' && needs.prepare.outputs.isDryRun == 'false' }}
     needs: [prepare, sign-windows-artifacts, npm-publish]
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 40
 
     steps:
@@ -528,7 +528,7 @@ jobs:
     name: Verify API History
     if: ${{ needs.prepare.outputs.release == 'true' && needs.prepare.outputs.isDryRun == 'false' }}
     needs: [prepare, npm-served]
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       - name: Checkout code
@@ -563,7 +563,7 @@ jobs:
     name: Deploy Docs
     if: ${{ needs.prepare.outputs.release == 'true' && needs.prepare.outputs.isDryRun == 'false' }}
     needs: [prepare, npm-served]
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       actions: write
 
@@ -578,7 +578,7 @@ jobs:
     name: Create GitHub Release
     if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: [prepare, build-examples, npm-publish]
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       - name: Checkout code

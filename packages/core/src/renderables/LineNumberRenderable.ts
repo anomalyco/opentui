@@ -605,10 +605,10 @@ export class LineNumberRenderable extends Renderable {
     // Draw full-width line backgrounds before children render
     if (!this.target || !this.gutter || this._lineColorsContent.size === 0) return
 
-    const y = Math.trunc(this.y)
+    const [x, y] = this._paintOrigin(buffer)
     const start = Math.max(0, -y)
     const end = Math.min(this.height, buffer.height - y)
-    if (end <= start || this.x >= buffer.width || this.x + this.width <= 0) return
+    if (end <= start || x >= buffer.width || x + this.width <= 0) return
 
     const sources = getLineSources(this.target, Math.trunc(this.target.scrollY) + start, end - start)
 
@@ -623,7 +623,7 @@ export class LineNumberRenderable extends Renderable {
 
       if (lineBg) {
         // Fill from after gutter to the end of the LineNumberRenderable
-        buffer.fillRect(this.x + gutterWidth, y + start + i, contentWidth, 1, lineBg)
+        buffer.fillRect(x + gutterWidth, y + start + i, contentWidth, 1, lineBg)
       }
     }
   }
