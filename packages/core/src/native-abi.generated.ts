@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 65efe7d32dc203336de9cf9eb606ed2a887d8528c35d911f83bd04398a2b33db
+// ABI audit SHA-256: edc296b72006b318f0faf15f4ba36b83fd12b43f404ea9d538f9abeecc6614e9
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1858,6 +1858,8 @@ export const nativeConstants = {
   OT_EDIT_POSITION_OFFSET: 4,
   OT_EDIT_POSITION_COORDS: 5,
   OT_EDIT_POSITION_LINE_START: 6,
+  OT_EDIT_POSITION_END: 7,
+  OT_EDIT_POSITION_PREV_CHAR: 8,
   OT_EDITOR_STYLE_FOREGROUND: 1,
   OT_EDITOR_STYLE_BACKGROUND: 2,
   OT_EDITOR_STYLE_ATTRIBUTES: 4,

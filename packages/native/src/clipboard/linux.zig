@@ -225,7 +225,8 @@ pub const WaylandSymbols = struct {
     wl_display_prepare_read: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_read_events: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_cancel_read: *const fn (*WlDisplay) callconv(.c) void,
-    wl_proxy_marshal_array_flags: *const fn (*WlProxy, u32, ?*const WlInterface, u32, u32, [*]WlArgument) callconv(.c) ?*WlProxy,
+    // Exported since libwayland 1.10; 1.20 added the flags variant, which Ubuntu 20.04 lacks.
+    wl_proxy_marshal_array_constructor_versioned: *const fn (*WlProxy, u32, [*]WlArgument, ?*const WlInterface, u32) callconv(.c) ?*WlProxy,
     wl_proxy_add_listener: *const fn (*WlProxy, [*]const *const anyopaque, ?*anyopaque) callconv(.c) c_int,
     wl_proxy_destroy: *const fn (*WlProxy) callconv(.c) void,
     wl_proxy_get_version: *const fn (*WlProxy) callconv(.c) u32,

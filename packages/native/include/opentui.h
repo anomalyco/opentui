@@ -1490,6 +1490,8 @@ ot_status ot_edit_buffer_history(ot_context *, const ot_handle *, uint32_t redo,
 #define OT_EDIT_POSITION_OFFSET UINT32_C(4)
 #define OT_EDIT_POSITION_COORDS UINT32_C(5)
 #define OT_EDIT_POSITION_LINE_START UINT32_C(6)
+#define OT_EDIT_POSITION_END UINT32_C(7)
+#define OT_EDIT_POSITION_PREV_CHAR UINT32_C(8)
 typedef struct ot_edit_position {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1499,7 +1501,8 @@ typedef struct ot_edit_position {
     uint32_t offset;
 } ot_edit_position;
 /* a is offset, row, or line for OFFSET, COORDS, LINE_START; b is col for COORDS.
- * Other inputs are zero. Invalid positions return valid=0 and zero coordinates. */
+ * Other inputs are zero. Invalid positions return valid=0 and zero coordinates.
+ * END is the text's end, PREV_CHAR where MOVE_LEFT would go; no query moves the cursor. */
 ot_status ot_edit_buffer_get_position(ot_context *, const ot_handle *, uint32_t query,
     uint32_t a, uint32_t b, ot_edit_position *out_position);
 /* by_coords=0 uses start_col/end_col as offsets and requires zero rows;
