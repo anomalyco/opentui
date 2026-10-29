@@ -669,6 +669,11 @@ test "video decoding jumps to a keyframe ahead instead of decoding the gap" {
     try testing.expect(try value.update(7_000_000));
     try testing.expect(value.decodedFrames() - before <= 30);
     try testing.expect(value.state.frame_pts_us <= 7_000_000 and value.state.frame_pts_us > 7_000_000 - frame_us);
+    // B-frames put the 6 s keyframe's index entry before 5.95 s; its frame still comes after.
+    try value.seek(0);
+    try testing.expect(try value.update(0));
+    try testing.expect(try value.update(5_950_000));
+    try testing.expect(value.state.frame_pts_us <= 5_950_000 and value.state.frame_pts_us > 5_950_000 - frame_us);
 }
 
 // The worker and the audio thread allocate through the Context allocator, whose test build

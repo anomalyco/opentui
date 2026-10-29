@@ -636,13 +636,17 @@ static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64
 static int skip_to_keyframe(otv_decoder *decoder, int64_t target_us) {
     if (decoder->decode_pts_us == AV_NOPTS_VALUE || target_us <= decoder->decode_pts_us) return OTV_OK;
     AVStream *stream = decoder->video.stream;
+    const AVIndexEntry *first = avformat_index_get_entry(stream, 0);
+    if (!first || stream->start_time == AV_NOPTS_VALUE) return OTV_OK;
+    // MP4 index entries hold decode times, which B-frames shift before the presentation times seeks take.
+    int64_t shift = first->timestamp - stream->start_time;
     if (target_us > INT64_MAX - decoder->origin_us) target_us = INT64_MAX - decoder->origin_us;
     int64_t timestamp = av_rescale_q(target_us + decoder->origin_us, AV_TIME_BASE_Q, stream->time_base);
-    int index = av_index_search_timestamp(stream, timestamp, AVSEEK_FLAG_BACKWARD);
+    int index = av_index_search_timestamp(stream, timestamp + shift, AVSEEK_FLAG_BACKWARD);
     if (index < 0) return OTV_OK;
     const AVIndexEntry *entry = avformat_index_get_entry(stream, index);
     if (!entry || !(entry->flags & AVINDEX_KEYFRAME)) return OTV_OK;
-    int64_t keyframe_us = av_rescale_q(entry->timestamp, stream->time_base, AV_TIME_BASE_Q) - decoder->origin_us;
+    int64_t keyframe_us = av_rescale_q(entry->timestamp - shift, stream->time_base, AV_TIME_BASE_Q) - decoder->origin_us;
     if (keyframe_us <= decoder->decode_pts_us) return OTV_OK;
     if (seek_stream(decoder, &decoder->video, keyframe_us) != OTV_OK) return OTV_ERROR;
     av_frame_unref(decoder->video_lookahead);
