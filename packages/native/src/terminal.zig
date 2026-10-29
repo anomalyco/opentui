@@ -53,9 +53,9 @@ pub const RemoteMode = enum(u8) {
     remote,
 };
 
-/// Wraps frames in DEC mode 2026 (synchronized output). `auto` leaves it out only for a remote
-/// endpoint whose replies have passed the 2026 query without reporting the mode: tmux honors the
-/// mode without reporting it, and redraws every touched line at each update's end.
+/// Wraps frames in DEC mode 2026 (synchronized output). Once the startup replies have passed the
+/// 2026 query, `auto` leaves it out for a remote endpoint that did not report the mode or that runs
+/// inside tmux or screen.
 pub const SynchronizedOutput = enum(u8) {
     auto,
     always,
@@ -1521,7 +1521,10 @@ pub fn synchronizedOutput(self: *const Terminal) bool {
     return switch (self.synchronized_output) {
         .always => true,
         .never => false,
-        .auto => self.caps.sync or !self.remote or !self.sync_reply_settled,
+        // tmux answers DECRQM 2026 from its own state, not the client terminal's, and redraws every
+        // touched line when an update ends. Over a remote link that redraw costs more than partial frames.
+        .auto => !self.remote or !self.sync_reply_settled or
+            (self.caps.sync and self.multiplexer != .tmux and self.multiplexer != .screen),
     };
 }
 

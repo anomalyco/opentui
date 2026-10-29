@@ -249,8 +249,13 @@ describe("renderer capabilities event", () => {
 })
 
 describe("synchronized output", () => {
-  // Replies come in query order: the startup cursor report, DECRQM 2026 when reported, then the width probe's report.
-  async function frame(remote: boolean, synchronizedOutput: SynchronizedOutput | undefined, reported: boolean) {
+  // Replies come in query order: XTVERSION, the startup cursor report, DECRQM 2026, then the width probe's report.
+  async function frame(
+    remote: boolean,
+    synchronizedOutput: SynchronizedOutput | undefined,
+    reported: boolean,
+    tmux = false,
+  ) {
     const writes: string[] = []
     const stdout = new Writable({
       write(chunk, _encoding, callback) {
@@ -262,7 +267,8 @@ describe("synchronized output", () => {
     const { renderer, renderOnce } = await createTestRenderer({ ...options, clock: new ManualClock() })
     try {
       await renderer.setupTerminal()
-      for (const reply of ["\x1b[3;1R", ...(reported ? ["\x1b[?2026;2$y"] : []), "\x1b[1;1R"]) {
+      const xtversion = tmux ? ["\x1bP>|tmux 3.8\x1b\\"] : []
+      for (const reply of [...xtversion, "\x1b[3;1R", ...(reported ? ["\x1b[?2026;2$y"] : []), "\x1b[1;1R"]) {
         renderer.stdin.emit("data", Buffer.from(reply))
       }
       await renderer.nativeScene!.driver.idle()
@@ -275,16 +281,24 @@ describe("synchronized output", () => {
   }
 
   // The native table covers every combination; these rows cover the option and the host's reply routing.
-  const rows: [remote: boolean, mode: SynchronizedOutput | undefined, reported: boolean, envelope: boolean][] = [
-    [true, undefined, false, false],
-    [true, undefined, true, true],
-    [false, undefined, false, true],
-    [true, "always", false, true],
-    [false, "never", true, false],
+  const rows: [
+    remote: boolean,
+    mode: SynchronizedOutput | undefined,
+    reported: boolean,
+    tmux: boolean,
+    envelope: boolean,
+  ][] = [
+    [true, undefined, false, false, false],
+    [true, undefined, true, false, true],
+    [true, undefined, true, true, false],
+    [false, undefined, true, true, true],
+    [false, undefined, false, false, true],
+    [true, "always", true, true, true],
+    [false, "never", true, false, false],
   ]
-  for (const [remote, mode, reported, envelope] of rows) {
-    test(`remote ${remote}, ${mode ?? "default"}, 2026 ${reported ? "reported" : "not reported"}`, async () => {
-      const output = await frame(remote, mode, reported)
+  for (const [remote, mode, reported, tmux, envelope] of rows) {
+    test(`remote ${remote}, tmux ${tmux}, ${mode ?? "default"}, 2026 ${reported ? "reported" : "not reported"}`, async () => {
+      const output = await frame(remote, mode, reported, tmux)
       expect(output.length).toBeGreaterThan(0)
       expect([output.startsWith("\x1b[?2026h"), output.includes("\x1b[?2026l")]).toEqual([envelope, envelope])
     })

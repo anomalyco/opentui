@@ -771,7 +771,7 @@ export interface NativeSessionTerminalOptions {
   synchronizedOutput?: SynchronizedOutput
 }
 
-/** "auto" leaves synchronized output out only for a remote terminal that did not report mode 2026. */
+/** "auto" leaves synchronized output out for a remote terminal without mode 2026 or inside tmux or screen. */
 export type SynchronizedOutput = "auto" | "always" | "never"
 
 export enum NativeSessionTerminalPhase {

@@ -70,13 +70,13 @@ Read [How Core uses native](/docs/native/core#complete-output-and-release-resour
 
 OpenTUI wraps each frame in synchronized output (`CSI ? 2026 h` … `CSI ? 2026 l`), so the terminal shows the frame whole. `synchronizedOutput` controls this:
 
-| Value      | Behavior                                                                                                                                                                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `"auto"`   | Default. Wraps every frame, except in a remote session (`remote`, or SSH or mosh detected) whose terminal answered the startup queries without reporting mode 2026, such as tmux over SSH. |
-| `"always"` | Wraps every frame.                                                                                                                                                                         |
-| `"never"`  | Never wraps a frame.                                                                                                                                                                       |
+| Value      | Behavior                                                                                                                                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"auto"`   | Default. Wraps every frame, except in a remote session (`remote`, or SSH or mosh detected) that runs inside tmux or screen, or whose terminal answered the startup queries without reporting mode 2026. |
+| `"always"` | Wraps every frame.                                                                                                                                                                                      |
+| `"never"`  | Never wraps a frame.                                                                                                                                                                                    |
 
-tmux honors the mode without reporting it, and it redraws every line an update touched when the update ends. Over a slow link those redraws cost bytes on every frame. Frames sent before the terminal's replies arrive keep the wrapper.
+tmux answers the mode query from its own state, not the client terminal's, and it redraws every line an update touched when the update ends. Over a slow link those redraws cost bytes on every frame, so `"auto"` leaves the wrapper out over SSH, and tmux may then show partial frames. Set `"always"` to keep it. Frames sent before the terminal's replies arrive keep the wrapper.
 
 ## Choose a render schedule
 

@@ -2856,26 +2856,32 @@ test "renderer - pinned split scrollback repaints live native images after appen
     try std.testing.expect(placement_index > append_index);
 }
 
-test "renderer - frames carry the sync envelope unless a remote endpoint never reported 2026" {
+test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2026 or runs in a multiplexer" {
     const Reply = enum { reported, not_reported, pending };
+    const Multiplexer = enum { none, tmux, screen };
     const Mode = terminal_mod.SynchronizedOutput;
-    for ([_]bool{ false, true }) |remote| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
-        errdefer std.debug.print("remote={} reply={t} mode={t}\n", .{ remote, reply, mode });
+    for ([_]bool{ false, true }) |remote| for (std.enums.values(Multiplexer)) |multiplexer| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
+        errdefer std.debug.print("remote={} multiplexer={t} reply={t} mode={t}\n", .{ remote, multiplexer, reply, mode });
         var pools = TestPools.init(std.testing.allocator);
         defer pools.deinit();
-        var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links);
+        // tmux answers XTVERSION itself; screen is known from STY.
+        const screen_env = [_]test_renderer_mod.TestEnvVar{.{ .key = "STY", .value = "1.pts-0.host" }};
+        const env: []const test_renderer_mod.TestEnvVar = if (multiplexer == .screen) &screen_env else &.{};
+        var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env);
         defer test_renderer.deinit();
         const term = &test_renderer.renderer.terminal;
         term.opts.remote_mode = if (remote) .remote else .local;
         term.synchronized_output = mode;
         var writer = DiscardTerminalWriter{};
         try term.queryTerminalSend(&writer);
-        // Replies come in query order: the startup cursor report, DECRQM, then the width probe's report.
+        // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report.
+        if (multiplexer == .tmux) term.processCapabilityResponse("\x1bP>|tmux 3.8\x1b\\");
         if (reply != .pending) term.processCapabilityResponse("\x1b[3;1R");
         if (reply == .reported) term.processCapabilityResponse("\x1b[?2026;2$y");
         if (reply != .pending) term.processCapabilityResponse("\x1b[1;1R");
 
-        const envelope = mode == .always or (mode == .auto and !(remote and reply == .not_reported));
+        const dropped = remote and reply != .pending and (reply == .not_reported or multiplexer != .none);
+        const envelope = mode == .always or (mode == .auto and !dropped);
         _ = test_renderer.renderer.resetSplitScrollback(1, 1);
         var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
         defer snapshot.deinit();
