@@ -1935,7 +1935,7 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   )
   const md = createMarkdownRenderable({
     id: "markdown-blockquote-style-update",
-    content: "> Quote text",
+    content: "> Quote text\n\n---",
     syntaxStyle: theme1,
   })
 
@@ -1943,6 +1943,7 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   await renderMarkdownRenderable(md)
   expect(findSpanContaining(captureSpans(), "│")?.fg?.toInts()).toEqual(concealColor1.toInts())
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor1.toInts())
+  expect(findSpanContaining(captureSpans(), "─")?.fg?.toInts()).toEqual(concealColor1.toInts())
 
   md.syntaxStyle = theme2
   renderer.requestRender()
@@ -1950,6 +1951,7 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
 
   expect(findSpanContaining(captureSpans(), "│")?.fg?.toInts()).toEqual(concealColor2.toInts())
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor2.toInts())
+  expect(findSpanContaining(captureSpans(), "─")?.fg?.toInts()).toEqual(concealColor2.toInts())
 })
 
 for (const [name, options] of [
@@ -1965,13 +1967,14 @@ for (const [name, options] of [
     const md = createMarkdownRenderable({
       id: `markdown-list-style-update-${name}`,
       content:
-        "Intro\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n\n| H |\n| --- |\n| `cell` |",
+        "Intro\n\n---\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n\n| H |\n| --- |\n| `cell` |",
       syntaxStyle: theme(fg2),
       fg: fg1,
       ...options,
     })
     const spans = [
       ["Intro", fg1, fg2],
+      ["─", fg1, fg2],
       ["second item", fg1, fg2],
       ["nested item", fg1, fg2],
       ["code", fg2, fg1],

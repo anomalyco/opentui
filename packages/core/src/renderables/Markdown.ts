@@ -1160,13 +1160,17 @@ export class MarkdownRenderable extends Renderable {
       : null
   }
 
+  private getHorizontalRuleColor(): ColorInput {
+    return this.getStyle("conceal")?.fg ?? this._fg ?? "#888888"
+  }
+
   private createHorizontalRuleRenderable(id: string, marginBottom: number = 0): BoxRenderable {
     return new BoxRenderable(this.ctx, {
       id,
       width: "100%",
       height: 1,
       border: ["top"],
-      borderColor: this.getStyle("conceal")?.fg ?? this._fg ?? "#888888",
+      borderColor: this.getHorizontalRuleColor(),
       flexShrink: 0,
       marginBottom,
     })
@@ -1926,6 +1930,7 @@ export class MarkdownRenderable extends Renderable {
     }
 
     if (token.type === "hr") {
+      if (state.renderable instanceof BoxRenderable) state.renderable.borderColor = this.getHorizontalRuleColor()
       state.renderable.marginBottom = marginBottom
       return
     }
