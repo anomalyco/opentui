@@ -256,6 +256,17 @@ jobs:
           echo "Bun tests exited with $bun_status, Node tests with $node_status"
           [ "$bun_status" = 0 ] && [ "$node_status" = 0 ]
 
+      # The step above runs the renderer with the legacy input parser. Run the tests that write bytes to
+      # the renderer's stdin again with the native one.
+      - name: Run input tests with the native input parser
+        if: runner.os == 'Linux'
+        working-directory: packages/core
+        env:
+          OTUI_NATIVE_INPUT_PARSER: "1"
+        run: |
+          ulimit -c unlimited
+          git grep -lF 'stdin.emit("data"' -- 'src/**/*.test.ts' | xargs bun test
+
       - name: Test packed distribution
         if: runner.os == 'Linux'
         working-directory: packages/core
