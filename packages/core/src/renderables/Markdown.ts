@@ -1014,7 +1014,7 @@ export class MarkdownRenderable extends Renderable {
     input: ListItemRenderInput,
     previousItem: Tokens.ListItem | undefined,
   ): boolean {
-    this.applyListItemMarker(row, input)
+    this.applyListItemMarker(row, input, previousItem)
 
     const content = row.getChildren()[1]
     if (!(content instanceof BoxRenderable)) return false
@@ -1103,6 +1103,11 @@ export class MarkdownRenderable extends Renderable {
       return true
     }
 
+    if (token.type === "blockquote" && renderable instanceof BoxRenderable) {
+      this.applyBlockquoteRenderable(renderable, token, 0)
+      return true
+    }
+
     return previousToken?.raw === token.raw
   }
 
@@ -1113,7 +1118,7 @@ export class MarkdownRenderable extends Renderable {
     }
   }
 
-  private applyListItemMarker(row: BoxRenderable, input: ListItemRenderInput): void {
+  private applyListItemMarker(row: BoxRenderable, input: ListItemRenderInput, previousItem?: Tokens.ListItem): void {
     const marker = row.getChildren()[0]
     if (!(marker instanceof TextRenderable)) return
     const marginBottom = /\n[ \t]*\n$/.test(input.item.raw) ? 1 : 0
@@ -1122,7 +1127,7 @@ export class MarkdownRenderable extends Renderable {
 
     if (row.marginBottom !== marginBottom) row.marginBottom = marginBottom
     if (marker.width !== markerWidth) marker.width = markerWidth
-    if (marker.chunks[0]?.text !== markerText) {
+    if (!previousItem || marker.chunks[0]?.text !== markerText) {
       marker.content = new StyledText([this.createChunk(markerText, "markup.list")])
     }
   }
@@ -1889,7 +1894,7 @@ export class MarkdownRenderable extends Renderable {
     token: MarkedToken,
     index: number,
     nextToken: MarkedToken | undefined,
-    forceListRefresh: boolean = false,
+    forceRefresh: boolean = false,
   ): void {
     const marginBottom = this.getInterBlockMargin(token, nextToken)
 
@@ -1908,7 +1913,7 @@ export class MarkdownRenderable extends Renderable {
         !this.applyListRenderable(
           state.renderable,
           token as Tokens.List,
-          forceListRefresh ? undefined : (state.token as Tokens.List),
+          forceRefresh ? undefined : (state.token as Tokens.List),
           `${this.id}-block-${index}`,
           marginBottom,
         )
@@ -1927,7 +1932,7 @@ export class MarkdownRenderable extends Renderable {
 
     if (token.type === "table") {
       const tableToken = token as Tokens.Table
-      const { cache, changed } = this.buildTableContentCache(tableToken, state.tableContentCache)
+      const { cache, changed } = this.buildTableContentCache(tableToken, state.tableContentCache, forceRefresh)
 
       if (!cache) {
         if (state.renderable instanceof CodeRenderable) {
@@ -2054,7 +2059,8 @@ export class MarkdownRenderable extends Renderable {
           this.destroyUnusedDefaultRenderable(custom.renderable)
         }
 
-        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token)
+        // A forced refresh restyles lists even when their items are unchanged, matching coalesced mode.
+        this.updateBlockRenderable(existing, block.token, blockIndex, blocks[i + 1]?.token, forceTableRefresh)
         existing.renderable.marginBottom = 0
         if (existing.marginTop !== block.marginTop) {
           this.applyMargins(existing.renderable, block.marginTop, 0)

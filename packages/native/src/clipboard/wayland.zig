@@ -21,6 +21,8 @@ const PROVIDER_TRANSFER_IDLE_TIMEOUT_NS = 30 * std.time.ns_per_s;
 // One drive call dispatches at most this many queued events, enough to settle a
 // selection-change backlog in one call while keeping per-call work bounded.
 const DISPATCH_EVENTS_PER_DRIVE_MAX = 64;
+// Bounds the restarts of a read whose offer went stale: its source vanished, or focus left the helper.
+pub const READ_RETRY_MAX: u8 = 2;
 
 pub const Progress = enum { pending, ready, unsupported, failed };
 pub const SelectionResult = enum { ok, pending, committed, unsupported, failed };
@@ -134,6 +136,7 @@ pub const Connection = struct {
     core_focus_lost: bool = false,
     core_selection_seen: bool = false,
     core_focus_users: u32 = 0,
+    core_focus_restart_count: u8 = 0,
     offers: [MAX_OFFERS]Offer = undefined,
     offer_count: u8 = 0,
     clipboard_offer: ?*WlProxy = null,
@@ -323,8 +326,8 @@ pub const Connection = struct {
         std.debug.assert(self.core_focus_users < std.math.maxInt(u32));
         self.core_focus_users += 1;
         if (self.core_focus_users > 1) return .pending;
-        self.core_selection_seen = false;
-        self.core_focus_lost = false;
+        std.debug.assert(!self.core_focus_lost and !self.core_selection_seen);
+        self.core_focus_restart_count = 0;
         if (self.clipboard_offer) |offer| self.removeOffer(offer);
         self.clipboard_offer = null;
         if (!self.createCoreHelper()) {
@@ -334,11 +337,18 @@ pub const Connection = struct {
         return .pending;
     }
 
-    pub fn coreSelectionProgress(self: *const Connection) Progress {
+    // Focus can leave the helper while a read waits (WSLg), which invalidates its offer. A new
+    // helper takes focus again, and the compositor sends it the current selection.
+    pub fn coreSelectionProgress(self: *Connection) Progress {
         if (!self.core_data_device) return .unsupported;
         if (self.phase == .failed) return .failed;
-        if (self.core_focus_users == 0 or self.helper_surface == null) return .failed;
-        if (self.core_focus_lost) return .failed;
+        std.debug.assert(self.core_focus_users > 0);
+        if (self.core_focus_lost and self.core_focus_restart_count < READ_RETRY_MAX) {
+            self.core_focus_restart_count += 1;
+            self.destroyCoreHelper();
+            _ = self.createCoreHelper();
+        }
+        if (self.helper_surface == null or self.core_focus_lost) return .failed;
         return if (self.core_focus_entered and self.core_selection_seen) .ready else .pending;
     }
 
@@ -1044,7 +1054,6 @@ pub const Connection = struct {
             seat.capabilities = capabilities;
             const has_keyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD != 0;
             if (self.core_data_device and self.bound_seat_global == seat.global_name and had_keyboard and !has_keyboard) {
-                self.core_focus_lost = true;
                 _ = self.fail(.protocol);
             }
             return;
@@ -1131,7 +1140,7 @@ pub const Connection = struct {
 
     fn keyboardLeave(data: ?*anyopaque, _: ?*WlProxy, _: u32, surface: ?*WlProxy) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
-        if (surface != self.helper_surface) return;
+        if (surface == null or surface != self.helper_surface) return;
         self.core_focus_entered = false;
         self.core_selection_seen = false;
         self.core_focus_lost = true;
@@ -1967,6 +1976,10 @@ test "Wayland core focus lifecycle rejects stale and unfocused offers" {
     Connection.deviceSelection(&connection, null, offer);
     try std.testing.expectEqual(@as(u8, 0), connection.offer_count);
     try std.testing.expect(connection.clipboard_offer == null);
+    // A leave for the destroyed helper arrives with a nil surface and must not mark the next read.
+    connection.core_focus_lost = false;
+    Connection.keyboardLeave(&connection, null, 1, null);
+    try std.testing.expect(!connection.core_focus_lost);
 
     connection.core_focus_entered = true;
     connection.core_focus_lost = false;
@@ -2012,6 +2025,47 @@ test "Wayland core selection becomes ready after focus and selection in either o
     try std.testing.expectEqual(Progress.pending, connection.coreSelectionProgress());
     Connection.deviceSelection(&connection, null, offer);
     try std.testing.expectEqual(Progress.ready, connection.coreSelectionProgress());
+}
+
+test "Wayland core read restarts after focus loss a bounded number of times" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const Fake = struct {
+        var helpers: u8 = 0;
+        fn marshal(proxy: *WlProxy, opcode: u32, _: [*]WlArgument, _: ?*const WlInterface, _: u32) callconv(.c) ?*WlProxy {
+            if (@intFromPtr(proxy) == 5 and opcode == 0) helpers += 1;
+            return @ptrFromInt(4);
+        }
+    };
+    var symbols = testSymbols();
+    symbols.wl_proxy_marshal_array_constructor_versioned = Fake.marshal;
+    var connection = testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
+    defer connection.deinit();
+    connection.core_data_device = true;
+    connection.compositor = @ptrFromInt(5);
+    connection.shell = @ptrFromInt(6);
+    connection.shm = @ptrFromInt(7);
+    // The rows share the connection, so each acquisition must start with the full budget.
+    for ([_]u8{ 0, READ_RETRY_MAX, READ_RETRY_MAX + 1 }) |losses| {
+        errdefer std.debug.print("losses: {d}\n", .{losses});
+        Fake.helpers = 0;
+        try std.testing.expectEqual(Progress.pending, connection.acquireCoreSelection());
+        var progress = Progress.pending;
+        for (0..losses + 1) |loss| {
+            // Each focus brings a fresh offer after a replaced selection; a leave invalidates it.
+            const offer: *WlProxy = @ptrFromInt(0x100 + loss);
+            Connection.keyboardEnter(&connection, null, 0, connection.helper_surface, null);
+            Connection.deviceDataOffer(&connection, null, offer);
+            Connection.deviceSelection(&connection, null, null);
+            Connection.deviceSelection(&connection, null, offer);
+            if (loss < losses) Connection.keyboardLeave(&connection, null, 0, connection.helper_surface);
+            progress = connection.coreSelectionProgress();
+        }
+        const restarted = losses <= READ_RETRY_MAX;
+        try std.testing.expectEqual(if (restarted) Progress.ready else Progress.failed, progress);
+        try std.testing.expectEqual(@min(losses, READ_RETRY_MAX) + 1, Fake.helpers);
+        if (restarted) try std.testing.expectEqual(0x100 + @as(usize, losses), @intFromPtr(connection.currentOffer(false).?.proxy));
+        connection.releaseCoreSelection();
+    }
 }
 
 test "Wayland bound core seat keyboard loss fails active and future acquisitions" {

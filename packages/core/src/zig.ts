@@ -767,7 +767,14 @@ export interface NativeSessionTerminalOptions {
   clearOnClose?: boolean
   /** End the startup query batch with DA1 (the reply sentinel). Defaults to false. */
   replySentinel?: boolean
+  /** Wrap frames in synchronized output (DEC mode 2026). Defaults to "auto". */
+  synchronizedOutput?: SynchronizedOutput
+  /** The output passes through tmux, screen or Zellij on this host. Defaults to false. */
+  hostMultiplexer?: boolean
 }
+
+/** "auto" leaves synchronized output out for a remote terminal without mode 2026 or under a multiplexer on the app's host. */
+export type SynchronizedOutput = "auto" | "always" | "never"
 
 export enum NativeSessionTerminalPhase {
   Uninitialized = 0,
@@ -1172,6 +1179,12 @@ function toFFIU64(value: bigint, label: string): bigint {
 function toFFIBool(value: boolean, label: string): 0 | 1 {
   if (typeof value !== "boolean") throw new TypeError(`${label} must be a boolean`)
   return ffiBool(value)
+}
+
+const SYNCHRONIZED_OUTPUT_FLAGS: Record<SynchronizedOutput, number> = {
+  auto: 0,
+  always: nativeConstants.OT_TERMINAL_SYNC_ALWAYS,
+  never: nativeConstants.OT_TERMINAL_SYNC_NEVER,
 }
 
 function toFFIF32(value: number, label: string, allowNaN = false): number {
@@ -6465,6 +6478,10 @@ export class FFIRenderLib {
   ): void {
     const layout = nativeLayouts.ot_session_terminal_options
     const handle = encodeContextHandle(context, session)
+    const synchronizedOutput = options.synchronizedOutput ?? "auto"
+    if (!Object.hasOwn(SYNCHRONIZED_OUTPUT_FLAGS, synchronizedOutput)) {
+      throw new TypeError("Session synchronizedOutput must be auto, always, or never")
+    }
     const flag = (value: boolean | undefined, label: string, bit: number) =>
       toFFIBool(value ?? true, `Session ${label}`) ? bit : 0
     const flags =
@@ -6472,7 +6489,9 @@ export class FFIRenderLib {
       flag(options.mouse, "mouse", nativeConstants.OT_TERMINAL_MOUSE) |
       flag(options.mouseMovement, "mouseMovement", nativeConstants.OT_TERMINAL_MOUSE_MOVEMENT) |
       flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE) |
-      (options.replySentinel ? nativeConstants.OT_TERMINAL_REPLY_SENTINEL : 0)
+      (options.replySentinel ? nativeConstants.OT_TERMINAL_REPLY_SENTINEL : 0) |
+      SYNCHRONIZED_OUTPUT_FLAGS[synchronizedOutput] |
+      (options.hostMultiplexer ? nativeConstants.OT_TERMINAL_HOST_MULTIPLEXER : 0)
     const record = createContextRecord(layout)
     record[layout.fields.flags.offset / 4] = flags
     record[layout.fields.kitty_keyboard_flags.offset / 4] = toSafeFFIU32Length(
