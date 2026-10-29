@@ -2067,18 +2067,18 @@ pub const Context = struct {
         const node = try self.sceneMutableNode(handle);
         if (callback) |function| {
             if (self.scene_measures.get(handle.slot)) |registration| {
-                try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, registration, &SceneMeasure.measure));
+                try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, registration, &SceneMeasure.measure, false));
                 registration.callback = function;
             } else {
                 try self.scene_measures.ensureUnusedCapacity(self.allocator, 1);
                 const registration = try self.allocator.create(SceneMeasure);
                 errdefer self.allocator.destroy(registration);
                 registration.* = .{ .owner = self, .handle = handle, .callback = function };
-                try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, registration, &SceneMeasure.measure));
+                try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, registration, &SceneMeasure.measure, false));
                 self.scene_measures.putAssumeCapacity(handle.slot, registration);
             }
         } else {
-            try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, null, null));
+            try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, null, null, false));
             if (self.scene_measures.fetchRemove(handle.slot)) |entry| self.allocator.destroy(entry.value);
         }
         yoga.yogaNodeInvalidateMeasure(node.yoga_node);

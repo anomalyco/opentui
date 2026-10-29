@@ -126,9 +126,10 @@ The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it
 - Write documentation links as logical `/docs/...` URLs. Pages map them to their channel with `channelUrl()`. Do not
   link to `/docs/next` from content.
 - Docs pages show the version at the right end of the site header: the release and `next`, with the current one in
-  the text color. Each links to the same page in its channel. The site links keep their place on every route. The
-  footer's line ends with the current version, muted, where it fits on that line. The main-branch docs also open each
-  page with a notice. Do not put the version in the page navigation.
+  the text color. The current version links to its channel's releases page; the other links to the same page in its
+  channel. The site links keep their place on every route. The footer's line ends with the current version, muted,
+  where it fits on that line. The main-branch docs also open each page with a notice. Do not put the version in the
+  page navigation.
 - `/docs/releases/<version>` shows a release's notes and its API changes. `/docs/api/<module>` lists every export with
   the release that added it. Below the hairline that ends the article, above the previous and next links, a closed
   `Changes` disclosure lists the page's three most recent releases with changes. Each release's version stands above

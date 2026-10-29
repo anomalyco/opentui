@@ -491,7 +491,6 @@ pub const Node = struct {
     // Scene.last_placement when the node joined its parent: equal z paints in attachment order.
     attach_order: u64 = 0,
     sort_dirty: bool = false,
-    child_order_frame: u64 = 0,
     layout_flags: packed struct {
         // Newly placed hidden children expose geometry once, without paint membership.
         needs_layout: bool = true,
@@ -502,7 +501,9 @@ pub const Node = struct {
     } = .{},
     skip: Skip = .{},
     culling: Culling = .{},
-    pass: Pass = .{},
+    // The frame of the node's last child selection: a later pass of the frame scans only the
+    // children replies marked.
+    selected_frame: u64 = 0,
     paint: Paint = .{},
     layout: Layout = .{},
     observed_layout: Layout = .{},
@@ -591,27 +592,6 @@ const Culling = struct {
     selected_epoch: u64 = 0,
     selected_at: u64 = 0,
     clean_selection: u64 = 0,
-};
-
-/// How far feedback passed a parent's children in a frame: children sort there, once per
-/// frame, and an idle-update node uses its update. A child is passed if its rank is below cursor
-/// and limit and, if the parent culls, a scan of this frame selected it. Ranks of children
-/// attached later are at least limit. The cursor keeps the frame's first round, so a culling
-/// parent's later round passes a child as soon as it selects it, before the child pops, which
-/// the old walk did only with that child earlier in paint order.
-const Pass = struct {
-    frame: u64 = 0,
-    cursor: u64 = 0,
-    limit: u64 = 0,
-    // A selection of the frame ended: it decided which of its children were passed.
-    finished: bool = false,
-    // The parent's selected_epoch at its first culling selection of the frame, kept through
-    // later scans, which do not undo what an earlier one passed; and whether the last culled.
-    epoch: u64 = 0,
-    culls: bool = false,
-    // The frame in which feedback passed the node's subtree whole: it skipped the node, or the
-    // node moved away from where feedback had passed it.
-    passed_frame: u64 = 0,
 };
 
 const Work = struct {
@@ -902,18 +882,13 @@ pub const Scene = struct {
             }
             try yoga.check(yoga.yogaNodeMoveChildChecked(target.childYoga(parent), value.yoga_node, index));
             const previous = node.parent;
-            // Children that feedback passed keep this frame's order wherever they go.
-            if (previous != parent and self.attempt != null and node.child_order_frame != self.attempt.?.frame_id and self.passedThisFrame(value)) node.pass.passed_frame = self.attempt.?.frame_id;
             if (previous) |old| removeChild(&old.scene_node.?.children, value);
             target.children.insertAssumeCapacity(index, value);
             if (previous != parent) {
                 if (previous) |old| self.detach(value, old);
-                // A child moved into a parent feedback passed paints after its siblings.
-                self.settleOrder(parent);
                 const siblings = target.paint_children.items;
-                if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) self.orderChanged(parent);
-                // At least limit: a reply may have detached the children a pass saw last.
-                node.paint_rank = @max(target.pass.limit, if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1);
+                if (siblings.len != 0 and siblings[siblings.len - 1].scene_node.?.paint.zIndex > node.paint.zIndex) target.sort_dirty = true;
+                node.paint_rank = if (siblings.len == 0) 0 else siblings[siblings.len - 1].scene_node.?.paint_rank + 1;
                 target.paint_children.appendAssumeCapacity(value);
                 node.parent = parent;
                 countBelow(parent, node.skip.update_below, node.skip.filters_below, true);
@@ -960,48 +935,6 @@ pub const Scene = struct {
         countBelow(parent, node.skip.update_below, node.skip.filters_below, false);
         node.parent = null;
         self.markSubtree(parent);
-    }
-
-    /// A child's paint order input changed. Children sort once per frame, where feedback passes
-    /// their parent; if it already did, the change waits for the next frame, which must visit
-    /// the parent: it may keep this frame's paint list.
-    fn orderChanged(self: *Scene, parent: *native.NativeRenderable) void {
-        self.settleOrder(parent);
-        parent.scene_node.?.sort_dirty = true;
-        self.markSubtree(parent);
-    }
-
-    /// Before a change to their order, sorts the children of a parent that feedback passed in
-    /// this frame without sorting them. Every earlier change came through here, so they sort
-    /// with the inputs they had when feedback passed them, as the paint walk would.
-    fn settleOrder(self: *Scene, parent: *native.NativeRenderable) void {
-        const active = self.attempt orelse return;
-        const node = parent.scene_node.?;
-        if (node.child_order_frame == active.frame_id or !self.passedThisFrame(parent)) return;
-        if (sortChildren(node, active.frame_id)) self.clearPreparation();
-    }
-
-    /// Whether feedback passed the node in this frame: a selection passed its rank, or it lies
-    /// in a subtree that was passed whole.
-    fn passedThisFrame(self: *Scene, value: *native.NativeRenderable) bool {
-        const active = self.attempt orelse return false;
-        if (value.scene_node.?.child_order_frame == active.frame_id) return true;
-        var current = value;
-        while (true) {
-            if (builtin.is_test) self.test_sort_steps += 1;
-            const node = current.scene_node.?;
-            if (node.pass.passed_frame == active.frame_id) return true;
-            const parent = node.parent orelse return false;
-            const target = parent.scene_node.?;
-            if (target.pass.frame == active.frame_id) {
-                if (node.paint_rank < @min(target.pass.cursor, target.pass.limit) and
-                    (!target.pass.culls or node.culling.selected_at >= target.pass.epoch)) return true;
-                // A running selection passes its children one by one, but an earlier pass may have
-                // passed its parent whole.
-                if (target.pass.finished) return false;
-            }
-            current = parent;
-        }
     }
 
     fn countBelow(start: *native.NativeRenderable, updates: u32, filters: u32, comptime add: bool) void {
@@ -1087,7 +1020,7 @@ pub const Scene = struct {
 
     fn laterScan(self: *const Scene, node: *const Node) bool {
         const active = &self.attempt.?;
-        return active.followup_pass and node.pass.frame == active.frame_id;
+        return active.followup_pass and node.selected_frame == active.frame_id;
     }
 
     /// Groups the nodes replies marked in the pass that ended by parent, for the next pass.
@@ -1222,7 +1155,8 @@ pub const Scene = struct {
             try yoga.check(yoga.yogaNodeCopyStyleChecked(value.yoga_node, self.style_node));
         }
         if (node.paint.zIndex != paint.zIndex) {
-            if (node.parent) |parent| self.orderChanged(parent);
+            // The paint list sorts the children before it paints them.
+            if (node.parent) |parent| parent.scene_node.?.sort_dirty = true;
         }
         if (node.paint.translateX != paint.translateX or node.paint.translateY != paint.translateY) {
             self.selection_epoch +%= 1;
@@ -1288,10 +1222,10 @@ pub const Scene = struct {
             node.resize_width = initial_width;
             node.resize_height = initial_height;
         }
-        // Today's walk stamped an idle-update node it passed shown, so UPDATE given in this frame
-        // waits for the next one.
-        const stamped = flags & api.OT_SCENE_HOOK_UPDATE != 0 and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0 and
-            node.prepared_gen == self.candidates_gen and node.layout_flags.prepared_visible and self.passedThisFrame(value);
+        // A shown idle-update node used its update when the latest round prepared it, so UPDATE
+        // given in this frame, whatever hooks come between, waits for the next one.
+        const stamped = node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0 and self.attempt != null and
+            node.prepared_gen == self.candidates_gen and node.layout_flags.prepared_visible;
         self.hook_count -= @intFromBool(node.hook_flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.hook_count += @intFromBool(flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.layout_hook_count -= @intFromBool(node.hook_flags & scene_layout_hook_flags != 0);
@@ -1751,10 +1685,6 @@ pub const Scene = struct {
                 if (value.scene_node == null or value.scene_node.?.owner != self) continue;
                 const node = value.scene_node.?;
                 if (operation.kind == .update) node.setFeedback(active, .unseen);
-                if (operation.kind == .done and node.pass.frame == active.frame_id) {
-                    node.pass.cursor = @max(node.pass.cursor, node.pass.limit);
-                    node.pass.finished = true;
-                }
                 const member = if (operation.kind == .filtered_refresh) blk: {
                     const parent = node.parent orelse continue;
                     if (!std.meta.eql(parent.scene_node.?.handle, operation.parent.?)) continue;
@@ -1767,8 +1697,6 @@ pub const Scene = struct {
                     // A child its destroyed parent left is never visible.
                     const parent = node.parent orelse continue;
                     if (!std.meta.eql(parent.scene_node.?.handle, handle)) continue;
-                    // A dropped entry issues no request, so the next pop moves the cursor before any reply.
-                    if (operation.kind == .update) parent.scene_node.?.pass.cursor = @max(parent.scene_node.?.pass.cursor, operation.rank);
                 }
                 if (member != visible_member) {
                     if (!try self.isVisibleMember(member)) continue;
@@ -1781,12 +1709,8 @@ pub const Scene = struct {
                         // marked since, waits for the later pass the mark starts, as in a normal frame.
                         if (!operation.needed and node.skip.subtree != .clean) continue;
                         node.setFeedback(active, .started);
-                        // Today's walk would issue no request below. It passes the subtree, which
-                        // only a skipped root has no parent to say.
-                        if (!full and !self.mustVisit(node)) {
-                            node.pass.passed_frame = active.frame_id;
-                            continue;
-                        }
+                        // Today's walk would issue no request below.
+                        if (!full and !self.mustVisit(node)) continue;
                         node.skip.subtree = .running;
                         node.culling.clean_selection = self.selection_epoch;
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .done });
@@ -1794,17 +1718,14 @@ pub const Scene = struct {
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .prepass });
                         if (node.hook_flags & api.OT_SCENE_HOOK_SCROLL != 0) self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .scroll });
                         self.feedback.appendAssumeCapacity(.{ .node = node.handle, .kind = .refresh });
-                        if (node.hook_flags & (api.OT_SCENE_HOOK_UPDATE | api.OT_SCENE_HOOK_IDLE_UPDATE) != 0 and node.update_frame != active.frame_id) {
-                            if (node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0) result = try self.request(node, api.OT_SCENE_FRAME_UPDATE);
+                        if (node.hook_flags & api.OT_SCENE_HOOK_UPDATE != 0 and node.update_frame != active.frame_id) {
+                            result = try self.request(node, api.OT_SCENE_FRAME_UPDATE);
                             node.update_frame = active.frame_id;
                         }
                     },
                     // A mark during the visit keeps the subtree stale for the next round.
-                    .done => if (node.skip.subtree == .running and !node.skip.self_stale and !node.sort_dirty) {
+                    .done => if (node.skip.subtree == .running and !node.skip.self_stale) {
                         node.skip.subtree = .clean;
-                    } else if (node.sort_dirty) {
-                        // An order frozen for this frame sorts in the next: keep the path to it due.
-                        self.markSubtree(value);
                     },
                     .refresh, .placed, .filtered_refresh => {
                         if (operation.kind != .placed and !node.skip.self_stale and !full) continue;
@@ -1851,9 +1772,6 @@ pub const Scene = struct {
                         }
                     },
                     .children => {
-                        // Capture child order after the parent's callbacks, never midway through siblings.
-                        // The lists hold the old order, so the next frame prepares again.
-                        if (sortChildren(node, active.frame_id)) self.clearPreparation();
                         if (!node.filtersChildren()) {
                             try self.selectChildren(objects, value);
                             continue;
@@ -1929,15 +1847,10 @@ pub const Scene = struct {
         const active = &self.attempt.?;
         const full = self.forcesFullFrame();
         const filter = try self.childFilter(objects, value);
-        const children = node.paint_children.items;
         const listed = self.scanList(objects, node);
-        if (node.pass.frame != active.frame_id) node.pass = .{ .frame = active.frame_id, .passed_frame = node.pass.passed_frame };
-        node.pass.limit = if (children.len == 0) node.pass.limit else children[children.len - 1].scene_node.?.paint_rank + 1;
-        const rescans = full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch);
-        if (rescans) node.culling.selected_epoch = self.selection_epoch;
-        node.pass.culls = filter != null;
-        if (node.pass.culls and node.pass.epoch == 0) node.pass.epoch = node.culling.selected_epoch;
-        if (rescans) {
+        node.selected_frame = active.frame_id;
+        if (full or (node.filtersChildren() and node.culling.selected_epoch != self.selection_epoch)) {
+            node.culling.selected_epoch = self.selection_epoch;
             const origin = if (filter != null) childOrigin(node, try composedLayout(value, false)) else [2]f64{ 0, 0 };
             var index = node.paint_children.items.len;
             while (index != 0) {
@@ -3197,7 +3110,7 @@ pub const Scene = struct {
                 if (mode == .paint) frame.filter = try self.childFilter(objects, value);
                 if (!dry and (mode == .paint or (self.hook_count == 0 and self.filter_count == 0))) {
                     // The candidates walked the old order, so the next frame walks again.
-                    if (sortChildren(node, self.attempt.?.frame_id) and mode == .paint) self.candidates.clearRetainingCapacity();
+                    if (sortChildren(node) and mode == .paint) self.candidates.clearRetainingCapacity();
                 }
                 frame.entered = true;
             }
@@ -3473,10 +3386,7 @@ fn paintLessThan(_: void, left: *native.NativeRenderable, right: *native.NativeR
 }
 
 /// Returns whether the order changed.
-fn sortChildren(node: *Node, frame_id: u64) bool {
-    // Feedback reruns refresh geometry, not sibling order already selected for this frame.
-    if (node.child_order_frame == frame_id) return false;
-    node.child_order_frame = frame_id;
+fn sortChildren(node: *Node) bool {
     if (!node.sort_dirty) return false;
     std.mem.sort(*native.NativeRenderable, node.paint_children.items, {}, paintLessThan);
     for (node.paint_children.items, 0..) |child, index| {

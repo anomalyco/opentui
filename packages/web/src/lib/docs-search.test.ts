@@ -242,6 +242,8 @@ describe("documentation search ranking against the published index", () => {
     expect(lookup(entries, "renderer")[0]?.entry.url).toBe("/docs/core-concepts/renderer")
     expect(lookup(entries, "keymap")[0]?.entry.url).toBe("/docs/keymap/overview")
     expect(lookup(entries, "solid")[0]?.entry.url).toBe("/docs/bindings/solid")
+    expect(lookup(entries, "releases")[0]?.entry.url).toBe("/docs/releases")
+    expect(lookup(entries, "changelog")[0]?.entry.url).toBe("/docs/releases")
   })
 
   test("symbol queries prefer the page that owns the symbol", () => {
