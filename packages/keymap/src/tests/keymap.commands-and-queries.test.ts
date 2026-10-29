@@ -824,7 +824,7 @@ describe("keymap: commands and queries", () => {
       const registered = keymap.getCommands({ visibility: "registered" }).map((command) => command.name)
       expect(reachable.filter((name) => name.endsWith(".c1"))).toEqual(names(kept.toReversed()))
       expect(registered.filter((name) => name.endsWith(".c1"))).toEqual(names(kept))
-      expect(getActiveKey(keymap, "b")?.command).toBe(`l${row.layers - 1}.c1`)
+      expect(keymap.getActiveKeys().find((key) => key.stroke.name === "b")?.command).toBe(`l${row.layers - 1}.c1`)
     }
   })
 
@@ -1020,7 +1020,7 @@ describe("keymap: commands and queries", () => {
       ;(retained.meta as { call?: () => void } | undefined)?.call?.()
       expect([change, events, calls, keymap.getCommands().length]).toEqual([change, ...outcomes[outcome]])
       // A command that is not plain data is handed out as it is, with its symbol keys and function properties.
-      if (change === "symbol key") expect((retained as Record<symbol, unknown>)[symbol]).toBe(1)
+      if (change === "symbol key") expect((retained as unknown as Record<symbol, unknown>)[symbol]).toBe(1)
       if (change === "function with properties") expect((retained.run as { tag?: unknown }).tag).toBeDefined()
       armed = false
       expect([{ ...first }, { ...next }]).toEqual(copies)
