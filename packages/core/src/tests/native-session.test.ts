@@ -479,7 +479,7 @@ test("blocked output and host promises do not hold other renderers' input, resiz
  * through the ticket ABI too. Records each post's byte limit and counts drains.
  */
 async function withStdoutWriter(
-  doneAt: (number | null)[],
+  doneAt: readonly (number | null)[],
   run: (
     driver: NativeSession,
     scheduler: ManualScheduler,
