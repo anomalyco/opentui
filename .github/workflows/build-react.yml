@@ -17,7 +17,6 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ZIG_VERSION: 0.16.0
 
 jobs:
   test:
@@ -25,14 +24,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}"]
+        os: [blacksmith-8vcpu-ubuntu-2404]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig cache
+        id: zig-cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+          save: true
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -48,15 +61,16 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
-
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
+
+      # Only a run that built the library holds its objects.
+      - name: Save Zig cache
+        if: steps.zig-cache.outputs.save == 'true' && steps.bottle.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .zig-cache
+          key: ${{ steps.zig-cache.outputs.key }}
 
       - name: Build
         run: |
@@ -83,7 +97,7 @@ jobs:
   build-complete:
     name: React - Build and Test
     needs: [test]
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
       - name: Check test results

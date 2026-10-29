@@ -28,13 +28,16 @@ env:
 jobs:
   site:
     name: Docs and Site
-    runs-on: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     defaults:
       run:
         working-directory: packages/web
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

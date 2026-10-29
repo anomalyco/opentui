@@ -944,6 +944,9 @@ pub const Service = struct {
             .unsupported => return service.fallbackCurrentWayland(operation),
             .failed => return service.finishWaylandFailure(operation),
         }
+        // The compositor drops unread requests of a disconnected client. The barrier keeps the
+        // connection busy until a roundtrip proves the clear was processed.
+        _ = service.wayland.?.requestSelectionBarrier();
         return service.finishOperation(operation, .cleared);
     }
 
@@ -1396,6 +1399,22 @@ pub const Service = struct {
         return if (service.wayland) |wayland| wayland.takeFailure() else .protocol;
     }
 
+    // Nothing reads the Wayland socket once draining reports idle, but the compositor keeps
+    // sending a data offer for every selection change. An idle connection would collect
+    // offers until the compositor's buffer overflows, so close it and reconnect on demand.
+    fn closeIdleWayland(service: *Service) void {
+        const wayland = service.wayland orelse return;
+        if (!wayland.closableWhenIdle()) return;
+        for (service.operations.items) |operation| {
+            operation.mutex.lock();
+            defer operation.mutex.unlock();
+            // An operation without a mechanism has not been polled yet and will most likely use Wayland.
+            if (operation.status == .pending and operation.mechanism != .x11) return;
+        }
+        wayland.dispatchQueued();
+        service.resetWayland();
+    }
+
     fn resetWayland(service: *Service) void {
         const wayland = service.wayland orelse return;
         for (service.operations.items) |operation| {
@@ -1803,6 +1822,8 @@ pub fn drainService(objects: *handles.Table, service_handle: Handle) u8 {
             active = x11.driveProviderUnit();
         },
     }
+    // The JS scheduler drains once more after the last operation settles, which is when this closes the connection.
+    service.closeIdleWayland();
     if (service.wayland) |wayland| active = active or wayland.hasWork();
     if (service.x11) |x11| active = active or x11.hasWork();
     return if (active) 1 else 0;
@@ -2451,6 +2472,93 @@ test "clipboard failed core selection progress releases operation focus" {
     try std.testing.expectEqual(clipboard_linux.Mechanism.wayland, operation.mechanism.?);
     try std.testing.expect(!operation.wayland_core_focus_acquired);
     try std.testing.expectEqual(@as(u32, 1), wayland.core_focus_users);
+}
+
+test "clipboard drain closes the Wayland connection only when nothing needs it" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const Dispatch = struct {
+        var count: u32 = 0;
+        fn pending(_: *clipboard_linux.WlDisplay) callconv(.c) c_int {
+            count += 1;
+            return 0;
+        }
+    };
+    const Case = struct {
+        name: []const u8,
+        status: ?OperationStatus = null,
+        mechanism: ?clipboard_linux.Mechanism = null,
+        clear: bool = false,
+        provider: bool = false,
+        primary: bool = false,
+        barrier: bool = false,
+        output_pending: bool = false,
+        phase: enum { ready, unsupported, failed } = .ready,
+        inherited_socket: bool = false,
+        open: bool,
+    };
+    const cases = [_]Case{
+        .{ .name = "idle", .open = false },
+        .{ .name = "operation not yet polled", .status = .pending, .open = true },
+        .{ .name = "pending Wayland operation", .status = .pending, .mechanism = .wayland, .open = true },
+        .{ .name = "pending X11 operation", .status = .pending, .mechanism = .x11, .open = false },
+        .{ .name = "settled Wayland operation", .status = .read, .mechanism = .wayland, .open = false },
+        .{ .name = "clear awaiting its barrier", .clear = true, .open = true },
+        .{ .name = "owned selection", .provider = true, .open = true },
+        .{ .name = "owned primary selection", .provider = true, .primary = true, .open = true },
+        .{ .name = "selection barrier", .barrier = true, .open = true },
+        .{ .name = "queued output", .output_pending = true, .open = true },
+        .{ .name = "cached unsupported probe", .phase = .unsupported, .open = true },
+        .{ .name = "failed connection", .phase = .failed, .open = false },
+        .{ .name = "inherited WAYLAND_SOCKET", .inherited_socket = true, .open = true },
+    };
+    var symbols = clipboard_wayland.testSymbols();
+    symbols.wl_display_dispatch_pending = Dispatch.pending;
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.name});
+        var objects = try handles.Table.init(std.testing.allocator, 2);
+        defer objects.deinit();
+        const service_handle = try createService(std.testing.allocator, &objects, 1, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
+        defer destroyTestService(&objects, service_handle);
+        const service = acquireService(&objects, service_handle).?;
+        service.libraries = .{ .wayland = true };
+        const wayland = try std.testing.allocator.create(clipboard_wayland.Connection);
+        wayland.* = clipboard_wayland.testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
+        service.wayland = wayland;
+        if (case.provider) {
+            const data = try std.testing.allocator.dupe(u8, "owned");
+            wayland.primary_supported = case.primary;
+            try std.testing.expectEqual(clipboard_wayland.SelectionResult.ok, wayland.publishText(case.primary, data));
+        }
+        if (case.barrier) _ = wayland.requestSelectionBarrier().?;
+        if (case.clear) {
+            var clear_handle: Handle = invalid_handle;
+            try std.testing.expectEqual(StartStatus.ok, startClearOperation(&objects, service_handle, 0, 1_000, &clear_handle));
+            try std.testing.expectEqual(OperationStatus.cleared, pollOperation(&objects, clear_handle));
+            try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(&objects, clear_handle));
+        }
+        wayland.output_pending = case.output_pending;
+        if (case.phase == .unsupported) wayland.phase = .unsupported;
+        if (case.phase == .failed) wayland.phase = .failed;
+        wayland.inherited_socket = case.inherited_socket;
+        var operation: Operation = .{
+            .allocator = std.testing.allocator,
+            .service = service,
+            .kind = .read,
+            .status = case.status orelse .pending,
+            .mechanism = case.mechanism,
+        };
+        if (case.status != null) try service.operations.append(std.testing.allocator, &operation);
+        defer service.operations.clearRetainingCapacity();
+        Dispatch.count = 0;
+
+        // The X11 turn leaves the fake display alone, so only the idle policy decides.
+        service.drain_mechanism = .x11;
+        const active = case.clear or case.provider or case.barrier or case.output_pending;
+        try std.testing.expectEqual(@as(u8, @intFromBool(active)), drainService(&objects, service_handle));
+        try std.testing.expectEqual(case.open, service.wayland != null);
+        // Queued events are dispatched before a close so their offers are destroyed.
+        try std.testing.expectEqual(@intFromBool(!case.open), Dispatch.count);
+    }
 }
 
 test "clipboard Wayland fallback transitions to X11 only when available" {

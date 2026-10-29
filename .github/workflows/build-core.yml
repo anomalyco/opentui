@@ -18,7 +18,6 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: 26.7.0
-  ZIG_VERSION: 0.16.0
 
 jobs:
   build:
@@ -27,6 +26,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -41,13 +43,6 @@ jobs:
         uses: ./.github/actions/restore-native-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
-
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
 
       - name: Setup cross-platform symbol tools
         if: steps.bottle.outputs.cache-hit != 'true'
@@ -99,9 +94,9 @@ jobs:
         include:
           - os: blacksmith-12vcpu-macos-15
             platform: darwin-arm64
-          - os: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
+          - os: blacksmith-8vcpu-ubuntu-2404
             platform: linux-x64
-          - os: ${{ vars.OPENTUI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+          - os: blacksmith-8vcpu-windows-2025
             platform: win32-x64
     runs-on: ${{ matrix.os }}
     defaults:
@@ -110,6 +105,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig cache
+        id: zig-cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: test
+          save: true
+
+      - name: Restore Bun install cache
+        id: bun-cache
+        uses: ./.github/actions/restore-bun-cache
+        with:
+          save: true
 
       # Hash native files before install and test steps write into packages/native.
       - name: Restore native test result
@@ -129,15 +141,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
-
       - name: Install dependencies
         run: bun install
+
+      - name: Save Bun install cache
+        if: steps.bun-cache.outputs.save == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ steps.bun-cache.outputs.key }}
 
       - name: Enable Linux core dumps
         if: runner.os == 'Linux'
@@ -203,6 +215,14 @@ jobs:
           cd packages/core
           bun run build:lib
 
+      # Only a run that built the native tests holds their objects.
+      - name: Save Zig cache
+        if: steps.zig-cache.outputs.save == 'true' && steps.native-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .zig-cache
+          key: ${{ steps.zig-cache.outputs.key }}
+
       # Both lanes run the same tests on fixed paths under the temp directory, so the Node lane gets its own.
       - name: Run Bun and Node TypeScript tests
         working-directory: packages/core
@@ -236,6 +256,17 @@ jobs:
           echo "Bun tests exited with $bun_status, Node tests with $node_status"
           [ "$bun_status" = 0 ] && [ "$node_status" = 0 ]
 
+      # The step above runs the renderer with the legacy input parser. Run the tests that write bytes to
+      # the renderer's stdin again with the native one.
+      - name: Run input tests with the native input parser
+        if: runner.os == 'Linux'
+        working-directory: packages/core
+        env:
+          OTUI_NATIVE_INPUT_PARSER: "1"
+        run: |
+          ulimit -c unlimited
+          git grep -lF 'stdin.emit("data"' -- 'src/**/*.test.ts' | xargs bun test
+
       - name: Test packed distribution
         if: runner.os == 'Linux'
         working-directory: packages/core
@@ -267,7 +298,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: ${{ vars.OPENTUI_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    runs-on: blacksmith-8vcpu-windows-2025
     defaults:
       run:
         shell: bash
@@ -275,17 +306,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      # This job compiles only the ABI check, which the test key holds too.
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: test
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.1
-
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
 
       - name: Install dependencies
         run: bun install
@@ -354,10 +391,13 @@ jobs:
   bun-1-compat:
     name: Bun 1.3 compatibility
     needs: build
-    runs-on: ${{ vars.OPENTUI_LINUX_8VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup development Bun
         uses: oven-sh/setup-bun@v2
@@ -388,7 +428,7 @@ jobs:
   build-complete:
     name: Core - Build and Test
     needs: [build, test, packages-windows, bun-1-compat]
-    runs-on: ${{ vars.OPENTUI_LINUX_4VCPU_RUNNER || 'ubuntu-24.04' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
       - name: Check test results

@@ -94,6 +94,7 @@ pub const Connection = struct {
     registry: ?*WlProxy = null,
     sync_callback: ?*WlProxy = null,
     phase: Phase = .idle,
+    inherited_socket: bool = false,
     sync_done: bool = false,
     // Selection barriers are wl_display.sync roundtrips issued at read admission.
     // At most one is in flight; later admissions wait for the follow-up barrier.
@@ -443,6 +444,20 @@ pub const Connection = struct {
         return if (flush_result == .complete) .ok else .committed;
     }
 
+    // An idle connection still receives an offer for every selection change, so the host
+    // closes it and reconnects on demand. An unsupported result binds no device and stays
+    // cached, and an inherited socket cannot be reopened after libwayland consumed it.
+    pub fn closableWhenIdle(self: *const Connection) bool {
+        return self.phase != .unsupported and !self.inherited_socket and !self.hasWork();
+    }
+
+    // Events already read from the socket may create offer proxies. Dispatching them
+    // registers those offers so deinit destroys them; nothing new is read from the socket.
+    pub fn dispatchQueued(self: *Connection) void {
+        const display = self.display orelse return;
+        _ = self.symbols.wl_display_dispatch_pending(display);
+    }
+
     pub fn hasProviders(self: *const Connection) bool {
         for (self.providers) |provider| if (provider != null) return true;
         return false;
@@ -509,7 +524,10 @@ pub const Connection = struct {
     }
 
     fn start(self: *Connection) !void {
+        // libwayland adopts and unsets an inherited WAYLAND_SOCKET, so record it before connecting.
+        const inherited_socket = posix_io.getEnv("WAYLAND_SOCKET") != null;
         const display = self.symbols.wl_display_connect(null) orelse return error.ConnectFailed;
+        self.inherited_socket = inherited_socket;
         // libwayland before 1.23 has no cap symbol and uses fixed-size bounded buffers instead.
         if (self.symbols.wl_display_set_max_buffer_size) |set_max_buffer_size| {
             set_max_buffer_size(display, WAYLAND_CONNECTION_BUFFER_SIZE_MAX);
@@ -1408,19 +1426,30 @@ test "Wayland core helper destroys its role before its surface" {
     try std.testing.expect(test_role_destroyed_before_surface);
 }
 
-test "Wayland connection setup applies the finite receive buffer cap" {
-    var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_display_connect = testDisplayConnect;
+test "Wayland connection setup applies the finite receive buffer cap and records an inherited socket" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const Environment = struct {
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+        // Like libwayland, connecting consumes an inherited WAYLAND_SOCKET.
+        fn connect(_: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
+            _ = unsetenv("WAYLAND_SOCKET");
+            return @ptrFromInt(1);
+        }
+    };
+    var symbols = testSymbols();
+    symbols.wl_display_connect = Environment.connect;
     symbols.wl_display_set_max_buffer_size = testSetMaxBufferSize;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
-    symbols.wl_proxy_add_listener = testAddListener;
     var connection = Connection.init(std.testing.allocator, &symbols, "", "", 1);
     connection.flush_outcome_override = .{ .result = 0, .errno = .SUCCESS };
     test_max_buffer_size = 0;
+    try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
+    defer _ = Environment.unsetenv("WAYLAND_SOCKET");
 
     try connection.start();
 
     try std.testing.expectEqual(@as(usize, WAYLAND_CONNECTION_BUFFER_SIZE_MAX), test_max_buffer_size);
+    try std.testing.expect(connection.inherited_socket);
 
     // libwayland before 1.23 has no cap symbol; setup must still succeed because
     // those versions already use fixed-size bounded connection buffers.
@@ -1432,6 +1461,7 @@ test "Wayland connection setup applies the finite receive buffer cap" {
     try uncapped.start();
 
     try std.testing.expectEqual(@as(usize, 0), test_max_buffer_size);
+    try std.testing.expect(!uncapped.inherited_socket);
 }
 
 test "Wayland dispatch drains queued callbacks up to the per-drive bound" {
@@ -1572,11 +1602,7 @@ test "Wayland writes and clears settle deterministically after marshalling for e
         .{ .flush = .{ .result = -1, .errno = .PIPE }, .selection = .failed, .output_pending = false, .phase = .failed },
     };
 
-    var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
-    symbols.wl_proxy_add_listener = testAddListener;
-    symbols.wl_proxy_destroy = testDestroyProxy;
-    symbols.wl_proxy_get_version = testProxyVersion;
+    const symbols = testSymbols();
 
     for (cases) |case| {
         var write = testReadyConnection(&symbols, case.flush);
@@ -1595,11 +1621,7 @@ test "Wayland writes and clears settle deterministically after marshalling for e
 }
 
 test "Wayland fatal selection flush preserves local ownership state" {
-    var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
-    symbols.wl_proxy_add_listener = testAddListener;
-    symbols.wl_proxy_destroy = testDestroyProxy;
-    symbols.wl_proxy_get_version = testProxyVersion;
+    const symbols = testSymbols();
 
     var failed_write = testReadyConnection(&symbols, .{ .result = -1, .errno = .PIPE });
     const caller_data = try std.testing.allocator.dupe(u8, "caller-owned");
@@ -1617,7 +1639,21 @@ test "Wayland fatal selection flush preserves local ownership state" {
     failed_clear.releaseProviders();
 }
 
-fn testReadyConnection(symbols: *const linux.WaylandSymbols, flush: FlushOutcome) Connection {
+// Fake libwayland entry points for tests that drive a connection without a compositor.
+pub fn testSymbols() linux.WaylandSymbols {
+    var symbols: linux.WaylandSymbols = undefined;
+    symbols.wl_proxy_marshal_array_flags = testMarshal;
+    symbols.wl_proxy_add_listener = testAddListener;
+    symbols.wl_proxy_destroy = testDestroyProxy;
+    symbols.wl_proxy_get_version = testProxyVersion;
+    symbols.wl_display_dispatch_pending_single = null;
+    symbols.wl_display_dispatch_pending = testDispatchQueueBulk;
+    symbols.wl_display_prepare_read = testPrepareReadBlocked;
+    symbols.wl_display_disconnect = testDisplayDisconnect;
+    return symbols;
+}
+
+pub fn testReadyConnection(symbols: *const linux.WaylandSymbols, flush: FlushOutcome) Connection {
     var connection = Connection.init(std.testing.allocator, symbols, "", "", 1);
     connection.display = @ptrFromInt(1);
     connection.manager = @ptrFromInt(2);
@@ -1637,10 +1673,6 @@ var test_read_event_count: u32 = 0;
 var test_display_error_call_count: u32 = 0;
 var test_role_connection: ?*Connection = null;
 var test_role_destroyed_before_surface = false;
-
-fn testDisplayConnect(_: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
-    return @ptrFromInt(1);
-}
 
 fn testSetMaxBufferSize(_: *linux.WlDisplay, size: usize) callconv(.c) void {
     test_max_buffer_size = size;
@@ -1681,6 +1713,8 @@ fn testReadEvents(_: *linux.WlDisplay) callconv(.c) c_int {
 }
 
 fn testCancelRead(_: *linux.WlDisplay) callconv(.c) void {}
+
+fn testDisplayDisconnect(_: *linux.WlDisplay) callconv(.c) void {}
 
 fn testDisplayError(_: *linux.WlDisplay) callconv(.c) c_int {
     test_display_error_call_count += 1;
@@ -2047,11 +2081,7 @@ test "Wayland reserves provider capacity independently for each selection" {
 }
 
 test "Wayland publication reclaims cancelled providers before checking capacity" {
-    var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
-    symbols.wl_proxy_add_listener = testAddListener;
-    symbols.wl_proxy_destroy = testDestroyProxy;
-    symbols.wl_proxy_get_version = testProxyVersion;
+    const symbols = testSymbols();
     var connection = testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
 
     for (connection.providers[0..2], 0..) |*slot, index| {
@@ -2212,11 +2242,7 @@ test "Wayland selection failures do not leak across operations" {
 }
 
 test "Wayland local marshal failure preserves the current provider" {
-    var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
-    symbols.wl_proxy_add_listener = testAddListener;
-    symbols.wl_proxy_destroy = testDestroyProxy;
-    symbols.wl_proxy_get_version = testProxyVersion;
+    var symbols = testSymbols();
     symbols.wl_display_get_error = testDisplayError;
     var connection = testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
     connection.display_error_override = null;
@@ -2238,11 +2264,7 @@ test "Wayland local marshal failure preserves the current provider" {
 }
 
 test "Wayland failed source offer does not replace the current provider" {
-    var symbols: linux.WaylandSymbols = undefined;
-    symbols.wl_proxy_marshal_array_flags = testMarshal;
-    symbols.wl_proxy_add_listener = testAddListener;
-    symbols.wl_proxy_destroy = testDestroyProxy;
-    symbols.wl_proxy_get_version = testProxyVersion;
+    const symbols = testSymbols();
     var connection = testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
     connection.display_error_override = 1;
     var transfers: [1]Transfer = undefined;
