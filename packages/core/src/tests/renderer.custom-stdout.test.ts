@@ -1870,6 +1870,13 @@ const outputFailure = async (renderer: CliRenderer, stdout: CollectingStdout) =>
   stdout.emit("error", new Error("terminal gone"))
   await expect(renderer.closed).rejects.toThrow("terminal gone")
 }
+const suspendInSplit = async (renderer: CliRenderer, stdout: CollectingStdout) => {
+  const suspending = renderer.suspend()
+  stdout.write(Buffer.from("caf\u00e9").subarray(0, 4))
+  await suspending
+  stdout.write(Buffer.from([0xa9]))
+  await renderer.resume()
+}
 const sessionClose = async (renderer: CliRenderer) => {
   const closing = renderer.nativeScene.driver.close()
   renderer.destroy()
@@ -1893,13 +1900,18 @@ test.each<[string, StdoutStep[], string]>([
   ["capture set again inside a split", splitBytes("\u00e9", 1, capture), "\u00e9"],
   ["split across a deferred passthrough", splitBytes("caf\u00e9", 4, passthrough), "caf\u00e9"],
   ["passthrough set in a frame inside a split", [lead, passthroughInFrame], "\u00e9"],
-  ["split across a cancelled passthrough", splitBytes("caf\u00e9", 4, passthrough, capture), "caf\u00e9"],
+  [
+    "split across a cancelled passthrough",
+    splitBytes("caf\u00e9", 4, passthrough, capture, (renderer) => renderer.idle()),
+    "caf\u00e9",
+  ],
   ["saved write while capture is off", [savedWriteWhileOff, Buffer.from([0xa9]), "b"], "\ufffdb"],
   ["passthrough after a lead byte", [lead, passthrough], "\ufffd"],
   ["lead byte after deferred passthrough", ["a", passthrough, lead], "a\ufffd"],
   ["suspend after a lead byte", ["a", lead, (renderer) => renderer.suspend(), destroy], "a\ufffd|"],
   ["replay reset after a lead byte", ["a", lead, (renderer) => renderer.resetSplitFooterForReplay(), "b"], "a\ufffd|b"],
   ["destroy after a lead byte", ["a", lead, destroy], "a\ufffd|"],
+  ["split across suspend during a deferred passthrough", ["a", passthrough, suspendInSplit], "a|caf\u00e9"],
   ["destroy after the session closes", ["a", lead, sessionClose], ""],
   ["output failure after a lead byte", ["a", lead, outputFailure], ""],
 ])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {

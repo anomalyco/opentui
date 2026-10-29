@@ -2037,12 +2037,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private applyPendingExternalOutputModeIfReady(): void {
     if (this.rendering) return
     const pendingMode = this.pendingExternalOutputMode
-    if (pendingMode === "passthrough") this.flushStdoutDecoder()
     if (
       pendingMode === null ||
       (this.externalOutputQueue.size > 0 && !(pendingMode === "capture-stdout" && this._screenMode === "split-footer"))
     ) {
       return
+    }
+    if (pendingMode === "passthrough") {
+      this.flushStdoutDecoder()
+      if (this.externalOutputQueue.size > 0) return
     }
 
     const previousMode = this._externalOutputMode
