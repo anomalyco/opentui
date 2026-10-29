@@ -3374,152 +3374,77 @@ test "renderer - split commit does not emit continuation spaces for wide graphem
     try std.testing.expect(std.mem.find(u8, output, "🧪 ") == null);
 }
 
-test "renderer - split repaint repaints footer without append payload" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
+test "renderer - split repaint writes the footer and its pending transition in one ordered frame" {
+    const Case = struct {
+        height: u32,
+        reset: [2]u32,
+        render_offset: ?u32 = null,
+        viewport_scroll: u32 = 0,
+        transition: renderer.SplitFooterTransition = .{},
+        pinned: u32,
+        // Each sequence's first occurrence follows the previous one's.
+        ordered: []const []const u8,
+        absent: []const []const u8 = &.{},
+        output_offset: ?u32 = null,
+    };
+    const cases = [_]Case{
+        // No append payload: the footer repaints without clearing its rows.
+        .{ .height = 3, .reset = .{ 2, 2 }, .pinned = 2, .ordered = &.{ ansi.ANSI.syncSet, "FOOT" }, .absent = &.{ "\x1b[3;1H\x1b[2K", "\x1b[3;1H\x1b[J" } },
+        .{
+            .height = 1,
+            .reset = .{ 4, 4 },
+            .render_offset = 3,
+            .transition = .{ .mode = .viewport_scroll, .source_top_line = 4, .source_height = 2, .target_top_line = 5, .target_height = 1, .scroll_lines = 1 },
+            .pinned = 4,
+            .ordered = &.{ ansi.ANSI.syncSet, "\x1b[1T", "\x1b[5;1H", "FOOT" },
+        },
+        // A gap that already exists scrolls by the explicit split delta.
+        .{
+            .height = 8,
+            .reset = .{ 6, 6 },
+            .render_offset = 6,
+            .viewport_scroll = 2,
+            .transition = .{ .mode = .viewport_scroll, .source_top_line = 7, .source_height = 4, .target_top_line = 3, .target_height = 8, .scroll_lines = 2 },
+            .pinned = 2,
+            .ordered = &.{"\x1b[2S"},
+            .absent = &.{"\x1b[4S"},
+            .output_offset = 2,
+        },
+        .{
+            .height = 3,
+            .reset = .{ 1, 7 },
+            .transition = .{ .mode = .clear_stale_rows, .source_top_line = 2, .source_height = 4, .target_top_line = 2, .target_height = 3, .scroll_lines = 0 },
+            .pinned = 7,
+            .ordered = &.{ ansi.ANSI.syncSet, "\x1b[5;1H\x1b[2K", "FOOT" },
+        },
+    };
+    for (cases, 0..) |case, index| {
+        errdefer std.debug.print("split repaint case {d}\n", .{index});
+        var pools = TestPools.init(std.testing.allocator);
+        defer pools.deinit();
+        var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 12, case.height, &pools.graphemes, &pools.links);
+        defer test_cli_renderer.deinit();
+        const cli_renderer = test_cli_renderer.renderer;
+        _ = cli_renderer.resetSplitScrollback(case.reset[0], case.reset[1]);
+        if (case.viewport_scroll != 0) cli_renderer.splitScrollback.noteViewportScroll(case.viewport_scroll);
+        if (case.render_offset) |offset| cli_renderer.renderOffset = offset;
+        cli_renderer.pendingSplitFooterTransition = case.transition;
+        try cli_renderer.getNextBuffer().drawText("FOOT", 0, 0, ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 0);
 
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        3,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
+        _ = test_cli_renderer.repaintSplit(case.pinned, true);
 
-    _ = cli_renderer.resetSplitScrollback(2, 2);
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = test_cli_renderer.repaintSplit(2, true);
-
-    const output = test_cli_renderer.lastOutput();
-    const footer_text_index = std.mem.find(u8, output, "FOOT");
-    const footer_clear_index = std.mem.find(u8, output, "\x1b[3;1H\x1b[2K");
-    const footer_erase_below_index = std.mem.find(u8, output, "\x1b[3;1H\x1b[J");
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-
-    try std.testing.expect(footer_text_index != null);
-    try std.testing.expect(footer_clear_index == null);
-    try std.testing.expect(footer_erase_below_index == null);
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(sync_index.? < footer_text_index.?);
-}
-
-test "renderer - split repaint applies pending viewport scroll transition in one frame" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        1,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    _ = cli_renderer.resetSplitScrollback(4, 4);
-    cli_renderer.renderOffset = 3;
-    cli_renderer.pendingSplitFooterTransition = .{ .mode = .viewport_scroll, .source_top_line = 4, .source_height = 2, .target_top_line = 5, .target_height = 1, .scroll_lines = 1 };
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = test_cli_renderer.repaintSplit(4, true);
-
-    const output = test_cli_renderer.lastOutput();
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-    const scroll_index = std.mem.find(u8, output, "\x1b[1T");
-    const footer_move_index = std.mem.find(u8, output, "\x1b[5;1H");
-    const footer_text_index = std.mem.find(u8, output, "FOOT");
-
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(scroll_index != null);
-    try std.testing.expect(footer_move_index != null);
-    try std.testing.expect(footer_text_index != null);
-    try std.testing.expect(sync_index.? < scroll_index.?);
-    try std.testing.expect(scroll_index.? < footer_move_index.?);
-    try std.testing.expect(footer_move_index.? < footer_text_index.?);
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
-}
-
-test "renderer - split repaint viewport scroll uses explicit split scroll delta when gap already exists" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        8,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    _ = cli_renderer.resetSplitScrollback(6, 6);
-    cli_renderer.splitScrollback.noteViewportScroll(2);
-    cli_renderer.renderOffset = 6;
-    cli_renderer.pendingSplitFooterTransition = .{ .mode = .viewport_scroll, .source_top_line = 7, .source_height = 4, .target_top_line = 3, .target_height = 8, .scroll_lines = 2 };
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = test_cli_renderer.repaintSplit(2, true);
-
-    const output = test_cli_renderer.lastOutput();
-    try std.testing.expect(std.mem.find(u8, output, "\x1b[2S") != null);
-    try std.testing.expect(std.mem.find(u8, output, "\x1b[4S") == null);
-    try std.testing.expectEqual(@as(u32, 2), cli_renderer.getSplitOutputOffset(2));
-}
-
-test "renderer - split repaint applies pending stale row clear transition in one frame" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        3,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    _ = cli_renderer.resetSplitScrollback(1, 7);
-    cli_renderer.pendingSplitFooterTransition = .{ .mode = .clear_stale_rows, .source_top_line = 2, .source_height = 4, .target_top_line = 2, .target_height = 3, .scroll_lines = 0 };
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = test_cli_renderer.repaintSplit(7, true);
-
-    const output = test_cli_renderer.lastOutput();
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-    const clear_index = std.mem.find(u8, output, "\x1b[5;1H\x1b[2K");
-    const footer_text_index = std.mem.find(u8, output, "FOOT");
-
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(clear_index != null);
-    try std.testing.expect(footer_text_index != null);
-    try std.testing.expect(sync_index.? < clear_index.?);
-    try std.testing.expect(clear_index.? < footer_text_index.?);
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
+        const output = test_cli_renderer.lastOutput();
+        var previous: usize = 0;
+        for (case.ordered, 0..) |sequence, position| {
+            const found = std.mem.find(u8, output, sequence) orelse return error.TestUnexpectedResult;
+            if (position != 0) try std.testing.expect(previous < found);
+            previous = found;
+        }
+        for (case.absent) |sequence| try std.testing.expect(std.mem.find(u8, output, sequence) == null);
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
+        if (case.output_offset) |offset| try std.testing.expectEqual(offset, cli_renderer.getSplitOutputOffset(case.pinned));
+    }
 }
 
 test "renderer - split commit appends styled snapshot with snapshot links before footer repaint" {
