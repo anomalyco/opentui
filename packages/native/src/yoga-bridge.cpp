@@ -186,9 +186,13 @@ uint32_t otYogaNodeMarkDirty(YGNodeRef node) noexcept {
   return checked([&] { YGNodeMarkDirty(node); });
 }
 
-uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback) noexcept {
+uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback,
+                                  uint32_t height_cap_only_clamps) noexcept {
   if (!node || (callback && YGNodeGetChildCount(node))) return OT_YOGA_INVALID_ARGUMENT;
-  return checked([&] { YGNodeSetMeasureFunc(node, callback); });
+  return checked([&] {
+    YGNodeSetMeasureFunc(node, callback);
+    facebook::yoga::resolveRef(node)->setHeightCapOnlyClamps(height_cap_only_clamps != 0);
+  });
 }
 
 void otYogaNodeInvalidateMeasure(YGNodeRef node) noexcept {
@@ -528,4 +532,17 @@ uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCa
       cacheAxisReference(*height, point_scale) << 1;
   return actual;
 }
+
+uint32_t otYogaTestLargerHeightCap(const OTYogaCacheAxis* width,
+                                   const OTYogaCacheAxis* height) noexcept {
+  using namespace facebook::yoga;
+  const CachedMeasurement cached{width->last_available, height->last_available,
+                                 static_cast<SizingMode>(width->last_mode),
+                                 static_cast<SizingMode>(height->last_mode), width->computed,
+                                 height->computed};
+  return canUseMeasurementForLargerHeightCap(
+      static_cast<SizingMode>(width->mode), width->available,
+      static_cast<SizingMode>(height->mode), height->available, cached, height->margin);
+}
 #endif
+

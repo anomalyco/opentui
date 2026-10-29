@@ -17,7 +17,7 @@ Its build file exports only the Zig VT modules.
 The change to `src/build/SharedDeps.zig` removes unused GUI frame data.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga 3.2.1 with five changes, applied in this order:
+The Yoga source is upstream Yoga 3.2.1 with six changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation through `yoga/OTAllocator.h`, so a test build can
   inject allocation failures. It also makes style updates, child insertion, and child moves leave the node
@@ -34,6 +34,12 @@ The Yoga source is upstream Yoga 3.2.1 with five changes, applied in this order:
   `src/context.zig` sets the option; other configs keep upstream rounding and caching.
 - `yoga-finite-percent.patch` clamps a resolved percentage to ±1e30, so a deep percentage chain cannot
   overflow f32 and stop layout on an indefinite available size.
+- `yoga-measure-height-cap.patch` lets a node mark its measure function as one that uses an "at most"
+  height only to clamp its result. Where Yoga would call such a function again because the cap grew,
+  it takes a cached size that was below the old cap at the same width, and stores it as a call's
+  result, so later cache decisions are the same as without the patch. A node with a percent margin,
+  padding, or minimum or maximum size keeps calling: no cache entry records the owner size. The native
+  text and editor measures set the mark; host measures do not.
 
 `src/tests/yoga_test.zig` tests each change.
 

@@ -584,7 +584,7 @@ typedef struct ot_scene_paint_slot {
  * generations are nonzero and must increase on every change. Initial dimensions
  * seed the resize baseline only before the first layout. Later subscriptions use
  * completed dimensions. Only the root accepts LAYOUT_CHANGED.
- * IDLE_UPDATE consumes the normal update position without a host request or callback.
+ * IDLE_UPDATE uses up the node's update for a frame without a host request or callback.
  * It does not count as a host hook and cannot be combined with UPDATE.
  * Non-root nodes accept RENDER_BEFORE, RENDER_SELF, and RENDER_AFTER.
  * Root paint flags are rejected.
