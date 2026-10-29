@@ -58,18 +58,12 @@ function toMicroseconds(seconds: number, label: string): bigint {
 
 /**
  * Plays a video file in a native scene node. Decoding, the media clock, and frame drawing stay native;
- * this wrapper sends control calls and reads playback state once per frame while playing.
+ * this wrapper sends control calls and reads playback state on the animation clock while playing.
  */
 export class VideoRenderable extends Renderable {
   static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "video",
     body: { native: this.prototype.renderSelf, buffered: true },
-    lifecycle: {
-      update: {
-        idle: this.prototype.onUpdate,
-        active: (renderable) => (renderable as VideoRenderable)._updating,
-      },
-    },
     bufferComposition: "native",
   }
 
@@ -84,8 +78,8 @@ export class VideoRenderable extends Renderable {
   private _metadata: VideoMetadata | null = null
   // Playback requested while no source is open; native state is the truth once one is.
   private _playRequested = false
-  // Playback keeps the renderer live and the update hook active.
-  private _updating = false
+  // Playback polls native state on the renderer's animation clock, drawn or not.
+  private stopTick?: () => void
   // Counts reported pauses, so a deferred onPlay that a pause overtook is dropped.
   private _pauses = 0
   public onReady?: (metadata: VideoMetadata) => void
@@ -246,7 +240,9 @@ export class VideoRenderable extends Renderable {
     const next = value ?? 30
     validateMaxFps(next)
     if (this._maxFps === next || this.isDestroyed) return
-    if (this.applyOption((native) => native.lib.videoSetMaxFps(native.context, native.node, next))) this._maxFps = next
+    if (!this.applyOption((native) => native.lib.videoSetMaxFps(native.context, native.node, next))) return
+    this._maxFps = next
+    this.syncPlayback()
   }
 
   /** Applies to the next source that opens, and to an open source that has not started yet. */
@@ -391,8 +387,7 @@ export class VideoRenderable extends Renderable {
   // Native code draws the frame; this keeps the body native.
   protected renderSelf(_buffer: OptimizedBuffer): void {}
 
-  protected override onUpdate(deltaTime: number): void {
-    super.onUpdate(deltaTime)
+  private poll(): void {
     if (!this._metadata || this.isDestroyed) return
     let state: NativeVideoState
     try {
@@ -464,8 +459,8 @@ export class VideoRenderable extends Renderable {
     }
   }
 
-  // Playback keeps the renderer painting and the per-frame state hook active. A caller
-  // that already reported a failure passes report = false, so it reports once.
+  // Playback ticks at maxFps, which paints each frame and advances, ends or loops playback. A
+  // caller that already reported a failure passes report = false, so it reports once.
   private syncPlayback(report = true): void {
     if (this.isDestroyed) return
     let active = false
@@ -474,9 +469,8 @@ export class VideoRenderable extends Renderable {
     } catch (error) {
       if (report) this.reportError(error)
     }
-    this._updating = active
-    if (this.live !== active) this.live = active
-    this.refreshNativeSceneHooks()
+    this.stopTick?.()
+    this.stopTick = active ? this._ctx.onAnimationTick(this._maxFps, () => this.poll()) : undefined
   }
 
   private setNativeSceneVideo(fit: ImageFit = this._fit): void {
@@ -496,9 +490,7 @@ export class VideoRenderable extends Renderable {
 
   protected destroySelf(): void {
     this.runCleanup((run) => {
-      run(() => {
-        if (this.live) this.live = false
-      })
+      run(() => this.stopTick?.())
       run(() => super.destroySelf())
     })
   }

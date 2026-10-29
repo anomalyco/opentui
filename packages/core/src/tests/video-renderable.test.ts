@@ -1,12 +1,15 @@
 import { fileURLToPath } from "node:url"
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import { BoxRenderable } from "../renderables/Box.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { VideoRenderable, type VideoMetadata } from "../renderables/Video.js"
 import { createTestRenderer, type TestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/video/testsrc-160x90-24fps-2s.mp4", import.meta.url))
 // Without an audio track, playback never opens an audio device.
 const SILENT = fileURLToPath(new URL("./fixtures/video/testsrc-160x90-24fps-2s-video-only.mp4", import.meta.url))
+const SWITCH = fileURLToPath(new URL("./fixtures/video/resolution-switch-160x90-to-6000x5000.mp4", import.meta.url))
 const MISSING = fileURLToPath(new URL("./fixtures/video/missing.mp4", import.meta.url))
 
 describe("VideoRenderable", () => {
@@ -21,6 +24,9 @@ describe("VideoRenderable", () => {
     }
     expect(condition()).toBe(true)
   }
+
+  // A playing video polls its state on the renderer's animation clock.
+  const ticking = () => (renderer as any).animationTickers.size > 0
 
   beforeEach(async () => {
     setup = await createTestRenderer({ width: 20, height: 6 })
@@ -46,7 +52,7 @@ describe("VideoRenderable", () => {
     expect(ready).toEqual({ width: 160, height: 90, fps: 24, duration: expect.any(Number), hasAudio: true })
     expect(video.duration).toBeGreaterThan(1.9)
     expect(video.paused).toBe(true)
-    expect(video.live).toBe(false)
+    expect(ticking()).toBe(false)
     await setup.renderOnce()
     expect(setup.captureCharFrame().trim().length).toBeGreaterThan(0)
     video.destroy()
@@ -55,7 +61,7 @@ describe("VideoRenderable", () => {
     expect(setup.captureCharFrame().trim().length).toBeGreaterThan(0)
   })
 
-  test("play keeps the renderer live and pause holds the position", async () => {
+  test("play ticks the animation clock and pause holds the position", async () => {
     const video = new VideoRenderable(renderer, { source: SILENT, width: 20, height: 6 })
     renderer.root.add(video)
     let played = 0
@@ -63,13 +69,13 @@ describe("VideoRenderable", () => {
     video.play()
     expect(played).toBe(1)
     expect(video.playing).toBe(true)
-    expect(video.live).toBe(true)
+    expect(ticking()).toBe(true)
     // Adaptive quality only lowers Kitty decode sizes; full size is tier 0.
     expect(video.qualityTier).toBe(0)
     await renderUntil(() => video.currentTime > 0.1)
     video.pause()
     expect(video.playing).toBe(false)
-    expect(video.live).toBe(false)
+    expect(ticking()).toBe(false)
     const position = video.currentTime
     await new Promise((resolve) => setTimeout(resolve, 40))
     await setup.renderOnce()
@@ -96,7 +102,7 @@ describe("VideoRenderable", () => {
     expect(ended).toBe(1)
     expect(video.ended).toBe(true)
     expect(video.playing).toBe(false)
-    expect(video.live).toBe(false)
+    expect(ticking()).toBe(false)
   })
 
   test("seeking past either end clamps without wrapping a looping video", async () => {
@@ -164,17 +170,18 @@ describe("VideoRenderable", () => {
   test("replacing the source keeps playback intent and destroy releases the player", async () => {
     const video = new VideoRenderable(renderer, { source: SILENT, autoplay: true })
     renderer.root.add(video)
-    expect(video.live).toBe(true)
+    expect(ticking()).toBe(true)
     video.autoplay = false
     video.source = undefined
     expect(video.ready).toBe(false)
     expect(video.playing).toBe(true)
-    expect(video.live).toBe(false)
+    expect(ticking()).toBe(false)
     video.source = SILENT
     expect(video.playing).toBe(true)
-    expect(video.live).toBe(true)
+    expect(ticking()).toBe(true)
     await setup.renderOnce()
     video.destroy()
+    expect(ticking()).toBe(false)
     await setup.renderOnce()
   })
 
@@ -184,7 +191,7 @@ describe("VideoRenderable", () => {
     expect(video.autoplay).toBe(false)
     video.play()
     expect(video.playing).toBe(true)
-    expect(video.live).toBe(false)
+    expect(ticking()).toBe(false)
     video.source = SILENT
     expect(video.playing).toBe(true)
     video.pause()
@@ -208,6 +215,32 @@ describe("VideoRenderable", () => {
     expect(video.maxFps).toBe(120)
   })
 
+  test("playback reports its end and failures, drawn or not", async () => {
+    for (const kind of ["scrolled out", "hidden", "failed"]) {
+      const events: string[] = []
+      const video = new VideoRenderable(renderer, {
+        source: kind === "failed" ? SWITCH : SILENT,
+        width: 20,
+        height: 6,
+        visible: kind !== "hidden",
+        onEnd: () => events.push("end"),
+        onError: (error) => events.push(error.message),
+      })
+      const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 6 })
+      // From 16 children on, a ScrollBox culls the ones outside its viewport.
+      if (kind === "failed") scroll.add(video)
+      for (let row = 0; row < 19; row++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
+      if (kind !== "failed") scroll.add(video)
+      renderer.root.add(scroll)
+      video.seek(kind === "failed" ? 0.95 : video.duration - 0.03)
+      video.play()
+      await renderUntil(() => events.length > 0)
+      expect(events).toEqual([kind === "failed" ? "video frame 6000x5000 exceeds the image limits" : "end"])
+      expect(video.playing).toBe(false)
+      scroll.destroyRecursively()
+    }
+  })
+
   test("a native state failure during update reports through onError", async () => {
     const errors: Error[] = []
     const video = new VideoRenderable(renderer, {
@@ -223,7 +256,7 @@ describe("VideoRenderable", () => {
       throw new Error("state unavailable")
     })
     try {
-      await setup.renderOnce()
+      await renderUntil(() => errors.length > 0)
     } finally {
       read.mockRestore()
     }
@@ -254,7 +287,7 @@ describe("VideoRenderable", () => {
     expect(video.playing).toBe(false)
     video.autoplay = true
     expect(video.playing).toBe(true)
-    expect(video.live).toBe(true)
+    expect(ticking()).toBe(true)
   })
 
   test("playback options set before a source apply when it opens", () => {
@@ -347,6 +380,11 @@ describe("VideoRenderable", () => {
     })
     // 1 fps over 1.2 s shows at most 2 or 3 source frames; 24 fps would show about 29.
     expect(frames.size).toBeLessThanOrEqual(3)
+    // A new rate retimes the clock: 5 updates take 5 s at 1 fps.
+    let updates = 0
+    video.onTimeUpdate = () => updates++
+    video.maxFps = 30
+    await renderUntil(() => updates >= 5)
   })
 
   test("onPlay reports autoplay and playback requested before the source", async () => {

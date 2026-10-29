@@ -62,7 +62,7 @@ await render(() => <video source="./clip.mp4" autoplay loop style={{ width: 60, 
 
 ## Playback
 
-- While a video plays, the renderable keeps the renderer live. A native audio thread refills audio and playback advances without paints, so a hidden or scrolled-out video keeps time. Each paint draws the current frame.
+- While a video plays, it ticks on the renderer's animation clock at `maxFps`. Each tick renders a frame and reads playback state, drawn or not, so a hidden or scrolled-out video keeps time, ends, and loops. A native audio thread refills audio between ticks. Each paint draws the current frame.
 - With an audio track, audio output is the media clock. Without audio, or if the audio device fails, playback follows the wall clock.
 - Frames present at the source frame rate or `maxFps`, whichever is lower.
 - `seek()` clamps to `[0, duration]`. Seeking past the end does not wrap, even when `loop` is on.
