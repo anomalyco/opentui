@@ -11,7 +11,9 @@
 //! `Stats`; the 388 stall (I1) is recorded, not asserted.
 //!
 //! Replay one run: OUTPUT_SIM_SEED=<n> OUTPUT_SIM_PRESET=<name> [OUTPUT_SIM_MODE=ticket]
-//! [OUTPUT_SIM_TRACE=1] bun run test:native -Dtest-filter="OUTPUT SIM".
+//! [OUTPUT_SIM_SIZE=100x32] [OUTPUT_SIM_EVENTS=<n>] [OUTPUT_SIM_TRACE=1]
+//! bun run test:native -Dtest-filter="OUTPUT SIM". OUTPUT_SIM_SEEDS=<n> runs n seeds of every
+//! CI plan; OUTPUT_SIM_SUMMARY=1 prints each preset's totals.
 const std = @import("std");
 const testing = std.testing;
 const c = @import("context_abi_c");
@@ -25,9 +27,15 @@ const presets = @import("output-sim/presets.zig");
 const link_model = @import("output-sim/link.zig");
 
 const ms = std.time.ns_per_ms;
-/// The model's own storage; the Context's goes through `Counting`, with leak checks.
+/// The model's own storage. The Context's goes through `ContextAllocator`.
 const gpa = std.heap.smp_allocator;
+/// Leak checks without per-allocation stack traces, which would dominate the run's time, and
+/// I4's limit: the feed's 8 MiB plus a fixed allowance for the renderer and scene.
+const ContextAllocator = std.heap.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit = true });
+const context_bytes_max = 12 * 1024 * 1024;
 const frame_interval_ns: u64 = std.time.ns_per_s / 60;
+/// 50 tokens a second, as the harness app streams.
+const token_period_ns: u64 = 20 * ms;
 /// The driver's drain budget and Writable copy size (`zig.ts`, `NativeSession.ts`).
 const drain_budget: u32 = 65_536;
 /// The driver's graceful close timeout (`closeTimeoutMs`).
@@ -36,9 +44,9 @@ const background = ansi.rgbColor(30, 30, 46, 255);
 /// The far terminal's reply to the startup queries: focus, bracketed paste, a cursor report,
 /// Kitty keyboard, and DA1. (DECRQM 2026 belongs to the synchronized-output model.)
 const replies = "\x1b[?1004;1$y\x1b[?2004;2$y\x1b[1;1R\x1b[?0u\x1b[?62;22c";
-const history_lines = 30;
-const lines_max = 40;
+const lines_max = 30;
 const words_per_line = 6;
+const words_max = lines_max * words_per_line;
 
 /// Counts per run, summed over runs. Invariant counters name their invariant.
 const Stats = struct {
@@ -58,9 +66,11 @@ const Stats = struct {
     keys_seen: u64 = 0,
     keys_delayed: u64 = 0,
     key_wait_max_ns: u64 = 0,
-    /// I2: a paint accepted while a frame was in flight, or a count out of step.
+    /// I2: a paint accepted while a frame was in flight, a count out of step, or a frame
+    /// presented before all its bytes were in the pty (R5).
     second_frames: u32 = 0,
-    /// I4: queued feed bytes above the limit, and the Context's peak live bytes.
+    /// I4: queued feed bytes above the limit, and the Context's peak live bytes (the limit
+    /// itself is `context_bytes_max`).
     feed_overflows: u32 = 0,
     live_peak_bytes: u64 = 0,
     /// I5: outside bytes inside a Session escape sequence or scalar.
@@ -68,16 +78,11 @@ const Stats = struct {
     /// I5 strict: cuts after an owner write that stopped inside its span. Blocking writes of
     /// whole spans never do; only partial and non-blocking writes may.
     cuts_mid_span: u32 = 0,
-    externals: u64 = 0,
-    /// Owner writes that ended inside a token, where an outside write could enter.
-    mid_token_ends: u64 = 0,
     /// I6: decoded screens that differ from the frame they end, or from the presented frame
     /// at quiescence.
     frame_mismatches: u32 = 0,
     quiescent_mismatches: u32 = 0,
     decoded_frames: u64 = 0,
-    /// Frames not compared because a cut escape garbled the decoder earlier (I5's effect).
-    garbled_frames: u64 = 0,
     /// I7: restore bytes not in the pty when suspend or exit returns, or terminal modes left on.
     restore_missing: u32 = 0,
     modes_left: u32 = 0,
@@ -92,8 +97,11 @@ const Stats = struct {
     /// I10: a failure without a hangup, a hangup that did not fail at once, or a replay.
     bad_failures: u32 = 0,
     hangups: u32 = 0,
+    /// Hangups while a frame was in flight.
+    hangups_in_frame: u32 = 0,
     discontinuities: u32 = 0,
-    /// I13: reply bytes seen as keys, replies lost, or capabilities that differ from the replies.
+    /// I13: replies lost or rejected, or capabilities and far-terminal modes that differ from
+    /// the replies.
     reply_errors: u32 = 0,
     /// I14: decoded input that differs from the unsplit stream.
     input_mismatches: u32 = 0,
@@ -106,48 +114,6 @@ const Stats = struct {
 
 /// Invariant counters that must stay zero, unless a known `main` defect is allowed.
 const invariant_fields = [_][]const u8{ "second_frames", "feed_overflows", "cut_tokens", "cuts_mid_span", "frame_mismatches", "quiescent_mismatches", "restore_missing", "modes_left", "stale_bytes", "slow_drains", "bad_failures", "discontinuities", "reply_errors", "input_mismatches" };
-
-const Counting = struct {
-    parent: std.mem.Allocator,
-    live: usize = 0,
-    peak: usize = 0,
-
-    fn allocator(self: *Counting) std.mem.Allocator {
-        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
-    }
-
-    fn note(self: *Counting, old: usize, new: usize) void {
-        self.live = self.live - old + new;
-        self.peak = @max(self.peak, self.live);
-    }
-
-    fn alloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {
-        const self: *Counting = @ptrCast(@alignCast(ptr));
-        const result = self.parent.rawAlloc(len, alignment, ret) orelse return null;
-        self.note(0, len);
-        return result;
-    }
-
-    fn resize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) bool {
-        const self: *Counting = @ptrCast(@alignCast(ptr));
-        if (!self.parent.rawResize(memory, alignment, len, ret)) return false;
-        self.note(memory.len, len);
-        return true;
-    }
-
-    fn remap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret: usize) ?[*]u8 {
-        const self: *Counting = @ptrCast(@alignCast(ptr));
-        const result = self.parent.rawRemap(memory, alignment, len, ret) orelse return null;
-        self.note(memory.len, len);
-        return result;
-    }
-
-    fn free(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret: usize) void {
-        const self: *Counting = @ptrCast(@alignCast(ptr));
-        self.parent.rawFree(memory, alignment, ret);
-        self.note(memory.len, 0);
-    }
-};
 
 /// Owner events run on the JS thread; world events are the link, outside writers and input.
 const Kind = enum {
@@ -181,6 +147,19 @@ fn earlier(_: void, a: Event, b: Event) std.math.Order {
 
 const Queue = std.PriorityQueue(Event, void, earlier);
 
+/// An event kind that has at most one live event: later posts supersede earlier ones.
+const Slot = struct {
+    generation: u64 = 0,
+    at: ?u64 = null,
+
+    /// Whether the event is the live one; it clears the slot.
+    fn take(slot: *Slot, event: Event) bool {
+        if (event.arg != slot.generation) return false;
+        slot.at = null;
+        return true;
+    }
+};
+
 /// A session offset where the far terminal checks something once its bytes have arrived.
 const Checkpoint = struct {
     offset: u64,
@@ -192,10 +171,10 @@ const Checkpoint = struct {
         query,
         /// Suspend or close restored the terminal: its modes must be off.
         restored,
+        /// Replies that came while active turned the detected modes on (I13).
+        replied,
     },
 };
-
-const Snapshot = struct { char: []u32, fg: []ansi.RGBA, bg: []ansi.RGBA, attributes: []u32, width: u32, height: u32 };
 
 /// One decoded input event, for I14.
 const Decoded = struct { kind: u8, code: u32, modifiers: u8, raw: u64 };
@@ -207,7 +186,7 @@ const VtStream = @typeInfo(@TypeOf(vt_decode.Terminal.vtStream)).@"fn".return_ty
 const Sim = struct {
     env: presets.Env,
     random: std.Random,
-    counting: *Counting,
+    debug: *ContextAllocator,
     f: fixture.Fixture,
     link: link_model.Link,
     far: vt_decode.Terminal,
@@ -221,24 +200,21 @@ const Sim = struct {
     print_trace: bool,
     phase: Phase = .running,
     script_left: u32,
-    // Scene.
+    // Scene: a ring of words, each a vocabulary index and a color.
     body: context.Handle = undefined,
     status: context.Handle = undefined,
-    words: std.ArrayList(u8) = .empty,
-    /// Each word's end in `words` and its color index; a line ends after `words_per_line` words.
-    word_ends: std.ArrayList(u32) = .empty,
-    word_colors: std.ArrayList(u8) = .empty,
-    text: std.ArrayList(u8) = .empty,
-    chunks: std.ArrayList(context.StyledTextChunk) = .empty,
+    words: [words_max][2]u8 = undefined,
+    /// Words streamed so far, the history included: word `i` is `words[i % words_max]`.
+    word_count: u32 = words_max,
     tokens: u32 = 0,
     spinner: u32 = 0,
+    /// Timers on a grid, as the harness app's: a stalled owner catches up on its next turn.
+    next_token_ns: u64 = 0,
+    next_produce_ns: u64 = 0,
     // Driver.
-    turn_generation: u64 = 0,
-    turn_at: ?u64 = null,
-    render_generation: u64 = 0,
-    render_at: ?u64 = null,
-    tick_generation: u64 = 0,
-    tick_at: ?u64 = null,
+    turn_slot: Slot = .{},
+    render_slot: Slot = .{},
+    tick_slot: Slot = .{},
     read_at: ?u64 = null,
     last_frame_ns: ?u64 = null,
     dirty: bool = false,
@@ -262,7 +238,7 @@ const Sim = struct {
     // Far terminal.
     checkpoints: std.ArrayList(Checkpoint) = .empty,
     checkpoint_head: usize = 0,
-    snapshots: std.ArrayList(?Snapshot) = .empty,
+    snapshots: std.ArrayList(?vt_decode.Cells) = .empty,
     segment_head: usize = 0,
     fed: u64 = 0,
     fed_session: u64 = 0,
@@ -281,14 +257,12 @@ const Sim = struct {
     externals: u32 = 0,
     /// The output wait of the oldest unread input byte at the last read (I1).
     read_wait_ns: u64 = 0,
-    /// The shared description is non-blocking for the rest of the run.
-    nonblocking_forever: bool = false,
     /// An error from world events run inside a blocking sink write, which drainOutput would
     /// otherwise take for a transport failure.
     inner_error: ?anyerror = null,
 
-    fn init(sim: *Sim, env: presets.Env, random: std.Random, counting: *Counting, script_events: u32, print_trace: bool) !void {
-        const f = try fixture.Fixture.init(counting.allocator(), env.cols, env.rows, .{
+    fn init(sim: *Sim, env: presets.Env, random: std.Random, debug: *ContextAllocator, script_events: u32, print_trace: bool) !void {
+        const f = try fixture.Fixture.init(debug.allocator(), env.cols, env.rows, .{
             .output = .{ .chunk_size = env.chunk_size, .chunk_count = 8 * 1024 * 1024 / env.chunk_size, .span_capacity = 128, .control_capacity = 4096 },
             .renderer = .{ .remote_mode = .remote, .forwarded_env = &.{} },
         });
@@ -296,7 +270,7 @@ const Sim = struct {
         sim.* = .{
             .env = env,
             .random = random,
-            .counting = counting,
+            .debug = debug,
             .f = f,
             .link = .{ .allocator = gpa, .env = &sim.env },
             .far = try vt_decode.newTerminal(env.cols, env.rows),
@@ -309,24 +283,25 @@ const Sim = struct {
         try f.owner.sessionInputExpect(f.id, .{ .replies = true, .cursor_position = true });
         try f.owner.setupSessionTerminal(f.id, .{});
         try sim.scheduleTurn(0);
-        try sim.post(.token, sim.jittered(20 * ms), 0);
+        sim.next_token_ns = sim.jittered(token_period_ns);
+        try sim.post(.token, sim.next_token_ns, 0);
         try sim.post(.spinner, sim.jittered(83 * ms), 0);
-        if (env.events.key_period_ns) |period| try sim.post(.key_send, sim.jittered(period), 0);
+        try sim.post(.key_send, sim.jittered(env.events.key_period_ns), 0);
         // A Writable sink owns its channel (an ssh channel, a socket): no outside writer shares it.
         if (env.external != null and env.output_mode == .sync_drain) try sim.post(.external, sim.jittered(env.external.?.period_ns), 0);
-        for (0..env.events.resizes) |_| try sim.post(.resize, 500 * ms + random.uintLessThan(u64, 3000 * ms), 0);
-        for (0..env.events.suspends) |_| try sim.post(.suspend_start, 800 * ms + random.uintLessThan(u64, 3000 * ms), 0);
-        if (env.events.producers) try sim.post(.produce, sim.jittered(if (env.events.flood) 50 * ms else 300 * ms), 0);
-        // A 1 MiB OSC 52 at the start of a flood.
-        if (env.events.flood) try sim.post(.produce, 1, 1);
+        // Inside the run's first two seconds: a run streams `script_events` tokens, 20 ms apart.
+        for (0..env.events.resizes) |_| try sim.post(.resize, 200 * ms + random.uintLessThan(u64, 1600 * ms), 0);
+        for (0..env.events.suspends) |_| try sim.post(.suspend_start, 400 * ms + random.uintLessThan(u64, 1600 * ms), 0);
+        sim.next_produce_ns = sim.jittered(sim.producePeriod());
+        if (env.events.producers) try sim.post(.produce, sim.next_produce_ns, 0);
     }
 
     fn deinit(self: *Sim) void {
         self.far_stream.deinit();
         self.far.deinit(testing.allocator);
         self.link.deinit();
-        for (self.snapshots.items) |maybe| if (maybe) |snapshot| freeSnapshot(snapshot);
-        inline for (.{ &self.words, &self.word_ends, &self.word_colors, &self.text, &self.chunks, &self.checkpoints, &self.snapshots, &self.input, &self.pieces, &self.decoded, &self.reply_seen }) |list| list.deinit(gpa);
+        for (self.snapshots.items) |maybe| if (maybe) |snapshot| freeCells(snapshot);
+        inline for (.{ &self.checkpoints, &self.snapshots, &self.input, &self.pieces, &self.decoded, &self.reply_seen }) |list| list.deinit(gpa);
         self.owner_queue.deinit(gpa);
         self.world_queue.deinit(gpa);
         gpa.free(self.host_buffer);
@@ -353,28 +328,26 @@ const Sim = struct {
         try (if (kind.owner()) &self.owner_queue else &self.world_queue).push(gpa, event);
     }
 
+    /// One pending event per slot, the earliest asked for; a superseded one does nothing.
+    fn schedule(self: *Sim, slot: *Slot, kind: Kind, at_ns: u64) !void {
+        if (slot.at) |at| if (at <= at_ns) return;
+        slot.generation += 1;
+        slot.at = at_ns;
+        try self.post(kind, at_ns, slot.generation);
+    }
+
     fn scheduleTurn(self: *Sim, at_ns: u64) !void {
-        if (self.turn_at) |at| if (at <= at_ns) return;
-        self.turn_generation += 1;
-        self.turn_at = at_ns;
-        try self.post(.turn, at_ns, self.turn_generation);
+        try self.schedule(&self.turn_slot, .turn, at_ns);
     }
 
     fn requestRender(self: *Sim) !void {
         self.dirty = true;
-        if (self.render_at != null) return;
-        const at = if (self.last_frame_ns) |last| @max(self.now, last + frame_interval_ns) else self.now;
-        self.render_generation += 1;
-        self.render_at = at;
-        try self.post(.render, at, self.render_generation);
+        if (self.render_slot.at != null) return;
+        try self.schedule(&self.render_slot, .render, if (self.last_frame_ns) |last| @max(self.now, last + frame_interval_ns) else self.now);
     }
 
     fn wakeLink(self: *Sim) !void {
-        const at = self.link.nextWake(self.now) orelse return;
-        if (self.tick_at) |scheduled| if (scheduled <= at) return;
-        self.tick_generation += 1;
-        self.tick_at = at;
-        try self.post(.tick, at, self.tick_generation);
+        try self.schedule(&self.tick_slot, .tick, self.link.nextWake(self.now) orelse return);
     }
 
     // Scene: a header, a sticky-bottom scroll node with streamed words, and a status line.
@@ -396,41 +369,29 @@ const Sim = struct {
         try owner.sceneSetStyle(scroll, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 1, 0);
         self.body = try self.node(scroll, c.OT_SCENE_TEXT, 4, 0);
         self.status = try self.node(self.f.root, c.OT_SCENE_TEXT, 5, 2);
-        for (0..history_lines * words_per_line) |_| try self.appendWord();
+        for (&self.words) |*word| word.* = .{ self.random.uintLessThan(u8, vocabulary.len), self.random.int(u8) };
         try self.setBody();
         try self.setStatus();
     }
 
-    fn appendWord(self: *Sim) !void {
-        const vocabulary = [_][]const u8{ "the", "stream", "renders", "tokens", "across", "a", "slow", "link", "while", "keys", "wait", "frames" };
-        try self.words.appendSlice(gpa, vocabulary[self.random.uintLessThan(usize, vocabulary.len)]);
-        try self.word_ends.append(gpa, @intCast(self.words.items.len));
-        try self.word_colors.append(gpa, self.random.int(u8));
-        // Keep whole lines: drop the oldest line when the history is full.
-        if (self.word_ends.items.len > lines_max * words_per_line) {
-            const cut = self.word_ends.items[words_per_line - 1];
-            self.words.replaceRangeAssumeCapacity(0, cut, &.{});
-            self.word_ends.replaceRangeAssumeCapacity(0, words_per_line, &.{});
-            self.word_colors.replaceRangeAssumeCapacity(0, words_per_line, &.{});
-            for (self.word_ends.items) |*end| end.* -= cut;
-        }
-    }
+    const vocabulary = [_][]const u8{ "the", "stream", "renders", "tokens", "across", "a", "slow", "link", "while", "keys", "wait", "frames" };
 
+    /// The last lines, whole: a word changes only the last line, and a new line scrolls.
     fn setBody(self: *Sim) !void {
-        self.text.clearRetainingCapacity();
-        self.chunks.clearRetainingCapacity();
-        var start: u32 = 0;
-        for (self.word_ends.items, self.word_colors.items, 0..) |end, color, index| {
-            const before = self.text.items.len;
-            try self.text.appendSlice(gpa, self.words.items[start..end]);
-            try self.text.append(gpa, if (index % words_per_line == words_per_line - 1) '\n' else ' ');
-            start = end;
-            try self.chunks.append(gpa, .{
-                .byte_count = @intCast(self.text.items.len - before),
-                .foreground = ansi.rgbColor(120 + color % 128, 200 - color % 100, 80 + color / 2, 255),
-            });
+        var text: [words_max * 8]u8 = undefined;
+        var chunks: [words_max]context.StyledTextChunk = undefined;
+        const count = words_max - words_per_line + self.word_count % words_per_line;
+        var len: usize = 0;
+        for (chunks[0..count], self.word_count - count..) |*chunk, index| {
+            const word = self.words[index % words_max];
+            const bytes = vocabulary[word[0]];
+            @memcpy(text[len..][0..bytes.len], bytes);
+            text[len + bytes.len] = if (index % words_per_line == words_per_line - 1) '\n' else ' ';
+            len += bytes.len + 1;
+            const color = word[1];
+            chunk.* = .{ .byte_count = @intCast(bytes.len + 1), .foreground = ansi.rgbColor(120 + color % 128, 200 - color % 100, 80 + color / 2, 255) };
         }
-        try self.f.owner.sceneSetStyledText(self.body, self.text.items, self.chunks.items);
+        try self.f.owner.sceneSetStyledText(self.body, text[0..len], chunks[0..count]);
     }
 
     fn setStatus(self: *Sim) !void {
@@ -445,11 +406,13 @@ const Sim = struct {
         try self.requestRender();
     }
 
-    fn scriptStep(self: *Sim) bool {
-        if (self.phase != .running) return false;
-        if (self.script_left == 0) return false;
-        self.script_left -= 1;
-        return true;
+    /// Script events run until the run's tokens are spent.
+    fn running(self: *const Sim) bool {
+        return self.phase == .running and self.script_left != 0;
+    }
+
+    fn producePeriod(self: *const Sim) u64 {
+        return if (self.env.events.flood) 50 * ms else 300 * ms;
     }
 
     // The main loop.
@@ -465,7 +428,7 @@ const Sim = struct {
                 // I9: nothing can make progress, yet the run is not over.
                 if (self.ended) return self.finish();
                 const value = self.sessionValue();
-                std.debug.print("OUTPUT SIM deadlock at {d} ns: phase {t}, transition {t}, dirty {}, render {?d}, drained {}, link {}, fed {d}/{d}, input {d}/{d}, lifecycle {t}\n", .{ self.now, self.phase, self.transition, self.dirty, self.render_at, value.isDrained(), self.link.drained(), self.fed, self.link.wire.items.len, self.read_input, self.input.items.len, value.lifecycle.phase });
+                std.debug.print("OUTPUT SIM deadlock at {d} ns: phase {t}, transition {t}, dirty {}, render {?d}, drained {}, link {}, fed {d}/{d}, input {d}/{d}, lifecycle {t}\n", .{ self.now, self.phase, self.transition, self.dirty, self.render_slot.at, value.isDrained(), self.link.drained(), self.fed, self.link.wire.items.len, self.read_input, self.input.items.len, value.lifecycle.phase });
                 return error.Deadlock;
             }
             const event = (if (use_owner) self.owner_queue.pop() else self.world_queue.pop()).?;
@@ -476,7 +439,6 @@ const Sim = struct {
             }
             self.now = @max(self.now, event.at_ns);
             self.traceEvent(event);
-            if (self.print_trace) std.debug.print("{d:>12} {t} {d}\n", .{ self.now, event.kind, event.arg });
             if (use_owner) {
                 if (self.ended) continue;
                 try self.runOwner(event);
@@ -491,6 +453,7 @@ const Sim = struct {
 
     /// Folds an event into the run's trace: its time, kind and argument, in order.
     fn traceEvent(self: *Sim, event: Event) void {
+        if (self.print_trace) std.debug.print("{d:>12} {t} {d}\n", .{ self.now, event.kind, event.arg });
         for ([_]u64{ self.now, @intFromEnum(event.kind), event.arg }) |word| {
             self.stats.trace = (self.stats.trace ^ word) *% 0x100000001b3;
         }
@@ -499,8 +462,7 @@ const Sim = struct {
     fn runWorld(self: *Sim, event: Event) anyerror!void {
         switch (event.kind) {
             .tick => {
-                if (event.arg != self.tick_generation) return;
-                self.tick_at = null;
+                if (!self.tick_slot.take(event)) return;
                 try self.link.advance(self.now);
                 self.collectFinished();
                 try self.hostWrite();
@@ -518,16 +480,15 @@ const Sim = struct {
                     bytes[external.size - 1] = 0x07;
                     try self.link.enqueue(.{ .kind = .external, .bytes = bytes, .limit = bytes.len, .external = self.externals });
                     self.externals += 1;
-                    self.stats.externals += 1;
                     self.collectFinished();
                 }
                 try self.post(.external, self.jittered(external.period_ns), 0);
             },
             .key_send => {
-                if (!self.scriptStep()) return;
+                if (!self.running()) return;
                 self.stats.keys_sent += 1;
                 try self.sendInput(if (self.random.uintLessThan(u32, 3) == 0) "\x1b[A" else "x", self.now);
-                try self.post(.key_send, self.jittered(self.env.events.key_period_ns.?), 0);
+                try self.post(.key_send, self.jittered(self.env.events.key_period_ns), 0);
             },
             .input_arrive => {
                 self.arrived_input = self.pieces.items[event.arg].end;
@@ -556,25 +517,29 @@ const Sim = struct {
     fn runOwner(self: *Sim, event: Event) !void {
         switch (event.kind) {
             .turn => {
-                if (event.arg != self.turn_generation) return;
-                self.turn_at = null;
+                if (!self.turn_slot.take(event)) return;
                 try self.turn();
             },
             .render => {
-                if (event.arg != self.render_generation) return;
-                self.render_at = null;
+                if (!self.render_slot.take(event)) return;
                 try self.render();
             },
             .token => {
-                if (!self.scriptStep()) return;
-                self.tokens += 1;
-                try self.appendWord();
+                if (!self.running()) return;
+                // Every token due since the last turn, as the harness app appends them.
+                while (self.next_token_ns <= self.now and self.script_left != 0) {
+                    self.words[self.word_count % words_max] = .{ self.random.uintLessThan(u8, vocabulary.len), self.random.int(u8) };
+                    self.word_count += 1;
+                    self.tokens += 1;
+                    self.script_left -= 1;
+                    self.next_token_ns += token_period_ns / 2 + self.random.uintLessThan(u64, token_period_ns);
+                }
                 try self.setBody();
                 try self.mutated();
-                try self.post(.token, self.jittered(20 * ms), 0);
+                try self.post(.token, self.next_token_ns, 0);
             },
             .spinner => {
-                if (!self.scriptStep()) return;
+                if (!self.running()) return;
                 self.spinner += 1;
                 try self.setStatus();
                 try self.mutated();
@@ -594,8 +559,7 @@ const Sim = struct {
                 try self.applyResize();
             },
             .suspend_start => {
-                if (!self.scriptStep()) return;
-                if (self.transition != .none or self.failed) return;
+                if (!self.running() or self.transition != .none or self.failed) return;
                 try self.f.owner.suspendSession(self.f.id);
                 self.transition = .suspending;
                 try self.scheduleTurn(self.now);
@@ -605,7 +569,11 @@ const Sim = struct {
                 self.transition = .resuming;
                 try self.scheduleTurn(self.now);
             },
-            .produce => try self.produce(event.arg),
+            .produce => {
+                if (!self.running()) return;
+                while (self.next_produce_ns <= self.now) : (self.next_produce_ns += self.jittered(self.producePeriod()) - self.now) try self.produce();
+                try self.post(.produce, self.next_produce_ns, 0);
+            },
             .host_done => try self.scheduleTurn(self.now),
             else => unreachable,
         }
@@ -618,6 +586,7 @@ const Sim = struct {
         const stats = value.getStats();
         // I4: queued feed bytes stay within the configured limit.
         if (stats.bytes_written - value.completed_bytes > value.output.options.max_bytes) self.stats.feed_overflows += 1;
+        self.stats.live_peak_bytes = @max(self.stats.live_peak_bytes, self.debug.total_requested_bytes);
         if (self.failed) return self.endAfterOwner();
         if (self.phase == .running and self.script_left == 0 and self.transition == .none and value.lifecycle.phase == .active) {
             self.phase = .settling;
@@ -644,7 +613,7 @@ const Sim = struct {
 
     fn quiescent(self: *Sim) bool {
         const value = self.sessionValue();
-        return !self.dirty and self.render_at == null and value.isDrained() and self.host == null and
+        return !self.dirty and self.render_slot.at == null and value.isDrained() and self.host == null and
             self.link.drained() and self.fed == self.link.wire.items.len and self.read_input == self.input.items.len and
             self.transition == .none and value.lifecycle.phase == .active;
     }
@@ -657,8 +626,8 @@ const Sim = struct {
             if (host.done < host.ticket.len) return;
             self.host = null;
             owner.completeOutput(self.f.id, host.ticket, if (host.failed) .failed else .written) catch |err| return self.onError(err);
-            try self.afterOutput();
             if (host.failed) return self.onError(error.SessionFailed);
+            try self.afterOutput();
         };
         const expired = if (self.close_deadline) |deadline| self.now >= deadline else false;
         const result = owner.pumpSession(self.f.id, self.now, 1) catch |err| return self.onError(err);
@@ -762,6 +731,8 @@ const Sim = struct {
         if (self.sessionValue().frame_end_offset != null) return;
         self.frame = null;
         if (self.failed) return;
+        // R5: a frame presents only once all its bytes are in the pty.
+        if (self.link.session_end < frame.end) self.stats.second_frames += 1;
         self.stats.presented += 1;
         const bytes = frame.end - frame.start;
         self.stats.frame_bytes += bytes;
@@ -799,7 +770,7 @@ const Sim = struct {
         self.stats.commits += 1;
         if (self.frame != null or self.stats.commits - self.stats.presented > 1) self.stats.second_frames += 1;
         if (end > start) {
-            try self.snapshots.append(gpa, try copySnapshot(self.f.cli.currentRenderBuffer));
+            try self.snapshots.append(gpa, try copyCells(.of(self.f.cli.currentRenderBuffer)));
             try self.checkpoint(.{ .frame = .{ .index = @intCast(self.snapshots.items.len - 1), .full = full } });
         }
         self.frame = .{ .start = start, .end = end };
@@ -818,30 +789,35 @@ const Sim = struct {
         try self.requestRender();
     }
 
-    fn produce(self: *Sim, arg: u64) !void {
-        if (arg == 0 and !self.scriptStep()) return;
+    /// One producer call; a flood sends a title and a 1 MiB OSC 52 each time. What each gets at
+    /// the limit is recorded: accepted, refused (`false`), or an error other than OOM.
+    fn produce(self: *Sim) !void {
         const owner = self.f.owner;
         const id = self.f.id;
-        const kind = if (arg == 1) 5 else if (self.env.events.flood) 0 else self.random.uintLessThan(u32, 5);
         var title: [32]u8 = undefined;
-        const outcome: anyerror!bool = switch (kind) {
-            0 => if (owner.controlSession(id, .{ .title = std.fmt.bufPrint(&title, "sim {d}", .{self.stats.produced}) catch unreachable })) true else |err| err,
-            1 => if (owner.controlSession(id, .{ .mouse = if (self.random.boolean()) .motion else .disabled })) true else |err| err,
-            2 => owner.writeSessionClipboard(id, .clipboard, "clipboard payload"),
-            3 => self.sessionValue().triggerNotification("done", "sim"),
-            4 => if (owner.writeSession(id, "\x1b]0;raw\x07")) true else |err| err,
-            else => blk: {
-                const payload = try gpa.alloc(u8, 1024 * 1024);
-                defer gpa.free(payload);
-                @memset(payload, 'a');
-                break :blk owner.writeSessionClipboard(id, .clipboard, payload);
-            },
-        };
-        if (outcome) |accepted| {
-            if (accepted) self.stats.produced += 1 else self.stats.produce_refused += 1;
-        } else |_| self.stats.produce_errors += 1;
+        const kinds: []const u32 = if (self.env.events.flood) &.{ 0, 5 } else &.{self.random.uintLessThan(u32, 5)};
+        for (kinds) |kind| {
+            const outcome: anyerror!bool = switch (kind) {
+                0 => if (owner.controlSession(id, .{ .title = std.fmt.bufPrint(&title, "sim {d}", .{self.stats.produced}) catch unreachable })) true else |err| err,
+                1 => if (owner.controlSession(id, .{ .mouse = if (self.random.boolean()) .motion else .disabled })) true else |err| err,
+                2 => owner.writeSessionClipboard(id, .clipboard, "clipboard payload"),
+                3 => self.sessionValue().triggerNotification("done", "sim"),
+                4 => if (owner.writeSession(id, "\x1b]0;raw\x07")) true else |err| err,
+                else => blk: {
+                    const payload = try gpa.alloc(u8, 1024 * 1024);
+                    defer gpa.free(payload);
+                    @memset(payload, 'a');
+                    break :blk owner.writeSessionClipboard(id, .clipboard, payload);
+                },
+            };
+            if (outcome) |accepted| {
+                if (accepted) self.stats.produced += 1 else self.stats.produce_refused += 1;
+            } else |err| {
+                if (err == error.OutOfMemory) return err;
+                self.stats.produce_errors += 1;
+            }
+        }
         try self.scheduleTurn(self.now);
-        if (arg == 0) try self.post(.produce, self.jittered(if (self.env.events.flood) 50 * ms else 300 * ms), 0);
     }
 
     // Input: pieces arrive, the owner reads what has arrived when it runs.
@@ -866,10 +842,12 @@ const Sim = struct {
         const start = self.read_input;
         if (start == self.arrived_input) return;
         if (self.print_trace) std.debug.print("  read {any}\n", .{self.input.items[start..self.arrived_input]});
-        // The oldest unread byte's arrival: what the stall cost the next key.
-        // Only the time the owner spent inside output writes since then counts (I1), not a stop.
+        // From the oldest unread byte's arrival, only the owner's time inside output writes
+        // counts (I1), not a stop.
         self.read_wait_ns = for (self.pieces.items) |piece| {
-            if (piece.end > start) break self.stats.blocked_ns - piece.blocked_ns;
+            if (piece.end <= start) continue;
+            std.debug.assert(self.stats.blocked_ns - piece.blocked_ns <= self.now - piece.at_ns);
+            break self.stats.blocked_ns - piece.blocked_ns;
         } else 0;
         self.read_input = self.arrived_input;
         try self.feed(self.input.items[start..self.read_input]);
@@ -879,7 +857,14 @@ const Sim = struct {
         var rest = bytes;
         while (true) {
             var sink: input_parser.Sink = .{ .events = &self.events, .payload = &self.payload };
-            const result = self.f.owner.sessionInputFeed(self.f.id, rest, self.now, &sink) catch |err| return self.onError(err);
+            const result = self.f.owner.sessionInputFeed(self.f.id, rest, self.now, &sink) catch |err| {
+                // A closing Session takes no input: I14 compares only what was fed.
+                if (err == error.SessionClosed and self.transition == .closing) {
+                    self.read_input -= @intCast(rest.len);
+                    return;
+                }
+                return self.onError(err);
+            };
             for (self.events[0..sink.count]) |event| try self.onInput(event, sink.raw(event));
             if (result.consumed == 0 and rest.len != 0) return error.InputSinkFull;
             rest = rest[result.consumed..];
@@ -889,7 +874,7 @@ const Sim = struct {
     }
 
     fn onInput(self: *Sim, event: input_parser.Event, raw: []const u8) !void {
-        if (self.print_trace) std.debug.print("  input kind {d} code {d} flags {d} raw {any}\n", .{ event.kind, event.code, event.flags, raw });
+        if (self.print_trace) std.debug.print("  input kind {d} code {d} raw {any}\n", .{ event.kind, event.code, raw });
         try self.decoded.append(gpa, .{ .kind = event.kind, .code = event.code, .modifiers = event.modifiers, .raw = std.hash.Wyhash.hash(0, raw) });
         switch (@as(input_parser.Kind, @enumFromInt(event.kind))) {
             .key => {
@@ -901,13 +886,19 @@ const Sim = struct {
             },
             .reply => {
                 try self.reply_seen.appendSlice(gpa, raw);
+                // As the TS driver: a fragment is not a reply to apply.
+                if (event.flags & input_parser.flags.reply_fragment != 0) {
+                    self.stats.reply_errors += 1;
+                    return;
+                }
                 self.f.owner.controlSession(self.f.id, .{ .capability_response = raw }) catch |err| switch (err) {
                     error.SessionClosed, error.SessionFailed => {},
                     else => {
-                        if (self.print_trace) std.debug.print("  reply rejected: {t}\n", .{err});
                         self.stats.reply_errors += 1;
                     },
                 };
+                // The last reply (DA1) while active: the modes it enables follow it at once.
+                if (raw[raw.len - 1] == 'c' and self.sessionValue().lifecycle.phase == .active) try self.checkpoint(.replied);
                 try self.scheduleTurn(self.now);
             },
             else => self.stats.reply_errors += 1,
@@ -933,12 +924,15 @@ const Sim = struct {
             const segment = self.link.segments.items[self.segment_head];
             const segment_end = segment.wire + segment.len;
             var end = @min(segment_end, self.link.arrived);
-            const session_bytes = segment.source == .session;
-            if (session_bytes and self.checkpoint_head < self.checkpoints.items.len) {
-                end = @min(end, self.fed + (self.checkpoints.items[self.checkpoint_head].offset - self.fed_session));
+            // Outside writes are OSC markers that I5 counts; the decoder sees only the Session's
+            // stream, so a cut does not hide later screens.
+            if (segment.source == .session) {
+                if (self.checkpoint_head < self.checkpoints.items.len) {
+                    end = @min(end, self.fed + (self.checkpoints.items[self.checkpoint_head].offset - self.fed_session));
+                }
+                self.far_stream.nextSlice(self.link.wire.items[self.fed..end]);
+                self.fed_session += end - self.fed;
             }
-            self.far_stream.nextSlice(self.link.wire.items[self.fed..end]);
-            if (session_bytes) self.fed_session += end - self.fed;
             self.fed = end;
         }
     }
@@ -948,30 +942,14 @@ const Sim = struct {
             .frame => |frame| {
                 const snapshot = self.snapshots.items[frame.index].?;
                 defer {
-                    freeSnapshot(snapshot);
+                    freeCells(snapshot);
                     self.snapshots.items[frame.index] = null;
                 }
                 if (frame.full) self.synced = true;
                 if (!self.synced or snapshot.width != self.far.cols or snapshot.height != self.far.rows) return;
-                // A cut escape can leave the decoder in any state (an open string, a mode, a
-                // link): that is I5's failure, so later screens are not compared.
-                if (self.link.cutsBefore(self.fed_session) != 0) {
-                    self.stats.garbled_frames += 1;
-                    return;
-                }
                 self.stats.decoded_frames += 1;
-                if (vt_decode.mismatch(&self.far, cellsOf(snapshot))) |found| {
-                    if (self.stats.frame_mismatches == 0 and self.print_trace) {
-                        std.debug.print("frame {d} differs at {d},{d} {s}\n", .{ frame.index, found.x, found.y, found.field });
-                        const plain = try self.far.plainString(testing.allocator);
-                        defer testing.allocator.free(plain);
-                        std.debug.print("VT:\n{s}\nrow:", .{plain});
-                        for (0..snapshot.width) |x| {
-                            const char = snapshot.char[found.y * snapshot.width + x];
-                            std.debug.print("{u}", .{if (char < 0x110000 and char != 0) @as(u21, @intCast(char)) else '?'});
-                        }
-                        std.debug.print("\n", .{});
-                    }
+                if (vt_decode.mismatch(&self.far, snapshot)) |found| {
+                    if (self.print_trace) std.debug.print("  frame {d} differs at {d},{d}: {s}\n", .{ frame.index, found.x, found.y, found.field });
                     self.stats.frame_mismatches += 1;
                 }
             },
@@ -988,6 +966,9 @@ const Sim = struct {
                 self.synced = false;
                 if (!self.restoredModes()) self.stats.modes_left += 1;
             },
+            .replied => if (!self.detectedModes()) {
+                self.stats.reply_errors += 1;
+            },
         }
     }
 
@@ -1000,7 +981,6 @@ const Sim = struct {
 
     // Invariants at events.
 
-    /// I7: every byte the Session published is in the pty.
     /// Counts a write or ticket that starts inside the frame in flight (I3).
     fn noteWrite(self: *Sim) void {
         const frame = &(self.frame orelse return);
@@ -1009,7 +989,6 @@ const Sim = struct {
     }
 
     fn nonblocking(self: *Sim) bool {
-        if (self.nonblocking_forever) return true;
         for (self.env.faults) |fault| if (fault.kind == .eagain) switch (fault.at) {
             .ns => |at| if (self.now >= at and self.now < at + fault.duration_ns) return true,
             else => {},
@@ -1017,27 +996,39 @@ const Sim = struct {
         return false;
     }
 
+    /// I7: every byte the Session published is in the pty.
     fn expectAllWritten(self: *Sim) !void {
         if (self.link.session_end != self.published()) self.stats.restore_missing += 1;
     }
 
-    /// I6 and I13 at quiescence.
+    /// I6 and I13 at quiescence: the screen, the replies, and the modes they turned on at the
+    /// far terminal.
     fn checkQuiescent(self: *Sim) !void {
-        const garbled = self.link.cutsBefore(self.fed_session) != 0;
-        if (self.synced and !garbled and vt_decode.mismatch(&self.far, .of(self.f.cli.currentRenderBuffer)) != null) self.stats.quiescent_mismatches += 1;
+        if (self.synced and vt_decode.mismatch(&self.far, .of(self.f.cli.currentRenderBuffer)) != null) self.stats.quiescent_mismatches += 1;
         if (!self.replies_sent) return;
         const caps = self.f.cli.terminal.caps;
-        if (self.print_trace) std.debug.print("  quiescent: replies {any}, caps focus {} paste {} kitty {}\n", .{ self.reply_seen.items, caps.focus_tracking, caps.bracketed_paste, caps.kitty_keyboard });
         if (!std.mem.eql(u8, self.reply_seen.items, replies)) self.stats.reply_errors += 1;
         if (!caps.focus_tracking or !caps.bracketed_paste or !caps.kitty_keyboard) self.stats.reply_errors += 1;
+        if (!self.detectedModes()) self.stats.reply_errors += 1;
+    }
+
+    /// The modes the replies report, on at the far terminal.
+    fn detectedModes(self: *Sim) bool {
+        const modes = &self.far.modes;
+        return modes.get(.focus_event) and modes.get(.bracketed_paste) and self.far.screens.active.kitty_keyboard.current().int() != 0;
     }
 
     fn onError(self: *Sim, err: anyerror) !void {
         switch (err) {
             error.SessionFailed => {
-                // I10: only a hangup fails the transport.
-                if (self.link.hangup == null) self.stats.bad_failures += 1;
-                if (!self.failed) self.stats.hangups += 1;
+                // I10: only a hangup fails the transport, at once: the Session is failed, its
+                // frame finished, and it takes no more output.
+                const value = self.sessionValue();
+                if (self.link.hangup == null or value.state != .failed or value.frame_end_offset != null) self.stats.bad_failures += 1;
+                if (!self.failed) {
+                    self.stats.hangups += 1;
+                    self.stats.hangups_in_frame += @intFromBool(self.frame != null);
+                }
                 self.failed = true;
             },
             else => return err,
@@ -1066,7 +1057,6 @@ const Sim = struct {
             },
             .exit => {
                 self.stats.exits += 1;
-                if (self.env.nonblocking_at_end) self.nonblocking_forever = true;
                 if (try self.restoreOnExit()) {
                     try self.expectAllWritten();
                     try self.checkpoint(.restored);
@@ -1113,8 +1103,8 @@ const Sim = struct {
         // A process exit ends a Writable's write with it. After a cancel, the write that was
         // running may still finish (I8), and nothing after it.
         if (self.env.events.end == .exit) self.host = null;
-        const running: u64 = if (self.host) |host| host.ticket.len - host.done else 0;
-        self.closed_at = self.link.session_end + running;
+        const rest: u64 = if (self.host) |host| host.ticket.len - host.done else 0;
+        self.closed_at = self.link.session_end + rest;
         self.stats.virtual_ns = self.now;
         // The owner is done; the link drains on its own.
         try self.wakeLink();
@@ -1124,13 +1114,12 @@ const Sim = struct {
         try self.link.advance(self.now);
         try self.feedTerminal();
         // I8: nothing from the Session entered the pty after close or cancel.
-        if (self.closed_at) |at| if (self.link.session_end != at) {
+        if (self.closed_at) |at| if (self.link.session_end > at) {
             self.stats.stale_bytes += 1;
         };
-        self.stats.cut_tokens = @intCast(self.link.cuts.items.len);
+        self.stats.cut_tokens = self.link.cut_tokens;
         self.stats.cuts_mid_span = self.link.cuts_mid_span;
         self.stats.discontinuities = self.link.discontinuities;
-        self.stats.live_peak_bytes = self.counting.peak;
         try self.checkInput();
         self.stats.trace = std.hash.Wyhash.hash(self.stats.trace, self.link.wire.items);
         self.stats.runs = 1;
@@ -1160,7 +1149,7 @@ const Sim = struct {
             return;
         }
         for (reference.items, self.decoded.items) |expected, actual| {
-            if (expected.kind != actual.kind or expected.code != actual.code or expected.raw != actual.raw) {
+            if (!std.meta.eql(expected, actual)) {
                 self.stats.input_mismatches += 1;
                 return;
             }
@@ -1196,13 +1185,6 @@ const SimSink = struct {
         }
         const limit = fault.limit;
         const hangup_after = fault.after;
-        var interrupt = false;
-        for (sim.env.faults) |each| switch (each.at) {
-            .write_index => |index| if (each.kind == .eintr and index == sim.stats.owner_writes) {
-                interrupt = true;
-            },
-            else => {},
-        };
         // What is left of the Session's span: a write that stops short of it ends mid-span.
         const value = sim.sessionValue();
         const span_left = value.span.?.len - value.span_offset;
@@ -1211,27 +1193,26 @@ const SimSink = struct {
             try sim.wakeLink();
             if (count == limit) link.hangup = hangup_after;
             if (count == 0) return error.WouldBlock;
-            link.mid_span = count < span_left;
+            // A write cut short by a hangup ends the output; it leaves no span to enter.
+            link.mid_span = count < span_left and link.hangup == null;
             sim.noteWrite();
-            if (link.tokenizer.state != .ground) sim.stats.mid_token_ends += 1;
             return count;
         }
-        const start = sim.now;
-        try link.enqueue(.{ .kind = .owner, .bytes = bytes, .limit = limit, .interrupt = interrupt });
+        try link.enqueue(.{ .kind = .owner, .bytes = bytes, .limit = limit });
         try sim.wakeLink();
         // The JS thread is inside write(2): only the world moves until the pty takes the bytes.
+        // The stall accrues as time passes, so input that arrives meanwhile sees only its share.
         const done = while (true) {
             if (takeOwner(link)) |writer| break writer.done;
             const event = sim.world_queue.pop() orelse return error.Deadlock;
+            sim.stats.blocked_ns += event.at_ns -| sim.now;
             sim.now = @max(sim.now, event.at_ns);
             sim.traceEvent(event);
             try sim.runWorld(event);
         };
-        sim.stats.blocked_ns += sim.now - start;
-        link.mid_span = done < span_left;
-        sim.noteWrite();
         if (done == limit) link.hangup = hangup_after;
-        if (link.tokenizer.state != .ground) sim.stats.mid_token_ends += 1;
+        link.mid_span = done < span_left and link.hangup == null;
+        sim.noteWrite();
         return done;
     }
 
@@ -1241,54 +1222,59 @@ const SimSink = struct {
     }
 };
 
-fn copySnapshot(target: *const @import("../buffer.zig").OptimizedBuffer) !Snapshot {
-    const cells = vt_decode.Cells.of(target);
-    return .{
-        .char = try gpa.dupe(u32, cells.char),
-        .fg = try gpa.dupe(ansi.RGBA, cells.fg),
-        .bg = try gpa.dupe(ansi.RGBA, cells.bg),
-        .attributes = try gpa.dupe(u32, cells.attributes),
-        .width = cells.width,
-        .height = cells.height,
-    };
+fn copyCells(cells: vt_decode.Cells) !vt_decode.Cells {
+    var copy = cells;
+    copy.char = try gpa.dupe(u32, cells.char);
+    copy.fg = try gpa.dupe(ansi.RGBA, cells.fg);
+    copy.bg = try gpa.dupe(ansi.RGBA, cells.bg);
+    copy.attributes = try gpa.dupe(u32, cells.attributes);
+    return copy;
 }
 
-fn freeSnapshot(snapshot: Snapshot) void {
-    gpa.free(snapshot.char);
-    gpa.free(snapshot.fg);
-    gpa.free(snapshot.bg);
-    gpa.free(snapshot.attributes);
-}
-
-fn cellsOf(snapshot: Snapshot) vt_decode.Cells {
-    return .{ .width = snapshot.width, .height = snapshot.height, .char = snapshot.char, .fg = snapshot.fg, .bg = snapshot.bg, .attributes = snapshot.attributes };
+fn freeCells(cells: vt_decode.Cells) void {
+    gpa.free(cells.char);
+    gpa.free(cells.fg);
+    gpa.free(cells.bg);
+    gpa.free(cells.attributes);
 }
 
 /// CI's screen: presets are written at the harness's 100x32 and scaled down (`presets.scaled`).
 const ci_size = [2]u16{ 60, 16 };
 
-fn runScaled(name: []const u8, base: presets.Env, mode: presets.OutputMode, seed: u64, script_events: u32) !Stats {
-    var faults: [8]presets.Fault = undefined;
-    return runOne(name, presets.scaled(base, ci_size[0], ci_size[1], &faults), mode, seed, script_events, false);
-}
+const Run = struct {
+    name: []const u8,
+    mode: presets.OutputMode,
+    seed: u64,
+    /// Tokens streamed, 20 ms apart: the run's length.
+    events: u32 = 200,
+    size: [2]u16 = ci_size,
+    print_trace: bool = false,
+};
 
-fn runOne(name: []const u8, base: presets.Env, mode: presets.OutputMode, seed: u64, script_events: u32, print_trace: bool) !Stats {
-    var prng = std.Random.DefaultPrng.init(seed);
+/// One seeded run. Every invariant is checked per run, so a failure names its seed and trace,
+/// and a replay of that seed fails the same way.
+fn runOne(run: Run) !Stats {
+    var scaled_faults: [8]presets.Fault = undefined;
+    const base = presets.scaled(presets.find(run.name) orelse return error.UnknownPreset, run.size[0], run.size[1], &scaled_faults);
+    var prng = std.Random.DefaultPrng.init(run.seed);
     const random = prng.random();
     var faults: [8]presets.Fault = undefined;
     var env = presets.jitter(base, random, &faults);
-    env.output_mode = mode;
-    // Leak checks without per-allocation stack traces, which would dominate the run's time.
-    var debug: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
+    env.output_mode = run.mode;
+    var debug: ContextAllocator = .init;
+    debug.requested_memory_limit = context_bytes_max;
     defer if (debug.deinit() == .leak) @panic("OUTPUT SIM leaked Context memory");
-    var counting: Counting = .{ .parent = debug.allocator() };
     var sim: Sim = undefined;
-    try sim.init(env, random, &counting, script_events, print_trace);
+    try sim.init(env, random, &debug, run.events, run.print_trace);
     defer sim.deinit();
-    sim.run() catch |err| {
-        std.debug.print("OUTPUT SIM {s} {t} seed {d}: {t} at {d} ns, trace {x}\n", .{ name, mode, seed, err, sim.now, sim.stats.trace });
-        return err;
-    };
+    errdefer std.debug.print("OUTPUT SIM {s} {t} seed {d} failed at {d} ns, trace {x}\n", .{ run.name, run.mode, run.seed, sim.now, sim.stats.trace });
+    try sim.run();
+    inline for (invariant_fields) |field| {
+        if (@field(sim.stats, field) != 0 and !allowed(run.name, run.mode, field)) {
+            std.debug.print("OUTPUT SIM {s}: {d}\n", .{ field, @field(sim.stats, field) });
+            return error.InvariantFailed;
+        }
+    }
     return sim.stats;
 }
 
@@ -1304,7 +1290,7 @@ fn add(total: *Stats, stats: Stats) void {
 
 fn printStats(name: []const u8, mode: presets.OutputMode, stats: Stats) void {
     const seconds = @as(f64, @floatFromInt(stats.virtual_ns)) / std.time.ns_per_s;
-    std.debug.print("{s:<16} {t:<10} runs {d:>3} fps {d:>5.1} B/frame {d:>6} max {d:>6} mut/frame {d:>4.2} multi {d:>4} blocked {d:>5.1}% keys {d}/{d} delayed {d} wait max {d} ms peak {d} KiB mid-token ends {d}\n", .{
+    std.debug.print("{s:<16} {t:<10} runs {d:>3} fps {d:>5.1} B/frame {d:>6} max {d:>6} mut/frame {d:>4.2} multi {d:>4} blocked {d:>5.1}% keys {d}/{d} delayed {d} wait max {d} ms peak {d} KiB produced {d}/{d}/{d}\n", .{
         name,                                                                                         mode,
         stats.runs,                                                                                   @as(f64, @floatFromInt(stats.presented)) / seconds,
         stats.frame_bytes / @max(1, stats.presented),                                                 stats.frame_bytes_max,
@@ -1312,121 +1298,115 @@ fn printStats(name: []const u8, mode: presets.OutputMode, stats: Stats) void {
         @as(f64, @floatFromInt(stats.blocked_ns)) * 100 / @as(f64, @floatFromInt(stats.virtual_ns)),  stats.keys_seen,
         stats.keys_sent,                                                                              stats.keys_delayed,
         stats.key_wait_max_ns / ms,                                                                   stats.live_peak_bytes / 1024,
-        stats.mid_token_ends,
+        stats.produced,                                                                               stats.produce_refused,
+        stats.produce_errors,
     });
     inline for (invariant_fields) |field| if (@field(stats, field) != 0) std.debug.print("    {s}: {d}\n", .{ field, @field(stats, field) });
 }
 
-fn environment(key: []const u8) ?[]u8 {
-    return std.testing.environ.getAlloc(testing.allocator, key) catch null;
+fn environment(arena: std.mem.Allocator, key: []const u8) ?[]const u8 {
+    return std.testing.environ.getAlloc(arena, key) catch null;
+}
+
+fn environmentInt(comptime T: type, arena: std.mem.Allocator, key: []const u8) !?T {
+    return try std.fmt.parseInt(T, environment(arena, key) orelse return null, 10);
 }
 
 test "OUTPUT SIM seeds" {
     if (!@import("ghostty_vt_options").available) return error.SkipZigTest;
-    const script_events = 200;
-    if (environment("OUTPUT_SIM_SEED")) |seed_text| {
-        defer testing.allocator.free(seed_text);
-        const name = environment("OUTPUT_SIM_PRESET") orelse try testing.allocator.dupe(u8, "ssh_slow");
-        defer testing.allocator.free(name);
-        const mode_text = environment("OUTPUT_SIM_MODE");
-        defer if (mode_text) |text| testing.allocator.free(text);
-        const mode = if (mode_text) |text| std.meta.stringToEnum(presets.OutputMode, text) orelse return error.UnknownMode else .sync_drain;
-        const trace = environment("OUTPUT_SIM_TRACE");
-        defer if (trace) |text| testing.allocator.free(text);
-        var env = presets.find(name) orelse return error.UnknownPreset;
-        var size: [2]u16 = ci_size;
-        if (environment("OUTPUT_SIM_SIZE")) |text| {
-            defer testing.allocator.free(text);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    if (try environmentInt(u64, arena, "OUTPUT_SIM_SEED")) |seed| {
+        var run: Run = .{ .name = environment(arena, "OUTPUT_SIM_PRESET") orelse "ssh_slow", .mode = .sync_drain, .seed = seed, .print_trace = environment(arena, "OUTPUT_SIM_TRACE") != null };
+        if (environment(arena, "OUTPUT_SIM_MODE")) |text| run.mode = std.meta.stringToEnum(presets.OutputMode, text) orelse return error.UnknownMode;
+        if (try environmentInt(u32, arena, "OUTPUT_SIM_EVENTS")) |events| run.events = events;
+        if (environment(arena, "OUTPUT_SIM_SIZE")) |text| {
             var parts = std.mem.splitScalar(u8, text, 'x');
-            size = .{ try std.fmt.parseInt(u16, parts.first(), 10), try std.fmt.parseInt(u16, parts.next() orelse return error.InvalidSize, 10) };
+            run.size = .{ try std.fmt.parseInt(u16, parts.first(), 10), try std.fmt.parseInt(u16, parts.next() orelse return error.InvalidSize, 10) };
         }
-        var scaled_faults: [8]presets.Fault = undefined;
-        env = presets.scaled(env, size[0], size[1], &scaled_faults);
-        const events_text = environment("OUTPUT_SIM_EVENTS");
-        defer if (events_text) |text| testing.allocator.free(text);
-        const events = if (events_text) |text| try std.fmt.parseInt(u32, text, 10) else script_events;
-        const stats = try runOne(name, env, mode, try std.fmt.parseInt(u64, seed_text, 10), events, trace != null);
-        printStats(name, mode, stats);
+        const stats = try runOne(run);
+        printStats(run.name, run.mode, stats);
         std.debug.print("trace {x}\n", .{stats.trace});
         return;
     }
-    const summary = environment("OUTPUT_SIM_SUMMARY");
-    defer if (summary) |text| testing.allocator.free(text);
+    const summary = environment(arena, "OUTPUT_SIM_SUMMARY") != null;
+    const seeds = try environmentInt(u64, arena, "OUTPUT_SIM_SEEDS");
     const Plan = struct { presets: []const presets.Preset, mode: presets.OutputMode, seeds: ?u64 };
     const plans = [_]Plan{
         .{ .presets = &presets.named, .mode = .sync_drain, .seeds = 6 },
         .{ .presets = &presets.sweep, .mode = .sync_drain, .seeds = null },
-        .{ .presets = &presets.named, .mode = .ticket, .seeds = 2 },
+        .{ .presets = &presets.ticket, .mode = .ticket, .seeds = 2 },
     };
-    // OUTPUT_SIM_SEEDS=<n> runs n seeds of every plan: a local sweep.
-    const seeds_text = environment("OUTPUT_SIM_SEEDS");
-    defer if (seeds_text) |text| testing.allocator.free(text);
-    const seeds: ?u64 = if (seeds_text) |text| try std.fmt.parseInt(u64, text, 10) else null;
     var failures: u32 = 0;
+    var cuts: u64 = 0;
     var traces: [presets.named.len][4]u64 = undefined;
+    var replays: usize = traces[0].len;
     for (plans) |plan| for (plan.presets, 0..) |preset, index| {
         var total: Stats = .{};
-        for (0..seeds orelse plan.seeds orelse preset.ci_seeds) |seed| {
-            const stats = try runScaled(preset.name, preset.env, plan.mode, seed, script_events);
-            if (plan.presets.ptr == &presets.named and plan.mode == .sync_drain and seed < 4) traces[index][seed] = stats.trace;
+        const ci_seeds = plan.seeds orelse preset.ci_seeds;
+        for (0..seeds orelse ci_seeds) |seed| {
+            const stats = try runOne(.{ .name = preset.name, .mode = plan.mode, .seed = seed });
+            if (plan.presets.ptr == &presets.named and plan.mode == .sync_drain and seed < replays) traces[index][seed] = stats.trace;
             add(&total, stats);
         }
-        if (summary != null) printStats(preset.name, plan.mode, total);
-        inline for (invariant_fields) |field| {
-            const count = @field(total, field);
-            const row = findKnown(preset.name, plan.mode, field);
-            const required = if (row) |value| value.required else false;
-            // D1 may show wherever outside writers share fd 1.
-            const allowed = row != null or (std.mem.eql(u8, field, "cut_tokens") and preset.env.external != null);
-            if ((count != 0 and !allowed) or (count == 0 and required)) {
-                std.debug.print("OUTPUT SIM {s} {t}: {s} = {d}{s}\n", .{ preset.name, plan.mode, field, count, if (count == 0) " (a known defect no longer reproduces)" else "" });
+        if (plan.presets.ptr == &presets.named) replays = @min(replays, seeds orelse ci_seeds);
+        if (summary) printStats(preset.name, plan.mode, total);
+        if (plan.mode == .sync_drain and preset.env.external != null) cuts += total.cut_tokens;
+        // Known defects and coverage minimums hold over the CI seeds, not over fewer.
+        if ((seeds orelse ci_seeds) < ci_seeds) continue;
+        inline for (invariant_fields) |field| if (findKnown(preset.name, plan.mode, field)) |row| {
+            if (row.required and @field(total, field) == 0) {
+                std.debug.print("OUTPUT SIM {s} {t}: {s} = 0, a known defect no longer reproduces\n", .{ preset.name, plan.mode, field });
                 failures += 1;
             }
-        }
+        };
         try expectMinimums(preset.name, plan.mode, total);
     };
     try testing.expectEqual(@as(u32, 0), failures);
-    // I11: seeds 0-3 of the named presets replay to the traces they had above.
-    for (presets.named, traces) |preset, expected| for (expected, 0..) |trace, seed| {
-        try testing.expectEqual(trace, (try runScaled(preset.name, preset.env, .sync_drain, seed, script_events)).trace);
+    // D1 reproduces on the presets with outside writers.
+    if (seeds == null) try testing.expect(cuts > 0);
+    // I11: the named presets' first seeds replay to the traces they had above.
+    for (presets.named, traces) |preset, expected| for (expected[0..replays], 0..) |trace, seed| {
+        try testing.expectEqual(trace, (try runOne(.{ .name = preset.name, .mode = .sync_drain, .seed = seed })).trace);
     };
 }
 
-/// Known `main` defects, recorded as counts until their fix run removes the row. A row whose
-/// count is zero fails too, so a fix shows up here.
-const Known = struct { preset: []const u8, mode: presets.OutputMode = .sync_drain, field: []const u8, required: bool = true };
+/// Known `main` defects, recorded until their fix run deletes the row. A required row that
+/// no longer reproduces fails, so a fix shows up here.
+const Known = struct { preset: []const u8, field: []const u8, required: bool = true };
 
 const known = [_]Known{
-    // D1: an output span larger than one feed chunk (a large frame, a long OSC 52) drains in
-    // several write(2) calls. An outside writer that waits for the tty lock enters between
-    // them, inside an escape sequence. Every preset with outside writers on fd 1 shows it.
-    .{ .preset = "ssh_slow", .field = "cut_tokens" },
-    .{ .preset = "ssh_16k", .field = "cut_tokens" },
-    .{ .preset = "nonblock_flip", .field = "cut_tokens" },
-    .{ .preset = "macos_chunked", .field = "cut_tokens" },
-    .{ .preset = "exit_blocked", .field = "cut_tokens" },
-    .{ .preset = "split_input", .field = "cut_tokens" },
-    .{ .preset = "producer_flood", .field = "cut_tokens" },
-    .{ .preset = "exit_nonblocking", .field = "cut_tokens" },
     // D2: exit with fd 1 non-blocking gives up on a 0-byte drain, so the restore never leaves.
     .{ .preset = "exit_nonblocking", .field = "restore_missing" },
-    // D3: the owner, stalled in a write, reads the rest of a split input sequence after the
-    // prefix's 20 ms deadline. feedInput expires the prefix first: an arrow key decodes as
-    // ESC, '[' and 'A', or ESC '[' as a reply fragment.
+    // D3, an effect of the 388 stall: the owner, inside a write, reads the rest of a split input
+    // sequence after the prefix's 20 ms deadline, and feedInput expires the prefix first (as
+    // documented): an arrow key decodes as ESC, '[' and 'A', or ESC '[' as a reply fragment.
     .{ .preset = "split_input", .field = "input_mismatches" },
     .{ .preset = "split_input", .field = "reply_errors", .required = false },
     // Outside writers inside a span: as `main` does when someone else makes fd 1 non-blocking
     // (the 1 ms retry returns to the loop mid-span), and the XNU model, which lets another
     // writer into a blocking write.
     .{ .preset = "nonblock_flip", .field = "cuts_mid_span", .required = false },
+    .{ .preset = "exit_nonblocking", .field = "cuts_mid_span", .required = false },
     .{ .preset = "macos_chunked", .field = "cuts_mid_span" },
 };
 
+/// Every known row is a `sync_drain` row: the ticket path runs without them.
 fn findKnown(name: []const u8, mode: presets.OutputMode, field: []const u8) ?Known {
+    if (mode != .sync_drain) return null;
     for (known) |row| {
-        if (row.mode == mode and std.mem.eql(u8, row.preset, name) and std.mem.eql(u8, row.field, field)) return row;
+        if (std.mem.eql(u8, row.preset, name) and std.mem.eql(u8, row.field, field)) return row;
     }
     return null;
+}
+
+/// D1: an output publication larger than one feed chunk (a large frame, a long OSC 52) drains
+/// in several write(2) calls, and an outside writer that waits for the tty lock enters between
+/// them, inside an escape sequence. It may show wherever outside writers share fd 1.
+fn allowed(name: []const u8, mode: presets.OutputMode, field: []const u8) bool {
+    if (findKnown(name, mode, field) != null) return true;
+    return std.mem.eql(u8, field, "cut_tokens") and presets.find(name).?.external != null;
 }
 
 /// I3 and coverage: each preset reaches what its invariants need.
@@ -1434,18 +1414,15 @@ fn expectMinimums(name: []const u8, mode: presets.OutputMode, total: Stats) !voi
     errdefer printStats(name, mode, total);
     const env = presets.find(name).?;
     try testing.expect(total.presented > 0 and total.commits >= total.presented);
-    // I4: the Context's memory stays within the feed's 8 MiB and a fixed allowance for the
-    // renderer and scene, at any link rate (measured peak: 10.1 MiB with a 1 MiB OSC 52 queued).
-    try testing.expect(total.live_peak_bytes < 12 * 1024 * 1024);
-    // Frames that span several writes or tickets occur, and the decoder compared frames.
-    try testing.expect(total.multi_ticket_frames > 0 or std.mem.eql(u8, name, "hangup_mid_frame"));
-    if (std.mem.eql(u8, name, "hangup_mid_frame")) {
-        // Every run hangs up, and the Session fails at once (I10).
+    // Frames that span several writes or tickets occur.
+    try testing.expect(total.multi_ticket_frames > 0);
+    if (env.faults.len != 0 and env.faults[0].kind == .eio) {
+        // Every run hangs up, inside a frame in some, and the Session fails at once (I10).
         try testing.expectEqual(total.runs, total.hangups);
+        try testing.expect(total.hangups_in_frame > 0);
         return;
     }
-    try testing.expect(total.decoded_frames > 0);
-    if (mode == .sync_drain) try testing.expect(total.suspends > 0);
+    try testing.expect(total.decoded_frames > 0 and total.suspends > 0);
     switch (env.events.end) {
         .close => try testing.expectEqual(total.runs, total.closes),
         .exit => try testing.expectEqual(total.runs, total.exits),
@@ -1458,4 +1435,6 @@ fn expectMinimums(name: []const u8, mode: presets.OutputMode, total: Stats) !voi
         try testing.expect(total.mutations > total.presented);
     }
     if (mode == .ticket) try testing.expectEqual(@as(u64, 0), total.blocked_ns);
+    // A flood reaches the feed's limit: producers are refused (R23).
+    if (env.events.flood) try testing.expect(total.produce_refused + total.produce_errors > 0);
 }

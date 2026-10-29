@@ -21,8 +21,6 @@ pub const Writer = struct {
     done: usize = 0,
     /// The write returns once this many bytes are in (a partial count), or at `bytes.len`.
     limit: usize,
-    /// Interrupted by a signal: it returns after its first accepted bytes.
-    interrupt: bool = false,
     /// Bytes written since this writer last let another one enter (`chunked`).
     run: usize = 0,
     external: u32 = 0,
@@ -92,8 +90,8 @@ pub const Link = struct {
     /// The Session's bytes in the pty so far: the next session segment starts here.
     session_end: u64 = 0,
     tokenizer: Tokenizer = .{},
-    /// I5: external writes that entered inside a Session token, by session offset.
-    cuts: std.ArrayList(u64) = .empty,
+    /// I5: outside writes that entered inside a Session token.
+    cut_tokens: u32 = 0,
     /// The last owner write stopped inside its Session span, and cuts there.
     mid_span: bool = false,
     cuts_mid_span: u32 = 0,
@@ -107,7 +105,7 @@ pub const Link = struct {
     pub fn deinit(self: *Link) void {
         for (self.queue.items) |writer| if (writer.kind == .external) self.allocator.free(writer.bytes);
         for (self.finished.items) |writer| if (writer.kind == .external) self.allocator.free(writer.bytes);
-        inline for (.{ &self.wire, &self.segments, &self.departures, &self.queue, &self.finished, &self.cuts }) |list| list.deinit(self.allocator);
+        inline for (.{ &self.wire, &self.segments, &self.departures, &self.queue, &self.finished }) |list| list.deinit(self.allocator);
     }
 
     pub fn ptyFill(self: *const Link) u64 {
@@ -132,7 +130,7 @@ pub const Link = struct {
             },
             // Once per write: a blocking write that the pty takes in pieces still holds the lock.
             .external => if (writer.done == 0 and self.tokenizer.state != .ground) {
-                try self.cuts.append(self.allocator, self.session_end);
+                self.cut_tokens += 1;
                 // After a write that stopped short of its span, or inside a write still running.
                 var inside = self.mid_span;
                 for (self.queue.items) |held| inside = inside or (held.kind == .owner and held.done != 0);
@@ -150,13 +148,6 @@ pub const Link = struct {
         }
         try self.segments.append(self.allocator, .{ .wire = self.wire.items.len, .len = @intCast(bytes.len), .source = source });
         try self.wire.appendSlice(self.allocator, bytes);
-    }
-
-    /// Cuts the terminal has reached by a session offset: the decoder is garbled after them.
-    pub fn cutsBefore(self: *const Link, offset: u64) usize {
-        var count: usize = 0;
-        for (self.cuts.items) |at| count += @intFromBool(at <= offset);
-        return count;
     }
 
     /// Session bytes that must start where the last ones ended, for I10.
@@ -193,7 +184,7 @@ pub const Link = struct {
             try self.accept(head, head.bytes[head.done..][0..count]);
             head.done += count;
             head.run += count;
-            if (head.interrupt or head.done == head.limit) {
+            if (head.done == head.limit) {
                 try self.finished.append(self.allocator, self.queue.orderedRemove(0));
                 continue;
             }
