@@ -192,13 +192,15 @@ describe("EditBuffer", () => {
 
     it("should handle moving left in a long line (potential BoundedArray overflow)", () => {
       const longText = "a".repeat(500)
-      buffer.setText(longText)
+      buffer.setText(longText + "\n" + longText)
 
       buffer.setCursorToLineCol(0, 500)
       buffer.moveCursorLeft()
 
       const cursor = buffer.getCursorPosition()
       expect(cursor.col).toBe(499)
+      buffer.moveCursorDown()
+      expect(buffer.getCursorPosition()).toMatchObject({ row: 1, col: 499 })
     })
   })
 
