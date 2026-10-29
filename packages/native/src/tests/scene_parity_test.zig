@@ -33,9 +33,8 @@ const fixture = @import("scene_fixture_test.zig");
 const Fixture = fixture.Fixture;
 const Recording = @import("scene_record_test.zig").Recording;
 const expectBufferInvariants = @import("buffer-invariants.zig").expectBufferInvariants;
-const ghostty_vt = @import("../ghostty-vt.zig");
+const vt_decode = @import("vt-decode.zig");
 const ansi = @import("../ansi.zig");
-const gp = @import("../grapheme.zig");
 
 const node_count_max = 40;
 const root_slot = 0;
@@ -284,7 +283,7 @@ const Harness = struct {
     stats: Stats = .{},
     bytes: [2]std.ArrayListUnmanaged(u8) = .{ .empty, .empty },
     /// Decodes the candidate's bytes independently of the encoder.
-    terminal: ghostty_vt.vt.Terminal,
+    terminal: vt_decode.Terminal,
     /// The decoder holds the whole screen: false after a resize until a forced frame.
     decoder_synced: bool = true,
     /// Per twin: the shared text buffer, its syntax style, a 2x1 buffer that raw writes draw,
@@ -321,7 +320,7 @@ const Harness = struct {
                 try twin.owner.sceneSetDebugFlags(twin.id, c.OT_SCENE_DEBUG_VERIFY);
             }
         }
-        var self: Harness = .{ .twins = twins, .random = random, .side = side, .terminal = try newTerminal(16, 6), .read_base = random.uintLessThan(usize, 16) };
+        var self: Harness = .{ .twins = twins, .random = random, .side = side, .terminal = try vt_decode.newTerminal(16, 6), .read_base = random.uintLessThan(usize, 16) };
         for (twins, 0..) |twin, index| {
             self.shared[index] = try twin.owner.createTextBuffer(.unicode);
             try twin.owner.textBufferSetText(self.shared[index], "shared text");
@@ -350,15 +349,6 @@ const Harness = struct {
         try self.apply(.{ .move = .{ .slot = content_slot, .parent = viewport_slot, .index = 0 } });
         try self.apply(.{ .viewport = true });
         return self;
-    }
-
-    fn newTerminal(width: u32, height: u32) !ghostty_vt.vt.Terminal {
-        var terminal: ghostty_vt.vt.Terminal = try .init(testing.io, testing.allocator, .{ .cols = @intCast(width), .rows = @intCast(height) });
-        var stream = terminal.vtStream();
-        defer stream.deinit();
-        // Grapheme clustering, as the renderer assumes.
-        stream.nextSlice("\x1b[?2027h");
-        return terminal;
     }
 
     fn deinit(self: *Harness) void {
@@ -416,7 +406,7 @@ const Harness = struct {
             .move => |value| try self.model.move(value.slot, value.parent, value.index),
             .resize => |value| {
                 self.terminal.deinit(testing.allocator);
-                self.terminal = try newTerminal(value.width, value.height);
+                self.terminal = try vt_decode.newTerminal(value.width, value.height);
                 self.decoder_synced = false;
             },
             .paint => |value| {
@@ -1262,37 +1252,13 @@ const Harness = struct {
     }
 
     /// The candidate's bytes, decoded by an independent terminal, show the presented cells.
-    /// Grapheme cells are skipped; colors are compared where the terminal holds RGB.
     fn expectDecoded(self: *Harness) !void {
         var stream = self.terminal.vtStream();
         defer stream.deinit();
         stream.nextSlice(self.bytes[candidate].items);
         if (!self.decoder_synced or self.split) return;
         self.stats.decoded += 1;
-        const cli = self.twins[candidate].cli;
-        const pages = &self.terminal.screens.active.pages;
-        for (0..cli.height) |y| for (0..cli.width) |x| {
-            const cell = cli.currentRenderBuffer.get(@intCast(x), @intCast(y)).?;
-            if (cell.char & gp.CHAR_TYPE_MASK != 0) continue;
-            const decoded = pages.getCell(.{ .active = .{ .x = @intCast(x), .y = @intCast(y) } }).?;
-            const codepoint: u32 = decoded.cell.codepoint();
-            const glyph = if (cell.char == 0) ' ' else cell.char;
-            try testing.expectEqual(glyph, if (codepoint == 0) ' ' else codepoint);
-            const style = decoded.style();
-            switch (style.bg_color) {
-                .rgb => |rgb| try testing.expectEqual([3]u8{ ansi.red(cell.bg), ansi.green(cell.bg), ansi.blue(cell.bg) }, [3]u8{ rgb.r, rgb.g, rgb.b }),
-                else => {},
-            }
-            if (glyph != ' ') switch (style.fg_color) {
-                .rgb => |rgb| try testing.expectEqual([3]u8{ ansi.red(cell.fg), ansi.green(cell.fg), ansi.blue(cell.fg) }, [3]u8{ rgb.r, rgb.g, rgb.b }),
-                else => {},
-            };
-            const attributes = cell.attributes;
-            try testing.expectEqual(attributes & ansi.TextAttributes.BOLD != 0, style.flags.bold);
-            try testing.expectEqual(attributes & ansi.TextAttributes.ITALIC != 0, style.flags.italic);
-            try testing.expectEqual(attributes & ansi.TextAttributes.INVERSE != 0, style.flags.inverse);
-            try testing.expectEqual(attributes & ansi.TextAttributes.STRIKETHROUGH != 0, style.flags.strikethrough);
-        };
+        try vt_decode.expectScreen(&self.terminal, .of(self.twins[candidate].cli.currentRenderBuffer));
     }
 
     /// Every presented reference frame takes today's full path. Each Track B shortcut adds
