@@ -1754,11 +1754,8 @@ describe("keymap: commands and queries", () => {
 
   test("carbon-3: a layer slot keeps its mount order while it is empty, waits for a target, or loses one", () => {
     const keymap = getKeymap(renderer)
-    const ranks = () => {
-      const { layers, commands } = getGraphSnapshot(keymap)
-      const names = new Map(commands.map(({ id, name }) => [id, name]))
-      return [...layers].sort((a, b) => a.order - b.order).map((layer) => names.get(layer.commandIds[0]!))
-    }
+    // The registered view lists layers in mount order.
+    const ranks = () => keymap.getCommands({ visibility: "registered" }).map(({ name }) => name)
     const layerOf = (name: string, target?: Renderable) => ({ target, commands: [{ name, run() {} }] })
     const emptied = createLayerSlot(keymap)
     const waiting = createLayerSlot(keymap)
