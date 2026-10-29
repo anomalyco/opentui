@@ -923,10 +923,36 @@ export class StdinParser {
         case "ground": {
           this.unitStart = this.cursor
 
-          // After a timeout-flushed lone ESC, a following `[` may be the start
-          // of a delayed `[<...M/m` mouse continuation. Recover only this narrow
-          // case; otherwise clear the recovery flag and parse bytes normally.
+          // After a timeout-flushed lone ESC, recover delayed mouse reports and
+          // complete color replies during startup queries. Release other input as keys.
           if (this.justFlushedEsc) {
+            if (byte === 0x5d && this.protocolContext.privateCapabilityRepliesActive && !this.forceFlush) {
+              // A color reply fits within 32 bytes. Bound lookahead even when typing follows in a large chunk.
+              const candidate = decodeUtf8(bytes.subarray(this.cursor, this.cursor + 32))
+              const colorPrefix = /^\](?:1[012];rgb:|4;\d{1,3};rgb:)/
+              const header = candidate.match(colorPrefix)?.[0]
+              const incompleteHeader =
+                ["]10;rgb:", "]11;rgb:", "]12;rgb:", "]4;"].some((prefix) => prefix.startsWith(candidate)) ||
+                /^\]4;\d{0,3}(?:;r(?:g(?:b(?::)?)?)?)?$/.test(candidate)
+              if (header) {
+                const body = candidate.slice(header.length)
+                const complete = body.match(/^([\da-fA-F]{1,4}\/[\da-fA-F]{1,4}\/[\da-fA-F]{1,4})(\x07|\x1b\\)/)
+                if (complete) {
+                  const end = this.cursor + header.length + complete[0].length
+                  this.emitOpaqueResponse("osc", Buffer.concat([Buffer.from([ESC]), bytes.subarray(this.cursor, end)]))
+                  this.justFlushedEsc = false
+                  this.consumePrefix(end)
+                  continue
+                }
+                if (/^[\da-fA-F]{0,4}(?:\/[\da-fA-F]{0,4}){0,2}(?:\x1b)?$/.test(body)) {
+                  this.markPending()
+                  return
+                }
+              } else if (incompleteHeader) {
+                this.markPending()
+                return
+              }
+            }
             if (byte === 0x5b) {
               this.justFlushedEsc = false
               this.cursor += 1
