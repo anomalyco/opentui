@@ -1253,10 +1253,7 @@ pub const Service = struct {
                 operation.diagnostic = "Failed to allocate X11 clipboard result";
                 return service.finishOperation(operation, .failed);
             },
-            .failed => {
-                x11.cleanupRead(&operation.x11_read);
-                return service.finishX11Failure(operation);
-            },
+            .failed => return service.finishX11Failure(operation),
         }
 
         while (true) {
@@ -1268,9 +1265,8 @@ pub const Service = struct {
                     operation.x11_targets[operation.x11_target_index],
                     operation.max_bytes,
                 )) {
-                    x11.cleanupRead(&operation.x11_read);
                     operation.rememberFailure(.x11_flush, "Failed to request X11 clipboard conversion");
-                    return service.finishOperation(operation, .failed);
+                    return service.finishX11Failure(operation);
                 }
                 return .pending;
             }
@@ -1360,7 +1356,24 @@ pub const Service = struct {
             .provider => operation.rememberFailure(.x11_provider, "X11 clipboard provider failed"),
         }
         operation.cleanupX11();
-        return service.finishOperation(operation, .failed);
+        const status = service.finishOperation(operation, .failed);
+        service.resetFailedX11();
+        return status;
+    }
+
+    // A failed connection never recovers. Drop it once no pending operation holds X11 state, so
+    // the next operation connects again; each pending one fails on its next poll.
+    fn resetFailedX11(service: *Service) void {
+        const x11 = service.x11 orelse return;
+        if (x11.phase != .failed) return;
+        for (service.operations.items) |operation| {
+            operation.mutex.lock();
+            defer operation.mutex.unlock();
+            if (operation.status == .pending and operation.mechanism == .x11) return;
+        }
+        x11.deinit();
+        service.allocator.destroy(x11);
+        service.x11 = null;
     }
 
     fn hasEarlierSelectionMutation(service: *const Service, operation: *const Operation) bool {
@@ -2613,34 +2626,70 @@ test "clipboard X11 candidate failure advances to the next compatible target" {
     try std.testing.expectEqual(@as(usize, 0), operation.transfer_data.items.len);
 }
 
-test "clipboard final X11 refusal cleans read state before publication" {
-    var symbols: clipboard_linux.XcbSymbols = undefined;
-    symbols.xcb_delete_property = testX11DeleteProperty;
-    symbols.xcb_destroy_window = testX11DestroyWindow;
-    var fake_connection: u8 = 0;
-    var x11 = clipboard_x11.Connection.init(std.testing.allocator, &symbols, 1);
-    x11.connection = @ptrCast(&fake_connection);
-    var service: Service = .{
-        .allocator = std.testing.allocator,
-        .objects = undefined,
-        .libraries = .{},
-        .x11 = &x11,
-        .requested_wayland_seat = &.{},
-        .environment_wayland_seat = &.{},
+test "clipboard X11 read outcomes clean read state and drop a failed connection" {
+    const Case = struct {
+        name: []const u8,
+        read: clipboard_x11.ReadState = .{},
+        failed: bool = false,
+        connect: bool = false,
+        other: ?clipboard_linux.Mechanism = null,
+        status: OperationStatus = .failed,
+        diagnostic: []const u8 = "X11 clipboard protocol failed",
+        dropped: bool = false,
     };
-    var request = [_]u8{ 0, 0, 0, 0 };
-    var operation: Operation = .{
-        .allocator = std.testing.allocator,
-        .service = &service,
-        .kind = .read,
-        .request = &request,
-        .implemented_candidate_attempted = true,
-        .x11_read = .{ .phase = .refused, .window = 42 },
-        .x11_target_count = 1,
+    const conversion = "Failed to request X11 clipboard conversion";
+    const cases = [_]Case{
+        .{ .name = "final refusal", .read = .{ .phase = .refused, .window = 42 }, .status = .empty, .diagnostic = "" },
+        .{ .name = "request, live connection", .diagnostic = conversion },
+        .{ .name = "request, failed connection", .failed = true, .diagnostic = conversion, .dropped = true },
+        .{ .name = "failed connection", .failed = true, .connect = true, .dropped = true },
+        .{ .name = "X11 read pending", .failed = true, .connect = true, .other = .x11 },
+        .{ .name = "Wayland read pending", .failed = true, .connect = true, .other = .wayland, .dropped = true },
     };
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.name});
+        var symbols: clipboard_linux.XcbSymbols = undefined;
+        const x11 = try std.testing.allocator.create(clipboard_x11.Connection);
+        x11.* = clipboard_x11.Connection.init(std.testing.allocator, &symbols, 1);
+        if (case.failed) x11.phase = .failed;
+        var service: Service = .{
+            .allocator = std.testing.allocator,
+            .objects = undefined,
+            .libraries = .{},
+            .x11 = x11,
+            .requested_wayland_seat = &.{},
+            .environment_wayland_seat = &.{},
+        };
+        defer if (service.x11) |left| {
+            left.deinit();
+            std.testing.allocator.destroy(left);
+        };
+        var request = [_]u8{ 0, 0, 0, 0 };
+        var operation: Operation = .{
+            .allocator = std.testing.allocator,
+            .service = &service,
+            .kind = .read,
+            .request = &request,
+            .mechanism = .x11,
+            .implemented_candidate_attempted = true,
+            .result_mime = try std.testing.allocator.dupe(u8, "text/plain"),
+            .x11_read = case.read,
+            .x11_targets = .{0} ** 6,
+            .x11_target_count = 1,
+        };
+        defer std.testing.allocator.free(operation.result_mime);
+        var other: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read };
+        other.mechanism = case.other;
+        var storage = [_]*Operation{ &operation, &other };
+        const count: usize = if (case.other == null) 1 else 2;
+        service.operations = .{ .items = storage[0..count], .capacity = storage.len };
 
-    try std.testing.expectEqual(OperationStatus.empty, service.driveX11Read(&operation));
-    try std.testing.expectEqual(clipboard_x11.ReadState{}, operation.x11_read);
+        const status = if (case.connect) service.driveX11(&operation) else service.driveX11Read(&operation);
+        try std.testing.expectEqual(case.status, status);
+        try std.testing.expectEqualStrings(case.diagnostic, operation.diagnostic);
+        try std.testing.expectEqual(clipboard_x11.ReadState{}, operation.x11_read);
+        try std.testing.expectEqual(case.dropped, service.x11 == null);
+    }
 }
 
 test "clipboard shutdown cancels unconfirmed X11 mutations before releasing providers" {
@@ -2703,10 +2752,6 @@ fn testX11PollTimestampEvent(_: *clipboard_linux.XcbConnection) callconv(.c) ?*c
 }
 
 fn testX11DestroyWindow(_: *clipboard_linux.XcbConnection, _: u32) callconv(.c) clipboard_linux.XcbCookie {
-    return .{ .sequence = 1 };
-}
-
-fn testX11DeleteProperty(_: *clipboard_linux.XcbConnection, _: u32, _: u32) callconv(.c) clipboard_linux.XcbCookie {
     return .{ .sequence = 1 };
 }
 
