@@ -980,7 +980,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private nativeResizeWait: Promise<void> | null = null
   private nativeKittyKeyboardFlags = 0
   private kittyTransportMode: KittyImageTransport = "raw"
-  private readonly synchronizedOutput: SynchronizedOutput
+  private readonly synchronizedOutput?: SynchronizedOutput
   private kittyTransportTimer: TimerHandle | null = null
   private _lastSceneTimeMs = 0
 
@@ -1299,7 +1299,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("nativeSceneWorkBudget was removed: frames always paint synchronously")
     }
     this.kittyTransportMode = config.kittyImageTransport ?? "raw"
-    this.synchronizedOutput = config.synchronizedOutput ?? "auto"
+    this.synchronizedOutput = config.synchronizedOutput
     const transportCode = KITTY_IMAGE_TRANSPORTS.indexOf(this.kittyTransportMode)
     if (transportCode < 0) throw new TypeError("Invalid kittyImageTransport")
     const useMemoryBufferedOutput = config.bufferedOutput === "memory"
