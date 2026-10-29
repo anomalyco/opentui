@@ -8,7 +8,8 @@ import {
 import { createTestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { Writable } from "node:stream"
-import type { SynchronizedOutput } from "../zig.js"
+import { resolveRenderLib, type SynchronizedOutput } from "../zig.js"
+import type { CliRendererConfig } from "../renderer.js"
 
 describe("isCapabilityResponse", () => {
   test("detects DECRPM responses", () => {
@@ -249,46 +250,90 @@ describe("renderer capabilities event", () => {
 })
 
 describe("synchronized output", () => {
-  // Replies come in query order: the startup cursor report, DECRQM 2026, then the width probe's report.
-  async function frame(remote: boolean, synchronizedOutput: SynchronizedOutput | undefined, reported: boolean) {
-    const writes: string[] = []
+  // Replies come in query order: the startup cursor report, DECRQM 2026, the width probe's report, then DA1.
+  async function frame(config: Partial<CliRendererConfig>, reported: boolean, lateMs = 0) {
+    let output = ""
     const stdout = new Writable({
       write(chunk, _encoding, callback) {
-        writes.push(Buffer.from(chunk).toString())
+        output += Buffer.from(chunk).toString()
         callback()
       },
     }) as NodeJS.WriteStream
-    const options = { width: 4, height: 2, stdout, bufferedOutput: "stdout", remote, synchronizedOutput } as const
-    const { renderer, renderOnce } = await createTestRenderer({ ...options, clock: new ManualClock() })
+    const clock = new ManualClock()
+    const { renderer, renderOnce } = await createTestRenderer({
+      width: 4,
+      height: 2,
+      stdout,
+      bufferedOutput: "stdout",
+      clock,
+      ...config,
+    })
     try {
       await renderer.setupTerminal()
-      for (const reply of ["\x1b[3;1R", ...(reported ? ["\x1b[?2026;2$y"] : []), "\x1b[1;1R"]) {
+      clock.advance(lateMs)
+      for (const reply of ["\x1b[3;1R", ...(reported ? ["\x1b[?2026;2$y"] : []), "\x1b[1;1R", "\x1b[?62;22c"]) {
         renderer.stdin.emit("data", Buffer.from(reply))
       }
       await renderer.nativeScene!.driver.idle()
-      writes.length = 0
+      output = ""
       await renderOnce()
-      return writes.join("")
+      return output
     } finally {
       renderer.destroy()
     }
   }
 
-  // The native table covers every combination; these rows cover the option and the host's reply routing.
-  const rows: [remote: boolean, mode: SynchronizedOutput | undefined, reported: boolean, envelope: boolean][] = [
-    [true, undefined, false, false],
-    [true, "always", false, true],
-    [false, "never", true, false],
+  // The native table covers every combination; these rows cover the option, the reply routing, and the host's
+  // multiplexer: a custom stdout never passes through the TMUX in process.env, and a client's TMUX never counts.
+  const client = { remote: true, environment: { TMUX: "/tmp/laptop,1,0" } }
+  const rows: [config: Partial<CliRendererConfig>, reported: boolean, envelope: boolean, lateMs?: number][] = [
+    [{ remote: true }, false, false],
+    [client, true, true],
+    [{ remote: true, synchronizedOutput: "always" }, false, true],
+    [{ remote: false, synchronizedOutput: "never" }, true, false],
+    [{ remote: true, experimental_nativeInput: false }, false, false, 5100],
+    [{ remote: true, experimental_nativeInput: true }, false, false, 5100],
   ]
-  for (const [remote, mode, reported, envelope] of rows) {
-    test(`remote ${remote}, ${mode ?? "default"}, 2026 ${reported ? "reported" : "not reported"}`, async () => {
-      const output = await frame(remote, mode, reported)
-      expect(output.length).toBeGreaterThan(0)
-      expect([output.startsWith("\x1b[?2026h"), output.includes("\x1b[?2026l")]).toEqual([envelope, envelope])
-    })
-  }
+  test("frames carry the envelope by option, reply and host", async () => {
+    const tmux = process.env.TMUX
+    process.env.TMUX = "/tmp/host,1,0"
+    try {
+      for (const [config, reported, envelope, lateMs] of rows) {
+        const output = await frame(config, reported, lateMs)
+        expect(output.length).toBeGreaterThan(0)
+        const seen = [output.startsWith("\x1b[?2026h"), output.includes("\x1b[?2026l")]
+        expect([JSON.stringify(config), lateMs, seen]).toEqual([JSON.stringify(config), lateMs, [envelope, envelope]])
+      }
+    } finally {
+      if (tmux === undefined) delete process.env.TMUX
+      else process.env.TMUX = tmux
+    }
+  })
+
+  test("process stdout under a host multiplexer tells native, whatever the forwarded keys", async () => {
+    const lib = resolveRenderLib()
+    const setup = lib.sessionSetupTerminal
+    const seen: (boolean | undefined)[] = []
+    lib.sessionSetupTerminal = (context, session, options = {}) => {
+      seen.push(options.hostMultiplexer)
+      return setup.call(lib, context, session, options)
+    }
+    const sty = process.env.STY
+    process.env.STY = "1.pts-0.host"
+    try {
+      const options = { stdout: process.stdout, remote: true, forwardEnvKeys: ["SSH_CONNECTION"] }
+      const { renderer } = await createTestRenderer({ ...options, clock: new ManualClock() })
+      await renderer.setupTerminal()
+      renderer.destroy()
+      expect(seen).toEqual([true])
+    } finally {
+      lib.sessionSetupTerminal = setup
+      if (sty === undefined) delete process.env.STY
+      else process.env.STY = sty
+    }
+  })
 
   test("an unknown mode is rejected", async () => {
-    await expect(frame(false, "sometimes" as SynchronizedOutput, false)).rejects.toThrow(TypeError)
+    await expect(frame({ synchronizedOutput: "sometimes" as SynchronizedOutput }, false)).rejects.toThrow(TypeError)
   })
 })

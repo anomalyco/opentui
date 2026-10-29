@@ -2857,56 +2857,48 @@ test "renderer - pinned split scrollback repaints live native images after appen
 }
 
 test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2026 or runs under a host multiplexer" {
-    // `sentinel`: width probes disabled, 2026 not reported, and the DA1 sentinel ends the batch.
-    const Reply = enum { reported, not_reported, pending, sentinel };
-    // A multiplexer on the app's host names itself in the app's environment.
-    const host_env = [_]?test_renderer_mod.TestEnvVar{
-        null,
-        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0" },
-        .{ .key = "STY", .value = "1.pts-0.host" },
-        .{ .key = "ZELLIJ", .value = "0" },
-    };
+    // `da1`: width probes disabled, 2026 not reported, and DA1 ends the replies.
+    const Reply = enum { reported, not_reported, pending, da1 };
     const Mode = terminal_mod.SynchronizedOutput;
-    for ([_]bool{ false, true }) |remote| for (host_env) |host| for ([_]bool{ false, true }) |xtversion| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
-        errdefer std.debug.print("remote={} host={s} xtversion={} reply={t} mode={t}\n", .{ remote, if (host) |v| v.key else "none", xtversion, reply, mode });
-        var pools = TestPools.init(std.testing.allocator);
-        defer pools.deinit();
-        var env: [2]test_renderer_mod.TestEnvVar = undefined;
-        var env_len: usize = 0;
-        if (host) |value| {
-            env[env_len] = value;
-            env_len += 1;
-        }
-        if (reply == .sentinel) {
-            env[env_len] = .{ .key = "OPENTUI_FORCE_EXPLICIT_WIDTH", .value = "0" };
-            env_len += 1;
-        }
-        var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env[0..env_len]);
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer snapshot.deinit();
+    try snapshot.drawText("line", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+    const snapshots = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 4, .start_on_new_line = false, .trailing_newline = true }};
+    const bools = [_]bool{ false, true };
+    // `host`: the host says a multiplexer runs between the app and the link. `client_tmux`: the terminal's
+    // environment names one, as a client's does; it must not count.
+    for (bools) |remote| for (bools) |host| for (bools) |client_tmux| for (bools) |xtversion| for (bools) |sentinel| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
+        errdefer std.debug.print("remote={} host={} client_tmux={} xtversion={} sentinel={} reply={t} mode={t}\n", .{ remote, host, client_tmux, xtversion, sentinel, reply, mode });
+        const env_all = [_]test_renderer_mod.TestEnvVar{
+            .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0" },
+            .{ .key = "OPENTUI_FORCE_EXPLICIT_WIDTH", .value = "0" },
+        };
+        const env = env_all[@intFromBool(!client_tmux)..if (reply == .da1) 2 else 1];
+        var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env);
         defer test_renderer.deinit();
         const term = &test_renderer.renderer.terminal;
         term.opts.remote_mode = if (remote) .remote else .local;
         term.synchronized_output = mode;
-        term.reply_sentinel = reply == .sentinel;
+        term.multiplexer_on_host = host;
+        term.reply_sentinel = sentinel;
         var writer = DiscardTerminalWriter{};
         try term.queryTerminalSend(&writer);
         // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report
-        // or the DA1 sentinel. A pending reply has only the cursor report, which precedes DECRQM. A tmux on either
-        // side of the link answers XTVERSION, so the answer alone does not drop the envelope.
+        // or DA1. A pending reply has only the cursor report, which precedes DECRQM. A tmux on either side of the
+        // link answers XTVERSION, so the answer alone does not drop the envelope.
         if (xtversion) term.processCapabilityResponse("\x1bP>|tmux 3.8\x1b\\");
         term.processCapabilityResponse("\x1b[3;1R");
         if (reply == .reported) term.processCapabilityResponse("\x1b[?2026;2$y");
-        if (reply != .pending) term.processCapabilityResponse(if (reply == .sentinel) "\x1b[?62;22c" else "\x1b[1;1R");
+        if (reply != .pending) term.processCapabilityResponse(if (reply == .da1) "\x1b[?62;22c" else "\x1b[1;1R");
 
-        const dropped = remote and reply != .pending and (reply != .reported or host != null);
+        const dropped = remote and reply != .pending and (reply != .reported or host);
         const envelope = mode == .always or (mode == .auto and !dropped);
         _ = test_renderer.renderer.resetSplitScrollback(1, 1);
-        var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
-        defer snapshot.deinit();
-        try snapshot.drawText("line", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
-        const snapshots = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 4, .start_on_new_line = false, .trailing_newline = true }};
+        try test_renderer.renderer.getNextBuffer().drawText("ab", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
         // A full frame and a split frame without footer paint close the envelope in different places.
         for (0..2) |frame| {
-            try test_renderer.renderer.getNextBuffer().drawText("ab", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
             const status = if (frame == 0) test_renderer.render(true) else test_renderer.renderSplit(.{
                 .snapshots = &snapshots,
                 .pinned_render_offset = 1,

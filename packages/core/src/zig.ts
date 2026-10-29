@@ -769,6 +769,8 @@ export interface NativeSessionTerminalOptions {
   replySentinel?: boolean
   /** Wrap frames in synchronized output (DEC mode 2026). Defaults to "auto". */
   synchronizedOutput?: SynchronizedOutput
+  /** The output passes through tmux, screen or Zellij on this host. Defaults to false. */
+  hostMultiplexer?: boolean
 }
 
 /** "auto" leaves synchronized output out for a remote terminal without mode 2026 or under a multiplexer on the app's host. */
@@ -6488,7 +6490,8 @@ export class FFIRenderLib {
       flag(options.mouseMovement, "mouseMovement", nativeConstants.OT_TERMINAL_MOUSE_MOVEMENT) |
       flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE) |
       (options.replySentinel ? nativeConstants.OT_TERMINAL_REPLY_SENTINEL : 0) |
-      SYNCHRONIZED_OUTPUT_FLAGS[synchronizedOutput]
+      SYNCHRONIZED_OUTPUT_FLAGS[synchronizedOutput] |
+      (options.hostMultiplexer ? nativeConstants.OT_TERMINAL_HOST_MULTIPLEXER : 0)
     const record = createContextRecord(layout)
     record[layout.fields.flags.offset / 4] = flags
     record[layout.fields.kitty_keyboard_flags.offset / 4] = toSafeFFIU32Length(

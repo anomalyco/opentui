@@ -231,6 +231,8 @@ reply_sentinel: bool = false,
 synchronized_output: SynchronizedOutput = .auto,
 /// A reply ordered after the DECRQM 2026 query arrived, so `caps.sync` is final.
 sync_reply_settled: bool = false,
+/// The host says a multiplexer runs between the app and the link. Never derived from forwarded or
+/// client environment, which can describe the other side of the link.
 multiplexer_on_host: bool = false,
 unicode_wide_locked: ?bool = null,
 host_env_hyperlinks: bool = false,
@@ -710,7 +712,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     }
 
     const env_map = self.opts.env_map orelse return;
-    self.multiplexer_on_host = env_map.get("TMUX") != null or env_map.get("STY") != null or env_map.get("ZELLIJ") != null;
 
     if (self.opts.remote_mode == .auto) {
         self.remote = self.remote or isRemoteSessionEnv(env_map);
@@ -1372,11 +1373,12 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
 
         scan_pos = pos + 1;
     }
+    // Every DA1 query follows the 2026 query, so its reply settles the synchronized-output decision.
+    if (device_attributes) self.sync_reply_settled = true;
     // The sentinel's reply follows every startup cursor report, so none is still coming.
     if (device_attributes and self.reply_sentinel) {
         self.startup_cursor_query_pending = false;
         self.explicit_width_probe_reports_pending = 0;
-        self.sync_reply_settled = true;
     }
 
     // Parse xtversion response: ESC P > | name version ESC \

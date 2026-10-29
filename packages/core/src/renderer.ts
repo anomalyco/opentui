@@ -3278,6 +3278,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           clearOnClose: this.clearOnShutdown,
           replySentinel: this.replySentinel,
           synchronizedOutput: this.synchronizedOutput,
+          // Only process stdout passes through a multiplexer on this host; forwarded and client env never count.
+          hostMultiplexer: this._usesProcessStdout && !!(process.env.TMUX || process.env.STY || process.env.ZELLIJ),
         }),
         () => {
           if (this._isDestroyed) return
