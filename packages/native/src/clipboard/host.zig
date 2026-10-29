@@ -1215,10 +1215,10 @@ pub const Service = struct {
                 if (operation.x11_read.phase != .idle) return .pending;
             },
             .ready => {
-                const empty_png = operation.result_mime.len > 0 and
-                    std.ascii.eqlIgnoreCase(operation.result_mime, "image/png") and
-                    operation.transfer_data.items.len == 0;
-                if (!empty_png) {
+                // WSLg's XWM answers UTF8_STRING with zero bytes when Windows holds an image.
+                const empty = operation.transfer_data.items.len == 0 and
+                    (service.libraries.is_wsl or std.ascii.eqlIgnoreCase(operation.result_mime, "image/png"));
+                if (!empty) {
                     operation.result = operation.transfer_data.toOwnedSlice(operation.allocator) catch {
                         x11.cleanupRead(&operation.x11_read);
                         operation.rememberFailure(.out_of_memory, "Failed to allocate X11 clipboard result");
@@ -2630,6 +2630,8 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
     const Case = struct {
         name: []const u8,
         read: clipboard_x11.ReadState = .{},
+        data: []const u8 = "",
+        wsl: bool = false,
         failed: bool = false,
         connect: bool = false,
         other: ?clipboard_linux.Mechanism = null,
@@ -2640,6 +2642,9 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
     const conversion = "Failed to request X11 clipboard conversion";
     const cases = [_]Case{
         .{ .name = "final refusal", .read = .{ .phase = .refused, .window = 42 }, .status = .empty, .diagnostic = "" },
+        .{ .name = "zero-byte text", .read = .{ .phase = .ready }, .status = .read, .diagnostic = "" },
+        .{ .name = "WSL zero-byte text", .read = .{ .phase = .ready }, .wsl = true, .status = .empty, .diagnostic = "" },
+        .{ .name = "WSL text", .read = .{ .phase = .ready }, .data = "hi", .wsl = true, .status = .read, .diagnostic = "" },
         .{ .name = "request, live connection", .diagnostic = conversion },
         .{ .name = "request, failed connection", .failed = true, .diagnostic = conversion, .dropped = true },
         .{ .name = "failed connection", .failed = true, .connect = true, .dropped = true },
@@ -2655,7 +2660,7 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
         var service: Service = .{
             .allocator = std.testing.allocator,
             .objects = undefined,
-            .libraries = .{},
+            .libraries = .{ .is_wsl = case.wsl },
             .x11 = x11,
             .requested_wayland_seat = &.{},
             .environment_wayland_seat = &.{},
@@ -2677,7 +2682,10 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
             .x11_targets = .{0} ** 6,
             .x11_target_count = 1,
         };
+        defer operation.transfer_data.deinit(std.testing.allocator);
+        defer std.testing.allocator.free(operation.result);
         defer std.testing.allocator.free(operation.result_mime);
+        try operation.transfer_data.appendSlice(std.testing.allocator, case.data);
         var other: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .read };
         other.mechanism = case.other;
         var storage = [_]*Operation{ &operation, &other };
@@ -2687,6 +2695,7 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
         const status = if (case.connect) service.driveX11(&operation) else service.driveX11Read(&operation);
         try std.testing.expectEqual(case.status, status);
         try std.testing.expectEqualStrings(case.diagnostic, operation.diagnostic);
+        try std.testing.expectEqualStrings(case.data, operation.result);
         try std.testing.expectEqual(clipboard_x11.ReadState{}, operation.x11_read);
         try std.testing.expectEqual(case.dropped, service.x11 == null);
     }
