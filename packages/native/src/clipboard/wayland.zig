@@ -526,7 +526,12 @@ pub const Connection = struct {
     fn start(self: *Connection) !void {
         // libwayland adopts and unsets an inherited WAYLAND_SOCKET, so record it before connecting.
         var inherited_socket = posix_io.getEnv("WAYLAND_SOCKET") != null;
-        const display = self.symbols.wl_display_connect(null) orelse wslg: {
+        // libwayland refuses a relative name without an absolute XDG_RUNTIME_DIR and logs each
+        // refusal to stderr, which is the terminal; skip the attempt instead of repeating the line.
+        const runtime_dir = posix_io.getEnv("XDG_RUNTIME_DIR") orelse "";
+        const name = posix_io.getEnv("WAYLAND_DISPLAY") orelse "";
+        const absolute = std.mem.startsWith(u8, runtime_dir, "/") or std.mem.startsWith(u8, name, "/");
+        const display = (if (inherited_socket or absolute) self.symbols.wl_display_connect(null) else null) orelse wslg: {
             inherited_socket = false;
             break :wslg self.connectWslg() orelse return error.ConnectFailed;
         };
@@ -1467,23 +1472,29 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         progress: Progress = .pending,
         wslg_path: []const u8 = "",
         connects: u8 = 1,
+        runtime_dir: bool = true,
     };
     const wslg_path = "/mnt/wslg/runtime-dir/wayland-7";
     const cases = [_]Case{
-        .{ .inherited = true },
+        .{ .inherited = true, .runtime_dir = false },
         .{ .cap = false },
         .{ .refused = .default, .progress = .unsupported },
         .{ .wsl = true },
         .{ .refused = .default, .wsl = true, .inherited = true, .wslg_path = wslg_path, .connects = 2 },
         .{ .refused = .all, .wsl = true, .progress = .unsupported, .wslg_path = wslg_path, .connects = 2 },
+        // libwayland would refuse the relative name and log to stderr on every operation.
+        .{ .runtime_dir = false, .wsl = true, .wslg_path = wslg_path },
     };
-    const saved_display = posix_io.getEnv("WAYLAND_DISPLAY");
-    const saved = if (saved_display) |value| try std.testing.allocator.dupeZ(u8, value) else null;
-    defer if (saved) |value| {
-        _ = Environment.setenv("WAYLAND_DISPLAY", value, 1);
-        std.testing.allocator.free(value);
-    } else {
-        _ = Environment.unsetenv("WAYLAND_DISPLAY");
+    const names = [_][*:0]const u8{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR" };
+    var saved: [names.len]?[:0]u8 = undefined;
+    for (names, &saved) |name, *value| {
+        value.* = if (posix_io.getEnv(name)) |current| try std.testing.allocator.dupeZ(u8, current) else null;
+    }
+    defer for (names, saved) |name, value| {
+        if (value) |restored| {
+            _ = Environment.setenv(name, restored, 1);
+            std.testing.allocator.free(restored);
+        } else _ = Environment.unsetenv(name);
     };
     try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", "wayland-7", 1));
     var symbols = testSymbols();
@@ -1497,6 +1508,9 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         Environment.refused = case.refused;
         Environment.path_length = 0;
         Environment.count = 0;
+        if (case.runtime_dir) {
+            try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", "/run/user/test", 1));
+        } else _ = Environment.unsetenv("XDG_RUNTIME_DIR");
         if (case.inherited) try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
         defer _ = Environment.unsetenv("WAYLAND_SOCKET");
 
