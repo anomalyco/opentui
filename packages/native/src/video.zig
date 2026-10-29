@@ -166,7 +166,6 @@ extern fn otv_open(
 ) c_int;
 extern fn otv_close(decoder: *?*Decoder) void;
 extern fn otv_seek(decoder: *Decoder, target_us: i64) c_int;
-extern fn otv_seek_video(decoder: *Decoder, target_us: i64) c_int;
 extern fn otv_set_output_size(decoder: *Decoder, width: u32, height: u32, cover: u32) c_int;
 extern fn otv_decode_frame(
     decoder: *Decoder,

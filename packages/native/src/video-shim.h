@@ -35,7 +35,6 @@ int otv_open(const char *path, const otv_limits *limits, otv_decoder **out_decod
                   char *error_out, uint32_t error_cap);
 void otv_close(otv_decoder **decoder);
 int otv_seek(otv_decoder *decoder, int64_t target_us);
-int otv_seek_video(otv_decoder *decoder, int64_t target_us);
 int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover);
 int otv_decode_frame(otv_decoder *decoder, int64_t target_us, const uint8_t **out_rgba,
                           uint32_t *out_width, uint32_t *out_height, uint32_t *out_stride,

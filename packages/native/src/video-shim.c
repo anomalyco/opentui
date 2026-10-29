@@ -22,11 +22,6 @@ int otv_seek(otv_decoder *decoder, int64_t target_us) {
     (void)target_us;
     return OTV_ERROR;
 }
-int otv_seek_video(otv_decoder *decoder, int64_t target_us) {
-    (void)decoder;
-    (void)target_us;
-    return OTV_ERROR;
-}
 int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover) {
     (void)decoder;
     (void)width;
@@ -531,21 +526,6 @@ int otv_seek(otv_decoder *decoder, int64_t target_us) {
     av_frame_unref(decoder->video_lookahead);
     av_frame_unref(decoder->video_selected);
     swr_free(&decoder->swr);
-    return OTV_OK;
-}
-
-int otv_seek_video(otv_decoder *decoder, int64_t target_us) {
-    if (!decoder) return OTV_ERROR;
-    if (target_us < 0) target_us = 0;
-    if (decoder->duration_us > 0 && target_us > decoder->duration_us) target_us = decoder->duration_us;
-    if (seek_stream(decoder, &decoder->video, target_us) != OTV_OK) {
-        snprintf(decoder->error, sizeof(decoder->error), "%s", decoder->video.error);
-        return OTV_ERROR;
-    }
-    decoder->frame_pts_us = AV_NOPTS_VALUE;
-    decoder->decode_pts_us = AV_NOPTS_VALUE;
-    av_frame_unref(decoder->video_lookahead);
-    av_frame_unref(decoder->video_selected);
     return OTV_OK;
 }
 
