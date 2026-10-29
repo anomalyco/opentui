@@ -1967,7 +1967,7 @@ for (const [name, options] of [
     const md = createMarkdownRenderable({
       id: `markdown-list-style-update-${name}`,
       content:
-        "Intro\n\n---\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n- fenced\n  ```ts\n  const a = 1\n  ```\n\n| H |\n| --- |\n| `cell` |",
+        "# Intro\n\n---\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n- fenced\n  ```ts\n  const a = 1\n  ```\n\n| H |\n| --- |\n| `cell` |",
       syntaxStyle: theme(fg2),
       fg: fg1,
       streaming: true,
@@ -1989,6 +1989,7 @@ for (const [name, options] of [
     renderer.root.add(md)
     await renderMarkdownRenderable(md)
     expect(colors()).toEqual(spans.map(([, before]) => before.toInts()))
+    const frame = captureFrame()
 
     md.streaming = false
     await renderOnce()
@@ -1997,9 +1998,10 @@ for (const [name, options] of [
     md.fg = fg2
     md.syntaxStyle = theme(fg1)
     await renderOnce()
-    expect(captureFrame()).toContain("quoted")
+    expect(captureFrame()).toBe(frame)
     await renderMarkdownRenderable(md)
     expect(colors()).toEqual(spans.map(([, , after]) => after.toInts()))
+    expect(captureFrame()).toBe(frame)
   })
 }
 

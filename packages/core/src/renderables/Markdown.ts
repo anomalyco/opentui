@@ -1976,10 +1976,11 @@ export class MarkdownRenderable extends Renderable {
       return
     }
 
+    const raw = this._internalBlockMode === "top-level" ? (this.getTopLevelBlockRaw(token) ?? token.raw) : token.raw
     if (state.renderable instanceof CodeRenderable) {
       this.applyMarkdownCodeRenderable(
         state.renderable,
-        this.getTopLevelBlockRaw(token) ?? token.raw,
+        raw,
         marginBottom,
         undefined,
         this.createInitialStyledText(token),
@@ -1989,7 +1990,7 @@ export class MarkdownRenderable extends Renderable {
 
     state.renderable.destroyRecursively()
     const markdownRenderable = this.createMarkdownCodeRenderable(
-      this.getTopLevelBlockRaw(token) ?? token.raw,
+      raw,
       `${this.id}-block-${index}`,
       marginBottom,
       this._linkifyMarkdownChunks,
