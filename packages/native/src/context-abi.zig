@@ -1144,9 +1144,7 @@ pub fn ot_session_setup_terminal(
     const sync_flags: u32 = c.OT_TERMINAL_SYNC_ALWAYS | c.OT_TERMINAL_SYNC_NEVER;
     const known_flags: u32 = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE |
         c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL | sync_flags;
-    if (options.flags & ~known_flags != 0 or options.flags & sync_flags == sync_flags or
-        options.kitty_keyboard_flags > 31)
-    {
+    if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags > 31) {
         return sessionError(owner, error.InvalidOptions);
     }
     owner.core.setupSessionTerminal(handleFromC(id.*), .{
@@ -1159,7 +1157,7 @@ pub fn ot_session_setup_terminal(
             0 => .auto,
             c.OT_TERMINAL_SYNC_ALWAYS => .always,
             c.OT_TERMINAL_SYNC_NEVER => .never,
-            else => unreachable,
+            else => return sessionError(owner, error.InvalidOptions),
         },
         .kitty_keyboard_flags = @intCast(options.kitty_keyboard_flags),
     }) catch |err| return sessionError(owner, err);
