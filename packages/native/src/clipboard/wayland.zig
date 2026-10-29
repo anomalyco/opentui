@@ -305,7 +305,7 @@ pub const Connection = struct {
         return self.barrier_serial_inflight;
     }
 
-    pub fn barrierDone(data: ?*anyopaque, callback: ?*WlProxy, _: u32) callconv(.c) void {
+    fn barrierDone(data: ?*anyopaque, callback: ?*WlProxy, _: u32) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
         std.debug.assert(self.barrier_callback == callback);
         std.debug.assert(self.barrier_serial_inflight == self.barrier_serial_completed + 1);
@@ -1085,7 +1085,7 @@ pub const Connection = struct {
         self.sync_done = true;
     }
 
-    pub fn deviceDataOffer(data: ?*anyopaque, _: ?*WlProxy, offer_proxy: ?*WlProxy) callconv(.c) void {
+    fn deviceDataOffer(data: ?*anyopaque, _: ?*WlProxy, offer_proxy: ?*WlProxy) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
         const proxy = offer_proxy orelse return;
         if (self.offer_count == MAX_OFFERS) {
@@ -1097,7 +1097,7 @@ pub const Connection = struct {
         _ = self.addListener(proxy, &offer_listener);
     }
 
-    pub fn deviceSelection(data: ?*anyopaque, _: ?*WlProxy, offer: ?*WlProxy) callconv(.c) void {
+    fn deviceSelection(data: ?*anyopaque, _: ?*WlProxy, offer: ?*WlProxy) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
         if (self.core_data_device and (self.core_focus_users == 0 or self.helper_surface == null)) {
             if (offer) |proxy| self.removeOffer(proxy);
@@ -1133,7 +1133,7 @@ pub const Connection = struct {
         posix_io.close(fd);
     }
 
-    pub fn keyboardEnter(
+    fn keyboardEnter(
         data: ?*anyopaque,
         _: ?*WlProxy,
         _: u32,
@@ -1144,7 +1144,7 @@ pub const Connection = struct {
         if (surface == self.helper_surface) self.core_focus_entered = true;
     }
 
-    pub fn keyboardLeave(data: ?*anyopaque, _: ?*WlProxy, _: u32, surface: ?*WlProxy) callconv(.c) void {
+    fn keyboardLeave(data: ?*anyopaque, _: ?*WlProxy, _: u32, surface: ?*WlProxy) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
         if (surface == null or surface != self.helper_surface) return;
         self.core_focus_entered = false;
@@ -1202,7 +1202,7 @@ pub const Connection = struct {
         }
     }
 
-    pub fn offerMime(data: ?*anyopaque, offer_proxy: ?*WlProxy, mime_pointer: [*:0]const u8) callconv(.c) void {
+    fn offerMime(data: ?*anyopaque, offer_proxy: ?*WlProxy, mime_pointer: [*:0]const u8) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
         const proxy = offer_proxy orelse return;
         const mime = std.mem.span(mime_pointer);
@@ -2026,6 +2026,47 @@ test "Wayland core selection becomes ready after focus and selection in either o
     try std.testing.expectEqual(Progress.pending, connection.coreSelectionProgress());
     Connection.deviceSelection(&connection, null, offer);
     try std.testing.expectEqual(Progress.ready, connection.coreSelectionProgress());
+}
+
+test "Wayland core read restarts after focus loss a bounded number of times" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const Fake = struct {
+        var helpers: u8 = 0;
+        fn marshal(proxy: *WlProxy, opcode: u32, _: ?*const WlInterface, _: u32, _: u32, _: [*]WlArgument) callconv(.c) ?*WlProxy {
+            if (@intFromPtr(proxy) == 5 and opcode == 0) helpers += 1;
+            return @ptrFromInt(4);
+        }
+    };
+    var symbols = testSymbols();
+    symbols.wl_proxy_marshal_array_flags = Fake.marshal;
+    var connection = testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
+    defer connection.deinit();
+    connection.core_data_device = true;
+    connection.compositor = @ptrFromInt(5);
+    connection.shell = @ptrFromInt(6);
+    connection.shm = @ptrFromInt(7);
+    // The rows share the connection, so each acquisition must start with the full budget.
+    for ([_]u8{ 0, READ_RETRY_MAX, READ_RETRY_MAX + 1 }) |losses| {
+        errdefer std.debug.print("losses: {d}\n", .{losses});
+        Fake.helpers = 0;
+        try std.testing.expectEqual(Progress.pending, connection.acquireCoreSelection());
+        var progress = Progress.pending;
+        for (0..losses + 1) |loss| {
+            // Each focus brings a fresh offer after a replaced selection; a leave invalidates it.
+            const offer: *WlProxy = @ptrFromInt(0x100 + loss);
+            Connection.keyboardEnter(&connection, null, 0, connection.helper_surface, null);
+            Connection.deviceDataOffer(&connection, null, offer);
+            Connection.deviceSelection(&connection, null, null);
+            Connection.deviceSelection(&connection, null, offer);
+            if (loss < losses) Connection.keyboardLeave(&connection, null, 0, connection.helper_surface);
+            progress = connection.coreSelectionProgress();
+        }
+        const restarted = losses <= READ_RETRY_MAX;
+        try std.testing.expectEqual(if (restarted) Progress.ready else Progress.failed, progress);
+        try std.testing.expectEqual(@min(losses, READ_RETRY_MAX) + 1, Fake.helpers);
+        if (restarted) try std.testing.expectEqual(0x100 + @as(usize, losses), @intFromPtr(connection.currentOffer(false).?.proxy));
+        connection.releaseCoreSelection();
+    }
 }
 
 test "Wayland bound core seat keyboard loss fails active and future acquisitions" {
