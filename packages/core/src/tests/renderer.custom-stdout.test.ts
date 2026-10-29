@@ -1855,6 +1855,11 @@ const lead = Buffer.from([0xc3])
 const passthrough = (renderer: CliRenderer) => (renderer.externalOutputMode = "passthrough")
 const destroy = (renderer: CliRenderer) => renderer.destroy()
 const capture = (renderer: CliRenderer) => (renderer.externalOutputMode = "capture-stdout")
+const passthroughInFrame = (renderer: CliRenderer, stdout: CollectingStdout) =>
+  renderer.requestAnimationFrame(() => {
+    passthrough(renderer)
+    stdout.write(Buffer.from([0xa9]))
+  })
 const savedWriteWhileOff = (renderer: CliRenderer, stdout: CollectingStdout) => {
   const write = stdout.write
   passthrough(renderer)
@@ -1864,6 +1869,11 @@ const savedWriteWhileOff = (renderer: CliRenderer, stdout: CollectingStdout) => 
 const outputFailure = async (renderer: CliRenderer, stdout: CollectingStdout) => {
   stdout.emit("error", new Error("terminal gone"))
   await expect(renderer.closed).rejects.toThrow("terminal gone")
+}
+const sessionClose = async (renderer: CliRenderer) => {
+  const closing = renderer.nativeScene.driver.close()
+  renderer.destroy()
+  await Promise.allSettled([closing, renderer.closed])
 }
 
 test.each<[string, StdoutStep[], string]>([
@@ -1881,10 +1891,16 @@ test.each<[string, StdoutStep[], string]>([
   ["empty writes inside a split", splitBytes("\u00e9", 1, "", null as never, ["", ""], ["", "bogus"]), "\u00e9"],
   ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
   ["capture set again inside a split", splitBytes("\u00e9", 1, capture), "\u00e9"],
+  ["split across a deferred passthrough", splitBytes("caf\u00e9", 4, passthrough), "caf\u00e9"],
+  ["passthrough set in a frame inside a split", [lead, passthroughInFrame], "\u00e9"],
+  ["split across a cancelled passthrough", splitBytes("caf\u00e9", 4, passthrough, capture), "caf\u00e9"],
   ["saved write while capture is off", [savedWriteWhileOff, Buffer.from([0xa9]), "b"], "\ufffdb"],
   ["passthrough after a lead byte", [lead, passthrough], "\ufffd"],
   ["lead byte after deferred passthrough", ["a", passthrough, lead], "a\ufffd"],
+  ["suspend after a lead byte", ["a", lead, (renderer) => renderer.suspend(), destroy], "a\ufffd|"],
+  ["replay reset after a lead byte", ["a", lead, (renderer) => renderer.resetSplitFooterForReplay(), "b"], "a\ufffd|b"],
   ["destroy after a lead byte", ["a", lead, destroy], "a\ufffd|"],
+  ["destroy after the session closes", ["a", lead, sessionClose], ""],
   ["output failure after a lead byte", ["a", lead, outputFailure], ""],
 ])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {
   const stdout = createCollectingStdout(80, 24)

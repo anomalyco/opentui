@@ -1961,12 +1961,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error('externalOutputMode "capture-stdout" requires screenMode "split-footer"')
     }
 
-    if (mode === "passthrough") this.flushStdoutDecoder()
     if (this._isDestroyed) {
       // A destroyed renderer cannot paint captured rows, so it never captures stdout again.
       this.pendingExternalOutputMode = null
       if (mode === "passthrough") this.applyExternalOutputMode(mode)
       return
+    }
+    if (mode === "passthrough" && !this.rendering && !this.pendingNativeMode && this.externalOutputQueue.size === 0) {
+      this.flushStdoutDecoder()
     }
     if (this.rendering || this.pendingNativeMode || this.externalOutputQueue.size > 0) {
       this.pendingExternalOutputMode = mode
@@ -2586,6 +2588,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("resetSplitFooterForReplay requires an active terminal")
     }
 
+    this.flushStdoutDecoder()
     if (this.rendering || this.externalOutputQueue.size > 0) {
       this.pendingNativeReplay = { options, remaining: this.externalOutputQueue.size }
       this.requestRender()
@@ -2845,7 +2848,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private flushStdoutDecoder(): void {
     const text = this.stdoutDecoder.end()
-    if (text && !this.nativeSession.error) this.interceptStdoutWrite(text)
+    if (text && this.nativeSession.open) this.interceptStdoutWrite(text)
   }
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
@@ -4625,6 +4628,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!this._terminalIsSetup || this.nativeTerminalTransition) {
       throw new Error("Native scene suspension requires completed terminal setup and no pending transition")
     }
+    this.flushStdoutDecoder()
     const flushNativeSplit = this.externalOutputQueue.size > 0 || this.pendingNativeReplay
     if (flushNativeSplit) this.lib.getYogaHost().assertMutable()
     let nativeTransition: Promise<void>
@@ -4894,6 +4898,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       console.error("Error pausing stdin during destroy:", e)
     }
 
+    this.flushStdoutDecoder()
     this.externalOutputMode = "passthrough"
   }
 
