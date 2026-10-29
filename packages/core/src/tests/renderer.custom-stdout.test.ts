@@ -1842,7 +1842,27 @@ test("suspend resolves idle waiters when an output-idle render was scheduled", a
   expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("captured-before-suspend"))
 })
 
-test("split-footer capture-stdout decodes every Writable#write chunk shape", async () => {
+type StdoutStep =
+  | string
+  | Uint8Array
+  | [string, string]
+  | ((renderer: CliRenderer, stdout: CollectingStdout) => unknown)
+const splitBytes = (text: string, at: number, ...between: StdoutStep[]): StdoutStep[] => {
+  const bytes = Buffer.from(text)
+  return [bytes.subarray(0, at), ...between, bytes.subarray(at)]
+}
+
+test.each<[string, StdoutStep[], string]>([
+  ["Uint8Array", [new TextEncoder().encode("hello-u8\n")], "hello-u8"],
+  ["Uint8Array view", [new TextEncoder().encode("\u00e9-view\n").subarray(1)], "\ufffd-view"],
+  ["base64", [[Buffer.from("hello-b64\n").toString("base64"), "base64"]], "hello-b64"],
+  ["upper-case HEX", [["6869", "HEX"]], "hi"],
+  ["latin1", [["\u00e9", "latin1"], "x"], "\ufffdx"],
+  ["2-byte split", splitBytes("caf\u00e9", 4), "caf\u00e9"],
+  ["3-byte split", splitBytes("\u4e00", 1), "\u4e00"],
+  ["4-byte split", splitBytes("\u{10437}", 1), "\u{10437}"],
+  ["string inside a split", splitBytes("\u00e9", 1, "x"), "\ufffdx\ufffd"],
+])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {
   const stdout = createCollectingStdout(80, 24)
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
     screenMode: "split-footer",
@@ -1855,24 +1875,15 @@ test("split-footer capture-stdout decodes every Writable#write chunk shape", asy
   await renderer.idle()
   stdout.clear()
 
-  stdout.write(new TextEncoder().encode("hello-u8\n"))
-  stdout.write(Buffer.from("hello-b64\n").toString("base64"), "base64")
-
-  const split = Buffer.from("caf\u00e9\n")
-  stdout.write(split.subarray(0, 4))
-  stdout.write(split.subarray(4))
+  for (const step of steps) {
+    if (typeof step === "function") await step(renderer, stdout)
+    else if (Array.isArray(step)) stdout.write(step[0], step[1] as BufferEncoding)
+    else stdout.write(step)
+  }
   await renderer.idle()
   await renderer.nativeScene.driver.idle()
 
-  const output = stdout.bytes().toString("utf8")
-  expect(output).toContain("hello-u8")
-  expect(output).not.toContain("104,101,108")
-
-  expect(output).toContain("hello-b64")
-  expect(output).not.toContain("aGVsbG8")
-
-  expect(output).toContain("\u00e9")
-  expect(output).not.toContain("\ufffd")
+  expect(stdout.text().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")).toContain(expected)
 })
 
 // ---- Dimension fallback ----
