@@ -909,6 +909,7 @@ pub const Service = struct {
     fn driveX11(service: *Service, operation: *Operation) OperationStatus {
         if (service.ensureX11(operation)) |status| return status;
         service.driveX11EventUnit();
+        if (service.x11.?.phase == .failed) return service.finishX11Failure(operation);
         return switch (operation.kind) {
             .read => service.driveX11Read(operation),
             .write => service.driveX11Write(operation),
@@ -2633,13 +2634,23 @@ test "clipboard X11 candidate failure advances to the next compatible target" {
 
 test "clipboard X11 read outcomes clean read state and drop a failed connection" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const ServerGone = struct {
+        fn poll(_: *clipboard_linux.XcbConnection) callconv(.c) ?*clipboard_linux.XcbGenericEvent {
+            return null;
+        }
+        fn hasError(_: *clipboard_linux.XcbConnection) callconv(.c) c_int {
+            return 1;
+        }
+        fn disconnect(_: *clipboard_linux.XcbConnection) callconv(.c) void {}
+    };
     const Case = struct {
         name: []const u8,
+        kind: OperationKind = .read,
         read: clipboard_x11.ReadState = .{},
         data: []const u8 = "",
         wsl: bool = false,
         phase: @FieldType(clipboard_x11.Connection, "phase") = .idle,
-        connect: bool = false,
+        drive: enum { read, operation, drain } = .read,
         other: ?clipboard_linux.Mechanism = null,
         status: OperationStatus = .failed,
         diagnostic: []const u8 = "X11 clipboard protocol failed",
@@ -2653,15 +2664,25 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
         .{ .name = "WSL text", .read = .{ .phase = .ready }, .data = "x", .wsl = true, .status = .read, .diagnostic = "" },
         .{ .name = "request, live connection", .diagnostic = conversion },
         .{ .name = "request, failed connection", .phase = .failed, .diagnostic = conversion, .dropped = true },
-        .{ .name = "unsupported connection", .phase = .unsupported, .connect = true, .status = .unsupported, .diagnostic = "", .dropped = true },
-        .{ .name = "X11 read pending", .phase = .failed, .connect = true, .other = .x11 },
+        .{ .name = "unsupported connection", .phase = .unsupported, .drive = .operation, .status = .unsupported, .diagnostic = "", .dropped = true },
+        .{ .name = "X11 read pending", .phase = .failed, .drive = .operation, .other = .x11 },
+        // A ready connection whose server went away.
+        .{ .name = "read in flight, server gone", .read = .{ .phase = .selection }, .phase = .ready, .drive = .operation, .dropped = true },
+        .{ .name = "write, server gone", .kind = .write, .phase = .ready, .drive = .operation, .dropped = true },
+        .{ .name = "clear, server gone", .kind = .clear, .phase = .ready, .drive = .operation, .dropped = true },
+        .{ .name = "owned selection, server gone", .phase = .ready, .drive = .drain },
     };
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.name});
         var symbols: clipboard_linux.XcbSymbols = undefined;
+        symbols.xcb_poll_for_event = ServerGone.poll;
+        symbols.xcb_connection_has_error = ServerGone.hasError;
+        symbols.xcb_disconnect = ServerGone.disconnect;
+        var fake_connection: u8 = 0;
         const x11 = try std.testing.allocator.create(clipboard_x11.Connection);
         x11.* = clipboard_x11.Connection.init(std.testing.allocator, &symbols, 1);
         x11.phase = case.phase;
+        if (case.phase == .ready) x11.connection = @ptrCast(&fake_connection);
         var service: Service = .{
             .allocator = std.testing.allocator,
             .objects = undefined,
@@ -2678,7 +2699,7 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
         var operation: Operation = .{
             .allocator = std.testing.allocator,
             .service = &service,
-            .kind = .read,
+            .kind = case.kind,
             .request = &request,
             .mechanism = .x11,
             .implemented_candidate_attempted = true,
@@ -2695,7 +2716,17 @@ test "clipboard X11 read outcomes clean read state and drop a failed connection"
         var storage = [_]*Operation{ &operation, &other };
         service.operations = .{ .items = &storage, .capacity = storage.len };
 
-        const status = if (case.connect) service.driveX11(&operation) else service.driveX11Read(&operation);
+        if (case.drive == .drain) {
+            const provider = try std.testing.allocator.create(clipboard_x11.Provider);
+            provider.* = .{ .selection = 1, .data = &.{} };
+            x11.providers[0] = provider;
+            x11.clipboard_provider = provider;
+            service.driveX11EventUnit();
+            try std.testing.expect(!x11.driveProviderUnit());
+            try std.testing.expect(x11.providers[0] == null);
+            continue;
+        }
+        const status = if (case.drive == .operation) service.driveX11(&operation) else service.driveX11Read(&operation);
         try std.testing.expectEqual(case.status, status);
         try std.testing.expectEqualStrings(case.diagnostic, operation.diagnostic);
         try std.testing.expectEqualStrings(case.data, operation.result);
