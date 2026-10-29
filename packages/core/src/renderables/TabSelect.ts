@@ -191,8 +191,7 @@ export class TabSelectRenderable extends Renderable {
 
       const baseTextColor = this._focused ? this._focusedTextColor : this._textColor
       const nameColor = isSelected ? this._selectedTextColor : baseTextColor
-      const nameContent = this.truncateText(option.name, actualTabWidth - 2)
-      this.frameBuffer.drawText(nameContent, tabX + 1, contentY, nameColor)
+      this.frameBuffer.drawTextFit(option.name, tabX + 1, contentY, actualTabWidth - 2, nameColor, undefined, true)
 
       if (isSelected && this._showUnderline && contentHeight >= 2) {
         this.frameBuffer.drawText(
@@ -210,19 +209,21 @@ export class TabSelectRenderable extends Renderable {
       if (selectedOption) {
         const descriptionY = contentY + (this._showUnderline ? 2 : 1)
         const descColor = this._selectedDescriptionColor
-        const descContent = this.truncateText(selectedOption.description, contentWidth - 2)
-        this.frameBuffer.drawText(descContent, contentX + 1, descriptionY, descColor)
+        this.frameBuffer.drawTextFit(
+          selectedOption.description,
+          contentX + 1,
+          descriptionY,
+          contentWidth - 2,
+          descColor,
+          undefined,
+          true,
+        )
       }
     }
 
     if (this._showScrollArrows && this._options.length > this.maxVisibleTabs) {
       this.renderScrollArrowsToFrameBuffer(contentX, contentY, contentWidth, contentHeight)
     }
-  }
-
-  private truncateText(text: string, maxWidth: number): string {
-    if (text.length <= maxWidth) return text
-    return text.substring(0, Math.max(0, maxWidth - 1)) + "…"
   }
 
   private renderScrollArrowsToFrameBuffer(

@@ -568,6 +568,21 @@ export class OptimizedBuffer {
     }
   }
 
+  /** @internal Draws text within maxWidth cells from x, cut on a glyph; nothing when maxWidth < 1. */
+  public drawTextFit(
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number,
+    fg: RGBA,
+    bg?: RGBA,
+    ellipsis = false,
+  ): void {
+    this.guard()
+    if (maxWidth < 1) return
+    this.drawChecked({ operation: "text", text, x, y, maxWidth, ellipsis, foreground: fg, background: bg })
+  }
+
   public fillRect(x: number, y: number, width: number, height: number, bg: RGBA): void {
     this.guard()
     // An empty rectangle draws nothing. Native extents are unsigned, so a negative one would be rejected.

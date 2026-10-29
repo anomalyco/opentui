@@ -65,6 +65,8 @@ const operations: Record<string, (buffer: OptimizedBuffer) => void> = {
     buffer.drawText(undefined as never, 8, 2, white)
     buffer.drawText(null as never, 8, 2, white)
     buffer.drawText("clipped text", -3, height - 1, white)
+    buffer.drawTextFit("漢字かな", 5, 1, 5, red, blue, true)
+    buffer.drawTextFit("abcdef", -2, 2, 7, red)
   },
   "clear, fills, cells, characters, and boxes": (buffer) => {
     buffer.drawText("gone", 0, 0, white)

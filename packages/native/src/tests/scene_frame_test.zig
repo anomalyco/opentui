@@ -1722,15 +1722,16 @@ test "Scene feedback follows changes that leave no layout behind" {
     }
 }
 
-// Children sort when today's walk passes their parent, once per frame, even when feedback skips
-// the parent: a reply's z-index change shows in the frame it would today, and no old order
-// stays on screen. P holds two children; H's reply lowers the second one. P is a root child
+// A reply's z-index change shows in its own frame, wherever feedback is: the paint list sorts
+// children again. P holds two children; H's reply lowers the second one. P is a root child
 // passed before H; the root itself, where H's RESIZE reply also resizes H, so a second round
 // follows; a child of Q, whose selection finished before H's UPDATE reply; a child of a
-// clean V with a second round, after which V must stay due until P sorts; or a child of V that
-// the first round passed whole, lowered by a RESIZE reply in the second round, which visits V.
-test "Scene feedback sorts children at the point today's walk passes them" {
-    for ([_]enum { child, root, nested, deep, later_round }{ .child, .root, .nested, .deep, .later_round }) |scene_kind| {
+// clean V with a second round; or a child of V that the first round passed whole, lowered by a
+// RESIZE reply in the second round, which visits V. Or H has no hook, and the root's
+// LAYOUT_CHANGED reply grows H, so the first round skips the clean root; the second round's
+// reply lowers the child (#1820).
+test "Scene feedback shows a reply's z-index change in its own frame" {
+    for ([_]enum { child, root, nested, deep, later_round, layout_changed }{ .child, .root, .nested, .deep, .later_round, .layout_changed }) |scene_kind| {
         const rounds = scene_kind == .root or scene_kind == .deep or scene_kind == .later_round;
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
         defer for (twins) |f| f.deinit();
@@ -1760,14 +1761,21 @@ test "Scene feedback sorts children at the point today's walk passes them" {
                 try f.owner.scenePatchPaint(list[index], c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ @intCast(index * 100), 0, 0, 255 } });
             }
             try feedbackNode(f, list, 3, c.OT_SCENE_BOX, f.root, if (scene_kind == .root) 2 else 1);
-            try feedbackHook(f, list[3], if (rounds) c.OT_SCENE_HOOK_RESIZE else c.OT_SCENE_HOOK_UPDATE);
+            if (scene_kind == .layout_changed) {
+                try feedbackHook(f, f.root, c.OT_SCENE_HOOK_LAYOUT_CHANGED);
+            } else try feedbackHook(f, list[3], if (rounds) c.OT_SCENE_HOOK_RESIZE else c.OT_SCENE_HOOK_UPDATE);
         }
         for (0..5) |frame| {
             for (twins, nodes) |f, list| {
                 if (rounds and frame == 1) try f.owner.sceneSetStyle(list[3], 4, 0, 0, 1, 2, 1);
+                // H's overflow changes no box, so the root's LAYOUT_CHANGED reply comes first.
+                if (scene_kind == .layout_changed and frame == 1) try f.owner.sceneSetStyle(list[3], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+                var replies: u32 = 0;
                 var request = try f.owner.sceneFrameStep(f.id, null, options);
-                while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                    if (frame == 1 and scene_kind == .later_round) {
+                while (request.kind != c.OT_SCENE_FRAME_DONE) : (replies += 1) {
+                    if (frame == 1 and scene_kind == .layout_changed) {
+                        if (replies == 0) try f.owner.sceneSetStyle(list[3], 4, 0, 0, 1, 3, 1) else try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
+                    } else if (frame == 1 and scene_kind == .later_round) {
                         // H's reply resizes R, whose RESIZE in the second round lowers the child.
                         if (std.meta.eql(request.node, list[3])) try f.owner.sceneSetStyle(list[5], 4, 0, 0, 1, 2, 1);
                         if (std.meta.eql(request.node, list[5])) try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
@@ -1777,14 +1785,14 @@ test "Scene feedback sorts children at the point today's walk passes them" {
                     }
                     request = try f.owner.sceneFrameStep(f.id, request, options);
                 }
+                if (scene_kind == .layout_changed and frame == 1) try testing.expectEqual(@as(u32, 2), replies);
                 _ = try f.owner.sceneFrameCommit(f.id, request, false);
                 try drain(f.owner, f.id);
             }
             try twins[0].expectSameCells(twins[1]);
             const parents = .{ (try twins[0].owner.raw().getRenderable(if (scene_kind == .root) twins[0].root else nodes[0][0])).scene_node.?, (try twins[1].owner.raw().getRenderable(if (scene_kind == .root) twins[1].root else nodes[1][0])).scene_node.? };
             for (parents[0].paint_children.items, parents[1].paint_children.items) |a, b| try testing.expectEqual(a.scene_node.?.num, b.scene_node.?.num);
-            // The new order shows from the frame after the reply.
-            if (frame >= 2) try testing.expectEqual(@as(u32, 12), parents[1].paint_children.items[0].scene_node.?.num);
+            if (frame >= 1) try testing.expectEqual(@as(u32, 12), parents[1].paint_children.items[0].scene_node.?.num);
         }
     }
 }
@@ -1812,17 +1820,18 @@ test "Scene feedback scans a culled wide parent no more than today's walk" {
     }
 }
 
-// An idle-update node uses its update where today's walk passes it, so UPDATE given later in
-// the frame waits for the next one, and UPDATE given before runs in this one. Root children
-// H1, M (idle update), V, H2, Q, N; P inside V, with C (UPDATE) and D. H2's reply gives M
-// UPDATE and RESIZE (seed 137), shows the hidden M before or after doing so (the walk never
-// stamped it), clears M's hooks, or gives M, which had UPDATE, idle update. Or it moves N into P
-// after C (P's selection finished: N was not passed), first detaching C, or D, P's last child;
-// moves M, which feedback passed, into Q, which it has not; or unbinds the viewport that culled
-// D. Then the moved node, or D, gets UPDATE. The count is the target's UPDATE calls that frame.
-test "Scene feedback uses an idle update only where the walk passed the node" {
-    const Case = enum { to_update, shown_to_update, show_then_update, to_none, update_to_idle, appended, emptied, trimmed, moved, culled };
-    const expected = [_]u32{ 0, 1, 1, 0, 1, 1, 1, 1, 0, 1 };
+// A shown idle-update node uses its update when the latest round prepares it, so UPDATE given
+// in the frame waits for the next one, wherever feedback is. Root children H1, M (idle update),
+// V, H2, Q, N; P inside V, with C (UPDATE) and D. H2's reply gives M UPDATE and RESIZE (seed
+// 137), shows the hidden M before or after doing so (the round did not prepare it shown; M was
+// hidden before it was ever shown, after, or after and moved, so the round lists it hidden),
+// clears M's hooks, clears them and then gives M UPDATE, or gives M, which had UPDATE, idle
+// update. Or it hides M and resizes N, whose RESIZE reply in the next round shows M and gives it
+// UPDATE. Or it moves M into Q, or unbinds the viewport that culled D; then the moved node, or D,
+// gets UPDATE. Or M gets UPDATE between frames. The count is the target's UPDATE calls that frame.
+test "Scene feedback uses an idle update for the frame of the round that prepared it shown" {
+    const Case = enum { to_update, shown_to_update, rehidden, placed_hidden, show_then_update, to_none, cleared_to_update, update_to_idle, hidden_by_reply, moved, culled, between_frames };
+    const expected = [_]u32{ 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1 };
     for (std.enums.values(Case), expected) |case, count_expected| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
         defer for (twins) |f| f.deinit();
@@ -1846,40 +1855,39 @@ test "Scene feedback uses an idle update only where the walk passed the node" {
             for ([_]usize{ 0, 3, 7 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
             for ([_]usize{ 1, 5, 8 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_IDLE_UPDATE);
             if (case == .update_to_idle) try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE);
+            if (case == .hidden_by_reply) try feedbackHook(f, list[5], c.OT_SCENE_HOOK_IDLE_UPDATE | c.OT_SCENE_HOOK_RESIZE);
             if (case == .shown_to_update or case == .show_then_update) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
             _ = try presentStepped(f, NoReply{});
-            const target = switch (case) {
-                .appended, .emptied, .trimmed => list[5],
-                .culled => list[8],
-                else => list[1],
-            };
+            if (case == .rehidden or case == .placed_hidden) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+            if (case == .placed_hidden) try f.owner.sceneMoveNode(list[1], f.root, 1);
+            if (case == .between_frames) try feedbackHook(f, list[1], c.OT_SCENE_HOOK_UPDATE);
+            const target = if (case == .culled) list[8] else list[1];
             var request = try f.owner.sceneFrameStep(f.id, null, options);
             while (request.kind != c.OT_SCENE_FRAME_DONE) {
                 if (std.meta.eql(request.node, target) and request.kind == c.OT_SCENE_FRAME_UPDATE) count.* += 1;
+                if (case == .hidden_by_reply and std.meta.eql(request.node, list[5])) {
+                    try f.owner.sceneSetStyle(target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                    try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                }
                 if (std.meta.eql(request.node, list[3])) switch (case) {
                     .to_update => try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_RESIZE),
-                    .shown_to_update, .show_then_update => {
-                        if (case == .shown_to_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                    .shown_to_update, .rehidden, .placed_hidden, .show_then_update => {
+                        if (case != .show_then_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
                         try f.owner.sceneSetStyle(target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
                         if (case == .show_then_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
                     },
-                    .to_none => try feedbackHook(f, target, 0),
+                    .to_none, .cleared_to_update => {
+                        try feedbackHook(f, target, 0);
+                        if (case == .cleared_to_update) try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
+                    },
+                    .hidden_by_reply => {
+                        try f.owner.sceneSetStyle(target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+                        try f.owner.sceneSetStyle(list[5], 4, 1, 0, 1, 2, 1);
+                    },
+                    .between_frames => {},
                     .update_to_idle => try feedbackHook(f, target, c.OT_SCENE_HOOK_IDLE_UPDATE),
                     else => {
-                        switch (case) {
-                            .appended => try f.owner.sceneMoveNode(list[5], list[6], 2),
-                            .emptied => {
-                                for (7..9) |index| try f.owner.sceneMoveNode(list[index], list[4], @intCast(index - 7));
-                                try f.owner.sceneMoveNode(list[5], list[6], 0);
-                            },
-                            .trimmed => {
-                                try f.owner.sceneMoveNode(list[8], list[4], 0);
-                                try f.owner.sceneMoveNode(list[5], list[6], 1);
-                            },
-                            .moved => try f.owner.sceneMoveNode(list[1], list[4], 0),
-                            .culled => try f.owner.sceneSetViewport(list[6], null),
-                            else => unreachable,
-                        }
+                        if (case == .moved) try f.owner.sceneMoveNode(list[1], list[4], 0) else try f.owner.sceneSetViewport(list[6], null);
                         try feedbackHook(f, target, c.OT_SCENE_HOOK_UPDATE);
                     },
                 };
@@ -1891,57 +1899,6 @@ test "Scene feedback uses an idle update only where the walk passed the node" {
         errdefer std.debug.print("case {s}\n", .{@tagName(case)});
         try testing.expectEqual(updates[0], updates[1]);
         try testing.expectEqual(count_expected, updates[1]);
-    }
-}
-
-// A culling parent's later scan does not undo the passing of its first: X, the first row of P
-// inside viewport V, uses its idle update in the first pass. H2's reply moves X out of view,
-// marks another row, and hooks H3; P scans again in the later pass. H3's reply hooks X and moves
-// it back: X's UPDATE waits for the next frame. Or H2's reply also unbinds V, so P selects
-// without culling, and H3's reply binds it again and hooks H4, whose reply hooks X.
-test "Scene feedback keeps an idle update a culling parent passed before it scanned again" {
-    for ([_]bool{ false, true }) |rebind| {
-        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 6, .{}), try Fixture.init(testing.allocator, 4, 6, .{}) };
-        defer for (twins) |f| f.deinit();
-        var counts: [2]u32 = .{ 0, 0 };
-        for (twins, &counts, 0..) |f, *count, twin| {
-            try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
-            // V, H2, H3 under the root; P under V; rows 0..16 under P; H4 under the root.
-            var list: [22]context.Handle = undefined;
-            for (0..3) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
-            try feedbackNode(f, &list, 21, c.OT_SCENE_BOX, f.root, 3);
-            try f.owner.sceneSetStyle(list[0], 4, 1, 0, 1, 3, 1);
-            try f.owner.sceneSetStyle(list[0], 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
-            try feedbackNode(f, &list, 3, c.OT_SCENE_BOX, list[0], 0);
-            try f.owner.sceneSetStyle(list[3], 4, 1, 0, c.OT_UNIT_AUTO, 0, 1);
-            for (4..21) |index| try feedbackNode(f, &list, index, c.OT_SCENE_BOX, list[3], @intCast(index - 4));
-            try f.owner.sceneSetViewport(list[3], list[0]);
-            try feedbackHook(f, list[4], c.OT_SCENE_HOOK_IDLE_UPDATE);
-            for ([_]usize{ 1, 5 }) |index| try feedbackHook(f, list[index], c.OT_SCENE_HOOK_UPDATE);
-            _ = try presentStepped(f, NoReply{});
-            var request = try f.owner.sceneFrameStep(f.id, null, options);
-            while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                if (std.meta.eql(request.node, list[4])) count.* += 1;
-                const unhooked = (try f.owner.raw().getRenderable(list[4])).scene_node.?.hook_flags != c.OT_SCENE_HOOK_UPDATE;
-                if (std.meta.eql(request.node, list[1])) {
-                    try f.owner.scenePatchPaint(list[4], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 8 });
-                    if (rebind) try f.owner.sceneSetViewport(list[3], null) else try feedbackHook(f, list[6], c.OT_SCENE_HOOK_RESIZE);
-                    try feedbackHook(f, list[2], c.OT_SCENE_HOOK_UPDATE);
-                }
-                if (rebind and std.meta.eql(request.node, list[2]) and unhooked) {
-                    try f.owner.sceneSetViewport(list[3], list[0]);
-                    try feedbackHook(f, list[21], c.OT_SCENE_HOOK_UPDATE);
-                }
-                if (std.meta.eql(request.node, list[if (rebind) 21 else 2]) and unhooked) {
-                    try feedbackHook(f, list[4], c.OT_SCENE_HOOK_UPDATE);
-                    try f.owner.scenePatchPaint(list[4], c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 0 });
-                }
-                request = try f.owner.sceneFrameStep(f.id, request, options);
-            }
-            _ = try f.owner.sceneFrameCommit(f.id, request, false);
-            try drain(f.owner, f.id);
-        }
-        try testing.expectEqual([2]u32{ 0, 0 }, counts);
     }
 }
 
@@ -1977,11 +1934,9 @@ test "Scene feedback prepares a text whose equal bytes were sent again" {
     };
 }
 
-// A node moved into a parent that preparation already passed paints after its siblings, in
-// the order the parent had then. H1's reply raises P's first child C1 before feedback passes P;
-// H2's reply moves N, whose z is between C2's and C1's, into P. P sorts with C1 raised, then N
-// follows; the next frame sorts N between them, though P's holder V holds no hook.
-test "Scene feedback appends a node moved into a passed parent after its sorted children" {
+// A node a reply moves into a parent sorts among its siblings in the same frame. H1's reply
+// raises P's first child C1; H2's reply moves N, whose z is between C2's and C1's, into P.
+test "Scene feedback sorts a node a reply moves in the same frame" {
     const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
     defer for (twins) |f| f.deinit();
     var parents: [2]context.Handle = undefined;
@@ -2005,13 +1960,13 @@ test "Scene feedback appends a node moved into a passed parent after its sorted 
         try drain(f.owner, f.id);
         parent.* = list[6];
     }
-    for ([_][3]u32{ .{ 15, 14, 13 }, .{ 15, 13, 14 } }, 0..) |expected, frame| {
+    for (0..2) |frame| {
         if (frame == 1) for (twins) |f| {
             _ = try presentStepped(f, NoReply{});
         };
         for (twins, parents) |f, parent| {
             const children = (try f.owner.raw().getRenderable(parent)).scene_node.?.paint_children.items;
-            for (expected, children) |num, child| try testing.expectEqual(num, child.scene_node.?.num);
+            for ([_]u32{ 15, 13, 14 }, children) |num, child| try testing.expectEqual(num, child.scene_node.?.num);
         }
         try twins[0].expectSameCells(twins[1]);
     }
@@ -2176,50 +2131,6 @@ test "Scene feedback passes keep the round and request counts at the limits" {
         }
         try testing.expectEqual(results[0], results[1]);
         try testing.expectEqual(@as(anyerror!u32, if (limits[0] == 1) error.LayoutLimit else if (limits[1] == chain) error.FrameRequestLimit else chain + 1), results[1]);
-    }
-}
-
-// Feedback that skips a clean root still passes every parent: a z-index change in a later round
-// keeps the frame's order, as preparation already reached the parent. W's overflow changes
-// before the frame, so the root's LAYOUT_CHANGED request comes first with no box changed; its
-// reply grows W, which needs a second round but marks nothing, so the first round skips the root. The second round's LAYOUT_CHANGED
-// reply lowers C2, the later of P's two overlapping children: it shows from the next frame.
-test "Scene feedback passes every parent when it skips a clean root" {
-    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 2, .{}), try Fixture.init(testing.allocator, 4, 2, .{}) };
-    defer for (twins) |f| f.deinit();
-    var nodes: [2][4]context.Handle = undefined;
-    for (twins, &nodes, 0..) |f, *list, twin| {
-        try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
-        // P and W under the root; C1 and C2 under P.
-        for (0..2) |index| try feedbackNode(f, list, index, c.OT_SCENE_BOX, f.root, @intCast(index));
-        for (2..4) |index| {
-            try feedbackNode(f, list, index, c.OT_SCENE_BOX, list[0], @intCast(index - 2));
-            try f.owner.sceneSetStyle(list[index], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
-            try f.owner.scenePatchPaint(list[index], c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ @intCast(index * 50), 0, 0, 255 } });
-        }
-        try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_LAYOUT_CHANGED, 1, 0, 0);
-        _ = try presentStepped(f, NoReply{});
-    }
-    for (0..2) |frame| {
-        for (twins, nodes) |f, list| {
-            if (frame == 0) try f.owner.sceneSetStyle(list[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
-            var replies: u32 = 0;
-            var request = try f.owner.sceneFrameStep(f.id, null, options);
-            while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                replies += 1;
-                if (frame == 0 and replies == 1) try f.owner.sceneSetStyle(list[1], 4, 0, 0, 1, 3, 1);
-                if (frame == 0 and replies == 2) try f.owner.scenePatchPaint(list[3], c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = -1 });
-                request = try f.owner.sceneFrameStep(f.id, request, options);
-            }
-            _ = try f.owner.sceneFrameCommit(f.id, request, false);
-            try drain(f.owner, f.id);
-        }
-        // C2 stays on top in the reply's frame and goes below C1 in the next.
-        for (twins, nodes) |f, list| {
-            const top = (try f.owner.raw().getRenderable(list[0])).scene_node.?.paint_children.items[1];
-            try testing.expectEqual((try f.owner.raw().getRenderable(list[if (frame == 0) 3 else 2])).scene_node.?.num, top.scene_node.?.num);
-        }
-        try twins[0].expectSameCells(twins[1]);
     }
 }
 

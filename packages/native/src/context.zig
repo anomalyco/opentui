@@ -156,6 +156,7 @@ pub const BufferDraw = struct {
     border_chars: [11]u32 = @splat(0),
     source: ?Handle = null,
     crop: BufferCrop = .{},
+    fit: buf.TextFit = .{},
 };
 
 pub const BufferStack = struct {
@@ -1702,7 +1703,7 @@ pub const Context = struct {
                 }, options.foreground, background, options.title_color, options.packed_options & 16 != 0, if (text.len == 0) null else text, @intCast((options.packed_options >> 5) & 3), if (bottom_title.len == 0) null else bottom_title, @intCast((options.packed_options >> 7) & 3));
             },
             // Text and fills draw their part inside the target. A cell outside it draws nothing.
-            .text => try target.drawTextChecked(text, options.x, options.y, options.foreground, options.background, options.attributes),
+            .text => try target.drawTextFitted(text, options.x, options.y, options.foreground, options.background, options.attributes, options.fit),
             .fill => target.fillRectClipped(options.x, options.y, options.width, options.height, background),
             .cell, .cell_blend, .char => {
                 if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff)) return error.InvalidOptions;
