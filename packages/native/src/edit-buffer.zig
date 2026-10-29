@@ -628,20 +628,22 @@ pub const EditBuffer = struct {
     }
 
     pub fn moveLeft(self: *EditBuffer) void {
-        const cursor = &self.cursor;
+        self.cursor = self.getPrevCharBoundary();
+        self.publishCursor(false);
+    }
 
+    /// Where moveLeft puts the cursor: the start of the grapheme before it, or the end of the line above.
+    pub fn getPrevCharBoundary(self: *EditBuffer) Cursor {
+        var cursor = self.cursor;
         if (cursor.col > 0) {
-            const prev_width = self.tb.getPrevGraphemeWidth(cursor.row, cursor.col);
-            cursor.col -= prev_width;
+            cursor.col -= self.tb.getPrevGraphemeWidth(cursor.row, cursor.col);
         } else if (cursor.row > 0) {
             cursor.row -= 1;
-            const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
-            cursor.col = line_width;
+            cursor.col = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
         }
         cursor.desired_col = cursor.col;
         cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
-
-        self.publishCursor(false);
+        return cursor;
     }
 
     pub fn moveRight(self: *EditBuffer) void {

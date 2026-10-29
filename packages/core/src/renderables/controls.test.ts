@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
+import type { Renderable } from "../Renderable.js"
 import { RGBA } from "../lib/RGBA.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
@@ -10,6 +11,7 @@ import { NativePaintRecorder } from "../zig.js"
 import { BoxRenderable } from "./Box.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
+import { LineNumberRenderable } from "./LineNumberRenderable.js"
 import { ArrowRenderable, ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
@@ -17,6 +19,7 @@ import { SliderRenderable } from "./Slider.js"
 import { TabSelectRenderable } from "./TabSelect.js"
 import { TextRenderable } from "./Text.js"
 import { TextareaRenderable } from "./Textarea.js"
+import { TimeToFirstDrawRenderable } from "./TimeToFirstDraw.js"
 
 const clock = new ManualClock()
 let setup: TestRendererSetup
@@ -524,6 +527,48 @@ test.each(paintCases)("%s JS fallback paint matches native paint", async (name, 
   NativePaintRecorder.prototype.end = end
   expect(jsPaints).toBe(4)
   if (name === "Box layout-only") expect(recorded).toBe(0)
+})
+
+const hostPaintCases: [string, () => Renderable][] = [
+  ["TimeToFirstDraw", () => new TimeToFirstDrawRenderable(renderer, { width: 20, label: "t", precision: 0 })],
+  [
+    "LineNumber with a content line color",
+    () =>
+      new LineNumberRenderable(renderer, {
+        target: new TextRenderable(renderer, { content: "a\nb\nc" }),
+        width: 8,
+        lineColors: new Map([[1, "#203040"]]),
+      }),
+  ],
+]
+
+// A host body paints at the truncated screen position, as native bodies do. Screen x -3.5 and y -0.5
+// truncate toward zero, unlike floor; at -3.5 the LineNumber and its children all sit left of 0.
+test.each(hostPaintCases)("%s paints at a fractional position", async (_, create) => {
+  const errors: string[] = []
+  const onError = ({ error }: { error: Error }) => errors.push(error.message)
+  renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+  const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
+  parent.add(create())
+  renderer.root.add(parent)
+  const capture = async (translateX: number, translateY: number) => {
+    Object.assign(parent, { translateX, translateY })
+    await setup.renderOnce()
+    return setup.captureSpans()
+  }
+  for (const [x, y] of [
+    [0.5, 0],
+    [-1.5, 0],
+    [0, 0.5],
+    [0, -1.5],
+    [-5.5, 0],
+  ]) {
+    const frame = await capture(x, y)
+    expect(errors.splice(0)).toEqual([])
+    expect(frame.lines[Math.trunc(1 + y)].spans.some((span) => span.text.trim() !== "")).toBe(true)
+    expect(frame).toEqual(await capture(Math.trunc(2 + x) - 2, Math.trunc(1 + y) - 1))
+  }
+  renderer.off(CliRenderEvents.RENDER_ERROR, onError)
 })
 
 // As on `main`, controls and graphemes longer than a cell holds are accepted when set and skipped when drawn.

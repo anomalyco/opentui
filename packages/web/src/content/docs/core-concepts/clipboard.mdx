@@ -204,8 +204,8 @@ write.
 
 ## Cancellation
 
-Every operation accepts an `AbortSignal`. Cancellation is cooperative. A synchronous platform call that is already
-in progress finishes before the service observes the abort.
+Every operation accepts an `AbortSignal`. Cancellation is cooperative. On Windows and macOS, a cancelled or timed-out
+operation settles at once. A platform call already in progress keeps running, and later operations wait for it.
 
 ```typescript
 import { createHostClipboard } from "@opentui/core"

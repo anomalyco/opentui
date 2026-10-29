@@ -11,7 +11,7 @@ import type { RenderContext } from "../types.js"
 import { env } from "../lib/env.js"
 
 // OTUI_NATIVE_INPUT_PARSER runs this suite through the native parser; a few expectations
-// follow its intentional behavior changes (packages/native/docs/input-parser.md §14.3).
+// follow its intentional behavior changes (see stdin-parser-native.test.ts).
 const nativeInput = env.OTUI_NATIVE_INPUT_PARSER
 const legacyInputTest = nativeInput ? test.skip : test
 
@@ -1247,26 +1247,11 @@ test("high byte buffer handling via keyInput events", async () => {
   })
 })
 
-test("high byte UTF-8 lead byte does not stall indefinitely", async () => {
-  const result = await new Promise<KeyEvent>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      currentRenderer.keyInput.removeListener("keypress", onKeypress)
-      reject(new Error("timed out waiting for high-byte keypress"))
-    }, 300)
-
-    const onKeypress = (parsedKey: KeyEvent) => {
-      clearTimeout(timeout)
-      currentRenderer.keyInput.removeListener("keypress", onKeypress)
-      resolve(parsedKey)
-    }
-
-    currentRenderer.keyInput.on("keypress", onKeypress)
-    // 128 + 105 = 233, should become \x1b + "i"
-    currentRenderer.stdin.emit("data", Buffer.from([233]))
-    advanceCurrentClock()
-  })
-
-  expect(result).toMatchObject({
+test("high byte UTF-8 lead byte does not stall indefinitely", () => {
+  const keys: KeyEvent[] = []
+  currentRenderer.keyInput.on("keypress", (key) => keys.push(key))
+  // 128 + 105 = 233, should become \x1b + "i"
+  const altI = {
     eventType: "press",
     name: "i",
     ctrl: false,
@@ -1276,7 +1261,14 @@ test("high byte UTF-8 lead byte does not stall indefinitely", async () => {
     number: false,
     sequence: "\x1bi",
     raw: "\x1bi",
-  })
+  }
+  currentRenderer.stdin.emit("data", Buffer.from([233]))
+  advanceCurrentClock()
+  // Legacy emits the lead byte on its timeout. Native waits for the rest of the UTF-8
+  // character with no deadline, until a byte that cannot continue it.
+  expect(keys).toMatchObject(nativeInput ? [] : [altI])
+  currentRenderer.stdin.emit("data", Buffer.from("x"))
+  expect(keys).toMatchObject([altI, { name: "x", meta: false, sequence: "x", raw: "x" }])
 })
 
 // The native parser reports nothing for zero bytes.
