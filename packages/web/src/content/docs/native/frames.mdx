@@ -268,13 +268,12 @@ Native code calculates Yoga layout and prepares node geometry, clipping, and pai
 If a preparation hook changes the scene, native code repeats the necessary preparation.
 An update hook runs at most once per node per attempt.
 The relative order of update and resize calls between different nodes is not specified.
+A node with `OT_SCENE_HOOK_IDLE_UPDATE` that the latest layout round prepared as visible has used up its update for that frame.
+If an acknowledgement then gives it `OT_SCENE_HOOK_UPDATE`, directly or after other hook changes, its first update request comes in the next frame.
 
-Native code sorts a parent's children by `z_index` once per frame, when preparation reaches that parent.
-With update, resize, or layout-changed hooks, or with a Box viewport (`ot_scene_set_viewport`), the host can change the scene after that sort.
-It can do so in a hook acknowledgement.
-A later `z_index` change or reparent in the same attempt does not sort the children again.
-The frame keeps the earlier order, and a node moved into that parent paints after its siblings.
-The next frame sorts again.
+Native code sorts a parent's children by `z_index` before it paints them.
+A `z_index` change or reparent in a preparation hook's acknowledgement shows in the same frame.
+A change in a paint hook waits for the next frame, as described below.
 
 The host sets positive `max_layout_rounds` and `max_host_requests` limits in `ot_scene_frame_options`. They must stay the same for the whole attempt.
 If preparation needs more than `max_layout_rounds` rounds, the step returns `OT_LAYOUT_LIMIT`.

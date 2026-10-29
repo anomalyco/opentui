@@ -1,11 +1,22 @@
 ---
-// Names the documentation's version in the site header and switches to the same page in the other channel. The
-// links carry data-docs-channel so the site validator accepts them as the only links between channels.
-import { channelCounterpart, pageChannel } from "../lib/docs-channel"
+// Names the documentation's version in the site header. The current version opens the channel's releases page; the
+// other label switches to the same page in its channel and carries data-docs-channel for the site validator.
+import { channelCounterpart, channelUrl, pageChannel } from "../lib/docs-channel"
 
 const channel = pageChannel(Astro.url.pathname)
 const path = Astro.url.pathname.replace(/\/+$/, "") || "/"
+const releasesHref = channelUrl("/docs/releases", channel)
 const choices = (["stable", "next"] as const).map((id) => {
+  const label = id === "stable" ? channel.release : "next"
+  if (id === channel.id) {
+    return {
+      id,
+      label,
+      href: releasesHref,
+      title: id === "stable" ? "Release notes and API changes" : "Release notes and unreleased API changes",
+      current: path === releasesHref ? ("page" as const) : ("true" as const),
+    }
+  }
   const target = channelCounterpart(path, channel, id)
   const title =
     id === "stable"
@@ -13,17 +24,18 @@ const choices = (["stable", "next"] as const).map((id) => {
       : "Documentation for the main branch, including unreleased changes"
   return {
     id,
-    label: id === "stable" ? channel.release : "next",
+    label,
     href: target.href,
     title: target.present ? title : `${title}. It does not have this page.`,
+    current: undefined,
   }
 })
 ---
 
 <nav class="docs-version" aria-label="Documentation version">
   {
-    choices.map(({ id, label, title, href }) => (
-      <a {href} {title} data-docs-channel={id} aria-current={id === channel.id ? "true" : undefined}>
+    choices.map(({ id, label, title, href, current }) => (
+      <a {href} {title} data-docs-channel={current ? undefined : id} aria-current={current}>
         {label}
       </a>
     ))
@@ -36,8 +48,8 @@ const choices = (["stable", "next"] as const).map((id) => {
     gap: 2ch;
   }
 
-  /* The current version is plain text, like the current page in the docs
-   * navigation; the other channel stays a link. */
+  /* The current version uses the text color and opens Releases; the other
+   * channel stays in the link color. */
   a[aria-current] {
     color: inherit;
   }

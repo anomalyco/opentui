@@ -30,11 +30,12 @@ pub const Fixture = struct {
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32, options: struct {
         limits: context.Options = .{},
         output: session.Options = .{ .chunk_size = 4096, .chunk_count = 2, .span_capacity = 2 },
+        renderer: session.RendererOptions = .{ .remote_mode = .remote },
     }) !Fixture {
         const owner = try context.Context.init(allocator, std.testing.io, options.limits);
         errdefer owner.deinit() catch unreachable;
         const id = try owner.createSession(options.output);
-        try owner.attachSessionRenderer(id, width, height, .{ .remote_mode = .remote });
+        try owner.attachSessionRenderer(id, width, height, options.renderer);
         const root = try owner.sceneCreateNode(id, 0, 1);
         return .{
             .owner = owner,
