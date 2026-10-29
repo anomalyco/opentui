@@ -857,7 +857,7 @@ pub const Service = struct {
                 service.environment_wayland_seat,
                 service.max_provider_transfers,
             );
-            wayland.allow_core_data_device = libraries.is_wsl;
+            wayland.is_wsl = libraries.is_wsl;
             service.wayland = wayland;
         }
         return switch (service.wayland.?.drive()) {
