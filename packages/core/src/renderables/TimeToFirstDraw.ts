@@ -106,9 +106,10 @@ export class TimeToFirstDrawRenderable extends Renderable {
     const content = `${this.label}: ${this._runtimeMs.toFixed(this.precision)}ms`
     const maxWidth = Math.max(this.width, 1)
     const visibleContent = truncateToCellWidth(buffer, content, maxWidth)
-    const centeredX = this.x + Math.max(0, Math.floor((maxWidth - visibleContent.width) / 2))
+    const [x, y] = this._paintOrigin(buffer)
+    const centeredX = x + Math.max(0, Math.floor((maxWidth - visibleContent.width) / 2))
 
-    buffer.drawText(visibleContent.text, centeredX, this.y, this.textColor)
+    buffer.drawText(visibleContent.text, centeredX, y, this.textColor)
   }
 
   private normalizePrecision(value: number): number {

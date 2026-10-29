@@ -1687,8 +1687,8 @@ test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as
         for (0..offsets) |offset| {
             const o: u32 = @intCast(offset);
             views[0].setViewport(if (row.wrap == .none) .{ .x = o, .y = 0, .width = width, .height = 1 } else .{ .x = 0, .y = o, .width = width, .height = height });
-            // Unwrapped, a grapheme cut by the left edge is dropped and the cells after it move left
-            // (corpus bug draw-offset-inside-wide-grapheme); the slice starts after it.
+            // Unwrapped, the slice starts after a grapheme that the left edge cuts and draws after
+            // its visible cells. Those are blanks in its style, which the cut-glyph test checks.
             const pos = utf8.findPosByWidth(text, o, tb.tabWidth(), row.control, false, true, row.method);
             const first = views[0].getVirtualLines()[0];
             const cut, const shift = if (row.wrap == .none) .{ pos.byte_offset, pos.columns_used } else .{ first.chunks.items[0].byte_start_in_chunk, first.document_cell_offset };
@@ -1701,13 +1701,15 @@ test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as
             views[1] = try TextBufferView.init(allocator, slice_tb);
             defer views[1].deinit();
             views[1].setViewport(if (row.wrap == .none) .{ .x = 0, .y = 0, .width = width - (shift - o), .height = 1 } else .{ .x = 0, .y = 0, .width = width, .height = height });
-            for (views, screens, &drawn, [2]u32{ 0, shift }) |view, screen, *chars, from| {
+            const blanks = if (row.wrap == .none) shift - o else 0;
+            for (views, screens, &drawn, [2]u32{ 0, shift }, [2]u32{ 0, blanks }) |view, screen, *chars, from, x| {
                 view.setWrapMode(row.wrap);
                 view.setWrapWidth(if (row.wrap == .none) null else width);
                 view.setTabIndicator('>');
                 view.setSelection(7 -| from, 19 -| from, .{ 1, 2, 3, 4 }, null);
                 screen.clear(.{ 0, 0, 0, 1 }, 32);
-                screen.drawTextBuffer(view, 0, 0);
+                screen.drawTextBuffer(view, @intCast(x), 0);
+                for (0..blanks) |blank| screen.set(@intCast(blank), 0, screens[0].get(@intCast(blank), 0).?);
                 @memset(chars, 0);
                 _ = try screen.writeResolvedChars(chars, false);
             }
@@ -2361,6 +2363,68 @@ test "drawTextBuffer - wide glyph skips every crossed highlight boundary" {
     output.drawTextBuffer(view, 0, 0);
     try std.testing.expectEqual(@as(u32, 'X'), output.get(2, 0).?.char);
     try std.testing.expectEqualDeep(green_color, output.get(2, 0).?.fg);
+}
+
+test "drawTextBuffer - a wide glyph cut by an edge draws the cells that two spaces draw" {
+    const allocator = std.testing.allocator;
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
+    const url = try pools.links.acquire("https://example.com");
+    defer pools.links.decref(url) catch unreachable;
+    // Each row cuts one cluster at an edge; `shown` puts spaces in its place. The buffer is 6 cells wide.
+    const Row = struct { text: []const u8, shown: []const u8, x: i32 = 0, clip: ?buffer.ClipRect = null, viewport: ?text_buffer_view.Viewport = null };
+    const rows = [_]Row{
+        .{ .text = "界a", .shown = "  a", .x = -1 },
+        .{ .text = "a界", .shown = "a  ", .x = 4 },
+        .{ .text = "界a", .shown = "  a", .x = 1, .clip = .{ .x = 2, .y = 0, .width = 4, .height = 1 } },
+        .{ .text = "a界", .shown = "a  ", .x = 1, .clip = .{ .x = 0, .y = 0, .width = 3, .height = 1 } },
+        .{ .text = "a界b", .shown = "a  b", .x = 1, .clip = .{ .x = 0, .y = 0, .width = 2, .height = 1 } },
+        .{ .text = "a界b", .shown = "a  b", .viewport = .{ .x = 0, .y = 0, .width = 2, .height = 1 } },
+        .{ .text = "界a界b", .shown = "  a  b", .x = 1, .viewport = .{ .x = 1, .y = 0, .width = 3, .height = 1 } },
+        .{ .text = "a\tb", .shown = "a  b", .viewport = .{ .x = 2, .y = 0, .width = 4, .height = 1 } },
+        .{ .text = "\u{1f44d}\u{1f3fd}a", .shown = "  a", .x = 1, .viewport = .{ .x = 1, .y = 0, .width = 3, .height = 1 } },
+    };
+    const syntax = try ss.SyntaxStyle.init(allocator);
+    defer syntax.deinit();
+    const green = try syntax.registerStyle("green", null, ansi.rgbColor(20, 200, 100, 255), 0);
+    // A highlighted span's background differs from the default one.
+    const Style = struct { bg: ?RGBA = ansi.rgbColor(32, 64, 192, 255), attributes: u32 = 0, select: bool = false, highlight: bool = false };
+    const styles = [_]Style{ .{}, .{ .bg = null }, .{ .attributes = ansi.TextAttributes.setLinkId(ansi.TextAttributes.UNDERLINE, url) }, .{ .bg = null, .select = true }, .{ .highlight = true } };
+    const screens = [2]*OptimizedBuffer{
+        try OptimizedBuffer.init(allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links }),
+        try OptimizedBuffer.init(allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links }),
+    };
+    defer for (screens) |screen| screen.deinit();
+    for (rows) |row| for (styles) |style| {
+        errdefer std.debug.print("text={s} style={any}\n", .{ row.text, style });
+        var drawn: [2][64]u8 = undefined;
+        for (screens, [2][]const u8{ row.text, row.shown }, &drawn) |screen, text, *chars| {
+            const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .unicode);
+            defer tb.deinit();
+            try tb.setText(text);
+            tb.setDefaultBg(style.bg);
+            tb.setDefaultAttributes(style.attributes);
+            tb.setSyntaxStyle(syntax);
+            if (style.highlight) try tb.addHighlight(0, 0, 8, green, 1, 0);
+            const view = try TextBufferView.init(allocator, tb);
+            defer view.deinit();
+            view.setWrapMode(.none);
+            view.setViewport(row.viewport);
+            if (style.select) view.setSelection(0, 8, ansi.rgbColor(200, 180, 0, 255), null);
+            // The backdrop holds a wide glyph and is opaque, so a skipped cell shows through.
+            screen.clear(ansi.rgbColor(192, 64, 16, 255), null);
+            try screen.drawText("01界45", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+            if (row.clip) |rect| try screen.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
+            defer screen.clearScissorRects();
+            screen.drawTextBuffer(view, row.x, 0);
+            @memset(chars, 0);
+            _ = try screen.writeResolvedChars(chars, false);
+        }
+        try std.testing.expectEqualStrings(&drawn[1], &drawn[0]);
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.fg), std.mem.sliceAsBytes(screens[0].buffer.fg));
+        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(screens[1].buffer.bg), std.mem.sliceAsBytes(screens[0].buffer.bg));
+        try std.testing.expectEqualSlices(u32, screens[1].buffer.attributes, screens[0].buffer.attributes);
+    };
 }
 
 test "owned styled text - scalar-split grapheme keeps the following token color" {

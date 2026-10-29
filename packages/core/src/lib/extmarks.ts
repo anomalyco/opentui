@@ -290,9 +290,7 @@ export class ExtmarksController {
         }
 
         // The deletion starts at the cursor stop before, which a grapheme it joins can move the cursor past.
-        this.originalMoveCursorLeft()
-        const deleteOffset = this.editBuffer.getCursorPosition().offset
-        this.originalSetCursorByOffset(currentOffset)
+        const deleteOffset = this.editBuffer._getPrevCharBoundary().offset
         const change = this.measureChange(() => this.originalDeleteCharBackward())
         this.saveSnapshot()
         this.shiftExtmarks(deleteOffset, change)
@@ -570,16 +568,9 @@ export class ExtmarksController {
 
   /** Cells an edit adds to the document, negative when it removes them. A grapheme rejoined across the edit changes widths, so measure the end. */
   private measureChange(edit: () => void): number {
-    const end = () => {
-      const cursor = this.editBuffer.getCursorPosition().offset
-      this.editBuffer.gotoLine(this.editBuffer.getLineCount() - 1)
-      const offset = this.editBuffer.getEOL().offset
-      this.originalSetCursorByOffset(cursor)
-      return offset
-    }
-    const before = end()
+    const before = this.editBuffer._getEOF().offset
     edit()
-    return end() - before
+    return this.editBuffer._getEOF().offset - before
   }
 
   private shiftExtmarks(offset: number, change: number, updateHighlights = true): void {

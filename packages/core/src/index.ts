@@ -141,6 +141,7 @@ export type {
   NativeSessionRendererState,
   NativeSessionSplitControl,
   NativeSessionTerminalOptions,
+  SynchronizedOutput,
   NativeSpanFeedEventHandler,
   NativeSplitSnapshot,
   NativeTextBufferInfo,
