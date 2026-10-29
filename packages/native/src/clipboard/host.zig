@@ -2494,6 +2494,7 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         output_pending: bool = false,
         phase: enum { ready, unsupported, failed } = .ready,
         inherited_socket: bool = false,
+        connected: bool = true,
         open: bool,
     };
     const cases = [_]Case{
@@ -2507,7 +2508,8 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         .{ .name = "owned primary selection", .provider = true, .primary = true, .open = true },
         .{ .name = "selection barrier", .barrier = true, .open = true },
         .{ .name = "queued output", .output_pending = true, .open = true },
-        .{ .name = "cached unsupported probe", .phase = .unsupported, .open = true },
+        .{ .name = "unsupported registry", .phase = .unsupported, .open = false },
+        .{ .name = "failed connect", .phase = .unsupported, .connected = false, .open = false },
         .{ .name = "failed connection", .phase = .failed, .open = false },
         .{ .name = "inherited WAYLAND_SOCKET", .inherited_socket = true, .open = true },
     };
@@ -2522,7 +2524,10 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         const service = acquireService(&objects, service_handle).?;
         service.libraries = .{ .wayland = true };
         const wayland = try std.testing.allocator.create(clipboard_wayland.Connection);
-        wayland.* = clipboard_wayland.testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
+        wayland.* = if (case.connected)
+            clipboard_wayland.testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS })
+        else
+            clipboard_wayland.Connection.init(std.testing.allocator, &symbols, "", "", 1);
         service.wayland = wayland;
         if (case.provider) {
             const data = try std.testing.allocator.dupe(u8, "owned");
@@ -2557,7 +2562,7 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
         try std.testing.expectEqual(@as(u8, @intFromBool(active)), drainService(&objects, service_handle));
         try std.testing.expectEqual(case.open, service.wayland != null);
         // Queued events are dispatched before a close so their offers are destroyed.
-        try std.testing.expectEqual(@intFromBool(!case.open), Dispatch.count);
+        try std.testing.expectEqual(@intFromBool(!case.open and case.connected), Dispatch.count);
     }
 }
 

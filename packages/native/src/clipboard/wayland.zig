@@ -445,10 +445,10 @@ pub const Connection = struct {
     }
 
     // An idle connection still receives an offer for every selection change, so the host
-    // closes it and reconnects on demand. An unsupported result binds no device and stays
-    // cached, and an inherited socket cannot be reopened after libwayland consumed it.
+    // closes it and reconnects on demand. Closing an unsupported result retries it on the next
+    // operation, and an inherited socket cannot be reopened after libwayland consumed it.
     pub fn closableWhenIdle(self: *const Connection) bool {
-        return self.phase != .unsupported and !self.inherited_socket and !self.hasWork();
+        return !self.inherited_socket and !self.hasWork();
     }
 
     // Events already read from the socket may create offer proxies. Dispatching them
