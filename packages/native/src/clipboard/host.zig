@@ -2632,6 +2632,7 @@ test "clipboard X11 candidate failure advances to the next compatible target" {
 }
 
 test "clipboard X11 read outcomes clean read state and drop a failed connection" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const Case = struct {
         name: []const u8,
         read: clipboard_x11.ReadState = .{},
