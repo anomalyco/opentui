@@ -10,11 +10,13 @@ var pasteboard_mutex: sync.Mutex = .{};
 pub const MimeType = enum(u32) {
     text_plain = 1,
     image_png = 2,
+    uri_list = 3,
 
     pub fn name(mime: MimeType) []const u8 {
         return switch (mime) {
             .text_plain => "text/plain",
             .image_png => "image/png",
+            .uri_list => "text/uri-list",
         };
     }
 };
@@ -147,6 +149,8 @@ fn read(allocator: Allocator, job: ReadJob, options: ExecuteOptions) JobError!Re
             .text_plain
         else if (std.ascii.eqlIgnoreCase(name, "image/png"))
             .image_png
+        else if (std.ascii.eqlIgnoreCase(name, "text/uri-list"))
+            .uri_list
         else
             continue;
         supported = true;
