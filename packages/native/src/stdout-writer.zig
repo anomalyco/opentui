@@ -549,3 +549,9 @@ test "stdout writer takes back a copy its thread never picked up" {
     try testing.expectEqual(Outcome.reclaimed, writer.waitCollect(0));
     writer.release();
 }
+
+test "stdout writer needs no pin for code in the main executable" {
+    if (!supported) return error.SkipZigTest;
+    // The test binary holds this code itself; glibc's dlopen(RTLD_NOLOAD) of an executable fails.
+    try testing.expect(pinLibrary());
+}
