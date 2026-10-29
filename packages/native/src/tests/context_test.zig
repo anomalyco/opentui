@@ -372,9 +372,10 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
 test "Context scene measure maps invalid host sizes to zero without a Yoga warning" {
     const Host = struct {
         var width: f32 = 0;
+        var half = false;
 
-        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, _: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
-            result.* = .{ .width = width, .height = 1 };
+        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, height: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
+            result.* = .{ .width = width, .height = if (half) height / 2 else 1 };
         }
     };
     const owner = try context.Context.init(std.testing.allocator, std.testing.io, .{});
@@ -394,6 +395,14 @@ test "Context scene measure maps invalid host sizes to zero without a Yoga warni
         try std.testing.expectEqual(@as(f32, if (width == 3) 3 else 0), measured.width);
         try std.testing.expectEqual(@as(f32, 1), measured.height);
         try std.testing.expect(owner.diagnostics.pop() == null);
+    }
+    // Half the offered height: a host measure may use the cap beyond clamping, so a larger
+    // cap measures again.
+    Host.half = true;
+    try owner.sceneMarkDirty(node);
+    for ([_]f32{ 10, 20 }) |height| {
+        try owner.sceneSetStyle(root, 4, 1, 0, 1, height, 1);
+        try std.testing.expectEqual(height / 2, (try layout(owner, node)).height);
     }
 }
 

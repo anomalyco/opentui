@@ -2032,6 +2032,7 @@ ot_status ot_buffer_draw_scene_body(ot_context *, const ot_handle *target, const
 #define OT_BUFFER_DRAW_HAS_BACKGROUND UINT32_C(1)
 #define OT_BUFFER_DRAW_HAS_SOURCE_WIDTH UINT32_C(2)
 #define OT_BUFFER_DRAW_HAS_SOURCE_HEIGHT UINT32_C(4)
+#define OT_BUFFER_DRAW_FIT_ELLIPSIS UINT32_C(16)
 
 #define OT_BUFFER_STACK_DEPTH_MAX UINT32_C(256)
 #define OT_BUFFER_STACK_GET_OPACITY UINT32_C(0)
@@ -2046,10 +2047,16 @@ ot_status ot_buffer_draw_scene_body(ot_context *, const ot_handle *target, const
  * struct_size is sizeof(the complete record), not sizeof(this header).
  * CLEAR/FILL/TEXT/BOX/COMPOSE use their named records below; CELL, CELL_BLEND,
  * and CHAR share ot_buffer_draw_cell; RESPECT_ALPHA uses ot_buffer_draw_alpha.
- * flags is zero except for TEXT (HAS_BACKGROUND) and COMPOSE
+ * flags is zero except for TEXT (HAS_BACKGROUND, FIT_ELLIPSIS) and COMPOSE
  * (HAS_SOURCE_WIDTH and HAS_SOURCE_HEIGHT). Without HAS_BACKGROUND, text
- * uses the background at each glyph or tab start. Omitted source extents use
- * the remaining source dimensions; an explicit zero extent draws nothing.
+ * uses the background at each glyph or tab start. A nonzero TEXT max_width
+ * stops the text before the first glyph that would end more than max_width
+ * cells right of x; a tab clips cell by cell. FIT_ELLIPSIS needs max_width
+ * and applies only to text wider than max_width: it keeps the glyphs that
+ * leave room for U+2026 and draws U+2026 right after them. A TEXT record of
+ * offsetof(ot_buffer_draw_text_record, max_width) bytes has no limit.
+ * Omitted source extents use the remaining source dimensions; an explicit
+ * zero extent draws nothing.
  * Positions are signed cells. FILL and TEXT draw only their cells inside the
  * target; TEXT skips a wide glyph that starts left of column 0. CELL, CELL_BLEND,
  * and CHAR at a position outside the target draw nothing.
@@ -2082,6 +2089,7 @@ typedef struct ot_buffer_draw_text_record {
     uint32_t attributes;
     uint16_t foreground[4];
     uint16_t background[4];
+    uint32_t max_width;
 } ot_buffer_draw_text_record;
 
 typedef struct ot_buffer_draw_cell {

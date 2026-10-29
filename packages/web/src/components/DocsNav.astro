@@ -9,16 +9,16 @@ const docsIndex = await buildDocsIndex()
 const normalize = (path: string) => path.replace(/\/+$/, "") || "/"
 const current = normalize(Astro.url.pathname)
 
-// Generated pages that are not in the docs index follow the reference section's ungrouped pages.
-const generated = [
-  { url: "/docs/api", navTitle: "API reference", group: undefined },
-  { url: "/docs/releases", navTitle: "Releases", group: undefined },
-]
+// Generated pages outside the docs index: Releases closes Start so it stays visible without scrolling, and API
+// reference follows the reference section's ungrouped pages.
+const releases = { url: "/docs/releases", navTitle: "Releases", group: undefined }
+const apiReference = { url: "/docs/api", navTitle: "API reference", group: undefined }
 const sections = docsIndex.sections.map((section) => {
+  if (section.id === "start") return { ...section, pages: [...section.pages, releases] }
   if (section.id !== "reference") return section
   const grouped = section.pages.findIndex((page) => page.group)
   const at = grouped === -1 ? section.pages.length : grouped
-  return { ...section, pages: [...section.pages.slice(0, at), ...generated, ...section.pages.slice(at)] }
+  return { ...section, pages: [...section.pages.slice(0, at), apiReference, ...section.pages.slice(at)] }
 })
 ---
 
