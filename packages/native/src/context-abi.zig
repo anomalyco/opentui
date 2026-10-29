@@ -2866,7 +2866,7 @@ test "Context focused draw records validate exact size before payload access" {
             .operation = entry[1],
             .flags = 0,
         };
-        for ([_]u32{ 0, @sizeOf(entry[0]) - 4, @sizeOf(entry[0]) + 4, 136 }) |size| {
+        for ([_]u32{ 0, @sizeOf(entry[0]) - 1, @sizeOf(entry[0]) + 4, 136 }) |size| {
             header.struct_size = size;
             try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_buffer_draw(context, &buffer, null, &header, null, null, 0, null, 0));
         }

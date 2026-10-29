@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("yoga");
 const logger = @import("logger.zig");
 const api = @import("context_abi_c");
@@ -324,6 +325,9 @@ fn internalMeasureFunc(
     return .{ .width = std.math.nan(f32), .height = std.math.nan(f32) };
 }
 
+/// Native measure callbacks that Yoga made; tests count layout work with it.
+pub threadlocal var test_native_measures: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {};
+
 fn internalNativeMeasureFunc(
     node: YGNodeConstRef,
     width: f32,
@@ -333,6 +337,7 @@ fn internalNativeMeasureFunc(
 ) callconv(.c) c.YGSize {
     // Hot native renderables measure entirely in Zig: Yoga -> native renderable
     // -> native text/editor view. This is separate from the JS callback path.
+    if (builtin.is_test) test_native_measures += 1;
     if (getContext(node)) |ctx| {
         if (ctx.native_measure_callback) |callback| {
             const size = callback(
@@ -1016,16 +1021,16 @@ pub export fn yogaNodeSetMeasureFuncChecked(node: YGNodeRef, enabled: u32) Statu
     if (enabled > 1) return .invalid_argument;
     const status = nodeStatus(node, true, enabled == 0);
     if (status != .ok) return status;
-    return @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled != 0) &internalMeasureFunc else null));
+    return @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled != 0) &internalMeasureFunc else null, 0));
 }
 
-pub fn yogaNodeSetNativeMeasureFunc(node: YGNodeRef, target: ?*anyopaque, callback: ?NativeMeasureCallback) Status {
+pub fn yogaNodeSetNativeMeasureFunc(node: YGNodeRef, target: ?*anyopaque, callback: ?NativeMeasureCallback, height_cap_only_clamps: bool) Status {
     if ((target == null) != (callback == null)) return .invalid_argument;
     const enabled = target != null;
     const status = nodeStatus(node, true, !enabled);
     if (status != .ok) return status;
     const ctx = getContext(node).?;
-    const result: Status = @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled) &internalNativeMeasureFunc else null));
+    const result: Status = @enumFromInt(c.otYogaNodeSetMeasureFunc(node, if (enabled) &internalNativeMeasureFunc else null, @intFromBool(height_cap_only_clamps)));
     if (result != .ok) return result;
     c.YGNodeSetNodeType(node, c.YGNodeTypeDefault);
     ctx.native_measure_target = target;
@@ -1095,4 +1100,5 @@ pub const testAllocationCount = c.otYogaTestAllocationCount;
 pub const testContentsChildCount = c.otYogaTestContentsChildCount;
 pub const testLogMessage = c.otYogaTestLogMessage;
 pub const testCacheMeasurement = c.otYogaTestCacheMeasurement;
+pub const testLargerHeightCap = c.otYogaTestLargerHeightCap;
 pub const TestCacheAxis = c.OTYogaCacheAxis;

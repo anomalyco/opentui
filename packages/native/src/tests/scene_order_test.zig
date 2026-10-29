@@ -69,11 +69,11 @@ test "Scene equal-z siblings paint in attachment order however z reached them" {
             try expectTop(f, a);
         }
         if (when == .between or when == .history) try f.owner.scenePatchPaint(b, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = 2 });
-        // The reply lands after this frame sorted, so the order changes in the next frame.
+        // The reply lands after feedback sorted; the paint list sorts again.
         const request = try f.step(null, frame_options, 1, hook);
         if (when == .reply) try f.owner.scenePatchPaint(b, c.OT_SCENE_PROPERTY_Z_INDEX, .{ .zIndex = 2 });
         _ = try f.step(request, frame_options, 0, null);
-        try expectTop(f, if (when == .reply) a else b);
+        try expectTop(f, b);
         try frame(f, &.{hook});
         try expectTop(f, b);
     }
