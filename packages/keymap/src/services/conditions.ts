@@ -14,12 +14,25 @@ function isReactiveMatcher(value: unknown): value is ReactiveMatcher {
 export interface ConditionService<TTarget extends object, TEvent extends KeymapEvent> {
   buildRuntimeMatcher(matcher: (() => boolean) | ReactiveMatcher, source: string): RuntimeMatcher
   matchesConditions(target: RuntimeMatchable): boolean
+  /** The results of a target with matchers read since the last `state` event: bit 1 false, bit 2 true. */
+  seenResults(target: RuntimeMatchable): number
 }
 
 export function createConditionService<TTarget extends object, TEvent extends KeymapEvent>(
   state: State<TTarget, TEvent>,
   notify: NotificationService<TTarget, TEvent>,
 ): ConditionService<TTarget, TEvent> {
+  // Per target with matchers, `epoch * 4 + results`; a `state` event starts a new epoch, since its listeners
+  // read again.
+  const seen = new WeakMap<RuntimeMatchable, number>()
+  let epoch = 0
+  notify.onStateEvent(() => void (epoch += 1))
+
+  const seenResults = (target: RuntimeMatchable): number => {
+    const entry = seen.get(target) ?? 0
+    return entry - (entry % 4) === epoch * 4 ? entry % 4 : 0
+  }
+
   const hasNoConditions = (target: RuntimeMatchable): boolean => {
     return target.requires.length === 0 && target.matchers.length === 0
   }
@@ -71,7 +84,10 @@ export function createConditionService<TTarget extends object, TEvent extends Ke
   }
 
   const matchesConditions = (target: RuntimeMatchable): boolean => {
-    return hasNoConditions(target) || (matchRequirements(target.requires) && matchesRuntimeMatchers(target))
+    if (hasNoConditions(target)) return true
+    const result = matchRequirements(target.requires) && matchesRuntimeMatchers(target)
+    if (target.matchers.length > 0) seen.set(target, epoch * 4 + (seenResults(target) | (result ? 2 : 1)))
+    return result
   }
 
   return {
@@ -91,5 +107,6 @@ export function createConditionService<TTarget extends object, TEvent extends Ke
       throw new Error(`Keymap ${source} expected a function or a reactive matcher`)
     },
     matchesConditions,
+    seenResults,
   }
 }

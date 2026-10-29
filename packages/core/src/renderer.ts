@@ -1,5 +1,6 @@
 import { appendFileSync, writeFileSync } from "node:fs"
 import { Writable } from "node:stream"
+import { StringDecoder } from "node:string_decoder"
 import { ANSI } from "./ansi.js"
 import { destroyTimelineEngine } from "./animation/Timeline.js"
 import { Renderable, RootRenderable } from "./Renderable.js"
@@ -1245,6 +1246,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private externalOutputQueue: ExternalOutputQueue
   private pendingExternalOutputMode: ExternalOutputMode | null = null
+  private readonly stdoutDecoder = new StringDecoder("utf8")
   private realStdoutWrite: (chunk: any, encoding?: any, callback?: any) => boolean
 
   private _useConsole: boolean = true
@@ -2082,6 +2084,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (mode === "passthrough") this.applyExternalOutputMode(mode)
       return
     }
+    if (mode === "passthrough" && !this.rendering && !this.pendingNativeMode && this.externalOutputQueue.size === 0) {
+      this.flushStdoutDecoder()
+    }
     if (this.rendering || this.pendingNativeMode || this.externalOutputQueue.size > 0) {
       this.pendingExternalOutputMode = mode
       this.requestRender()
@@ -2154,6 +2159,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       (this.externalOutputQueue.size > 0 && !(pendingMode === "capture-stdout" && this._screenMode === "split-footer"))
     ) {
       return
+    }
+    if (pendingMode === "passthrough") {
+      this.flushStdoutDecoder()
+      if (this.externalOutputQueue.size > 0) return
     }
 
     const previousMode = this._externalOutputMode
@@ -2699,6 +2708,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("resetSplitFooterForReplay requires an active terminal")
     }
 
+    this.flushStdoutDecoder()
     if (this.rendering || this.externalOutputQueue.size > 0) {
       this.pendingNativeReplay = { options, remaining: this.externalOutputQueue.size }
       this.requestRender()
@@ -2959,13 +2969,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
+  private flushStdoutDecoder(): void {
+    const text = this.stdoutDecoder.end()
+    if (text && this.nativeSession.open) this.interceptStdoutWrite(text)
+  }
+
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
     const resolvedCallback = typeof encoding === "function" ? encoding : callback
-    const resolvedEncoding = typeof encoding === "string" ? encoding : undefined
-    const text = typeof chunk === "string" ? chunk : (chunk?.toString(resolvedEncoding) ?? "")
     let writable = true
 
     if (this._externalOutputMode === "capture-stdout" && this._screenMode === "split-footer" && this._splitHeight > 0) {
+      // Decode the bytes a terminal would receive; a split UTF-8 sequence waits for the write that completes it.
+      const bytes = ArrayBuffer.isView(chunk)
+        ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+        : Buffer.from(String(chunk ?? ""), Buffer.isEncoding(encoding) ? encoding : undefined)
+      const text = this.stdoutDecoder.write(bytes)
       // Capture mode intentionally diverts stdout into split commit snapshots
       // instead of writing directly to process stdout. Native flushing will append
       // and repaint in one controlled frame, which is what avoids footer flicker.
@@ -4765,6 +4783,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!this._terminalIsSetup || this.nativeTerminalTransition) {
       throw new Error("Native scene suspension requires completed terminal setup and no pending transition")
     }
+    this.flushStdoutDecoder()
     const flushNativeSplit = this.externalOutputQueue.size > 0 || this.pendingNativeReplay
     if (flushNativeSplit) this.lib.getYogaHost().assertMutable()
     let nativeTransition: Promise<void>
@@ -5037,6 +5056,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       console.error("Error pausing stdin during destroy:", e)
     }
 
+    this.flushStdoutDecoder()
     this.externalOutputMode = "passthrough"
   }
 
