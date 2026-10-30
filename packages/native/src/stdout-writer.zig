@@ -96,8 +96,9 @@ pub fn Writer(comptime Sink: type, comptime Runner: type) type {
                 var blocked = std.posix.sigfillset();
                 for ([_]std.posix.SIG{ .TTOU, .SEGV, .BUS, .ILL, .FPE, .TRAP }) |sig| std.posix.sigdelset(&blocked, sig);
                 var previous: std.posix.sigset_t = undefined;
-                std.posix.sigprocmask(std.posix.SIG.BLOCK, &blocked, &previous);
-                defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
+                // XNU's sigprocmask sets the mask of every thread in the process.
+                std.debug.assert(std.c.pthread_sigmask(std.posix.SIG.BLOCK, &blocked, &previous) == 0);
+                defer std.debug.assert(std.c.pthread_sigmask(std.posix.SIG.SETMASK, &previous, &blocked) == 0);
                 _ = live_threads.fetchAdd(1, .monotonic);
                 self.runner.thread = std.Thread.spawn(.{}, threadMain, .{self}) catch {
                     _ = live_threads.fetchSub(1, .monotonic);
