@@ -19,6 +19,7 @@ enum {
 enum {
     OT_CLIPBOARD_MACOS_MIME_TEXT_PLAIN = 1,
     OT_CLIPBOARD_MACOS_MIME_IMAGE_PNG = 2,
+    OT_CLIPBOARD_MACOS_MIME_URI_LIST = 3,
 };
 
 typedef int32_t (*ot_clipboard_macos_stop_callback)(const void *context);
@@ -53,6 +54,38 @@ static const CGDataConsumerCallbacks ot_clipboard_macos_output_callbacks = {
 static int32_t ot_clipboard_macos_check_stop(ot_clipboard_macos_stop_callback stop_callback,
                                              const void *stop_context) {
     return stop_callback == NULL ? OT_CLIPBOARD_MACOS_STATUS_OK : stop_callback(stop_context);
+}
+
+static int32_t ot_clipboard_macos_read_uri_list(NSPasteboard *pasteboard, uint32_t max_bytes,
+                                              ot_clipboard_macos_stop_callback stop_callback,
+                                              const void *stop_context, NSData **out_data) {
+    NSMutableData *data = [NSMutableData data];
+    for (NSPasteboardItem *item in [pasteboard pasteboardItems]) {
+        int32_t status = ot_clipboard_macos_check_stop(stop_callback, stop_context);
+        if (status != OT_CLIPBOARD_MACOS_STATUS_OK) return status;
+
+        NSString *value = [item stringForType:NSPasteboardTypeFileURL];
+        if (value == nil) continue;
+        NSURL *url = [NSURL URLWithString:value];
+        if (url == nil || ![url isFileURL]) continue;
+        NSString *host = [url host];
+        if ([host length] > 0 && ![host isEqualToString:@"localhost"]) continue;
+
+        // Emit encoded URLs, not paths: spaces and newlines must not split a file reference.
+        NSString *encoded = [url absoluteString];
+        NSUInteger length = [encoded lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+        NSUInteger remaining = max_bytes - [data length];
+        if (remaining < 2 || length > remaining - 2) {
+            return OT_CLIPBOARD_MACOS_STATUS_LIMIT_EXCEEDED;
+        }
+        [data appendData:[encoded dataUsingEncoding:NSUTF8StringEncoding]];
+        [data appendBytes:"\r\n" length:2];
+    }
+    int32_t status = ot_clipboard_macos_check_stop(stop_callback, stop_context);
+    if (status != OT_CLIPBOARD_MACOS_STATUS_OK) return status;
+    if ([data length] == 0) return OT_CLIPBOARD_MACOS_STATUS_EMPTY;
+    *out_data = data;
+    return OT_CLIPBOARD_MACOS_STATUS_OK;
 }
 
 static int32_t ot_clipboard_macos_read_png(NSPasteboard *pasteboard, uint32_t max_bytes,
@@ -242,6 +275,12 @@ int32_t ot_clipboard_macos_read(uint32_t mime, uint32_t max_bytes, uint32_t max_
                 }
                 length = [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
                 source = [text UTF8String];
+            } else if (mime == OT_CLIPBOARD_MACOS_MIME_URI_LIST) {
+                status = ot_clipboard_macos_read_uri_list(pasteboard, max_bytes, stop_callback,
+                                                        stop_context, &data);
+                if (status != OT_CLIPBOARD_MACOS_STATUS_OK) return status;
+                length = [data length];
+                source = [data bytes];
             } else if (mime == OT_CLIPBOARD_MACOS_MIME_IMAGE_PNG) {
                 status = ot_clipboard_macos_read_png(pasteboard, max_bytes, max_image_pixels,
                                                       max_conversion_bytes, stop_callback,

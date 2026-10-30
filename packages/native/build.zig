@@ -680,6 +680,26 @@ pub fn build(b: *std.Build) void {
     const run_lifetime = b.addRunArtifact(lifetime_artifact);
     lifetime_step.dependOn(&run_lifetime.step);
 
+    if (native_target.result.os.tag == .macos) {
+        const clipboard_test_module = b.createModule(.{
+            .target = native_target,
+            .optimize = .Debug,
+            .link_libc = true,
+        });
+        clipboard_test_module.addCSourceFile(.{
+            .file = b.path("src/clipboard/macos-uri-list.test.m"),
+            .flags = &.{ "-fobjc-arc", "-fobjc-arc-exceptions", "-isysroot", macos_sdk_path.? },
+        });
+        clipboard_test_module.linkFramework("AppKit", .{});
+        clipboard_test_module.linkFramework("ImageIO", .{});
+        addMacOSSDKSearchPaths(b, clipboard_test_module, macos_sdk_path.?);
+        const clipboard_test = b.addExecutable(.{
+            .name = "clipboard-uri-list-test",
+            .root_module = clipboard_test_module,
+        });
+        test_step.dependOn(&b.addRunArtifact(clipboard_test).step);
+    }
+
     // Bench step (native only)
     const bench_step = b.step("bench", "Run benchmarks");
     const bench_mod = b.createModule(.{
