@@ -39,6 +39,7 @@ pub const SplitSnapshot = struct {
 
 pub const SplitRender = struct {
     snapshots: []const SplitSnapshot,
+    prefix: []const u8 = &.{},
     pinned_render_offset: u32,
     paint_footer: bool,
     suspended: bool,
@@ -972,8 +973,13 @@ pub const CliRenderer = struct {
             else
                 self.clampSplitSurfaceOffset(previous_offset, options.pinned_render_offset);
             redraw_footer = redraw_footer or previous_offset != self.renderOffset;
-            if (options.snapshots.len != 0) {
+            if (options.prefix.len != 0) {
                 self.beginRenderFrame(writer);
+                frame_started = true;
+                writer.writeAll(options.prefix) catch b.failFrame();
+            }
+            if (options.snapshots.len != 0) {
+                if (!frame_started) self.beginRenderFrame(writer);
                 frame_started = true;
                 if (!options.suspended) self.applyPendingSplitFooterTransition(writer, &frame_started);
                 for (options.snapshots) |commit| {

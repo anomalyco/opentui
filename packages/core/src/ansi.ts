@@ -7,6 +7,9 @@ export const ANSI = {
   clearScreen: "\x1b[2J",
   clearSavedLines: "\x1b[3J",
 
+  syncSet: "\x1b[?2026h",
+  syncReset: "\x1b[?2026l",
+
   scrollDown: (lines: number) => `\x1b[${lines}T`,
   scrollUp: (lines: number) => `\x1b[${lines}S`,
 

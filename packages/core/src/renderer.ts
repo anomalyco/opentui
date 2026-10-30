@@ -1126,6 +1126,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // churn and keep render latency predictable under heavy scrollback append load.
   private readonly maxSplitCommitsPerFrame: number = 8
 
+  // Instead of sending the "wipe" now, we store it here and let the next frame send it at the
+  // start inside its synchronized update, hence "wipe" and the redraw land together.
+  // While a "wipe" is stored here, that frame also sends the entire queued replay at once
+  // in a single update instead of chunks.
+  private pendingSplitFramePrefix: string = ""
+
   private _terminalWidth: number = 0
   private _terminalHeight: number = 0
   private _terminalIsSetup: boolean = false
@@ -2601,16 +2607,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private applySplitFooterReplayReset(options: SplitFooterReplayResetOptions): void {
-    const bytes = this.lib.encoder.encode(
+    // Park the screen-clear bytes instead of sending them now. The next frame sends them together with the
+    // replayed history inside one synchronized update, so the screen never flashes blank between the two.
+    this.pendingSplitFramePrefix +=
       ANSI.resetScrollRegion +
-        ANSI.reset +
-        ANSI.home +
-        ANSI.clearScreen +
-        (options.clearSavedLines ? ANSI.clearSavedLines : "") +
-        ANSI.home,
-    )
-    if (!this.nativeSession.write(bytes))
-      throw new NativeError("Native terminal output", NativeStatus.OutputBackpressure)
+      ANSI.reset +
+      ANSI.home +
+      ANSI.clearScreen +
+      (options.clearSavedLines ? ANSI.clearSavedLines : "") +
+      ANSI.home
     this.abortSplitStartupCursorSeed()
     this.clearPendingSplitFooterTransition()
     this.resetSplitScrollback()
@@ -4232,12 +4237,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     if (clearStart === null) this.nativeSession.resize(nextGeometry.renderWidth, nextGeometry.renderHeight)
     else {
+      // When we capture stdout, park the scrub so the next frame sends it inside a synchronized update
+      // keeping the shrunk area from flickering before the redraw
+      const captureSync = this._externalOutputMode === "capture-stdout"
       this.nativeSession.setScreen(
         this._screenMode === "alternate-screen",
         nextGeometry.renderWidth,
         nextGeometry.renderHeight,
-        this.lib.encoder.encode(ANSI.moveCursorAndClear(clearStart, 1)),
+        captureSync ? undefined : this.lib.encoder.encode(ANSI.moveCursorAndClear(clearStart, 1)),
       )
+      if (captureSync) this.pendingSplitFramePrefix += ANSI.moveCursorAndClear(clearStart, 1)
     }
 
     this._terminalWidth = width
@@ -4632,7 +4641,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("Native scene suspension requires completed terminal setup and no pending transition")
     }
     this.flushStdoutDecoder()
-    const flushNativeSplit = this.externalOutputQueue.size > 0 || this.pendingNativeReplay
+    const flushNativeSplit =
+      this.externalOutputQueue.size > 0 || this.pendingNativeReplay || this.pendingSplitFramePrefix !== ""
     if (flushNativeSplit) this.lib.getYogaHost().assertMutable()
     let nativeTransition: Promise<void>
     if (flushNativeSplit) {
@@ -4816,11 +4826,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // scopes still unwind before this microtask releases the Context.
     queueMicrotask(async () => {
       try {
-        if (splitFlush || this.externalOutputQueue.size > 0 || this.pendingNativeReplay) {
+        if (
+          splitFlush ||
+          this.externalOutputQueue.size > 0 ||
+          this.pendingNativeReplay ||
+          this.pendingSplitFramePrefix !== ""
+        ) {
           this.nativeSession.armCloseTimeout()
           if (splitFlush) await splitFlush
           else if (terminalTransition) await terminalTransition
-          if (this.externalOutputQueue.size > 0 || this.pendingNativeReplay) await this.flushNativeSplitOutput()
+          if (this.externalOutputQueue.size > 0 || this.pendingNativeReplay || this.pendingSplitFramePrefix !== "") {
+            await this.flushNativeSplitOutput()
+          }
         }
         void this.nativeSession.close()
       } catch (error) {
@@ -5276,14 +5293,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private async presentNativeScene(): Promise<"rendered" | "retryable-skip" | "failed" | "blocked"> {
     if (this.isSplitCursorSeedFrameBlocked()) return "blocked"
-    const commits =
-      this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
-        ? this.pendingNativeReplay?.remaining === 0
-          ? []
-          : this.externalOutputQueue.batch(
-              Math.min(this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
-            )
-        : null
+    const splitCapture = this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
+    // If a screen clear is parked, this frame opens the synchronized update and sends the entire queued
+    // replay, so the clear and the whole restored history show up as together in the same frame.
+    const prefixPending = splitCapture && this.pendingSplitFramePrefix !== ""
+    const commits = splitCapture
+      ? this.pendingNativeReplay?.remaining === 0
+        ? []
+        : this.externalOutputQueue.batch(
+            Math.min(
+              prefixPending ? Number.POSITIVE_INFINITY : this.maxSplitCommitsPerFrame,
+              this.pendingNativeReplay?.remaining ?? Infinity,
+            ),
+          )
+      : null
     const split =
       commits === null
         ? null
@@ -5291,10 +5314,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
             commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
             this.getSplitPinnedRenderOffset(),
             this.forceFullRepaintRequested,
+            prefixPending ? this.lib.encoder.encode(this.pendingSplitFramePrefix) : undefined,
           )
     const status = split?.status ?? this.nativeScene.commit(this.forceFullRepaintRequested)
     if (commits && (status === NativeSessionRenderStatus.Pending || status === NativeSessionRenderStatus.Presented)) {
       this.nativeSplitAcceptedCount = commits.length
+      if (prefixPending) this.pendingSplitFramePrefix = ""
     }
     switch (status) {
       case NativeSessionRenderStatus.Pending:
@@ -5341,7 +5366,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       remaining -= this.nativeSplitAcceptedCount
       this.completeNativeSplitCommits(this.externalOutputQueue.peek(this.nativeSplitAcceptedCount))
     }
-    while (remaining > 0 || this.pendingNativeReplay?.remaining === 0) {
+    while (remaining > 0 || this.pendingNativeReplay?.remaining === 0 || this.pendingSplitFramePrefix !== "") {
       if (this.pendingNativeReplay?.remaining === 0) {
         try {
           this.applySplitFooterReplayReset(this.pendingNativeReplay.options)
@@ -5351,10 +5376,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           continue
         }
       }
-      if (remaining === 0) break
-      const commits = this.externalOutputQueue.batch(
-        Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
-      )
+      if (remaining === 0 && this.pendingSplitFramePrefix === "") break
+      const prefixPending = this.pendingSplitFramePrefix !== ""
+      const commits =
+        remaining === 0
+          ? []
+          : this.externalOutputQueue.batch(
+              Math.min(
+                remaining,
+                prefixPending ? Number.POSITIVE_INFINITY : this.maxSplitCommitsPerFrame,
+                this.pendingNativeReplay?.remaining ?? Infinity,
+              ),
+            )
       // A null-frame render also reports PENDING for an earlier frame, which would complete unsent commits.
       if (this.lib.sessionGetRendererState(driver.context, driver.session).framePending) {
         throw new Error("Native split output flush requires no pending frame presentation")
@@ -5364,12 +5397,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
         this.getSplitPinnedRenderOffset(),
         false,
+        prefixPending ? this.lib.encoder.encode(this.pendingSplitFramePrefix) : undefined,
       )
       if (result.status === NativeSessionRenderStatus.Failed) throw new Error("Native split output frame failed")
       if (result.status === NativeSessionRenderStatus.Skipped) {
         await driver.idle()
         continue
       }
+      if (prefixPending) this.pendingSplitFramePrefix = ""
       await driver.whenPresented()
       remaining -= commits.length
       this.completeNativeSplitCommits(commits)

@@ -1622,7 +1622,20 @@ test.each([
     result.resize(nextWidth, nextHeight)
     await renderer.nativeScene!.driver.idle()
 
-    expect(result.output()).toBe(ANSI.moveCursorAndClear(clearStart, 1))
+    await result.renderOnce()
+    await renderer.nativeScene!.driver.idle()
+
+    const out = result.output()
+    const scrub = ANSI.moveCursorAndClear(clearStart, 1)
+
+    expect(out.indexOf(ANSI.syncSet)).toBe(0)
+    expect(out.indexOf(scrub)).toBeGreaterThan(out.indexOf(ANSI.syncSet))
+    expect(out.indexOf(ANSI.syncReset)).toBeGreaterThan(out.indexOf(scrub))
+
+    expect(out.split(ANSI.syncReset).length - 1).toBe(1)
+    expect(out.endsWith(ANSI.syncReset)).toBe(true)
+
+    expect((renderer as any).pendingSplitFramePrefix).toBe("")
     expect((renderer as any).pendingSplitFooterTransition).toBeNull()
   },
 )

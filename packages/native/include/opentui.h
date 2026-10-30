@@ -1182,6 +1182,9 @@ ot_status ot_scene_measure_layout(ot_context *, const ot_handle *session, const 
 ot_status ot_session_render_split(ot_context *, const ot_handle *session, const ot_scene_frame_request *,
     const ot_split_snapshot *, uint32_t count, uint32_t pinned_render_offset, uint32_t force,
     uint32_t *out_status);
+ot_status ot_session_render_split_with_prefix(ot_context *, const ot_handle *session, const ot_scene_frame_request *,
+    const ot_split_snapshot *, uint32_t count, uint32_t pinned_render_offset, uint32_t force,
+    const uint8_t *prefix, uint32_t prefix_bytes, uint32_t *out_status);
 ot_status ot_session_split_control(ot_context *, const ot_handle *session, const ot_split_control *, uint32_t *out_offset);
 /* Screen mode, dimensions, and copied trailing output are admitted together.
  * The screen packet plus trailing output must fit within 4096 bytes. */

@@ -427,6 +427,10 @@ pub const Session = struct {
     /// Snapshot serialization may materialize image fallbacks. Private, bounded
     /// copies keep both rejected admission and in-flight output from changing sources.
     pub fn renderSplit(self: *Session, frame: ?scene.FrameRequest, snapshots: []const renderer.SplitSnapshot, pinned_render_offset: u32, force: bool) !RenderStatus {
+        return self.renderSplitWithPrefix(frame, snapshots, pinned_render_offset, force, &.{});
+    }
+
+    pub fn renderSplitWithPrefix(self: *Session, frame: ?scene.FrameRequest, snapshots: []const renderer.SplitSnapshot, pinned_render_offset: u32, force: bool, prefix: []const u8) !RenderStatus {
         const suspended_snapshots = frame == null and self.lifecycle.phase == .suspended;
         if (suspended_snapshots) {
             try self.checkOpen();
@@ -435,7 +439,7 @@ pub const Session = struct {
         }
         const attached = self.renderer orelse return error.RendererNotAttached;
         if (frame == null and self.frame_end_offset != null) return .pending;
-        if (snapshots.len > split_snapshots_max or pinned_render_offset > std.math.maxInt(u16)) return error.InvalidOptions;
+        if (snapshots.len > split_snapshots_max or pinned_render_offset > std.math.maxInt(u16) or prefix.len > control_packet_bytes_max) return error.InvalidOptions;
         var work: ?renderer.FrameWork = null;
         var damage: ?*const std.DynamicBitSetUnmanaged = null;
         if (frame) |request| {
@@ -471,6 +475,7 @@ pub const Session = struct {
         }
         const status = try self.renderReady(force, .{
             .snapshots = copies[0..count],
+            .prefix = prefix,
             .pinned_render_offset = pinned_render_offset,
             .paint_footer = frame != null,
             .suspended = suspended_snapshots,
