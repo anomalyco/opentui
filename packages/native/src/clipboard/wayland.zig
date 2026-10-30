@@ -1477,21 +1477,21 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         progress: Progress = .pending,
         wslg_path: []const u8 = "",
         connects: u8 = 1,
-        runtime_dir: ?[*:0]const u8 = "/run/user/test",
+        runtime_dir: [*:0]const u8 = "/run/user/test",
         display: [*:0]const u8 = "wayland-7",
     };
     const wslg_path = "/mnt/wslg/runtime-dir/wayland-7";
     const cases = [_]Case{
-        .{ .inherited = true, .runtime_dir = null },
+        .{ .inherited = true, .runtime_dir = "" },
         .{ .cap = false },
         .{ .refused = .default, .progress = .unsupported },
         .{ .wsl = true },
         .{ .refused = .default, .wsl = true, .inherited = true, .wslg_path = wslg_path, .connects = 2 },
         .{ .refused = .all, .wsl = true, .progress = .unsupported, .wslg_path = wslg_path, .connects = 2 },
         // libwayland would refuse the relative name and log to stderr on every operation.
-        .{ .runtime_dir = null, .wsl = true, .wslg_path = wslg_path },
+        .{ .runtime_dir = "", .wsl = true, .wslg_path = wslg_path },
         .{ .runtime_dir = "run/user/test", .wsl = true, .wslg_path = wslg_path },
-        .{ .runtime_dir = null, .display = "/run/user/test/wayland-7" },
+        .{ .runtime_dir = "", .display = "/run/user/test/wayland-7" },
     };
     const names = [_][*:0]const u8{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR" };
     var saved: [names.len]?[:0]u8 = undefined;
@@ -1516,9 +1516,7 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         Environment.path_length = 0;
         Environment.count = 0;
         try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", case.display, 1));
-        if (case.runtime_dir) |runtime_dir| {
-            try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", runtime_dir, 1));
-        } else _ = Environment.unsetenv("XDG_RUNTIME_DIR");
+        try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", case.runtime_dir, 1));
         if (case.inherited) try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
         defer _ = Environment.unsetenv("WAYLAND_SOCKET");
 
