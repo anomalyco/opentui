@@ -4977,8 +4977,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         void this.nativeSession.close()
       } catch (error) {
         this.externalOutputQueue.clear()
-        this.nativeSession.dispose()
-        console.error("Native split output cancelled during close:", error)
+        // A late close stops the flush and still restores (#1875).
+        if (!this.nativeSession.isCloseInterruption(error)) {
+          this.nativeSession.dispose()
+          console.error("Native split output cancelled during close:", error)
+        }
       }
     })
     // A refused writer wakes after the queued rows and the terminal restore, when stdout is no longer captured.
