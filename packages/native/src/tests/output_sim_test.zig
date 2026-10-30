@@ -842,7 +842,8 @@ const Sim = struct {
                 if (self.env.writer_stops_ns) |at| if (self.now >= at) return;
                 if (writer.pick()) try self.post(.writer_write, self.now, event.arg);
             },
-            .writer_write => switch (writer.writeStep()) {
+            // As the thread: after a cancel only a write already inside the kernel goes on.
+            .writer_write => switch (if (self.writer_queued == null and writer.state.load(.acquire) == .stop) .failed else writer.writeStep()) {
                 .more => {
                     const wake = self.link.nextWake(self.now) orelse self.now;
                     try self.post(.writer_write, @max(wake, self.now + 1), event.arg);
