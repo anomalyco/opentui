@@ -695,6 +695,26 @@ test "renderer explicit width gives OSC 66 at most 7 cells and pads a wider glyp
     }
 }
 
+test "renderer skips hyperlink targets that carry control bytes" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 3, 1, &pools.graphemes, &pools.links);
+    defer test_renderer.deinit();
+    test_renderer.renderer.terminal.caps.hyperlinks = true;
+    const link_id = try pools.links.acquire("https://example.com/path\x1b]52;c;QQ==\x07");
+    const linked = ansi.TextAttributes.setLinkId(0, link_id);
+
+    const next = test_renderer.renderer.getNextBuffer();
+    try next.drawText("ABC", 0, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(0, 0, 0, 255), linked);
+    _ = test_renderer.render(false);
+
+    const output = test_renderer.memory.lastWrite();
+    try std.testing.expect(std.mem.find(u8, output, "\x1b]8;") == null);
+    try std.testing.expect(std.mem.find(u8, output, "]52;") == null);
+    try std.testing.expect(std.mem.find(u8, output, "ABC") != null);
+}
+
 test "renderer preserves Malayalam report after Ghostty probe replies" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

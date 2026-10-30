@@ -1436,7 +1436,11 @@ pub const CliRenderer = struct {
                     if (currentLinkId != 0) {
                         const lp = snapshot.link_pool;
                         if (lp.get(currentLinkId)) |url_bytes| {
-                            writer.print("\x1b]8;id={d};{s}\x1b\\", .{ currentLinkId, url_bytes }) catch {};
+                            if (link.isWritableTarget(url_bytes)) {
+                                writer.print("\x1b]8;id={d};{s}\x1b\\", .{ currentLinkId, url_bytes }) catch {};
+                            } else {
+                                currentLinkId = 0;
+                            }
                         } else |_| {
                             currentLinkId = 0;
                         }
@@ -2563,7 +2567,11 @@ pub const CliRenderer = struct {
                     if (currentLinkId != 0) {
                         const lp = self.nextRenderBuffer.link_pool;
                         if (lp.get(currentLinkId)) |url_bytes| {
-                            writer.print("\x1b]8;id={d};{s}\x1b\\", .{ currentLinkId, url_bytes }) catch {};
+                            if (link.isWritableTarget(url_bytes)) {
+                                writer.print("\x1b]8;id={d};{s}\x1b\\", .{ currentLinkId, url_bytes }) catch {};
+                            } else {
+                                currentLinkId = 0;
+                            }
                         } else |_| {
                             // Link not found, treat as no link
                             currentLinkId = 0;
@@ -2695,10 +2703,14 @@ pub const CliRenderer = struct {
                         self.emitColor(writer, cell.bg, true);
                         ansi.TextAttributes.applyAttributesOutputWriter(writer, cell.attributes) catch {};
                         const replay_link_id = if (hyperlinksEnabled) ansi.TextAttributes.getLinkId(cell.attributes) else 0;
+                        var replay_link_opened = false;
                         if (replay_link_id != 0) {
                             const lp = self.nextRenderBuffer.link_pool;
                             if (lp.get(replay_link_id)) |url_bytes| {
-                                writer.print("\x1b]8;id={d};{s}\x1b\\", .{ replay_link_id, url_bytes }) catch {};
+                                if (link.isWritableTarget(url_bytes)) {
+                                    writer.print("\x1b]8;id={d};{s}\x1b\\", .{ replay_link_id, url_bytes }) catch {};
+                                    replay_link_opened = true;
+                                }
                             } else |_| {}
                         }
                         if (gp.isGraphemeChar(cell.char)) {
@@ -2717,7 +2729,7 @@ pub const CliRenderer = struct {
                                 writer.writeAll(utf8Buf[0..len]) catch {};
                             } else |_| {}
                         }
-                        if (replay_link_id != 0) writer.writeAll("\x1b]8;;\x1b\\") catch {};
+                        if (replay_link_opened) writer.writeAll("\x1b]8;;\x1b\\") catch {};
                     }
                 }
             }
