@@ -1089,9 +1089,9 @@ pub const Player = struct {
         return self.normalize(self.wallTime());
     }
 
-    /// Advances the media clock to now and ends or loops playback at the end,
-    /// at most one wrap per call. It never decodes, so state reads keep
-    /// playback moving while the node is not painted.
+    /// Advances the media clock to now and ends or loops playback at the end; a loop
+    /// restarts at the time that ran past the end. It never decodes, so state reads
+    /// keep playback moving while the node is not painted.
     fn tick(self: *Player) void {
         if (!self.playing) return;
         const state = self.video.getState();
@@ -1105,7 +1105,7 @@ pub const Player = struct {
         const media = if (audio_clock) state.current_time_us else self.wallTime();
         const total = self.duration();
         if (total <= 0 or media < total) return;
-        if (self.loop) self.seek(0) catch {} else self.finish();
+        if (self.loop) self.seek(@mod(media, total)) catch {} else self.finish();
     }
 
     pub fn snapshot(self: *Player) PlayerState {

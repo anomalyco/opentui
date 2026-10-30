@@ -10,6 +10,7 @@ const renderer = @import("../renderer.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
 
 const asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4";
+const video_only_asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s-video-only.mp4";
 const missing = "../core/src/tests/fixtures/video/missing.mp4";
 const frame_us: u32 = 41_667;
 
@@ -401,7 +402,46 @@ test "video scene loop restarts playback at the end" {
     const state = try f.owner.videoGetState(node);
     try testing.expect(state.playing);
     try testing.expect(!state.ended);
-    try testing.expect(state.current_time_us < 500_000);
+    // The loop carries the 20 ms that ran past the end.
+    try testing.expect(state.current_time_us >= 15_000 and state.current_time_us < 500_000);
+}
+
+// Five loops of state reads at about 120, 30 and 7 fps, and after stalls that pass the end by more
+// than the clip, with the wall clock moved back instead of sleeping; one row pauses and resumes at
+// every read. The end falls between reads. Each loop carries the time past the end, so none loses it.
+test "video player loops keep the clip duration at any tick interval" {
+    var detail: [256]u8 = undefined;
+    const value = try video.Player.open(testing.allocator, video_only_asset, &detail);
+    defer value.deinit();
+    const total = value.video.info.duration_us;
+    try value.setLoop(true);
+    try value.play();
+    const Row = struct { interval_us: i64, pause: bool = false };
+    const rows = [_]Row{
+        .{ .interval_us = 8_333 },
+        .{ .interval_us = 33_000 },
+        .{ .interval_us = 140_000 },
+        .{ .interval_us = 2 * total + 70_000 },
+        .{ .interval_us = 33_000, .pause = true },
+    };
+    for (rows) |row| {
+        const origin = std.Io.Clock.now(.awake, testing.io).toMicroseconds();
+        try value.seek(0);
+        var elapsed_us: i64 = 0;
+        var state: video.PlayerState = undefined;
+        while (elapsed_us < 5 * total) : (elapsed_us += row.interval_us) {
+            value.clock_start_us -= row.interval_us;
+            if (row.pause) {
+                try value.pause();
+                try value.play();
+            }
+            state = value.snapshot();
+        }
+        // Only the real time spent in seeks is lost; a loop that restarts at 0 loses up to an interval.
+        const expected = @mod(elapsed_us + std.Io.Clock.now(.awake, testing.io).toMicroseconds() - origin, total);
+        errdefer std.debug.print("interval {d}: expected {d}, read {d}\n", .{ row.interval_us, expected, state.current_time_us });
+        try testing.expect(@mod(expected - state.current_time_us, total) < 4_000);
+    }
 }
 
 const gop_asset = "../core/src/tests/fixtures/video/gop-160x90-24fps-12s.mp4";
