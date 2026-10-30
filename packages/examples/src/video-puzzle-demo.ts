@@ -146,32 +146,34 @@ function computeGeometry(): Geometry {
 }
 
 // A solved board closes its gaps: the tiles meet edge to edge, centered where the board was.
-function slotPosition(slot: number, together = closed): [number, number] {
+function slotPosition(slot: number): [number, number] {
   const row = Math.floor(slot / size)
   const column = slot % size
-  const gap = together ? 0 : GAP
-  const inset = together ? Math.floor((GAP * (size - 1)) / 2) : 0
+  const gap = closed ? 0 : GAP
+  const inset = closed ? Math.floor((GAP * (size - 1)) / 2) : 0
   return [inset + column * (geometry.tileWidth + gap), inset + row * (geometry.tileHeight + gap)]
 }
 
-// The board covers the source like fit "cover"; each tile crops the source pixels under its home cells, so it
-// decodes and sends only its own region.
+// The closed board, tiles edge to edge, covers the source like fit "cover". Each tile crops the source pixels
+// between its edges, which neighbours share, so a solved board shows one picture with no seam. Each tile decodes
+// and sends only its own region.
 function homeCrop(home: number): { left: number; top: number; width: number; height: number } | undefined {
   const metadata = tiles[0]?.video.videoMetadata
   if (!metadata || metadata.width <= 0 || metadata.height <= 0) return undefined
-  const { boardWidth, boardHeight, tileWidth, tileHeight } = geometry
-  const boardAspect = boardWidth / (boardHeight * geometry.cellAspect)
-  const sourceWidth = Math.min(metadata.width, metadata.height * boardAspect)
-  const sourceHeight = sourceWidth / boardAspect
-  const scale = sourceWidth / boardWidth
-  const [x, y] = slotPosition(home, false)
-  const left = Math.round((metadata.width - sourceWidth) / 2 + x * scale)
-  const top = Math.round((metadata.height - sourceHeight) / 2 + (y * sourceHeight) / boardHeight)
+  const aspect = geometry.tileWidth / (geometry.tileHeight * geometry.cellAspect)
+  const sourceWidth = Math.min(metadata.width, metadata.height * aspect)
+  const sourceHeight = sourceWidth / aspect
+  const edge = (index: number, extent: number, total: number) =>
+    Math.round((total - extent) / 2 + (index * extent) / size)
+  const column = home % size
+  const row = Math.floor(home / size)
+  const left = edge(column, sourceWidth, metadata.width)
+  const top = edge(row, sourceHeight, metadata.height)
   return {
     left,
     top,
-    width: Math.max(1, Math.min(metadata.width - left, Math.round(tileWidth * scale))),
-    height: Math.max(1, Math.min(metadata.height - top, Math.round((tileHeight * sourceHeight) / boardHeight))),
+    width: edge(column + 1, sourceWidth, metadata.width) - left,
+    height: edge(row + 1, sourceHeight, metadata.height) - top,
   }
 }
 
@@ -369,7 +371,11 @@ function setFrozen(frozen: boolean): void {
   if (frozen === (frozenAt !== null)) return
   if (frozen) {
     frozenAt = clock()
-    for (const tile of tiles) tile.video.pause()
+    // Each player stops at its own clock; a paused seek puts every tile on the same frame.
+    for (const tile of tiles) {
+      tile.video.pause()
+      if (tile.box.visible) tile.video.seek(wrap(frozenAt + tile.offset))
+    }
     return
   }
   epoch = performance.now() - (frozenAt ?? 0) * 1000
