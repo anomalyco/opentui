@@ -881,24 +881,44 @@ test "video audio after a first seek starts at the target sample" {
         }
     }
     // A track that starts after the video plays silence until its first sample, so the sine
-    // that starts at 0.5 s stays at 0.5 s from the start and after a later seek.
+    // that starts at 0.5 s stays at 0.5 s. A seek decodes as on a freshly opened video after
+    // the whole track or 2048 frames at 1 s, also when it lands on the first packet.
     var detail: [256]u8 = undefined;
-    const late = try video.Video.open(testing.allocator, late_audio_asset, true, &detail);
-    defer late.deinit();
-    for ([_]i64{ 0, 250_000 }) |target_us| {
-        if (target_us > 0) try late.seek(target_us);
-        var frames: usize = 0;
-        while (true) {
-            const decoded = try late.readAudio(sought[frames * 2 ..], @intCast(@min(4096, sought.len / 2 - frames)));
-            if (decoded == 0) break;
-            frames += decoded;
+    for ([_][]const u8{ asset, late_audio_asset }) |path| {
+        for ([_]i64{ 0, 250_000, 1_000_000 }) |target_us| {
+            const fresh = try video.Video.open(testing.allocator, path, true, &detail);
+            defer fresh.deinit();
+            if (target_us > 0 or path.ptr == asset.ptr) try fresh.seek(target_us);
+            const fresh_frames = try readAllAudio(fresh, reference);
+            if (path.ptr == late_audio_asset.ptr and target_us < 500_000) {
+                const first = for (reference[0 .. fresh_frames * 2], 0..) |sample, index| {
+                    if (@abs(sample) > 0.05) break index / 2;
+                } else fresh_frames;
+                const expected: usize = @intCast(@divExact((500_000 - target_us) * 48, 1000));
+                try testing.expect(first >= expected and first < expected + 100);
+            }
+            for ([_]?u32{ null, 2048 }) |earlier_frames| {
+                const reused = try video.Video.open(testing.allocator, path, true, &detail);
+                defer reused.deinit();
+                if (earlier_frames) |count| {
+                    try reused.seek(1_000_000);
+                    _ = try reused.readAudio(sought, count);
+                } else _ = try readAllAudio(reused, sought);
+                try reused.seek(target_us);
+                const frames = try readAllAudio(reused, sought);
+                errdefer std.debug.print("{s} seek {d} after {?d} frames\n", .{ path, target_us, earlier_frames });
+                try testing.expectEqualSlices(f32, reference[0 .. fresh_frames * 2], sought[0 .. frames * 2]);
+            }
         }
-        const first = for (sought[0 .. frames * 2], 0..) |sample, index| {
-            if (@abs(sample) > 0.05) break index / 2;
-        } else frames;
-        const expected: usize = @intCast(@divExact((500_000 - target_us) * 48, 1000));
-        errdefer std.debug.print("seek {d}: first loud sample {d}, expected about {d}\n", .{ target_us, first, expected });
-        try testing.expect(first >= expected and first < expected + 100);
+    }
+}
+
+fn readAllAudio(value: *video.Video, output: []f32) !usize {
+    var frames: usize = 0;
+    while (true) {
+        const decoded = try value.readAudio(output[frames * 2 ..], @intCast(@min(4096, output.len / 2 - frames)));
+        if (decoded == 0) return frames;
+        frames += decoded;
     }
 }
 

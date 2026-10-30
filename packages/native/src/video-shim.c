@@ -238,6 +238,41 @@ static void otv_attach_hw_device(otv_decoder *decoder, ot_stream_decoder *stream
     stream->codec->get_format = otv_select_pixel_format;
 }
 
+static int open_codec(otv_decoder *decoder, ot_stream_decoder *out, const AVCodec *codec, char *error,
+                      size_t error_size) {
+    out->codec = avcodec_alloc_context3(codec);
+    if (!out->codec) return fail_to(error, error_size, AVERROR(ENOMEM), "avcodec_alloc_context3");
+    int result = avcodec_parameters_to_context(out->codec, out->stream->codecpar);
+    if (result < 0) return fail_to(error, error_size, result, "avcodec_parameters_to_context");
+    out->codec->pkt_timebase = out->stream->time_base;
+    // The decoder skips `delay` samples once after opening, whatever packet comes first; after
+    // an initial seek that drops the frame holding the target. Demuxers mark the priming samples
+    // on the first packet instead, which also covers seeks back to the start.
+    out->codec->delay = 0;
+    // Enough threads to pipeline 4K decoding without drowning the process;
+    // uncapped auto detection spawns one per logical core.
+    int cpu_count = av_cpu_count();
+    int is_video = out->codec->codec_type == AVMEDIA_TYPE_VIDEO;
+    out->codec->thread_count = is_video ? (cpu_count > 8 ? 8 : cpu_count) : 1;
+    if (is_video) {
+        // Frames become native images, so sources beyond the image limits cannot play.
+        const int width = out->codec->width, height = out->codec->height;
+        if (width <= 0 || height <= 0) {
+            snprintf(error, error_size, "video size %dx%d is invalid", width, height);
+            return OTV_ERROR;
+        }
+        if (exceeds_limits(decoder, width, height)) {
+            snprintf(error, error_size, "video size %dx%d exceeds the image limits", width, height);
+            return OTV_ERROR;
+        }
+        out->codec->max_pixels = (int64_t)decoder->limits.max_pixels;
+        otv_attach_hw_device(decoder, out);
+    }
+    result = avcodec_open2(out->codec, codec, NULL);
+    if (result < 0) return fail_to(error, error_size, result, "avcodec_open2");
+    return OTV_OK;
+}
+
 static int open_stream(otv_decoder *decoder, const char *path, enum AVMediaType type,
                        enum AVCodecID required_codec, ot_stream_decoder *out) {
     memset(out, 0, sizeof(*out));
@@ -261,37 +296,7 @@ static int open_stream(otv_decoder *decoder, const char *path, enum AVMediaType 
                  avcodec_get_name(out->stream->codecpar->codec_id));
         return OTV_ERROR;
     }
-    codec = avcodec_find_decoder(required_codec);
-    if (!codec) return fail(decoder, AVERROR_DECODER_NOT_FOUND, "avcodec_find_decoder");
-    out->codec = avcodec_alloc_context3(codec);
-    if (!out->codec) return fail(decoder, AVERROR(ENOMEM), "avcodec_alloc_context3");
-    result = avcodec_parameters_to_context(out->codec, out->stream->codecpar);
-    if (result < 0) return fail(decoder, result, "avcodec_parameters_to_context");
-    out->codec->pkt_timebase = out->stream->time_base;
-    // The decoder skips `delay` samples once after opening, whatever packet comes first; after
-    // an initial seek that drops the frame holding the target. Demuxers mark the priming samples
-    // on the first packet instead, which also covers seeks back to the start.
-    out->codec->delay = 0;
-    // Enough threads to pipeline 4K decoding without drowning the process;
-    // uncapped auto detection spawns one per logical core.
-    int cpu_count = av_cpu_count();
-    out->codec->thread_count = type == AVMEDIA_TYPE_VIDEO ? (cpu_count > 8 ? 8 : cpu_count) : 1;
-    if (type == AVMEDIA_TYPE_VIDEO) {
-        // Frames become native images, so sources beyond the image limits cannot play.
-        const int width = out->codec->width, height = out->codec->height;
-        if (width <= 0 || height <= 0) {
-            snprintf(decoder->error, sizeof(decoder->error), "video size %dx%d is invalid", width, height);
-            return OTV_ERROR;
-        }
-        if (exceeds_limits(decoder, width, height)) {
-            snprintf(decoder->error, sizeof(decoder->error), "video size %dx%d exceeds the image limits", width, height);
-            return OTV_ERROR;
-        }
-        out->codec->max_pixels = (int64_t)decoder->limits.max_pixels;
-        otv_attach_hw_device(decoder, out);
-    }
-    result = avcodec_open2(out->codec, codec, NULL);
-    if (result < 0) return fail(decoder, result, "avcodec_open2");
+    if (open_codec(decoder, out, codec, decoder->error, sizeof(decoder->error)) != OTV_OK) return OTV_ERROR;
     out->packet = av_packet_alloc();
     out->frame = av_frame_alloc();
     if (!out->packet || !out->frame) return fail(decoder, AVERROR(ENOMEM), "allocate packet/frame");
@@ -489,7 +494,19 @@ static int seek_stream(otv_decoder *decoder, ot_stream_decoder *stream, int64_t 
     int result = avformat_seek_file(stream->format, stream->stream_index, INT64_MIN, timestamp, timestamp, AVSEEK_FLAG_BACKWARD);
     if (result < 0) result = av_seek_frame(stream->format, stream->stream_index, timestamp, AVSEEK_FLAG_BACKWARD);
     if (result < 0) return fail_to(stream->error, sizeof(stream->error), result, "avformat_seek_file");
-    avcodec_flush_buffers(stream->codec);
+    // The AAC flush keeps the last frame's window shapes, which the first frame after the seek
+    // would overlap with, so audio gets a new decoder.
+    if (stream == &decoder->audio) {
+        AVCodecContext *previous = stream->codec;
+        if (open_codec(decoder, stream, previous->codec, stream->error, sizeof(stream->error)) != OTV_OK) {
+            avcodec_free_context(&stream->codec);
+            stream->codec = previous;
+            return OTV_ERROR;
+        }
+        avcodec_free_context(&previous);
+    } else {
+        avcodec_flush_buffers(stream->codec);
+    }
     av_packet_unref(stream->packet);
     stream->packet_pending = 0;
     av_frame_unref(stream->frame);
