@@ -1019,6 +1019,7 @@ test "video scene playback ends or loops after the audio drains without paints" 
             }
             // A device pulls the whole queued tail; only the audio thread publishes what it played.
             var output: [960 * 2]f32 = undefined;
+            const mixed_at = std.Io.Clock.now(.awake, testing.io).toMicroseconds();
             for (0..12) |_| {
                 value.video.engine_lock.lockUncancelable(testing.io);
                 _ = audio.mixToBuffer(value.video.audio_engine.?, &output, 960, 2);
@@ -1035,7 +1036,9 @@ test "video scene playback ends or loops after the audio drains without paints" 
             const state = try f.owner.videoGetState(node);
             try testing.expectEqual(!loop, state.ended);
             try testing.expectEqual(loop, state.playing);
-            if (loop) try testing.expect(state.current_time_us >= 25_000 and state.current_time_us < 500_000);
+            // The drain came after the mix began, so the carried time is at most the time since then.
+            const since_mix = std.Io.Clock.now(.awake, testing.io).toMicroseconds() - mixed_at;
+            if (loop) try testing.expect(state.current_time_us >= 25_000 and state.current_time_us <= since_mix);
         }
     }
 }
