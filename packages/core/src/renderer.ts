@@ -1252,6 +1252,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private splitCommitLimit = this.maxSplitCommitsPerFrame
   // The renderer state's dropped frame count already reported.
   private droppedFrames = 0
+  // A frame was dropped since the last rendered one; native counts a partial frame only when its full repaint fails.
+  private dropRetried = false
 
   private _terminalWidth: number = 0
   private _terminalHeight: number = 0
@@ -5460,6 +5462,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.splitCommitLimit = 1
       return true
     }
+    if (!commits?.length) {
+      if (!counted && !this.dropRetried) this.requestRender()
+      this.dropRetried = true
+    }
     if (commits?.length === 1) {
       this.externalOutputQueue.drop(1)
       // The dropped commit no longer sets where queued output ends.
@@ -5525,6 +5531,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       else this.applyPendingExternalOutputModeIfReady()
     }
     this.forceFullRepaintRequested = false
+    this.dropRetried = false
     // Image uploads that did not fit this frame go out in the next ones. Such a frame has bytes, so it was pending.
     if (status === NativeSessionRenderStatus.Pending && this.nativeSession.imageUploadsPending) this.requestRender()
     return "rendered"

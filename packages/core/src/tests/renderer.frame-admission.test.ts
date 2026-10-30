@@ -365,6 +365,45 @@ for (const mode of ["demand", "continuous"] as const) {
   })
 }
 
+// 413: in demand mode, one update that changes all but row 0 and is too large as a diff gets its full repaint
+// without another request: noise stays too large and is reported once; a checkerboard of characters fits as a
+// full repaint and is drawn.
+for (const content of ["noise", "checkerboard"] as const) {
+  test(`one oversize update in demand mode is retried as a full repaint (${content})`, async () => {
+    const { renderer, stdout, clock } = createAdmissionRenderer()
+    const dropped: unknown[] = []
+    renderer.on(CliRenderEvents.FRAME_DROPPED, (event) => dropped.push(event))
+    let update = false
+    const fg = RGBA.fromInts(200, 200, 200)
+    const bg = RGBA.fromInts(9, 9, 9)
+    renderer.addPostProcessFn((buffer) => {
+      buffer.drawText("header", 0, 0, fg, bg)
+      if (update && content === "noise") paintNoise(buffer, 0, 0, 1, buffer.width, buffer.height - 1)
+      for (let row = 1; row < buffer.height; row++) {
+        for (let column = 0; column < buffer.width && content === "checkerboard"; column++) {
+          buffer.setCell(column, row, update && (row + column) % 2 === 0 ? "o" : "x", fg, bg)
+        }
+      }
+    })
+    stdout.release()
+    renderer.requestRender()
+    clock.advance(100)
+    await renderer.idle()
+    const before = stdout.text().length
+    update = true
+    renderer.requestRender()
+    for (let turn = 0; turn < 8; turn++) {
+      clock.advance(100)
+      await settle()
+    }
+    await renderer.idle()
+    const drawn = stdout.text().slice(before)
+    expect({ events: dropped.length, drawn: drawn.includes("oxox") }).toEqual(
+      content === "noise" ? { events: 1, drawn: false } : { events: 0, drawn: true },
+    )
+  })
+}
+
 // 413: a scrollback commit larger than one frame goes again alone and is then dropped and reported; the commits
 // around it and the footer still draw, and closing restores the terminal.
 test("a scrollback commit too large for the output is dropped", async () => {
