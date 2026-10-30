@@ -28,7 +28,7 @@ const Fixture = struct {
             .chunk_size = 64,
             .initial_chunks = 64,
             .max_bytes = 4096,
-            .growth_policy = @intFromEnum(feed_mod.GrowthPolicy.block),
+            .growth_policy = @backingInt(feed_mod.GrowthPolicy.block),
             .auto_commit_on_full = 0,
             .span_queue_capacity = 64,
         });
@@ -263,7 +263,7 @@ test "renderer presentation rejects active output and callback reentry" {
         var rejected: ?anyerror = null;
 
         fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (event != @intFromEnum(feed_mod.EventId.DataAvailable)) return;
+            if (event != @backingInt(feed_mod.EventId.DataAvailable)) return;
             const cli = target.?;
             cli.backend.feed.setCallback(null);
             _ = cli.renderDeferred(false) catch |err| {
@@ -304,7 +304,7 @@ test "renderer presentation skipped admission has no completion" {
     try fixture.paint("old", 11);
     try std.testing.expectEqual(.rendered, try fixture.render(true));
     const previous_stats = cli.getRenderStats();
-    const blocker = [_]u8{'x'} ** 4096;
+    const blocker: [4096]u8 = @splat('x');
     // A full queue skips before encoding; one free chunk skips after encoding.
     for ([_]usize{ 4096, 4032 }) |size| {
         try fixture.feed.writeAtomic(blocker[0..size]);

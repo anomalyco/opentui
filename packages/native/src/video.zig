@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const io = if (builtin.is_test) std.testing.io else @import("root").io;
 const audio = @import("audio.zig");
 const image = @import("image.zig");
+const utils = @import("utils.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -53,7 +54,7 @@ pub const State = extern struct {
 const latency_window_size = 30;
 
 pub const LatencyWindow = struct {
-    samples: [latency_window_size]u32 = [_]u32{0} ** latency_window_size,
+    samples: [latency_window_size]u32 = @splat(0),
     count: u8 = 0,
     cursor: u8 = 0,
 
@@ -166,7 +167,7 @@ extern fn otv_open(
 ) c_int;
 extern fn otv_close(decoder: *?*Decoder) void;
 extern fn otv_seek(decoder: *Decoder, target_us: i64) c_int;
-extern fn otv_set_output_size(decoder: *Decoder, width: u32, height: u32, cover: u32) c_int;
+extern fn otv_set_output_size(decoder: *Decoder, width: u32, height: u32, cover: u32, crop: image.Region) c_int;
 extern fn otv_decode_frame(
     decoder: *Decoder,
     target_us: i64,
@@ -190,7 +191,7 @@ fn nowUs() i64 {
 }
 
 fn elapsedSince(started: i64) u32 {
-    return @intCast(std.math.clamp(nowUs() - started, 0, std.math.maxInt(u32)));
+    return utils.unsigned(u32, @min(utils.nonNegative(nowUs() - started), std.math.maxInt(u32)));
 }
 
 fn copyMessage(buffer: []u8, message: []const u8) usize {
@@ -218,6 +219,8 @@ const AudioStatus = struct {
     failed: bool = false,
     mixer_running: bool = false,
     applied_version: u32 = 0,
+    // When the stream was first seen drained, so the wall clock can take over from then.
+    ended_us: i64 = 0,
 };
 
 const Device = enum { idle, started, failed };
@@ -251,6 +254,7 @@ pub const Video = struct {
     output_width: u32,
     output_height: u32,
     output_cover: bool = false,
+    output_crop: ?image.Region = null,
     wants_playback: bool = false,
     muted: bool = false,
     volume: f32 = 1,
@@ -268,7 +272,7 @@ pub const Video = struct {
     audio_lock: std.Io.Mutex = .init,
     audio_control: AudioControl = .{},
     audio_status: AudioStatus = .{},
-    audio_error_buf: [256]u8 = [_]u8{0} ** 256,
+    audio_error_buf: [256]u8 = @splat(0),
     audio_error_len: usize = 0,
     // Serializes every engine entry, as audio.zig requires. Device startup
     // holds it, so the owner thread never takes it.
@@ -297,7 +301,7 @@ pub const Video = struct {
     worker_quit: bool = false,
     worker_result: ?ProduceOutcome = null,
     // The last failure; cleared by seeks and recovery.
-    last_error_buf: [256]u8 = [_]u8{0} ** 256,
+    last_error_buf: [256]u8 = @splat(0),
     last_error_len: usize = 0,
 
     /// With external_audio the caller owns the audio: no engine is created and
@@ -306,11 +310,11 @@ pub const Video = struct {
     pub fn open(allocator: Allocator, path: []const u8, external_audio: bool, error_out: []u8) !*Video {
         if (error_out.len > 0) error_out[0] = 0;
         if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidArgument;
-        const path_z = try allocator.dupeZ(u8, path);
+        const path_z = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(path_z);
         var decoder: ?*Decoder = null;
         var info = Info{};
-        var detail: [256]u8 = [_]u8{0} ** 256;
+        var detail: [256]u8 = @splat(0);
         const limits: image.Limits = .{};
         const shim_limits: OtvLimits = .{ .max_pixels = limits.max_pixels, .max_width = limits.max_width, .max_height = limits.max_height };
         if (otv_open(path_z.ptr, &shim_limits, &decoder, &info, &detail, detail.len) != 0 or decoder == null) {
@@ -364,14 +368,19 @@ pub const Video = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn configureOutput(self: *Video, width: u32, height: u32, cover: bool) !void {
+    /// Converts the crop of each frame, or the whole frame, to width x height. Returns
+    /// whether the output changed.
+    pub fn configureOutput(self: *Video, width: u32, height: u32, cover: bool, crop: ?image.Region) !bool {
         if (width == 0 or height == 0) return error.InvalidArgument;
-        if (width == self.output_width and height == self.output_height and cover == self.output_cover) return;
+        if (width == self.output_width and height == self.output_height and cover == self.output_cover and
+            std.meta.eql(crop, self.output_crop)) return false;
         self.quiesceWorker();
-        if (otv_set_output_size(self.decoder, width, height, @intFromBool(cover)) != 0) return error.DecodeFailed;
+        const region = crop orelse image.Region{ .width = 0, .height = 0 };
+        if (otv_set_output_size(self.decoder, width, height, @intFromBool(cover), region) != 0) return error.DecodeFailed;
         self.output_width = width;
         self.output_height = height;
         self.output_cover = cover;
+        self.output_crop = crop;
         // The decoder keeps its position and converts the selected frame again
         // at the new size; a reseek would re-decode from the previous keyframe
         // and stall long-GOP streams on every resize or quality change.
@@ -380,6 +389,7 @@ pub const Video = struct {
         self.resetScheduler();
         self.state.frame_serial = 0;
         self.state.frame_pts_us = -1;
+        return true;
     }
 
     pub fn seek(self: *Video, target_us: i64) !void {
@@ -851,7 +861,7 @@ pub const Video = struct {
 
     fn updateControl(self: *Video, change: anytype) void {
         self.audio_lock.lockUncancelable(io);
-        inline for (std.meta.fields(@TypeOf(change))) |field| @field(self.audio_control, field.name) = @field(change, field.name);
+        inline for (@typeInfo(@TypeOf(change)).@"struct".field_names) |name| @field(self.audio_control, name) = @field(change, name);
         self.audio_control.version +%= 1;
         self.audio_lock.unlock(io);
         self.wakeAudio();
@@ -967,6 +977,8 @@ pub const Video = struct {
         self.audio_lock.lockUncancelable(io);
         defer self.audio_lock.unlock(io);
         if (generation != self.audio_control.generation) return stats.state;
+        const drained = known and stats.state == audio.StreamState.ended;
+        if (drained and self.audio_status.stats.state != audio.StreamState.ended) self.audio_status.ended_us = nowUs();
         if (known) self.audio_status.stats = stats;
         self.audio_status.produced_frames = self.audio_produced_frames;
         self.audio_status.ended = self.audio_ended;
@@ -989,6 +1001,10 @@ pub const Video = struct {
                 self.audio_ended = true;
                 return;
             }
+            // Each stream fades in over its first 5 ms, so a start mid-wave does not click.
+            if (self.audio_produced_frames == 0) for (0..@min(decoded, 240)) |frame| {
+                for (buffer[2 * frame ..][0..2]) |*sample| sample.* *= @as(f32, @floatFromInt(frame)) / 240;
+            };
             const bytes = std.mem.sliceAsBytes(buffer[0 .. @as(usize, decoded) * 2]);
             // The queue bound keeps writes within the stream's input capacity.
             const written = audio.writeStream(engine, self.audio_stream, bytes.ptr, @intCast(bytes.len));
@@ -1090,23 +1106,25 @@ pub const Player = struct {
         return self.normalize(self.wallTime());
     }
 
-    /// Advances the media clock to now and ends or loops playback at the end,
-    /// at most one wrap per call. It never decodes, so state reads keep
-    /// playback moving while the node is not painted.
+    /// Advances the media clock to now and ends or loops playback at the end; a loop
+    /// restarts at the time that ran past the end. It never decodes, so state reads
+    /// keep playback moving while the node is not painted.
     fn tick(self: *Player) void {
         if (!self.playing) return;
         const state = self.video.getState();
         const audio_clock = state.audio_active != 0 or state.buffering != 0;
         if (self.audio_clock and !audio_clock) {
-            // Audio drained or failed: the wall clock continues from the audio position.
-            self.position_us = self.video.audioTimeUs(self.video.audioStatus());
-            self.clock_start_us = nowUs();
+            // Audio drained or failed: the wall clock continues from the audio position, and
+            // from the drain, so a loop also carries the time since the audio ended.
+            const status = self.video.audioStatus();
+            self.position_us = self.video.audioTimeUs(status);
+            self.clock_start_us = if (status.stats.state == audio.StreamState.ended) status.ended_us else nowUs();
         }
         self.audio_clock = audio_clock;
         const media = if (audio_clock) state.current_time_us else self.wallTime();
         const total = self.duration();
         if (total <= 0 or media < total) return;
-        if (self.loop) self.seek(0) catch {} else self.finish();
+        if (self.loop) self.seek(@mod(media, total)) catch {} else self.finish();
     }
 
     pub fn snapshot(self: *Player) PlayerState {
@@ -1133,9 +1151,9 @@ pub const Player = struct {
         if (self.ended and !self.loop) try self.seek(0);
         self.playing = true;
         self.ended = false;
-        self.audio_clock = false;
         self.clock_start_us = nowUs();
         self.video.play();
+        self.audio_clock = self.video.audioClockActive(self.video.audioStatus());
     }
 
     pub fn pause(self: *Player) !void {
@@ -1160,6 +1178,7 @@ pub const Player = struct {
         };
         self.position_us = target;
         self.clock_start_us = nowUs();
+        self.audio_clock = self.playing and self.video.audioClockActive(self.video.audioStatus());
         self.ended = false;
         self.needs_update = true;
         if (self.playing or !self.presented) return;
@@ -1216,19 +1235,17 @@ pub const Player = struct {
     }
 
     /// Advances playback to now and returns the current frame for a decode target of
-    /// width x height pixels. Decode failures stop playback and keep the last frame.
-    pub fn frame(self: *Player, width: u32, height: u32, cover: bool) ?*image.Image {
+    /// width x height pixels from the crop of the source. Decode failures stop playback
+    /// and keep the last frame.
+    pub fn frame(self: *Player, width: u32, height: u32, cover: bool, crop: ?image.Region) ?*image.Image {
         if (self.failed) return self.video.current_image;
         self.tick();
-        self.present(width, height, cover) catch self.fail();
+        self.present(width, height, cover, crop) catch self.fail();
         return self.video.current_image;
     }
 
-    fn present(self: *Player, width: u32, height: u32, cover: bool) !void {
-        if (width != self.video.output_width or height != self.video.output_height or cover != self.video.output_cover) {
-            try self.video.configureOutput(width, height, cover);
-            self.needs_update = true;
-        }
+    fn present(self: *Player, width: u32, height: u32, cover: bool, crop: ?image.Region) !void {
+        if (try self.video.configureOutput(width, height, cover, crop)) self.needs_update = true;
         self.presented = true;
         if (self.needs_update or self.video.current_image == null) {
             _ = try self.video.update(self.currentTime());

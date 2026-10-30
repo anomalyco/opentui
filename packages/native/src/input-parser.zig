@@ -151,13 +151,13 @@ pub const Sink = struct {
     fn openPaste(self: *Sink) ?*Event {
         if (self.count == 0) return null;
         const last = &self.events[self.count - 1];
-        std.debug.assert(last.kind == @intFromEnum(Kind.paste) and last.flags & flags.paste_end == 0);
+        std.debug.assert(last.kind == @backingInt(Kind.paste) and last.flags & flags.paste_end == 0);
         return last;
     }
 
     fn startPaste(self: *Sink, start: bool) *Event {
         self.push(.{
-            .kind = @intFromEnum(Kind.paste),
+            .kind = @backingInt(Kind.paste),
             .action = 0,
             .modifiers = 0,
             .flags = if (start) flags.paste_start else 0,
@@ -883,7 +883,7 @@ const Wire = struct {
 
 fn makeEvent(kind: Kind, action: u8, modifiers: Modifiers, code: u32, raw: Span, text: Span) Event {
     return .{
-        .kind = @intFromEnum(kind),
+        .kind = @backingInt(kind),
         .action = action,
         .modifiers = @bitCast(modifiers),
         .flags = 0,
@@ -908,7 +908,7 @@ const KeyOptions = struct {
 fn emitKey(sink: *Sink, raw: []const []const u8, code: u32, mods: Modifiers, options: KeyOptions) void {
     const raw_span = sink.copy(raw);
     const text_span = sink.copy(&.{options.text});
-    var value = makeEvent(.key, @intFromEnum(options.action), mods, code, raw_span, text_span);
+    var value = makeEvent(.key, @backingInt(options.action), mods, code, raw_span, text_span);
     value.flags = options.flags;
     value.base_code = options.base;
     sink.push(value);
@@ -925,14 +925,14 @@ fn emitDecodedKey(sink: *Sink, alt: bool, unit: []const u8, value: Key) void {
 
 fn emitReply(sink: *Sink, raw: []const u8, protocol: Protocol, reply_flags: u8) void {
     const span = sink.copy(&.{raw});
-    var value = makeEvent(.reply, 0, .{}, @intFromEnum(protocol), span, .{ .offset = sink.payload_len, .len = 0 });
+    var value = makeEvent(.reply, 0, .{}, @backingInt(protocol), span, .{ .offset = sink.payload_len, .len = 0 });
     value.flags = reply_flags;
     sink.push(value);
 }
 
 fn emitMouse(sink: *Sink, raw: []const u8, mouse: Mouse) void {
     const span = sink.copy(&.{raw});
-    var value = makeEvent(.mouse, @intFromEnum(mouse.action), mouse.mods, mouse.button, span, .{ .offset = sink.payload_len, .len = 0 });
+    var value = makeEvent(.mouse, @backingInt(mouse.action), mouse.mods, mouse.button, span, .{ .offset = sink.payload_len, .len = 0 });
     value.x = mouse.x;
     value.y = mouse.y;
     sink.push(value);

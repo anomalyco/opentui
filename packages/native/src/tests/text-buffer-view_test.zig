@@ -7,6 +7,7 @@ const seg_mod = @import("../text-buffer-segment.zig");
 const text_work = @import("../text-work.zig");
 const ansi = @import("../ansi.zig");
 const link = @import("../link.zig");
+const utils = @import("../utils.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
@@ -16,7 +17,7 @@ test "TextBufferView reuses word metadata across widths and layout capacity acro
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    const text = "alpha \u{754c}abc e\u{301} words\n" ** 100;
+    const text = utils.repeat(u8, "alpha \u{754c}abc e\u{301} words\n", 100);
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
@@ -82,7 +83,7 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
 
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
-    try tb.setText("x\n" ++ ("\u{65e5}" ** 512));
+    try tb.setText("x\n" ++ utils.repeat(u8, "\u{65e5}", 512));
     const healthy = try TextBufferView.init(std.testing.allocator, tb);
     defer healthy.deinit();
     healthy.setWrapMode(.word);
@@ -121,7 +122,7 @@ test "TextBufferView optional metadata failure preserves every streamed piece" {
 
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
-    try tb.setText(("a\u{754c}e\u{301} \u{0600} xy\tend-" ** 5000) ++ "\n" ++ ("\u{754c}abc e\u{301}\n" ** 100));
+    try tb.setText(utils.repeat(u8, "a\u{754c}e\u{301} \u{0600} xy\tend-", 5000) ++ "\n" ++ utils.repeat(u8, "\u{754c}abc e\u{301}\n", 100));
     const expected = try TextBufferView.init(std.testing.allocator, tb);
     defer expected.deinit();
     expected.setWrapMode(.word);
@@ -171,9 +172,9 @@ test "TextBufferView width reuse does not leave metadata in old buffer roots" {
         const mem_id = try tb.registerMemBuffer("", false);
         for (0..20) |edit| {
             const text = if (edit % 2 == 0)
-                "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop \n" ** 100
+                utils.repeat(u8, "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop \n", 100)
             else
-                "Changed text metrics: \u{754c} e\u{301} abcdefghijklmnop \n" ** 100;
+                utils.repeat(u8, "Changed text metrics: \u{754c} e\u{301} abcdefghijklmnop \n", 100);
             try tb.replaceMemBuffer(mem_id, text, false);
             try tb.setTextFromMemId(mem_id);
             _ = view.getVirtualLines();
@@ -201,7 +202,7 @@ test "TextBufferView live word metadata follows views history and buffer switche
     const other = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer other.deinit();
     try other.setText("unrelated\t\u{754c} text");
-    try edit.setText("alpha \u{754c} e\u{301} abcdefghijklmnopqrstuvwxyz\n" ** 10);
+    try edit.setText(utils.repeat(u8, "alpha \u{754c} e\u{301} abcdefghijklmnopqrstuvwxyz\n", 10));
     view.setWrapMode(.word);
     second.setWrapMode(.word);
     view.setWrapWidth(16);
@@ -221,7 +222,7 @@ test "TextBufferView live word metadata follows views history and buffer switche
         try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
         try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
     }
-    try edit.replaceText("changed\ttext \u{0600} \u{301} \u{754c} words\n" ** 10);
+    try edit.replaceText(utils.repeat(u8, "changed\ttext \u{0600} \u{301} \u{754c} words\n", 10));
     for (0..3) |step| {
         if (step == 1) _ = try edit.undo();
         if (step == 2) _ = try edit.redo();
@@ -267,7 +268,7 @@ test "TextBufferView live word metadata follows views history and buffer switche
     // A sibling's full layout frees the layouts of a medium chunk that an edit detached, and undo
     // brings the chunk back while this view's word storage still borrows them.
     for ([_]bool{ false, true }) |whole_line| {
-        try edit.setText("first line\n" ++ "\u{754c}\u{754c} " ** 200 ++ "\nlast line");
+        try edit.setText("first line\n" ++ utils.repeat(u8, "\u{754c}\u{754c} ", 200) ++ "\nlast line");
         try edit.insertText("x");
         view.setWrapWidth(40);
         _ = view.getVirtualLines();
@@ -289,7 +290,7 @@ test "TextBufferView live word metadata follows views history and buffer switche
     var buffers: [2]*TextBuffer = undefined;
     inline for (&buffers, .{ "hello\n", "alpha\n" }) |*buffer, line| {
         buffer.* = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-        try buffer.*.setText(line ** 5_000);
+        try buffer.*.setText(utils.repeat(u8, line, 5_000));
     }
     defer for (buffers) |buffer| buffer.deinit();
     const switched = try TextBufferView.init(std.testing.allocator, buffers[0]);
@@ -328,7 +329,7 @@ test "TextBufferView live word metadata discards partial allocation on failure" 
         defer tb.deinit();
         const view = try TextBufferView.init(tracking.allocator(), tb);
         defer view.deinit();
-        try tb.setText("alpha \u{754c} e\u{301} word word word word\n" ** 100);
+        try tb.setText(utils.repeat(u8, "alpha \u{754c} e\u{301} word word word word\n", 100));
         view.setWrapMode(.word);
         view.setWrapWidth(16);
         tracking.fail_index = tracking.alloc_index + failure;
@@ -349,8 +350,9 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
     defer pools.deinit();
 
     // The sweep fails each allocation of the partial layout in turn until the layout succeeds.
-    // With in-place growth refused, the allocations depend only on request sizes, and the 60
-    // appended lines make the splice grow its arrays into a new arena block in both modes.
+    // With in-place growth refused, the allocations depend only on request sizes, and the 220
+    // appended lines make the splice grow its arrays into a new arena block in both modes. The
+    // sizes follow the build mode: ArrayList holds a safety lock only with runtime safety on.
     for ([_]bool{ false, true }) |truncate| {
         var reached_splice = false;
         var failure: usize = 0;
@@ -371,9 +373,9 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
                 current.setTruncate(truncate);
             }
             full.force_full_layout = true;
-            try tb.setText("alpha \u{754c} e\u{301} word word word word\n" ** 20);
+            try tb.setText(utils.repeat(u8, "alpha \u{754c} e\u{301} word word word word\n", 20));
             _ = view.getVirtualLines();
-            try tb.append("\ntail \u{754c} words that wrap" ** 60);
+            try tb.append(utils.repeat(u8, "\ntail \u{754c} words that wrap", 220));
             tracking.fail_index = tracking.alloc_index + failure;
             _ = text_work.take();
             _ = view.getVirtualLines();
@@ -404,7 +406,7 @@ test "TextBufferView rewrap reuses virtual line allocation without retaining cle
         defer tb.deinit();
         const view = try TextBufferView.init(tracking.allocator(), tb);
         defer view.deinit();
-        try tb.setText("OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop " ** 100);
+        try tb.setText(utils.repeat(u8, "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop ", 100));
         view.setWrapMode(mode);
         for ([_]u32{ 80, 79, 80 }) |width| {
             view.setWrapWidth(width);
@@ -430,8 +432,8 @@ test "TextBufferView rewrap matches fresh layout after text and tab changes" {
 
     const texts = [_][]const u8{
         "",                                                             "one",                                                              "one two three\n\nshort\n",
-        "\talpha \u{754c}abc e\u{301} \u{1f469}\u{200d}\u{1f4bb}\tend", "abcdefg \u{301} hi\n\u{0600} 0123456789abcdef\nword\u{200b}word ", "\u{754c} " ** 600,
-        "\u{754c}abc " ** 10000,
+        "\talpha \u{754c}abc e\u{301} \u{1f469}\u{200d}\u{1f4bb}\tend", "abcdefg \u{301} hi\n\u{0600} 0123456789abcdef\nword\u{200b}word ", utils.repeat(u8, "\u{754c} ", 600),
+        utils.repeat(u8, "\u{754c}abc ", 10000),
     };
     inline for (std.meta.tags(@import("../utf8.zig").WidthMethod)) |method| {
         const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
@@ -1515,7 +1517,7 @@ test "TextBufferView word wrapping - layout cache OOM falls back to complete str
     var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
-    const text = "a," ** 1023 ++ "\xC3\xA9";
+    const text = utils.repeat(u8, "a,", 1023) ++ "\xC3\xA9";
     try tb.setText(text);
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1997,7 +1999,7 @@ test "TextBufferView line info - very long lines" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    const longText = [_]u8{'A'} ** 1000;
+    const longText: [1000]u8 = @splat('A');
     try tb.setText(&longText);
 
     const line_count = view.getVirtualLineCount();
@@ -2080,7 +2082,7 @@ test "TextBufferView line info - extremely long single line" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    const extremelyLongText = [_]u8{'A'} ** 10000;
+    const extremelyLongText: [10000]u8 = @splat('A');
     try tb.setText(&extremelyLongText);
 
     const line_count = view.getVirtualLineCount();
@@ -2101,7 +2103,7 @@ test "TextBufferView line info - extremely long line with wrapping" {
     defer view.deinit();
 
     // Create extremely long text with 10000 'A' characters
-    const extremelyLongText = [_]u8{'A'} ** 10000;
+    const extremelyLongText: [10000]u8 = @splat('A');
     try tb.setText(&extremelyLongText);
 
     view.setWrapMode(.char);
@@ -2865,7 +2867,7 @@ test "TextBufferView measureForDimensions - a ledger that cannot be kept still r
     while (true) : (failure += 1) {
         const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
         defer tb.deinit();
-        try tb.setText("word " ** 40 ++ "\nshort line");
+        try tb.setText(utils.repeat(u8, "word ", 40) ++ "\nshort line");
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
         const view = try TextBufferView.init(failing.allocator(), tb);
         defer view.deinit();
@@ -4594,7 +4596,7 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                 } else for (&views) |*pair| for (pair) |view| {
                     // One setting per step, so a measure at an unchanged width meets each one.
                     if (step % 3 == 0) view.setWrapWidth(view.wrap_width.? % 7 + 1);
-                    if (step % 3 == 1) view.setWrapMode(modes[(@intFromEnum(view.wrap_mode) + 1) % modes.len]);
+                    if (step % 3 == 1) view.setWrapMode(modes[(@backingInt(view.wrap_mode) + 1) % modes.len]);
                     if (step % 3 == 2) view.setFirstLineOffset(view.first_line_offset ^ 2);
                 },
                 else => unreachable,

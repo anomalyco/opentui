@@ -1,6 +1,7 @@
 const std = @import("std");
 const bench_utils = @import("../bench-utils.zig");
 const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
 
 const BenchResult = bench_utils.BenchResult;
 const BenchStats = bench_utils.BenchStats;
@@ -302,7 +303,7 @@ fn benchFindChunkLayoutInfo(
 
     const name = "findChunkLayoutInfo: ASCII punctuation (62.5 KiB)";
     if (bench_utils.matchesBenchFilter(name, bench_filter)) {
-        const text = "word-" ** 12_800;
+        const text = utils.repeat(u8, "word-", 12_800);
         var temp = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer temp.deinit();
         const alloc = temp.allocator();

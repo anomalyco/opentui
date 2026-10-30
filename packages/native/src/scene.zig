@@ -14,7 +14,8 @@ const utf8 = @import("utf8.zig");
 const image = @import("image.zig");
 const video = @import("video.zig");
 const Context = @import("context.zig").Context;
-const nextPaintEpoch = @import("utils.zig").nextPaintEpoch;
+const utils = @import("utils.zig");
+const nextPaintEpoch = utils.nextPaintEpoch;
 const scene_record = @import("scene-record.zig");
 const api = @import("context_abi_c");
 
@@ -450,6 +451,8 @@ pub const ImageState = struct {
     buffer: ?*buffer.OptimizedBuffer = null,
     fit: image.Fit = .fit,
     protocol: image.RenderProtocol = .auto,
+    // The source region the node shows; fit applies to it.
+    crop: ?image.Region = null,
 
     pub fn deinit(self: ImageState) void {
         if (self.source) |source| source.deinit();
@@ -2727,9 +2730,9 @@ pub const Scene = struct {
             const end = start + width;
             const a = first.buffer;
             const b = second.buffer;
-            if (!std.mem.eql(u32, a.char[start..end], b.char[start..end]) or !std.mem.eql(u32, a.attributes[start..end], b.attributes[start..end]) or
-                !std.mem.eql(u8, std.mem.sliceAsBytes(a.fg[start..end]), std.mem.sliceAsBytes(b.fg[start..end])) or
-                !std.mem.eql(u8, std.mem.sliceAsBytes(a.bg[start..end]), std.mem.sliceAsBytes(b.bg[start..end]))) return error.RetainedMismatch;
+            if (!utils.eql(u32, a.char[start..end], b.char[start..end]) or !utils.eql(u32, a.attributes[start..end], b.attributes[start..end]) or
+                !utils.eql(u8, std.mem.sliceAsBytes(a.fg[start..end]), std.mem.sliceAsBytes(b.fg[start..end])) or
+                !utils.eql(u8, std.mem.sliceAsBytes(a.bg[start..end]), std.mem.sliceAsBytes(b.bg[start..end]))) return error.RetainedMismatch;
         }
     }
 
@@ -2758,7 +2761,7 @@ pub const Scene = struct {
         defer self.verify_target = null;
         try self.paintMembers(owner, cli, options, recording, refresh_views, false);
         try self.verifyRows(scratch, next, false);
-        if (!std.mem.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(kept.items))) return error.RetainedMismatch;
+        if (!utils.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(kept.items))) return error.RetainedMismatch;
     }
 
     /// Where paint draws: next, or the scratch buffer of a verified skip.
@@ -3080,8 +3083,10 @@ pub const Scene = struct {
         const cell_height: f64 = if (has_resolution) @as(f64, @floatFromInt(resolution.pixel_height)) / @as(f64, @floatFromInt(resolution.terminal_height)) else 4;
         var width: f64 = layout.width;
         var height: f64 = layout.height;
-        const source_width: f64 = @floatFromInt(info.width);
-        const source_height: f64 = @floatFromInt(info.height);
+        // The decoder converts only the crop, so fit and the decode size follow the crop.
+        const crop = image.Region.inside(state.image.crop, info.width, info.height);
+        const source_width: f64 = @floatFromInt(if (crop) |region| region.width else info.width);
+        const source_height: f64 = @floatFromInt(if (crop) |region| region.height else info.height);
         if (state.image.fit == .fit) {
             const aspect = source_width / source_height * (cell_height / cell_width);
             const scale = @min(width / aspect, height);
@@ -3100,7 +3105,7 @@ pub const Scene = struct {
         const scale = @min(1, @min(source_width / pixel_width, source_height / pixel_height)) * player.quality.scale();
         const decode_width: u32 = @intFromFloat(@min(16_384, @max(1, @round(pixel_width * scale))));
         const decode_height: u32 = @intFromFloat(@min(16_384, @max(1, @round(pixel_height * scale))));
-        const frame = player.frame(decode_width, decode_height, state.image.fit == .cover) orelse return;
+        const frame = player.frame(decode_width, decode_height, state.image.fit == .cover, crop) orelse return;
         if (state.painted != player.video.published) {
             // New pixels need a new render identity: renderers cache content by it.
             if (owner.last_image_id == std.math.maxInt(u32)) return error.ObjectLimit;
@@ -3112,6 +3117,7 @@ pub const Scene = struct {
         }
         var drawn = state.image;
         drawn.source = frame;
+        drawn.crop = null;
         try paintImage(cli, drawn, layout);
     }
 
@@ -3125,10 +3131,12 @@ pub const Scene = struct {
         const cell_aspect: f64 = if (has_resolution) cell_height / cell_width else 2;
         var width: f64 = layout.width;
         var height: f64 = layout.height;
-        var source_width = source.width();
-        var source_height = source.height();
-        var source_x: u32 = 0;
-        var source_y: u32 = 0;
+        const region = image.Region.inside(state.crop, source.width(), source.height()) orelse
+            image.Region{ .width = source.width(), .height = source.height() };
+        var source_width = region.width;
+        var source_height = region.height;
+        var source_x = region.left;
+        var source_y = region.top;
         if (state.fit == .fit) {
             const aspect = @as(f64, @floatFromInt(source_width)) / @as(f64, @floatFromInt(source_height)) * cell_aspect;
             const scale = @min(width / aspect, height);
@@ -3138,10 +3146,10 @@ pub const Scene = struct {
             const aspect = width / (height * cell_aspect);
             if (@as(f64, @floatFromInt(source_width)) / @as(f64, @floatFromInt(source_height)) > aspect) {
                 source_width = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(source_height)) * aspect)));
-                source_x = (source.width() - source_width) / 2;
+                source_x += (region.width - source_width) / 2;
             } else {
                 source_height = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(source_width)) / aspect)));
-                source_y = (source.height() - source_height) / 2;
+                source_y += (region.height - source_height) / 2;
             }
         }
         const x = (if (state.buffer != null) @as(f64, 0) else layout.screenX) + @floor((layout.width - width) / 2);
@@ -3162,7 +3170,7 @@ pub const Scene = struct {
         if (builtin.is_test) self.test_cursor_steps += 1;
         const node = entry.node.scene_node.?;
         const layout = cellLayout(entry.layout);
-        if (node.control.editor.mouse_pointer < std.meta.tags(@import("terminal.zig").MousePointerStyle).len) cli.terminal.setMousePointerStyle(@enumFromInt(node.control.editor.mouse_pointer));
+        if (node.control.editor.mouse_pointer < std.meta.tags(@import("terminal.zig").MousePointerStyle).len) cli.terminal.setMousePointerStyle(@fromBackingInt(@intCast(node.control.editor.mouse_pointer)));
         if (!node.control.editor.show_cursor) return self.releaseEditorCursor(cli);
         const cursor = node.editor.?.view.getVisualCursor();
         // Terminal keeps zero-based row/column in u16 alongside its public position.
@@ -3171,7 +3179,7 @@ pub const Scene = struct {
         const cursor_y = std.math.clamp(layout.screenY + @as(f64, @floatFromInt(cursor.visual_row)) + 1, 1, position_max);
         cli.terminal.setCursorPosition(@intFromFloat(cursor_x), @intFromFloat(cursor_y), true);
         // Styles 0 to 3 are the enum's order; sceneSetEditorOptions rejects others.
-        cli.terminal.setCursorStyle(@enumFromInt(node.control.editor.style), node.control.editor.blinking);
+        cli.terminal.setCursorStyle(@fromBackingInt(@intCast(node.control.editor.style)), node.control.editor.blinking);
         cli.terminal.setCursorColor(node.control.editor.color);
         self.editor_cursor_owned = true;
     }

@@ -42,6 +42,7 @@ describe("video component", () => {
           source={VIDEO_FIXTURE}
           audio={false}
           maxFps={12}
+          crop={{ left: 80, top: 45, width: 80, height: 45 }}
           onReady={(metadata) => readies.push(metadata.width)}
           onError={(error) => failures.push(error.message)}
           style={{ width: 8, height: 4 }}
@@ -56,6 +57,21 @@ describe("video component", () => {
     expect(readies).toEqual([160])
     expect(videoRef!.paused).toBe(true)
     expect(videoRef!.maxFps).toBe(12)
+    expect(videoRef!.crop).toEqual({ left: 80, top: 45, width: 80, height: 45 })
+  })
+
+  it("clears a crop removed from the style", async () => {
+    let videoRef: VideoRenderable | undefined
+    const crop = { left: 80, top: 45, width: 80, height: 45 }
+    const [styled, setStyled] = createSignal(true)
+
+    testSetup = await testRender(
+      () => <video ref={videoRef} source={VIDEO_FIXTURE} style={styled() ? { width: 8, height: 4, crop } : {}} />,
+      { width: 12, height: 6 },
+    )
+    expect(videoRef!.crop).toEqual(crop)
+    setStyled(false)
+    expect(videoRef!.crop).toBeUndefined()
   })
 
   it("swaps media when the source signal changes", async () => {

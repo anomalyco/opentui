@@ -5,6 +5,7 @@ const ansi = @import("../ansi.zig");
 const grapheme = @import("../grapheme.zig");
 const image = @import("../image.zig");
 const scene = @import("../scene.zig");
+const utils = @import("../utils.zig");
 
 const swap_red_blue = [_]f32{ 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1 };
 
@@ -26,7 +27,7 @@ test "Context color matrices reject invalid input before changing accepted cells
     for ([_]u32{ 0, 4, std.math.maxInt(u32) }) |channel| {
         try testing.expectError(error.InvalidOptions, owner.colorMatrixBuffer(id, null, &swap_red_blue, null, 1, channel));
     }
-    const oversized = [_]f32{ 0, 0, 1 } ** 5;
+    const oversized = utils.repeat(f32, &.{ 0, 0, 1 }, 5).*;
     try testing.expectError(error.InvalidOptions, owner.colorMatrixBuffer(id, null, &swap_red_blue, &oversized, 1, 3));
     try testing.expectEqualSlices(ansi.RGBA, &before, target.buffer.bg);
     try testing.expect(!owner.mutating);

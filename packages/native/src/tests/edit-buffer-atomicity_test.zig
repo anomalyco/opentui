@@ -5,6 +5,7 @@ const link = @import("../link.zig");
 
 const EditBuffer = edit_buffer.EditBuffer;
 const EditorView = @import("../editor-view.zig").EditorView;
+const utils = @import("../utils.zig");
 
 const Events = struct {
     var order: [3]u8 = undefined;
@@ -81,7 +82,7 @@ test "EditBuffer atomicity - rejected mutations preserve history content cursor 
                 const fault = if (fail_rope) &rope_failing else &failing;
                 fault.fail_index = fault.alloc_index + offset;
                 fault.resize_fail_index = fault.resize_index;
-                const input = "replacement" ** 512 ++ "\n";
+                const input = utils.repeat(u8, "replacement", 512) ++ "\n";
                 const result = switch (operation) {
                     .insert => eb.insertText(input),
                     .selected => ev.replaceSelectedText(input),
@@ -203,7 +204,7 @@ test "EditBuffer atomicity - a failed edit that rejoins a grapheme keeps the add
     // Each edit rejoins a grapheme across memory, so the join copies it to the add buffer: `e` from
     // `setText` and U+0301 from the edit, or two regional indicators that a deleted `x` kept apart.
     // The paste fills a grown add buffer, so that copy grows it again.
-    const paste = "\u{301}" ++ "y" ** (131072 - 2);
+    const paste = "\u{301}" ++ utils.repeat(u8, "y", 131072 - 2);
     const Edit = enum { insert, replace, forward, paste };
     for (std.enums.values(Edit)) |edit| {
         for ([_]bool{ false, true }) |fail_rope| {

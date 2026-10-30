@@ -83,7 +83,7 @@ fn matrixOutput(result: MatrixColor) RGBA {
 /// No clamping is performed - output values may exceed [0, 1] range
 pub fn colorMatrix(self: anytype, matrix: []align(1) const f32, cellMask: []align(1) const f32, strength: f32, target: ColorTarget) void {
     if (matrix.len < 16 or cellMask.len < 3) return;
-    if (@intFromEnum(target) == 0) return;
+    if (@backingInt(target) == 0) return;
     if (!math.isFinite(strength)) return;
 
     const width = self.width;
@@ -118,14 +118,14 @@ pub fn colorMatrix(self: anytype, matrix: []align(1) const f32, cellMask: []alig
         const index = y * width + x;
 
         // Apply color matrix to foreground if target includes FG
-        if (@intFromEnum(target) & 1 != 0) {
+        if (@backingInt(target) & 1 != 0) {
             const input = matrixInput(fg[index]);
             const fg_result = applyMatrix4x4Scalar(&mat4, input.r, input.g, input.b, input.a, cellStrength);
             fg[index] = matrixOutput(fg_result);
         }
 
         // Apply color matrix to background if target includes BG
-        if (@intFromEnum(target) & 2 != 0) {
+        if (@backingInt(target) & 2 != 0) {
             const input = matrixInput(bg[index]);
             const bg_result = applyMatrix4x4Scalar(&mat4, input.r, input.g, input.b, input.a, cellStrength);
             bg[index] = matrixOutput(bg_result);
@@ -145,7 +145,7 @@ pub fn colorMatrix(self: anytype, matrix: []align(1) const f32, cellMask: []alig
 /// No clamping is performed - output values may exceed [0, 1] range
 pub fn colorMatrixUniform(self: anytype, matrix: []align(1) const f32, strength: f32, target: ColorTarget) void {
     if (matrix.len < 16 or strength == 0.0) return;
-    if (@intFromEnum(target) == 0) return;
+    if (@backingInt(target) == 0) return;
     if (!math.isFinite(strength)) return;
 
     const width = self.width;
@@ -157,8 +157,8 @@ pub fn colorMatrixUniform(self: anytype, matrix: []align(1) const f32, strength:
     // Use matrix directly as 4x4
     const mat4 = matrix[0..16].*;
 
-    const processFG = @intFromEnum(target) & 1 != 0;
-    const processBG = @intFromEnum(target) & 2 != 0;
+    const processFG = @backingInt(target) & 1 != 0;
+    const processBG = @backingInt(target) & 2 != 0;
 
     // Process 4 pixels at a time using SIMD
     const strength_vec: Vec4 = @splat(strength);

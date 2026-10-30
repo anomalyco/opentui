@@ -93,7 +93,7 @@ const ssh_link: Env = .{ .rate_bps = 48_000, .latency_ns = 20 * ms, .external = 
 
 fn with(base: Env, comptime changes: anytype) Env {
     var env = base;
-    inline for (std.meta.fields(@TypeOf(changes))) |field| @field(env, field.name) = @field(changes, field.name);
+    inline for (@typeInfo(@TypeOf(changes)).@"struct".field_names) |name| @field(env, name) = @field(changes, name);
     return env;
 }
 

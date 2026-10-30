@@ -33,7 +33,7 @@ pub fn bufferDrawFromC(header: *const c.ot_buffer_draw_header, draw: *context.Bu
     if (header.struct_size < @sizeOf(c.ot_buffer_draw_header)) return error.InvalidOptions;
     if (header.abi_version != c.OT_CONTEXT_ABI_VERSION) return error.UnsupportedVersion;
     if (header.operation > c.OT_BUFFER_DRAW_RESPECT_ALPHA) return error.InvalidOptions;
-    draw.* = .{ .operation = @enumFromInt(header.operation) };
+    draw.* = .{ .operation = @fromBackingInt(@intCast(header.operation)) };
     switch (draw.operation) {
         .clear => {
             const record = try bufferDrawRecord(c.ot_buffer_draw_clear, header, 0);
@@ -132,7 +132,7 @@ pub fn imageDrawFromC(options: *const c.ot_image_draw_options) !context.ImageDra
         .source_y = options.source_y,
         .source_width = if (options.flags & c.OT_IMAGE_DRAW_SOURCE_WIDTH != 0) options.source_width else null,
         .source_height = if (options.flags & c.OT_IMAGE_DRAW_SOURCE_HEIGHT != 0) options.source_height else null,
-        .protocol = @enumFromInt(options.protocol),
+        .protocol = @fromBackingInt(@intCast(options.protocol)),
     };
 }
 
@@ -157,15 +157,15 @@ comptime {
     // Each OT_SCENE_RECORD_<NAME> type has an equal Command tag, and each tag has a type.
     @setEvalBranchQuota(200_000);
     var count = 0;
-    for (@typeInfo(c).@"struct".decls) |decl| {
-        const name = if (std.mem.startsWith(u8, decl.name, "OT_SCENE_RECORD_")) decl.name["OT_SCENE_RECORD_".len..] else continue;
+    for (@typeInfo(c).@"struct".decl_names) |decl_name| {
+        const name = if (std.mem.startsWith(u8, decl_name, "OT_SCENE_RECORD_")) decl_name["OT_SCENE_RECORD_".len..] else continue;
         if (std.mem.eql(u8, name, "SLOT") or std.mem.eql(u8, name, "BYTES_MAX") or std.mem.startsWith(u8, name, "PHASE_") or std.mem.startsWith(u8, name, "GRAYSCALE_")) continue;
         var lower: [name.len]u8 = undefined;
-        const tag = std.meta.stringToEnum(Command, std.ascii.lowerString(&lower, name)) orelse @compileError(decl.name ++ " has no Command tag");
-        if (@intFromEnum(tag) != @field(c, decl.name)) @compileError(decl.name ++ " differs from its Command tag");
+        const tag = std.meta.stringToEnum(Command, std.ascii.lowerString(&lower, name)) orelse @compileError(decl_name ++ " has no Command tag");
+        if (@backingInt(tag) != @field(c, decl_name)) @compileError(decl_name ++ " differs from its Command tag");
         count += 1;
     }
-    if (count != std.meta.fields(Command).len) @compileError("a Command tag has no OT_SCENE_RECORD_ type");
+    if (count != @typeInfo(Command).@"enum".field_names.len) @compileError("a Command tag has no OT_SCENE_RECORD_ type");
 }
 
 /// Unpadded byte count of a command record, after checking its fixed fields.
@@ -398,7 +398,7 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
             const value = try fixed(c.ot_scene_record_stack, body);
             if (value.operation > c.OT_BUFFER_STACK_CLEAR_OPACITY) return error.InvalidOptions;
             _ = try Context.bufferStackOn(target, floor, .{
-                .operation = @enumFromInt(value.operation),
+                .operation = @fromBackingInt(@intCast(value.operation)),
                 .x = value.x,
                 .y = value.y,
                 .width = value.width,

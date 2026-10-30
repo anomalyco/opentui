@@ -15,6 +15,7 @@ const OptimizedBuffer = buffer.OptimizedBuffer;
 const RGBA = text_buffer.RGBA;
 const WrapMode = text_buffer.WrapMode;
 const owned_styled = @import("owned-styled-text.zig");
+const utils = @import("../utils.zig");
 
 fn resolvedRow(allocator: std.mem.Allocator, opt_buffer: *const OptimizedBuffer, pool: *gp.GraphemePool, y: u32) ![]u8 {
     var row: std.ArrayListUnmanaged(u8) = .empty;
@@ -1624,7 +1625,7 @@ test "loadFile - registered file content survives text replacement" {
     defer std.testing.allocator.free(file_path);
 
     // Two replacements settle the rope arena into one block that later resets reuse.
-    const other_mem_id = try tb.registerMemBuffer("other line\n" ** 64, false);
+    const other_mem_id = try tb.registerMemBuffer(utils.repeat(u8, "other line\n", 64), false);
     try tb.setTextFromMemId(other_mem_id);
     try tb.setTextFromMemId(other_mem_id);
 
@@ -1648,15 +1649,15 @@ test "drawTextBuffer - a line at every horizontal or wrapped-row offset draws as
     const words = "\u{754c}\u{754c}e\u{301} ab\tc \u{1f600}d xyz\u{1}w \u{1f468}\u{200d}\u{1f469} ";
     const rows = [_]struct { parts: []const []const u8, method: utf8.WidthMethod = .unicode, control: utf8.ControlDisplay = .hidden, wrap: WrapMode = .none, at_5: ?[]const u8 = null }{
         .{ .parts = &.{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"}, .at_5 = "56789ABCDE   " },
-        .{ .parts = &.{mixed ** 3} },
-        .{ .parts = &.{mixed ** 3}, .control = .notation },
-        .{ .parts = &.{mixed ** 3}, .method = .wcwidth },
+        .{ .parts = &.{utils.repeat(u8, mixed, 3)} },
+        .{ .parts = &.{utils.repeat(u8, mixed, 3)}, .control = .notation },
+        .{ .parts = &.{utils.repeat(u8, mixed, 3)}, .method = .wcwidth },
         .{ .parts = &.{ "\u{754c}\u{754c}a", "\tbcdefghijk", "e\u{301}xyz\u{754c}", "0123456789" } },
-        .{ .parts = &.{"\t\t\t\t\t\u{1f468}\u{200d}\u{1f469}" ++ (mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char },
-        .{ .parts = &.{"abcdefghij\u{200b}k\u{1f468}\u{200d}\u{1f469}xyz" ** 4}, .wrap = .char, .method = .wcwidth },
-        .{ .parts = &.{(mixed ++ "\u{1f468}\u{200d}\u{1f469}") ** 6}, .wrap = .char, .control = .notation },
-        .{ .parts = &.{words ** 6}, .wrap = .word },
-        .{ .parts = &.{words ** 6}, .wrap = .word, .method = .wcwidth },
+        .{ .parts = &.{"\t\t\t\t\t\u{1f468}\u{200d}\u{1f469}" ++ utils.repeat(u8, mixed ++ "\u{1f468}\u{200d}\u{1f469}", 6)}, .wrap = .char },
+        .{ .parts = &.{utils.repeat(u8, "abcdefghij\u{200b}k\u{1f468}\u{200d}\u{1f469}xyz", 4)}, .wrap = .char, .method = .wcwidth },
+        .{ .parts = &.{utils.repeat(u8, mixed ++ "\u{1f468}\u{200d}\u{1f469}", 6)}, .wrap = .char, .control = .notation },
+        .{ .parts = &.{utils.repeat(u8, words, 6)}, .wrap = .word },
+        .{ .parts = &.{utils.repeat(u8, words, 6)}, .wrap = .word, .method = .wcwidth },
     };
     var drawn: [2][256]u8 = undefined;
     // Columns 3k and 3k+1 of the first half of each line are highlighted, so offsets fall inside

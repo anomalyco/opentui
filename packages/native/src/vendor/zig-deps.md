@@ -15,6 +15,15 @@ It excludes large font fixtures, tests, examples, applications, and unrelated C 
 Its manifest omits unrelated application dependencies.
 Its build file exports only the Zig VT modules.
 The change to `src/build/SharedDeps.zig` removes unused GUI frame data.
+The Ghostty pin supports Zig 0.16. `ghostty-zig-0.17.patch` makes it compile on Zig 0.17, applied after
+`ghostty-shared-deps.patch`. It changes only what Zig 0.17 rejects: array multiplication, removed standard
+library names, and the new reflection fields. Ghostty's own Zig 0.17 port (ghostty-org/ghostty#14519) landed
+in commit `3d07ef9`, after the pin, and makes the same kind of changes. Remove the patch when the pin moves
+to that commit or later.
+The OpenTUI uucode copy uses commit `d500967`, a Zig 0.17 port of commit `2826a37`, which contains the former
+pin `8ad04b7`. The Ghostty copy uses commit `ea62149`, a Zig 0.17 port of Ghostty's uucode pin, `9d55524`.
+Both ports change only Zig code, and the update script gives both copies the same Unicode data, so the
+generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
 The Yoga source is upstream Yoga 3.2.1 with seven changes, applied in this order:

@@ -45,7 +45,7 @@ describe("package facts", () => {
     expect(core?.entrypoints).toContain("./testing")
     expect(core?.platformPackages).toHaveLength(8)
     expect(core?.platforms).toHaveLength(8)
-    expect(core?.zig).toEqual({ name: "opentui", version: "0.1.11", minimumZigVersion: "0.16.0" })
+    expect(core?.zig).toEqual({ name: "opentui", version: "0.1.11", minimumZigVersion: "0.17.0" })
   })
 
   test("extracts Zig package metadata", () => {

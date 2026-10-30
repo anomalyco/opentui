@@ -14,6 +14,7 @@ const options: scene.FrameOptions = .{
 };
 const custom = [11]u32{ 'A', 'B', 'C', 'D', '-', '|', '+', '+', '+', '+', '+' };
 const indexed = @import("../ansi.zig").indexedColor(42, 0, 200, 0);
+const utils = @import("../utils.zig");
 
 const Fixture = struct { session: context.Handle, root: context.Handle, box: context.Handle };
 
@@ -50,7 +51,7 @@ test "Scene box details rejects invalid replacement before publication" {
         chars[4] = invalid;
         try testing.expectError(error.InvalidUnicode, owner.sceneSetBoxDetails(fixture.box, .{ .custom_border_chars = chars }));
     }
-    const oversized = "a" ** (buffer.text_bytes_max + 1);
+    const oversized = utils.repeat(u8, "a", buffer.text_bytes_max + 1);
     try testing.expectError(error.TextLimit, owner.sceneSetBoxDetails(fixture.box, .{ .title = oversized }));
     try repaint(owner, fixture.session, options.background, true, 0);
     try expectRow((try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer(), 0, "A-old------B");
@@ -132,12 +133,12 @@ test "Scene box details checked title draw reports allocation failure and defaul
     try testing.expect(!failing.has_induced_failure);
     state.allocator = scene_allocator;
     // A printable ASCII title draws without the prepared copy and runs.
-    const ascii_title = [_]u8{'x'} ** 4097;
+    const ascii_title: [4097]u8 = @splat('x');
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = &ascii_title });
     try repaint(owner, fixture.session, options.background, true, 0);
     try testing.expect(!failing.has_induced_failure);
     // Keep a visible title large enough to exercise heap fallback, not the stack path.
-    const title = [_]u8{'x'} ** 4096 ++ "\u{e9}".*;
+    const title = @as([4096]u8, @splat('x')) ++ "\u{e9}".*;
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = &title });
     try testing.expectError(error.OutOfMemory, repaint(owner, fixture.session, options.background, true, 0));
     try testing.expect(failing.has_induced_failure);

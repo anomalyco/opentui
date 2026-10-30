@@ -10,10 +10,10 @@ export LC_ALL
 
 GHOSTTY_COMMIT=aeda37b305ee3d897ff1bfeddfe39d7fa9366a74
 GHOSTTY_SHA256=5ee98bf64d6cd93deded555b83d335ca20aca799536d1c7cae1a5d6b7799038e
-UUCODE_GHOSTTY_COMMIT=9d55524551411b493cca41ca06363625d90aff1e
-UUCODE_GHOSTTY_SHA256=68d23543cb2c6c5dfdbdf38b38375e0c6d412a5c5fb72ce06bd139f7a4d25132
-UUCODE_OPENTUI_COMMIT=8ad04b756f85a5ba1ac8d2b8cb48d0946f06b630
-UUCODE_OPENTUI_SHA256=f1ce9f0038c46cc75fdd4e8469baac0dce60e20517d8d32ed813bfa9906fefc2
+UUCODE_GHOSTTY_COMMIT=ea62149739404a73c202b48a33bf6dd2af4bd9b0
+UUCODE_GHOSTTY_SHA256=f37c4071a217853450d084cb9c12b6d4b68f887eb9cb42fe77a84f86056eacbf
+UUCODE_OPENTUI_COMMIT=d500967026220f5e283088dc69e95aa79cdaa5a0
+UUCODE_OPENTUI_SHA256=94e85a3754410df19d08344e3ed562a6a4cd7b6e0c5fbce7de55b54b6e9eca66
 YOGA_VERSION=3.2.1
 YOGA_SHA256=86b399ac31fd820d8ffa823c3fae31bb690b6fc45301b2a8a966c09b5a088b55
 
@@ -98,6 +98,7 @@ cp -R "$SOURCE_DIR/ghostty/pkg/android-ndk" "$SOURCE_DIR/ghostty/pkg/apple-sdk" 
 cp "$VENDOR_DIR/zig-deps/ghostty-build.zig" "$DEPS_DIR/ghostty/build.zig"
 cp "$VENDOR_DIR/zig-deps/ghostty-build.zig.zon" "$DEPS_DIR/ghostty/build.zig.zon"
 git -C "$DEPS_DIR/ghostty" apply "$VENDOR_DIR/zig-deps/ghostty-shared-deps.patch"
+git -C "$DEPS_DIR/ghostty" apply "$VENDOR_DIR/zig-deps/ghostty-zig-0.17.patch"
 
 for name in uucode-ghostty uucode-opentui; do
   extract "$TMP_DIR/$name.tar.gz" "$SOURCE_DIR/$name"

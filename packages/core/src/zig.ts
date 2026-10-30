@@ -36,6 +36,7 @@ export type {
   NativeRenderStats,
 }
 
+import type { ExtractOptions } from "./image.js"
 import { RGBA } from "./lib/RGBA.js"
 import { isStyledText, type StyledText } from "./lib/styled-text.js"
 import { YogaError, YogaStatus, type MeasureFunction } from "./yoga.js"
@@ -5799,6 +5800,19 @@ export class FFIRenderLib {
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_scene_set_video")
       nativeResult("ot_scene_set_video", this.opentui.symbols.ot_scene_set_video(pointer, handle, fitId, storage))
+    })
+  }
+
+  /** Sets the source region an image or video node shows; undefined shows the whole source. */
+  public sceneSetCrop(context: NativeContextHandle, node: SceneNodeHandle, crop: ExtractOptions | undefined): void {
+    const handle = encodeContextHandle(context, node)
+    const { left = 0, top = 0, width = 0, height = 0 } = crop ?? {}
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_crop")
+      nativeResult(
+        "ot_scene_set_crop",
+        this.opentui.symbols.ot_scene_set_crop(pointer, handle, left, top, width, height),
+      )
     })
   }
 

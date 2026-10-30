@@ -8,7 +8,7 @@ const SupportedZigVersion = struct {
 };
 
 const SUPPORTED_ZIG_VERSIONS = [_]SupportedZigVersion{
-    .{ .major = 0, .minor = 16, .patch = 0 },
+    .{ .major = 0, .minor = 17, .patch = 0 },
 };
 
 const SupportedTarget = struct {
@@ -92,15 +92,22 @@ const LCMS2_SOURCES = [_][]const u8{
     "src/cmsxform.c",
 };
 
+// Zig 0.17 compiles a host query without a CPU model for the baseline CPU,
+// so native artifacts name the native CPU.
+fn nativeTarget(b: *std.Build) std.Build.ResolvedTarget {
+    return b.resolveTargetQuery(.{ .cpu_model = .native });
+}
+
 fn nativeExecutableTarget(b: *std.Build) std.Build.ResolvedTarget {
-    if (builtin.os.tag != .linux) {
-        return b.resolveTargetQuery(.{});
+    if (builtin.target.os.tag != .linux) {
+        return nativeTarget(b);
     }
 
     // Zig 0.16's ELF linker still fails on newer glibc startup objects that
     // ship .sframe relocations. Keep shipped libraries on linux-gnu, but use
     // musl for local native executables so test/debug/bench still work.
     var query = b.graph.host.query;
+    query.cpu_model = .native;
     query.abi = .musl;
     query.glibc_version = null;
     return b.resolveTargetQuery(query);
@@ -136,6 +143,9 @@ fn isMacOSSDKAvailable(b: *std.Build, sdk_path: []const u8) bool {
 }
 
 fn resolveMacOSSDKPath(b: *std.Build) ?[]const u8 {
+    // Zig 0.17 reuses a configuration unless build.zig says it can't. This search reads
+    // the environment and the file system, so each build configures again.
+    b.graph.poisonCache();
     if (b.option([]const u8, "macos-sdk", "Path to a macOS SDK for CoreAudio headers and framework linking")) |sdk_path| {
         if (isMacOSSDKAvailable(b, sdk_path)) return sdk_path;
         std.debug.print("macOS SDK path '{s}' must be a MacOSX*.sdk with the required frameworks\n", .{sdk_path});
@@ -149,7 +159,7 @@ fn resolveMacOSSDKPath(b: *std.Build) ?[]const u8 {
         }
     }
 
-    if (builtin.os.tag == .macos and std.zig.system.darwin.isSdkInstalled(b.allocator, b.graph.io)) {
+    if (builtin.target.os.tag == .macos and std.zig.system.darwin.isSdkInstalled(b.allocator, b.graph.io)) {
         const sdk_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
         if (std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &sdk_target.result)) |sdk_path| {
             if (isMacOSSDKAvailable(b, sdk_path)) return sdk_path;
@@ -384,12 +394,14 @@ fn addVideoDependencies(b: *std.Build, module: *std.Build.Module, target: std.Bu
         module.addCSourceFile(.{ .file = b.path("src/video-shim.c"), .flags = unavailable_flags });
         return;
     };
-    const prefix = b.pathFromRoot(b.fmt(".cache/ffmpeg/prefix/{s}", .{target_name}));
-    // scripts/build-ffmpeg.ts writes this marker after a complete install.
-    if (!pathExists(b, b.pathJoin(&.{ prefix, "opentui-build" }))) {
+    const prefix = b.root.joinString(b.allocator, b.fmt(".cache/ffmpeg/prefix/{s}", .{target_name})) catch @panic("OOM");
+    // scripts/build-ffmpeg.ts writes this marker after a complete install. Its
+    // revision names the Zig version whose zig cc compiled the objects.
+    const marker = std.Io.Dir.cwd().readFileAlloc(b.graph.io, b.pathJoin(&.{ prefix, "opentui-build" }), b.allocator, .limited(64)) catch "";
+    if (!std.mem.endsWith(u8, marker, "-zig-" ++ builtin.zig_version_string)) {
         if (require_video) {
             std.debug.print(
-                "error: FFmpeg for {s} is missing at {s}.\nRun `bun scripts/build-ffmpeg.ts --target={s}` in packages/native (see src/vendor/ffmpeg/README.md).\n",
+                "error: FFmpeg for {s} at {s} is missing or built by another Zig version.\nRun `bun scripts/build-ffmpeg.ts --target={s}` in packages/native (see src/vendor/ffmpeg/README.md).\n",
                 .{ target_name, prefix, target_name },
             );
             std.process.exit(1);
@@ -397,7 +409,7 @@ fn addVideoDependencies(b: *std.Build, module: *std.Build.Module, target: std.Bu
         if (!video_unavailable_warned.contains(target_name)) {
             video_unavailable_warned.put(b.allocator, target_name, {}) catch @panic("OOM");
             std.debug.print(
-                "warning: FFmpeg for {s} is missing; building without video. Run `bun scripts/build-ffmpeg.ts --target={s}` in packages/native.\n",
+                "warning: FFmpeg for {s} is missing or built by another Zig version; building without video. Run `bun scripts/build-ffmpeg.ts --target={s}` in packages/native.\n",
                 .{ target_name, target_name },
             );
         }
@@ -449,10 +461,11 @@ fn addNativeAudioDependencies(
 
 fn addYogaDependencies(b: *std.Build, module: *std.Build.Module, test_allocator: bool) void {
     const yoga_dep = b.dependency("yoga", .{});
-    const flags = if (test_allocator)
-        appendCFlags(b, &YOGA_CXX_FLAGS, &.{"-DOT_YOGA_TEST_ALLOCATOR"})
-    else
-        &YOGA_CXX_FLAGS;
+    var flags: []const []const u8 = &YOGA_CXX_FLAGS;
+    if (test_allocator) flags = appendCFlags(b, flags, &.{"-DOT_YOGA_TEST_ALLOCATOR"});
+    // Zig 0.17's macOS math.h includes float.h for INFINITY and NAN alone, and
+    // libc++'s float.h then skips the full include, so Yoga's FLT_MAX is missing.
+    if (module.resolved_target.?.result.os.tag == .macos) flags = appendCFlags(b, flags, &.{"-DFLT_MAX=__FLT_MAX__"});
 
     module.link_libcpp = true;
     module.addIncludePath(yoga_dep.path(""));
@@ -480,7 +493,7 @@ fn ghosttyVtAvailable(target: std.Build.ResolvedTarget) bool {
 fn addTranslatedCImports(
     b: *std.Build,
     module: *std.Build.Module,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     target: std.Build.ResolvedTarget,
 ) void {
     const miniaudio_translate = b.addTranslateC(.{
@@ -505,7 +518,7 @@ fn addTranslatedCImports(
 fn addContextABIHeader(
     b: *std.Build,
     module: *std.Build.Module,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     target: std.Build.ResolvedTarget,
 ) void {
     const header = b.addTranslateC(.{
@@ -527,7 +540,7 @@ fn addTestFixtures(b: *std.Build, module: *std.Build.Module) void {
 fn applyDependencies(
     b: *std.Build,
     module: *std.Build.Module,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     target: std.Build.ResolvedTarget,
     build_options: *std.Build.Step.Options,
 ) void {
@@ -541,7 +554,7 @@ fn applyDependencies(
     if (ghostty_vt_available) {
         if (b.lazyDependency("ghostty", .{
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             // Enable once OpenTUI uses Ghostty VT at runtime. Until then,
             // Highway and simdutf only add binary size and exported symbols.
             .simd = false,
@@ -611,8 +624,8 @@ pub fn build(b: *std.Build) void {
     checkZigVersion();
 
     const optimize = b.standardOptimizeOption(.{});
-    const bench_optimize = b.option(std.builtin.OptimizeMode, "bench-optimize", "Optimize mode for benchmarks") orelse .ReleaseFast;
-    const test_optimize = b.option(std.builtin.OptimizeMode, "test-optimize", "Optimize mode for native tests") orelse .Debug;
+    const bench_optimize = b.option(std.lang.Optimize, "bench-optimize", "Optimize mode for benchmarks") orelse .fast;
+    const test_optimize = b.option(std.lang.Optimize, "test-optimize", "Optimize mode for native tests") orelse .debug;
     const debug_use_llvm = b.option(bool, "debug-llvm", "Use LLVM backend for debug/test artifacts");
     const target_option = b.option([]const u8, "library-target", "Build static/shared libraries for a specific target (e.g., 'x86_64-linux-gnu.2.17').");
     const build_all = b.option(bool, "all", "Build for all supported targets") orelse false;
@@ -678,6 +691,19 @@ pub fn build(b: *std.Build) void {
     const run_test = b.addRunArtifact(test_artifact);
     test_step.dependOn(&run_test.step);
 
+    // Zig 0.17.0 miscompiles some integer casts only in optimized LLVM code,
+    // where utils.zig tests its replacements.
+    const utils_test = b.addTest(.{
+        .name = "utils-llvm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/utils.zig"),
+            .target = native_target,
+            .optimize = .safe,
+        }),
+        .use_llvm = true,
+    });
+    test_step.dependOn(&b.addRunArtifact(utils_test).step);
+
     // Branch coverage: the same tests, compiled with LLVM SanitizerCoverage edge counters
     // (`fuzz = true`) and a runner that dumps every counter. `scripts/branch-cov.ts`
     // symbolizes the PCs and lists every branch arm no test reached.
@@ -685,10 +711,10 @@ pub fn build(b: *std.Build) void {
     const cov_mod = b.createModule(.{
         .root_source_file = b.path("src/test.zig"),
         .target = native_target,
-        .optimize = .Debug,
+        .optimize = .debug,
         .fuzz = true,
     });
-    applyDependencies(b, cov_mod, .Debug, native_target, build_options);
+    applyDependencies(b, cov_mod, .debug, native_target, build_options);
     addTestFixtures(b, cov_mod);
     const cov_artifact = b.addTest(.{
         .name = "test-cov",
@@ -706,19 +732,19 @@ pub fn build(b: *std.Build) void {
     const abi_step = b.step("test-abi", "Run C context acceptance against static/shared libraries");
     // Shared-library acceptance needs the host's dynamic loader. Pin glibc to
     // avoid the startup-object issue described in nativeExecutableTarget.
-    const abi_target = if (builtin.os.tag == .linux and !builtin.abi.isMusl())
+    const abi_target = if (builtin.target.os.tag == .linux and !builtin.target.abi.isMusl())
         b.resolveTargetQuery(.{
-            .cpu_arch = builtin.cpu.arch,
+            .cpu_arch = builtin.target.cpu.arch,
             .os_tag = .linux,
             .abi = .gnu,
             .glibc_version = .{ .major = 2, .minor = 17, .patch = 0 },
         })
     else
         native_target;
-    for (createLibraries(b, abi_target, .Debug, build_options, macos_sdk_path)) |lib| {
+    for (createLibraries(b, abi_target, .debug, build_options, macos_sdk_path)) |lib| {
         const fixture_module = b.createModule(.{
             .target = abi_target,
-            .optimize = .Debug,
+            .optimize = .debug,
             .link_libc = true,
         });
         fixture_module.linkLibrary(lib);
@@ -740,9 +766,9 @@ pub fn build(b: *std.Build) void {
     const lifetime_mod = b.createModule(.{
         .root_source_file = b.path("src/test.zig"),
         .target = native_target,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
-    applyDependencies(b, lifetime_mod, .Debug, native_target, lifetime_options);
+    applyDependencies(b, lifetime_mod, .debug, native_target, lifetime_options);
     addTestFixtures(b, lifetime_mod);
     const lifetime_artifact = b.addTest(.{
         .root_module = lifetime_mod,
@@ -781,13 +807,11 @@ pub fn build(b: *std.Build) void {
     applyDependencies(b, bench_isolated_mod, bench_optimize, native_target, build_options);
     bench_mod.addObject(b.addObject(.{ .name = "opentui-bench-isolated", .root_module = bench_isolated_mod }));
     const run_bench = b.addRunArtifact(bench_exe);
-    if (b.args) |args| {
-        run_bench.addArgs(args);
-    }
+    run_bench.addPassthruArgs();
     bench_step.dependOn(&run_bench.step);
 
     const bench_ffi_step = b.step("bench-ffi", "Build NativeSpanFeed benchmark library");
-    const bench_ffi_target = b.resolveTargetQuery(.{});
+    const bench_ffi_target = nativeTarget(b);
     const bench_ffi_mod = b.createModule(.{
         .root_source_file = b.path("src/native-span-feed-bench-lib.zig"),
         .target = bench_ffi_target,
@@ -814,9 +838,9 @@ pub fn build(b: *std.Build) void {
     const debug_mod = b.createModule(.{
         .root_source_file = b.path("src/debug-view.zig"),
         .target = native_target,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
-    applyDependencies(b, debug_mod, .Debug, native_target, build_options);
+    applyDependencies(b, debug_mod, .debug, native_target, build_options);
     const debug_exe = b.addExecutable(.{
         .name = "opentui-debug",
         .root_module = debug_mod,
@@ -828,7 +852,7 @@ pub fn build(b: *std.Build) void {
 
 fn buildAllTargets(
     b: *std.Build,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_options: *std.Build.Step.Options,
     macos_sdk_path: ?[]const u8,
 ) !void {
@@ -847,13 +871,13 @@ fn buildAllTargets(
 
 fn buildNativeTarget(
     b: *std.Build,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_options: *std.Build.Step.Options,
     macos_sdk_path: ?[]const u8,
 ) !void {
     // Find the matching supported target for the native platform
-    const native_arch = @tagName(builtin.cpu.arch);
-    const native_os = @tagName(builtin.os.tag);
+    const native_arch = @tagName(builtin.target.cpu.arch);
+    const native_os = @tagName(builtin.target.os.tag);
 
     for (SUPPORTED_TARGETS) |supported_target| {
         // Check if this target matches the native platform
@@ -880,7 +904,7 @@ fn buildNativeTarget(
 fn buildSingleTarget(
     b: *std.Build,
     target_str: []const u8,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_options: *std.Build.Step.Options,
     macos_sdk_path: ?[]const u8,
 ) !void {
@@ -909,7 +933,7 @@ fn buildTarget(
     zig_target: []const u8,
     output_name: []const u8,
     description: []const u8,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_options: *std.Build.Step.Options,
     macos_sdk_path: ?[]const u8,
 ) !void {
@@ -932,7 +956,7 @@ fn buildTarget(
                 .{ .override = .{ .custom = install_path } }
             else
                 .disabled,
-            .pdb_dir = if (optimize == .Debug) .default else if (lib.producesPdbFile())
+            .pdb_dir = if (optimize == .debug) .default else if (lib.producesPdbFile())
                 .{ .override = .{ .custom = install_path } }
             else
                 .disabled,
@@ -945,7 +969,7 @@ fn buildTarget(
 fn createLibraries(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_options: *std.Build.Step.Options,
     macos_sdk_path: ?[]const u8,
 ) [2]*std.Build.Step.Compile {
@@ -966,7 +990,7 @@ fn createLibraries(
         .root_module = module,
         .linkage = .dynamic,
     });
-    if (target.result.os.tag == .linux and optimize != .Debug) shared.build_id = .sha1;
+    if (target.result.os.tag == .linux and optimize != .debug) shared.build_id = .sha1;
     // Zig's default DLL entry skips the MinGW CRT startup, so CRT state such as
     // the DLL atexit table would stay uninitialized. MinGW's strtod registers
     // there, and both the Zig code and FFmpeg call it, so this applies with or

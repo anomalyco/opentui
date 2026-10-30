@@ -1,8 +1,9 @@
 import type { OptimizedBuffer } from "../buffer.js"
 import { Renderable, type NativeRenderableIntegration, type RenderableOptions } from "../Renderable.js"
 import type { RenderContext } from "../types.js"
+import type { ExtractOptions } from "../image.js"
 import type { NativeVideoState } from "../zig.js"
-import type { ImageFit } from "./Image.js"
+import { checkCrop, sameCrop, type ImageFit } from "./Image.js"
 
 export interface VideoMetadata {
   width: number
@@ -16,6 +17,8 @@ export interface VideoRenderableOptions extends RenderableOptions<VideoRenderabl
   /** Path of an MP4 (H.264/AAC) file. */
   source?: string
   fit?: ImageFit
+  /** The region of the source to show, in source pixels; `fit` applies to it, and only the region is scaled. */
+  crop?: ExtractOptions
   /** Plays each source once it opens. */
   autoplay?: boolean
   loop?: boolean
@@ -71,6 +74,7 @@ export class VideoRenderable extends Renderable {
 
   private _source: string | undefined
   private _fit: ImageFit
+  private _crop: ExtractOptions | undefined
   private _loop: boolean
   private _audio: boolean
   private _muted: boolean
@@ -117,6 +121,7 @@ export class VideoRenderable extends Renderable {
       this.onTimeUpdate = options.onTimeUpdate
       this.setNativeSceneVideo()
       if (options.source !== undefined) this.source = options.source
+      this.crop = options.crop
     } catch (error) {
       this.abortConstruction(error, () => this.destroySelf())
     }
@@ -166,6 +171,12 @@ export class VideoRenderable extends Renderable {
       this.afterOpen(() => {
         this.onReady?.(metadata)
         this.startRequested()
+        // A crop outside this source shows the whole frame until one fits. The crop set in the same turn counts.
+        try {
+          if (this._crop) checkCrop(this._crop, metadata.width, metadata.height)
+        } catch (error) {
+          this.reportError(error, "")
+        }
       })
     } catch (error) {
       this._metadata = null
@@ -187,6 +198,20 @@ export class VideoRenderable extends Renderable {
     if (this._fit === next || this.isDestroyed) return
     this.setNativeSceneVideo(next)
     this._fit = next
+    this.requestRender()
+  }
+
+  public get crop(): ExtractOptions | undefined {
+    return this._crop && { ...this._crop }
+  }
+
+  /** A crop that is not whole pixels, or lies outside the open source, reports through onError and keeps the previous one. */
+  public set crop(value: ExtractOptions | null | undefined) {
+    if (sameCrop(this._crop, value ?? undefined) || this.isDestroyed) return
+    const next = this.acceptCrop(value ?? undefined)
+    if (next === null) return
+    this._ctx.nativeScene.setCrop(this, next)
+    this._crop = next
     this.requestRender()
   }
 
@@ -487,6 +512,17 @@ export class VideoRenderable extends Renderable {
 
   private setNativeSceneVideo(fit: ImageFit = this._fit): void {
     this._ctx.nativeScene.setVideo(this, fit, this.buffered ? this.frameBuffer : null)
+  }
+
+  // Returns the checked copy, or null after reporting why the crop is invalid for the source.
+  private acceptCrop(crop: ExtractOptions | undefined): ExtractOptions | undefined | null {
+    try {
+      return crop && checkCrop(crop, this._metadata?.width, this._metadata?.height)
+    } catch (error) {
+      // Frameworks may assign onError, or the source, after crop.
+      queueMicrotask(() => this.isDestroyed || this.reportError(error, ""))
+      return null
+    }
   }
 
   private startRequested(): void {

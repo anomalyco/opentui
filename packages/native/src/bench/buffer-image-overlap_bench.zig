@@ -5,6 +5,7 @@ const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const image = @import("../image.zig");
 const link = @import("../link.zig");
+const utils = @import("../utils.zig");
 
 pub const benchName = "Buffer Image Overlap";
 
@@ -68,7 +69,7 @@ fn runWorkload(target: *buffer.OptimizedBuffer, scenario: Scenario) !void {
             }
         },
         .transparent_wide_text_overlap => {
-            const text = "界" ** (WIDTH / 2);
+            const text = utils.repeat(u8, "界", WIDTH / 2);
             var y: u32 = 0;
             while (y < HEIGHT) : (y += 1) try target.drawText(text, 0, y, transparent, transparent, 0);
         },

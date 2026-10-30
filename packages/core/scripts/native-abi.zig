@@ -9,34 +9,34 @@ pub const json = blk: {
     var callbacks: []const u8 = "";
     var layouts: []const u8 = "";
     var constants: []const u8 = "";
-    for (@typeInfo(c).@"struct".decls) |decl| {
-        if (!std.mem.startsWith(u8, decl.name, "OT_") and
-            !std.mem.startsWith(u8, decl.name, "ot_")) continue;
-        const value = @field(c, decl.name);
-        if (std.mem.startsWith(u8, decl.name, "OT_")) {
+    for (@typeInfo(c).@"struct".decl_names) |decl_name| {
+        if (!std.mem.startsWith(u8, decl_name, "OT_") and
+            !std.mem.startsWith(u8, decl_name, "ot_")) continue;
+        const value = @field(c, decl_name);
+        if (std.mem.startsWith(u8, decl_name, "OT_")) {
             switch (@typeInfo(@TypeOf(value))) {
                 .int, .comptime_int => {
-                    constants = constants ++ separator(constants) ++ quote(decl.name) ++ ":" ++
+                    constants = constants ++ separator(constants) ++ quote(decl_name) ++ ":" ++
                         std.fmt.comptimePrint("{d}", .{value});
                 },
-                else => @compileError("Unsupported ABI constant: " ++ decl.name),
+                else => @compileError("Unsupported ABI constant: " ++ decl_name),
             }
-        } else if (std.mem.startsWith(u8, decl.name, "ot_")) {
+        } else if (std.mem.startsWith(u8, decl_name, "ot_")) {
             if (@TypeOf(value) == type) {
                 switch (@typeInfo(value)) {
-                    .@"struct" => layouts = layouts ++ separator(layouts) ++ quote(decl.name) ++ ":" ++ layout(value),
-                    .optional, .pointer => callbacks = callbacks ++ separator(callbacks) ++ quote(decl.name) ++ ":" ++ function(callback(value)),
+                    .@"struct" => layouts = layouts ++ separator(layouts) ++ quote(decl_name) ++ ":" ++ layout(value),
+                    .optional, .pointer => callbacks = callbacks ++ separator(callbacks) ++ quote(decl_name) ++ ":" ++ function(callback(value)),
                     .int => {},
                     .@"opaque" => {
-                        if (!std.mem.eql(u8, decl.name, "ot_context"))
-                            @compileError("Unsupported opaque ABI type: " ++ decl.name);
+                        if (!std.mem.eql(u8, decl_name, "ot_context"))
+                            @compileError("Unsupported opaque ABI type: " ++ decl_name);
                     },
-                    else => @compileError("Unsupported ABI typedef: " ++ decl.name),
+                    else => @compileError("Unsupported ABI typedef: " ++ decl_name),
                 }
             } else if (@typeInfo(@TypeOf(value)) == .@"fn") {
-                symbols = symbols ++ separator(symbols) ++ quote(decl.name) ++ ":" ++ function(@TypeOf(value));
+                symbols = symbols ++ separator(symbols) ++ quote(decl_name) ++ ":" ++ function(@TypeOf(value));
             } else {
-                @compileError("Unsupported ABI declaration: " ++ decl.name);
+                @compileError("Unsupported ABI declaration: " ++ decl_name);
             }
         }
     }
@@ -75,15 +75,15 @@ fn name(comptime T: type) []const u8 {
         .optional => |info| name(info.child),
         .pointer => |info| if (@typeInfo(info.child) == .@"fn") blk: {
             const signature = @typeInfo(info.child).@"fn";
-            if (signature.is_var_args or signature.is_generic)
+            if (signature.attrs.varargs or signature.is_generic)
                 @compileError("Unsupported ABI callback: " ++ @typeName(T));
-            if (!std.meta.eql(signature.calling_convention, std.builtin.CallingConvention.c))
+            if (!std.meta.eql(signature.attrs.@"callconv", std.lang.CallingConvention.c))
                 @compileError("Unsupported ABI calling convention: " ++ @typeName(T));
             var args: []const u8 = "";
-            for (signature.params) |param|
-                args = args ++ separator(args) ++ name(param.type.?);
+            for (signature.param_types) |param|
+                args = args ++ separator(args) ++ name(param.?);
             break :blk "callback(" ++ args ++ ")->" ++ name(signature.return_type.?);
-        } else "*" ++ (if (info.is_const) "const " else "") ++ name(info.child),
+        } else "*" ++ (if (info.attrs.@"const") "const " else "") ++ name(info.child),
         .array => |info| std.fmt.comptimePrint("[{d}]{s}", .{ info.len, name(info.child) }),
         .@"struct", .@"opaque" => blk: {
             const full = @typeName(T);
@@ -106,21 +106,22 @@ fn name(comptime T: type) []const u8 {
 
 fn function(comptime T: type) []const u8 {
     const info = @typeInfo(T).@"fn";
-    if (info.is_var_args or info.is_generic) @compileError("Unsupported ABI function: " ++ @typeName(T));
-    if (!std.meta.eql(info.calling_convention, std.builtin.CallingConvention.c))
+    if (info.attrs.varargs or info.is_generic) @compileError("Unsupported ABI function: " ++ @typeName(T));
+    if (!std.meta.eql(info.attrs.@"callconv", std.lang.CallingConvention.c))
         @compileError("Unsupported ABI calling convention: " ++ @typeName(T));
     var args: []const u8 = "";
-    for (info.params) |param| args = args ++ separator(args) ++ quote(name(param.type.?));
+    for (info.param_types) |param| args = args ++ separator(args) ++ quote(name(param.?));
     return "{\"args\":[" ++ args ++ "],\"returns\":" ++ quote(name(info.return_type.?)) ++ "}";
 }
 
 fn layout(comptime T: type) []const u8 {
     if (@typeInfo(T).@"struct".layout != .@"extern") @compileError("Expected C record: " ++ @typeName(T));
     var fields: []const u8 = "";
-    for (@typeInfo(T).@"struct".fields) |field| {
-        fields = fields ++ separator(fields) ++ quote(field.name) ++ ":" ++ std.fmt.comptimePrint(
+    const info = @typeInfo(T).@"struct";
+    for (info.field_names, info.field_types, info.field_attrs) |field_name, field_type, field_attrs| {
+        fields = fields ++ separator(fields) ++ quote(field_name) ++ ":" ++ std.fmt.comptimePrint(
             "{{\"offset\":{d},\"size\":{d},\"alignment\":{d},\"type\":{s}}}",
-            .{ @offsetOf(T, field.name), @sizeOf(field.type), field.alignment orelse @alignOf(field.type), quote(name(field.type)) },
+            .{ @offsetOf(T, field_name), @sizeOf(field_type), field_attrs.@"align" orelse @alignOf(field_type), quote(name(field_type)) },
         );
     }
     return std.fmt.comptimePrint("{{\"size\":{d},\"alignment\":{d},\"fields\":{{{s}}}}}", .{ @sizeOf(T), @alignOf(T), fields });

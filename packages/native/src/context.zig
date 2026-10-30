@@ -71,19 +71,20 @@ pub const Error = handles.Error || yoga.Error || session.Error || error{
 pub const RendererBuffer = enum { current, next };
 
 const scene_style_enum_maxima = blk: {
-    @setEvalBranchQuota(64 * std.meta.declarations(api).len);
+    const names = @typeInfo(api).@"struct".decl_names;
+    @setEvalBranchQuota(64 * names.len);
     var count = 0;
-    for (std.meta.declarations(api)) |decl| {
-        if (std.mem.startsWith(u8, decl.name, "OT_STYLE_ENUM_") and
-            !std.mem.endsWith(u8, decl.name, "_MAX")) count += 1;
+    for (names) |name| {
+        if (std.mem.startsWith(u8, name, "OT_STYLE_ENUM_") and
+            !std.mem.endsWith(u8, name, "_MAX")) count += 1;
     }
     var maxima: [count]u32 = undefined;
-    var present = [_]bool{false} ** count;
-    for (std.meta.declarations(api)) |decl| {
-        if (!std.mem.startsWith(u8, decl.name, "OT_STYLE_ENUM_") or
-            !std.mem.endsWith(u8, decl.name, "_MAX")) continue;
-        const kind = @field(api, decl.name[0 .. decl.name.len - "_MAX".len]);
-        maxima[kind] = @field(api, decl.name);
+    var present: [count]bool = @splat(false);
+    for (names) |name| {
+        if (!std.mem.startsWith(u8, name, "OT_STYLE_ENUM_") or
+            !std.mem.endsWith(u8, name, "_MAX")) continue;
+        const kind = @field(api, name[0 .. name.len - "_MAX".len]);
+        maxima[kind] = @field(api, name);
         present[kind] = true;
     }
     for (present) |found| if (!found) @compileError("Missing checked scene style enum constraint");
@@ -139,7 +140,7 @@ pub const BufferDraw = struct {
         respect_alpha = api.OT_BUFFER_DRAW_RESPECT_ALPHA,
 
         comptime {
-            // Record decoders range-check the C value, then cast it with @enumFromInt.
+            // Record decoders range-check the C value, then cast it with @fromBackingInt.
             for (0..api.OT_BUFFER_DRAW_RESPECT_ALPHA + 1) |value| std.debug.assert(std.enums.fromInt(Operation, value) != null);
             std.debug.assert(std.enums.values(Operation).len == api.OT_BUFFER_DRAW_RESPECT_ALPHA + 1);
         }
@@ -770,7 +771,7 @@ pub const Context = struct {
             .chunk_size = options.chunk_size,
             .initial_chunks = options.chunk_count,
             .max_bytes = @as(u64, options.chunk_size) * options.chunk_count,
-            .growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block),
+            .growth_policy = @backingInt(native_span_feed.GrowthPolicy.block),
             .auto_commit_on_full = 1,
             .span_queue_capacity = options.span_capacity,
         });
@@ -938,7 +939,7 @@ pub const Context = struct {
         try value.checkOpen();
         const attached = value.renderer orelse return error.RendererNotAttached;
         if (corner > 3) return error.InvalidOptions;
-        attached.setDebugOverlay(enabled, @enumFromInt(corner));
+        attached.setDebugOverlay(enabled, @fromBackingInt(@intCast(corner)));
     }
 
     pub fn sessionUpdateStats(self: *Context, handle: Handle, overall_ms: f64, fps: u32, callback_ms: f64) Error!void {
@@ -1837,7 +1838,7 @@ pub const Context = struct {
             if (cells.len / 3 > self.render_cells_max) return error.InvalidOptions;
         }
         try target.checkImageResources();
-        const channels: buffer_effects.ColorTarget = @enumFromInt(channel);
+        const channels: buffer_effects.ColorTarget = @fromBackingInt(@intCast(channel));
         if (mask) |cells| {
             buffer_effects.colorMatrix(target, matrix, cells, strength, channels);
         } else {
@@ -2127,8 +2128,23 @@ pub const Context = struct {
         }
         if (target) |value| try value.retain();
         if (source) |value| value.retain();
-        node.scene_node.?.control.image.deinit();
-        node.scene_node.?.control.image = .{ .source = source, .fit = fit, .protocol = protocol, .buffer = target };
+        const state = &node.scene_node.?.control.image;
+        const crop = state.crop;
+        state.deinit();
+        state.* = .{ .source = source, .fit = fit, .protocol = protocol, .buffer = target, .crop = crop };
+    }
+
+    /// Sets the source region an IMAGE or VIDEO node shows; null shows the whole source.
+    pub fn sceneSetCrop(self: *Context, handle: Handle, crop: ?image.Region) !void {
+        if (crop) |region| std.debug.assert(region.width > 0 and region.height > 0);
+        try self.beginMutation();
+        defer self.mutating = false;
+        const node = (try self.scenePaintNode(handle)).scene_node.?;
+        switch (node.kind) {
+            api.OT_SCENE_IMAGE => node.control.image.crop = crop,
+            api.OT_SCENE_VIDEO => node.control.video.image.crop = crop,
+            else => return error.WrongKind,
+        }
     }
 
     fn videoState(self: *Context, handle: Handle) !*scene.VideoState {
@@ -2150,8 +2166,9 @@ pub const Context = struct {
         const target = if (buffer_handle) |id| try self.getBuffer(id) else null;
         if (target) |value| try value.retain();
         const state = &node.scene_node.?.control.video;
+        const crop = state.image.crop;
         state.image.deinit();
-        state.image = .{ .fit = fit, .buffer = target };
+        state.image = .{ .fit = fit, .buffer = target, .crop = crop };
     }
 
     /// Replaces the node's player. An empty path closes it. A failed open keeps no player.
@@ -2755,7 +2772,7 @@ pub const Context = struct {
             // their caches first so no failing work follows selection publication.
             try text.prepareView();
             if (text.view.virtual_lines.items.len > std.math.maxInt(i32)) return error.InvalidOptions;
-            const behavior: text_buffer_view.SelectionBehavior = @enumFromInt(options.behavior);
+            const behavior: text_buffer_view.SelectionBehavior = @fromBackingInt(@intCast(options.behavior));
             break :selection if (options.operation == api.OT_SCENE_TEXT_SELECTION_SET)
                 text.view.setLocalSelectionBehavior(options.anchor_x, options.anchor_y, options.focus_x, options.focus_y, options.background, options.foreground, behavior)
             else

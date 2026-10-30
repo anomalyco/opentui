@@ -74,7 +74,7 @@ test "Scene editor sets the mouse pointer only when its options select one" {
     terminal.setMousePointerStyle(.crosshair);
     try repaint(owner, fixture.session, background, true, 0);
     try testing.expectEqual(.crosshair, terminal.getMousePointer());
-    try owner.sceneSetEditorOptions(fixture.node, .{ .mouse_pointer = @intFromEnum(MousePointerStyle.zoom_out) });
+    try owner.sceneSetEditorOptions(fixture.node, .{ .mouse_pointer = @backingInt(MousePointerStyle.zoom_out) });
     try repaint(owner, fixture.session, background, true, 0);
     try testing.expectEqual(.zoom_out, terminal.getMousePointer());
 }

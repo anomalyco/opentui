@@ -1,7 +1,7 @@
 import type { NativeSession } from "./NativeSession.js"
 import type { Renderable, RenderableOptions } from "./Renderable.js"
 import type { ImageFit } from "./renderables/Image.js"
-import type { NativeImage } from "./image.js"
+import type { ExtractOptions, NativeImage } from "./image.js"
 import { OptimizedBuffer } from "./buffer.js"
 import type { ImageRenderProtocol } from "./types.js"
 import { RendererControlState, type CliRenderer } from "./renderer.js"
@@ -459,6 +459,11 @@ export class NativeScene {
     this.flushStaged()
     const { renderLib: lib, context } = this.driver
     lib.sceneSetVideo(context, renderable._getSceneHandle(this), fit, buffer?._getSceneHandle(this) ?? null)
+  }
+
+  setCrop(renderable: Renderable, crop: ExtractOptions | undefined): void {
+    this.flushStaged()
+    this.driver.renderLib.sceneSetCrop(this.driver.context, renderable._getSceneHandle(this), crop)
   }
 
   /** @internal Video control and state calls address the node after staged writes. */

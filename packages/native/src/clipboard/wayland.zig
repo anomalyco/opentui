@@ -143,7 +143,7 @@ pub const Connection = struct {
     primary_offer: ?*WlProxy = null,
     primary_supported: bool = false,
     bound_seat_global: ?u32 = null,
-    providers: [MAX_PROVIDERS]?*Provider = .{null} ** MAX_PROVIDERS,
+    providers: [MAX_PROVIDERS]?*Provider = @splat(null),
     clipboard_provider: ?*Provider = null,
     primary_provider: ?*Provider = null,
     provider_cursor: u8 = 0,
@@ -566,7 +566,7 @@ pub const Connection = struct {
         if (!self.is_wsl) return null;
         const name = posix_io.getEnv("WAYLAND_DISPLAY") orelse return null;
         var buffer: [std.fs.max_path_bytes:0]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&buffer, "/mnt/wslg/runtime-dir/{s}", .{name}) catch return null;
+        const path = std.mem.printSentinel(&buffer, "/mnt/wslg/runtime-dir/{s}", .{name}, 0) catch return null;
         return self.symbols.wl_display_connect(path);
     }
 
@@ -1496,7 +1496,7 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
     const names = [_][*:0]const u8{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR" };
     var saved: [names.len]?[:0]u8 = undefined;
     for (names, &saved) |name, *value| {
-        value.* = if (posix_io.getEnv(name)) |current| try std.testing.allocator.dupeZ(u8, current) else null;
+        value.* = if (posix_io.getEnv(name)) |current| try std.testing.allocator.dupeSentinel(u8, current, 0) else null;
     }
     defer for (names, saved) |name, value| {
         if (value) |restored| {
@@ -1830,7 +1830,7 @@ fn testProxyVersion(_: *WlProxy) callconv(.c) u32 {
 
 test "Wayland MIME retention ignores irrelevant metadata without consuming the bounded set" {
     try std.testing.expect(!isRelevantMime("application/x-irrelevant"));
-    try std.testing.expect(!isRelevantMime(&([_]u8{'x'} ** (MAX_MIME_BYTES + 1))));
+    try std.testing.expect(!isRelevantMime(&@as([MAX_MIME_BYTES + 1]u8, @splat('x'))));
 
     const proxy: *WlProxy = @ptrFromInt(1);
     var connection = testOfferConnection(proxy);
