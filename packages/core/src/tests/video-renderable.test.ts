@@ -362,6 +362,7 @@ describe("VideoRenderable", () => {
     ["1x1", { left: 159, top: 89, width: 1, height: 1 }, ""],
     ["odd sizes", { left: 3, top: 5, width: 37, height: 21 }, ""],
     ["out of bounds", { left: 150, top: 0, width: 11, height: 1 }, "outside the 160x90 source"],
+    ["out of bounds below", { left: 0, top: 80, width: 10, height: 20 }, "outside the 160x90 source"],
     ["zero size", { left: 0, top: 0, width: 0, height: 4 }, "positive u32 width"],
     ["fractional", { left: 0.5, top: 0, width: 4, height: 4 }, "u32 left"],
   ])("crop %s", async (name, crop, error) => {
@@ -390,6 +391,8 @@ describe("VideoRenderable", () => {
       video.crop = null
       expect(spy).toHaveBeenCalledTimes(error ? 0 : 2)
       expect(video.crop).toBeUndefined()
+      await setup.renderOnce()
+      expect(isDeepStrictEqual(setup.captureSpans(), whole)).toBe(true)
     } finally {
       spy.mockRestore()
     }

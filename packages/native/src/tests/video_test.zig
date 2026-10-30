@@ -369,6 +369,10 @@ test "video scene crop decodes only the source region" {
         try paint(f);
         const frame = value.video.current_image.?;
         try testing.expectEqual(row.size, [2]u32{ frame.width(), frame.height() });
+        // The same output again publishes no new frame.
+        const published = value.video.published;
+        try paint(f);
+        try testing.expectEqual(published, value.video.published);
         const part = row.pixels orelse continue;
         for (0..part.height) |y| {
             const offset = ((part.top + y) * 160 + part.left) * 4;

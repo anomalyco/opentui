@@ -260,10 +260,11 @@ describe("ImageRenderable image loading", () => {
     ["1x1", { left: 2, top: 0, width: 1, height: 1 }, "fill", ""],
     ["odd sizes", { left: 1, top: 1, width: 3, height: 2 }, "fill", ""],
     ["fit over", { left: 0, top: 0, width: 1, height: 3 }, "fit", ""],
-    ["cover over wide", { left: 1, top: 1, width: 3, height: 1 }, "cover", ""],
+    ["cover over wide", { left: 1, top: 1, width: 3, height: 2 }, "cover", ""],
     ["cover over tall", { left: 2, top: 1, width: 1, height: 2 }, "cover", ""],
     ["out of bounds", { left: 2, top: 0, width: 3, height: 1 }, "fit", "outside the 4x3 source"],
     ["zero size", { left: 0, top: 0, width: 0, height: 1 }, "fill", "positive u32 width"],
+    ["zero height", { left: 0, top: 0, width: 1, height: 0 }, "fill", "positive u32 width"],
   ])("crop %s paints like the extracted region", async (_, crop, fit, error) => {
     const red = Uint8Array.from({ length: 48 }, (_, index) => (index % 4 === 0 ? 20 + 5 * index : 255))
     const image = NativeImage.fromRgba(red, 4, 3)
@@ -310,6 +311,10 @@ describe("ImageRenderable image loading", () => {
     await Promise.resolve()
     expect(errors).toHaveLength(1)
     expect(renderable.crop).toEqual({ left: 2, top: 0, width: 2, height: 1 })
+    // A change of top or height alone is a change.
+    renderable.crop = { left: 2, top: 1, width: 2, height: 1 }
+    renderable.crop = { left: 2, top: 1, width: 2, height: 2 }
+    expect(renderable.crop).toEqual({ left: 2, top: 1, width: 2, height: 2 })
     renderable.crop = null
     expect(renderable.getFittedSize(4, 4, 1)).toEqual({ width: 4, height: 4 })
     // A crop set while a larger source loads is checked against that source.

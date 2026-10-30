@@ -165,6 +165,7 @@ test "Context video ABI checks nodes arguments and reports failures" {
         .{ .{ 0, 0, 0, 1 }, c.OT_INVALID_ARGUMENT },
         .{ .{ 0, 0, 1, 0 }, c.OT_INVALID_ARGUMENT },
         .{ .{ 1, 0, 0, 0 }, c.OT_INVALID_ARGUMENT },
+        .{ .{ 0, 1, 0, 0 }, c.OT_INVALID_ARGUMENT },
     }) |row| {
         const crop = row[0];
         try std.testing.expectEqual(row[1], abi.ot_scene_set_crop(context, &node, crop[0], crop[1], crop[2], crop[3]));
