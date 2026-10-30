@@ -1025,14 +1025,15 @@ ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t 
  * and translations immediately, without running layout. OT_LAYOUT_YOGA instead
  * copies the six actual Yoga computed values, including zero dimensions, and
  * sets screen_x/y to zero. OT_LAYOUT_PAINT copies where the latest paint list painted the
- * node, including screen_x/y, with each axis that leaves the signed 32-bit cell range
- * clamped to the whole cells it paints within 2^22 of the origin, at least one; PUBLIC and
- * YOGA keep the unclamped values. During a RECORD request, mutations do not change those
- * coordinates. A node that list did not paint (hidden, culled, or detached), and every node
- * after a solve or after a change between frames that drops the list, until the next list
- * paints it, reads its latest solved geometry composed with current translations and
- * offsets, at least one cell per axis; zeros if Yoga has not laid it out since it was
- * created or moved. While a host request is pending, such a node's first read holds.
+ * node, or where a frame being prepared places it, including screen_x/y, with each axis
+ * that leaves the signed 32-bit cell range clamped to the whole cells it paints within 2^22
+ * of the origin, at least one; PUBLIC and YOGA keep the unclamped values. During a RECORD
+ * request, mutations do not change those coordinates. A node that list did not paint
+ * (hidden, culled, or detached), and every node after a culling viewport scrolls between
+ * frames, until the next list paints it, reads its latest solved geometry composed with
+ * current translations and offsets, at least one cell per axis; zeros if Yoga has not laid
+ * it out since it was created or moved. While a host request is pending, such a node's
+ * first read holds.
  * These reads do not run layout. Other selectors reject without changing output.
  * A scroll node's children report YOGA values local to its content node, and their
  * screen_x/y compose through the viewport and content origins and the offset. */

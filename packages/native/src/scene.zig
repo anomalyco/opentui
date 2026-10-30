@@ -528,7 +528,8 @@ pub const Node = struct {
     // Scene.candidates_gen of the walk that listed the node, or of the preparation of its
     // culling parent's child (prepareSubtree).
     prepared_gen: u64 = 0,
-    // Scene.candidates_gen when a walk or a preparation went through the node's children.
+    // Scene.candidates_gen when a walk or a preparation went through the node's children or found
+    // none to go through; behind only where the walk stopped at the node.
     subtree_gen: u64 = 0,
     // Scene.members_gen of the paint list that painted the node, and the request during which
     // paint layout read it again (getPaintLayout).
@@ -664,8 +665,6 @@ const PreparationFrame = struct {
     // The candidates walk stops below the node's children, or at the node.
     stops_children: bool = false,
     stops: bool = false,
-    // prepareSubtree leaves nodes Yoga has not laid out to the next round.
-    preparing: bool = false,
     filter: ?Filter = null,
     // A filtering node's children that may overlap, when its index found them.
     culled: ?[]*native.NativeRenderable = null,
@@ -767,9 +766,9 @@ pub const Scene = struct {
     members: std.ArrayListUnmanaged(Work) = .empty,
     // Advances with each candidates walk, which clears both lists first.
     candidates_gen: u64 = 0,
-    // Advances with each paint list, each solve, and each change between frames that drops the
-    // list.
-    members_gen: u64 = 0,
+    // Advances with each paint list, and when a moved culling parent drops the list; it starts
+    // past every node's painted_gen.
+    members_gen: u64 = 1,
     // Advances with each host request.
     last_request: u64 = 0,
     last_feedback_id: u64 = 0,
@@ -1649,8 +1648,6 @@ pub const Scene = struct {
     pub fn clearPreparation(self: *Scene) void {
         self.candidates.clearRetainingCapacity();
         self.members.clearRetainingCapacity();
-        // A change between frames moves what the list painted; a RECORD reply's does not.
-        if (self.attempt == null) self.members_gen += 1;
     }
 
     pub fn cancelFrame(self: *Scene) void {
@@ -2239,7 +2236,6 @@ pub const Scene = struct {
         // Every solve, a measurement-only one too, invalidates the geometry nodes hold.
         self.layout_epoch = epoch;
         self.selection_epoch +%= 1;
-        self.members_gen += 1;
         self.layout_width = cli.width;
         self.layout_height = cli.height;
         self.layout_pending = true;
@@ -2324,19 +2320,21 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         std.debug.assert(node.prepared_gen == self.candidates_gen);
         node.subtree_gen = self.candidates_gen;
-        if (!node.layout_flags.prepared_visible or node.paint_children.items.len == 0) return;
+        // The walk stops only at shown nodes with children.
+        std.debug.assert(node.layout_flags.prepared_visible);
         // The list holds no node of a culled subtree, so its room for every node holds this one;
         // only the stamps stay.
         if (builtin.is_test) self.test_subtree_preparations += 1;
         const listed = self.candidates.items.len;
         defer self.candidates.items.len = listed;
-        const start: PreparationFrame = .{ .node = value, .parent = node.layout, .clip = .{ .x = 0, .y = 0, .width = 0, .height = 0 }, .opacity = 1, .entered = true, .filtered = true, .preparing = true };
+        const start: PreparationFrame = .{ .node = value, .parent = node.layout, .clip = .{ .x = 0, .y = 0, .width = 0, .height = 0 }, .opacity = 1, .entered = true, .filtered = true };
         try self.prepare(objects, start, .candidates, false, &self.candidates);
         for (self.candidates.items[listed..]) |entry| self.stampEntry(entry, true);
     }
 
-    /// Before a reply moves or hooks a node in a subtree the round's walk left out, prepares
-    /// that subtree, so the change meets what a full walk would have left.
+    /// Before a reply reads or changes a node, prepares what the round's walk left out around it:
+    /// the culled subtree that holds it, and its own if the walk stopped at it. Later
+    /// preparations then meet what the full walk read at the round's start.
     pub fn prepareOmitted(self: *Scene, objects: *const handles.Table, value: *native.NativeRenderable) !void {
         if (self.attempt == null) return;
         while (value.scene_node.?.prepared_gen != self.candidates_gen) {
@@ -2345,6 +2343,7 @@ pub const Scene = struct {
             if (row.scene_node.?.subtree_gen == self.candidates_gen) return;
             try self.prepareSubtree(objects, row);
         }
+        if (value.scene_node.?.subtree_gen != self.candidates_gen) try self.prepareSubtree(objects, value);
     }
 
     fn stampCandidates(self: *Scene, phases: bool) void {
@@ -3257,10 +3256,6 @@ pub const Scene = struct {
                     var computed: yoga.ExternalYogaLayout = undefined;
                     self.frame_work.geometry_reads += 1;
                     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-                    if (frame.preparing and (std.math.isNan(computed.width) or std.math.isNan(computed.height))) {
-                        depth -= 1;
-                        continue;
-                    }
                     layout = .{
                         .left = computed.left,
                         .top = computed.top,
@@ -3298,6 +3293,8 @@ pub const Scene = struct {
                 list.appendAssumeCapacity(.{ .node = value, .layout = layout, .clip = frame.clip, .opacity = frame.opacity, .visible = visible, .filtered = frame.filtered });
                 if (node.viewport) |handle| _ = try self.viewportNode(objects, handle);
                 if (!visible or (node.paint_children.items.len == 0 and node.viewport == null and node.scroll == null)) {
+                    // Nothing below it is left out; a reply's new children wait for the next walk.
+                    if (mode == .candidates and !dry) node.subtree_gen = self.candidates_gen;
                     depth -= 1;
                     continue;
                 }
@@ -3354,7 +3351,7 @@ pub const Scene = struct {
             if (depth == stack.len) return error.YogaDepthLimit;
             const child = children[frame.child];
             frame.child += 1;
-            stack[depth] = .{ .node = child, .parent = frame.parent, .clip = frame.clip, .opacity = frame.opacity, .filtered = frame.filtered or node.filtersChildren(), .stops = frame.stops_children, .preparing = frame.preparing, .filter = frame.filter };
+            stack[depth] = .{ .node = child, .parent = frame.parent, .clip = frame.clip, .opacity = frame.opacity, .filtered = frame.filtered or node.filtersChildren(), .stops = frame.stops_children, .filter = frame.filter };
             depth += 1;
         }
     }
@@ -3493,10 +3490,10 @@ pub fn getLayout(value: *const native.NativeRenderable) !Layout {
     return composedLayout(value, .observed);
 }
 
-/// Where the latest paint list painted the node. The walks prepare a culled subtree only where
-/// it shows, so a node the list did not paint reads its solved geometry again; while a host
-/// request is pending, the first read holds, so a hook reads its request's geometry after its
-/// own changes.
+/// Where the latest paint list painted the node, or where this frame's preparation placed it.
+/// The walks prepare a culled subtree only where it shows, so a node the list did not paint
+/// reads its solved geometry again; while a host request is pending, the first read holds, so
+/// a hook reads its request's geometry after its own changes.
 pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
     const node = value.scene_node.?;
     const owner = node.owner;
@@ -3504,8 +3501,7 @@ pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
     const pending = if (owner.attempt) |active| active.pending != null else false;
     if (pending and node.read_request == owner.last_request) return cellLayout(node.layout);
     const layout = try composedLayout(value, .solved);
-    // A node Yoga has not laid out keeps the stamp a walk reuses.
-    if (pending and layout.width != 0) {
+    if (pending) {
         node.layout = layout;
         node.read_request = owner.last_request;
     }

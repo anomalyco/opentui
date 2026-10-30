@@ -206,6 +206,9 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
     try f.owner.sceneSetPaint(child, .{ .background = .{ 2, 0, 0, 255 } });
     try f.owner.sceneMoveNode(child, f.root, 0);
     try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_UPDATE, 1, 8, 1);
+    // Before any paint list, a measured node reads its solved geometry.
+    try f.owner.sceneMeasureLayout(f.id, f.root);
+    try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetPaintLayout(child)).width);
     const update = try f.step(null, options, c.OT_SCENE_FRAME_UPDATE, f.root);
     try f.owner.scenePatchPaint(child, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 3 });
     const done = try f.step(update, options, c.OT_SCENE_FRAME_DONE, null);
@@ -2559,7 +2562,8 @@ test "Scene scroll node frames ask the host nothing and toggle bars a bounded nu
     try testing.expectEqual(@as(u32, 0), idle.damage_rows);
 }
 
-const Culled = enum { scroll_in_reply, read_moved, first_frame_read, solve_read, translated_read, body_after_reply, moved_out, idle_update, stale_viewport };
+const Culled = enum { scroll_in_reply, bars_in_reply, row_bars_in_reply, read_moved, first_frame_read, solve_read, translated_read, translate_in_reply, held_read, body_after_reply, moved_out, idle_update, shown_then_update, hidden_row, stale_viewport };
+const always_bars: scene.ScrollOptions = .{ .bars = @splat(.{ .policy = c.OT_SCENE_SCROLL_BAR_ALWAYS }) };
 
 /// H (root child 0), V (`shown` rows tall, clipping), its content with V as the viewport and 16
 /// one-cell rows at list[3..19], and G (list[19]) in row `row`.
@@ -2577,7 +2581,7 @@ fn culledScene(f: Fixture, list: []context.Handle, shown: f32, row: usize) !void
 
 /// One frame; logs each request with the paint layout the C ABI reads for it, and with `reply`
 /// answers as the case says. A RECORD gets H's recording of G's body.
-fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std.ArrayListUnmanaged([5]u64), reply: bool) !void {
+fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std.ArrayListUnmanaged([6]u64), reply: bool) !void {
     var request = try f.owner.sceneFrameStep(f.id, null, options);
     while (request.kind != c.OT_SCENE_FRAME_DONE) {
         if (request.kind == c.OT_SCENE_FRAME_RECORD) {
@@ -2587,9 +2591,12 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             request = try f.owner.sceneFrameStepWithRecording(f.id, request, options, recording.view());
             continue;
         }
-        const read = case == .first_frame_read or case == .solve_read or case == .translated_read;
+        const read = switch (case) {
+            .first_frame_read, .solve_read, .translated_read, .translate_in_reply, .held_read => true,
+            else => false,
+        };
         const painted = try f.owner.sceneGetPaintLayout(if (read) list[19] else request.node);
-        try log.append(testing.allocator, .{ request.kind, request.num, request.layout_epoch, @bitCast(@as(f64, painted.width)), @bitCast(painted.screenY) });
+        try log.append(testing.allocator, .{ request.kind, request.num, request.layout_epoch, @bitCast(@as(f64, painted.width)), @bitCast(painted.screenY), request.node.slot });
         if (reply and std.meta.eql(request.node, list[0])) switch (case) {
             .scroll_in_reply => try f.owner.sceneSetScroll(list[19], .{}),
             .read_moved => {
@@ -2598,8 +2605,26 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             },
             .moved_out => try f.owner.sceneMoveNode(list[19], list[20], 0),
             .idle_update => try feedbackHook(f, list[19], c.OT_SCENE_HOOK_UPDATE),
+            .bars_in_reply => for (list[22..]) |box| try f.owner.sceneSetScroll(box, always_bars),
+            .row_bars_in_reply => {
+                try f.owner.sceneSetScroll(list[3], always_bars);
+                try f.owner.sceneMoveNode(try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 99), list[3], 0);
+            },
+            .held_read => {
+                try feedbackHook(f, list[20], c.OT_SCENE_HOOK_UPDATE);
+                const after = try f.owner.sceneGetPaintLayout(list[19]);
+                try log.append(testing.allocator, .{ 0, 0, 0, @bitCast(@as(f64, after.width)), @bitCast(after.screenY), 0 });
+            },
+            .shown_then_update, .hidden_row => {
+                try f.owner.sceneSetStyle(list[if (case == .hidden_row) 3 else 19], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                try feedbackHook(f, list[19], c.OT_SCENE_HOOK_UPDATE);
+            },
             else => {},
         };
+        // After selection takes the culling parent's rows.
+        if (reply and case == .translate_in_reply and std.meta.eql(request.node, list[20])) {
+            try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -10 });
+        }
         if (reply and case == .body_after_reply and std.meta.eql(request.node, list[19])) {
             try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 7, 1);
             try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 0 });
@@ -2614,26 +2639,31 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
 // reply adds a scroll node inside a shown row, moves a node into one and reads its paint layout,
 // or moves an unprepared node out of a culled row; paint layout read in the first frame, after a
 // solve or a translation, and in a later round's scene body; a reply gives an idle-update node in
-// a shown row UPDATE; a destroyed viewport in a culled row.
+// a shown row UPDATE; a destroyed viewport in a culled row. Replies also add bars to boxes in a
+// shown row and to an empty row, translate the culling parent, hook a node beside a culled node
+// whose paint layout the request read, and show a node or its hidden row before hooking it.
 test "Scene culled subtrees follow replies and reads as the full walk does" {
     for (std.enums.values(Culled)) |case| {
         errdefer std.debug.print("case {t}\n", .{case});
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 8, 4, .{}), try Fixture.init(testing.allocator, 8, 4, .{}) };
         defer for (twins) |f| f.deinit();
-        var logs: [2]std.ArrayListUnmanaged([5]u64) = .{ .empty, .empty };
+        var logs: [2]std.ArrayListUnmanaged([6]u64) = .{ .empty, .empty };
         defer for (&logs) |*log| log.deinit(testing.allocator);
         var results: [2]anyerror!void = undefined;
+        var g_slot: u64 = 0;
         for (twins, &logs, &results, 0..) |f, *log, *result, twin| {
             try f.owner.sceneSetDebugFlags(f.id, if (twin == 0) c.OT_SCENE_DEBUG_FULL_FRAME else c.OT_SCENE_DEBUG_VERIFY);
-            var list: [22]context.Handle = undefined;
+            var list: [223]context.Handle = undefined;
             const row: usize = switch (case) {
                 .first_frame_read, .stale_viewport => 7,
                 .solve_read => 3,
                 .body_after_reply => 2,
-                .moved_out => 15,
+                .row_bars_in_reply => 1,
+                .moved_out, .held_read => 15,
                 else => 0,
             };
             try culledScene(f, &list, if (case == .solve_read) 4 else 2, row);
+            g_slot = list[19].slot;
             try feedbackHook(f, list[0], if (case == .body_after_reply) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE);
             switch (case) {
                 .first_frame_read => try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 6, 1),
@@ -2654,10 +2684,22 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 },
                 // A scroll node below keeps a translation from keeping the candidates.
                 .translated_read => try f.owner.sceneSetScroll(list[18], .{}),
+                .bars_in_reply => for (list[22..], 1..) |*box, index| {
+                    box.* = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(100 + index));
+                    try f.owner.sceneMoveNode(box.*, list[3], @intCast(index));
+                },
+                .translate_in_reply => {
+                    try feedbackNode(f, &list, 20, c.OT_SCENE_BOX, f.root, 2);
+                    // Asked in the round the translation reveals it in.
+                    try feedbackNode(f, &list, 21, c.OT_SCENE_BOX, list[13], 0);
+                    for (list[20..22]) |node| try feedbackHook(f, node, c.OT_SCENE_HOOK_UPDATE);
+                },
+                .held_read => try feedbackNode(f, &list, 20, c.OT_SCENE_BOX, list[18], 1),
+                .shown_then_update, .hidden_row => try f.owner.sceneSetStyle(list[if (case == .hidden_row) 3 else 19], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0),
                 else => {},
             }
             const g_hooks: u32 = switch (case) {
-                .idle_update => c.OT_SCENE_HOOK_IDLE_UPDATE,
+                .idle_update, .shown_then_update, .hidden_row => c.OT_SCENE_HOOK_IDLE_UPDATE,
                 .body_after_reply, .moved_out => c.OT_SCENE_HOOK_UPDATE,
                 else => 0,
             };
@@ -2665,6 +2707,9 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
             if (case != .first_frame_read) try culledFrame(f, case, &list, log, false);
             switch (case) {
                 .read_moved, .body_after_reply, .translated_read => try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -2 }),
+                .held_read => try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -5 }),
+                // A solve while the node is hidden lays it out at no size.
+                .shown_then_update => try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 5, 1),
                 .solve_read => {
                     try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, 2, 1);
                     try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 7, 1);
@@ -2673,7 +2718,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 else => {},
             }
             // The next frame walks the candidates again, or keeps them for the scroll.
-            if (case != .read_moved and case != .solve_read and case != .translated_read) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_OPACITY, .{ .opacity = 0.5 });
+            if (case != .read_moved and case != .solve_read and case != .translated_read and case != .held_read and case != .translate_in_reply) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_OPACITY, .{ .opacity = 0.5 });
             result.* = culledFrame(f, case, &list, log, true);
         }
         results[0] catch |err| {
@@ -2681,8 +2726,14 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
             continue;
         };
         try results[1];
-        try testing.expectEqualSlices([5]u64, logs[0].items, logs[1].items);
+        try testing.expectEqualSlices([6]u64, logs[0].items, logs[1].items);
         try twins[0].expectSameCells(twins[1]);
+        // The reply's UPDATE reaches the node it shows, in a later round.
+        if (case == .shown_then_update or case == .hidden_row) {
+            var updates: usize = 0;
+            for (logs[1].items) |entry| updates += @intFromBool(entry[0] == c.OT_SCENE_FRAME_UPDATE and entry[5] == g_slot);
+            try testing.expectEqual(@as(usize, 1), updates);
+        }
     }
 }
 
