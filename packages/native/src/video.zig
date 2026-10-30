@@ -1105,8 +1105,7 @@ pub const Player = struct {
             // from the drain, so a loop also carries the time since the audio ended.
             const status = self.video.audioStatus();
             self.position_us = self.video.audioTimeUs(status);
-            const drained = status.stats.state == audio.StreamState.ended;
-            self.clock_start_us = if (drained) status.ended_us else nowUs();
+            self.clock_start_us = if (status.stats.state == audio.StreamState.ended) status.ended_us else nowUs();
         }
         self.audio_clock = audio_clock;
         const media = if (audio_clock) state.current_time_us else self.wallTime();
@@ -1139,9 +1138,9 @@ pub const Player = struct {
         if (self.ended and !self.loop) try self.seek(0);
         self.playing = true;
         self.ended = false;
-        self.audio_clock = false;
         self.clock_start_us = nowUs();
         self.video.play();
+        self.audio_clock = self.video.audioClockActive(self.video.audioStatus());
     }
 
     pub fn pause(self: *Player) !void {
@@ -1166,6 +1165,7 @@ pub const Player = struct {
         };
         self.position_us = target;
         self.clock_start_us = nowUs();
+        self.audio_clock = self.playing and self.video.audioClockActive(self.video.audioStatus());
         self.ended = false;
         self.needs_update = true;
         if (self.playing or !self.presented) return;
