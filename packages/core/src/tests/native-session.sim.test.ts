@@ -35,8 +35,8 @@ const presets = {
   local_fast: { rate: null, capacity: 18_944, hangup: false, stall: 0 },
   ssh_slow: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 0 },
   hangup_mid_frame: { rate: 48_000, capacity: 18_944 + 65_536, hangup: true, stall: 0 },
-  // The link stalls for 2 s as the run ends, past the 1 s close timeout, with a write running.
-  close_timeout: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 2000 },
+  // The link stalls for 4 s as the run ends, past the 1 s close timeout, with a write running.
+  close_timeout: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 4000 },
   // The link stalls as the run ends and does not recover within the run.
   close_stuck: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 3_600_000 },
   // R23: split-footer captured stdout at about 1,000 lines a second, titles and a 1 MiB OSC 52 on a 16 KB/s link;

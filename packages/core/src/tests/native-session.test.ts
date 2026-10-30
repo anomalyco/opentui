@@ -582,13 +582,24 @@ test("the stdout writer is polled in one task with a growing backoff, and a coll
 })
 
 // #1870: the second copy ends at 300 ms, after the deadline. A grace shorter than the backoff leaves the polls as
-// they are: 175 in all, the last at 329 ms.
-test.each([100, 1])("a close waits for the writer's copy in flight past the deadline: %p ms", async (timeoutMs) => {
+// they are: 175 in all, the last at 329 ms. With stdout corked the third copy waits with nothing in flight, so the
+// deadline restarted at the collect fires. A deadline from armCloseTimeout is held the same way.
+test.each([
+  { timeoutMs: 100, bytes: 6000, expected: "closed" },
+  { timeoutMs: 1, bytes: 6000, expected: "closed" },
+  { timeoutMs: 100, bytes: 9000, cork: true, expected: timeout },
+  { timeoutMs: 100, bytes: 6000, arm: true, expected: "closed" },
+])("a close waits for the writer's copy in flight past the deadline: %o", async ({ timeoutMs, bytes, ...row }) => {
   await withStdoutWriter([10, 300], timeoutMs, async (driver, scheduler, posts) => {
-    expect(driver.write(new Uint8Array(6000).fill(98))).toBe(true)
-    const closed = outcome(driver.close())
-    for (let ms = 0; ms <= 400; ms++) await scheduler.run(ms)
-    expect(await closed).toBe("closed")
+    expect(driver.write(new Uint8Array(bytes).fill(98))).toBe(true)
+    if (row.arm) driver.armCloseTimeout()
+    let closed = row.arm ? null : outcome(driver.close())
+    for (let ms = 0; ms <= 600; ms++) {
+      if (row.cork && ms === 20) process.stdout.cork()
+      if (row.arm && ms === 350) closed = outcome(driver.close())
+      await scheduler.run(ms)
+    }
+    expect(await closed).toBe(row.expected)
     expect(posts.length).toBe(175)
   })
 })
