@@ -19,8 +19,8 @@ const builtin = @import("builtin");
 /// The most bytes one hand-over copies: the driver's drain budget.
 pub const handover_max: u32 = 64 * 1024;
 
-/// Linux only for now; macOS waits for its tty probe.
-pub const supported = builtin.os.tag == .linux;
+/// Other platforms keep the synchronous drain.
+pub const supported = builtin.os.tag == .linux or builtin.os.tag == .macos;
 
 pub const State = enum(u32) { idle, in_flight, writing, done_ok, done_failed, stop };
 
@@ -256,6 +256,13 @@ pub const StdoutWriter = Writer(FdSink, ThreadRunner(null));
 /// Pins the image that holds this code, so a detached writer never returns into an unmapped
 /// library. Code in the main executable cannot be unmapped and needs no pin.
 pub fn pinLibrary() bool {
+    if (builtin.os.tag == .macos) {
+        var info: std.c.dl_info = undefined;
+        if (std.c.dladdr(@ptrCast(&pinLibrary), &info) == 0) return false;
+        // dyld's image 0 is the main executable.
+        if (@intFromPtr(info.fbase) == @intFromPtr(std.c._dyld_get_image_header(0))) return true;
+        return std.c.dlopen(info.fname, .{ .NOW = true, .NOLOAD = true, .NODELETE = true }) != null;
+    }
     if (builtin.os.tag != .linux) return false;
     const Search = struct {
         address: usize,
@@ -300,11 +307,18 @@ pub fn stdoutSupported() bool {
 // (without -fllvm the default backend ignores -fsanitize-thread).
 const testing = std.testing;
 
+/// A channel that one hand-over fills: fds[0] reads, fds[1] writes.
 pub fn testPipe(capacity: c_int) ![2]std.posix.fd_t {
     var fds: [2]std.posix.fd_t = undefined;
-    if (std.c.pipe(&fds) != 0) return error.Pipe;
-    // F_SETPIPE_SZ: a small pipe fills with one hand-over.
-    _ = std.c.fcntl(fds[1], 1031, capacity);
+    if (builtin.os.tag == .linux) {
+        if (std.c.pipe(&fds) != 0) return error.Pipe;
+        // F_SETPIPE_SZ.
+        _ = std.c.fcntl(fds[1], 1031, capacity);
+        return fds;
+    }
+    // macOS pipes hold 16 to 64 KiB and cannot shrink; a Unix stream socket holds its send buffer.
+    if (std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds) != 0) return error.Pipe;
+    _ = std.c.setsockopt(fds[1], std.c.SOL.SOCKET, std.c.SO.SNDBUF, std.mem.asBytes(&capacity), @sizeOf(c_int));
     return fds;
 }
 
@@ -433,25 +447,19 @@ test "stdout writer retries EINTR and EAGAIN, and fails a hangup, a zero count, 
     try waitThreadsGone();
 }
 
-var mask_blocked: std.atomic.Value(u64) = .init(0);
+/// Written by the writer thread before it exits; read after `waitThreadsGone`.
+var mask_blocked: std.posix.sigset_t = undefined;
 
-/// Reads the calling thread's blocked-signal mask.
-fn blockedSignals() u64 {
-    var buffer: [4096]u8 = undefined;
-    const fd = std.c.open("/proc/thread-self/status", .{});
-    if (fd < 0) return 0;
-    defer _ = std.c.close(fd);
-    const rc = std.c.read(fd, &buffer, buffer.len);
-    if (rc <= 0) return 0;
-    const text = buffer[0..@intCast(rc)];
-    const start = (std.mem.indexOf(u8, text, "SigBlk:\t") orelse return 0) + 8;
-    const end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse return 0;
-    return std.fmt.parseInt(u64, text[start..end], 16) catch 0;
+/// The calling thread's blocked signals. glibc writes only the kernel's part of the set.
+fn blockedSignals() std.posix.sigset_t {
+    var set = std.posix.sigemptyset();
+    std.posix.sigprocmask(std.posix.SIG.BLOCK, null, &set);
+    return set;
 }
 
 const MaskSink = struct {
     pub fn write(_: MaskSink, bytes: []const u8) SinkError!usize {
-        mask_blocked.store(blockedSignals(), .release);
+        mask_blocked = blockedSignals();
         return bytes.len;
     }
 
@@ -467,16 +475,10 @@ test "stdout writer blocks signals from its first instruction, except SIGTTOU an
     try testing.expectEqual(Outcome.written, writer.waitCollect(std.time.ns_per_s));
     writer.abandon();
     try waitThreadsGone();
-    const mask = mask_blocked.load(.acquire);
-    const bit = struct {
-        fn of(sig: std.posix.SIG) u64 {
-            return @as(u64, 1) << @intCast(@intFromEnum(sig) - 1);
-        }
-    }.of;
     for ([_]std.posix.SIG{ .INT, .WINCH, .HUP, .PIPE, .TERM, .TSTP, .CONT, .ALRM, .CHLD, .USR1, .USR2 }) |sig| {
-        try testing.expect(mask & bit(sig) != 0);
+        try testing.expect(std.posix.sigismember(&mask_blocked, sig));
     }
-    for ([_]std.posix.SIG{ .TTOU, .SEGV, .BUS, .ILL, .FPE, .TRAP }) |sig| try testing.expect(mask & bit(sig) == 0);
+    for ([_]std.posix.SIG{ .TTOU, .SEGV, .BUS, .ILL, .FPE, .TRAP }) |sig| try testing.expect(!std.posix.sigismember(&mask_blocked, sig));
 }
 
 test "stdout writer abandoned inside a stuck write returns at once and frees itself afterwards" {

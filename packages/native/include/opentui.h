@@ -3350,7 +3350,8 @@ ot_status ot_session_drain_stdout(
  * then unchanged. wait above 1 or a null output: OT_INVALID_ARGUMENT. A pending
  * read_output ticket: OT_OUTPUT_BUSY. Before consuming output, wait=0 returns
  * OT_UNSUPPORTED_RESOURCE when stdout is not a terminal, on platforms without the
- * writer (it runs on Linux), or when the thread cannot start: use drain_stdout.
+ * writer (it runs on Linux and macOS), or when the thread cannot start: use
+ * drain_stdout.
  * While a copy is posted, read_output, drain_output and drain_stdout return
  * OT_OUTPUT_BUSY and complete_output returns OT_STALE_OUTPUT for any ticket.
  * Cancel and destroy never wait for a running copy. The thread calls nothing
