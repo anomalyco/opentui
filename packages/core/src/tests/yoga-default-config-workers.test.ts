@@ -15,10 +15,19 @@ test(
       [...runtimeArgs, fileURLToPath(new URL(`yoga-default-config-worker-child.${extension}`, import.meta.url))],
       { encoding: "utf8", timeout: childTimeoutMs },
     )
-    expect({ status: child.status, signal: child.signal, stdout: child.stdout.trim() }).toEqual({
+    const stdout = child.stdout.trim()
+    const passed = child.status === 0 && stdout === "default config survived: 3"
+    // A failure shows the tail of the child's stderr, so a crash explains itself.
+    expect({
+      status: child.status,
+      signal: child.signal,
+      stdout,
+      stderr: passed ? "" : child.stderr.slice(-4096),
+    }).toEqual({
       status: 0,
       signal: null,
       stdout: "default config survived: 3",
+      stderr: "",
     })
   },
   childTimeoutMs + 5_000,
