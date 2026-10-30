@@ -60,6 +60,20 @@ describe("video component", () => {
     expect(videoRef!.crop).toEqual({ left: 80, top: 45, width: 80, height: 45 })
   })
 
+  it("clears a crop removed from the style", async () => {
+    let videoRef: VideoRenderable | undefined
+    const crop = { left: 80, top: 45, width: 80, height: 45 }
+    const [styled, setStyled] = createSignal(true)
+
+    testSetup = await testRender(
+      () => <video ref={videoRef} source={VIDEO_FIXTURE} style={styled() ? { width: 8, height: 4, crop } : {}} />,
+      { width: 12, height: 6 },
+    )
+    expect(videoRef!.crop).toEqual(crop)
+    setStyled(false)
+    expect(videoRef!.crop).toBeUndefined()
+  })
+
   it("swaps media when the source signal changes", async () => {
     let videoRef: VideoRenderable | undefined
     const failures: string[] = []
