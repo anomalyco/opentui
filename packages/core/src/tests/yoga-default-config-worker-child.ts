@@ -1,3 +1,4 @@
+import { dlopen, FFIType } from "../platform/ffi.js"
 import { isWorkerRuntime, postWorkerMessage, Worker } from "../platform/worker.js"
 import Yoga, { type Node } from "../yoga.js"
 
@@ -14,6 +15,10 @@ if (isWorkerRuntime) {
   for (const node of live) node.free()
   postWorkerMessage("done")
 } else {
+  // libuv sets SEM_NOGPFAULTERRORBOX, which keeps Windows Error Reporting from writing a crash dump.
+  if (process.platform === "win32") {
+    dlopen("kernel32.dll", { SetErrorMode: { args: [FFIType.u32], returns: FFIType.u32 } }).symbols.SetErrorMode(0)
+  }
   const workers = Array.from({ length: workerCount }, () => new Worker(new URL(import.meta.url)))
   try {
     await Promise.all(

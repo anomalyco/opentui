@@ -14,6 +14,9 @@ import {
 
 type KeyAliasMap = Record<string, string>
 
+const transparent = RGBA.fromValues(0, 0, 0, 0)
+const arrowColor = parseColor("#AAAAAA")
+
 export interface TabSelectOption {
   name: string
   description: string
@@ -108,7 +111,7 @@ export class TabSelectRenderable extends Renderable {
   constructor(ctx: RenderContext, options: TabSelectRenderableOptions) {
     const calculatedHeight = calculateDynamicHeight(options.showUnderline ?? true, options.showDescription ?? true)
 
-    super(ctx, { ...options, height: calculatedHeight, buffered: true })
+    super(ctx, { ...options, height: calculatedHeight })
 
     try {
       this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultColors.backgroundColor))
@@ -152,97 +155,60 @@ export class TabSelectRenderable extends Renderable {
     return kind === "height" ? this.calculateDynamicHeight() : super.defaultDimension(kind)
   }
 
+  // Draws at the paint origin every frame, only inside the node, so it needs no scissor. An opaque selected tab and
+  // its underline get no background fill, and glyphs blend over the fills with a transparent background, so the
+  // frame matches the composed buffer of `buffered: true`.
   protected renderSelf(buffer: OptimizedBuffer, deltaTime: number): void {
-    if (!this.visible || !this.frameBuffer) return
-
-    if (this.isDirty) {
-      this.refreshFrameBuffer()
-    }
-  }
-
-  private refreshFrameBuffer(): void {
-    if (!this.frameBuffer) return
-    // Use focused colors if focused
+    const [x, y] = this._paintOrigin(buffer)
+    const width = this._paintWidth
+    const height = this._paintHeight
     const bgColor = this._focused ? this._focusedBackgroundColor : this._backgroundColor
-    this.frameBuffer.clear(bgColor)
-    if (this._options.length === 0) return
+    const selectedX = (this.selectedIndex - this.scrollOffset) * this._tabWidth
+    const selectedWidth = Math.min(this._tabWidth, width - selectedX)
+    const selectedRows = this._showUnderline && height >= 2 ? 2 : 1
+    const hole = this._options.length > 0 && selectedX < width && this._selectedBackgroundColor.a === 1
+    const rows = hole ? selectedRows : 0
 
-    const contentX = 0
-    const contentY = 0
-    const contentWidth = this.width
-    const contentHeight = this.height
+    if (buffer === this.frameBuffer) buffer.clear(bgColor)
+    else {
+      buffer.fillRect(x, y, selectedX, rows, bgColor)
+      buffer.fillRect(x + selectedX + selectedWidth, y, width - selectedX - selectedWidth, rows, bgColor)
+      buffer.fillRect(x, y + rows, width, height - rows, bgColor)
+    }
 
     const visibleOptions = this._options.slice(this.scrollOffset, this.scrollOffset + this.maxVisibleTabs)
-
-    // Render tab names
     for (let i = 0; i < visibleOptions.length; i++) {
-      const actualIndex = this.scrollOffset + i
       const option = visibleOptions[i]
-      const isSelected = actualIndex === this.selectedIndex
-      const tabX = contentX + i * this._tabWidth
+      const isSelected = this.scrollOffset + i === this.selectedIndex
+      const tabX = x + i * this._tabWidth
 
-      if (tabX >= contentX + contentWidth) break
+      if (tabX >= x + width) break
 
-      const actualTabWidth = Math.min(this._tabWidth, contentWidth - i * this._tabWidth)
-
-      if (isSelected) {
-        this.frameBuffer.fillRect(tabX, contentY, actualTabWidth, 1, this._selectedBackgroundColor)
-      }
-
+      const actualTabWidth = Math.min(this._tabWidth, width - i * this._tabWidth)
       const baseTextColor = this._focused ? this._focusedTextColor : this._textColor
       const nameColor = isSelected ? this._selectedTextColor : baseTextColor
-      this.frameBuffer.drawTextFit(option.name, tabX + 1, contentY, actualTabWidth - 2, nameColor, undefined, true)
 
-      if (isSelected && this._showUnderline && contentHeight >= 2) {
-        this.frameBuffer.drawText(
-          "▬".repeat(actualTabWidth),
-          tabX,
-          contentY + 1,
-          nameColor,
-          this._selectedBackgroundColor,
-        )
+      if (isSelected) {
+        buffer.fillRect(tabX, y, actualTabWidth, selectedRows, this._selectedBackgroundColor)
+      }
+      buffer.drawTextFit(option.name, tabX + 1, y, actualTabWidth - 2, nameColor, transparent, true)
+      if (isSelected && selectedRows === 2) {
+        buffer.drawText("▬".repeat(actualTabWidth), tabX, y + 1, nameColor, transparent)
       }
     }
 
-    if (this._showDescription && contentHeight >= (this._showUnderline ? 3 : 2)) {
-      const selectedOption = this.getSelectedOption()
-      if (selectedOption) {
-        const descriptionY = contentY + (this._showUnderline ? 2 : 1)
-        const descColor = this._selectedDescriptionColor
-        this.frameBuffer.drawTextFit(
-          selectedOption.description,
-          contentX + 1,
-          descriptionY,
-          contentWidth - 2,
-          descColor,
-          undefined,
-          true,
-        )
-      }
+    const selectedOption = this.getSelectedOption()
+    if (selectedOption && this._showDescription && height >= (this._showUnderline ? 3 : 2)) {
+      const descriptionY = y + (this._showUnderline ? 2 : 1)
+      const description = selectedOption.description
+      buffer.drawTextFit(description, x + 1, descriptionY, width - 2, this._selectedDescriptionColor, transparent, true)
     }
 
     if (this._showScrollArrows && this._options.length > this.maxVisibleTabs) {
-      this.renderScrollArrowsToFrameBuffer(contentX, contentY, contentWidth, contentHeight)
-    }
-  }
-
-  private renderScrollArrowsToFrameBuffer(
-    contentX: number,
-    contentY: number,
-    contentWidth: number,
-    contentHeight: number,
-  ): void {
-    if (!this.frameBuffer) return
-
-    const hasMoreLeft = this.scrollOffset > 0
-    const hasMoreRight = this.scrollOffset + this.maxVisibleTabs < this._options.length
-
-    if (hasMoreLeft) {
-      this.frameBuffer.drawText("‹", contentX, contentY, parseColor("#AAAAAA"))
-    }
-
-    if (hasMoreRight) {
-      this.frameBuffer.drawText("›", contentX + contentWidth - 1, contentY, parseColor("#AAAAAA"))
+      if (this.scrollOffset > 0) buffer.drawText("‹", x, y, arrowColor, transparent)
+      if (this.scrollOffset + this.maxVisibleTabs < this._options.length) {
+        buffer.drawText("›", x + width - 1, y, arrowColor, transparent)
+      }
     }
   }
 

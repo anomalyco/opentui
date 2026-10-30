@@ -1958,7 +1958,7 @@ pub const Scene = struct {
                     layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
                     layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
                     self.frame_work.overlap_tests += 1;
-                    if (!overlaps(bounds, layout)) {
+                    if (!overlaps(bounds, publicLayout(layout))) {
                         if (!full and state.skip.attention_index != no_slot and onlySubtreeListed(state)) dropAttention(node, state.skip.attention_index);
                         continue;
                     }
@@ -2148,7 +2148,8 @@ pub const Scene = struct {
         const active = &self.attempt.?;
         // Once per round, unless a reply marked the node since.
         if (node.observed_frame == active.frame_id and node.observed_round == active.rounds and !node.skip.self_stale) return null;
-        const changed = node.resize_width != node.layout.width or node.resize_height != node.layout.height;
+        const public = publicLayout(node.layout);
+        const changed = node.resize_width != public.width or node.resize_height != public.height;
         var visible = true;
         if (check_display and (node.text != null or node.editor != null or node.kind == api.OT_SCENE_TEXT_VIEW or (changed and node.hook_flags & api.OT_SCENE_HOOK_RESIZE != 0))) {
             // Placement and filtered refresh already checked the parent's membership.
@@ -2161,9 +2162,9 @@ pub const Scene = struct {
             try self.request(node, api.OT_SCENE_FRAME_RESIZE)
         else
             null;
-        node.observed_layout = node.layout;
-        node.resize_width = node.layout.width;
-        node.resize_height = node.layout.height;
+        node.observed_layout = public;
+        node.resize_width = public.width;
+        node.resize_height = public.height;
         node.observed_frame = active.frame_id;
         node.observed_round = active.rounds;
         node.layout_flags.needs_layout = false;
@@ -2363,15 +2364,16 @@ pub const Scene = struct {
         node.geometry_epoch = self.layout_epoch;
         node.prepared_gen = self.candidates_gen;
         node.layout_flags.prepared_visible = entry.visible;
+        const public = publicLayout(entry.layout);
         // An observed node's resize size is its observed one; a new node is stale anyway.
-        if (phases and !sameBox(entry.layout, node.observed_layout)) markObservationStale(entry.node);
+        if (phases and !sameBox(public, node.observed_layout)) markObservationStale(entry.node);
         if (phases) return;
         if (entry.visible and node.hook_flags & api.OT_SCENE_HOOK_IDLE_UPDATE != 0) node.update_frame = active.frame_id;
         // With hooks, hidden roots never enter refresh; placed hidden children still do.
         if (self.hook_count != 0 and !entry.visible and node.parent == null) return;
-        node.observed_layout = entry.layout;
-        node.resize_width = entry.layout.width;
-        node.resize_height = entry.layout.height;
+        node.observed_layout = public;
+        node.resize_width = public.width;
+        node.resize_height = public.height;
         node.observed_frame = active.frame_id;
         node.observed_round = active.rounds;
         node.placement = 0;
@@ -2878,8 +2880,9 @@ pub const Scene = struct {
         }, entry.clip);
         const met = bandsMeet(bands, rows);
         self.frame_work.members_painted += @intFromBool(met);
-        if (!met) {
-            // A member no band meets still prepares its view, as its body would.
+        if (!met or cells.width == 0 or cells.height == 0) {
+            // A member no band meets, or that Yoga sizes to zero, draws no cell but still prepares
+            // its view, as its body would.
             if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF == 0) try self.prepareMember(entry);
         } else if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint) or hasFills(node)) for (bands) |band| {
             if (!band.meets(rows)) continue;
@@ -3213,8 +3216,10 @@ pub const Scene = struct {
                 index.exceptions.appendAssumeCapacity(child);
                 continue;
             }
+            // The one-cell rect overlaps tests, so a zero-size child is found where it is kept.
+            const public = publicLayout(state.layout);
             const start = mainStart(state, row);
-            const end = start + (if (row) state.layout.width else state.layout.height);
+            const end = start + (if (row) public.width else public.height);
             if (!(start >= last_start and @abs(start) <= CullIndex.bound and @abs(end) <= CullIndex.bound)) return;
             last_start = start;
             max_end = @max(max_end, end);
@@ -3264,15 +3269,13 @@ pub const Scene = struct {
                         .top = computed.top,
                         .right = computed.right,
                         .bottom = computed.bottom,
-                        .width = @max(computed.width, 1),
-                        .height = @max(computed.height, 1),
+                        .width = computed.width,
+                        .height = computed.height,
                     };
                 } else if (mode == .paint) {
                     // Final paint follows settled preparation, but transforms remain live.
                     std.debug.assert(node.prepared_gen == self.candidates_gen);
                 }
-                // Image paint and hit geometry rely on at least one cell per dimension.
-                std.debug.assert(layout.width >= 1 and layout.height >= 1);
                 if (node.scroll) |state| {
                     if (refresh_layout and visible and state.resolved_epoch != self.layout_epoch) try self.resolveScroll(objects, value, state);
                 }
@@ -3285,7 +3288,7 @@ pub const Scene = struct {
                 const cells = cellLayout(layout);
                 if (frame.filter) |filter| {
                     self.frame_work.overlap_tests += 1;
-                    if (!overlaps(filter, layout)) {
+                    if (!overlaps(filter, publicLayout(layout))) {
                         depth -= 1;
                         continue;
                     }
@@ -3456,6 +3459,16 @@ fn sameBox(a: Layout, b: Layout) bool {
         if (@as(u32, @bitCast(@field(a, name))) != @as(u32, @bitCast(@field(b, name)))) return false;
     }
     return true;
+}
+
+/// Public geometry keeps at least one cell per dimension; paint geometry keeps Yoga's zero. Culling
+/// tests this rect too, so a zero-size node keeps the children it does not clip wherever a one-cell
+/// node would.
+fn publicLayout(layout: Layout) Layout {
+    var result = layout;
+    result.width = @max(layout.width, 1);
+    result.height = @max(layout.height, 1);
+    return result;
 }
 
 fn rect(layout: Layout) [4]f64 {
@@ -3703,7 +3716,8 @@ fn keyGreaterThan(comptime key: BatchKey) fn (*Scene, Feedback, Feedback) bool {
 }
 
 /// Paint, clip, and hit geometry use i32 cells. An axis outside them keeps the truncated cells that paint covers
-/// within 2^22 of the origin, at least one, so no node moves onto a terminal and every visible edge stays exact.
+/// within 2^22 of the origin, at least one unless zero, so no node moves onto a terminal and every visible edge
+/// stays exact.
 /// NaN, Yoga's f32 overflow, lands off screen with its subtree.
 pub fn cellLayout(layout: Layout) Layout {
     var cells = layout;
@@ -3719,12 +3733,13 @@ fn cellAxis(start: *f64, size: *f32) void {
     const bound: f64 = 1 << 22;
     const first = @trunc(start.*);
     start.* = @min(@max(first, -bound), bound - 1);
+    if (size.* == 0) return;
     size.* = @floatCast(@min(@max(first + @trunc(@as(f64, size.*)), start.* + 1), bound) - start.*);
 }
 
-/// A view or request size in cells; Yoga sizes can exceed u32.
+/// A view or request size in cells, at least one like public sizes; Yoga sizes can exceed u32.
 fn cellSize(size: f32) u32 {
-    return @intFromFloat(@min(size, 0x7fff_ff80));
+    return @intFromFloat(@min(@max(size, 1), 0x7fff_ff80));
 }
 
 /// Whether a band meets the rows; bands are sorted and disjoint, so rows outside their hull

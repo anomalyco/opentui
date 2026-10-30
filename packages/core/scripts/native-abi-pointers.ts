@@ -224,6 +224,7 @@ export const nativePointerPolicies = {
     5: { ffi: "ptr", nullable: "never", retention: "call", source: "callback" },
   },
   ot_session_drain_stdout: { 0: context, 1: buffer, 3: buffer },
+  ot_session_post_stdout: { 0: context, 1: buffer, 4: buffer, 5: buffer },
   ot_session_complete_output: { 0: context, 1: buffer, 2: buffer },
   ot_session_close: { 0: context, 1: buffer },
   ot_session_cancel: { 0: context, 1: buffer },

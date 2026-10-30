@@ -1027,13 +1027,14 @@ ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t 
  * sets screen_x/y to zero. OT_LAYOUT_PAINT copies where the latest paint list painted the
  * node, or where a frame being prepared places it, including screen_x/y, with each axis
  * that leaves the signed 32-bit cell range clamped to the whole cells it paints within 2^22
- * of the origin, at least one; PUBLIC and YOGA keep the unclamped values. During a RECORD
- * request, mutations do not change those coordinates. A node that list did not paint
- * (hidden, culled, or detached), and every node after a solve or after a change between
- * frames that drops the list, until the next list paints it, reads its latest solved
- * geometry composed with current translations and offsets, at least one cell per axis;
- * zeros if Yoga has not laid it out since it was created or moved. While a host request is
- * pending, such a node's first read holds.
+ * of the origin, at least one unless zero; PUBLIC and YOGA keep the unclamped values.
+ * PUBLIC raises a zero width or height to one cell; PAINT keeps it, and a node with a zero
+ * dimension paints and hits no cell. During a RECORD request, mutations do not change those
+ * coordinates. A node that list did not paint (hidden, culled, or detached), and every node
+ * after a solve or after a change between frames that drops the list, until the next list
+ * paints it, reads its latest solved geometry composed with current translations and
+ * offsets, at least one cell per axis; zeros if Yoga has not laid it out since it was
+ * created or moved. While a host request is pending, such a node's first read holds.
  * These reads do not run layout. Other selectors reject without changing output.
  * A scroll node's children report YOGA values local to its content node, and their
  * screen_x/y compose through the viewport and content origins and the offset. */
@@ -2383,6 +2384,10 @@ typedef struct ot_session_capabilities {
 #define OT_PUMP_WAIT_UNTIL UINT32_C(3)
 #define OT_PUMP_CLOSED UINT32_C(4)
 
+/* ot_session_post_stdout states. */
+#define OT_STDOUT_IDLE UINT32_C(0)
+#define OT_STDOUT_IN_FLIGHT UINT32_C(1)
+
 /* Initialize struct_size and abi_version. status, reserved, and deadline_ns are
  * output-only. deadline_ns is nonzero only for OT_PUMP_WAIT_UNTIL. No memory is
  * borrowed. A rejected call leaves the entire output record unchanged. */
@@ -3269,6 +3274,35 @@ ot_status ot_session_drain_stdout(
     ot_context *context,
     const ot_handle *session,
     uint32_t max_bytes,
+    uint32_t *out_written);
+
+/* Write process stdout from a native thread that the Session owns, so this call
+ * never waits in write(2) on a slow terminal.
+ * wait=0: if the running copy has ended, complete its bytes as complete_output
+ *   would; then, when max_bytes is positive and output is queued, copy the next
+ *   prefix (at most max_bytes and 64 KiB) to the thread and start it. max_bytes
+ *   zero only collects.
+ * wait=1 (process exit only): never starts a copy. Waits for the running copy
+ *   without a limit and completes it. A copy the thread has not picked up within
+ *   100 ms is taken back unwritten, stays queued for drain_stdout, and the thread
+ *   is stopped. With no copy running, or no thread: OT_OK and OT_STDOUT_IDLE.
+ * out_written is the bytes this call completed; out_state is OT_STDOUT_IN_FLIGHT
+ * when a copy is still running on return, else OT_STDOUT_IDLE. A failed write
+ * returns OT_OUTPUT_FAILED and stops the transport without replay; outputs are
+ * then unchanged. wait above 1 or a null output: OT_INVALID_ARGUMENT. A pending
+ * read_output ticket: OT_OUTPUT_BUSY. Before consuming output, wait=0 returns
+ * OT_UNSUPPORTED_RESOURCE when stdout is not a terminal, on platforms without the
+ * writer (it runs on Linux), or when the thread cannot start: use drain_stdout.
+ * While a copy is posted, read_output, drain_output and drain_stdout return
+ * OT_OUTPUT_BUSY and complete_output returns OT_STALE_OUTPUT for any ticket.
+ * Cancel and destroy never wait for a running copy. The thread calls nothing
+ * back and keeps the library loaded until process exit. */
+ot_status ot_session_post_stdout(
+    ot_context *context,
+    const ot_handle *session,
+    uint32_t max_bytes,
+    uint32_t wait,
+    uint32_t *out_state,
     uint32_t *out_written);
 
 /* success must be 0 or 1. Failure stops the transport without replaying bytes.

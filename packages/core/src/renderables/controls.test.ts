@@ -1,13 +1,14 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
 import type { Renderable } from "../Renderable.js"
-import { RGBA } from "../lib/RGBA.js"
+import { RGBA, rgbToHex } from "../lib/RGBA.js"
+import { renderFontToFrameBuffer } from "../lib/ascii.font.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import type { CapturedFrame } from "../types.js"
-import { NativePaintRecorder } from "../zig.js"
+import { NativePaintRecorder, resolveRenderLib } from "../zig.js"
 import { BoxRenderable } from "./Box.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
@@ -182,6 +183,11 @@ const tabPaints: {
     options: { tabWidth: 3, showDescription: false, showUnderline: false, options: [{ name: "ab", description: "" }] },
     lines: [" …"],
   },
+  {
+    name: "an underline without a description",
+    options: { showDescription: false, options: items.slice(0, 2) },
+    lines: [" one       two", "▬▬▬▬▬▬▬▬▬▬"],
+  },
 ]
 
 test.each(tabPaints)("TabSelect paints $name", async ({ options, lines }) => {
@@ -191,6 +197,214 @@ test.each(tabPaints)("TabSelect paints $name", async ({ options, lines }) => {
   await setup.renderOnce()
   const frame = setup.captureCharFrame().split("\n")
   expect(frame.slice(0, lines.length).map((line) => line.trimEnd())).toEqual(lines)
+})
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+const hex = (color: RGBA) => rgbToHex(color).slice(1)
+
+// A frame's visible cells, [grapheme, fg, bg] each: the foreground of a blank cell without attributes does not show.
+function cells(frame: CapturedFrame, rows = frame.rows): [string, RGBA | null, RGBA][][] {
+  return frame.lines
+    .slice(0, rows)
+    .map((line) =>
+      line.spans.flatMap((span) =>
+        Array.from(graphemes.segment(span.text), ({ segment }): [string, RGBA | null, RGBA] => [
+          segment,
+          segment.trim() || span.attributes ? span.fg : null,
+          span.bg,
+        ]),
+      ),
+    )
+}
+
+// Each row of the first `width` cells as runs of the same visible colors, `text fg/bg|…` with hex colors.
+function runs(frame: CapturedFrame, rows: number, width: number): string[] {
+  return cells(frame, rows).map((line) => {
+    const out: { text: string; fg: RGBA | null; bg: RGBA }[] = []
+    for (const [text, fg, bg] of line.slice(0, width)) {
+      const last = out.at(-1)
+      if (last?.bg.equals(bg) && (!fg || !last.fg || last.fg.equals(fg))) {
+        last.text += text
+        last.fg ??= fg
+      } else out.push({ text, fg, bg })
+    }
+    return out.map(({ text, fg, bg }) => `${text} ${fg ? hex(fg) : ""}/${hex(bg)}`).join("|")
+  })
+}
+
+// Default colors over a backdrop: the transparent background shows it, and focus fills the control opaque. Each
+// row focuses one control, so the other paints unfocused.
+const selectRows = [
+  " ▶ one         ffff00/334455|             /102030",
+  "   one item    cccccc/334455|             /102030",
+]
+const tabRows = [" one     ffffff/102030| two     ffff00/334455| three     ffffff/102030"]
+const defaultPaints: [string, string[]][] = [
+  [
+    "Select",
+    [
+      ...selectRows,
+      "   two         ffffff/1a1a1a|             /102030",
+      "   two item    888888/1a1a1a|             /102030",
+      ...tabRows,
+      "         /102030|▬▬▬▬▬▬▬▬ ffff00/334455|           /102030",
+      " two item                  cccccc/102030",
+    ],
+  ],
+  [
+    "TabSelect",
+    [
+      ...selectRows,
+      "   two                     ffffff/102030",
+      "   two item                888888/102030",
+      " one     ffffff/1a1a1a| two     ffff00/334455| three   ffffff/1a1a1a|   /102030",
+      "         /1a1a1a|▬▬▬▬▬▬▬▬ ffff00/334455|         /1a1a1a|   /102030",
+      " two item                cccccc/1a1a1a|   /102030",
+    ],
+  ],
+]
+
+test.each(defaultPaints)("Select and TabSelect default colors over a backdrop, focus %s", async (focus, lines) => {
+  const backdrop = new BoxRenderable(renderer, { width: 26, height: 7, backgroundColor: "#102030" })
+  const select = new SelectRenderable(renderer, { width: 14, height: 4, options: items.slice(0, 3) })
+  const tabs = new TabSelectRenderable(renderer, { width: 24, tabWidth: 8, options: items.slice(0, 3) })
+  backdrop.add(select)
+  backdrop.add(tabs)
+  renderer.root.add(backdrop)
+  ;(focus === "Select" ? select : tabs).focus()
+  tabs.setSelectedIndex(1)
+  await setup.renderOnce()
+  expect(runs(setup.captureSpans(), 7, 26)).toEqual(lines)
+})
+
+// 029: the tabs paint on the first frame, also when the width gives the layout the constructor's size. The
+// `tabPaints` rows cover a "100%" width.
+test.each([false, true])("TabSelect with width 40 paints on the first frame, buffered %p", async (buffered) => {
+  renderer.root.add(
+    new TabSelectRenderable(renderer, { width: 40, tabWidth: 10, options: items.slice(0, 1), buffered }),
+  )
+  await setup.renderOnce()
+  expect(setup.captureCharFrame().split("\n")[0].trimEnd()).toBe(" one")
+})
+
+const wide = "設定とオプション設"
+const wideItems = Array.from({ length: 10 }, () => ({ name: wide, description: wide }))
+const translucent = {
+  backgroundColor: "#20202080",
+  focusedBackgroundColor: "#30303080",
+  selectedBackgroundColor: "#33445580",
+}
+// Recorded into the frame, a control paints what its composed `buffered: true` buffer paints: exactly with opaque
+// layer colors, also under parent opacity 0.5, and within 2 per channel with translucent ones over a translucent
+// background. Translations cut the left and top edges, and the last one the bottom (the font's second row).
+// The "wide" rows put a wide glyph under the scroll indicator, over the transparent background; the font's "three"
+// is wider than the node. The frame after a key press makes no native draw call and has no buffer unless buffered.
+const recordCases: [string, typeof Select | typeof Tabs, object, number?][] = [
+  ["Select", Select, { options: items, focusable: false }],
+  ["Select focused", Select, { options: items, backgroundColor: "#101820", focusedBackgroundColor: "#182028" }],
+  ["Select font", Select, { options: items.slice(2), font: "tiny", backgroundColor: "#101820", focusable: false }],
+  ["Select wide name", Select, { options: wideItems, showScrollIndicator: true, selectedIndex: 5, focusable: false }],
+  [
+    "Select wide description",
+    Select,
+    { options: wideItems, showScrollIndicator: true, selectedIndex: 6, focusable: false },
+  ],
+  [
+    "Select too short for an item",
+    Select,
+    { options: items, height: 1, showScrollIndicator: true, backgroundColor: "#101820", focusable: false },
+  ],
+  // "down" would move an empty Select's index to -1, which hides a missing options check.
+  [
+    "Select empty",
+    Select,
+    { options: [], backgroundColor: "#101820", keyBindings: [{ name: "down", action: "move-up" }], focusable: false },
+  ],
+  ["Select translucent", Select, { options: items, font: "tiny", ...translucent }, 2],
+  ["TabSelect", Tabs, { options: [...items, ...items], selectedIndex: 5, focusable: false }],
+  ["TabSelect focused", Tabs, { options: wideItems.slice(0, 3), backgroundColor: "#101820" }],
+  ["TabSelect empty", Tabs, { options: [], backgroundColor: "#101820", focusable: false }],
+  ["TabSelect translucent", Tabs, { options: [...items, ...items], showUnderline: false, ...translucent }, 2],
+]
+
+test.each(recordCases)("%s records what its buffer composes", async (_, Control, options, tolerance = 0) => {
+  const errors: string[] = []
+  const onError = ({ error }: { error: Error }) => errors.push(error.message)
+  renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+  const content = Array.from({ length: 12 }, (_, i) => `${i}`.repeat(40)).join("\n")
+  const symbols = (resolveRenderLib() as unknown as { opentui: { symbols: Record<string, (...args: any[]) => any> } })
+    .opentui.symbols
+  const originals = { ...symbols }
+  let draws = 0
+  for (const name of Object.keys(originals).filter((name) => name.startsWith("ot_buffer_draw"))) {
+    symbols[name] = (...args) => (draws++, originals[name](...args))
+  }
+  for (const opacity of tolerance ? [1] : [1, 0.5]) {
+    for (const [translateX, translateY] of [
+      [0, 0],
+      [0.5, 0.5],
+      [-2.5, -1.5],
+      [-1.5, 8.5],
+    ]) {
+      const frames = []
+      for (const buffered of [true, false]) {
+        const parent = new BoxRenderable(renderer, { position: "absolute", left: 1, opacity })
+        Object.assign(parent, { translateX, translateY })
+        parent.add(
+          new TextRenderable(renderer, { position: "absolute", width: 40, content, fg: "#c0c0c0", bg: "#402010" }),
+        )
+        const node = new Control(renderer, { width: 21, height: 7, tabWidth: 7, ...options, buffered })
+        parent.add(node)
+        renderer.root.add(parent)
+        if (node.focusable) node.focus()
+        if ("selectedIndex" in options) node.setSelectedIndex(options.selectedIndex as number)
+        await setup.renderOnce()
+        node.handleKeyPress(key(Control === Select ? "down" : "right"))
+        draws = 0
+        await setup.renderOnce()
+        expect([Reflect.get(node, "frameBuffer") === null, draws === 0]).toEqual([!buffered, !buffered])
+        // An unchanged frame paints the same cells.
+        const painted = setup.captureSpans()
+        await setup.renderOnce()
+        expect(setup.captureSpans()).toEqual(painted)
+        frames.push(
+          cells(painted)
+            .flat()
+            .map(([text, fg, bg]) => [text, ...(fg?.toInts() ?? []), ...bg.toInts()]),
+        )
+        parent.destroyRecursively()
+        // A failed frame must not leave the previous control's cells for the next capture.
+        await setup.renderOnce()
+      }
+      expect(errors.splice(0)).toEqual([])
+      const [a, b] = frames
+      const close = (v: string | number, w: string | number) => v === w || Math.abs(+v - +w) <= tolerance
+      if (
+        a.length !== b.length ||
+        a.some((cell, i) => cell.length !== b[i].length || cell.some((v, j) => !close(v, b[i][j])))
+      ) {
+        expect(b).toEqual(a)
+      }
+    }
+  }
+  Object.assign(symbols, originals)
+  renderer.off(CliRenderEvents.RENDER_ERROR, onError)
+})
+
+// A font cut at the top or the bottom draws the rows inside the buffer. Every call returns the laid-out size, also
+// when no row is inside.
+test.each([-1, 3, -2, 4])("renderFontToFrameBuffer at y %d draws the rows inside the buffer", (y) => {
+  const draw = (height: number, y: number) => {
+    const buffer = OptimizedBuffer.create(12, height, renderer.widthMethod, { owner: renderer.nativeScene })
+    const size = renderFontToFrameBuffer(buffer, { text: "ab", y, font: "tiny" })
+    const rows = buffer.getSpanLines().map((line) => line.spans.map((span) => span.text).join(""))
+    buffer.destroy()
+    return { size, rows }
+  }
+  const cut = draw(4, y)
+  const whole = draw(12, 6)
+  expect(cut.size).toEqual(whole.size)
+  expect(cut.rows).toEqual(cut.rows.map((_, row) => whole.rows[row - y + 6]))
 })
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), `auto:x,y`
@@ -336,7 +550,8 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
 // Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling, and the
 // SCROLL request comes only while a part has a listener (`listen` adds a content "resize" and a bar "change" listener;
 // it hears changes from then on). Listeners of events a part does not emit ask for nothing. The counts of the events
-// follow the trace.
+// follow the trace. `+n` counts the renderer's selection listeners: the box listens once while it auto-scrolls, also
+// while it is detached, and a finished selection stops it; a destroyed box does not listen.
 test("ScrollBox host requests per frame", async () => {
   const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
   for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
@@ -348,7 +563,11 @@ test("ScrollBox host requests per frame", async () => {
     wheel: () => setup.mockMouse.scroll(5, 5, "down"),
     append: () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     auto: () => (scroll.updateAutoScroll(10, 9), clock.advance(100)),
+    "start twice": () => (scroll.startAutoScroll(10, 0), scroll.startAutoScroll(10, 0)),
     stop: () => scroll.stopAutoScroll(),
+    "auto+remove": () => (scroll.updateAutoScroll(10, 0), renderer.root.remove(scroll)),
+    add: () => renderer.root.add(scroll),
+    selection: () => renderer.emit(CliRenderEvents.SELECTION, null),
     listen: () => (scroll.content.on("resize", resized), scroll.verticalScrollBar.on("change", changed)),
     "append+listeners": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     "idle+listeners": () => {},
@@ -357,6 +576,8 @@ test("ScrollBox host requests per frame", async () => {
     "append again": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     unsupported: () => (scroll.content.on("change", changed), scroll.verticalScrollBar.on("resize", resized)),
     "append unsupported": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    "destroy+auto": () => (scroll.updateAutoScroll(10, 0), scroll.destroyRecursively()),
+    "start after destroy": () => scroll.startAutoScroll(10, 0),
   }
   let events = ""
   const resized = () => (events += "r")
@@ -366,12 +587,15 @@ test("ScrollBox host requests per frame", async () => {
     await step()
     renderer.requestRender()
     await setup.renderOnce()
-    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}`)
+    const listeners = renderer.listenerCount(CliRenderEvents.SELECTION) || ""
+    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}${listeners && `+${listeners}`}`)
     events = ""
   }
   expect(trace.join(" ")).toBe(
-    "idle:0 scroll:0 wheel:0 append:0 auto:1 stop:0 listen:0 append+listeners:1r idle+listeners:0 " +
-      "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0",
+    "idle:0 scroll:0 wheel:0 append:0 auto:1+1 start twice:1+1 stop:0 auto+remove:0+1 add:1+1 selection:0 listen:0 " +
+      "append+listeners:1r idle+listeners:0 " +
+      "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0 destroy+auto:0 " +
+      "start after destroy:0",
   )
 })
 
@@ -610,7 +834,7 @@ test("box titles and arrow characters accept any text", async () => {
   const errors: unknown[] = []
   renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
   const box = new BoxRenderable(renderer, { border: true, width: 12, height: 3, bottomTitle: text })
-  const arrow = new ArrowRenderable(renderer, { direction: "up", arrowChars: { up: text } })
+  const arrow = new ArrowRenderable(renderer, { direction: "up", height: 1, arrowChars: { up: text } })
   renderer.root.add(box)
   renderer.root.add(arrow)
   box.title = text

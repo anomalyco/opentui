@@ -60,6 +60,16 @@ offset: 0 / 7
 └──────────────────────────────┘
 ```
 
+### Headers above a growing ScrollBox
+
+A ScrollBox with `flexGrow` and no `flexBasis` asks for the full height of its content. Once the content is taller than the space, Yoga shrinks the siblings above it as well, and can shrink a one-row header to zero rows. A node with zero rows is not drawn. To keep the header, give it `flexShrink: 0`, or give the ScrollBox `flexBasis: 0`:
+
+```typescript
+const column = new BoxRenderable(renderer, { flexDirection: "column", height: "100%" })
+column.add(new TextRenderable(renderer, { content: "filter: (type)", flexShrink: 0 }))
+column.add(new ScrollBoxRenderable(renderer, { flexGrow: 1, minHeight: 0 }))
+```
+
 ## Sticky scroll
 
 Enable sticky scroll to keep content pinned to an edge as new content arrives. Set both `stickyScroll` and `stickyStart` because `stickyStart` has no default.
