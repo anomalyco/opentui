@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url"
+import { isDeepStrictEqual } from "node:util"
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { BoxRenderable } from "../renderables/Box.js"
@@ -351,6 +352,66 @@ describe("VideoRenderable", () => {
     video.source = SILENT
     expect(errors).toEqual([])
     expect(video.ready).toBe(true)
+  })
+
+  // Each row sets a crop on an open 160x90 source; an accepted crop reaches native and changes the
+  // painted frame unless it is the whole source. A rejected one reports and keeps the previous crop.
+  test.each([
+    ["full", { left: 0, top: 0, width: 160, height: 90 }, ""],
+    ["corner", { left: 80, top: 45, width: 80, height: 45 }, ""],
+    ["1x1", { left: 159, top: 89, width: 1, height: 1 }, ""],
+    ["odd sizes", { left: 3, top: 5, width: 37, height: 21 }, ""],
+    ["out of bounds", { left: 150, top: 0, width: 11, height: 1 }, "outside the 160x90 source"],
+    ["zero size", { left: 0, top: 0, width: 0, height: 4 }, "positive u32 width"],
+    ["fractional", { left: 0.5, top: 0, width: 4, height: 4 }, "u32 left"],
+  ])("crop %s", async (name, crop, error) => {
+    const errors: Error[] = []
+    const video = new VideoRenderable(renderer, {
+      source: SILENT,
+      width: 20,
+      height: 6,
+      onError: (e) => errors.push(e),
+    })
+    renderer.on("render:error", (event: { error: Error }) => errors.push(event.error))
+    renderer.root.add(video)
+    await setup.renderOnce()
+    const whole = setup.captureSpans()
+    const spy = spyOn(renderer.nativeScene.videoNode(video).lib, "sceneSetCrop")
+    try {
+      video.crop = crop
+      await Promise.resolve()
+      await setup.renderOnce()
+      expect(errors.map((e) => e.message)).toEqual(error ? [expect.stringContaining(error)] : [])
+      expect(video.crop).toEqual(error ? undefined : crop)
+      expect(spy.mock.calls.map((call) => call[2])).toEqual(error ? [] : [crop])
+      expect(isDeepStrictEqual(setup.captureSpans(), whole)).toBe(!!error || name === "full")
+      // An equal crop is no change; a nullish one shows the whole source again.
+      video.crop = { ...crop }
+      video.crop = null
+      expect(spy).toHaveBeenCalledTimes(error ? 0 : 2)
+      expect(video.crop).toBeUndefined()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("a crop is checked when a source opens and applies while playing", async () => {
+    const errors: Error[] = []
+    const crop = { left: 0, top: 0, width: 161, height: 1 }
+    const video = new VideoRenderable(renderer, { crop, width: 20, height: 6, onError: (e) => errors.push(e) })
+    renderer.root.add(video)
+    expect(video.crop).toEqual(crop)
+    expect(new VideoRenderable(renderer, { source: SILENT, crop }).crop).toBeUndefined()
+    video.source = SILENT
+    await Promise.resolve()
+    // The open reports the crop that does not fit; it stays set and the node shows the whole frame.
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining("outside the 160x90 source")])
+    expect(video.crop).toEqual(crop)
+    video.play()
+    video.crop = { left: 10, top: 10, width: 20, height: 20 }
+    await setup.renderOnce()
+    expect(video.playing).toBe(true)
+    expect(errors).toHaveLength(1)
   })
 
   test("pausing before a deferred autoplay report drops its onPlay", async () => {
