@@ -339,7 +339,7 @@ const {
         if (node instanceof ImageRenderable) {
           for (const prop in previousStyle) {
             if (Object.prototype.hasOwnProperty.call(nextStyle, prop)) continue
-            if (prop !== "fit" && prop !== "protocol") continue
+            if (prop !== "fit" && prop !== "protocol" && prop !== "crop") continue
             node[prop] = undefined
           }
         }

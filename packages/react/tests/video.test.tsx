@@ -40,6 +40,7 @@ describe("React Renderer | video element", () => {
         ref={(renderable: VideoRenderable | null) => {
           videoRef = renderable
         }}
+        crop={{ left: 80, top: 45, width: 80, height: 45 }}
         source={VIDEO_FIXTURE}
         maxFps={12}
         onReady={(metadata) => readies.push(metadata.width)}
@@ -56,6 +57,7 @@ describe("React Renderer | video element", () => {
     expect(videoRef!.videoMetadata?.fps).toBe(24)
     expect(videoRef!.paused).toBe(true)
     expect(videoRef!.maxFps).toBe(12)
+    expect(videoRef!.crop).toEqual({ left: 80, top: 45, width: 80, height: 45 })
   })
 
   it("swaps media when the source prop changes, and starts it after audio changed with it", async () => {
