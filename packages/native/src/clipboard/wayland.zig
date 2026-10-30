@@ -2062,6 +2062,7 @@ test "Wayland core read restarts after focus loss a bounded number of times" {
             Connection.deviceSelection(&connection, null, offer);
             if (loss < losses) Connection.keyboardLeave(&connection, null, 0, connection.helper_surface);
             progress = connection.coreSelectionProgress();
+            if (loss < losses) try std.testing.expectEqual(if (loss < READ_RETRY_MAX) Progress.pending else Progress.failed, progress);
         }
         const restarted = losses <= READ_RETRY_MAX;
         try std.testing.expectEqual(if (restarted) Progress.ready else Progress.failed, progress);
