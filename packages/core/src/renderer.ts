@@ -5367,8 +5367,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     } catch (error) {
       renderFailed = true
-      // Teardown abandons in-flight frames, and `closed` reports a Session failure once.
-      if (this.canRender) {
+      // Teardown and a late close abandon in-flight frames, and `closed` reports a Session failure once.
+      if (this.canRender && !this.nativeSession.isCloseInterruption(error)) {
         const renderError = error instanceof Error ? error : new Error(String(error))
         const event: CliRendererErrorEvent = { error: renderError, renderable: this.root.takeCurrentRenderable() }
         const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)

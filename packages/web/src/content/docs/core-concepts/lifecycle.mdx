@@ -81,13 +81,18 @@ await renderer.closed
 An active frame or buffer lease can delay reclamation. A failed output endpoint rejects `closed`. Destruction alone
 does not prove that restoration bytes reached the terminal.
 
-Over a slow link, `closed` waits while the terminal takes the queued output. When no output is written for one second,
-or the close runs for ten seconds in all, the renderer stops waiting for the queue. It lets the write in progress
-finish, drops the output still queued, writes the restoration, and rejects `closed` with an error that says the close
-ran late. The dropped output can include frames, split-footer rows not yet written, clipboard and title updates, and
-image uploads. If the restoration then writes nothing for another second, the Session cancels it without restoration.
-On Linux the native stdout writer waits for its write in progress without a limit, so a link that never moves keeps
-`closed` pending. A process exit during a slow close drops the queue the same way.
+Over a slow link, `closed` waits while the terminal takes the queued output. When no output is written for one second
+while no write is in progress, or the close has run for ten seconds, the renderer stops waiting for the queue. It lets
+the write in progress finish, drops the output still queued, writes the restoration, and rejects `closed` with an
+error that says the close ran late. The dropped output can include frames, split-footer rows not yet written,
+clipboard and title updates, and image uploads. If the restoration then writes nothing for another second, the
+Session cancels it without restoration. A process exit during a slow close drops the queue the same way.
+
+The ten seconds bound when the renderer stops waiting, not when `closed` settles: the write in progress can be up to
+64 KiB, which takes 16 seconds at 4 KB/s. The one-second limit applies where writes do not block (a non-blocking
+stdout or a custom stream). The native stdout writer waits for its write in progress without a limit, and a blocking
+stdout without the writer (`OTUI_STDOUT_THREAD=0`, or a platform without it) waits inside `write(2)`, so on a link
+that never moves `closed` stays pending.
 
 Renderer destruction performs these actions:
 

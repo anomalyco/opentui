@@ -399,9 +399,9 @@ test("environment limits reject before attachment and accept the boundary", () =
   }
 })
 
-function rendererFor(scheduler: ManualScheduler, stdout: Writable, clock: ManualClock) {
+function rendererFor(scheduler: ManualScheduler, stdout: Writable, clock: ManualClock, closeTimeoutMs?: number) {
   return new CliRenderer(createTestStdin(), stdout as NodeJS.WriteStream, 2, 1, {
-    nativeSession: new NativeSession(stdout, { scheduler }),
+    nativeSession: new NativeSession(stdout, { scheduler, closeTimeoutMs }),
     clock,
     remote: true,
     screenMode: "main-screen",
@@ -478,6 +478,34 @@ test("blocked output and host promises do not hold other renderers' input, resiz
     }
     await scheduler.turns(8)
     await Promise.allSettled(renderers.map((renderer) => renderer.closed))
+  }
+})
+
+// #1875: a late close drops the frame the render loop waits for. Its presentation rejects, and the loop ends
+// without reporting an error for the closed Session.
+test("a late close rejects the dropped frame's presentation and the render loop ends quietly", async () => {
+  const scheduler = new ManualScheduler()
+  const clock = new ManualClock()
+  const stdout = new RecordingWriteStream(2, 1, { highWaterMark: 1 })
+  const renderer = rendererFor(scheduler, stdout, clock, 25)
+  const errors: unknown[] = []
+  renderer.on("render:error", (event) => errors.push(event.error))
+  try {
+    stdout.hold()
+    renderer.start()
+    await scheduler.turns(8)
+    const driver = renderer.nativeScene.driver
+    const presented = outcome(driver.whenPresented())
+    const closed = outcome(driver.close())
+    await scheduler.turns(40)
+    stdout.release()
+    await scheduler.turns(40)
+    expect([await presented, await closed, errors]).toEqual([late, late, []])
+  } finally {
+    stdout.release()
+    renderer.destroy()
+    renderer.nativeScene.driver.dispose()
+    await scheduler.turns(8)
   }
 })
 
@@ -593,39 +621,46 @@ test("the stdout writer is polled in one task with a growing backoff, and a coll
 // #1870: the second copy ends at 300 ms, after the deadline: 175 polls in all, the last at 329 ms. A 1 ms grace caps
 // the close at 10 ms (#1875), which drops the copy queued behind the first, in flight until 300 ms; its polls still
 // back off. With stdout corked the third copy waits with nothing in flight, so the deadline restarted at the collect
-// drops it at 429 ms; the close ends late if stdout moves within another deadline. A deadline from armCloseTimeout
-// is held the same way.
+// drops it at 429 ms; the close ends late if stdout moves within another deadline. A copy collected at 900 ms with
+// stdout corked restarts the deadline past the cap, and the cap still drops at 1000 ms. A deadline from
+// armCloseTimeout is held the same way.
 test.each([
   { timeoutMs: 100, bytes: 6000, expected: "closed" },
-  { timeoutMs: 1, bytes: 6000, doneAt: [300], posts: 102, expected: late },
+  { timeoutMs: 1, bytes: 6000, doneAt: [300], posts: 103, expected: late },
   { timeoutMs: 100, bytes: 9000, cork: true, expected: timeout },
   { timeoutMs: 100, bytes: 9000, cork: true, uncork: 450, expected: late },
+  { timeoutMs: 100, bytes: 6000, doneAt: [900], cork: true, posts: 113, settledMs: 1100, expected: timeout },
   { timeoutMs: 100, bytes: 6000, arm: true, expected: "closed" },
 ])("a close waits for the writer's copy in flight past the deadline: %o", async ({ timeoutMs, bytes, ...row }) => {
   await withStdoutWriter(row.doneAt ?? [10, 300], timeoutMs, async (driver, scheduler, posts) => {
     expect(driver.write(new Uint8Array(bytes).fill(98))).toBe(true)
     if (row.arm) driver.armCloseTimeout()
-    let closed = row.arm ? null : outcome(driver.close())
-    for (let ms = 0; ms <= 600; ms++) {
+    let settledMs = 0
+    const close = () => outcome(driver.close()).finally(() => (settledMs = Number(scheduler.time / MS)))
+    let closed = row.arm ? null : close()
+    for (let ms = 0; ms <= 1200; ms++) {
       if (row.cork && ms === 20) process.stdout.cork()
       if (ms === row.uncork) process.stdout.uncork()
-      if (row.arm && ms === 350) closed = outcome(driver.close())
+      if (row.arm && ms === 350) closed = close()
       await scheduler.run(ms)
     }
     expect(await closed).toBe(row.expected)
     expect(posts.length).toBe(row.posts ?? 175)
+    if (row.settledMs) expect(settledMs).toBe(row.settledMs)
   })
 })
 
 // #1875: five copies, the first in flight until 1050 ms. The cap, ten deadlines after close, drops the other four, and
 // the close ends late once the first is written; a copy collected at the cap starts no other. An exit during the held
-// close drops them at once, and on the drain path (no writer) it drains none of them.
+// close, or during the split-footer flush before it (armed deadline), drops them at once, and on the drain path (no
+// writer) it drains none of them.
 test.each([
   { firstMs: 1050, exitAt: null, drain: false },
   { firstMs: 1000, exitAt: null, drain: false },
   { firstMs: 1050, exitAt: 500, drain: false },
+  { firstMs: 1050, exitAt: 500, drain: false, arm: true },
   { firstMs: 1050, exitAt: 0, drain: true },
-])("a held close keeps only the copy in flight: %o", async ({ firstMs, exitAt, drain }) => {
+])("a held close keeps only the copy in flight: %o", async ({ firstMs, exitAt, drain, arm }) => {
   if (drain) process.env.OTUI_STDOUT_THREAD = "0"
   clearEnvCache()
   try {
@@ -634,7 +669,7 @@ test.each([
       100,
       async (driver, scheduler, _posts, counts) => {
         expect(driver.write(new Uint8Array(20_000).fill(99))).toBe(true)
-        const closed = outcome(driver.close())
+        const closed = arm ? driver.armCloseTimeout() : outcome(driver.close())
         for (let ms = 0; ms <= 2100; ms += 10) {
           if (ms === exitAt) expect(driver.restoreOnExit()).toBe(true)
           await scheduler.run(ms)

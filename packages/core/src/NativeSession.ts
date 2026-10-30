@@ -38,7 +38,8 @@ export interface NativeSessionDriverOptions {
   /** Copy-buffer size for custom Writable destinations. Native stdout needs no buffer. */
   outputBufferSize?: number
   /** Graceful close drops the queued output, restores and rejects as late once this long passes without written
-   * bytes, or ten times this long in all. Another interval without written bytes then cancels it unrestored. */
+   * bytes and no write in progress, or ten times this long in all; a write in progress finishes first. Another
+   * interval without written bytes then cancels it unrestored. */
   closeTimeoutMs?: number
   scheduler?: NativeSessionScheduler
 }
@@ -780,6 +781,8 @@ export class NativeSession {
         this.closeLate = new Error("NativeSession graceful close ran late; queued output was dropped")
         this.closeRequested = true
         this.lib.sessionDropOutput(this.context, this.session)
+        this.presentationWait?.reject(this.closeLate)
+        this.presentationWait = null
         this.closeDeadlineNs = now + this.closeTimeoutNs
         this.schedule()
         return
@@ -825,8 +828,9 @@ export class NativeSession {
     } catch (error) {
       this.finish(asError(error))
     } finally {
-      const closeNs = this.stdoutPost ? null : this.closeDeadlineNs
-      if (closeNs !== null && (deadlineNs === null || closeNs < deadlineNs)) deadlineNs = closeNs
+      for (const closeNs of [this.stdoutPost ? null : this.closeDeadlineNs, this.closeLate ? null : this.closeCapNs]) {
+        if (closeNs !== null && (deadlineNs === null || closeNs < deadlineNs)) deadlineNs = closeNs
+      }
       if (deadlineNs !== null) this.schedule(deadlineNs)
     }
   }
