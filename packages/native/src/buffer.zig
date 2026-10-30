@@ -3248,8 +3248,8 @@ pub const OptimizedBuffer = struct {
         title_visible: bool,
         opacity: f32,
     ) !void {
-        const startX = nonNegative(x);
-        const startY = nonNegative(y);
+        const startX = @max(0, x);
+        const startY = @max(0, y);
         const endX = @min(@as(i32, @intCast(self.width)) - 1, x + @as(i32, @intCast(width)) - 1);
         const endY = @min(@as(i32, @intCast(self.height)) - 1, y + @as(i32, @intCast(height)) - 1);
 
