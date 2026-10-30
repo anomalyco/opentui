@@ -850,11 +850,12 @@ test "video audio drains at the end of the stream" {
     try testing.expectEqual(state.audio_produced_frames, state.audio_consumed_frames);
 }
 
-// Decodes the whole track from target_us into output and returns its frame count.
-fn decodeAudioFrom(target_us: i64, output: []f32) !usize {
-    const value = try openAsset(true);
+// Decodes the track of path, from target_us or the start, into output and returns its frame count.
+fn decodeAudioFrom(path: []const u8, target_us: ?i64, output: []f32) !usize {
+    var detail: [256]u8 = undefined;
+    const value = try video.Video.open(testing.allocator, path, true, &detail);
     defer value.deinit();
-    if (target_us > 0) try value.seek(target_us);
+    if (target_us) |target| try value.seek(target);
     var total: usize = 0;
     while (true) {
         const capacity: u32 = @intCast(@min(4096, output.len / 2 - total));
@@ -869,14 +870,16 @@ test "video audio after a first seek starts at the target sample" {
     defer testing.allocator.free(reference);
     const sought = try testing.allocator.alloc(f32, 100_000 * 2);
     defer testing.allocator.free(sought);
-    const total = try decodeAudioFrom(0, reference);
-    for ([_]i64{ 1_800_000, 1_000_000, 500_000 }) |target_us| {
-        const start: usize = @intCast(@divExact(target_us * 48, 1000));
-        const frames = try decodeAudioFrom(target_us, sought);
-        try testing.expectEqual(total - start, frames);
-        // The sought PCM continues the full decode from its first sample.
-        for (0..frames) |frame| {
-            try testing.expectApproxEqAbs(reference[(start + frame) * 2], sought[frame * 2], 0.001);
+    // The sought PCM continues the full decode, also within an AAC frame of the start.
+    for ([_][]const u8{ asset, late_audio_asset }) |path| {
+        const total = try decodeAudioFrom(path, null, reference);
+        for ([_]i64{ 1_800_000, 1_000_000, 500_000, 250_000, 10_000, 1_000, 0 }) |target_us| {
+            const start: usize = @intCast(@divExact(target_us * 48, 1000));
+            const frames = try decodeAudioFrom(path, target_us, sought);
+            try testing.expectEqual(total - start, frames);
+            for (0..frames) |frame| {
+                try testing.expectApproxEqAbs(reference[(start + frame) * 2], sought[frame * 2], 0.001);
+            }
         }
     }
     // A track that starts after the video plays silence until its first sample, so the sine

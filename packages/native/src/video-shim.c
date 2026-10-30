@@ -506,11 +506,11 @@ int otv_seek(otv_decoder *decoder, int64_t target_us) {
         snprintf(decoder->error, sizeof(decoder->error), "%s", decoder->video.error);
         return OTV_ERROR;
     }
-    // An AAC frame overlaps the previous one, so audio starts a frame early and trims to the target.
+    // An AAC frame overlaps the previous one, so audio starts a frame early (near 0, at the priming
+    // frame before 0) and trims to the target.
     int64_t audio_target_us = target_us;
     if (decoder->has_audio && decoder->audio.codec->frame_size > 0 && decoder->audio.codec->sample_rate > 0)
         audio_target_us -= av_rescale(decoder->audio.codec->frame_size, AV_TIME_BASE, decoder->audio.codec->sample_rate);
-    if (audio_target_us < 0) audio_target_us = 0;
     if (seek_stream(decoder, &decoder->audio, audio_target_us) != OTV_OK) {
         snprintf(decoder->error, sizeof(decoder->error), "%s", decoder->audio.error);
         return OTV_ERROR;
