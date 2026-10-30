@@ -313,8 +313,14 @@ pub fn closeAll(fds: [2]std.posix.fd_t) void {
 }
 
 pub fn readExactly(fd: std.posix.fd_t, out: []u8) !void {
+    const deadline: Deadline = .init();
     var done: usize = 0;
     while (done < out.len) {
+        var poll_fd: [1]std.c.pollfd = .{.{ .fd = fd, .events = std.c.POLL.IN, .revents = 0 }};
+        if (std.c.poll(&poll_fd, 1, 10) == 0) {
+            try deadline.check();
+            continue;
+        }
         const rc = std.c.read(fd, out[done..].ptr, out.len - done);
         if (rc <= 0) return error.ShortRead;
         done += @intCast(rc);
@@ -339,12 +345,35 @@ const scribbling: std.mem.Allocator = .{ .ptr = undefined, .vtable = &.{
     }.free,
 } };
 
-pub fn waitThreadsGone() void {
-    while (live_threads.load(.acquire) != 0) std.Thread.yield() catch {};
+/// A test's wait on a writer thread fails after 10 s instead of hanging the test run.
+pub const Deadline = struct {
+    end_ns: u64,
+
+    pub fn init() Deadline {
+        return .{ .end_ns = monotonicNs() + 10 * std.time.ns_per_s };
+    }
+
+    /// Fails once the deadline has passed, else yields.
+    pub fn check(self: Deadline) error{Timeout}!void {
+        if (monotonicNs() > self.end_ns) return error.Timeout;
+        std.Thread.yield() catch {};
+    }
+
+    fn monotonicNs() u64 {
+        var now: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &now);
+        return @as(u64, @intCast(now.sec)) * std.time.ns_per_s + @as(u64, @intCast(now.nsec));
+    }
+};
+
+pub fn waitThreadsGone() !void {
+    const deadline: Deadline = .init();
+    while (live_threads.load(.acquire) != 0) try deadline.check();
 }
 
-fn waitState(state: *const std.atomic.Value(State), wanted: State) void {
-    while (state.load(.acquire) != wanted) std.Thread.yield() catch {};
+pub fn waitState(state: *const std.atomic.Value(State), wanted: State) !void {
+    const deadline: Deadline = .init();
+    while (state.load(.acquire) != wanted) try deadline.check();
 }
 
 const Script = struct {
@@ -379,7 +408,7 @@ test "stdout writer retries EINTR and EAGAIN, and fails a hangup, a zero count, 
         try testing.expectEqual(row.results.len, index.load(.monotonic));
         writer.abandon();
     }
-    waitThreadsGone();
+    try waitThreadsGone();
 
     // The same on a real pipe: a closed reader is EPIPE (SIGPIPE is blocked in the writer), and a
     // full non-blocking pipe waits in poll(2) until the reader drains it.
@@ -401,7 +430,7 @@ test "stdout writer retries EINTR and EAGAIN, and fails a hangup, a zero count, 
     try readExactly(fds[0], &read);
     try testing.expectEqual(Outcome.written, writer.waitCollect(std.time.ns_per_s));
     writer.abandon();
-    waitThreadsGone();
+    try waitThreadsGone();
 }
 
 var mask_blocked: std.atomic.Value(u64) = .init(0);
@@ -437,7 +466,7 @@ test "stdout writer blocks signals from its first instruction, except SIGTTOU an
     writer.start(1);
     try testing.expectEqual(Outcome.written, writer.waitCollect(std.time.ns_per_s));
     writer.abandon();
-    waitThreadsGone();
+    try waitThreadsGone();
     const mask = mask_blocked.load(.acquire);
     const bit = struct {
         fn of(sig: std.posix.SIG) u64 {
@@ -457,13 +486,13 @@ test "stdout writer abandoned inside a stuck write returns at once and frees its
     const writer = try StdoutWriter.create(scribbling, .{ .fd = fds[1] }, .{});
     @memset(&writer.buffer, 'y');
     writer.start(handover_max);
-    waitState(&writer.state, .writing);
+    try waitState(&writer.state, .writing);
     writer.abandon();
     // The owner is gone; the reader drains, the write returns, the publish fails, and the
     // thread frees the writer. The testing allocator reports a leak or a double free.
     var read: [handover_max]u8 = undefined;
     try readExactly(fds[0], &read);
-    waitThreadsGone();
+    try waitThreadsGone();
 }
 
 var hook_parked: std.atomic.Value(u32) = .init(0);
@@ -487,7 +516,7 @@ test "stdout writer abandoned between its write and its publish is freed exactly
     writer.abandon();
     hook_release.store(1, .release);
     io().futexWake(u32, &hook_release.raw, 1);
-    waitThreadsGone();
+    try waitThreadsGone();
 }
 
 fn drainUntilClosed(fd: std.posix.fd_t) void {
@@ -508,7 +537,7 @@ test "stdout writer survives posts raced against abandons without a park" {
         if (round % 7 == 0) _ = writer.waitCollect(std.time.ns_per_s);
         writer.abandon();
     }
-    waitThreadsGone();
+    try waitThreadsGone();
     _ = std.c.close(fds[1]);
     reader.join();
     _ = std.c.close(fds[0]);
@@ -540,7 +569,7 @@ test "stdout writer starts no new write after an abandon, on a full non-blocking
     const writer = try StdoutWriter.create(testing.allocator, .{ .fd = fds[1] }, .{});
     @memset(writer.buffer[0..4096], 'S');
     writer.start(4096);
-    waitState(&writer.state, .writing);
+    try waitState(&writer.state, .writing);
     try std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(30), .clock = .awake }, io());
     writer.abandon();
     var stale: usize = 0;
@@ -553,7 +582,7 @@ test "stdout writer starts no new write after an abandon, on a full non-blocking
         }
         try std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(2), .clock = .awake }, io());
     }
-    waitThreadsGone();
+    try waitThreadsGone();
     try testing.expectEqual(@as(usize, 0), stale);
 }
 

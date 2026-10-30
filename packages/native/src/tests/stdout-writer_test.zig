@@ -16,6 +16,7 @@ const pipe = struct {
 }.open;
 const readExactly = stdout_writer.readExactly;
 const waitThreadsGone = stdout_writer.waitThreadsGone;
+const Deadline = stdout_writer.Deadline;
 
 const PipeCreate = struct {
     fd: std.posix.fd_t,
@@ -29,10 +30,11 @@ const PipeCreate = struct {
 
 /// Collects until the copy in flight is written.
 fn collect(value: *session.Session, create: PipeCreate) !u32 {
+    const deadline: Deadline = .init();
     while (true) {
         const result = try value.postStdout(PipeWriter, create, 0, false);
         if (!result.in_flight) return result.written;
-        std.Thread.yield() catch {};
+        try deadline.check();
     }
 }
 
@@ -128,13 +130,14 @@ test "Session stdout writer fails the transport on a closed reader, without repl
     try owner.writeSession(id, "hello");
     const create: PipeCreate = .{ .fd = fds[1] };
     try testing.expect((try value.postStdout(PipeWriter, create, 65_536, false)).in_flight);
+    const deadline: Deadline = .init();
     while (true) {
         const result = value.postStdout(PipeWriter, create, 0, false) catch |err| {
             try testing.expectEqual(error.SessionFailed, err);
             break;
         };
         try testing.expect(result.in_flight);
-        std.Thread.yield() catch {};
+        try deadline.check();
     }
     try testing.expectEqual(session.State.failed, value.state);
     try testing.expectEqual(@as(u64, 0), value.completed_bytes);
@@ -155,19 +158,20 @@ test "Session cancel with the writer stuck in write(2) returns at once; the thre
     @memset(&bytes, 'z');
     for (0..2) |_| try owner.writeSession(id, &bytes);
     const create: PipeCreate = .{ .fd = fds[1] };
-    // The first copy fills the pipe; the second blocks in write(2).
+    // The first copy fills the pipe; nobody reads, so the second blocks in write(2).
     try testing.expect((try value.postStdout(PipeWriter, create, 65_536, false)).in_flight);
-    var read: [4096]u8 = undefined;
-    try readExactly(fds[0], &read);
-    _ = try collect(value, create);
+    try testing.expectEqual(@as(u32, 4096), try collect(value, create));
     try testing.expect((try value.postStdout(PipeWriter, create, 65_536, false)).in_flight);
     const writer: *PipeWriter = @ptrCast(@alignCast(value.stdout_post.?.ptr));
-    while (writer.state.load(.acquire) != .writing) std.Thread.yield() catch {};
+    try stdout_writer.waitState(&writer.state, .writing);
     try owner.cancelSession(id);
     try testing.expect(value.stdout_post == null and value.pending == null);
-    // The rest of the running write still lands, then nothing (R9); the thread frees the writer.
+    // Behind the first copy, the rest of the running write still lands, then nothing (R9); the
+    // thread frees the writer.
+    var read: [4096]u8 = undefined;
     try readExactly(fds[0], &read);
-    waitThreadsGone();
+    try readExactly(fds[0], &read);
+    try waitThreadsGone();
 }
 
 const Unwritten = struct {
