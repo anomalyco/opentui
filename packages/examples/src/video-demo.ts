@@ -1,9 +1,6 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { basename, dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { dirname, resolve } from "node:path"
 import {
   BoxRenderable,
   CliRenderEvents,
@@ -19,11 +16,9 @@ import {
   type KeyEvent,
   type SelectOption,
 } from "@opentui/core"
+import { dragonFile } from "./lib/dragon-clip.js"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 import { listVideoDirectory, resolveVideoDirectoryPath } from "./lib/video-file-browser.js"
-
-// @ts-ignore Bun embeds imported assets and returns their runtime paths.
-import dragonPath from "./assets/dragon.mp4" with { type: "file" }
 
 const FITS: ImageFit[] = ["fit", "cover", "fill"]
 const PLAYER_HELP =
@@ -44,16 +39,6 @@ let message = "Ready"
 let directory = process.cwd()
 let browseRequest = 0
 let resumeAfterBrowse = false
-
-// FFmpeg opens only real files: a compiled binary embeds the clip in Bun's virtual file system, and a Node
-// bundle names it relative to the bundle.
-function dragonFile(): string {
-  const path = resolve(dirname(fileURLToPath(import.meta.url)), dragonPath as string)
-  if (!/\$bunfs|^B:[\\/]~BUN/i.test(path)) return path
-  const file = join(tmpdir(), basename(path))
-  if (!existsSync(file)) writeFileSync(file, readFileSync(path))
-  return file
-}
 
 function formatTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds))
