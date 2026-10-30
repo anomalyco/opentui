@@ -28,6 +28,8 @@ const SEEK_COOLDOWN_MS = 400
 // Seeks on a clip with one keyframe decode from its start, so a tick starts only a few of them.
 const SEEKS_PER_TICK = 2
 const TICK_FPS = 30
+// A solved board turns into one player; the tiles go once it has painted for this many ticks.
+const SWAP_TICKS = 6
 const SCRAMBLE_STEP_MS = 45
 const SOLVE_STEP_MS = 170
 const HELP = [
@@ -72,6 +74,10 @@ let board: BoxRenderable | null = null
 let mapText: TextRenderable | null = null
 let statsText: TextRenderable | null = null
 let tiles: Tile[] = []
+// The single player that replaces the tiles of a solved board.
+let whole: VideoRenderable | null = null
+let wholeTicks = 0
+let wholeSeek = 0
 let slots: number[] = []
 let size = 3
 let holeSlot = 0
@@ -186,11 +192,18 @@ function layout(): void {
     tile.box.height = geometry.tileHeight
     tile.video.crop = homeCrop(tile.home)
   }
+  if (whole) {
+    whole.width = geometry.boardWidth
+    whole.height = geometry.boardHeight
+  }
+}
+
+function source(): string {
+  return process.argv.slice(2).find((argument) => !argument.startsWith("-")) ?? dragonFile()
 }
 
 function createTiles(): void {
   if (!renderer || !board) return
-  const source = process.argv.slice(2).find((argument) => !argument.startsWith("-")) ?? dragonFile()
   for (let home = 0; home < size * size; home++) {
     const box = new BoxRenderable(renderer, {
       id: `video-puzzle-tile-${home}`,
@@ -200,7 +213,7 @@ function createTiles(): void {
     // Only the tile that carries sound opens an audio device; the others follow the wall clock.
     const video = new VideoRenderable(renderer, {
       id: `video-puzzle-video-${home}`,
-      source,
+      source: source(),
       width: "100%",
       height: "100%",
       fit: "fill",
@@ -228,6 +241,8 @@ function createTiles(): void {
 
 function destroyTiles(): void {
   for (const tile of tiles) tile.box.destroyRecursively()
+  whole?.destroy()
+  whole = null
   tiles = []
   slots = []
   history = []
@@ -285,13 +300,14 @@ function move(direction: Direction, record = true): boolean {
 
 // Keys and clicks name the way a tile slides, so the hole moves the other way.
 function slide(direction: Direction): void {
+  if (whole) return
   if (mode !== "play") stopAutomation()
   move(OPPOSITE[direction])
   checkSolved()
 }
 
 function clickTile(tile: Tile): void {
-  if (tile === holeTile() || !board) return
+  if (tile === holeTile() || !board || whole) return
   if (mode !== "play") stopAutomation()
   const row = Math.floor(tile.slot / size)
   const column = tile.slot % size
@@ -314,9 +330,45 @@ function checkSolved(): void {
     solvedOnce = true
     message = `Solved in ${moves} moves`
   }
+  startWhole()
+}
+
+// The solved board becomes one uncropped player covering it, the gaps included. It starts on the shared clock
+// beneath the tiles, so they hide it until it has drawn, and stays muted until the tiles' sound stops.
+function startWhole(): void {
+  if (!renderer || !board || whole) return
+  whole = new VideoRenderable(renderer, {
+    id: "video-puzzle-whole",
+    source: source(),
+    position: "absolute",
+    width: geometry.boardWidth,
+    height: geometry.boardHeight,
+    fit: "cover",
+    loop: true,
+    audio: sound,
+    muted: true,
+    maxFps: TICK_FPS,
+    onError: (error) => {
+      message = error.message
+    },
+  })
+  board.add(whole, 0)
+  wholeTicks = 0
+  wholeSeek = performance.now()
+  whole.seek(clock())
+  if (frozenAt === null) whole.play()
+}
+
+function finishWhole(): void {
+  if (!whole || tiles.length === 0 || frozenAt !== null || ++wholeTicks < SWAP_TICKS) return
+  for (const tile of tiles) tile.box.destroyRecursively()
+  tiles = []
+  slots = []
+  whole.muted = false
 }
 
 function startScramble(): void {
+  if (whole) return rebuild(size)
   stopAutomation()
   moves = 0
   message = "Scrambling"
@@ -363,17 +415,20 @@ function setFrozen(frozen: boolean): void {
   if (frozen) {
     frozenAt = clock()
     for (const tile of tiles) tile.video.pause()
+    whole?.pause()
     return
   }
   epoch = performance.now() - (frozenAt ?? 0) * 1000
   frozenAt = null
   for (const tile of tiles) if (tile.box.visible) tile.video.play()
+  whole?.play()
 }
 
 function setSound(on: boolean): void {
   sound = on
   // Turning audio on or off reopens the source; synchronize() seeks it back onto the clock.
   if (tiles[0]) tiles[0].video.audio = on
+  if (whole) whole.audio = on
 }
 
 // Each video keeps its own media clock, and players that loop together stay together. A tile that strays from
@@ -391,6 +446,11 @@ function synchronize(now: number): void {
     tile.video.seek(desired)
     if (++started >= SEEKS_PER_TICK) break
   }
+  if (!whole || now - wholeSeek < SEEK_COOLDOWN_MS) return
+  if (Math.abs(wrapSigned(whole.currentTime - clock())) <= SYNC_TOLERANCE) return
+  wholeSeek = now
+  seeks++
+  whole.seek(clock())
 }
 
 function animate(deltaTime: number): void {
@@ -453,13 +513,14 @@ function updateSidebar(): void {
     const color = home ? (Math.abs(drift) <= SYNC_TOLERANCE ? "#7ee787" : "#f2cc60") : "#ff7b72"
     chunks.push(fg("#c9d1d9")(String(tile.home + 1).padStart(2)), fg(color)(` ${formatDrift(drift).padStart(6)}`))
   }
-  mapText.content = new StyledText(chunks)
+  mapText.content = tiles.length > 0 ? new StyledText(chunks) : new StyledText([fg("#7ee787")("one player, no tiles")])
   const state = frozenAt !== null ? "frozen" : mode === "play" ? "playing" : mode
+  const players = tiles.length > 0 ? tiles.map((tile) => tile.video) : whole ? [whole] : []
   statsText.content = new StyledText([
     fg("#8b949e")("clock    "),
     fg("#c9d1d9")(`${target.toFixed(2)}s / ${duration.toFixed(2)}s  ${state}\n`),
     fg("#8b949e")("players  "),
-    fg("#c9d1d9")(`${tiles.filter((tile) => tile.video.playing).length} of ${tiles.length} decoding\n`),
+    fg("#c9d1d9")(`${players.filter((video) => video.playing).length} of ${players.length} decoding\n`),
     fg("#8b949e")("in place "),
     fg("#c9d1d9")(`${inPlace}, worst drift ${Math.round(worst * 1000)}ms\n`),
     fg("#8b949e")("moves    "),
@@ -477,6 +538,7 @@ function tick(deltaTime: number): void {
   step(now)
   animate(deltaTime)
   synchronize(now)
+  finishWhole()
   updateSidebar()
 }
 
