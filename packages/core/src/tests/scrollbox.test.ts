@@ -727,6 +727,15 @@ describe("ScrollBoxRenderable - culled content layout freshness", () => {
         [2, "row-12 "],
       ],
     },
+    {
+      // A zero-height row at the viewport's top edge paints nothing, but its children still do.
+      name: "a zero-height row at the top edge keeps its children",
+      act: async (_, rows) => {
+        rows[0].height = 0
+        rows[0].add(new TextRenderable(testRenderer, { content: "BADGE", position: "absolute", left: 10 }))
+      },
+      lines: [[0, "BADGE"]],
+    },
   ]
 
   for (const { name, act, lines, sizeChanges } of cases) {
