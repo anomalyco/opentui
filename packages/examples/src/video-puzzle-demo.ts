@@ -16,14 +16,14 @@ import {
 import { dragonFile } from "./lib/dragon-clip.js"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
-// A sliding puzzle whose tiles are live video. Every tile is its own VideoRenderable showing the whole clip
-// through a window, so a 3x3 board runs nine decoders at once. A tile out of place plays at its own moment of
-// the clip; once it slides home it seeks onto a shared clock, and the picture reassembles in space and time.
+// A sliding puzzle whose tiles are live video. Every tile is its own VideoRenderable that crops its share of
+// the clip, so a 3x3 board runs nine decoders at once. A tile out of place plays at its own moment of the clip;
+// once it slides home it seeks onto a shared clock, and the picture reassembles in space and time.
 
 const SIDEBAR_WIDTH = 34
 const GAP = 1
-// A home tile further than this from the shared clock seeks back onto it: two frames of the 24 fps clip.
-const SYNC_TOLERANCE = 0.085
+// A home tile further than this from the shared clock seeks back onto it: one frame of the 24 fps clip.
+const SYNC_TOLERANCE = 0.042
 const SEEK_COOLDOWN_MS = 400
 // Seeks on a clip with one keyframe decode from its start, so a tick starts only a few of them.
 const SEEKS_PER_TICK = 2
@@ -59,6 +59,7 @@ interface Tile {
 }
 
 interface Geometry {
+  cellAspect: number
   tileWidth: number
   tileHeight: number
   boardWidth: number
@@ -74,7 +75,7 @@ let tiles: Tile[] = []
 let slots: number[] = []
 let size = 3
 let holeSlot = 0
-let geometry: Geometry = { tileWidth: 1, tileHeight: 1, boardWidth: 1, boardHeight: 1 }
+let geometry: Geometry = { cellAspect: 2, tileWidth: 1, tileHeight: 1, boardWidth: 1, boardHeight: 1 }
 let duration = 6
 let epoch = 0
 let frozenAt: number | null = null
@@ -113,24 +114,29 @@ function solved(): boolean {
   return tiles.every((tile) => tile.home === tile.slot || tile === holeTile())
 }
 
+function cellAspect(): number {
+  const resolution = renderer?.resolution
+  if (!renderer || !resolution || resolution.width <= 0) return 2
+  return resolution.height / renderer.height / (resolution.width / renderer.width)
+}
+
 function computeGeometry(): Geometry {
   if (!renderer) return geometry
   const metadata = tiles[0]?.video.videoMetadata
   const videoAspect = metadata && metadata.height > 0 ? metadata.width / metadata.height : 768 / 1168
-  const resolution = renderer.resolution
-  const cellAspect =
-    resolution && resolution.width > 0 ? resolution.height / renderer.height / (resolution.width / renderer.width) : 2
+  const aspect = cellAspect()
   const availableWidth = Math.max(size * 3, renderer.width - SIDEBAR_WIDTH - 4)
   const availableHeight = Math.max(size * 2, renderer.height - 2)
   let boardHeight = availableHeight
-  let boardWidth = Math.round(boardHeight * videoAspect * cellAspect)
+  let boardWidth = Math.round(boardHeight * videoAspect * aspect)
   if (boardWidth > availableWidth) {
     boardWidth = availableWidth
-    boardHeight = Math.round(boardWidth / (videoAspect * cellAspect))
+    boardHeight = Math.round(boardWidth / (videoAspect * aspect))
   }
   const tileWidth = Math.max(2, Math.floor((boardWidth - GAP * (size - 1)) / size))
   const tileHeight = Math.max(1, Math.floor((boardHeight - GAP * (size - 1)) / size))
   return {
+    cellAspect: aspect,
     tileWidth,
     tileHeight,
     boardWidth: tileWidth * size + GAP * (size - 1),
@@ -144,13 +150,33 @@ function slotPosition(slot: number): [number, number] {
   return [column * (geometry.tileWidth + GAP), row * (geometry.tileHeight + GAP)]
 }
 
+// The board covers the source like fit "cover"; each tile crops the source pixels under its home cells, so it
+// decodes and sends only its own region.
+function homeCrop(home: number): { left: number; top: number; width: number; height: number } | undefined {
+  const metadata = tiles[0]?.video.videoMetadata
+  if (!metadata || metadata.width <= 0 || metadata.height <= 0) return undefined
+  const { boardWidth, boardHeight, tileWidth, tileHeight } = geometry
+  const boardAspect = boardWidth / (boardHeight * geometry.cellAspect)
+  const sourceWidth = Math.min(metadata.width, metadata.height * boardAspect)
+  const sourceHeight = sourceWidth / boardAspect
+  const scale = sourceWidth / boardWidth
+  const [x, y] = slotPosition(home)
+  const left = Math.round((metadata.width - sourceWidth) / 2 + x * scale)
+  const top = Math.round((metadata.height - sourceHeight) / 2 + (y * sourceHeight) / boardHeight)
+  return {
+    left,
+    top,
+    width: Math.max(1, Math.min(metadata.width - left, Math.round(tileWidth * scale))),
+    height: Math.max(1, Math.min(metadata.height - top, Math.round((tileHeight * sourceHeight) / boardHeight))),
+  }
+}
+
 function layout(): void {
   if (!board) return
   geometry = computeGeometry()
   board.width = geometry.boardWidth
   board.height = geometry.boardHeight
   for (const tile of tiles) {
-    const [homeX, homeY] = slotPosition(tile.home)
     const [x, y] = slotPosition(tile.slot)
     tile.x = x
     tile.y = y
@@ -158,11 +184,7 @@ function layout(): void {
     tile.box.top = y
     tile.box.width = geometry.tileWidth
     tile.box.height = geometry.tileHeight
-    // Every video has the board's size, so "cover" crops them alike and each tile shows its share.
-    tile.video.left = -homeX
-    tile.video.top = -homeY
-    tile.video.width = geometry.boardWidth
-    tile.video.height = geometry.boardHeight
+    tile.video.crop = homeCrop(tile.home)
   }
 }
 
@@ -173,16 +195,17 @@ function createTiles(): void {
     const box = new BoxRenderable(renderer, {
       id: `video-puzzle-tile-${home}`,
       position: "absolute",
-      overflow: "hidden",
       backgroundColor: "#05070b",
     })
+    // Only the tile that carries sound opens an audio device; the others follow the wall clock.
     const video = new VideoRenderable(renderer, {
       id: `video-puzzle-video-${home}`,
       source,
-      position: "absolute",
-      fit: "cover",
+      width: "100%",
+      height: "100%",
+      fit: "fill",
       loop: true,
-      muted: !(sound && home === 0),
+      audio: sound && home === 0,
       maxFps: TICK_FPS,
       onError: (error) => {
         message = error.message
@@ -349,21 +372,14 @@ function setFrozen(frozen: boolean): void {
 
 function setSound(on: boolean): void {
   sound = on
-  if (tiles[0]) tiles[0].video.muted = !on
+  // Turning audio on or off reopens the source; synchronize() seeks it back onto the clock.
+  if (tiles[0]) tiles[0].video.audio = on
 }
 
-// Each video keeps its own media clock. The shared clock follows the median of the settled home tiles, since a
-// loop restarts every player a little late alike; then every tile that strays seeks onto it plus its offset.
+// Each video keeps its own media clock, and players that loop together stay together. A tile that strays from
+// the shared clock plus its offset seeks onto it: after it slides, after a freeze, or when sound reopens it.
 function synchronize(now: number): void {
   if (mode === "scramble" || frozenAt !== null) return
-  const settled = tiles.filter(
-    (tile) => tile.box.visible && tile.slot === tile.home && now - tile.lastSeek >= SEEK_COOLDOWN_MS,
-  )
-  if (settled.length > 0) {
-    const drifts = settled.map((tile) => wrapSigned(tile.video.currentTime - clock())).sort((a, b) => a - b)
-    const median = drifts[Math.floor(drifts.length / 2)]
-    if (Math.abs(median) <= SYNC_TOLERANCE * 2) epoch -= median * 1000
-  }
   let started = 0
   for (const tile of tiles) {
     if (!tile.box.visible || now - tile.lastSeek < SEEK_COOLDOWN_MS) continue
@@ -456,6 +472,8 @@ function updateSidebar(): void {
 
 function tick(deltaTime: number): void {
   const now = performance.now()
+  // The terminal reports its pixel size after the first frames; the crops follow the cell shape.
+  if (cellAspect() !== geometry.cellAspect) layout()
   step(now)
   animate(deltaTime)
   synchronize(now)
