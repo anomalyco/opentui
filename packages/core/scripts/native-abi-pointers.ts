@@ -87,6 +87,7 @@ export const nativePointerPolicies = {
   ot_image_pixels_release: { 0: context, 1: buffer },
   ot_scene_set_image: { 0: context, 1: buffer, 2: optional, 5: optional },
   ot_scene_set_video: { 0: context, 1: buffer, 3: optional },
+  ot_scene_set_crop: { 0: context, 1: buffer },
   ot_video_open: { 0: context, 1: buffer, 2: empty, 5: buffer },
   ot_video_play: { 0: context, 1: buffer },
   ot_video_pause: { 0: context, 1: buffer },

@@ -392,6 +392,18 @@ pub fn ot_scene_set_image(context: ?*ContextHandle, node_ptr: ?*const c.ot_handl
     return c.OT_OK;
 }
 
+pub fn ot_scene_set_crop(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, left: u32, top: u32, width: u32, height: u32) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const whole = left == 0 and top == 0 and width == 0 and height == 0;
+    if (!whole and (width == 0 or height == 0)) return sessionError(owner, error.InvalidOptions);
+    const crop: ?@import("image.zig").Region = if (whole) null else .{ .left = left, .top = top, .width = width, .height = height };
+    owner.core.sceneSetCrop(handleFromC(node.*), crop) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_buffer_draw_image(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, image_ptr: ?*const c.ot_handle, options_ptr: ?*const c.ot_image_draw_options, out_ptr: ?*u32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -3683,7 +3695,7 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
         ot_scene_set_viewport,       ot_scene_set_focus,  ot_scene_set_slider,       ot_scene_get_slider_thumb,
         ot_scene_set_arrow,          ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
         ot_scene_set_text_selection, ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
-        ot_scene_set_image,          ot_scene_set_scroll, ot_scene_set_scroll_arrow,
+        ot_scene_set_image,          ot_scene_set_scroll, ot_scene_set_scroll_arrow, ot_scene_set_crop,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }

@@ -166,7 +166,7 @@ extern fn otv_open(
 ) c_int;
 extern fn otv_close(decoder: *?*Decoder) void;
 extern fn otv_seek(decoder: *Decoder, target_us: i64) c_int;
-extern fn otv_set_output_size(decoder: *Decoder, width: u32, height: u32, cover: u32) c_int;
+extern fn otv_set_output_size(decoder: *Decoder, width: u32, height: u32, cover: u32, crop: image.Region) c_int;
 extern fn otv_decode_frame(
     decoder: *Decoder,
     target_us: i64,
@@ -251,6 +251,7 @@ pub const Video = struct {
     output_width: u32,
     output_height: u32,
     output_cover: bool = false,
+    output_crop: ?image.Region = null,
     wants_playback: bool = false,
     muted: bool = false,
     volume: f32 = 1,
@@ -364,14 +365,19 @@ pub const Video = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn configureOutput(self: *Video, width: u32, height: u32, cover: bool) !void {
+    /// Converts the crop of each frame, or the whole frame, to width x height. Returns
+    /// whether the output changed.
+    pub fn configureOutput(self: *Video, width: u32, height: u32, cover: bool, crop: ?image.Region) !bool {
         if (width == 0 or height == 0) return error.InvalidArgument;
-        if (width == self.output_width and height == self.output_height and cover == self.output_cover) return;
+        if (width == self.output_width and height == self.output_height and cover == self.output_cover and
+            std.meta.eql(crop, self.output_crop)) return false;
         self.quiesceWorker();
-        if (otv_set_output_size(self.decoder, width, height, @intFromBool(cover)) != 0) return error.DecodeFailed;
+        const region = crop orelse image.Region{ .width = 0, .height = 0 };
+        if (otv_set_output_size(self.decoder, width, height, @intFromBool(cover), region) != 0) return error.DecodeFailed;
         self.output_width = width;
         self.output_height = height;
         self.output_cover = cover;
+        self.output_crop = crop;
         // The decoder keeps its position and converts the selected frame again
         // at the new size; a reseek would re-decode from the previous keyframe
         // and stall long-GOP streams on every resize or quality change.
@@ -380,6 +386,7 @@ pub const Video = struct {
         self.resetScheduler();
         self.state.frame_serial = 0;
         self.state.frame_pts_us = -1;
+        return true;
     }
 
     pub fn seek(self: *Video, target_us: i64) !void {
@@ -1216,19 +1223,17 @@ pub const Player = struct {
     }
 
     /// Advances playback to now and returns the current frame for a decode target of
-    /// width x height pixels. Decode failures stop playback and keep the last frame.
-    pub fn frame(self: *Player, width: u32, height: u32, cover: bool) ?*image.Image {
+    /// width x height pixels from the crop of the source. Decode failures stop playback
+    /// and keep the last frame.
+    pub fn frame(self: *Player, width: u32, height: u32, cover: bool, crop: ?image.Region) ?*image.Image {
         if (self.failed) return self.video.current_image;
         self.tick();
-        self.present(width, height, cover) catch self.fail();
+        self.present(width, height, cover, crop) catch self.fail();
         return self.video.current_image;
     }
 
-    fn present(self: *Player, width: u32, height: u32, cover: bool) !void {
-        if (width != self.video.output_width or height != self.video.output_height or cover != self.video.output_cover) {
-            try self.video.configureOutput(width, height, cover);
-            self.needs_update = true;
-        }
+    fn present(self: *Player, width: u32, height: u32, cover: bool, crop: ?image.Region) !void {
+        if (try self.video.configureOutput(width, height, cover, crop)) self.needs_update = true;
         self.presented = true;
         if (self.needs_update or self.video.current_image == null) {
             _ = try self.video.update(self.currentTime());

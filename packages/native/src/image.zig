@@ -164,6 +164,22 @@ pub const RenderProtocol = enum(u32) {
 
 pub const Fit = enum(u32) { fit = api.OT_IMAGE_FIT, cover = api.OT_IMAGE_COVER, fill = api.OT_IMAGE_FILL };
 
+/// A region of a source in pixels, as extract takes it; the video shim takes it by value.
+pub const Region = extern struct {
+    left: u32 = 0,
+    top: u32 = 0,
+    width: u32,
+    height: u32,
+
+    /// The crop if it lies inside a width x height source. A crop outside it shows the whole source.
+    pub fn inside(crop: ?Region, width: u32, height: u32) ?Region {
+        const value = crop orelse return null;
+        if (value.left > width or value.width > width - value.left) return null;
+        if (value.top > height or value.height > height - value.top) return null;
+        return value;
+    }
+};
+
 pub const Image = struct {
     allocator: Allocator,
     owner_context_id: u64 = 0,

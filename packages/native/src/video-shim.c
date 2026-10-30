@@ -22,11 +22,12 @@ int otv_seek(otv_decoder *decoder, int64_t target_us) {
     (void)target_us;
     return OTV_ERROR;
 }
-int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover) {
+int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover, otv_region crop) {
     (void)decoder;
     (void)width;
     (void)height;
     (void)cover;
+    (void)crop;
     return OTV_ERROR;
 }
 int otv_decode_frame(otv_decoder *decoder, int64_t target_us, const uint8_t **out_rgba,
@@ -116,6 +117,7 @@ struct otv_decoder {
     uint32_t output_width;
     uint32_t output_height;
     int output_cover;
+    otv_region crop;
     struct SwsContext *sws;
     AVFrame *sws_dst;
     struct SwrContext *swr;
@@ -466,11 +468,12 @@ void otv_close(otv_decoder **decoder_ptr) {
     *decoder_ptr = NULL;
 }
 
-int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover) {
+int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover, otv_region crop) {
     if (!decoder || width == 0 || height == 0) return OTV_ERROR;
     decoder->output_width = width;
     decoder->output_height = height;
     decoder->output_cover = cover != 0;
+    decoder->crop = crop;
     sws_freeContext(decoder->sws);
     decoder->sws = NULL;
     free(decoder->rgba);
@@ -544,6 +547,22 @@ static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64
         transfer = av_frame_copy_props(decoder->hw_transfer_frame, frame);
         if (transfer < 0) return fail_video(decoder, transfer, "av_frame_copy_props");
         frame = decoder->hw_transfer_frame;
+    }
+    // A shallow copy whose plane pointers start at the crop, so swscale reads only the region.
+    // Unaligned keeps the exact left edge; chroma then starts at the sample that covers it.
+    AVFrame region;
+    if (decoder->crop.width != 0) {
+        const otv_region crop = decoder->crop;
+        if ((uint64_t)crop.left + crop.width > (uint32_t)frame->width || (uint64_t)crop.top + crop.height > (uint32_t)frame->height)
+            return fail_video(decoder, AVERROR(EINVAL), "crop outside the frame");
+        region = *frame;
+        region.crop_left = crop.left;
+        region.crop_top = crop.top;
+        region.crop_right = (size_t)frame->width - crop.left - crop.width;
+        region.crop_bottom = (size_t)frame->height - crop.top - crop.height;
+        int cropped = av_frame_apply_cropping(&region, AV_FRAME_CROP_UNALIGNED);
+        if (cropped < 0) return fail_video(decoder, cropped, "av_frame_apply_cropping");
+        frame = &region;
     }
     uint32_t scaled_width = decoder->output_width;
     uint32_t scaled_height = decoder->output_height;

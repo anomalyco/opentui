@@ -1836,6 +1836,12 @@ ot_status ot_image_pixels_release(ot_context *, const ot_handle *lease);
  * fit and protocol use OT_IMAGE_*; mutations reject measurement-callback reentry. */
 ot_status ot_scene_set_image(ot_context *, const ot_handle *node, const ot_handle *image,
     uint32_t fit, uint32_t protocol, const ot_handle *buffer);
+/* Sets the region of the source, in source pixels, that an IMAGE or VIDEO node shows; fit
+ * applies to the region. All four zero show the whole source; otherwise width and height
+ * are positive. A region that does not lie inside the source shows the whole source. A VIDEO
+ * node scales and copies only the region of each frame. Setting the image or video keeps it. */
+ot_status ot_scene_set_crop(ot_context *, const ot_handle *node, uint32_t left, uint32_t top,
+    uint32_t width, uint32_t height);
 
 /* A VIDEO node owns one decoder and player. Decoded frames stay native: each paint
  * of the node draws the current frame as the IMAGE node does, from a small set of

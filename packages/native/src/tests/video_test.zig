@@ -45,7 +45,7 @@ test "video open reports metadata and decodes the first frame natively" {
     try testing.expectEqual(@as(u32, 2), value.info.audio_channels);
     try testing.expect(value.info.duration_us >= 1_900_000 and value.info.duration_us <= 2_100_000);
 
-    try value.configureOutput(80, 45, false);
+    _ = try value.configureOutput(80, 45, false, null);
     try testing.expect(try value.update(0));
     const state = value.getState();
     try testing.expectEqual(@as(u32, 1), state.has_frame);
@@ -249,7 +249,7 @@ test "video output reconfiguration keeps the current frame presentable" {
     defer value.deinit();
     try testing.expect(try value.update(0));
     const before = value.current_image.?;
-    try value.configureOutput(40, 20, true);
+    _ = try value.configureOutput(40, 20, true, null);
     try testing.expectEqual(before, value.current_image.?);
     try testing.expectEqual(@as(u32, 1), value.state.has_frame);
     try testing.expect(try value.update(0));
@@ -269,13 +269,13 @@ test "video experimental hardware decoding matches software or falls back to it"
     _ = Environment.unsetenv("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL");
     const accelerated = try hardware;
     defer accelerated.deinit();
-    try accelerated.configureOutput(64, 96, false);
+    _ = try accelerated.configureOutput(64, 96, false, null);
     try testing.expect(try accelerated.update(500_000));
 
     // H.264 reconstruction is bit-exact, so both paths produce the same pixels.
     const software = try openAsset(false);
     defer software.deinit();
-    try software.configureOutput(64, 96, false);
+    _ = try software.configureOutput(64, 96, false, null);
     try testing.expect(try software.update(500_000));
     try testing.expectEqualSlices(u8, software.current_image.?.pixels, accelerated.current_image.?.pixels);
 }
@@ -324,6 +324,63 @@ test "video scene nodes paint the current frame through the image path" {
     // The painted buffer retains the frame, so the decoder skips it until release.
     try testing.expect(frame.ref_count > 1);
     try testing.expectEqual(@as(usize, 1), f.cli.getNextBuffer().image_placements.items.len);
+}
+
+// A crop converts only its region of each frame: at 1:1 the frame equals that part of the
+// whole source. pixels names the source part of a 1:1 frame.
+test "video scene crop decodes only the source region" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    const node = try videoNode(f);
+    _ = try f.owner.videoOpen(node, asset, true);
+    const value = try playerOf(f, node);
+    const whole = try openAsset(true);
+    defer whole.deinit();
+    _ = try whole.configureOutput(160, 90, false, null);
+    try testing.expect(try whole.update(0));
+    const Region = image.Region;
+    const Row = struct { fit: image.Fit, crop: ?Region, size: [2]u32, pixels: ?Region = null };
+    // The node is 16x16 pixels: 8x4 cells of 2x4.
+    for ([_]Row{
+        .{ .fit = .fill, .crop = null, .size = .{ 16, 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 0, .width = 160, .height = 90 }, .size = .{ 16, 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 0, .width = 16, .height = 16 }, .size = .{ 16, 16 }, .pixels = .{ .left = 0, .top = 0, .width = 16, .height = 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 144, .top = 74, .width = 16, .height = 16 }, .size = .{ 16, 16 }, .pixels = .{ .left = 144, .top = 74, .width = 16, .height = 16 } },
+        // At odd offsets 4:2:0 chroma starts with the sample that covers the edge, so only the size is exact.
+        .{ .fit = .fill, .crop = .{ .left = 3, .top = 5, .width = 16, .height = 16 }, .size = .{ 16, 16 } },
+        // swscale converts a 1x1 frame on another path, which rounds differently.
+        .{ .fit = .fill, .crop = .{ .left = 159, .top = 89, .width = 1, .height = 1 }, .size = .{ 1, 1 } },
+        // The decode size stays within the region: 7/16 of the node.
+        .{ .fit = .fill, .crop = .{ .left = 9, .top = 1, .width = 7, .height = 11 }, .size = .{ 7, 7 } },
+        // A region outside the source shows the whole source.
+        .{ .fit = .fill, .crop = .{ .left = 150, .top = 80, .width = 16, .height = 16 }, .size = .{ 16, 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 0, .width = 161, .height = 1 }, .size = .{ 16, 16 } },
+        // fit fits the region's aspect: 80x20 shows as 8x1 cells.
+        .{ .fit = .fit, .crop = .{ .left = 40, .top = 30, .width = 80, .height = 20 }, .size = .{ 16, 4 } },
+        // cover crops the centre of the region: 32x16 into 16x16 keeps its middle half.
+        .{ .fit = .cover, .crop = .{ .left = 40, .top = 30, .width = 32, .height = 16 }, .size = .{ 16, 16 }, .pixels = .{ .left = 48, .top = 30, .width = 16, .height = 16 } },
+    }) |row| {
+        // Setting the video keeps the crop.
+        try f.owner.sceneSetCrop(node, row.crop);
+        try f.owner.sceneSetVideo(node, row.fit, null);
+        try paint(f);
+        const frame = value.video.current_image.?;
+        try testing.expectEqual(row.size, [2]u32{ frame.width(), frame.height() });
+        const part = row.pixels orelse continue;
+        for (0..part.height) |y| {
+            const offset = ((part.top + y) * 160 + part.left) * 4;
+            try testing.expectEqualSlices(u8, whole.current_image.?.pixels[offset..][0 .. part.width * 4], frame.pixels[y * part.width * 4 ..][0 .. part.width * 4]);
+        }
+    }
+    // A change while playing applies to the next paint, and playback goes on.
+    value.video.failAudio("test");
+    try f.owner.videoControl(node, video.Player.play, .{});
+    try paint(f);
+    try f.owner.sceneSetCrop(node, .{ .left = 10, .top = 10, .width = 8, .height = 8 });
+    try paint(f);
+    try testing.expectEqual([2]u32{ 8, 8 }, [2]u32{ value.video.current_image.?.width(), value.video.current_image.?.height() });
+    const state = try f.owner.videoGetState(node);
+    try testing.expect(state.playing and !state.failed);
 }
 
 // A playing video changes its cells without any scene input changing, so retained paint must
@@ -479,7 +536,7 @@ test "video rejects sources beyond the image limits" {
     // A stream whose first frames fit can switch to a size beyond the limits.
     const value = try video.Video.open(testing.allocator, switch_asset, true, &detail);
     defer value.deinit();
-    try value.configureOutput(32, 18, false);
+    _ = try value.configureOutput(32, 18, false, null);
     try testing.expect(try value.update(0));
     try testing.expectError(error.DecodeFailed, value.update(1_200_000));
     try testing.expect(std.mem.indexOf(u8, value.lastError(), "6000x5000 exceeds the image limits") != null);
@@ -522,7 +579,7 @@ fn decodeDamagedWithStderrCaptured() !void {
         var detail: [256]u8 = undefined;
         const value = try video.Video.open(testing.allocator, path, true, &detail);
         defer value.deinit();
-        try value.configureOutput(32, 18, false);
+        _ = try value.configureOutput(32, 18, false, null);
         var target: i64 = 0;
         while (target < 2_000_000) : (target += frame_us) {
             _ = value.update(target) catch {
@@ -657,7 +714,7 @@ fn openGop() !*video.Video {
     var detail: [256]u8 = undefined;
     const value = try video.Video.open(testing.allocator, gop_asset, true, &detail);
     errdefer value.deinit();
-    try value.configureOutput(32, 18, false);
+    _ = try value.configureOutput(32, 18, false, null);
     return value;
 }
 
@@ -686,7 +743,7 @@ test "video scene teardown during a decode and during audio leaks nothing" {
     const decoding = try videoNode(f);
     _ = try f.owner.videoOpen(decoding, gop_asset, true);
     const gop = (try playerOf(f, decoding)).video;
-    try gop.configureOutput(32, 18, false);
+    _ = try gop.configureOutput(32, 18, false, null);
     try testing.expect(try gop.update(0));
     const before = gop.decodedFrames();
     try testing.expect(try gop.prepare(5_900_000));
@@ -720,7 +777,7 @@ test "video seek and teardown cancel a long decode" {
     const resized = value.decodedFrames();
     try testing.expect(try value.prepare(5_900_000));
     while (value.decodedFrames() == resized) std.atomic.spinLoopHint();
-    try value.configureOutput(16, 9, false);
+    _ = try value.configureOutput(16, 9, false, null);
     const stopped = value.decodedFrames();
     sleepMs(20);
     try testing.expectEqual(stopped, value.decodedFrames());
@@ -733,7 +790,7 @@ test "video paused output reconfiguration rescales the shown frame without decod
     try testing.expect(try value.update(5_500_000));
     const pts = value.state.frame_pts_us;
     const before = value.decodedFrames();
-    try value.configureOutput(40, 20, true);
+    _ = try value.configureOutput(40, 20, true, null);
     try testing.expect(try value.update(5_500_000));
     // At most the lookahead frame that tells the shown frame is still current.
     try testing.expect(value.decodedFrames() - before <= 1);
@@ -910,7 +967,7 @@ test "video output reconfiguration keeps the queued audio" {
     try prebuffer(value);
     try mix(value, 4800);
     const before = value.getState();
-    try value.configureOutput(40, 20, false);
+    _ = try value.configureOutput(40, 20, false, null);
     const after = value.getState();
     try testing.expectEqual(before.audio_consumed_frames, after.audio_consumed_frames);
     try testing.expect(after.audio_queued_frames >= before.audio_queued_frames);
