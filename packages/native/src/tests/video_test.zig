@@ -198,14 +198,22 @@ test "video seek replaces queued PCM and restarts the clock at the target" {
     value.play();
     try prebuffer(value);
     try mix(value, 4800);
-    try value.seek(1_000_000);
+    // A quarter period of the 440 Hz sine into the second: the new stream starts at a peak.
+    try value.seek(1_000_568);
     var state = value.getState();
     try testing.expectEqual(@as(u64, 0), state.audio_consumed_frames);
     try testing.expectEqual(@as(u64, 0), state.audio_produced_frames);
     try prebuffer(value);
-    try mix(value, 4800);
+    var output: [9600]f32 = undefined;
+    try testing.expectEqual(audio.Status.ok, value.mixOffline(&output, 4800));
     state = value.getState();
-    try testing.expectEqual(@as(i64, 1_100_000), state.current_time_us);
+    try testing.expectEqual(@as(i64, 1_100_568), state.current_time_us);
+    // It fades in from silence instead of stepping to the peak; the sine's own step is 0.0056.
+    var previous: f32 = 0;
+    for (output) |sample| {
+        try testing.expect(@abs(sample - previous) < 0.01);
+        previous = sample;
+    }
 }
 
 // Seeks while the audio thread refills: a seek repositions the audio decoder only between

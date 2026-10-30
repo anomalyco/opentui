@@ -993,6 +993,10 @@ pub const Video = struct {
                 self.audio_ended = true;
                 return;
             }
+            // Each stream fades in over its first 5 ms, so a start mid-wave does not click.
+            if (self.audio_produced_frames == 0) for (0..@min(decoded, 240)) |frame| {
+                for (buffer[2 * frame ..][0..2]) |*sample| sample.* *= @as(f32, @floatFromInt(frame)) / 240;
+            };
             const bytes = std.mem.sliceAsBytes(buffer[0 .. @as(usize, decoded) * 2]);
             // The queue bound keeps writes within the stream's input capacity.
             const written = audio.writeStream(engine, self.audio_stream, bytes.ptr, @intCast(bytes.len));
