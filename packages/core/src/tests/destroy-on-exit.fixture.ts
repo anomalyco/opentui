@@ -30,6 +30,8 @@ const renderer = await createCliRenderer({
   remote: true,
   onDestroy: mode === "on-destroy-exit" ? terminateDuringCleanup : undefined,
 }).catch(() => process.exit(code))
+// Every row reports from a destroy listener; the test's table says which exit paths deliver it.
+renderer.on(CliRenderEvents.DESTROY, () => renderer.setProgramStatus({ state: "clear" }))
 if (mode === "destroy-listener-exit") renderer.on(CliRenderEvents.DESTROY, terminateDuringCleanup)
 if (mode === "root-destroyed-exit") renderer.root.on("destroyed", terminateDuringCleanup)
 await renderer.idle()
@@ -48,6 +50,8 @@ if (mode === "during-render") {
     process.exit(code)
   })
   renderer.start()
+} else if (mode === "signal") {
+  process.kill(process.pid, "SIGTERM")
 } else if (mode === "signal-during-resume") {
   await renderer.suspend()
   reportRawMode = true
