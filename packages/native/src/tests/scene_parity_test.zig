@@ -462,7 +462,7 @@ const Harness = struct {
                 };
                 const created = try f.owner.sceneCreateNode(f.id, kind, Model.num(value.slot));
                 if (value.kind == .scroll) try f.owner.sceneSetScroll(created, .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_BOTTOM });
-                if (self.model.handles[value.slot] == null) self.model.handles[value.slot] = undefined;
+                if (self.model.handles[value.slot] == null) self.model.handles[value.slot] = .{ undefined, undefined };
                 self.model.handles[value.slot].?[twin] = created;
                 if (value.kind == .editor) {
                     const edit = try f.owner.createEditBuffer(.unicode);
