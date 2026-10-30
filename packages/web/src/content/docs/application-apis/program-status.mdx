@@ -67,7 +67,8 @@ renderer.setProgramStatus({ state: "clear", id: "us-east" })
 
 `setProgramStatus()` returns `true` when OpenTUI queues the report. It returns `false` in these cases:
 
-- The terminal is closing: the renderer's `destroy` listeners have run, or the process is exiting.
+- The session failed, or the terminal is closing: from the microtask after `destroy()`, or when the process exits.
+  Reports made in `destroy` listeners, in `onDestroy`, or right after `destroy()` are still queued.
 - The terminal is not active, for example before `setupTerminal()` finishes or while the renderer is suspended.
 - The output queue is full.
 
