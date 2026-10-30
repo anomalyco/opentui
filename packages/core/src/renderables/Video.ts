@@ -79,12 +79,11 @@ export class VideoRenderable extends Renderable {
   private _maxFps: number
   private _autoplay: boolean
   private _metadata: VideoMetadata | null = null
-  // Playback requested while no source is open; native state is the truth once one is.
+  // Playback requested but not started natively: before a source opens, or until the open's microtask, so
+  // options set after the source (audio) apply before an audio device starts.
   private _playRequested = false
   // Playback polls native state on the renderer's animation clock, drawn or not.
   private stopTick?: () => void
-  // Counts reported pauses, so a deferred onPlay that a pause overtook is dropped.
-  private _pauses = 0
   // Counts opens, so only the latest open reports; changing audio reopens the same source.
   private _opens = 0
   public onReady?: (metadata: VideoMetadata) => void
@@ -145,7 +144,7 @@ export class VideoRenderable extends Renderable {
       const info = native.lib.videoOpen(native.context, native.node, value ?? "", this._audio)
       // An empty path closes the player, like no source.
       if (!value) return
-      this._playRequested = false
+      this._playRequested = resume || this._autoplay
       this._metadata = {
         width: info.width,
         height: info.height,
@@ -162,15 +161,11 @@ export class VideoRenderable extends Renderable {
         toMicroseconds(this._avSyncOffsetMs / 1000, "avSyncOffsetMs"),
       )
       native.lib.videoSetMaxFps(native.context, native.node, this._maxFps)
-      const play = resume || this._autoplay
-      if (play) native.lib.videoCall(native.context, native.node, "ot_video_play")
       const metadata = { ...this._metadata }
-      // Frameworks assign handlers after the source; report the open once they are set.
-      const pauses = this._pauses
+      // Frameworks assign handlers and options after the source; report and start the open once they are set.
       this.afterOpen(() => {
         this.onReady?.(metadata)
-        // A pause before this report already told handlers; a stale onPlay would contradict it.
-        if (play && pauses === this._pauses) this.onPlay?.()
+        this.startRequested()
       })
     } catch (error) {
       this._metadata = null
@@ -275,14 +270,13 @@ export class VideoRenderable extends Renderable {
     this._autoplay = next
     // Frameworks may set autoplay after the source.
     if (!next || !this._metadata) return
-    const started = this.control((native) => {
+    const requested = this.control((native) => {
       const state = native.lib.videoGetState(native.context, native.node)
       if (state.playing || state.ended || state.currentTimeUs !== 0n) return false
-      native.lib.videoCall(native.context, native.node, "ot_video_play")
+      this._playRequested = true
     })
-    // Handlers may follow autoplay as well.
-    const pauses = this._pauses
-    if (started) this.afterOpen(() => pauses === this._pauses && this.onPlay?.())
+    // Handlers and options may follow autoplay as well.
+    if (requested) this.afterOpen(() => this.startRequested())
   }
 
   public get ready(): boolean {
@@ -295,7 +289,7 @@ export class VideoRenderable extends Renderable {
 
   public get playing(): boolean {
     if (this.isDestroyed) return false
-    return this._metadata ? this.readState().playing : this._playRequested
+    return this._playRequested || (this._metadata !== null && this.readState().playing)
   }
 
   public get paused(): boolean {
@@ -336,7 +330,7 @@ export class VideoRenderable extends Renderable {
   }
 
   public play(): void {
-    if (this.isDestroyed) return
+    if (this.isDestroyed || this._playRequested) return
     if (!this._metadata) {
       // A failed open retries and reports its failure again.
       if (this._source !== undefined) this.open(this._source, true)
@@ -356,16 +350,15 @@ export class VideoRenderable extends Renderable {
 
   public pause(): void {
     if (this.isDestroyed) return
-    if (!this._metadata) {
-      this._playRequested = false
-      return
-    }
+    const requested = this._playRequested
+    this._playRequested = false
+    if (!this._metadata) return
     const paused = this.control((native) => {
+      if (requested) return
       if (!native.lib.videoGetState(native.context, native.node).playing) return false
       native.lib.videoCall(native.context, native.node, "ot_video_pause")
     })
     if (!paused) return
-    this._pauses++
     const time = this.currentTime
     this.onPause?.()
     this.onTimeUpdate?.(time)
@@ -484,7 +477,7 @@ export class VideoRenderable extends Renderable {
     if (this.isDestroyed) return
     let active = false
     try {
-      active = this._metadata !== null && this.readState().playing
+      active = this._metadata !== null && (this._playRequested || this.readState().playing)
     } catch (error) {
       if (report) this.reportError(error)
     }
@@ -494,6 +487,12 @@ export class VideoRenderable extends Renderable {
 
   private setNativeSceneVideo(fit: ImageFit = this._fit): void {
     this._ctx.nativeScene.setVideo(this, fit, this.buffered ? this.frameBuffer : null)
+  }
+
+  private startRequested(): void {
+    if (!this._playRequested) return
+    this._playRequested = false
+    if (this.control((native) => native.lib.videoCall(native.context, native.node, "ot_video_play"))) this.onPlay?.()
   }
 
   private afterOpen(report: () => void): void {

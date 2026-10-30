@@ -280,7 +280,7 @@ describe("VideoRenderable", () => {
     expect(errors.map((error) => error.message)).toEqual(["state unavailable", "state unavailable"])
   })
 
-  test("autoplay set after the source starts it", () => {
+  test("autoplay set after the source starts it", async () => {
     const video = new VideoRenderable(renderer, { width: 20, height: 6 })
     renderer.root.add(video)
     video.source = SILENT
@@ -288,6 +288,9 @@ describe("VideoRenderable", () => {
     video.autoplay = true
     expect(video.playing).toBe(true)
     expect(ticking()).toBe(true)
+    await Promise.resolve()
+    video.pause()
+    expect(video.playing).toBe(false)
   })
 
   test("playback options set before a source apply when it opens", () => {
@@ -397,7 +400,8 @@ describe("VideoRenderable", () => {
 
   test("onPlay reports autoplay and playback requested before the source", async () => {
     let plays = 0
-    new VideoRenderable(renderer, { source: SILENT, autoplay: true, onPlay: () => plays++ })
+    // play() while the autoplay waits for its microtask reports once.
+    new VideoRenderable(renderer, { source: SILENT, autoplay: true, onPlay: () => plays++ }).play()
     const video = new VideoRenderable(renderer, { onPlay: () => plays++ })
     video.play()
     video.source = SILENT

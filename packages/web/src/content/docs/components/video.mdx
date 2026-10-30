@@ -38,7 +38,7 @@ const video = new VideoRenderable(renderer, {
 renderer.root.add(video)
 ```
 
-`source` is a file path. Opening is synchronous: `ready` and `videoMetadata` are set when the setter returns. `onReady`, `onError`, and the `onPlay` of an autoplay run in a microtask, so callbacks assigned after `source` still receive the result. Setting `autoplay` after `source` starts the open source if it has not started yet. Replacing `source` keeps playback running if it was. Setting it to `undefined` closes the player. Changing `audio` reopens an open source the same way, from the start.
+`source` is a file path. Opening is synchronous: `ready` and `videoMetadata` are set when the setter returns. `onReady`, `onError`, and the `onPlay` of an autoplay run in a microtask, so callbacks assigned after `source` still receive the result. Playback that the open starts (autoplay, or a replaced source that was playing) starts in that microtask too, so options such as `audio` set after `source` apply first; `playing` is `true` from the start. Setting `autoplay` after `source` starts the open source if it has not started yet. Replacing `source` keeps playback running if it was. Setting it to `undefined` closes the player. Changing `audio` reopens an open source the same way, from the start.
 
 ## React
 
