@@ -38,7 +38,7 @@ const video = new VideoRenderable(renderer, {
 renderer.root.add(video)
 ```
 
-`source` is a file path. Opening is synchronous: `ready` and `videoMetadata` are set when the setter returns. `onReady`, `onError`, and the `onPlay` of an autoplay run in a microtask, so callbacks assigned after `source` still receive the result. Setting `autoplay` after `source` starts the open source if it has not started yet. Replacing `source` keeps playback running if it was. Setting it to `undefined` closes the player.
+`source` is a file path. Opening is synchronous: `ready` and `videoMetadata` are set when the setter returns. `onReady`, `onError`, and the `onPlay` of an autoplay run in a microtask, so callbacks assigned after `source` still receive the result. Playback that the open starts (autoplay, or a replaced source that was playing) starts in that microtask too, so options such as `audio` set after `source` apply first; `playing` is `true` from the start. Setting `autoplay` after `source` starts the open source if it has not started yet. Replacing `source` keeps playback running if it was. Setting it to `undefined` closes the player. Changing `audio` reopens an open source the same way, from the start.
 
 ## React
 
@@ -64,6 +64,7 @@ await render(() => <video source="./clip.mp4" autoplay loop style={{ width: 60, 
 
 - While a video plays, it ticks on the renderer's animation clock at `maxFps`. Each tick renders a frame and reads playback state, drawn or not, so a hidden or scrolled-out video keeps time, ends, and loops. A native audio thread refills audio between ticks. Each paint draws the current frame.
 - With an audio track, audio output is the media clock. Without audio, or if the audio device fails, playback follows the wall clock.
+- Each player with audio opens its own audio device, even when `muted`. For many silent players of one clip, such as tiles of a video wall, set `audio: false` on all but the one that plays sound: they open no audio device and follow the wall clock.
 - Frames present at the source frame rate or `maxFps`, whichever is lower.
 - `seek()` clamps to `[0, duration]`. Seeking past the end does not wrap, even when `loop` is on.
 - Frames draw like an [Image](/docs/components/image) with `protocol: "auto"`. `fit` works the same way.
@@ -78,6 +79,7 @@ await render(() => <video source="./clip.mp4" autoplay loop style={{ width: 60, 
 | `fit`               | `"fit" \| "cover" \| "fill"`       | Destination sizing. Defaults to `"fit"`                                         |
 | `autoplay`          | `boolean`                          | Plays each source once it opens                                                 |
 | `loop`              | `boolean`                          | Restarts at the end                                                             |
+| `audio`             | `boolean`                          | Opens the audio track. Defaults to `true`. Changing it reopens an open source   |
 | `muted`             | `boolean`                          | Silences audio. The audio clock keeps running                                   |
 | `volume`            | `number`                           | Non-negative and within the 32-bit float range. Defaults to `1`                 |
 | `avSyncOffsetMs`    | `number`                           | From -60000 to 60000. Positive values show frames earlier relative to the audio |

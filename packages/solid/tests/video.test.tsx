@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { fileURLToPath } from "node:url"
 import { createSignal } from "solid-js"
-import { VideoRenderable } from "@opentui/core"
+import { VideoRenderable, resolveRenderLib } from "@opentui/core"
 import { testRender } from "../index.js"
 
 const VIDEO_FIXTURE = fileURLToPath(
@@ -9,6 +9,20 @@ const VIDEO_FIXTURE = fileURLToPath(
 )
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
+
+// Logs native opens with their flags (1: no audio) and play calls, in order.
+function logNativeVideo(): { log: string[]; restore: () => void } {
+  const symbols = (resolveRenderLib() as any).opentui.symbols
+  const log: string[] = []
+  const spies = ["ot_video_open", "ot_video_play"].map((name) => {
+    const original = symbols[name]
+    return spyOn(symbols, name).mockImplementation((...args: any[]) => {
+      log.push(name === "ot_video_play" ? "play" : `open:${args[4]}`)
+      return original(...args)
+    })
+  })
+  return { log, restore: () => spies.forEach((spy) => spy.mockRestore()) }
+}
 
 afterEach(() => {
   testSetup?.renderer.destroy()
@@ -26,6 +40,7 @@ describe("video component", () => {
         <video
           ref={videoRef}
           source={VIDEO_FIXTURE}
+          audio={false}
           maxFps={12}
           onReady={(metadata) => readies.push(metadata.width)}
           onError={(error) => failures.push(error.message)}
@@ -70,19 +85,33 @@ describe("video component", () => {
     expect(videoRef!.videoMetadata?.height).toBe(90)
   })
 
-  it("autoplays when autoplay follows source", async () => {
-    let videoRef: VideoRenderable | undefined
-    let plays = 0
-
-    testSetup = await testRender(
-      () => (
-        <video ref={videoRef} source={VIDEO_FIXTURE} autoplay onPlay={() => plays++} style={{ width: 8, height: 4 }} />
-      ),
-      { width: 12, height: 6 },
-    )
-    await testSetup.renderOnce()
-
-    expect(videoRef!.playing).toBe(true)
-    expect(plays).toBe(1)
+  it("autoplays when autoplay follows source, after an audio prop set later applies", async () => {
+    const [audio] = createSignal(false)
+    for (const reactive of [false, true]) {
+      let videoRef: VideoRenderable | undefined
+      let plays = 0
+      const native = logNativeVideo()
+      try {
+        // Static props run in JSX order and before reactive ones, so audio arrives after source and autoplay.
+        testSetup = await testRender(
+          () =>
+            reactive ? (
+              <video ref={videoRef} audio={audio()} source={VIDEO_FIXTURE} autoplay onPlay={() => plays++} />
+            ) : (
+              <video ref={videoRef} source={VIDEO_FIXTURE} autoplay audio={false} onPlay={() => plays++} />
+            ),
+          { width: 12, height: 6 },
+        )
+        await testSetup.renderOnce()
+      } finally {
+        native.restore()
+      }
+      // The open with audio never plays, so it starts no audio device.
+      expect(native.log).toEqual(["open:0", "open:1", "play"])
+      expect(videoRef!.playing).toBe(true)
+      expect(plays).toBe(1)
+      testSetup.renderer.destroy()
+      testSetup = undefined
+    }
   })
 })

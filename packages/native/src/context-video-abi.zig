@@ -44,15 +44,16 @@ pub fn ot_scene_set_video(context: ?*ContextHandle, node: ?*const c.ot_handle, f
     return c.OT_OK;
 }
 
-pub fn ot_video_open(context: ?*ContextHandle, node: ?*const c.ot_handle, path: ?[*]const u8, path_length: u32, out_ptr: ?*c.ot_video_info) callconv(.c) c.ot_status {
+pub fn ot_video_open(context: ?*ContextHandle, node: ?*const c.ot_handle, path: ?[*]const u8, path_length: u32, flags: u32, out_ptr: ?*c.ot_video_info) callconv(.c) c.ot_status {
     var handle: @import("context-handles.zig").Handle = undefined;
     const admitted = admit(context, node, &handle);
     if (admitted != c.OT_OK) return admitted;
     const owner = context.?;
     const out = out_ptr orelse return failure(owner, error.InvalidArgument);
     if (path_length != 0 and path == null) return failure(owner, error.InvalidArgument);
+    if (flags > c.OT_VIDEO_OPEN_NO_AUDIO) return failure(owner, error.InvalidArgument);
     const bytes: []const u8 = if (path_length == 0) &.{} else path.?[0..path_length];
-    const info = owner.core.videoOpen(handle, bytes) catch |err| return failure(owner, err);
+    const info = owner.core.videoOpen(handle, bytes, flags == 0) catch |err| return failure(owner, err);
     out.* = .{
         .duration_us = info.duration_us,
         .width = info.width,
@@ -160,7 +161,7 @@ test "Context video ABI checks nodes arguments and reports failures" {
 
     var info: c.ot_video_info = undefined;
     const missing = "../core/src/tests/fixtures/video/missing.mp4";
-    try std.testing.expectEqual(c.OT_VIDEO_FAILED, ot_video_open(context, &node, missing, missing.len, &info));
+    try std.testing.expectEqual(c.OT_VIDEO_FAILED, ot_video_open(context, &node, missing, missing.len, 0, &info));
     var count: u32 = 0;
     try std.testing.expectEqual(c.OT_OK, ot_video_get_error(context, &node, null, 0, &count));
     try std.testing.expect(count > 8);
@@ -175,12 +176,19 @@ test "Context video ABI checks nodes arguments and reports failures" {
     try std.testing.expectEqual(count, copied);
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_get_error(context, &node, null, 1, &count));
     try std.testing.expectEqual(c.OT_INVALID_PHASE, ot_video_play(context, &node));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_open(context, &node, null, 1, &info));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_open(context, &node, missing, missing.len, null));
-    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_video_open(context, &box, missing, missing.len, &info));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_open(context, &node, null, 1, 0, &info));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_open(context, &node, missing, missing.len, 0, null));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_video_open(context, &box, missing, missing.len, 0, &info));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_open(context, &node, missing, missing.len, 2, &info));
 
+    // A source with an audio track gets an audio engine, unless the open asks for no audio.
     const asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4";
-    try std.testing.expectEqual(c.OT_OK, ot_video_open(context, &node, asset, asset.len, &info));
+    const video_state = &(try core.raw().getRenderable(abi.handleFromC(node))).scene_node.?.control.video;
+    try std.testing.expectEqual(c.OT_OK, ot_video_open(context, &node, asset, asset.len, 0, &info));
+    try std.testing.expect(video_state.player.?.video.audio_engine != null);
+    try std.testing.expectEqual(c.OT_OK, ot_video_open(context, &node, asset, asset.len, c.OT_VIDEO_OPEN_NO_AUDIO, &info));
+    try std.testing.expectEqual(@as(u32, 1), info.has_audio);
+    try std.testing.expect(video_state.player.?.video.audio_engine == null);
     try std.testing.expectEqual(@as(u32, 160), info.width);
     try std.testing.expectEqual(@as(u32, 24), info.fps_num / info.fps_den);
     try std.testing.expectEqual(c.OT_OK, ot_video_set_loop(context, &node, 1));
@@ -202,6 +210,6 @@ test "Context video ABI checks nodes arguments and reports failures" {
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_video_pause(context, &node));
     core.mutating = false;
     // An empty path closes the player.
-    try std.testing.expectEqual(c.OT_OK, ot_video_open(context, &node, null, 0, &info));
+    try std.testing.expectEqual(c.OT_OK, ot_video_open(context, &node, null, 0, 0, &info));
     try std.testing.expectEqual(c.OT_INVALID_PHASE, ot_video_get_state(context, &node, &state));
 }
