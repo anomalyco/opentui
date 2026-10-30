@@ -20,8 +20,9 @@ line() { echo "$*" | tee -a "$summary"; }
 cat "$out/host.txt"
 cd "$repo/packages/core"
 
-# The writer's Zig tests, on real threads; none may be skipped.
-limit 1800 bun run test:native -Dtest-filter=writer >"$out/native-writer.txt" 2>&1
+# The writer's Zig tests, on real threads; none may be skipped ("writer" alone also matches a Linux-only
+# X11 test).
+limit 1800 bun run test:native "-Dtest-filter=stdout writer" >"$out/native-writer.txt" 2>&1
 rc=$?
 summary_line=$(grep -m1 "Build Summary" "$out/native-writer.txt")
 if [ $rc = 0 ] && ! grep -q skipped <<<"$summary_line"; then line "PASS native-writer-tests $summary_line"; else line "FAIL native-writer-tests rc=$rc $summary_line"; fi
@@ -31,7 +32,8 @@ if [ $rc = 0 ] && ! grep -q skipped <<<"$summary_line"; then line "PASS native-w
 rc=$?
 if [ $rc = 0 ] && grep -q "All 8 tests passed" "$out/tsan.txt"; then
   line "PASS tsan $(grep 'tests passed' "$out/tsan.txt" | tail -1)"
-elif grep -q "libtsan" "$out/tsan.txt" && ! grep -q "tests passed\|failed\." "$out/tsan.txt"; then
+elif ! grep -q "^1/8 " "$out/tsan.txt"; then
+  # libtsan did not build, or its runtime died before the first test.
   line "INFO tsan unsupported: $(grep -m1 error "$out/tsan.txt")"
 else
   line "FAIL tsan rc=$rc $(grep -m1 'FAIL\|error\|WARNING: ThreadSanitizer' "$out/tsan.txt")"

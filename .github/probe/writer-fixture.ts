@@ -8,6 +8,8 @@ import { BoxRenderable, TextRenderable, createCliRenderer } from "../../packages
 const [mode, status] = process.argv.slice(2) as [string, string]
 const t0 = performance.now()
 let lagMax = 0
+// When the longest stall ended, in ms since start: tells a stall in setup from one in the link stall.
+let lagAt = 0
 let lagFrom = Infinity
 // fcntl is variadic. Apple arm64 passes variadic arguments on the stack, so the flags go in the ninth
 // argument (the first stack slot) as well as the third (x86_64's register).
@@ -20,14 +22,18 @@ const nonblock = () => (fcntl(3, 0) & O_NONBLOCK) !== 0
 const log = (event: string, extra: Record<string, unknown> = {}) =>
   appendFileSync(
     status,
-    JSON.stringify({ event, t: Math.round(performance.now() - t0), lagMax, nonblock: nonblock(), ...extra }) + "\n",
+    JSON.stringify({ event, t: Math.round(performance.now() - t0), lagMax, lagAt, nonblock: nonblock(), ...extra }) +
+      "\n",
   )
 
 // The JS thread's longest stall after `ready`: with the writer on it stays small while the pty is stalled.
 let last = performance.now()
 setInterval(() => {
   const now = performance.now()
-  if (now > lagFrom) lagMax = Math.max(lagMax, now - last - 5)
+  if (now > lagFrom && now - last - 5 > lagMax) {
+    lagMax = now - last - 5
+    lagAt = Math.round(now - t0)
+  }
   last = now
 }, 5)
 

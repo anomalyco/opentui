@@ -125,6 +125,9 @@ class Run:
     def lag(self, event):
         return self.events.get(event, {}).get("lagMax")
 
+    def lag_at(self, event):
+        return self.events.get(event, {}).get("lagAt")
+
 
 def restored(out):
     """The last alternate-screen entry is left and the cursor is visible again."""
@@ -147,7 +150,7 @@ def check_exit(name, off, nonblock):
     ok = not run.hung and run.code == 0 and run.stderr() == b"" and restored(run.out) and fd_nonblock == nonblock
     detail = (
         f"code={run.code} hung={run.hung} stderr={len(run.stderr())} restored={restored(run.out)} "
-        f"lag_ms={lag} fd1_nonblock={fd_nonblock}"
+        f"lag_ms={lag} lag_at_ms={run.lag_at('exiting')} fd1_nonblock={fd_nonblock}"
     )
     # Blocking fd: with the writer the JS thread keeps running while the link is stalled; without it the
     # synchronous drain blocks it until the parent reads again (the control shows the check can fail).
@@ -218,6 +221,8 @@ def check_crash_after_destroy(name, off):
 
 CHECKS = {
     "exit-blocking": lambda: check_exit("exit-blocking", False, False),
+    "exit-blocking-2": lambda: check_exit("exit-blocking-2", False, False),
+    "exit-blocking-3": lambda: check_exit("exit-blocking-3", False, False),
     "exit-blocking-off": lambda: check_exit("exit-blocking-off", True, False),
     "exit-nonblock": lambda: check_exit("exit-nonblock", False, True),
     "exit-nonblock-off": lambda: check_exit("exit-nonblock-off", True, True),
