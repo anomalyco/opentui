@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const io = if (builtin.is_test) std.testing.io else @import("root").io;
 const audio = @import("audio.zig");
 const image = @import("image.zig");
+const utils = @import("utils.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -190,7 +191,7 @@ fn nowUs() i64 {
 }
 
 fn elapsedSince(started: i64) u32 {
-    return @intCast(std.math.clamp(nowUs() - started, 0, std.math.maxInt(u32)));
+    return utils.unsigned(u32, @min(utils.nonNegative(nowUs() - started), std.math.maxInt(u32)));
 }
 
 fn copyMessage(buffer: []u8, message: []const u8) usize {

@@ -1033,7 +1033,7 @@ pub const CliRenderer = struct {
 
     fn recordFrameCost(self: *CliRenderer, started_us: i64) void {
         const elapsed = std.Io.Clock.now(.awake, self.io).toMicroseconds() - started_us;
-        self.lastFrameCostUs = @intCast(std.math.clamp(elapsed, 0, std.math.maxInt(u32)));
+        self.lastFrameCostUs = utils.unsigned(u32, @min(utils.nonNegative(elapsed), std.math.maxInt(u32)));
     }
 
     fn splitOutputOffset(self: *const CliRenderer, surface_offset: u32) u32 {
