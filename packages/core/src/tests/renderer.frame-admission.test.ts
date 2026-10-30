@@ -285,6 +285,7 @@ test("Kitty uploads that do not fit one frame go out in the next frames", async 
   stdout.release()
   for (let index = 0; index < 3; index++) {
     const source = NativeImage.fromRgba(noise(index, 48 * 48 * 4), 48, 48)
+    cleanups.push(async () => source.dispose())
     renderer.root.add(
       new ImageRenderable(renderer, {
         source,

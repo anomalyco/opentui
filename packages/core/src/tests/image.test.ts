@@ -739,6 +739,9 @@ describe("NativeImage", () => {
     const pixels = Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8)
     const image = NativeImage.fromRgba(pixels, 2, 1)
     const handle = image.ptr
+    // Images that other test files leave alive share this owner, so count its references instead of expecting it closed.
+    const owner = (image as unknown as { owner: { references: number; resources: { disposed: boolean } } }).owner
+    const references = owner.references
     const raw = image.takeRaw()
     try {
       expect(raw).toMatchObject({
@@ -759,7 +762,7 @@ describe("NativeImage", () => {
       raw.dispose()
       raw.dispose()
     }
-    expect(() => resolveRenderLib().imageGetInfo(handle)).toThrow()
+    expect([owner.references, owner.resources.disposed]).toEqual([references - 1, references === 1])
   })
 
   test("takeRaw reports deferred PNG decode errors", async () => {
