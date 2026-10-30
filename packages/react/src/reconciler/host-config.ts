@@ -65,6 +65,8 @@ export const hostConfig: HostConfig<
     return new components[type](rootContainerInstance.ctx, {
       id,
       ...initialInstanceProps(type, props),
+      // setInitialProperties assigns crop, so an invalid one reports once.
+      ...("crop" in props && { crop: undefined }),
     })
   },
 

@@ -60,7 +60,8 @@ export function run(renderer: CliRenderer): void {
 export function destroy(renderer: CliRenderer): void {
   if (keyHandler) renderer.keyInput.off("keypress", keyHandler)
   if (capabilityHandler) renderer.off(CliRenderEvents.CAPABILITIES, capabilityHandler)
-  // A clear without an id would also remove records that other programs left in this terminal.
+  // Leaving the demo returns to the examples menu, which waits for input, so report idle. A clear without an id would
+  // also remove records that other programs left in this terminal.
   if (!renderer.isDestroyed) renderer.setProgramStatus(reports["1"]!.status)
   keyHandler = null
   capabilityHandler = null

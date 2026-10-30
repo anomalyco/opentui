@@ -36,6 +36,7 @@ export type {
   NativeRenderStats,
 }
 
+import type { ExtractOptions } from "./image.js"
 import { RGBA } from "./lib/RGBA.js"
 import { isStyledText, type StyledText } from "./lib/styled-text.js"
 import { YogaError, YogaStatus, type MeasureFunction } from "./yoga.js"
@@ -5802,17 +5803,31 @@ export class FFIRenderLib {
     })
   }
 
-  /** Replaces the node's player; an empty path closes it. */
-  public videoOpen(context: NativeContextHandle, node: SceneNodeHandle, path: string): NativeVideoInfo {
+  /** Sets the source region an image or video node shows; undefined shows the whole source. */
+  public sceneSetCrop(context: NativeContextHandle, node: SceneNodeHandle, crop: ExtractOptions | undefined): void {
+    const handle = encodeContextHandle(context, node)
+    const { left = 0, top = 0, width = 0, height = 0 } = crop ?? {}
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_crop")
+      nativeResult(
+        "ot_scene_set_crop",
+        this.opentui.symbols.ot_scene_set_crop(pointer, handle, left, top, width, height),
+      )
+    })
+  }
+
+  /** Replaces the node's player; an empty path closes it. Without audio, playback opens no audio device. */
+  public videoOpen(context: NativeContextHandle, node: SceneNodeHandle, path: string, audio: boolean): NativeVideoInfo {
     const handle = encodeContextHandle(context, node)
     const bytes = path.length === 0 ? null : sessionBytes(this.encoder.encode(path), "Video path length")
     const layout = nativeLayouts.ot_video_info
     const output = new Uint8Array(layout.size)
+    const flags = audio ? 0 : nativeConstants.OT_VIDEO_OPEN_NO_AUDIO
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_video_open")
       nativeResult(
         "ot_video_open",
-        this.opentui.symbols.ot_video_open(pointer, handle, bytes, bytes?.byteLength ?? 0, output),
+        this.opentui.symbols.ot_video_open(pointer, handle, bytes, bytes?.byteLength ?? 0, flags, output),
       )
     })
     const view = new DataView(output.buffer)

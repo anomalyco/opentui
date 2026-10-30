@@ -823,6 +823,42 @@ test "Scene image paints a fill wider than its pixel range" {
     try testing.expectEqual([3]u32{ cells[0], cells[0], cells[0] }, cells);
 }
 
+// fit and cover apply to the crop, and a crop outside the source shows the whole source.
+test "Scene image crop selects the source rectangle it fits" {
+    const f = try Fixture.init(testing.allocator, 4, 2, .{ .output = transport });
+    defer f.deinit();
+    // Cells are 10x20 pixels, so the 2x1 cell node is square.
+    f.cli.image_resolution = .{ .terminal_width = 4, .terminal_height = 2, .pixel_width = 40, .pixel_height = 40 };
+    const pixels = [_]u8{ 200, 40, 0, 255 } ** 32;
+    const picture = try placed(f, c.OT_SCENE_IMAGE, 2, 0, 0, 2);
+    const Region = @import("../image.zig").Region;
+    const Row = struct { fit: @import("../image.zig").Fit, crop: ?Region, cells: u32, source: [4]u32 };
+    for ([_]Row{
+        .{ .fit = .fill, .crop = null, .cells = 2, .source = .{ 0, 0, 8, 4 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 0, .width = 8, .height = 4 }, .cells = 2, .source = .{ 0, 0, 8, 4 } },
+        .{ .fit = .fill, .crop = .{ .left = 2, .top = 1, .width = 3, .height = 2 }, .cells = 2, .source = .{ 2, 1, 3, 2 } },
+        .{ .fit = .fill, .crop = .{ .left = 7, .top = 3, .width = 1, .height = 1 }, .cells = 2, .source = .{ 7, 3, 1, 1 } },
+        .{ .fit = .fill, .crop = .{ .left = 6, .top = 0, .width = 3, .height = 1 }, .cells = 2, .source = .{ 0, 0, 8, 4 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 4, .width = 1, .height = 1 }, .cells = 2, .source = .{ 0, 0, 8, 4 } },
+        // A tall region fits one cell, where the whole 2:1 source fits two.
+        .{ .fit = .fit, .crop = .{ .left = 0, .top = 0, .width = 2, .height = 4 }, .cells = 1, .source = .{ 0, 0, 2, 4 } },
+        .{ .fit = .fit, .crop = null, .cells = 2, .source = .{ 0, 0, 8, 4 } },
+        // cover keeps the square centre of the region.
+        .{ .fit = .cover, .crop = .{ .left = 0, .top = 0, .width = 8, .height = 2 }, .cells = 2, .source = .{ 3, 0, 2, 2 } },
+        .{ .fit = .cover, .crop = .{ .left = 1, .top = 0, .width = 2, .height = 4 }, .cells = 2, .source = .{ 1, 1, 2, 2 } },
+        .{ .fit = .cover, .crop = .{ .left = 1, .top = 1, .width = 5, .height = 3 }, .cells = 2, .source = .{ 2, 1, 3, 3 } },
+    }) |row| {
+        // Setting the image keeps the crop.
+        try f.owner.sceneSetCrop(picture, row.crop);
+        try f.owner.sceneSetImage(picture, try f.owner.createImagePixels(&pixels, 8, 4, .{ .stride = 32 }), row.fit, .blocks, null);
+        try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, true, 0);
+        const placement = f.cli.getNextBuffer().image_placements.items[0];
+        try testing.expectEqual(row.cells, placement.width);
+        try testing.expectEqual(row.source, [4]u32{ placement.source_x, placement.source_y, placement.source_width, placement.source_height });
+    }
+    try testing.expectError(error.WrongKind, f.owner.sceneSetCrop(f.root, null));
+}
+
 fn fingerprint(f: Fixture, recording: *const Recording, hooks: u32) !scene_record.Fingerprint {
     const slots = [_]scene.PaintSlot{.{ .node = f.root, .num = 1, .hooks = hooks, .hook_generation = 1, .layout = .{}, .public_layout = null, .clip = .{ .x = 0, .y = 0, .width = 1, .height = 1 }, .opacity = 1 }};
     var segments: [1]scene_record.Segments = undefined;

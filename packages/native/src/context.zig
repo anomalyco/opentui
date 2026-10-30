@@ -2127,8 +2127,23 @@ pub const Context = struct {
         }
         if (target) |value| try value.retain();
         if (source) |value| value.retain();
-        node.scene_node.?.control.image.deinit();
-        node.scene_node.?.control.image = .{ .source = source, .fit = fit, .protocol = protocol, .buffer = target };
+        const state = &node.scene_node.?.control.image;
+        const crop = state.crop;
+        state.deinit();
+        state.* = .{ .source = source, .fit = fit, .protocol = protocol, .buffer = target, .crop = crop };
+    }
+
+    /// Sets the source region an IMAGE or VIDEO node shows; null shows the whole source.
+    pub fn sceneSetCrop(self: *Context, handle: Handle, crop: ?image.Region) !void {
+        if (crop) |region| std.debug.assert(region.width > 0 and region.height > 0);
+        try self.beginMutation();
+        defer self.mutating = false;
+        const node = (try self.scenePaintNode(handle)).scene_node.?;
+        switch (node.kind) {
+            api.OT_SCENE_IMAGE => node.control.image.crop = crop,
+            api.OT_SCENE_VIDEO => node.control.video.image.crop = crop,
+            else => return error.WrongKind,
+        }
     }
 
     fn videoState(self: *Context, handle: Handle) !*scene.VideoState {
@@ -2150,12 +2165,13 @@ pub const Context = struct {
         const target = if (buffer_handle) |id| try self.getBuffer(id) else null;
         if (target) |value| try value.retain();
         const state = &node.scene_node.?.control.video;
+        const crop = state.image.crop;
         state.image.deinit();
-        state.image = .{ .fit = fit, .buffer = target };
+        state.image = .{ .fit = fit, .buffer = target, .crop = crop };
     }
 
     /// Replaces the node's player. An empty path closes it. A failed open keeps no player.
-    pub fn videoOpen(self: *Context, handle: Handle, path: []const u8) !video.Info {
+    pub fn videoOpen(self: *Context, handle: Handle, path: []const u8, audio_enabled: bool) !video.Info {
         try self.beginMutation();
         defer self.mutating = false;
         const state = try self.videoState(handle);
@@ -2166,7 +2182,7 @@ pub const Context = struct {
         state.open_error = &.{};
         if (path.len == 0) return .{};
         var detail: [256]u8 = undefined;
-        state.player = video.Player.open(self.allocator, path, &detail) catch |err| {
+        state.player = video.Player.open(self.allocator, path, audio_enabled, &detail) catch |err| {
             state.open_error = self.allocator.dupe(u8, std.mem.sliceTo(&detail, 0)) catch &.{};
             return err;
         };

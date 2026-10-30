@@ -450,6 +450,8 @@ pub const ImageState = struct {
     buffer: ?*buffer.OptimizedBuffer = null,
     fit: image.Fit = .fit,
     protocol: image.RenderProtocol = .auto,
+    // The source region the node shows; fit applies to it.
+    crop: ?image.Region = null,
 
     pub fn deinit(self: ImageState) void {
         if (self.source) |source| source.deinit();
@@ -3080,8 +3082,10 @@ pub const Scene = struct {
         const cell_height: f64 = if (has_resolution) @as(f64, @floatFromInt(resolution.pixel_height)) / @as(f64, @floatFromInt(resolution.terminal_height)) else 4;
         var width: f64 = layout.width;
         var height: f64 = layout.height;
-        const source_width: f64 = @floatFromInt(info.width);
-        const source_height: f64 = @floatFromInt(info.height);
+        // The decoder converts only the crop, so fit and the decode size follow the crop.
+        const crop = image.Region.inside(state.image.crop, info.width, info.height);
+        const source_width: f64 = @floatFromInt(if (crop) |region| region.width else info.width);
+        const source_height: f64 = @floatFromInt(if (crop) |region| region.height else info.height);
         if (state.image.fit == .fit) {
             const aspect = source_width / source_height * (cell_height / cell_width);
             const scale = @min(width / aspect, height);
@@ -3100,7 +3104,7 @@ pub const Scene = struct {
         const scale = @min(1, @min(source_width / pixel_width, source_height / pixel_height)) * player.quality.scale();
         const decode_width: u32 = @intFromFloat(@min(16_384, @max(1, @round(pixel_width * scale))));
         const decode_height: u32 = @intFromFloat(@min(16_384, @max(1, @round(pixel_height * scale))));
-        const frame = player.frame(decode_width, decode_height, state.image.fit == .cover) orelse return;
+        const frame = player.frame(decode_width, decode_height, state.image.fit == .cover, crop) orelse return;
         if (state.painted != player.video.published) {
             // New pixels need a new render identity: renderers cache content by it.
             if (owner.last_image_id == std.math.maxInt(u32)) return error.ObjectLimit;
@@ -3112,6 +3116,7 @@ pub const Scene = struct {
         }
         var drawn = state.image;
         drawn.source = frame;
+        drawn.crop = null;
         try paintImage(cli, drawn, layout);
     }
 
@@ -3125,10 +3130,12 @@ pub const Scene = struct {
         const cell_aspect: f64 = if (has_resolution) cell_height / cell_width else 2;
         var width: f64 = layout.width;
         var height: f64 = layout.height;
-        var source_width = source.width();
-        var source_height = source.height();
-        var source_x: u32 = 0;
-        var source_y: u32 = 0;
+        const region = image.Region.inside(state.crop, source.width(), source.height()) orelse
+            image.Region{ .width = source.width(), .height = source.height() };
+        var source_width = region.width;
+        var source_height = region.height;
+        var source_x = region.left;
+        var source_y = region.top;
         if (state.fit == .fit) {
             const aspect = @as(f64, @floatFromInt(source_width)) / @as(f64, @floatFromInt(source_height)) * cell_aspect;
             const scale = @min(width / aspect, height);
@@ -3138,10 +3145,10 @@ pub const Scene = struct {
             const aspect = width / (height * cell_aspect);
             if (@as(f64, @floatFromInt(source_width)) / @as(f64, @floatFromInt(source_height)) > aspect) {
                 source_width = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(source_height)) * aspect)));
-                source_x = (source.width() - source_width) / 2;
+                source_x += (region.width - source_width) / 2;
             } else {
                 source_height = @intFromFloat(@max(1, @round(@as(f64, @floatFromInt(source_width)) / aspect)));
-                source_y = (source.height() - source_height) / 2;
+                source_y += (region.height - source_height) / 2;
             }
         }
         const x = (if (state.buffer != null) @as(f64, 0) else layout.screenX) + @floor((layout.width - width) / 2);

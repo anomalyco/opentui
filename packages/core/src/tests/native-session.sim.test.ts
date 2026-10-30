@@ -25,20 +25,23 @@ const MS = 1_000_000n
 const output = { chunkSize: 4096, spanCapacity: 128, maxBytes: 8_388_608n, controlCapacity: 4096 }
 // What suspend, exit and close must have handed to the link: the cursor shown and the alternate screen left.
 const restoration = ["\x1b[?25h", "\x1b[?1049l"]
+const timeout = "NativeSession graceful close timed out; output cancelled without restoration"
 const fds = ["blocking", "nonblocking", "unsupported"] as const
 type Fd = (typeof fds)[number]
 // Width and height pairs.
 const sizes = [120, 40, 100, 30, 132, 43]
 
 const presets = {
-  local_fast: { rate: null, capacity: 18_944, hangup: false, stall: false },
-  ssh_slow: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: false },
-  hangup_mid_frame: { rate: 48_000, capacity: 18_944 + 65_536, hangup: true, stall: false },
-  // The link stalls for 2 s as the run ends, so a graceful close times out with a write running.
-  close_timeout: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: true },
+  local_fast: { rate: null, capacity: 18_944, hangup: false, stall: 0 },
+  ssh_slow: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 0 },
+  hangup_mid_frame: { rate: 48_000, capacity: 18_944 + 65_536, hangup: true, stall: 0 },
+  // The link stalls for 4 s as the run ends, past the 1 s close timeout, with a write running.
+  close_timeout: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 4000 },
+  // The link stalls as the run ends and does not recover within the run.
+  close_stuck: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 3_600_000 },
   // R23: split-footer captured stdout at about 1,000 lines a second, titles and a 1 MiB OSC 52 on a 16 KB/s link;
   // what each producer gets at its limit and the JS queue's peak are recorded.
-  producer_flood: { rate: 16_000, capacity: 18_944 + 65_536, hangup: false, stall: false },
+  producer_flood: { rate: 16_000, capacity: 18_944 + 65_536, hangup: false, stall: 0 },
 }
 type Preset = keyof typeof presets
 // fd: the stdout writer thread; fd-off: OTUI_STDOUT_THREAD=0, today's drain on the JS thread.
@@ -524,18 +527,26 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
       const restores = fd === "blocking" || (writer && fd === "nonblocking")
       if (restores && !link.failed) expect(restored, label).toBe(true)
     } else {
-      if (config.stall) link.stalledUntil = world.now + 2000n * MS
+      if (config.stall) link.stalledUntil = world.now + BigInt(config.stall) * MS
       app.destroy()
     }
-    await world.until(() => closed !== "pending")
+    // R27 (#1870): over a stall the close waits for the writer's copy in flight and restores once the link moves,
+    // or keeps waiting. The close timeout cancels any other wait, without claiming restoration.
+    const waits = config.stall > 0 && writer && fd !== "unsupported"
+    await world.until(() => closed !== "pending" || (waits && world.now - ended > 10_000n * MS))
     // A graceful close completes and restores unless the link hung up. Exit drains synchronously, without the
     // close timeout, so only the queue bounds it.
     if (config.stall) {
-      // R27: the close timeout cancels with a write running, without claiming restoration.
-      expect(closed, label).toBe("NativeSession graceful close timed out; output cancelled without restoration")
+      expect(closed, label).toBe(!waits ? timeout : preset === "close_stuck" ? "pending" : "closed")
+      if (closed === "pending") driver.dispose()
+      await world.until(() => closed !== "pending")
     } else if (end.startsWith("destroy") && !flood) expect(closed === "closed", label).toBe(!link.failed)
     if (closed === "closed") expect(link.restored(offset), label).toBe(true)
-    const closeBound = 1000 + (rate === null ? 0 : Math.ceil((output.chunkSize * 1000) / rate)) + 100
+    // The writer holds the close while the link takes its copies (#1870), and a blocking drain over the stall.
+    const held =
+      (waits || fd === "blocking" ? config.stall : 0) +
+      (writer && rate ? ((link.stream.length - offset) * 1000) / rate : 0)
+    const closeBound = held + 1000 + (rate === null ? 0 : Math.ceil((output.chunkSize * 1000) / rate)) + 100
     expect(Number((world.now - ended) / MS), label).toBeLessThanOrEqual(end.startsWith("destroy") ? closeBound : bound)
     // I8: nothing reaches the link after a close, and the driver leaves the sink.
     const afterClose = link.stream.length
@@ -580,22 +591,15 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
   }
 }
 
-// The Writable path matches the fd unsupported fallback up to exit, so it needs fewer seeds. The close timeout runs
-// on the writer thread only.
+// The Writable path matches the fd unsupported fallback up to exit, so it needs fewer seeds.
 const seeds: Record<Path, number> = { writable: 4, fd: 16, "fd-off": 16 }
 const rows = (Object.keys(presets) as Preset[]).flatMap((preset) =>
-  (preset === "close_timeout" || preset === "producer_flood"
-    ? (["fd"] as const)
-    : (["writable", "fd", "fd-off"] as const)
-  ).flatMap((path) =>
-    Array.from(
-      { length: preset === "close_timeout" ? 6 : preset === "producer_flood" ? 3 : seeds[path] },
-      (_, seed) => ({
-        preset,
-        path,
-        seed,
-      }),
-    ),
+  (preset === "producer_flood" ? (["fd"] as const) : (["writable", "fd", "fd-off"] as const)).flatMap((path) =>
+    Array.from({ length: presets[preset].stall ? 6 : preset === "producer_flood" ? 3 : seeds[path] }, (_, seed) => ({
+      preset,
+      path,
+      seed,
+    })),
   ),
 )
 

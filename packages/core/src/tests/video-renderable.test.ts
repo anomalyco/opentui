@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url"
+import { isDeepStrictEqual } from "node:util"
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { BoxRenderable } from "../renderables/Box.js"
@@ -159,6 +160,9 @@ describe("VideoRenderable", () => {
     renderer.root.add(video)
     await Promise.resolve()
     expect(errors).toHaveLength(1)
+    // An audio change waits for the next open instead of retrying a failed one.
+    video.audio = false
+    await Promise.resolve()
     // play() after a failed open opens again and reports the failure instead of staying silent.
     video.play()
     await Promise.resolve()
@@ -168,11 +172,15 @@ describe("VideoRenderable", () => {
   })
 
   test("replacing the source keeps playback intent and destroy releases the player", async () => {
-    const video = new VideoRenderable(renderer, { source: SILENT, autoplay: true })
+    const events: string[] = []
+    const video = new VideoRenderable(renderer, { source: SILENT, autoplay: true, onReady: () => events.push("ready") })
     renderer.root.add(video)
     expect(ticking()).toBe(true)
     video.autoplay = false
     video.source = undefined
+    // Closing drops the report of the open it replaced.
+    await Promise.resolve()
+    expect(events).toEqual([])
     expect(video.ready).toBe(false)
     expect(video.playing).toBe(true)
     expect(ticking()).toBe(false)
@@ -280,19 +288,22 @@ describe("VideoRenderable", () => {
     expect(errors.map((error) => error.message)).toEqual(["state unavailable", "state unavailable"])
   })
 
-  test("autoplay set after the source starts it", () => {
+  test("autoplay set after the source starts it", async () => {
     const video = new VideoRenderable(renderer, { width: 20, height: 6 })
     renderer.root.add(video)
     video.source = SILENT
-    expect(video.playing).toBe(false)
+    expect([video.playing, video.audio]).toEqual([false, true])
     video.autoplay = true
     expect(video.playing).toBe(true)
     expect(ticking()).toBe(true)
+    await Promise.resolve()
+    video.pause()
+    expect(video.playing).toBe(false)
   })
 
   test("playback options set before a source apply when it opens", () => {
     const errors: Error[] = []
-    const video = new VideoRenderable(renderer, { onError: (error) => errors.push(error) })
+    const video = new VideoRenderable(renderer, { audio: false, onError: (error) => errors.push(error) })
     const lib = renderer.nativeScene.videoNode(video).lib
     const setters = [
       ["loop", true, "videoSetLoop", true],
@@ -302,6 +313,7 @@ describe("VideoRenderable", () => {
       ["maxFps", 12, "videoSetMaxFps", 12],
     ] as const
     const spies = setters.map(([, , method]) => spyOn(lib, method))
+    const open = spyOn((lib as any).opentui.symbols, "ot_video_open")
     try {
       for (const [option, value] of setters) (video as any)[option] = value
       for (const spy of spies) expect(spy).not.toHaveBeenCalled()
@@ -311,8 +323,14 @@ describe("VideoRenderable", () => {
         expect(spies[index]).toHaveBeenCalledTimes(1)
         expect(spies[index].mock.calls[0][2]).toBe(applied)
       })
+      // Audio is chosen at open, so a change reopens the source with playback running; the same value does not.
+      video.play()
+      video.audio = undefined
+      video.audio = null
+      expect(open.mock.calls.map((call: unknown[]) => call[4])).toEqual([1, 0])
+      expect(video.playing).toBe(true)
     } finally {
-      for (const spy of spies) spy.mockRestore()
+      for (const spy of [...spies, open]) spy.mockRestore()
     }
     expect(errors).toEqual([])
   })
@@ -334,6 +352,80 @@ describe("VideoRenderable", () => {
     video.source = SILENT
     expect(errors).toEqual([])
     expect(video.ready).toBe(true)
+  })
+
+  // Each row sets a crop on an open 160x90 source; an accepted crop reaches native and changes the
+  // painted frame unless it is the whole source. A rejected one reports and keeps the previous crop.
+  test.each([
+    ["full", { left: 0, top: 0, width: 160, height: 90 }, ""],
+    ["corner", { left: 80, top: 45, width: 80, height: 45 }, ""],
+    ["1x1", { left: 159, top: 89, width: 1, height: 1 }, ""],
+    ["odd sizes", { left: 3, top: 5, width: 37, height: 21 }, ""],
+    ["out of bounds", { left: 150, top: 0, width: 11, height: 1 }, "outside the 160x90 source"],
+    ["out of bounds below", { left: 0, top: 80, width: 10, height: 20 }, "outside the 160x90 source"],
+    ["zero size", { left: 0, top: 0, width: 0, height: 4 }, "positive u32 width"],
+    ["fractional", { left: 0.5, top: 0, width: 4, height: 4 }, "u32 left"],
+  ])("crop %s", async (name, crop, error) => {
+    const errors: Error[] = []
+    const video = new VideoRenderable(renderer, {
+      source: SILENT,
+      width: 20,
+      height: 6,
+      onError: (e) => errors.push(e),
+    })
+    renderer.on("render:error", (event: { error: Error }) => errors.push(event.error))
+    renderer.root.add(video)
+    await setup.renderOnce()
+    const whole = setup.captureSpans()
+    const spy = spyOn(renderer.nativeScene.videoNode(video).lib, "sceneSetCrop")
+    try {
+      video.crop = crop
+      await Promise.resolve()
+      await setup.renderOnce()
+      expect(errors.map((e) => e.message.includes(error))).toEqual(error ? [true] : [])
+      if (error) expect(video.crop).toBeUndefined()
+      else expect(video.crop).toEqual(crop)
+      expect(spy.mock.calls.map((call) => call[2])).toEqual(error ? [] : [crop])
+      expect(isDeepStrictEqual(setup.captureSpans(), whole)).toBe(!!error || name === "full")
+      // An equal crop is no change; a nullish one shows the whole source again.
+      video.crop = { ...crop }
+      video.crop = null
+      expect(spy).toHaveBeenCalledTimes(error ? 0 : 2)
+      expect(video.crop).toBeUndefined()
+      await setup.renderOnce()
+      expect(isDeepStrictEqual(setup.captureSpans(), whole)).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  test("a crop is checked when a source opens and applies while playing", async () => {
+    const errors: Error[] = []
+    const crop = { left: 0, top: 0, width: 161, height: 1 }
+    const video = new VideoRenderable(renderer, { crop, width: 20, height: 6, onError: (e) => errors.push(e) })
+    renderer.root.add(video)
+    expect(video.crop).toEqual(crop)
+    expect(new VideoRenderable(renderer, { source: SILENT, crop }).crop).toBeUndefined()
+    video.source = SILENT
+    await Promise.resolve()
+    // The open reports the crop that does not fit; it stays set and the node shows the whole frame.
+    expect(errors.map((e) => e.message.includes("outside the 160x90 source"))).toEqual([true])
+    expect(video.crop).toEqual(crop)
+    video.play()
+    video.crop = { left: 10, top: 10, width: 20, height: 20 }
+    await setup.renderOnce()
+    expect(video.playing).toBe(true)
+    expect(errors).toHaveLength(1)
+    // The open checks the crop set in the same turn, and a crop rejected before the source still reports.
+    const next = new VideoRenderable(renderer, { crop: { left: 0, top: 0, width: 200, height: 100 } })
+    next.onError = (e) => errors.push(e)
+    next.source = SILENT
+    next.crop = { left: 0, top: 0, width: 80, height: 45 }
+    const late = new VideoRenderable(renderer, { onError: (e) => errors.push(e) })
+    late.crop = { left: 0, top: 0, width: 0, height: 45 }
+    late.source = SILENT
+    await Promise.resolve()
+    expect(errors.map((e) => e.message.includes("positive u32 width")).slice(1)).toEqual([true])
   })
 
   test("pausing before a deferred autoplay report drops its onPlay", async () => {
@@ -389,7 +481,8 @@ describe("VideoRenderable", () => {
 
   test("onPlay reports autoplay and playback requested before the source", async () => {
     let plays = 0
-    new VideoRenderable(renderer, { source: SILENT, autoplay: true, onPlay: () => plays++ })
+    // play() while the autoplay waits for its microtask reports once.
+    new VideoRenderable(renderer, { source: SILENT, autoplay: true, onPlay: () => plays++ }).play()
     const video = new VideoRenderable(renderer, { onPlay: () => plays++ })
     video.play()
     video.source = SILENT

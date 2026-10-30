@@ -480,6 +480,7 @@ test("blocked output and host promises do not hold other renderers' input, resiz
  */
 async function withStdoutWriter(
   doneAt: readonly (number | null)[],
+  closeTimeoutMs: number,
   run: (
     driver: NativeSession,
     scheduler: ManualScheduler,
@@ -533,7 +534,7 @@ async function withStdoutWriter(
     return { written, inFlight: true }
   }
   try {
-    const driver = new NativeSession(sink, { scheduler, output, closeTimeoutMs: 100 })
+    const driver = new NativeSession(sink, { scheduler, output, closeTimeoutMs })
     try {
       await run(driver, scheduler, posts, drains)
     } finally {
@@ -547,7 +548,7 @@ async function withStdoutWriter(
 }
 
 test("the stdout writer is polled in one task with a growing backoff, and a collect starts the next copy", async () => {
-  await withStdoutWriter([40, 41], async (driver, scheduler, posts) => {
+  await withStdoutWriter([40, 41], 100, async (driver, scheduler, posts) => {
     const delays: (number | undefined)[] = []
     const schedule = scheduler.schedule.bind(scheduler)
     let live = 0
@@ -580,13 +581,26 @@ test("the stdout writer is polled in one task with a growing backoff, and a coll
   })
 })
 
-test("a turn after the close deadline still counts a copy the writer finished before it (R28)", async () => {
-  // The second copy ends at 97 ms; its polls fall at 95 and 106 ms, so the deadline turn at 100 ms collects it.
-  await withStdoutWriter([10, 97], async (driver, scheduler) => {
-    expect(driver.write(new Uint8Array(6000).fill(98))).toBe(true)
-    const closed = outcome(driver.close())
-    for (let ms = 0; ms <= 120; ms++) await scheduler.run(ms)
-    expect(await closed).toBe("closed")
+// #1870: the second copy ends at 300 ms, after the deadline. A grace shorter than the backoff leaves the polls as
+// they are: 175 in all, the last at 329 ms. With stdout corked the third copy waits with nothing in flight, so the
+// deadline restarted at the collect fires. A deadline from armCloseTimeout is held the same way.
+test.each([
+  { timeoutMs: 100, bytes: 6000, expected: "closed" },
+  { timeoutMs: 1, bytes: 6000, expected: "closed" },
+  { timeoutMs: 100, bytes: 9000, cork: true, expected: timeout },
+  { timeoutMs: 100, bytes: 6000, arm: true, expected: "closed" },
+])("a close waits for the writer's copy in flight past the deadline: %o", async ({ timeoutMs, bytes, ...row }) => {
+  await withStdoutWriter([10, 300], timeoutMs, async (driver, scheduler, posts) => {
+    expect(driver.write(new Uint8Array(bytes).fill(98))).toBe(true)
+    if (row.arm) driver.armCloseTimeout()
+    let closed = row.arm ? null : outcome(driver.close())
+    for (let ms = 0; ms <= 600; ms++) {
+      if (row.cork && ms === 20) process.stdout.cork()
+      if (row.arm && ms === 350) closed = outcome(driver.close())
+      await scheduler.run(ms)
+    }
+    expect(await closed).toBe(row.expected)
+    expect(posts.length).toBe(175)
   })
 })
 
@@ -598,7 +612,7 @@ test.each([
   // The thread never picks up the copy posted before exit: no new writer during exit.
   { doneAt: [null], bytes: 100, posted: 0, drained: 1 },
 ])("exit restores through the stdout writer, or after a take-back through the drain: $doneAt", async (row) => {
-  await withStdoutWriter(row.doneAt, async (driver, scheduler, posts, drains) => {
+  await withStdoutWriter(row.doneAt, 100, async (driver, scheduler, posts, drains) => {
     expect(driver.write(new Uint8Array(row.bytes).fill(97))).toBe(true)
     await scheduler.run(0)
     scheduler.time = MS

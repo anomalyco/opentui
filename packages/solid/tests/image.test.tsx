@@ -77,50 +77,55 @@ describe("image component", () => {
     let imageRef: ImageRenderable | undefined
     const [fit, setFit] = createSignal<"fill" | undefined>("fill")
     const [protocol, setProtocol] = createSignal<"kitty" | undefined>("kitty")
+    const [crop, setCrop] = createSignal<{ left: number; top: number; width: number; height: number }>()
+    setCrop({ left: 1, top: 2, width: 3, height: 4 })
 
-    testSetup = await testRender(() => <image ref={imageRef} fit={fit()} protocol={protocol()} />, {
+    testSetup = await testRender(() => <image ref={imageRef} fit={fit()} protocol={protocol()} crop={crop()} />, {
       width: 4,
       height: 2,
     })
     expect(imageRef!.fit).toBe("fill")
     expect(imageRef!.protocol).toBe("kitty")
+    expect(imageRef!.crop).toEqual({ left: 1, top: 2, width: 3, height: 4 })
 
     setFit(undefined)
     setProtocol(undefined)
+    setCrop(undefined)
 
     expect(imageRef!.fit).toBe("fit")
     expect(imageRef!.protocol).toBe("auto")
+    expect(imageRef!.crop).toBeUndefined()
     expect(imageRef!.effectiveProtocol).toBe("blocks")
   })
 
   it("restores image defaults without clearing unrelated style keys", async () => {
     let imageRef: ImageRenderable | undefined
+    const crop = { left: 0, top: 0, width: 1, height: 1 }
     const [configured, setConfigured] = createSignal(true)
 
     testSetup = await testRender(
       () => (
         <image
           ref={imageRef}
-          style={configured() ? { fit: "fill" as const, protocol: "kitty" as const, visible: true, opacity: 0.5 } : {}}
+          style={
+            configured() ? { fit: "fill" as const, protocol: "kitty" as const, crop, visible: true, opacity: 0.5 } : {}
+          }
         />
       ),
       { width: 4, height: 2 },
     )
-    expect({
+    const state = () => ({
       fit: imageRef!.fit,
       protocol: imageRef!.protocol,
+      crop: imageRef!.crop,
       visible: imageRef!.visible,
       opacity: imageRef!.opacity,
-    }).toEqual({ fit: "fill", protocol: "kitty", visible: true, opacity: 0.5 })
+    })
+    expect(state()).toEqual({ fit: "fill", protocol: "kitty", crop, visible: true, opacity: 0.5 })
 
     setConfigured(false)
 
-    expect({
-      fit: imageRef!.fit,
-      protocol: imageRef!.protocol,
-      visible: imageRef!.visible,
-      opacity: imageRef!.opacity,
-    }).toEqual({ fit: "fit", protocol: "auto", visible: true, opacity: 0.5 })
+    expect(state()).toEqual({ fit: "fit", protocol: "auto", crop: undefined, visible: true, opacity: 0.5 })
   })
 
   it("cancels a pending image load when its component unmounts", async () => {

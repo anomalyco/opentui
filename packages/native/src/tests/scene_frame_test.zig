@@ -1032,7 +1032,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
     // A video takes the full path like an image, although only its rows changed, and frames
     // retain again two frames after it goes.
     const video_node = try placedAt(f, f.root, c.OT_SCENE_VIDEO, 12, 6, 7, 2, 1);
-    _ = try f.owner.videoOpen(video_node, "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4");
+    _ = try f.owner.videoOpen(video_node, "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4", true);
     counts[rows.len + 3] = try presentWork(f, .{});
     try testing.expectEqual(FrameWork.full_path_images, counts[rows.len + 3].full_path_reasons);
     try testing.expectEqual(@as(u32, 9), counts[rows.len + 3].damage_rows);
@@ -1043,7 +1043,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
     // A video that paints no cell, here one off screen, takes the damaged-rows path, and the
     // frames after it damage only the surface's rows again.
     const off_screen = try placedAt(f, f.root, c.OT_SCENE_VIDEO, 13, 20, 7, 2, 1);
-    _ = try f.owner.videoOpen(off_screen, "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4");
+    _ = try f.owner.videoOpen(off_screen, "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4", true);
     try testing.expectEqual(@as(u32, 0), (try presentWork(f, .{})).full_path_reasons);
     const kept = try presentWork(f, .{});
     try testing.expectEqual(@as(u32, 0), kept.full_path_reasons);
@@ -1067,7 +1067,7 @@ test "Scene frame retained paint keeps a clipped video out of every buffer" {
         const clip = try placedAt(f, f.root, c.OT_SCENE_BOX, 2, 0, 0, 4, 2);
         try f.owner.sceneSetStyle(clip, 0, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
         const node = try placedAt(f, clip, c.OT_SCENE_VIDEO, 3, 0, 4, 4, 2);
-        _ = try f.owner.videoOpen(node, "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4");
+        _ = try f.owner.videoOpen(node, "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4", true);
         _ = try presentWork(f, .{});
         const kept = try presentWork(f, .{});
         try testing.expectEqual(@as(u32, 0), kept.full_path_reasons);

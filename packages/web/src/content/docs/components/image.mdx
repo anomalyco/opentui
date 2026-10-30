@@ -69,7 +69,7 @@ await render(
 )
 ```
 
-You can update `source`, callbacks, fit, and protocol after construction. Replacing `source` keeps the current image visible until the replacement succeeds. It cancels obsolete loading and disposes stale native images. Setting `source` to `undefined` clears it. Clearing `fit` or `protocol` restores `"fit"` or `"auto"`.
+You can update `source`, callbacks, fit, crop, and protocol after construction. Replacing `source` keeps the current image visible until the replacement succeeds. It cancels obsolete loading and disposes stale native images. Setting `source` to `undefined` clears it. Clearing `fit` or `protocol` restores `"fit"` or `"auto"`.
 
 ## Sizing
 
@@ -78,6 +78,13 @@ You can update `source`, callbacks, fit, and protocol after construction. Replac
 | `fit`   | Contain and center the full image. Preserve aspect (default) |
 | `cover` | Fill the renderable, preserve aspect ratio, and center-crop  |
 | `fill`  | Fill the renderable and allow stretching                     |
+
+`crop: { left, top, width, height }` selects a region of the source in source pixels, with the fields of `NativeImage.extract()`. `fit` then applies to the region: `cover` center-crops the region again. A crop that is not whole pixels with a positive size, or lies outside the loaded image, calls `onError` and keeps the previous crop. Each loaded image checks the crop; until one fits, the renderable shows the whole image.
+
+```typescript
+// The top-right quarter of a 1920x1080 image, fitted into the renderable.
+image.crop = { left: 960, top: 0, width: 960, height: 540 }
+```
 
 Sizing uses terminal pixel resolution when available and a 2:1 cell-height fallback otherwise. During startup and resize, Sixel images temporarily use blocks until current pixel geometry arrives.
 
@@ -160,6 +167,7 @@ Timeouts, terminal or output errors, `cancelKittyImageTransport()`, suspend, and
 | -------------------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
 | `source`             | `ImageRenderableSource`                                     | Encoded image source or `NativeImage`. Optional                 |
 | `fit`                | `"fit" \| "cover" \| "fill"`                                | Destination sizing                                              |
+| `crop`               | `ExtractOptions \| undefined`                               | Source region in source pixels. `fit` applies to it             |
 | `protocol`           | `"auto" \| "kitty" \| "sixel" \| "blocks"`                  | Requested rendering protocol                                    |
 | `onLoad`             | `(image: NativeImage) => void`                              | Called after the current source loads                           |
 | `onError`            | `(error: unknown) => void`                                  | Called when the current source fails                            |

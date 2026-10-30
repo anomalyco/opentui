@@ -5,7 +5,7 @@ import { join } from "node:path"
 
 // R12b: a writer thread blocked in write(2) outlives its Session and RenderLib.dispose(); the library stays
 // pinned, so the write returns into mapped code and the process exits cleanly.
-test.skipIf(process.platform !== "linux")(
+test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
   "a blocked stdout writer survives Session cancel and library dispose",
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "otui-writer-"))
