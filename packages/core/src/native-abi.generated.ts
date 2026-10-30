@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: d846729b81d7c2dac52b994f989222e0f40dd2a66fcd85c2ee4c74ace42fd649
+// ABI audit SHA-256: 824240426764f6ffcc3821f31b33fb65563e7e64a0f77a7db6d2bf5f5392f2fb
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -271,6 +271,7 @@ export const nativeSymbols = {
   ot_session_read_output: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
   ot_session_drain_output: { args: ["ptr", "buffer", "u32", "buffer", "ptr", "ptr"], returns: "i32" },
   ot_session_drain_stdout: { args: ["ptr", "buffer", "u32", "buffer"], returns: "i32" },
+  ot_session_post_stdout: { args: ["ptr", "buffer", "u32", "u32", "buffer", "buffer"], returns: "i32" },
   ot_session_complete_output: { args: ["ptr", "buffer", "buffer", "u32"], returns: "i32" },
   ot_session_close: { args: ["ptr", "buffer"], returns: "i32" },
   ot_session_pump_exit: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -2085,6 +2086,8 @@ export const nativeConstants = {
   OT_PUMP_OUTPUT_PENDING: 2,
   OT_PUMP_WAIT_UNTIL: 3,
   OT_PUMP_CLOSED: 4,
+  OT_STDOUT_IDLE: 0,
+  OT_STDOUT_IN_FLIGHT: 1,
   OT_INPUT_KEY: 1,
   OT_INPUT_MOUSE: 2,
   OT_INPUT_PASTE: 3,

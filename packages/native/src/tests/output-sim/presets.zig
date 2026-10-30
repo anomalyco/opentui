@@ -54,6 +54,9 @@ pub const OutputMode = enum {
     sync_drain,
     /// Today's Writable path: `readOutput`, an asynchronous host write, `completeOutput`.
     ticket,
+    /// The stdout writer: the owner posts copies, a stepped writer "thread" writes them on the
+    /// world's time (pick, write and publish are separate events), and the owner polls.
+    writer,
 };
 
 pub const Env = struct {
@@ -72,6 +75,8 @@ pub const Env = struct {
     external: ?External = null,
     events: Mix = .{},
     output_mode: OutputMode = .sync_drain,
+    /// The writer "thread" stops picking up copies from this time on: a thread that never runs.
+    writer_stops_ns: ?u64 = null,
     /// The Session's output chunk size. The driver's default is 64 KiB; half the seeds use
     /// 4 KiB, which splits frames into several tickets.
     chunk_size: u32 = 65_536,
@@ -132,6 +137,12 @@ pub const sweep = [_]Preset{
 /// The `ticket` (Writable) plan: the named presets, split input, and a cancel mid-write.
 pub const ticket = named ++ [_]Preset{ split_input, crash_mid };
 
+/// Writer mode only: the thread stops picking up copies at 2 s, and the run ends in exit, which
+/// takes the posted copy back and restores through the synchronous drain.
+pub const writer_only = [_]Preset{
+    .{ .name = "writer_stall", .env = with(ssh_link, .{ .writer_stops_ns = 2000 * ms, .events = Mix{ .end = .exit, .settle = false, .resizes = 0, .suspends = 0 } }), .ci_seeds = 2 },
+};
+
 /// The same environment on a smaller screen, with every byte rate and capacity scaled by the
 /// cell ratio, so the link stays as congested as at full size: CI runs 60x16 for time.
 pub fn scaled(env: Env, cols: u16, rows: u16, faults: []Fault) Env {
@@ -153,7 +164,7 @@ pub fn scaled(env: Env, cols: u16, rows: u16, faults: []Fault) Env {
 
 pub fn find(name: []const u8) ?Env {
     // `ticket` holds no preset of its own.
-    for (named ++ sweep) |preset| if (std.mem.eql(u8, preset.name, name)) return preset.env;
+    for (named ++ sweep ++ writer_only) |preset| if (std.mem.eql(u8, preset.name, name)) return preset.env;
     return null;
 }
 

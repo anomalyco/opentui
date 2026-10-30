@@ -37,6 +37,7 @@ not OpenTUI configuration keys. Read [Terminal capabilities](/docs/reference/ter
 | `OTUI_USE_CONSOLE`              | `boolean` | `true`           | Renderer console activation | Enable global `console.*` capture                    |
 | `OTUI_USE_ALTERNATE_SCREEN`     | `boolean` | unset            | Renderer creation           | Override `screenMode`                                |
 | `OTUI_OVERRIDE_STDOUT`          | `boolean` | unset            | Renderer creation           | Override `externalOutputMode`                        |
+| `OTUI_STDOUT_THREAD`            | `boolean` | `true`           | Native session creation     | Write terminal stdout from a native thread           |
 | `CELL_ASPECT_RATIO`             | `number`  | computed         | `ThreeCliRenderer` creation | Override the Three.js cell aspect ratio              |
 
 `OPENTUI_FORCE_WCWIDTH`, `OPENTUI_FORCE_UNICODE`, and `OPENTUI_FORCE_NOZWJ` are native presence flags. Any value,
@@ -57,6 +58,9 @@ changing other capability detection.
 `OTUI_PALETTE_IDLE_TIMEOUT_MS` bounds palette detection when a terminal reports OSC support but does not answer color
 queries. `OTUI_USE_CONSOLE=false` disables global `console.*` capture. The `consoleMode` renderer option changes only
 the overlay surface.
+
+On Linux, when stdout is a terminal, a native thread writes the renderer's output, so a slow link (ssh) does not
+block the JS thread. `OTUI_STDOUT_THREAD=false` or `0` writes it on the JS thread instead, as before.
 
 When set, `OTUI_USE_ALTERNATE_SCREEN` overrides `screenMode`. A true value forces `"alternate-screen"`. Any other
 explicit value forces `"main-screen"`. When set, `OTUI_OVERRIDE_STDOUT` overrides `externalOutputMode`. A true value

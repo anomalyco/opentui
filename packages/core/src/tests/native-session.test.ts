@@ -472,3 +472,139 @@ test("blocked output and host promises do not hold other renderers' input, resiz
     await Promise.allSettled(renderers.map((renderer) => renderer.closed))
   }
 })
+
+/**
+ * Process stdout through a scripted stdout writer (post_stdout over the ticket ABI): copy n's write ends at
+ * `doneAt[n]` ms; `null` is a copy the thread never picks up, which wait=1 takes back unread. drain_stdout writes
+ * through the ticket ABI too. Records each post's byte limit and counts drains.
+ */
+async function withStdoutWriter(
+  doneAt: readonly (number | null)[],
+  run: (
+    driver: NativeSession,
+    scheduler: ManualScheduler,
+    posts: { maxBytes: number; wait: boolean; at: bigint }[],
+    drains: { count: number },
+  ) => Promise<void>,
+): Promise<void> {
+  const scheduler = new ManualScheduler()
+  const sink = new Sink()
+  Object.assign(sink, { fd: 1 })
+  const stdout = Object.getOwnPropertyDescriptor(process, "stdout")!
+  const postStdout = lib.sessionPostStdout
+  const drainStdout = lib.sessionDrainStdout
+  const posts: { maxBytes: number; wait: boolean; at: bigint }[] = []
+  const drains = { count: 0 }
+  let copy: { ticket: NonNullable<ReturnType<typeof lib.sessionReadOutput>>; done: bigint } | null = null
+  let parked = false
+  let started = 0
+  Object.defineProperty(process, "stdout", { value: sink, configurable: true, writable: true })
+  lib.sessionDrainStdout = (context, session) => {
+    drains.count++
+    const ticket = lib.sessionReadOutput(context, session, new Uint8Array(65_536))
+    if (!ticket) return 0
+    lib.sessionCompleteOutput(context, session, ticket, true)
+    return ticket.byteCount
+  }
+  lib.sessionPostStdout = (context, session, maxBytes, wait) => {
+    posts.push({ maxBytes, wait, at: scheduler.time })
+    if (posts.length > 1000) throw new Error("the driver keeps posting")
+    if (parked) {
+      if (!wait) return { written: 0, inFlight: true }
+      parked = false
+      return { written: 0, inFlight: false }
+    }
+    let written = 0
+    if (copy) {
+      if (scheduler.time < copy.done && !wait) return { written: 0, inFlight: true }
+      lib.sessionCompleteOutput(context, session, copy.ticket, true)
+      written = copy.ticket.byteCount
+      copy = null
+    }
+    if (wait || maxBytes === 0) return { written, inFlight: false }
+    const done = doneAt[started++]
+    if (done === null) {
+      parked = true
+      return { written, inFlight: true }
+    }
+    const ticket = lib.sessionReadOutput(context, session, new Uint8Array(maxBytes))
+    if (!ticket) return { written, inFlight: false }
+    copy = { ticket, done: BigInt(done!) * MS }
+    return { written, inFlight: true }
+  }
+  try {
+    const driver = new NativeSession(sink, { scheduler, output, closeTimeoutMs: 100 })
+    try {
+      await run(driver, scheduler, posts, drains)
+    } finally {
+      if (!driver.disposed) driver.dispose()
+    }
+  } finally {
+    lib.sessionPostStdout = postStdout
+    lib.sessionDrainStdout = drainStdout
+    Object.defineProperty(process, "stdout", stdout)
+  }
+}
+
+test("the stdout writer is polled in one task with a growing backoff, and a collect starts the next copy", async () => {
+  await withStdoutWriter([40, 41], async (driver, scheduler, posts) => {
+    const delays: (number | undefined)[] = []
+    const schedule = scheduler.schedule.bind(scheduler)
+    let live = 0
+    let most = 0
+    scheduler.schedule = (callback, delayMs) => {
+      delays.push(delayMs)
+      most = Math.max(most, ++live)
+      const cancel = schedule(() => (live--, callback()), delayMs)
+      return () => (live--, cancel())
+    }
+    expect(driver.write(new Uint8Array(6000).fill(97))).toBe(true)
+    for (let ms = 0; ms <= 60; ms++) await scheduler.run(ms)
+    // The post, then the next turn, then timed polls from 1 ms that grow with the copy's age to at most 50 ms
+    // (R21: one task at a time). Untimed entries after the first two are the scheduler's own ready turns.
+    expect(delays.slice(0, 2)).toEqual([undefined, undefined])
+    const steps = delays.filter((delay) => delay !== undefined)
+    expect(steps.slice(0, 8)).toEqual([1, 1, 1, 1, 1, 1, 1, 1])
+    expect(steps).toContain(5)
+    expect(Math.max(...steps)).toBeLessThanOrEqual(50)
+    expect(most).toBe(1)
+    // The first poll after 40 ms collected the first copy and started the second in the same call (I12).
+    const collect = posts.find((post) => post.at >= 40n * MS)!
+    expect(collect.maxBytes).toBeGreaterThan(0)
+    // Two copies in all: the write was 6000 bytes in 4 KiB chunks.
+    expect(posts.filter((post) => post.maxBytes > 0 && !post.wait).length).toBeGreaterThanOrEqual(2)
+    let idle = false
+    void driver.idle().then(() => (idle = true))
+    await scheduler.run(61)
+    expect(idle).toBe(true)
+  })
+})
+
+test("a turn after the close deadline still counts a copy the writer finished before it (R28)", async () => {
+  // The second copy ends at 97 ms; its polls fall at 95 and 106 ms, so the deadline turn at 100 ms collects it.
+  await withStdoutWriter([10, 97], async (driver, scheduler) => {
+    expect(driver.write(new Uint8Array(6000).fill(98))).toBe(true)
+    const closed = outcome(driver.close())
+    for (let ms = 0; ms <= 120; ms++) await scheduler.run(ms)
+    expect(await closed).toBe("closed")
+  })
+})
+
+test.each([
+  // A finished copy the driver has not polled yet: exit's first wait collects it (R8).
+  { doneAt: [1], bytes: 100, posted: 0, drained: 0 },
+  // The thread never picks the exit's copy up: exit takes it back once and drains (R8).
+  { doneAt: [1, null], bytes: 6000, posted: 1, drained: 1 },
+  // The thread never picks up the copy posted before exit: no new writer during exit.
+  { doneAt: [null], bytes: 100, posted: 0, drained: 1 },
+])("exit restores through the stdout writer, or after a take-back through the drain: $doneAt", async (row) => {
+  await withStdoutWriter(row.doneAt, async (driver, scheduler, posts, drains) => {
+    expect(driver.write(new Uint8Array(row.bytes).fill(97))).toBe(true)
+    await scheduler.run(0)
+    scheduler.time = MS
+    const before = posts.length
+    expect(driver.restoreOnExit()).toBe(true)
+    expect(posts.slice(before).filter((post) => !post.wait && post.maxBytes > 0)).toHaveLength(row.posted)
+    expect(drains.count).toBe(row.drained)
+  })
+})

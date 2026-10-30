@@ -17,7 +17,7 @@ Its build file exports only the Zig VT modules.
 The change to `src/build/SharedDeps.zig` removes unused GUI frame data.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga 3.2.1 with six changes, applied in this order:
+The Yoga source is upstream Yoga 3.2.1 with seven changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation through `yoga/OTAllocator.h`, so a test build can
   inject allocation failures. It also makes style updates, child insertion, and child moves leave the node
@@ -40,6 +40,12 @@ The Yoga source is upstream Yoga 3.2.1 with six changes, applied in this order:
   result, so later cache decisions are the same as without the patch. A node with a percent margin,
   padding, or minimum or maximum size keeps calling: no cache entry records the owner size. The native
   text and editor measures set the mark; host measures do not.
+- `yoga-cache-margin.patch` subtracts the margin from the old size too in the cache's "stricter size" rule
+  (upstream PR facebook/yoga#1965). Upstream compares the new size without the margin with the old size
+  with it, so a measured node that grew by less than its margin kept its old size. Unlike #1965, only a
+  positive margin comes off the old size: a percent margin follows an owner size that no cache entry
+  records, so a negative one would accept a stale size. Upstream's rule is already valid for a negative
+  margin. Upstream fixes the owner size separately in facebook/yoga#2042.
 
 `src/tests/yoga_test.zig` tests each change.
 
