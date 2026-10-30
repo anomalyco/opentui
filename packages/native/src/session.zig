@@ -8,6 +8,7 @@ const terminal = @import("terminal.zig");
 const scene = @import("scene.zig");
 const buffer = @import("buffer.zig");
 const input_parser = @import("input-parser.zig");
+const stdout_writer = @import("stdout-writer.zig");
 const Context = @import("context.zig").Context;
 const api = @import("context_abi_c");
 
@@ -325,6 +326,10 @@ pub const OutputTicket = struct {
 /// Written acknowledges the entire copy. The host handles partial I/O itself.
 pub const OutputResult = enum { written, failed };
 
+/// A stdout writer collect or post: bytes completed by this call, and whether a copy is still
+/// being written when it returns.
+pub const PostResult = struct { written: u32 = 0, in_flight: bool = false };
+
 /// Context-owned, address-stable transport and optional renderer. Use Context's
 /// checked methods. Session owns output, presentation, terminal lifecycle, and
 /// destruction. Legacy renderer setup must remain disabled.
@@ -337,6 +342,10 @@ pub const Session = struct {
     span: ?feed.SpanInfo = null,
     span_offset: u32 = 0,
     pending: ?OutputTicket = null,
+    /// `pending` belongs to the stdout writer: no host ticket can complete it.
+    pending_post: bool = false,
+    /// The stdout writer, created by the first post.
+    stdout_post: ?stdout_writer.Abandon = null,
     last_request_id: u64 = 0,
     /// Successful ticket bytes, not retained span charges or discarded output.
     completed_bytes: u64 = 0,
@@ -355,6 +364,7 @@ pub const Session = struct {
     pub fn deinit(self: *Session) error{Busy}!void {
         if (!self.canDestroy()) return error.Busy;
         std.debug.assert(self.span == null and self.pending == null);
+        self.abandonStdout();
         if (self.renderer) |value| value.destroyStorage();
         if (self.scene) |value| value.deinit();
         self.output.destroy();
@@ -1385,6 +1395,7 @@ pub const Session = struct {
         if (ticket.session.context_id != self.handle.context_id) return error.WrongContext;
         if (ticket.session.slot != self.handle.slot) return error.WrongSession;
         if (ticket.session.generation != self.handle.generation) return error.StaleHandle;
+        if (self.pending_post) return error.StaleRequest;
         const pending = self.pending orelse return error.StaleRequest;
         if (ticket.request_id != pending.request_id) return error.StaleRequest;
         if (ticket.len != pending.len) return error.InvalidTicket;
@@ -1454,9 +1465,67 @@ pub const Session = struct {
         }
     }
 
+    /// Writes stdout from a native thread (`W` is `stdout_writer.Writer(Sink, Runner)`).
+    /// Collects a finished copy, then, unless `wait` or `max_bytes == 0`, hands over the next
+    /// one. `wait` (process exit) never starts a copy: it waits for the running one, and a copy
+    /// the thread never picked up is taken back unwritten for the synchronous drain.
+    /// `create` makes the writer on the first hand-over, or fails with UnsupportedResource
+    /// before any output is consumed.
+    pub fn postStdout(self: *Session, comptime W: type, create: anytype, max_bytes: u32, wait: bool) Error!PostResult {
+        if (!try self.checkOutput()) return .{};
+        var result: PostResult = .{};
+        if (self.pending_post) {
+            const writer: *W = @ptrCast(@alignCast(self.stdout_post.?.ptr));
+            switch (if (wait) writer.waitCollect(reclaim_grace_ns) else writer.collect()) {
+                .busy => return .{ .in_flight = true },
+                .written => {
+                    const ticket = self.pending.?;
+                    self.pending_post = false;
+                    try self.completeOutput(ticket, .written);
+                    result.written = ticket.len;
+                },
+                .failed => {
+                    self.pending_post = false;
+                    try self.completeOutput(self.pending.?, .failed);
+                    return error.SessionFailed;
+                },
+                .reclaimed => {
+                    self.pending = null;
+                    self.pending_post = false;
+                    self.stdout_post = null;
+                    writer.release();
+                    return .{};
+                },
+            }
+        } else if (self.pending != null) return error.Busy;
+        if (wait or max_bytes == 0) return result;
+        if (self.span == null and !self.output.hasPendingSpans()) return result;
+        const writer: *W = if (self.stdout_post) |held| @ptrCast(@alignCast(held.ptr)) else blk: {
+            const created: *W = try create.create();
+            self.stdout_post = created.handle();
+            break :blk created;
+        };
+        const ticket = (try self.readOutput(writer.buffer[0..@min(max_bytes, writer.buffer.len)])).?;
+        self.pending_post = true;
+        writer.start(ticket.len);
+        result.in_flight = true;
+        return result;
+    }
+
+    /// How long process exit waits for the thread to pick up a posted copy before taking it back.
+    const reclaim_grace_ns = 100 * std.time.ns_per_ms;
+
+    fn abandonStdout(self: *Session) void {
+        const held = self.stdout_post orelse return;
+        self.stdout_post = null;
+        self.pending_post = false;
+        held.abandon(held.ptr);
+    }
+
     /// Explicitly discards disconnected output. Copies belong to the host, so
     /// cancellation leaves no native borrow and never retries accepted bytes.
     pub fn cancel(self: *Session) void {
+        self.abandonStdout();
         self.cancelSceneFrame();
         self.finishPresentation(.failed);
         if (self.span) |span| {

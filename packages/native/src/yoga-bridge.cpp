@@ -494,7 +494,8 @@ void otYogaTestLogMessage(YGConfigConstRef config, const char* message) noexcept
                       message);
 }
 
-// Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate.
+// Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate, with the margin
+// patch.
 static bool cacheAxisReference(const OTYogaCacheAxis& axis, float point_scale) {
   using namespace facebook::yoga;
   const float effective = point_scale != 0
@@ -510,7 +511,7 @@ static bool cacheAxisReference(const OTYogaCacheAxis& axis, float point_scale) {
        (size >= axis.computed || inexactEquals(size, axis.computed))) ||
       (last_mode == SizingMode::FitContent && mode == SizingMode::FitContent &&
        isDefined(axis.last_available) && isDefined(size) && isDefined(axis.computed) &&
-       axis.last_available > size &&
+       axis.last_available - std::max(axis.margin, 0.0f) > size &&
        (axis.computed <= size || inexactEquals(size, axis.computed)));
 }
 

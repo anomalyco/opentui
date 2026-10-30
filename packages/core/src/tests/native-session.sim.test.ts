@@ -1,6 +1,8 @@
 // Seeded simulation of the real CliRenderer and NativeSession on virtual time over a modeled link, through a
-// borrowed Writable and through fd 1, whose drain_stdout write is modeled with the ticket ABI.
+// borrowed Writable and through fd 1. On fd 1 the stdout writer thread (post_stdout) and, with
+// OTUI_STDOUT_THREAD=0, the synchronous drain_stdout write are modeled with the ticket ABI.
 import { expect, test } from "bun:test"
+import { clearEnvCache } from "../lib/env.js"
 import { NativeSession } from "../NativeSession.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderer } from "../renderer.js"
@@ -14,6 +16,7 @@ import {
   NativeSessionTerminalPhase,
   NativeStatus,
   resolveRenderLib,
+  type NativeOutputTicket,
 } from "../zig.js"
 
 const lib = resolveRenderLib()
@@ -28,11 +31,18 @@ type Fd = (typeof fds)[number]
 const sizes = [120, 40, 100, 30, 132, 43]
 
 const presets = {
-  local_fast: { rate: null, capacity: 18_944, hangup: false },
-  ssh_slow: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false },
-  hangup_mid_frame: { rate: 48_000, capacity: 18_944 + 65_536, hangup: true },
+  local_fast: { rate: null, capacity: 18_944, hangup: false, stall: false },
+  ssh_slow: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: false },
+  hangup_mid_frame: { rate: 48_000, capacity: 18_944 + 65_536, hangup: true, stall: false },
+  // The link stalls for 2 s as the run ends, so a graceful close times out with a write running.
+  close_timeout: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: true },
+  // R23: split-footer captured stdout at about 1,000 lines a second, titles and a 1 MiB OSC 52 on a 16 KB/s link;
+  // what each producer gets at its limit and the JS queue's peak are recorded.
+  producer_flood: { rate: 16_000, capacity: 18_944 + 65_536, hangup: false, stall: false },
 }
 type Preset = keyof typeof presets
+// fd: the stdout writer thread; fd-off: OTUI_STDOUT_THREAD=0, today's drain on the JS thread.
+type Path = "writable" | "fd" | "fd-off"
 
 /** Runs `then` once the promise resolves; the run observes rejections elsewhere. */
 const after = (promise: Promise<unknown>, then: () => unknown) => void promise.then(then, () => {})
@@ -86,6 +96,10 @@ class World {
     return event
   }
 
+  cancel(event: Event): void {
+    this.events.delete(event)
+  }
+
   record(kind: string, bytes: Uint8Array = new Uint8Array()): void {
     for (const unit of `${this.now} ${kind};`) this.hash = Math.imul(this.hash ^ unit.charCodeAt(0), 0x01000193)
     for (const byte of bytes) this.hash = Math.imul(this.hash ^ byte, 0x01000193)
@@ -125,6 +139,10 @@ class Link {
   // Latin-1 keeps one character per byte.
   stream = ""
   failed = false
+  /** The link moves nothing before this time. */
+  stalledUntil = 0n
+  /** A split footer has no alternate screen to leave. */
+  restoration = restoration
   private backlog = 0
   private measured = 0n
 
@@ -137,15 +155,20 @@ class Link {
 
   room(): number {
     if (this.rate === null) return Number.MAX_SAFE_INTEGER
-    this.backlog = Math.max(0, this.backlog - (this.rate * Number(this.world.now - this.measured)) / 1e9)
+    const moving =
+      this.world.now > this.stalledUntil
+        ? this.world.now - (this.measured > this.stalledUntil ? this.measured : this.stalledUntil)
+        : 0n
+    this.backlog = Math.max(0, this.backlog - (this.rate * Number(moving)) / 1e9)
     this.measured = this.world.now
     return Math.floor(this.capacity - this.backlog)
   }
 
-  /** Whole milliseconds until `count` bytes fit. */
+  /** Whole milliseconds until `count` bytes fit. A stalled link (a frozen ssh with a full pty) takes nothing. */
   delay(count: number): bigint {
     const excess = count - this.room()
-    return excess <= 0 ? 0n : BigInt(Math.ceil((excess * 1000) / this.rate!)) * MS
+    const stall = this.stalledUntil > this.world.now ? this.stalledUntil - this.world.now : 0n
+    return (excess <= 0 ? 0n : BigInt(Math.ceil((excess * 1000) / this.rate!)) * MS) + stall
   }
 
   /** Takes the bytes; after a hangup only the prefix before it. Returns the count taken. */
@@ -163,7 +186,7 @@ class Link {
   }
 
   restored(offset: number): boolean {
-    return restoration.every((sequence) => this.stream.includes(sequence, offset))
+    return this.restoration.every((sequence) => this.stream.includes(sequence, offset))
   }
 }
 
@@ -187,8 +210,19 @@ class LinkSink extends TestWriteStream {
  * Replaces the fd 1 write of drain_stdout with the ticket ABI, which moves the span prefix drainOutput offers: a
  * blocking fd takes it all while the owner waits, a non-blocking one what fits (0 is EAGAIN); a hangup fails it.
  */
-function modelDrainStdout(world: World, link: Link, fd: Fd): typeof lib.sessionDrainStdout {
+type Calls = {
+  posts: number
+  drains: number
+  exiting: boolean
+  runningDrains: number
+  idleCollects: number
+  busyPolls: number
+}
+
+function modelDrainStdout(world: World, link: Link, fd: Fd, calls: Calls): typeof lib.sessionDrainStdout {
   return (context, session, maxBytes = 65_536) => {
+    calls.drains++
+    if (!calls.exiting) calls.runningDrains++
     if (fd === "unsupported") throw new NativeError("ot_session_drain_stdout", NativeStatus.UnsupportedResource)
     const capacity = fd === "blocking" || link.failed ? maxBytes : Math.min(maxBytes, link.room())
     if (capacity <= 0) return 0
@@ -203,25 +237,109 @@ function modelDrainStdout(world: World, link: Link, fd: Fd): typeof lib.sessionD
   }
 }
 
+/**
+ * The stdout writer thread on fd 1 (post_stdout), over the ticket ABI. A copy's write is a world event that
+ * completes once the link has room for it (the thread's blocking write); its publish is a later seeded event, so
+ * a destroy, the close timeout or exit can land between the two. wait=1 (exit) advances virtual time to the
+ * write's end. Collecting completes the real ticket, which presents frames; a hangup fails it.
+ */
+function modelPostStdout(world: World, link: Link, fd: Fd, calls: Calls, publishDelay: () => bigint) {
+  type Copy = {
+    ticket: NativeOutputTicket
+    bytes: Uint8Array
+    state: "writing" | "written" | "published"
+    ok: boolean
+    event: Event | null
+  }
+  let copy: Copy | null = null
+  const buffer = new Uint8Array(65_536)
+  const write = (current: Copy) => {
+    current.ok = link.accept(current.bytes) === current.bytes.length
+    current.state = "written"
+  }
+  const model: typeof lib.sessionPostStdout = (context, session, maxBytes, wait) => {
+    calls.posts++
+    if (fd === "unsupported") {
+      if (wait) return { written: 0, inFlight: false }
+      throw new NativeError("ot_session_post_stdout", NativeStatus.UnsupportedResource)
+    }
+    let written = 0
+    if (copy) {
+      if (copy.state !== "published") {
+        if (!wait) {
+          calls.busyPolls++
+          return { written: 0, inFlight: true }
+        }
+        if (copy.event) world.cancel(copy.event)
+        if (copy.state === "writing") {
+          world.now += link.delay(copy.bytes.length)
+          write(copy)
+        }
+        copy.state = "published"
+      }
+      const done = copy
+      copy = null
+      lib.sessionCompleteOutput(context, session, done.ticket, done.ok)
+      if (!done.ok) throw new NativeError("ot_session_post_stdout", NativeStatus.OutputFailed)
+      written = done.ticket.byteCount
+    }
+    // I12: on fd 1 the driver collects and starts the next copy in one call.
+    if (!wait && maxBytes === 0 && written > 0) calls.idleCollects++
+    if (wait || maxBytes === 0) return { written, inFlight: false }
+    const ticket = lib.sessionReadOutput(context, session, buffer.subarray(0, Math.min(maxBytes, buffer.length)))
+    if (!ticket) return { written, inFlight: false }
+    const current: Copy = { ticket, bytes: buffer.slice(0, ticket.byteCount), state: "writing", ok: true, event: null }
+    current.event = world.at("writer", link.delay(current.bytes.length), () => {
+      write(current)
+      current.event = world.at("writer", publishDelay(), () => {
+        current.event = null
+        current.state = "published"
+      })
+    })
+    copy = current
+    return { written, inFlight: true }
+  }
+  return model
+}
+
 /** Runs one seeded script and checks the invariants where they apply. Returns the trace hash. */
-async function simulate(preset: Preset, path: "writable" | "fd", seed: number): Promise<number> {
+async function simulate(preset: Preset, path: Path, seed: number): Promise<number> {
   const draw = random(seed)
   const world = new World(random(seed ^ 0x5eed))
   const config = presets[preset]
   const rate = config.rate === null ? null : Math.round(config.rate * (0.75 + draw(51) / 100))
   const link = new Link(world, rate, config.capacity, config.hangup ? 20_000 + draw(200_000) : null)
   const sink = new LinkSink(link)
-  const fd = path === "fd" ? fds[seed % fds.length]! : null
-  const end = (["destroy", "exit", "exit mid-stream", "destroy mid-stream"] as const)[draw(4)]!
+  if (preset === "producer_flood") link.restoration = restoration.slice(0, 1)
+  const fd = path === "writable" ? null : fds[seed % fds.length]!
+  const writer = path === "fd"
+  const flood = preset === "producer_flood"
+  const end = config.stall
+    ? "destroy"
+    : flood
+      ? "destroy mid-stream"
+      : (["destroy", "exit", "exit mid-stream", "destroy mid-stream"] as const)[draw(4)]!
   const label = `${preset} ${path}${fd ? `/${fd}` : ""} seed ${seed}`
   const stdout = Object.getOwnPropertyDescriptor(process, "stdout")!
   const drainStdout = lib.sessionDrainStdout
+  const postStdout = lib.sessionPostStdout
+  const calls: Calls = { posts: 0, drains: 0, exiting: false, runningDrains: 0, idleCollects: 0, busyPolls: 0 }
   const consoleError = console.error
   console.error = () => {}
+  // Fail closed: the real post_stdout would start a thread on this process's fd 1. Only the model may run.
+  lib.sessionPostStdout = () => {
+    throw new Error(`${label}: the real post_stdout was reached in a simulation`)
+  }
+  if (path === "fd-off") process.env.OTUI_STDOUT_THREAD = "0"
+  else delete process.env.OTUI_STDOUT_THREAD
+  clearEnvCache()
   if (fd) {
     sink.fd = 1
     Object.defineProperty(process, "stdout", { value: sink, configurable: true, writable: true })
-    lib.sessionDrainStdout = modelDrainStdout(world, link, fd)
+    lib.sessionDrainStdout = modelDrainStdout(world, link, fd, calls)
+    // A local terminal's thread publishes at once; elsewhere 0-2 ms after its write.
+    if (writer)
+      lib.sessionPostStdout = modelPostStdout(world, link, fd, calls, () => (rate === null ? 0n : BigInt(draw(3)) * MS))
   }
   let renderer: CliRenderer | undefined
   let closed = "pending"
@@ -231,7 +349,8 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
       nativeSession: driver,
       clock: world.clock,
       remote: true,
-      screenMode: "alternate-screen",
+      screenMode: flood ? "split-footer" : "alternate-screen",
+      ...(flood ? { externalOutputMode: "capture-stdout" as const, footerHeight: 12 } : {}),
       consoleMode: "disabled",
       exitSignals: [],
       exitOnCtrlC: false,
@@ -245,13 +364,17 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
       const status = render.call(driver, force, frame)
       changed &&= status !== NativeSessionRenderStatus.Pending && status !== NativeSessionRenderStatus.Presented
       if (status === NativeSessionRenderStatus.Pending && preset === "local_fast") {
-        // A local terminal presents each frame in the virtual instant it commits, in one owner turn per output
-        // chunk (plus one for a Writable callback): the writer thread's latency baseline.
-        const [committedAt, turns, offset] = [world.now, world.hostTurns, link.stream.length]
+        // R20: on a local terminal every path presents each frame in the virtual instant it commits. The synchronous
+        // paths take one owner turn per output chunk (plus one for a Writable callback). The writer thread takes
+        // one more turn per frame, besides polls that find the copy still being written; those are the next turns,
+        // which a write that loses the same-instant tie costs.
+        const [committedAt, turns, offset, busy] = [world.now, world.hostTurns, link.stream.length, calls.busyPolls]
         after(driver.whenPresented(), () => {
           const chunks = Math.max(1, Math.ceil((link.stream.length - offset) / output.chunkSize))
-          const spare = fd === "blocking" || fd === "nonblocking" ? 0 : 1
-          if (world.now !== committedAt || world.hostTurns - turns - chunks > spare) slowFrames++
+          const threaded = writer && fd !== "unsupported"
+          const spare = threaded ? 1 : fd === "blocking" || fd === "nonblocking" ? 0 : 1
+          const extra = world.hostTurns - turns - (calls.busyPolls - busy) - chunks
+          if (world.now !== committedAt || extra > spare) slowFrames++
         })
       }
       return status
@@ -263,8 +386,8 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
     let keyArrival = 0n
     app.keyInput.on("keypress", () => {
       const wait = world.now - keyArrival
-      // I1: only a blocking fd write holds the owner.
-      if (fd !== "blocking") expect(wait, label).toBe(0n)
+      // I1: only today's blocking fd write holds the owner; with the writer thread nothing does.
+      if (fd !== "blocking" || writer) expect(wait, label).toBe(0n)
       keys++
       if (wait > 0n) stalled++
       if (wait > waitMax) waitMax = wait
@@ -295,6 +418,26 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
       app.stdin.emit("data", Buffer.from(String.fromCharCode(97 + draw(26))))
     }
     const resume = () => after(app.resume(), () => ((transition = false), checkActive()))
+    // I13: capability replies arrive at any time, during transitions and with a copy in flight; they are applied
+    // or consumed, never delivered as keys.
+    const reply = () => app.stdin.emit("data", Buffer.from("\x1b[?1004;1$y\x1b[?2004;2$y\x1b[?2026;2$y\x1b[?62;22c"))
+    // R23: each producer's outcome at the limit, and the captured-stdout queue's peak.
+    const produced = { accepted: 0, refused: 0, errors: 0, queuePeak: 0 }
+    const produce = (call: () => boolean | void) => {
+      try {
+        if (call() === false) produced.refused++
+        else produced.accepted++
+      } catch {
+        produced.errors++
+      }
+    }
+    const floodTick = () => {
+      for (let line = 0; line < 10; line++) produce(() => void sink.write(`captured ${tokens} ${line} ${filler}\n`))
+      produce(() => app.setTerminalTitle(`flood ${tokens}`))
+      if (draw(20) === 0) produce(() => app.copyToClipboardOSC52("x".repeat(1 << 20)))
+      const queue = (app as unknown as { externalOutputQueue: { size: number } }).externalOutputQueue
+      produced.queuePeak = Math.max(produced.queuePeak, queue.size)
+    }
     const suspendCycle = (offset = link.stream.length) =>
       after(app.suspend(), () => {
         if (!link.restored(offset) && !link.failed) badTransitions++
@@ -306,6 +449,9 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
       const kind = draw(100)
       world.at("script", at - world.now, () => {
         if (app.isDestroyed) return
+        if (flood && active()) floodTick()
+        // Not on local_fast, whose per-frame turn count (R20) a reply's control packet would add to.
+        if (kind < 3 && preset !== "local_fast") reply()
         if (kind < 55) {
           history[history.length - 1] += ` token${tokens++}`
           // A new line scrolls the whole view, as a streaming transcript does.
@@ -329,8 +475,9 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
     await world.until(() => !transition || app.isDestroyed)
     expect(keys, label).toBe(keysSent)
     expect(badTransitions, label).toBe(0)
-    // On a slow link keys wait behind a blocking write today (388); the stdout writer thread makes this 0.
-    if (preset === "ssh_slow" && fd === "blocking") expect(stalled, label).toBeGreaterThan(0)
+    // On a slow link keys wait behind a blocking write with the writer thread off (388, today's behavior).
+    if (preset === "ssh_slow" && fd === "blocking" && path === "fd-off") expect(stalled, label).toBeGreaterThan(0)
+    if (writer) expect(stalled, label).toBe(0)
 
     const bound = rate === null ? 200 : Math.ceil(((link.capacity + 2 * 65_536) * 1000) / rate) + 200
     if (!end.endsWith("mid-stream")) {
@@ -369,15 +516,24 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
     if (end.startsWith("exit") && !app.isDestroyed) {
       const restoreOnExit = driver.restoreOnExit
       driver.restoreOnExit = () => (restored = restoreOnExit.call(driver))
+      calls.exiting = true
       ;(app as unknown as { nativeProcessExitHandler(): void }).nativeProcessExitHandler()
-      // I7: a restoration that is reported has reached the link, and a blocking fd always restores.
+      // I7: a restoration that is reported has reached the link, and a blocking fd always restores. R30: through
+      // the writer thread a non-blocking fd restores too (today's drain gives up on it).
       if (restored) expect(link.restored(offset), label).toBe(true)
-      if (fd === "blocking" && !link.failed) expect(restored, label).toBe(true)
-    } else app.destroy()
+      const restores = fd === "blocking" || (writer && fd === "nonblocking")
+      if (restores && !link.failed) expect(restored, label).toBe(true)
+    } else {
+      if (config.stall) link.stalledUntil = world.now + 2000n * MS
+      app.destroy()
+    }
     await world.until(() => closed !== "pending")
     // A graceful close completes and restores unless the link hung up. Exit drains synchronously, without the
     // close timeout, so only the queue bounds it.
-    if (end.startsWith("destroy")) expect(closed === "closed", label).toBe(!link.failed)
+    if (config.stall) {
+      // R27: the close timeout cancels with a write running, without claiming restoration.
+      expect(closed, label).toBe("NativeSession graceful close timed out; output cancelled without restoration")
+    } else if (end.startsWith("destroy") && !flood) expect(closed === "closed", label).toBe(!link.failed)
     if (closed === "closed") expect(link.restored(offset), label).toBe(true)
     const closeBound = 1000 + (rate === null ? 0 : Math.ceil((output.chunkSize * 1000) / rate)) + 100
     expect(Number((world.now - ended) / MS), label).toBeLessThanOrEqual(end.startsWith("destroy") ? closeBound : bound)
@@ -386,16 +542,37 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
     await world.until(() => world.settled)
     if (closed === "closed") expect(link.stream.length, label).toBe(afterClose)
     expect(sink.listenerCount("drain"), label).toBe(0)
+    // R24: the writer rows ran the post model, with the drain only at exit; the unsupported writer falls back
+    // after one refusal; today's paths never post.
+    if (writer && fd !== "unsupported") {
+      expect(calls.posts, label).toBeGreaterThan(0)
+      // Exit goes through the writer too (R30): no drain at all.
+      expect(calls.drains, label).toBe(0)
+      expect(calls.idleCollects, label).toBe(0)
+    } else if (writer) expect(calls.posts, label).toBe(1)
+    else expect(calls.posts, label).toBe(0)
     world.record(`end ${closed} ${restored}`)
     const hash = world.hash >>> 0
     // OUTPUT_SIM_SUMMARY=1 prints the recorded baseline: owner stalls (I1) and exit outcomes (I7).
-    const summary = { hash, keys, stalled, waitMaxMs: Number(waitMax / MS), end, restored, closed }
+    const summary = {
+      hash,
+      keys,
+      stalled,
+      waitMaxMs: Number(waitMax / MS),
+      end,
+      restored,
+      closed,
+      ...(flood ? produced : {}),
+    }
     if (process.env.OUTPUT_SIM_SUMMARY) console.log(label, JSON.stringify(summary))
     return hash
   } finally {
     console.error = consoleError
     Object.defineProperty(process, "stdout", stdout)
     lib.sessionDrainStdout = drainStdout
+    lib.sessionPostStdout = postStdout
+    delete process.env.OTUI_STDOUT_THREAD
+    clearEnvCache()
     if (renderer && closed === "pending") {
       renderer.destroy()
       renderer.nativeScene.driver.dispose()
@@ -403,10 +580,22 @@ async function simulate(preset: Preset, path: "writable" | "fd", seed: number): 
   }
 }
 
-// The Writable path matches the fd unsupported fallback up to exit, so it needs fewer seeds.
+// The Writable path matches the fd unsupported fallback up to exit, so it needs fewer seeds. The close timeout runs
+// on the writer thread only.
+const seeds: Record<Path, number> = { writable: 4, fd: 16, "fd-off": 16 }
 const rows = (Object.keys(presets) as Preset[]).flatMap((preset) =>
-  (["writable", "fd"] as const).flatMap((path) =>
-    Array.from({ length: path === "fd" ? 16 : 4 }, (_, seed) => ({ preset, path, seed })),
+  (preset === "close_timeout" || preset === "producer_flood"
+    ? (["fd"] as const)
+    : (["writable", "fd", "fd-off"] as const)
+  ).flatMap((path) =>
+    Array.from(
+      { length: preset === "close_timeout" ? 6 : preset === "producer_flood" ? 3 : seeds[path] },
+      (_, seed) => ({
+        preset,
+        path,
+        seed,
+      }),
+    ),
   ),
 )
 

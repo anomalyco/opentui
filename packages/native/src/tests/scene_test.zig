@@ -156,6 +156,31 @@ test "Scene empty boxes skip paint setup but retain hits and descendant clipping
     try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().opacity_stack.items.len);
 }
 
+// GitHub #1852: Yoga shrinks a one-row text above a 20-row sibling in a 4-row column to zero
+// rows. It keeps its one-cell public height but paints and hits no cell under the sibling.
+test "Scene node that flex shrink sizes to zero paints and hits no cell" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    const header = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 2);
+    try f.owner.sceneSetText(header, "header");
+    const list = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    try f.owner.sceneSetStyle(list, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_POINT, 20, 0);
+    for ([_]context.Handle{ header, list }, 0..) |node, index| {
+        try f.owner.sceneSetStyle(node, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 1, 0);
+        try f.owner.sceneMoveNode(node, f.root, @intCast(index));
+    }
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try testing.expectEqual(@as(f32, 0), (try f.owner.sceneGetPaintLayout(header)).height);
+    try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetLayout(header, false)).height);
+    try testing.expectEqual(@as(u32, ' '), f.cli.getNextBuffer().get(0, 0).?.char);
+    const token = (try f.owner.raw().getRenderable(header)).scene_node.?.token;
+    for (f.state.hits.items) |hit| try testing.expect(hit.token != token);
+    // A host draws its body as paint would: nothing.
+    const target = try f.owner.createBuffer(8, 1, .{});
+    try f.owner.drawSceneBody(target, null, header, 0, 0);
+    try testing.expect((try f.owner.raw().getBuffer(target)).get(0, 0).?.char != 'h');
+}
+
 test "Scene hit walk answers what a grid overwritten in paint order holds" {
     var prng = std.Random.DefaultPrng.init(0x316);
     const random = prng.random();
@@ -466,6 +491,8 @@ test "Scene cell layout keeps in-range axes and the truncated visible cells of t
         .{ 5, nan, 5, 1 },
         .{ -inf, inf, -4194304, 1 },
         .{ 3, inf, 3, 4194301 },
+        // A zero size stays zero, so the node paints no cell.
+        .{ 3e9, 0, 4194303, 0 },
     }) |row| {
         const cells = scene.cellLayout(.{ .screenX = row[0], .width = @floatCast(row[1]) });
         try testing.expectEqual([2]f64{ row[2], row[3] }, [2]f64{ cells.screenX, cells.width });

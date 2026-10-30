@@ -326,7 +326,7 @@ pub const Connection = struct {
         std.debug.assert(self.core_focus_users < std.math.maxInt(u32));
         self.core_focus_users += 1;
         if (self.core_focus_users > 1) return .pending;
-        std.debug.assert(!self.core_focus_lost and !self.core_selection_seen);
+        std.debug.assert(!self.core_focus_entered and !self.core_focus_lost and !self.core_selection_seen);
         self.core_focus_restart_count = 0;
         if (self.clipboard_offer) |offer| self.removeOffer(offer);
         self.clipboard_offer = null;
@@ -1135,7 +1135,7 @@ pub const Connection = struct {
         _: ?*anyopaque,
     ) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
-        if (surface == self.helper_surface) self.core_focus_entered = true;
+        if (surface != null and surface == self.helper_surface) self.core_focus_entered = true;
     }
 
     fn keyboardLeave(data: ?*anyopaque, _: ?*WlProxy, _: u32, surface: ?*WlProxy) callconv(.c) void {
@@ -1477,18 +1477,21 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         progress: Progress = .pending,
         wslg_path: []const u8 = "",
         connects: u8 = 1,
-        runtime_dir: bool = true,
+        runtime_dir: [*:0]const u8 = "/run/user/test",
+        display: [*:0]const u8 = "wayland-7",
     };
     const wslg_path = "/mnt/wslg/runtime-dir/wayland-7";
     const cases = [_]Case{
-        .{ .inherited = true, .runtime_dir = false },
+        .{ .inherited = true, .runtime_dir = "" },
         .{ .cap = false },
         .{ .refused = .default, .progress = .unsupported },
         .{ .wsl = true },
         .{ .refused = .default, .wsl = true, .inherited = true, .wslg_path = wslg_path, .connects = 2 },
         .{ .refused = .all, .wsl = true, .progress = .unsupported, .wslg_path = wslg_path, .connects = 2 },
         // libwayland would refuse the relative name and log to stderr on every operation.
-        .{ .runtime_dir = false, .wsl = true, .wslg_path = wslg_path },
+        .{ .runtime_dir = "", .wsl = true, .wslg_path = wslg_path },
+        .{ .runtime_dir = "run/user/test", .wsl = true, .wslg_path = wslg_path },
+        .{ .runtime_dir = "", .display = "/run/user/test/wayland-7" },
     };
     const names = [_][*:0]const u8{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR" };
     var saved: [names.len]?[:0]u8 = undefined;
@@ -1501,7 +1504,6 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
             std.testing.allocator.free(restored);
         } else _ = Environment.unsetenv(name);
     };
-    try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", "wayland-7", 1));
     var symbols = testSymbols();
     symbols.wl_display_connect = Environment.connect;
     for (cases) |case| {
@@ -1513,9 +1515,8 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         Environment.refused = case.refused;
         Environment.path_length = 0;
         Environment.count = 0;
-        if (case.runtime_dir) {
-            try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", "/run/user/test", 1));
-        } else _ = Environment.unsetenv("XDG_RUNTIME_DIR");
+        try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", case.display, 1));
+        try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", case.runtime_dir, 1));
         if (case.inherited) try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
         defer _ = Environment.unsetenv("WAYLAND_SOCKET");
 
@@ -1924,11 +1925,9 @@ test "Wayland core data-device fallback is WSL-gated and read-only" {
 
 test "Wayland core helper acquisition fails closed outside Linux" {
     if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
-    var connection: Connection = undefined;
+    var connection = Connection.init(std.testing.allocator, undefined, "", "", 1);
     connection.core_data_device = true;
     connection.phase = .ready;
-    connection.core_focus_users = 0;
-    connection.clipboard_offer = null;
 
     try std.testing.expectEqual(Progress.failed, connection.acquireCoreSelection());
     try std.testing.expectEqual(@as(u32, 0), connection.core_focus_users);
@@ -1976,10 +1975,11 @@ test "Wayland core focus lifecycle rejects stale and unfocused offers" {
     Connection.deviceSelection(&connection, null, offer);
     try std.testing.expectEqual(@as(u8, 0), connection.offer_count);
     try std.testing.expect(connection.clipboard_offer == null);
-    // A leave for the destroyed helper arrives with a nil surface and must not mark the next read.
+    // Enter and leave for the destroyed helper arrive with a nil surface and must not mark the next read.
     connection.core_focus_lost = false;
+    Connection.keyboardEnter(&connection, null, 1, null, null);
     Connection.keyboardLeave(&connection, null, 1, null);
-    try std.testing.expect(!connection.core_focus_lost);
+    try std.testing.expect(!connection.core_focus_entered and !connection.core_focus_lost);
 
     connection.core_focus_entered = true;
     connection.core_focus_lost = false;
@@ -2059,6 +2059,7 @@ test "Wayland core read restarts after focus loss a bounded number of times" {
             Connection.deviceSelection(&connection, null, offer);
             if (loss < losses) Connection.keyboardLeave(&connection, null, 0, connection.helper_surface);
             progress = connection.coreSelectionProgress();
+            if (loss < losses) try std.testing.expectEqual(if (loss < READ_RETRY_MAX) Progress.pending else Progress.failed, progress);
         }
         const restarted = losses <= READ_RETRY_MAX;
         try std.testing.expectEqual(if (restarted) Progress.ready else Progress.failed, progress);
