@@ -1110,6 +1110,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private currentSelection: Selection | null = null
   private selectionContainers: Renderable[] = []
+  private lastSelectionUpdateFocus: { renderableNum: number; x: number; y: number } | null = null
   private lastClick: { count: number; time: number; x: number; y: number; renderableId: number } | null = null
 
   private _splitHeight: number = 0
@@ -5447,6 +5448,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.currentSelection = null
     }
     this.selectionContainers = []
+    this.lastSelectionUpdateFocus = null
   }
 
   /**
@@ -5458,6 +5460,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.clearSelectionState()
     this.selectionContainers.push(renderable.parent || this.root)
+    this.lastSelectionUpdateFocus = null
     this.currentSelection = new Selection(renderable, { x, y }, { x, y }, behavior)
     this.currentSelection.isStart = true
 
@@ -5491,7 +5494,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.currentSelection.isDragging = false
       }
 
-      if (this.selectionContainers.length > 0) {
+      // Only mutate the container stack when the focus state has actually changed since the last update.
+      const renderableNum = currentRenderable?.num ?? -1
+      const prev = this.lastSelectionUpdateFocus
+      const focusChanged = !prev || prev.renderableNum !== renderableNum || prev.x !== x || prev.y !== y
+      this.lastSelectionUpdateFocus = { renderableNum, x, y }
+
+      if (focusChanged && this.selectionContainers.length > 0) {
         const currentContainer = this.selectionContainers[this.selectionContainers.length - 1]
 
         if (!currentRenderable || !this.isWithinContainer(currentRenderable, currentContainer)) {
