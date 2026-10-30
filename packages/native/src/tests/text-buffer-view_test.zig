@@ -350,8 +350,9 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
     defer pools.deinit();
 
     // The sweep fails each allocation of the partial layout in turn until the layout succeeds.
-    // With in-place growth refused, the allocations depend only on request sizes, and the 200
-    // appended lines make the splice grow its arrays into a new arena block in both modes.
+    // With in-place growth refused, the allocations depend only on request sizes, and the 220
+    // appended lines make the splice grow its arrays into a new arena block in both modes. The
+    // sizes follow the build mode: ArrayList holds a safety lock only with runtime safety on.
     for ([_]bool{ false, true }) |truncate| {
         var reached_splice = false;
         var failure: usize = 0;
@@ -374,7 +375,7 @@ test "TextBufferView a partial layout that fails reports it and lays out fully o
             full.force_full_layout = true;
             try tb.setText(utils.repeat(u8, "alpha \u{754c} e\u{301} word word word word\n", 20));
             _ = view.getVirtualLines();
-            try tb.append(utils.repeat(u8, "\ntail \u{754c} words that wrap", 200));
+            try tb.append(utils.repeat(u8, "\ntail \u{754c} words that wrap", 220));
             tracking.fail_index = tracking.alloc_index + failure;
             _ = text_work.take();
             _ = view.getVirtualLines();
