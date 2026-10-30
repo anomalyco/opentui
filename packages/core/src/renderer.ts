@@ -2240,8 +2240,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   /**
    * Report program status with OSC 7501. Terminals that do not implement the
    * protocol ignore it, so this does not wait for `capabilities.program_status`.
-   * Returns false when the report is not queued: the terminal is closing (after
-   * `destroy` listeners), not active, or output is full. Invalid reports throw.
+   * Returns false when the report is not queued: the session failed or is closing (from the
+   * microtask after `destroy()`), the terminal is not active, or output is full. Invalid reports throw.
    */
   public setProgramStatus(status: ProgramStatus): boolean {
     if (!this.nativeSession.open) return false

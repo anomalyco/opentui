@@ -50,9 +50,10 @@ describe("renderer program status", () => {
     for (const [status] of reports) expect(renderer.setProgramStatus(status)).toBe(true)
     await renderer.nativeScene.driver.idle()
     expect(stdout.text()).toBe(reports.map(([, body]) => `\x1b]7501;${body}\x1b\\`).join(""))
-    // Destroy listeners can still report (see destroy-on-exit); the closed terminal refuses.
+    // Reports are accepted until the close starts in the microtask after destroy(), then refused.
     renderer.destroy()
-    await renderer.closed
+    expect(renderer.setProgramStatus({ state: "done" })).toBe(true)
+    await Promise.resolve()
     expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
   })
 
