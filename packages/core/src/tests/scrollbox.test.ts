@@ -1168,6 +1168,30 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     expect(frame).toContain("PARAGRAPH_0")
   })
 
+  // A whole-tree rebuild each frame replaces a placeholder Markdown before any highlight lands; the box still measures
+  // the whole document, so it scrolls (#1853).
+  test.each(["before", "after"])("markdown replaced %s its first frame, rebuilt each frame, measures", async (when) => {
+    const doc = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")
+    const heights: number[] = []
+    let previous: ScrollBoxRenderable | undefined
+    for (let i = 0; i < 12; i++) {
+      if (previous) testRenderer.root.remove(previous)
+      previous = new ScrollBoxRenderable(testRenderer, { height: 10 })
+      const markdown = new MarkdownRenderable(testRenderer, {
+        content: "Loading",
+        syntaxStyle: SyntaxStyle.create(testRenderer.nativeScene),
+        treeSitterClient: mockTreeSitterClient,
+      })
+      previous.add(markdown)
+      testRenderer.root.add(previous)
+      if (when === "after") await renderOnce()
+      markdown.content = doc
+      await renderOnce()
+      heights.push(previous.scrollHeight)
+    }
+    expect(heights).toEqual(Array(12).fill(30))
+  })
+
   test("maintains visibility when scrolling with many Code elements", async () => {
     const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
