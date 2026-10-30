@@ -100,4 +100,35 @@ describe("React Renderer | video element", () => {
     expect(videoRef!.ready).toBe(true)
     expect(videoRef!.videoMetadata?.height).toBe(90)
   })
+
+  it("reports an invalid initial crop once and clears a removed crop", async () => {
+    let videoRef: VideoRenderable | null = null
+    const failures: string[] = []
+    type Crop = { left: number; top: number; width: number; height: number } | undefined
+    let updateCrop: (crop: Crop) => void = () => {}
+
+    function App() {
+      const [crop, setCrop] = useState<Crop>({ left: 0, top: 0, width: 0, height: 1 })
+      updateCrop = setCrop
+      return (
+        <video
+          ref={(renderable: VideoRenderable | null) => {
+            videoRef = renderable
+          }}
+          source={VIDEO_FIXTURE}
+          crop={crop}
+          onError={(error) => failures.push(error.message)}
+          style={{ width: 8, height: 4 }}
+        />
+      )
+    }
+
+    testSetup = await testRender(<App />, { width: 12, height: 6 })
+    await testSetup.renderOnce()
+    expect(failures).toEqual([expect.stringContaining("positive u32 width")])
+    act(() => updateCrop({ left: 80, top: 45, width: 80, height: 45 }))
+    expect(videoRef!.crop).toEqual({ left: 80, top: 45, width: 80, height: 45 })
+    act(() => updateCrop(undefined))
+    expect(videoRef!.crop).toBeUndefined()
+  })
 })
