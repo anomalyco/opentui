@@ -159,6 +159,9 @@ describe("VideoRenderable", () => {
     renderer.root.add(video)
     await Promise.resolve()
     expect(errors).toHaveLength(1)
+    // An audio change waits for the next open instead of retrying a failed one.
+    video.audio = false
+    await Promise.resolve()
     // play() after a failed open opens again and reports the failure instead of staying silent.
     video.play()
     await Promise.resolve()
@@ -168,11 +171,15 @@ describe("VideoRenderable", () => {
   })
 
   test("replacing the source keeps playback intent and destroy releases the player", async () => {
-    const video = new VideoRenderable(renderer, { source: SILENT, autoplay: true })
+    const events: string[] = []
+    const video = new VideoRenderable(renderer, { source: SILENT, autoplay: true, onReady: () => events.push("ready") })
     renderer.root.add(video)
     expect(ticking()).toBe(true)
     video.autoplay = false
     video.source = undefined
+    // Closing drops the report of the open it replaced.
+    await Promise.resolve()
+    expect(events).toEqual([])
     expect(video.ready).toBe(false)
     expect(video.playing).toBe(true)
     expect(ticking()).toBe(false)
@@ -284,7 +291,7 @@ describe("VideoRenderable", () => {
     const video = new VideoRenderable(renderer, { width: 20, height: 6 })
     renderer.root.add(video)
     video.source = SILENT
-    expect(video.playing).toBe(false)
+    expect([video.playing, video.audio]).toEqual([false, true])
     video.autoplay = true
     expect(video.playing).toBe(true)
     expect(ticking()).toBe(true)
@@ -295,7 +302,7 @@ describe("VideoRenderable", () => {
 
   test("playback options set before a source apply when it opens", () => {
     const errors: Error[] = []
-    const video = new VideoRenderable(renderer, { onError: (error) => errors.push(error) })
+    const video = new VideoRenderable(renderer, { audio: false, onError: (error) => errors.push(error) })
     const lib = renderer.nativeScene.videoNode(video).lib
     const setters = [
       ["loop", true, "videoSetLoop", true],
@@ -308,8 +315,6 @@ describe("VideoRenderable", () => {
     const open = spyOn((lib as any).opentui.symbols, "ot_video_open")
     try {
       for (const [option, value] of setters) (video as any)[option] = value
-      expect(video.audio).toBe(true)
-      video.audio = false
       for (const spy of spies) expect(spy).not.toHaveBeenCalled()
       video.source = SILENT
       setters.forEach(([option, value, , applied], index) => {
@@ -317,9 +322,10 @@ describe("VideoRenderable", () => {
         expect(spies[index]).toHaveBeenCalledTimes(1)
         expect(spies[index].mock.calls[0][2]).toBe(applied)
       })
-      // Audio is chosen at open, so changing it reopens the source, with playback running.
+      // Audio is chosen at open, so a change reopens the source with playback running; the same value does not.
       video.play()
       video.audio = undefined
+      video.audio = null
       expect(open.mock.calls.map((call: unknown[]) => call[4])).toEqual([1, 0])
       expect(video.playing).toBe(true)
     } finally {

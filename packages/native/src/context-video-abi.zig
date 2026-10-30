@@ -181,11 +181,14 @@ test "Context video ABI checks nodes arguments and reports failures" {
     try std.testing.expectEqual(c.OT_WRONG_KIND, ot_video_open(context, &box, missing, missing.len, 0, &info));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_open(context, &node, missing, missing.len, 2, &info));
 
-    // Without audio, a source with an audio track creates no audio engine.
+    // A source with an audio track gets an audio engine, unless the open asks for no audio.
     const asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4";
+    const video_state = &(try core.raw().getRenderable(abi.handleFromC(node))).scene_node.?.control.video;
+    try std.testing.expectEqual(c.OT_OK, ot_video_open(context, &node, asset, asset.len, 0, &info));
+    try std.testing.expect(video_state.player.?.video.audio_engine != null);
     try std.testing.expectEqual(c.OT_OK, ot_video_open(context, &node, asset, asset.len, c.OT_VIDEO_OPEN_NO_AUDIO, &info));
     try std.testing.expectEqual(@as(u32, 1), info.has_audio);
-    try std.testing.expect((try core.raw().getRenderable(abi.handleFromC(node))).scene_node.?.control.video.player.?.video.audio_engine == null);
+    try std.testing.expect(video_state.player.?.video.audio_engine == null);
     try std.testing.expectEqual(@as(u32, 160), info.width);
     try std.testing.expectEqual(@as(u32, 24), info.fps_num / info.fps_den);
     try std.testing.expectEqual(c.OT_OK, ot_video_set_loop(context, &node, 1));
