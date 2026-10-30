@@ -53,7 +53,7 @@ The renderer also supplies structured scrollback writers and surfaces. Use the c
 
 Captured writes, writer snapshots, and surface commits wait in one queue until frames present them, in order. A writer snapshot or surface commit can hold at most the Session output capacity divided by 24 bytes, about 349,000 cells by default. A larger one throws.
 
-Captured stdout has a limit of 64 MiB, about 9,700 rows at 80 columns. Writer snapshots and surface commits don't count toward it, and the renderer never drops them.
+Captured stdout has a limit of 64 MiB, about 9,700 rows at 80 columns. Writer snapshots and surface commits don't count toward it. The renderer drops one only when its output is larger than one frame can write (about 8 MiB by default, for example a full-width snapshot of about 1,500 rows with its own colors in every cell), and emits `frame:dropped` for it.
 
 When captured stdout reaches half the limit, `stdout.write()` returns `false`. After frames write it below half again, `stdout` emits `'drain'`. A writer that respects backpressure, such as `pipe()`, then waits for the terminal instead of losing rows. The terminal stream also emits `'drain'` for its own writes, and that can wake the writer early. Backpressure therefore can't guarantee that no rows are lost.
 
@@ -145,6 +145,7 @@ Use `renderer.on(event, listener)` and remove long-lived listeners with `off()`.
 | `resize`              | `(width, height)`                | The render region changed.                                |
 | `frame`               | `{ frameId }`                    | A frame's output completed.                               |
 | `render:error`        | `{ error, renderable }`          | An error stopped a frame. See below.                      |
+| `frame:dropped`       | `{ bytes, limit }`               | A frame was too large for the output. See below.          |
 | `handler:error`       | `{ error, event }`               | A mouse handler threw.                                    |
 | `external_output`     | `CliRendererExternalOutputEvent` | Core queued a split-footer output snapshot.               |
 | `focus`, `blur`       | none                             | The terminal reported window focus or blur.               |
@@ -164,6 +165,8 @@ The `focus` and `blur` events describe terminal-window focus. They do not focus 
 `renderable` is the node whose paint hook threw. It is `undefined` for other errors, including errors from `onUpdate` and `onResize`.
 Without a `render:error` listener, the renderer reports the error through its normal error path.
 An error from a `setFrameCallback()` callback does not stop the frame. Core logs it and does not emit `render:error`.
+
+`frame:dropped` reports a frame that one write to the terminal cannot hold: `bytes` is its size and `limit` the most one frame can write. Image uploads don't count: a frame sends the images that fit and later frames send the rest. The screen keeps the previous frame. The renderer does not try the same content again; it reports it once and tries again after the content changes. In split-footer mode, it drops a scrollback commit that is too large, and the frames after it draw.
 
 ## Use renderer-owned services
 

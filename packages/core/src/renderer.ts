@@ -320,6 +320,14 @@ export interface CliRendererErrorEvent {
   renderable: Renderable | undefined
 }
 
+/** A frame whose output, without image uploads, is larger than one frame of Session output. */
+export interface CliRendererFrameDroppedEvent {
+  /** The frame's encoded size in bytes. */
+  bytes: number
+  /** The most bytes one frame can write. */
+  limit: number
+}
+
 export interface RendererSchedulerState {
   isRunning: boolean
   isRendering: boolean
@@ -1039,6 +1047,7 @@ export enum CliRenderEvents {
   RESIZE = "resize",
   FRAME = "frame",
   RENDER_ERROR = "render:error",
+  FRAME_DROPPED = "frame:dropped",
   HANDLER_ERROR = "handler:error",
   EXTERNAL_OUTPUT = "external_output",
   FOCUS = "focus",
@@ -1239,6 +1248,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // This is a visual smoothness control: smaller batches reduce frame envelope
   // churn and keep render latency predictable under heavy scrollback append load.
   private readonly maxSplitCommitsPerFrame: number = 8
+  // Scrollback commits per frame; 1 after a batch was too large for one frame.
+  private splitCommitLimit = this.maxSplitCommitsPerFrame
+  // The renderer state's dropped frame count already reported.
+  private droppedFrames = 0
 
   private _terminalWidth: number = 0
   private _terminalHeight: number = 0
@@ -5356,6 +5369,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           } else {
             this.clearFrameTimer()
           }
+        } else if (nativeStatus === "dropped" && (this._isRunning || this.immediateRerenderRequested)) {
+          // The native renderer does not encode a dropped frame again until its content changes.
+          const immediate = this.immediateRerenderRequested
+          this.immediateRerenderRequested = false
+          this.scheduleFrame(immediate ? this.minTargetFrameTime : this.targetFrameTime)
         } else {
           // Blocked frames resume on a cursor reply/timeout; skipped frames wait for output idle.
           this.immediateRerenderRequested = false
@@ -5429,14 +5447,41 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.loop()
   }
 
-  private async presentNativeScene(): Promise<"rendered" | "retryable-skip" | "failed" | "blocked"> {
+  /**
+   * After a failed frame: false unless the frame was dropped for its size. A dropped scrollback batch goes again one
+   * commit at a time, and a single commit is dropped. Each dropped content is reported once.
+   */
+  private handleDroppedFrame(commits: readonly QueuedCommit[] | null): boolean {
+    const state = this.lib.sessionGetRendererState(this.nativeSession.context, this.nativeSession.session)
+    if (state.droppedFrameBytes === 0) return false
+    const counted = state.droppedFrames !== this.droppedFrames
+    this.droppedFrames = state.droppedFrames
+    if (commits && commits.length > 1) {
+      this.splitCommitLimit = 1
+      return true
+    }
+    if (commits?.length === 1) {
+      this.externalOutputQueue.drop(1)
+      if (this.pendingNativeReplay) this.pendingNativeReplay.remaining -= 1
+    }
+    if (counted) {
+      const event: CliRendererFrameDroppedEvent = {
+        bytes: state.droppedFrameBytes,
+        limit: Number(this.nativeSession.maxAtomicWriteBytes),
+      }
+      this.emit(CliRenderEvents.FRAME_DROPPED, event)
+    }
+    return true
+  }
+
+  private async presentNativeScene(): Promise<"rendered" | "retryable-skip" | "failed" | "dropped" | "blocked"> {
     if (this.isSplitCursorSeedFrameBlocked()) return "blocked"
     const commits =
       this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
         ? this.pendingNativeReplay?.remaining === 0
           ? []
           : this.externalOutputQueue.batch(
-              Math.min(this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
+              Math.min(this.splitCommitLimit, this.pendingNativeReplay?.remaining ?? Infinity),
             )
         : null
     const split =
@@ -5462,6 +5507,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.scheduleRenderAfterOutputIdle()
         return "retryable-skip"
       case NativeSessionRenderStatus.Failed:
+        if (this.handleDroppedFrame(commits)) {
+          if (commits?.length) this.requestRender()
+          return "dropped"
+        }
         console.error("[CliRenderer] Native frame render failed; waiting for the next render request to force repaint")
         return "failed"
       default:
@@ -5486,6 +5535,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     this.externalOutputQueue.drop(commits.length)
     if (this.pendingNativeReplay) this.pendingNativeReplay.remaining -= commits.length
+    this.splitCommitLimit = this.maxSplitCommitsPerFrame
     this.nativeSplitAcceptedCount = 0
     this.pendingSplitFooterTransition = null
   }
@@ -5512,7 +5562,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       remaining = Math.min(remaining, this.externalOutputQueue.size)
       if (remaining === 0) break
       const commits = this.externalOutputQueue.batch(
-        Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
+        Math.min(remaining, this.splitCommitLimit, this.pendingNativeReplay?.remaining ?? Infinity),
       )
       // A null-frame render also reports PENDING for an earlier frame, which would complete unsent commits.
       if (this.lib.sessionGetRendererState(driver.context, driver.session).framePending) {
@@ -5524,7 +5574,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.getSplitPinnedRenderOffset(),
         false,
       )
-      if (result.status === NativeSessionRenderStatus.Failed) throw new Error("Native split output frame failed")
+      if (result.status === NativeSessionRenderStatus.Failed) {
+        if (!this.handleDroppedFrame(commits)) throw new Error("Native split output frame failed")
+        if (commits.length === 1) remaining -= 1
+        continue
+      }
       if (result.status === NativeSessionRenderStatus.Skipped) {
         await driver.idle()
         continue

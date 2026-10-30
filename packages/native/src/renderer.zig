@@ -80,6 +80,35 @@ fn snapshotRowEnd(snapshot: *const OptimizedBuffer, row: u32, limit: u32) u32 {
     return x;
 }
 
+/// What a frame shows: its size, cells, and image placements. An image cell counts by its
+/// placement only, so a drawn frame and its encoded copy, with fallbacks drawn, agree.
+fn frameContentHash(frame: *const OptimizedBuffer) u64 {
+    var hasher = std.hash.Wyhash.init(0x6f76_6572_7369_7a65);
+    hasher.update(std.mem.asBytes(&[2]u32{ frame.width, frame.height }));
+    for (frame.image_placements.items) |placement| {
+        const fields = [_]u32{
+            placement.image_handle,           @bitCast(placement.x),   @bitCast(placement.y),
+            placement.width,                  placement.height,        placement.pixel_width,
+            placement.pixel_height,           placement.source_x,      placement.source_y,
+            placement.source_width,           placement.source_height, placement.opacity,
+            @intFromEnum(placement.protocol),
+        };
+        hasher.update(std.mem.asBytes(&fields));
+    }
+    const cells = frame.buffer;
+    for (cells.char, cells.fg, cells.bg, cells.attributes) |char, fg, bg, attributes| {
+        if (gp.isImageChar(char)) {
+            hasher.update(std.mem.asBytes(&gp.imageIdFromChar(char)));
+            continue;
+        }
+        hasher.update(std.mem.asBytes(&char));
+        hasher.update(std.mem.asBytes(&fg));
+        hasher.update(std.mem.asBytes(&bg));
+        hasher.update(std.mem.asBytes(&attributes));
+    }
+    return hasher.final();
+}
+
 pub const SplitFooterTransitionMode = enum(u8) {
     none = 0,
     viewport_scroll = 1,
@@ -318,6 +347,12 @@ pub const CliRenderer = struct {
         retain: bool = false,
     } = null,
     presentationFailed: bool = false,
+    /// Frames dropped because they are larger than one frame of output: the count of
+    /// distinct contents dropped, the last one's size (0 once a frame is not dropped
+    /// for size), and its content, which is not encoded again until it changes.
+    dropped_frames: u32 = 0,
+    dropped_frame_bytes: u32 = 0,
+    dropped_content: ?u64 = null,
     /// Set by a Session only while it commits a scene draft.
     scene_work: ?FrameWork = null,
     /// The draft's rows that can differ from the presented frame, or null for all rows.
@@ -952,6 +987,15 @@ pub const CliRenderer = struct {
 
     fn renderFrame(self: *CliRenderer, force: bool, split: ?SplitRender) RenderStatus {
         std.debug.assert(self.pendingPresentation == null and !self.presentationFailed);
+        // A dropped scrollback commit is not held: the host drops the commit instead.
+        const holds = split == null or split.?.snapshots.len == 0;
+        if (self.dropped_content) |content| {
+            if (holds and frameContentHash(self.nextRenderBuffer) == content) {
+                self.clearSkippedFrameState();
+                return .failed;
+            }
+        }
+        self.dropped_frame_bytes = 0;
         // Backpressure: skipping must NOT update lastRenderTime so the next
         // successful render sees the full accumulated delta (catch-up).
         if (self.backend.prepareFrame() != .ok) {
@@ -1015,10 +1059,17 @@ pub const CliRenderer = struct {
         const status = renderStatusFromWrite(write_status);
         std.debug.assert(status != .rendered or !self.imageRenderFailed);
         if (status != .rendered) {
+            if (b.oversizeBytes != 0) {
+                // A failed encode still syncs every cell, so the current buffer holds the dropped frame.
+                self.dropped_frames +%= 1;
+                self.dropped_frame_bytes = @intCast(@min(b.oversizeBytes, std.math.maxInt(u32)));
+                self.dropped_content = if (holds) frameContentHash(self.currentRenderBuffer) else null;
+            }
             self.renderStats = previous_stats;
             self.rollbackSplitFrame(start_split_state);
             return self.finishUnpublishedFrame(status);
         }
+        self.dropped_content = null;
         self.markUploads();
         // A Session hands over scene work only for frames that paint the footer.
         std.debug.assert(self.scene_work == null or paint_footer);

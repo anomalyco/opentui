@@ -394,6 +394,9 @@ pub const FeedBackend = struct {
     /// when the frame fits once queued output drains (output pressure), else
     /// `.failed`. Neither publishes bytes; the renderer forces a full repaint.
     frameStatus: WriteStatus = .ok,
+    /// The encoded size of a frame that failed because it is larger than an empty
+    /// queue, counted to its end without image uploads; 0 otherwise.
+    oversizeBytes: usize = 0,
 
     /// Image uploads of the frame, in write order. Their bytes are staged but not
     /// charged to the feed: an upload that does not fit waits for a later frame.
@@ -457,7 +460,13 @@ pub const FeedBackend = struct {
             upload.cut = true;
             return;
         }
-        if (self.frameStatus != .ok) return error.BufferFull;
+        if (self.frameStatus != .ok) {
+            if (self.oversizeBytes == 0) return error.BufferFull;
+            // Count the rest of a frame that is too large without staging it. Accepting the
+            // bytes keeps writers from stopping inside a write, so the count is exact.
+            self.oversizeBytes +|= data.len;
+            return;
+        }
         const required = std.math.add(usize, self.frameBytes.items.len - self.keptUploadBytes, data.len) catch {
             self.failFrame();
             return error.BufferFull;
@@ -465,8 +474,9 @@ pub const FeedBackend = struct {
         self.feed.setStagedBytes(required) catch |err| {
             self.frameStatus = self.admissionStatus(required, err);
             self.failFrame();
-            return error.BufferFull;
+            if (self.oversizeBytes == 0) return error.BufferFull;
         };
+        if (self.frameStatus != .ok) return;
         return self.stage(data);
     }
 
@@ -491,8 +501,10 @@ pub const FeedBackend = struct {
     /// once its queued output drains. Anything else fails the frame.
     fn admissionStatus(self: *FeedBackend, frame_bytes: usize, err: NativeSpanFeed.StreamError) WriteStatus {
         if (err != error.NoSpace and err != error.MaxBytes) return .failed;
-        if (!self.feed.bounded() or frame_bytes > self.feed.atomicByteLimit()) return .failed;
-        return .skipped;
+        if (!self.feed.bounded()) return .failed;
+        if (frame_bytes <= self.feed.atomicByteLimit()) return .skipped;
+        self.oversizeBytes = frame_bytes;
+        return .failed;
     }
 
     fn uploadLimit(self: *FeedBackend) u64 {
@@ -563,6 +575,7 @@ pub const FeedBackend = struct {
         if (builtin.is_test) self.frameWriteCount = 0;
         self.frameStatus = .ok;
         self.frameActive = true;
+        self.oversizeBytes = 0;
         self.uploads.clearRetainingCapacity();
         self.upload = null;
         self.keptUploadBytes = 0;

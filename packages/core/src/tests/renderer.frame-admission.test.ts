@@ -1,8 +1,11 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import { NativeImage } from "../image.js"
 import { NativeSession } from "../NativeSession.js"
 import { RGBA } from "../lib/RGBA.js"
 import { ImageRenderable } from "../renderables/Image.js"
+import { TextRenderable } from "../renderables/Text.js"
+import { Renderable } from "../Renderable.js"
+import type { OptimizedBuffer } from "../buffer.js"
 import { CliRenderer, CliRenderEvents, createCliRenderer, type CliRendererConfig } from "../renderer.js"
 import { settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -301,4 +304,113 @@ test("Kitty uploads that do not fit one frame go out in the next frames", async 
   }
   await renderer.idle()
   expect(stdout.text().split("\x1b_Ga=t").length - 1).toBe(3)
+})
+
+/** Cells with their own colors, about 40 bytes each on the wire. */
+function paintNoise(buffer: OptimizedBuffer, seed: number, x = 0, y = 0, width = buffer.width, height = buffer.height) {
+  for (let row = 0; row < height; row++) {
+    for (let column = 0; column < width; column++) {
+      const shade = (column * 7 + row * 31 + seed) & 255
+      buffer.setCell(
+        x + column,
+        y + row,
+        "x",
+        RGBA.fromInts(shade, 255 - shade, 9),
+        RGBA.fromInts(9, shade, 255 - shade),
+      )
+    }
+  }
+}
+
+class Noise extends Renderable {
+  protected override renderSelf(buffer: OptimizedBuffer): void {
+    paintNoise(buffer, 0, this.x, this.y, this.width, this.height)
+  }
+}
+
+// 413: a full screen of noise (about 77 KB) is larger than one frame of this Session. It is reported once per
+// content and never logged; continuous rendering keeps its cadence, and a changed content is tried again.
+for (const mode of ["demand", "continuous"] as const) {
+  test(`a frame too large for the output is reported once per content (${mode})`, async () => {
+    const { renderer, stdout, clock } = createAdmissionRenderer()
+    const errors = spyOn(console, "error").mockImplementation(() => {})
+    const dropped: { bytes: number; limit: number }[] = []
+    renderer.on(CliRenderEvents.FRAME_DROPPED, (event) => dropped.push(event))
+    let seed = 0
+    let paints = 0
+    renderer.addPostProcessFn((buffer) => {
+      paints++
+      paintNoise(buffer, seed)
+    })
+    stdout.release()
+    const frames = async () => {
+      for (let turn = 0; turn < 5; turn++) {
+        if (mode === "demand") renderer.requestRender()
+        clock.advance(100)
+        await settle()
+      }
+    }
+    if (mode === "continuous") renderer.start()
+    await frames()
+    seed = 1
+    await frames()
+    renderer.pause()
+    const logged = errors.mock.calls.length
+    errors.mockRestore()
+    expect({ events: dropped.length, logged }).toEqual({ events: 2, logged: 0 })
+    // Each content was painted again on later frames, so the cadence went on after the drops.
+    expect(paints).toBeGreaterThanOrEqual(8)
+    expect(dropped[0]!.bytes).toBeGreaterThan(dropped[0]!.limit)
+    expect(dropped[0]!.limit).toBe(28_672)
+  })
+}
+
+// 413: a scrollback commit larger than one frame goes again alone and is then dropped and reported; the commits
+// around it and the footer still draw, and closing restores the terminal.
+test("a scrollback commit too large for the output is dropped", async () => {
+  const { renderer, stdout, clock } = createAdmissionRenderer(80, 24, { screenMode: "split-footer", footerHeight: 4 })
+  const dropped: unknown[] = []
+  renderer.on(CliRenderEvents.FRAME_DROPPED, (event) => dropped.push(event))
+  const footer = new TextRenderable(renderer, { content: "footer-a" })
+  renderer.root.add(footer)
+  const writeNoise = () =>
+    renderer.writeToScrollback((ctx) => ({
+      root: new Noise(ctx.renderContext, { position: "absolute", left: 0, top: 0, width: ctx.width, height: 17 }),
+      width: ctx.width,
+      height: 17,
+      startOnNewLine: true,
+      trailingNewline: true,
+    }))
+  stdout.release()
+  await renderer.setupTerminal()
+  stdout.write("before\n")
+  writeNoise()
+  stdout.write("after\n")
+  for (let turn = 0; turn < 8; turn++) {
+    clock.advance(100)
+    await settle()
+  }
+  footer.content = "ZZZZZZZZ"
+  // Later commits batch again.
+  for (const line of ["one", "two", "three"]) stdout.write(`${line}\n`)
+  for (let turn = 0; turn < 4; turn++) {
+    clock.advance(100)
+    await settle()
+  }
+  const output = stdout.text()
+  expect({ events: dropped.length, before: output.includes("before"), after: output.includes("after") }).toEqual({
+    events: 1,
+    before: true,
+    after: true,
+  })
+  expect(output).toContain("ZZZZZZZZ")
+  expect(output).toContain("three")
+  expect(output.slice(output.indexOf("one"), output.indexOf("three"))).not.toContain("\x1b[?2026l")
+  // The close flush drops a commit too large for one frame as well, then restores the terminal.
+  const closing = output.length
+  writeNoise()
+  renderer.destroy()
+  await renderer.closed
+  expect(dropped.length).toBe(2)
+  expect(stdout.text().slice(closing)).toContain("\x1b[?25h")
 })
