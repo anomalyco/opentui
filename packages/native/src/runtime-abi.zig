@@ -35,7 +35,7 @@ fn handleStdLog(
     };
     if (!ghostty_scope) return;
     const configured = ghosttyLogLevel() orelse return;
-    if (@intFromEnum(message_level) > @intFromEnum(configured)) return;
+    if (@backingInt(message_level) > @backingInt(configured)) return;
 
     const level: logger.LogLevel = switch (message_level) {
         .err => .err,

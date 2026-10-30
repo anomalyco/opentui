@@ -11,6 +11,7 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const owned_styled = @import("owned-styled-text.zig");
 const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
 
 const EditorView = editor_view.EditorView;
 const EditBuffer = edit_buffer.EditBuffer;
@@ -395,7 +396,7 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
         .{ .text = long, .wrap = .char, .start = .{ 0, 0 }, .moves = "D", .ends = &.{.{ 0, 20 }} },
         .{ .text = "Short line", .wrap = .char, .start = .{ 0, 0 }, .moves = "Uu", .ends = &.{ .{ 0, 0 }, .{ 0, 0 } } },
         .{ .text = "Short line\nSecond line", .wrap = .char, .start = .{ 1, 0 }, .moves = "Dd", .ends = &.{ .{ 1, 0 }, .{ 1, 0 } } },
-        .{ .text = "1234567890" ** 5, .wrap = .char, .start = .{ 0, 15 }, .moves = "DDU", .ends = &.{ .{ 0, 35 }, .{ 0, 50 }, .{ 0, 35 } } },
+        .{ .text = utils.repeat(u8, "1234567890", 5), .wrap = .char, .start = .{ 0, 15 }, .moves = "DDU", .ends = &.{ .{ 0, 35 }, .{ 0, 50 }, .{ 0, 35 } } },
         .{ .text = empty_line, .placeholder = &.{.{ .text = "hint\nhint" }}, .start = .{ 0, 10 }, .moves = "DDUU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
         .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "dduudU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 }, .{ 1, 0 }, .{ 0, 0 } } },
         // 001: a move into a width-2 unit lands on its start; the desired column stays.
@@ -966,7 +967,7 @@ test "EditorView - clearing a drawn placeholder lays out the edit buffer afresh"
     const ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
     defer ev.deinit();
     try eb.setText("");
-    try owned_styled.setPlaceholder(ev, &.{.{ .text = "type a message, press enter to send it\n" ** 200 }});
+    try owned_styled.setPlaceholder(ev, &.{.{ .text = utils.repeat(u8, "type a message, press enter to send it\n", 200) }});
     _ = ev.getVirtualLines();
     ev.clearPlaceholder();
     try std.testing.expectEqual(@as(usize, 1), ev.getVirtualLines().len);

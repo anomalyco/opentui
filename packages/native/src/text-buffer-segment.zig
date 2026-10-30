@@ -196,6 +196,7 @@ pub const TextChunk = struct {
             var reusable: std.ArrayListUnmanaged(RenderClusterInfo) = .{
                 .items = cached,
                 .capacity = cold.render_clusters_capacity,
+                .pointer_stability = .{},
             };
             reusable.clearRetainingCapacity();
             try utf8.findRenderClusterInfo(allocator, self.getBytes(mem_registry), tabwidth, control_display, self.isAsciiOnly(), width_method, &reusable);
@@ -281,6 +282,7 @@ pub const TextChunk = struct {
         var wrap_breaks: std.ArrayListUnmanaged(utf8.LayoutWrapBreak) = .{
             .items = cached,
             .capacity = cold.wrap_breaks_capacity,
+            .pointer_stability = .{},
         };
         var cjk_breaks = cold.cjk_breaks;
         cjk_breaks.clearRetainingCapacity();

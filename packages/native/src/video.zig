@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const io = if (builtin.is_test) std.testing.io else @import("root").io;
 const audio = @import("audio.zig");
 const image = @import("image.zig");
+const utils = @import("utils.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -53,7 +54,7 @@ pub const State = extern struct {
 const latency_window_size = 30;
 
 pub const LatencyWindow = struct {
-    samples: [latency_window_size]u32 = [_]u32{0} ** latency_window_size,
+    samples: [latency_window_size]u32 = @splat(0),
     count: u8 = 0,
     cursor: u8 = 0,
 
@@ -190,7 +191,7 @@ fn nowUs() i64 {
 }
 
 fn elapsedSince(started: i64) u32 {
-    return @intCast(std.math.clamp(nowUs() - started, 0, std.math.maxInt(u32)));
+    return utils.unsigned(u32, @min(utils.nonNegative(nowUs() - started), std.math.maxInt(u32)));
 }
 
 fn copyMessage(buffer: []u8, message: []const u8) usize {
@@ -271,7 +272,7 @@ pub const Video = struct {
     audio_lock: std.Io.Mutex = .init,
     audio_control: AudioControl = .{},
     audio_status: AudioStatus = .{},
-    audio_error_buf: [256]u8 = [_]u8{0} ** 256,
+    audio_error_buf: [256]u8 = @splat(0),
     audio_error_len: usize = 0,
     // Serializes every engine entry, as audio.zig requires. Device startup
     // holds it, so the owner thread never takes it.
@@ -300,7 +301,7 @@ pub const Video = struct {
     worker_quit: bool = false,
     worker_result: ?ProduceOutcome = null,
     // The last failure; cleared by seeks and recovery.
-    last_error_buf: [256]u8 = [_]u8{0} ** 256,
+    last_error_buf: [256]u8 = @splat(0),
     last_error_len: usize = 0,
 
     /// With external_audio the caller owns the audio: no engine is created and
@@ -309,11 +310,11 @@ pub const Video = struct {
     pub fn open(allocator: Allocator, path: []const u8, external_audio: bool, error_out: []u8) !*Video {
         if (error_out.len > 0) error_out[0] = 0;
         if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidArgument;
-        const path_z = try allocator.dupeZ(u8, path);
+        const path_z = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(path_z);
         var decoder: ?*Decoder = null;
         var info = Info{};
-        var detail: [256]u8 = [_]u8{0} ** 256;
+        var detail: [256]u8 = @splat(0);
         const limits: image.Limits = .{};
         const shim_limits: OtvLimits = .{ .max_pixels = limits.max_pixels, .max_width = limits.max_width, .max_height = limits.max_height };
         if (otv_open(path_z.ptr, &shim_limits, &decoder, &info, &detail, detail.len) != 0 or decoder == null) {
@@ -860,7 +861,7 @@ pub const Video = struct {
 
     fn updateControl(self: *Video, change: anytype) void {
         self.audio_lock.lockUncancelable(io);
-        inline for (std.meta.fields(@TypeOf(change))) |field| @field(self.audio_control, field.name) = @field(change, field.name);
+        inline for (@typeInfo(@TypeOf(change)).@"struct".field_names) |name| @field(self.audio_control, name) = @field(change, name);
         self.audio_control.version +%= 1;
         self.audio_lock.unlock(io);
         self.wakeAudio();

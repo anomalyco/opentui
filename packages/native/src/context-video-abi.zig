@@ -39,7 +39,7 @@ pub fn ot_scene_set_video(context: ?*ContextHandle, node: ?*const c.ot_handle, f
     if (admitted != c.OT_OK) return admitted;
     const owner = context.?;
     if (fit > c.OT_IMAGE_FILL) return abi.sessionError(owner, error.InvalidOptions);
-    owner.core.sceneSetVideo(handle, @enumFromInt(fit), if (buffer_ptr) |id| abi.handleFromC(id.*) else null) catch |err|
+    owner.core.sceneSetVideo(handle, @fromBackingInt(@intCast(fit)), if (buffer_ptr) |id| abi.handleFromC(id.*) else null) catch |err|
         return abi.sessionError(owner, err);
     return c.OT_OK;
 }
@@ -177,11 +177,11 @@ test "Context video ABI checks nodes arguments and reports failures" {
     var count: u32 = 0;
     try std.testing.expectEqual(c.OT_OK, ot_video_get_error(context, &node, null, 0, &count));
     try std.testing.expect(count > 8);
-    var short = [_]u8{0xaa} ** 8;
+    var short: [8]u8 = @splat(0xaa);
     var unchanged: u32 = 7;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_video_get_error(context, &node, &short, short.len, &unchanged));
     try std.testing.expectEqual(@as(u32, 7), unchanged);
-    try std.testing.expectEqualSlices(u8, &([_]u8{0xaa} ** 8), &short);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(0xaa)), &short);
     var detail: [512]u8 = undefined;
     var copied: u32 = 0;
     try std.testing.expectEqual(c.OT_OK, ot_video_get_error(context, &node, &detail, detail.len, &copied));

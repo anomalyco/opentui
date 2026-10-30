@@ -5,6 +5,7 @@ const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const ansi = @import("../ansi.zig");
+const utils = @import("../utils.zig");
 const scene_record = @import("../scene-record.zig");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 
@@ -465,7 +466,7 @@ const Resources = struct {
         // Never placed, so never prepared: corrupted coordinates must still draw nothing.
         const scene_box = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 10);
         try f.owner.sceneSetPaint(scene_box, .{ .borderSides = c.OT_BORDER_ALL });
-        const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
+        const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255 }, 4).*;
         return .{
             .text = text,
             .edit = edit,
@@ -502,7 +503,7 @@ fn appendCommand(recording: *Recording, command: Command, resources: Resources) 
             recording.append(c.ot_scene_record_packed{ .header = recordHeader(c.OT_SCENE_RECORD_PACKED), .x = 3, .y = 1, .width = 2, .height = 1, .byte_count = @sizeOf(@TypeOf(cells)), .reserved = 0 }, std.mem.sliceAsBytes(&cells));
         },
         .supersample => {
-            const pixels = [_]u8{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 } ** 2;
+            const pixels = utils.repeat(u8, &.{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 }, 2).*;
             recording.append(c.ot_scene_record_supersample{ .header = recordHeader(c.OT_SCENE_RECORD_SUPERSAMPLE), .x = 6, .y = 2, .format = 1, .stride = 16, .byte_count = pixels.len, .reserved = 0 }, &pixels);
         },
         .grayscale => recording.append(c.ot_scene_record_grayscale{ .header = recordHeader(c.OT_SCENE_RECORD_GRAYSCALE), .x = 1, .y = 3, .width = 3, .height = 1, .flags = c.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND | c.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND, .sample_count = 3, .foreground = white, .background = blue }, std.mem.sliceAsBytes(&[_]f32{ 0.2, 0.6, 1.0 })),
@@ -537,7 +538,7 @@ fn paintScene(f: Fixture) !context.Handle {
     try f.owner.sceneSetSlider(try placed(f, c.OT_SCENE_SLIDER, 4, 6, 1, 4), .{ .value = 40 });
     _ = try placed(f, c.OT_SCENE_ARROW, 5, 11, 0, 1);
     // A wide picture takes the fit path and the cropping cover path.
-    const pixels = [_]u8{ 200, 40, 0, 255, 0, 40, 200, 255 } ** 4;
+    const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255, 0, 40, 200, 255 }, 4).*;
     const picture = try f.owner.createImagePixels(&pixels, 4, 2, .{ .stride = 16 });
     try f.owner.sceneSetImage(try placed(f, c.OT_SCENE_IMAGE, 6, 0, 3, 2), picture, .fit, .blocks, null);
     const backed = try placed(f, c.OT_SCENE_IMAGE, 7, 2, 3, 2);
@@ -771,8 +772,8 @@ test "Scene record and direct text draws fit text to a cell width" {
         const y: i32 = @intCast(index);
         var record = textRecord(row.x, y, row.max_width, c.OT_BUFFER_DRAW_HAS_BACKGROUND | @as(u32, if (row.ellipsis) c.OT_BUFFER_DRAW_FIT_ELLIPSIS else 0));
         if (row.legacy) record.header.struct_size = @offsetOf(c.ot_buffer_draw_text_record, "max_width");
-        recording.text("x" ** width, 0, y);
-        try f.owner.drawBufferText(direct, "x" ** width, 0, y, .{ 255, 255, 255, 255 }, null, 0);
+        recording.text(utils.repeat(u8, "x", width), 0, y);
+        try f.owner.drawBufferText(direct, utils.repeat(u8, "x", width), 0, y, .{ 255, 255, 255, 255 }, null, 0);
         if (row.scissor) {
             recording.append(c.ot_scene_record_stack{ .header = recordHeader(c.OT_SCENE_RECORD_STACK), .operation = c.OT_BUFFER_STACK_PUSH_SCISSOR, .x = 1, .y = y, .width = 2, .height = 1, .opacity = 1 }, &.{});
             try target.pushScissorRect(1, y, 2, 1);
@@ -903,7 +904,7 @@ test "Scene record fingerprints bound the rows each command kind writes" {
         .{ .command = .{ .draw = .grid }, .print = .{ .top = 1, .bottom = 4 } },
         .{ .command = .{ .draw = .stack }, .print = .{} },
     };
-    var seen: std.EnumSet(scene_record.Command) = .initEmpty();
+    var seen: std.EnumSet(scene_record.Command) = .empty;
     for (rows) |row| {
         var recording: Recording = .{};
         recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
@@ -926,7 +927,7 @@ test "Scene record fingerprints bound the rows each command kind writes" {
         try testing.expectEqual(row.print, print);
     }
     // Each command type needs a row.
-    try testing.expect(seen.eql(.initFull()));
+    try testing.expect(seen.eql(.full));
 }
 
 const FrameWork = @import("../renderer.zig").FrameWork;
@@ -937,7 +938,7 @@ const Hooked = enum { same, text, outside, back, above, below, offscreen, offscr
 // lists stay kept (B5a) and an unchanged recording paints nothing. The table runs without VERIFY,
 // then with it: VERIFY must pass and change no count.
 test "Scene record frames keep unchanged recordings and damage the rows changed ones write" {
-    var results: [2][std.meta.fields(Hooked).len]FrameWork = undefined;
+    var results: [2][@typeInfo(Hooked).@"enum".field_names.len]FrameWork = undefined;
     for ([_]bool{ false, true }, &results) |verify, *counts| try hookedTable(verify, counts);
     try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
 }
@@ -1029,7 +1030,7 @@ fn hookedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .image, .damage = 6, .reasons = FrameWork.full_path_images },
         .{ .change = .image_gone, .damage = 6, .reasons = FrameWork.full_path_images | FrameWork.full_path_unretained },
     };
-    comptime std.debug.assert(rows.len == std.meta.fields(Hooked).len);
+    comptime std.debug.assert(rows.len == @typeInfo(Hooked).@"enum".field_names.len);
     for (rows, counts) |row, *count| {
         errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
         var recording: Recording = .{};

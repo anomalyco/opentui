@@ -26,7 +26,8 @@ const ZLIB_URL = `https://zlib.net/fossils/zlib-${ZLIB_VERSION}.tar.gz`
 const NASM_VERSION = "3.02"
 const NASM_SHA256 = "87336eba53b4acfe917424ab5d500d2b0054d9f5148d35c2273ccf2cfb712f0d"
 const NASM_URL = `https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/nasm-${NASM_VERSION}.tar.xz`
-const BUILD_REVISION = "5"
+// zig cc compiles the objects, so a new Zig version needs a new revision.
+const BUILD_REVISION = "6-zig-0.17.0"
 // Must match the macOS minimum of the Zig-built library so the static FFmpeg
 // objects never carry a newer availability floor than the final link.
 const MACOS_VERSION_MIN = "13.0"

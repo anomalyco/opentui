@@ -3,7 +3,9 @@ const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     var default_target = b.graph.host.query;
-    if (builtin.os.tag == .linux) {
+    // Zig 0.17 compiles a host query without a CPU model for the baseline CPU.
+    default_target.cpu_model = .native;
+    if (builtin.target.os.tag == .linux) {
         default_target.abi = .musl;
         default_target.glibc_version = null;
     }

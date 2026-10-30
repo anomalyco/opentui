@@ -150,7 +150,7 @@ const Kind = enum {
     writer_publish,
 
     fn owner(kind: Kind) bool {
-        return @intFromEnum(kind) < @intFromEnum(Kind.tick);
+        return @backingInt(kind) < @backingInt(Kind.tick);
     }
 };
 
@@ -481,7 +481,7 @@ const Sim = struct {
     /// Folds an event into the run's trace: its time, kind and argument, in order.
     fn traceEvent(self: *Sim, event: Event) void {
         if (self.print_trace) std.debug.print("{d:>12} {t} {d}\n", .{ self.now, event.kind, event.arg });
-        for ([_]u64{ self.now, @intFromEnum(event.kind), event.arg }) |word| {
+        for ([_]u64{ self.now, @backingInt(event.kind), event.arg }) |word| {
             self.stats.trace = (self.stats.trace ^ word) *% 0x100000001b3;
         }
     }
@@ -1042,7 +1042,7 @@ const Sim = struct {
     fn onInput(self: *Sim, event: input_parser.Event, raw: []const u8) !void {
         if (self.print_trace) std.debug.print("  input kind {d} code {d} raw {any}\n", .{ event.kind, event.code, raw });
         try self.decoded.append(gpa, .{ .kind = event.kind, .code = event.code, .modifiers = event.modifiers, .raw = std.hash.Wyhash.hash(0, raw) });
-        switch (@as(input_parser.Kind, @enumFromInt(event.kind))) {
+        switch (@as(input_parser.Kind, @fromBackingInt(@intCast(event.kind)))) {
             .key => {
                 self.stats.keys_seen += 1;
                 self.stats.key_wait_max_ns = @max(self.stats.key_wait_max_ns, self.read_wait_ns);
@@ -1557,12 +1557,12 @@ fn runOne(run: Run) !Stats {
 }
 
 fn add(total: *Stats, stats: Stats) void {
-    inline for (std.meta.fields(Stats)) |field| {
-        if (comptime std.mem.endsWith(u8, field.name, "_max_ns") or std.mem.endsWith(u8, field.name, "_max") or std.mem.endsWith(u8, field.name, "_peak_bytes")) {
-            @field(total, field.name) = @max(@field(total, field.name), @field(stats, field.name));
-        } else if (comptime std.mem.eql(u8, field.name, "trace")) {
+    inline for (@typeInfo(Stats).@"struct".field_names) |name| {
+        if (comptime std.mem.endsWith(u8, name, "_max_ns") or std.mem.endsWith(u8, name, "_max") or std.mem.endsWith(u8, name, "_peak_bytes")) {
+            @field(total, name) = @max(@field(total, name), @field(stats, name));
+        } else if (comptime std.mem.eql(u8, name, "trace")) {
             total.trace = std.hash.Wyhash.hash(total.trace, std.mem.asBytes(&stats.trace));
-        } else @field(total, field.name) += @field(stats, field.name);
+        } else @field(total, name) += @field(stats, name);
     }
 }
 

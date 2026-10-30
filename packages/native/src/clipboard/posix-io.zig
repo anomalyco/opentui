@@ -91,7 +91,7 @@ pub fn checkSocketError(handle: std.posix.fd_t) !void {
         &size,
     );
     if (std.posix.errno(result) != .SUCCESS) return error.Unexpected;
-    return switch (@as(std.posix.E, @enumFromInt(error_code))) {
+    return switch (@as(std.posix.E, @fromBackingInt(@intCast(error_code)))) {
         .SUCCESS => {},
         .ACCES => error.AccessDenied,
         .PERM => error.PermissionDenied,

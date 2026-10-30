@@ -14,7 +14,8 @@ const utf8 = @import("utf8.zig");
 const image = @import("image.zig");
 const video = @import("video.zig");
 const Context = @import("context.zig").Context;
-const nextPaintEpoch = @import("utils.zig").nextPaintEpoch;
+const utils = @import("utils.zig");
+const nextPaintEpoch = utils.nextPaintEpoch;
 const scene_record = @import("scene-record.zig");
 const api = @import("context_abi_c");
 
@@ -2729,9 +2730,9 @@ pub const Scene = struct {
             const end = start + width;
             const a = first.buffer;
             const b = second.buffer;
-            if (!std.mem.eql(u32, a.char[start..end], b.char[start..end]) or !std.mem.eql(u32, a.attributes[start..end], b.attributes[start..end]) or
-                !std.mem.eql(u8, std.mem.sliceAsBytes(a.fg[start..end]), std.mem.sliceAsBytes(b.fg[start..end])) or
-                !std.mem.eql(u8, std.mem.sliceAsBytes(a.bg[start..end]), std.mem.sliceAsBytes(b.bg[start..end]))) return error.RetainedMismatch;
+            if (!utils.eql(u32, a.char[start..end], b.char[start..end]) or !utils.eql(u32, a.attributes[start..end], b.attributes[start..end]) or
+                !utils.eql(u8, std.mem.sliceAsBytes(a.fg[start..end]), std.mem.sliceAsBytes(b.fg[start..end])) or
+                !utils.eql(u8, std.mem.sliceAsBytes(a.bg[start..end]), std.mem.sliceAsBytes(b.bg[start..end]))) return error.RetainedMismatch;
         }
     }
 
@@ -2760,7 +2761,7 @@ pub const Scene = struct {
         defer self.verify_target = null;
         try self.paintMembers(owner, cli, options, recording, refresh_views, false);
         try self.verifyRows(scratch, next, false);
-        if (!std.mem.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(kept.items))) return error.RetainedMismatch;
+        if (!utils.eql(u8, std.mem.sliceAsBytes(self.hits.items), std.mem.sliceAsBytes(kept.items))) return error.RetainedMismatch;
     }
 
     /// Where paint draws: next, or the scratch buffer of a verified skip.
@@ -3169,7 +3170,7 @@ pub const Scene = struct {
         if (builtin.is_test) self.test_cursor_steps += 1;
         const node = entry.node.scene_node.?;
         const layout = cellLayout(entry.layout);
-        if (node.control.editor.mouse_pointer < std.meta.tags(@import("terminal.zig").MousePointerStyle).len) cli.terminal.setMousePointerStyle(@enumFromInt(node.control.editor.mouse_pointer));
+        if (node.control.editor.mouse_pointer < std.meta.tags(@import("terminal.zig").MousePointerStyle).len) cli.terminal.setMousePointerStyle(@fromBackingInt(@intCast(node.control.editor.mouse_pointer)));
         if (!node.control.editor.show_cursor) return self.releaseEditorCursor(cli);
         const cursor = node.editor.?.view.getVisualCursor();
         // Terminal keeps zero-based row/column in u16 alongside its public position.
@@ -3178,7 +3179,7 @@ pub const Scene = struct {
         const cursor_y = std.math.clamp(layout.screenY + @as(f64, @floatFromInt(cursor.visual_row)) + 1, 1, position_max);
         cli.terminal.setCursorPosition(@intFromFloat(cursor_x), @intFromFloat(cursor_y), true);
         // Styles 0 to 3 are the enum's order; sceneSetEditorOptions rejects others.
-        cli.terminal.setCursorStyle(@enumFromInt(node.control.editor.style), node.control.editor.blinking);
+        cli.terminal.setCursorStyle(@fromBackingInt(@intCast(node.control.editor.style)), node.control.editor.blinking);
         cli.terminal.setCursorColor(node.control.editor.color);
         self.editor_cursor_owned = true;
     }
