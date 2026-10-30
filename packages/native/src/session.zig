@@ -286,6 +286,8 @@ const Lifecycle = struct {
     /// Enable has published, so restoration may clear the rendered main-screen
     /// area. Before that, the visible screen still holds shell output.
     screen_claimed: bool = false,
+    /// A late close dropped output, which may have cut a frame inside its synchronized update.
+    dropped: bool = false,
     image_index: usize = 0,
     deadline_ns: ?u64 = null,
 
@@ -1221,6 +1223,7 @@ pub const Session = struct {
                 if (progress.image_index == value.currentImages.items.len) progress.step = .reset_input;
             },
             .reset_input => {
+                if (progress.dropped) try writer.writeAll(ansi.ANSI.syncReset);
                 try candidate.resetInputModes(writer);
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
@@ -1528,15 +1531,30 @@ pub const Session = struct {
         try self.beginClose();
         // Restoration packets enter only a drained queue. Once the first is queued, the queue holds nothing else.
         const step = self.lifecycle.step;
-        if (self.lifecycle.image_index != 0 or (step != .idle and step != .delete_images)) return;
+        if (step != .idle and (step != .delete_images or self.lifecycle.image_index != 0)) return;
         self.finishPresentation(.failed);
-        self.releaseQueued(if (self.pending) |ticket| ticket.len else 0);
+        if (self.releaseQueued(if (self.pending) |ticket| ticket.len else 0)) {
+            // Dropped packets may have changed the terminal model without reaching the terminal: reset every
+            // mode the Session turned on.
+            self.lifecycle.dropped = true;
+            if (self.renderer) |value| {
+                const state = &value.terminal.state;
+                state.alt_screen = state.alt_screen or state.alt_screen_was_entered;
+                state.kitty_keyboard = state.kitty_keyboard or state.kitty_keyboard_was_pushed;
+                state.modify_other_keys = true;
+                state.bracketed_paste = true;
+                state.focus_tracking = true;
+            }
+        }
         if (self.output.closed and self.isDrained()) self.state = .closed;
     }
 
     /// Releases every queued span. The held span keeps `kept` bytes from its offset for a copy in flight.
-    fn releaseQueued(self: *Session, kept: u32) void {
+    /// Returns whether any bytes were released.
+    fn releaseQueued(self: *Session, kept: u32) bool {
+        var released = false;
         if (self.span) |*span| {
+            released = span.len > self.span_offset + kept;
             if (kept == 0) {
                 self.output.releaseSpan(span.slot_index, span.release_id) catch unreachable;
                 self.span = null;
@@ -1546,7 +1564,9 @@ pub const Session = struct {
         var spans: [1]feed.SpanInfo = undefined;
         while (self.output.drainSpans(&spans) != 0) {
             self.output.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
+            released = true;
         }
+        return released;
     }
 
     /// Explicitly discards disconnected output. Copies belong to the host, so
@@ -1555,7 +1575,7 @@ pub const Session = struct {
         self.abandonStdout();
         self.cancelSceneFrame();
         self.finishPresentation(.failed);
-        self.releaseQueued(0);
+        _ = self.releaseQueued(0);
         self.output.close() catch unreachable;
         self.pending = null;
         self.state = .cancelled;

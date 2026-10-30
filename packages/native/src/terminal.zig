@@ -241,7 +241,9 @@ hyperlinks_override: ?bool = null,
 
 state: struct {
     alt_screen: bool = false,
+    alt_screen_was_entered: bool = false,
     kitty_keyboard: bool = false,
+    kitty_keyboard_was_pushed: bool = false,
     kitty_keyboard_flags: u8 = 0,
     bracketed_paste: bool = false,
     mouse: bool = false,
@@ -351,6 +353,7 @@ pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
 pub fn enterAltScreen(self: *Terminal, tty: anytype) !void {
     try tty.writeAll(ansi.ANSI.switchToAlternateScreen);
     self.state.alt_screen = true;
+    self.state.alt_screen_was_entered = true;
 }
 
 pub fn exitAltScreen(self: *Terminal, tty: anytype) !void {
@@ -1056,6 +1059,7 @@ pub fn setKittyKeyboard(self: *Terminal, tty: anytype, enable: bool, flags: u8) 
         if (!self.state.kitty_keyboard) {
             try tty.print(ansi.ANSI.csiUPush, .{flags});
             self.state.kitty_keyboard = true;
+            self.state.kitty_keyboard_was_pushed = true;
             self.state.kitty_keyboard_flags = flags;
         }
     } else {

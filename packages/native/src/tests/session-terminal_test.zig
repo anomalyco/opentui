@@ -7,6 +7,7 @@ const ansi = @import("../ansi.zig");
 const image = @import("../image.zig");
 const scene = @import("../scene.zig");
 const yoga = @import("../yoga.zig");
+const vt_decode = @import("vt-decode.zig");
 
 const transport: session.Options = .{
     .chunk_size = 4096,
@@ -620,7 +621,9 @@ test "Session exit pump preserves output order and restoration without clocks or
             try f.value.write("queued-before-exit");
         }
         var bytes: [8192]u8 = undefined;
-        const ticket = (try f.value.readOutput(bytes[0..1])).?;
+        // The held copy starts inside its span.
+        try f.value.completeOutput((try f.value.readOutput(bytes[0..1])).?, .written);
+        const ticket = (try f.value.readOutput(bytes[1..2])).?;
         const clocks = probe.clocks;
         const allocated = failing.allocated_bytes;
         failing.fail_index = failing.alloc_index;
@@ -629,7 +632,7 @@ test "Session exit pump preserves output order and restoration without clocks or
         try testing.expectEqual(.output_pending, try f.value.pumpExit());
         try testing.expectEqualDeep(ticket, f.value.pending.?);
         try f.value.completeOutput(ticket, .written);
-        var len: usize = ticket.len;
+        var len: usize = 1 + ticket.len;
         for (0..32) |_| {
             switch (try f.value.pumpExit()) {
                 .output_pending => len += (try f.drain(bytes[len..])).len,
@@ -647,11 +650,78 @@ test "Session exit pump preserves output order and restoration without clocks or
         try testing.expect(!failing.has_induced_failure);
         const output = bytes[0..len];
         if (!closing) try testing.expectEqual(!drop, std.mem.startsWith(u8, output, "queued-before-exit"));
-        if (drop) try testing.expect(std.mem.find(u8, output, "ueued") == null);
+        if (drop) try testing.expect(std.mem.find(u8, output, "eued") == null);
         try testing.expect(std.mem.find(u8, output, "\x1b[?1049l") != null);
         try testing.expect(std.mem.find(u8, output, "\x1b[?2004l") != null);
         try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.showCursor));
         try testing.expect(f.value.canDestroy());
+    }
+}
+
+test "Session late close restores the modes that dropped output changed" {
+    // A drop can cut a frame inside its synchronized update, or drop a queued packet that the terminal model
+    // already counts as written. The far terminal must still end on the main screen with its modes reset. Raw
+    // output after a completed suspend is dropped too, whatever images the suspend deleted.
+    for ([_]enum { frame, kitty_off, kitty_switch, main_screen, after_suspend }{ .frame, .kitty_off, .kitty_switch, .main_screen, .after_suspend }) |case| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        var bytes: [32 * 1024]u8 = undefined;
+        try f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 5 });
+        var len = (try f.driveOutput(&now_ns, .active, &bytes, 256)).len;
+        const kitty_reply: session.Control = .{ .capability_response = "\x1b[?0u" };
+        if (case != .kitty_switch) {
+            try f.value.control(kitty_reply);
+            len += (try f.drain(bytes[len..])).len;
+        }
+        if (case == .frame or case == .after_suspend) {
+            const pixels = try image.createFromRgba(testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
+            defer pixels.deinit();
+            try f.paint("ab");
+            try testing.expect(try f.cli.getNextBuffer().drawImage(pixels, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+            try testing.expectEqual(.pending, try f.owner.renderSession(f.id, true));
+        }
+        if (case == .after_suspend) {
+            len += (try f.drain(bytes[len..])).len;
+            try f.owner.suspendSession(f.id);
+            len += (try f.driveOutput(&now_ns, .suspended, bytes[len..], 256)).len;
+        }
+        if (case != .frame) try f.value.write("x");
+        const ticket = if (case == .after_suspend) null else (try f.value.readOutput(bytes[len .. len + 16])).?;
+        switch (case) {
+            .frame, .after_suspend => {},
+            .kitty_off => try f.value.control(.{ .kitty_keyboard_flags = 0 }),
+            .kitty_switch => try f.value.control(kitty_reply),
+            .main_screen => try f.value.setScreen(false, 4, 2, ""),
+        }
+        try f.owner.dropSessionOutput(f.id);
+        if (ticket) |held| {
+            try f.value.completeOutput(held, .written);
+            len += held.len;
+        } else try testing.expectEqual(@as(u32, 0), f.value.getStats().outstanding_spans);
+        for (0..32) |_| {
+            switch (try f.value.pumpExit()) {
+                .output_pending => len += (try f.drain(bytes[len..])).len,
+                .again => {},
+                .closed => break,
+                else => return error.TestUnexpectedResult,
+            }
+        }
+        try testing.expectEqual(.restored, f.value.getTerminalState().phase);
+        const output = bytes[0..len];
+        var far = try vt_decode.newTerminal(4, 2);
+        defer far.deinit(testing.allocator);
+        var stream = far.vtStream();
+        defer stream.deinit();
+        stream.nextSlice(output);
+        try testing.expect(!far.modes.get(.synchronized_output));
+        try testing.expectEqual(.primary, far.screens.active_key);
+        for ([_]@TypeOf(far.screens.active_key){ .primary, .alternate }) |key| {
+            if (far.screens.get(key)) |screen| try testing.expectEqual(@as(u5, 0), screen.kitty_keyboard.current().int());
+        }
+        // Ghostty VT does not track modifyOtherKeys level 1, so check that the last switch turns it off.
+        const set = std.mem.lastIndexOf(u8, output, ansi.ANSI.modifyOtherKeysSet) orelse 0;
+        try testing.expect(set < (std.mem.lastIndexOf(u8, output, ansi.ANSI.modifyOtherKeysReset) orelse 0));
     }
 }
 
