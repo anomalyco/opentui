@@ -171,9 +171,13 @@ export class VideoRenderable extends Renderable {
       this.afterOpen(() => {
         this.onReady?.(metadata)
         this.startRequested()
+        // A crop outside this source shows the whole frame until one fits. The crop set in the same turn counts.
+        try {
+          if (this._crop) checkCrop(this._crop, metadata.width, metadata.height)
+        } catch (error) {
+          this.reportError(error, "")
+        }
       })
-      // A crop outside this source shows the whole frame until one fits.
-      this.acceptCrop(this._crop)
     } catch (error) {
       this._metadata = null
       this._playRequested = false
@@ -515,7 +519,8 @@ export class VideoRenderable extends Renderable {
     try {
       return crop && checkCrop(crop, this._metadata?.width, this._metadata?.height)
     } catch (error) {
-      this.afterOpen(() => this.reportError(error, ""))
+      // Frameworks may assign onError, or the source, after crop.
+      queueMicrotask(() => this.isDestroyed || this.reportError(error, ""))
       return null
     }
   }

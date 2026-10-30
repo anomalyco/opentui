@@ -312,6 +312,14 @@ describe("ImageRenderable image loading", () => {
     expect(renderable.crop).toEqual({ left: 2, top: 0, width: 2, height: 1 })
     renderable.crop = null
     expect(renderable.getFittedSize(4, 4, 1)).toEqual({ width: 4, height: 4 })
+    // A crop set while a larger source loads is checked against that source.
+    const larger = NativeImage.fromRgba(new Uint8Array(8 * 6 * 4), 8, 6)
+    renderable.source = larger
+    larger.dispose()
+    renderable.crop = { left: 4, top: 3, width: 4, height: 3 }
+    await renderable.loadPromise
+    expect(renderable.crop).toEqual({ left: 4, top: 3, width: 4, height: 3 })
+    expect(errors).toHaveLength(1)
     renderable.destroy()
   })
 

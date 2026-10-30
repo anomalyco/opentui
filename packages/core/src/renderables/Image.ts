@@ -157,7 +157,8 @@ export class ImageRenderable extends Renderable {
   /** A crop that is not whole pixels, or lies outside the loaded image, reports through onError and keeps the previous one. */
   public set crop(value: ExtractOptions | null | undefined) {
     if (sameCrop(this._crop, value ?? undefined) || this.isDestroyed) return
-    const next = this.acceptCrop(value ?? undefined, this._image)
+    // A loading source checks the crop when it loads, not against the outgoing image.
+    const next = this.acceptCrop(value ?? undefined, this._loadController ? null : this._image)
     if (next === null) return
     this._ctx.nativeScene.setCrop(this, next)
     this._crop = next

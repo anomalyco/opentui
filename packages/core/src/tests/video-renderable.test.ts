@@ -412,6 +412,16 @@ describe("VideoRenderable", () => {
     await setup.renderOnce()
     expect(video.playing).toBe(true)
     expect(errors).toHaveLength(1)
+    // The open checks the crop set in the same turn, and a crop rejected before the source still reports.
+    const next = new VideoRenderable(renderer, { crop: { left: 0, top: 0, width: 200, height: 100 } })
+    next.onError = (e) => errors.push(e)
+    next.source = SILENT
+    next.crop = { left: 0, top: 0, width: 80, height: 45 }
+    const late = new VideoRenderable(renderer, { onError: (e) => errors.push(e) })
+    late.crop = { left: 0, top: 0, width: 0, height: 45 }
+    late.source = SILENT
+    await Promise.resolve()
+    expect(errors.map((e) => e.message).slice(1)).toEqual([expect.stringContaining("positive u32 width")])
   })
 
   test("pausing before a deferred autoplay report drops its onPlay", async () => {
