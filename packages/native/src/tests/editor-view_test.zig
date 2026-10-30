@@ -45,6 +45,28 @@ fn marginCells(size: u32, margin: f32) u32 {
     return @min(raw, if (size > 1) (size - 1) / 2 else 0);
 }
 
+/// The viewport and visual cursor that one scroll to `eb`'s cursor from `vp` gives on a fresh
+/// layout of the same text.
+fn followFresh(pools: *TestPools, eb: *EditBuffer, ev: *EditorView, vp: Viewport) !struct { Viewport, editor_view.VisualCursor } {
+    var bytes: [4096]u8 = undefined;
+    const fresh_buffer = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+    defer fresh_buffer.deinit();
+    try fresh_buffer.setText(bytes[0..eb.getText(&bytes)]);
+    const fresh = try EditorView.init(std.testing.allocator, fresh_buffer, vp.width, vp.height);
+    defer fresh.deinit();
+    fresh.setWrapMode(ev.text_buffer_view.wrap_mode);
+    fresh.setScrollMargin(ev.scroll_margin);
+    fresh.setViewport(vp, false);
+    const cursor = eb.getPrimaryCursor();
+    try fresh_buffer.setCursor(cursor.row, cursor.col);
+    // The visual cursor settles the fresh view, so the reference does not rely on `getViewport`.
+    const vcursor = fresh.getVisualCursor();
+    return .{ fresh.text_buffer_view.getViewport().?, vcursor };
+}
+
+// Edits only make a scroll due. The first read after a burst, whichever it is, scrolls once from
+// the viewport of the last read, as a fresh layout of the same text and cursor would (005: undo
+// and redo too).
 test "EditorView - random edits and moves keep the cursor inside the scroll margins" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -59,12 +81,18 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
         const ev = try EditorView.init(std.testing.allocator, eb, random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10));
         defer ev.deinit();
         ev.setWrapMode(random.enumValue(text_buffer.WrapMode));
+        // A twin that lays out every line each time: the editor's partial layouts must equal it.
+        const twin = try EditorView.init(std.testing.allocator, eb, ev.getViewport().?.width, ev.getViewport().?.height);
+        defer twin.deinit();
+        twin.text_buffer_view.force_full_layout = true;
+        twin.setWrapMode(ev.text_buffer_view.wrap_mode);
         const margin = margins[random.uintLessThan(usize, margins.len)];
         ev.setScrollMargin(margin);
+        var settled = ev.getViewport().?;
         for (0..60) |step| {
             errdefer std.debug.print("viewport property failed: seed 0x{x} run {d} step {d}\n", .{ seed, run, step });
-            const row_before = ev.getVisualCursor().visual_row + ev.getViewport().?.y;
-            const op = random.uintLessThan(u8, 12);
+            const op = random.uintLessThan(u8, 15);
+            const row_before = if (op == 7 or op == 8) ev.getVisualCursor().visual_row + ev.getViewport().?.y else 0;
             switch (op) {
                 0, 1 => try eb.insertText(pieces[random.uintLessThan(usize, pieces.len)]),
                 2 => try eb.backspace(),
@@ -75,13 +103,50 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
                 7 => ev.moveUpVisual(),
                 8 => ev.moveDownVisual(),
                 9 => try eb.setCursor(random.uintLessThan(u32, eb.tb.lineCount() + 1), random.uintLessThan(u32, 40)),
-                10 => ev.setViewportSize(random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10)),
+                10 => {
+                    ev.setViewportSize(random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10));
+                    twin.setViewportSize(ev.text_buffer_view.getViewport().?.width, ev.text_buffer_view.getViewport().?.height);
+                },
                 11 => try eb.setText(pieces[random.uintLessThan(usize, pieces.len)]),
+                12 => if (eb.canUndo()) {
+                    _ = try eb.undo();
+                },
+                13 => if (eb.canRedo()) {
+                    _ = try eb.redo();
+                },
+                14 => {
+                    const end = random.uintAtMost(u32, eb.tb.rope().totalWeight());
+                    ev.setSelection(random.uintAtMost(u32, end), end, null, null);
+                    settled = ev.text_buffer_view.getViewport().?; // Selecting applies a due scroll.
+                    switch (random.uintLessThan(u8, 3)) {
+                        0 => try ev.deleteSelectedText(),
+                        1 => _ = try ev.replaceSelectedText(""),
+                        else => _ = try ev.replaceSelectedText(pieces[random.uintLessThan(usize, pieces.len)]),
+                    }
+                },
                 else => unreachable,
             }
-            // getVisualCursor scrolls first, as rendering does.
+            // These calls scroll to the cursor themselves.
+            if (op == 7 or op == 8 or op == 10) settled = ev.text_buffer_view.getViewport().?;
+            if (random.boolean()) continue;
+            const expected = try followFresh(&pools, eb, ev, settled);
+            switch (random.uintLessThan(u8, 3)) {
+                0 => _ = ev.getViewport(),
+                1 => _ = ev.getVisualCursor(),
+                2 => _ = ev.getCachedLineInfo(),
+                else => unreachable,
+            }
+            const vp = ev.text_buffer_view.getViewport().?;
             const vcursor = ev.getVisualCursor();
-            const vp = ev.getViewport().?;
+            settled = vp;
+            const want = twin.text_buffer_view.getLogicalLineInfo();
+            const got = ev.text_buffer_view.getLogicalLineInfo();
+            inline for (.{ "line_start_cols", "line_width_cols", "line_sources", "line_wraps" }) |field| {
+                try std.testing.expectEqualSlices(u32, @field(want, field), @field(got, field));
+            }
+            try std.testing.expectEqualDeep(expected[0], vp);
+            try std.testing.expectEqual(expected[1].visual_row, vcursor.visual_row);
+            try std.testing.expectEqual(expected[1].visual_col, vcursor.visual_col);
             const cursor = eb.getPrimaryCursor();
             try std.testing.expectEqual(cursor.row, vcursor.logical_row);
             try std.testing.expectEqual(cursor.col, vcursor.logical_col);
@@ -99,6 +164,81 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
                 try std.testing.expect(cursor.col + cols < vp.x + vp.width);
             } else try std.testing.expectEqual(@as(u32, 0), vp.x);
         }
+    }
+}
+
+test "EditorView - undo and redo scroll like setCursor on the restored text" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    for ([_]bool{ false, true }) |redo| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, 10, 3);
+        defer ev.deinit();
+        try eb.insertText("\n\n\n\n");
+        try eb.insertText("\n\n\n");
+        try eb.setCursor(0, 0);
+        const settled = ev.getViewport().?;
+        _ = try eb.undo();
+        if (redo) _ = try eb.redo();
+        const expected = try followFresh(&pools, eb, ev, settled);
+        try std.testing.expectEqualDeep(expected[0], ev.getViewport().?);
+        if (!redo) try std.testing.expectEqual(@as(u32, 2), expected[0].y);
+    }
+}
+
+test "EditorView - view calls apply a due scroll first, as if the viewport was read before them" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // The cursor moves below the viewport (row 8 from y 0) or above it (row 2 from y 6). Calls 8-11
+    // stop following the cursor and then move it: only the scroll due before applies. Call 12: the
+    // frame scrolls back to a cursor that a viewport change left behind.
+    const rows = [_]struct { call: u8, row: u32, y: ?u32 = null }{
+        .{ .call = 0, .row = 8 },          .{ .call = 1, .row = 2 }, .{ .call = 2, .row = 8 },  .{ .call = 3, .row = 8 },
+        .{ .call = 4, .row = 8 },          .{ .call = 5, .row = 2 }, .{ .call = 6, .row = 8 },  .{ .call = 7, .row = 8 },
+        .{ .call = 8, .row = 8, .y = 6 },  .{ .call = 9, .row = 8 }, .{ .call = 10, .row = 8 }, .{ .call = 11, .row = 2, .y = 1 },
+        .{ .call = 12, .row = 2, .y = 1 },
+    };
+    for (rows) |row| {
+        var results: [2]struct { Viewport, Cursor } = undefined;
+        for (&results, [_]bool{ false, true }) |*result, read_first| {
+            const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(std.testing.allocator, eb, 5, 4);
+            defer ev.deinit();
+            try eb.setText("0 line\n1 line\n2 line\n3 line\n4 line\n5 line\n6 line\n7 line\n8 line\n9 line");
+            ev.setViewport(.{ .x = 0, .y = if (row.row < 6) 6 else 0, .width = 5, .height = 4 }, false);
+            if (row.call == 10) {
+                ev.setSelectionFollowCursor(true);
+                ev.setSelection(0, 1, null, null);
+            }
+            try eb.setCursor(row.row, 3);
+            if (read_first) _ = ev.getViewport();
+            switch (row.call) {
+                0 => ev.setViewport(.{ .x = 0, .y = 1, .width = 5, .height = 4 }, false),
+                1 => ev.setViewportSize(5, 2),
+                2 => ev.setScrollMargin(0.5),
+                3 => ev.setWrapMode(.char),
+                4 => ev.moveUpVisual(),
+                5 => ev.moveDownVisual(),
+                6 => _ = ev.setLocalSelection(1, 1, 3, 1, null, null, true),
+                7 => _ = ev.updateLocalSelection(1, 1, 3, 1, null, null, true),
+                8 => ev.setSelection(0, 1, null, null),
+                9 => ev.setSelectionInclusive(0, 1, null, null),
+                10 => ev.setSelectionFollowCursor(false),
+                11 => ev.setSelection(0, 1, null, null),
+                12 => {
+                    ev.setViewport(.{ .x = 0, .y = 6, .width = 5, .height = 4 }, false);
+                    _ = ev.getVirtualLines();
+                },
+                else => unreachable,
+            }
+            if (row.call >= 8 and row.call <= 11) try eb.setCursor(if (row.row < 6) 9 else 0, 0);
+            result.* = .{ ev.getViewport().?, eb.getPrimaryCursor() };
+        }
+        errdefer std.debug.print("call {d}\n", .{row.call});
+        try std.testing.expectEqualDeep(results[1], results[0]);
+        if (row.y) |y| try std.testing.expectEqual(y, results[0][0].y);
     }
 }
 
@@ -506,7 +646,7 @@ test "EditorView - small viewport cursor movement preserves scrolling margins" {
             try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
 
             if (height == 1) {
-                ev.updateBeforeRender();
+                _ = ev.updateCursorBeforeRender();
                 try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
                 ev.moveDownVisual();
                 try std.testing.expectEqual(@as(u32, 4), ev.getPrimaryCursor().row);
@@ -571,7 +711,7 @@ test "EditorView - small viewport accepts empty buffers and zero dimensions" {
             .{ .x = 0, .y = 0, .width = 0, .height = 1 },
         }) |vp| {
             ev.setViewport(vp, true);
-            ev.updateBeforeRender();
+            _ = ev.updateCursorBeforeRender();
             try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
             try std.testing.expectEqualDeep(vp, ev.getViewport().?);
         }
@@ -817,6 +957,22 @@ test "EditorView - visual cursor should stay on same line when moving to line en
     }
 }
 
+// The view switches back to the edit buffer and frees the placeholder; its next layout must not
+// diff against the freed placeholder rope.
+test "EditorView - clearing a drawn placeholder lays out the edit buffer afresh" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
+    defer ev.deinit();
+    try eb.setText("");
+    try owned_styled.setPlaceholder(ev, &.{.{ .text = utils.repeat(u8, "type a message, press enter to send it\n", 200) }});
+    _ = ev.getVirtualLines();
+    ev.clearPlaceholder();
+    try std.testing.expectEqual(@as(usize, 1), ev.getVirtualLines().len);
+}
+
 test "EditorView - placeholder with styled text renders with correct highlights" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -845,7 +1001,7 @@ test "EditorView - placeholder with styled text renders with correct highlights"
     const written = eb.getText(&out_buffer);
     try std.testing.expectEqual(@as(usize, 0), written);
 
-    ev.updateBeforeRender();
+    _ = ev.updateCursorBeforeRender();
 
     const tbv_ptr = ev.getTextBufferView();
 
@@ -1236,7 +1392,6 @@ test "EditorView - placeholder initialization rejection leaves no published owne
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
             try std.testing.expect(ev.placeholder_buffer == null);
-            try std.testing.expect(ev.placeholder_syntax_style == null);
             try std.testing.expect(!ev.placeholder_active);
             try std.testing.expectEqual(view, ev.getTextBufferView());
             try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
@@ -1248,17 +1403,14 @@ test "EditorView - placeholder initialization rejection leaves no published owne
 
 fn setOwnedPlaceholderForTest(ev: *EditorView, bytes: []const u8, url: []const u8) !void {
     const allocator = ev.global_allocator;
-    const style = try text_buffer.SyntaxStyle.init(allocator);
-    errdefer style.deinit();
     var prepared_links = link.LinkTracker.init(allocator, ev.edit_buffer.tb.link_pool);
     defer prepared_links.deinit();
     const id = try prepared_links.trackUrl(url);
-    const style_id = try style.registerStyle("hint", ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1), null, ansi.TextAttributes.setLinkId(1, id));
     const copy = try allocator.dupe(u8, bytes);
     errdefer allocator.free(copy);
-    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+    try ev.setPlaceholderOwnedStyledText(copy, &.{.{
         .byte_count = @intCast(bytes.len),
-        .style_id = style_id,
+        .style = .{ .fg = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1), .bg = null, .attributes = ansi.TextAttributes.setLinkId(1, id) },
     }}, &prepared_links);
     std.debug.assert(prepared_links.getLinkCount() == 0);
 }
@@ -1289,7 +1441,7 @@ test "EditorView - placeholder owned replacement preserves accepted state on all
             const selection = ev.getSelection();
             const measured = try view.measureForDimensions(10, 2);
             const old_buffer = ev.placeholder_buffer;
-            const old_style = ev.placeholder_syntax_style;
+            const old_styles = if (old_buffer) |buffer| buffer.run_styles.count() else 0;
             const active_buffer = ev.getTextBuffer();
             const epoch = active_buffer.getContentEpoch();
             const old_link_count = links.getLiveSlotCount();
@@ -1309,7 +1461,7 @@ test "EditorView - placeholder owned replacement preserves accepted state on all
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 try std.testing.expect(failing.has_induced_failure);
                 try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
-                try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
+                try std.testing.expectEqual(old_styles, if (ev.placeholder_buffer) |buffer| buffer.run_styles.count() else 0);
                 try std.testing.expectEqual(initial == .visible, ev.placeholder_active);
                 try std.testing.expectEqual(active_buffer, ev.getTextBuffer());
                 try std.testing.expectEqual(epoch, active_buffer.getContentEpoch());
@@ -1322,7 +1474,7 @@ test "EditorView - placeholder owned replacement preserves accepted state on all
                     var actual: [64]u8 = undefined;
                     try std.testing.expectEqualStrings("old\u{754c}", actual[0..buffer.getTextRange(0, std.math.maxInt(u32), &actual)]);
                     const highlight = buffer.getLineHighlightsSlice(0)[0];
-                    const definition = old_style.?.resolveById(highlight.style_id).?;
+                    const definition = buffer.resolveStyle(highlight.style_id).?;
                     const id = ansi.TextAttributes.getLinkId(definition.attributes);
                     try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
                     try std.testing.expectEqual(@as(u32, 5), highlight.col_end);
@@ -1356,34 +1508,30 @@ test "EditorView - placeholder owned rejection retains caller inputs and legacy 
     defer ev.deinit();
     const background = ansi.indexedColor(254, 228, 228, 228);
     eb.tb.setDefaultBg(background);
-    const style = try text_buffer.SyntaxStyle.init(allocator);
     var transferred = false;
-    defer if (!transferred) style.deinit();
     var prepared_links = link.LinkTracker.init(allocator, &links);
     defer prepared_links.deinit();
     const id = try prepared_links.trackUrl("https://example.com/hint");
-    const style_id = try style.registerStyle("hint", null, null, ansi.TextAttributes.setLinkId(1, id));
+    const hint: text_buffer.StyleDefinition = .{ .fg = null, .bg = null, .attributes = ansi.TextAttributes.setLinkId(1, id) };
     const copy = try allocator.dupe(u8, "H\u{754c}");
     defer if (!transferred) allocator.free(copy);
     for ([_]bool{ false, true }) |has_previous| {
         if (has_previous) try owned_styled.setPlaceholder(ev, &.{.{ .text = "legacy", .attributes = 1 }});
         const old_buffer = ev.placeholder_buffer;
-        const old_style = ev.placeholder_syntax_style;
         const active = ev.getTextBuffer();
-        try std.testing.expectError(error.InvalidIndex, ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+        try std.testing.expectError(error.InvalidIndex, ev.setPlaceholderOwnedStyledText(copy, &.{.{
             .byte_count = @intCast(copy.len + 1),
-            .style_id = style_id,
+            .style = hint,
         }}, &prepared_links));
         try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
-        try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
         try std.testing.expectEqual(active, ev.getTextBuffer());
         try std.testing.expectEqualStrings("H\u{754c}", copy);
         try std.testing.expectEqual(@as(u32, 1), prepared_links.getLinkCount());
         try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
     }
-    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+    try ev.setPlaceholderOwnedStyledText(copy, &.{.{
         .byte_count = @intCast(copy.len),
-        .style_id = style_id,
+        .style = hint,
     }}, &prepared_links);
     transferred = true;
     try std.testing.expectEqual(@as(u32, 0), prepared_links.getLinkCount());

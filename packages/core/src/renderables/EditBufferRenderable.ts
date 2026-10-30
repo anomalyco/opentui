@@ -1,8 +1,9 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } from "../lib/selection.js"
 import { EditBuffer, type LogicalCursor } from "../edit-buffer.js"
 import { EditorView, type VisualCursor } from "../editor-view.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
+import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
 import type {
   RenderContext,
   Highlight,
@@ -83,7 +84,7 @@ export interface EditBufferOptions extends RenderableOptions<EditBufferRenderabl
 }
 
 export abstract class EditBufferRenderable extends Renderable implements LineInfoProvider {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "editor",
     body: { native: this.prototype.renderSelf },
     lifecycle: {
@@ -96,8 +97,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     beforeAfter: false,
     paintBuffer: "destination",
     bufferComposition: "native",
-    construction: "prototype",
-  });
+  };
 
   [BrandedEditBufferRenderable] = true
   protected static override readonly defaultFocusable = true
@@ -267,7 +267,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   get cursorOffset(): number {
-    return this.visualCursor.offset
+    return this.editorView.isDestroyed ? emptyVisualCursor.offset : this.editBuffer.getCursorPosition().offset
   }
 
   set cursorOffset(offset: number) {
@@ -482,14 +482,20 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   protected override onMouseEvent(event: any): void {
     if (event.type === "scroll") {
-      this.handleScroll(event)
+      scrollOnce(event, this, () => {
+        const before = this.editorView.getViewport()
+        this.handleScroll(event)
+        const after = this.editorView.getViewport()
+        return after.offsetX !== before.offsetX || after.offsetY !== before.offsetY
+      })
     }
   }
 
   protected handleScroll(event: any): void {
     if (!event.scroll) return
 
-    const { direction, delta } = event.scroll
+    const { delta } = event.scroll
+    const direction = wheelDirection(event)
     const viewport = this.editorView.getViewport()
 
     if (direction === "up") {
@@ -510,7 +516,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
         this.editorView.setViewport(newOffsetX, viewport.offsetY, viewport.width, viewport.height, true)
         this.requestRender()
       } else if (direction === "right") {
-        const newOffsetX = viewport.offsetX + delta
+        const maxOffsetX = Math.max(0, this.lineInfo.lineWidthColsMax - viewport.width)
+        const newOffsetX = Math.min(viewport.offsetX + delta, Math.max(viewport.offsetX, maxOffsetX))
         this.editorView.setViewport(newOffsetX, viewport.offsetY, viewport.width, viewport.height, true)
         this.requestRender()
       }

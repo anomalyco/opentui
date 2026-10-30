@@ -254,14 +254,7 @@ export const DOC_MANIFEST = {
     canonicalSection: "Extend / Custom UI",
     primaryNav: false,
     status: "Advanced",
-    searchSymbols: [
-      "BaseRenderable",
-      "Renderable",
-      "render",
-      "measure",
-      "nativeIntegration",
-      "defineNativeIntegration",
-    ],
+    searchSymbols: ["BaseRenderable", "Renderable", "render", "measure", "nativeIntegration", "refreshHooks"],
     related: ["core-concepts/renderables", "core-concepts/lifecycle", "bindings/react", "bindings/solid"],
   }),
 
@@ -506,7 +499,20 @@ export const DOC_MANIFEST = {
     searchSymbols: ["ImageRenderable", "Image", "image"],
     related: ["reference/native-image", "components/frame-buffer"],
   }),
-  "components/qr-code": page("components", 19, "QR code", "component-reference", {
+  "components/video": page("components", 19, "Video", "component-reference", {
+    group: "Graphics and media",
+    availability: BUILT_IN_ALL,
+    status: "Built in",
+    component: {
+      purpose: "Plays an MP4 file natively with Kitty, Sixel, or Unicode blocks and audio.",
+      coreRenderable: "VideoRenderable",
+      react: "<video> (built in)",
+      solid: "<video> (built in)",
+    },
+    searchSymbols: ["VideoRenderable", "Video", "video"],
+    related: ["components/image", "core-concepts/audio"],
+  }),
+  "components/qr-code": page("components", 20, "QR code", "component-reference", {
     group: "Graphics and media",
     packages: ["@opentui/qrcode"],
     availability: {
@@ -524,7 +530,7 @@ export const DOC_MANIFEST = {
     searchSymbols: ["QRCodeRenderable", "QRCode", "qrCode"],
     related: ["reference/qr-encoder", "components/image"],
   }),
-  "components/embedded-terminal": page("components", 20, "Embedded terminal", "component-reference", {
+  "components/embedded-terminal": page("components", 21, "Embedded terminal", "component-reference", {
     group: "Graphics and media",
     availability: CORE_ONLY,
     status: "Built-in Core renderable",

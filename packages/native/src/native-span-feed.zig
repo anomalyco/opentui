@@ -1010,33 +1010,33 @@ pub fn createNativeSpanFeedWithAllocator(allocator: std.mem.Allocator, options_p
     return Stream.create(allocator, opts) catch null;
 }
 
-pub export fn streamSetCallback(stream: ?*Stream, callback: ?*const CallbackFn) void {
+pub fn streamSetCallback(stream: ?*Stream, callback: ?*const CallbackFn) callconv(.c) void {
     if (stream == null) return;
     stream.?.setCallback(callback);
 }
 
-pub export fn attachNativeSpanFeed(stream: ?*Stream) i32 {
+pub fn attachNativeSpanFeed(stream: ?*Stream) callconv(.c) i32 {
     if (stream == null) return Status.err_invalid;
     const s = stream.?;
     s.attach() catch |err| return errorToStatus(err);
     return Status.ok;
 }
 
-pub export fn streamClose(stream: ?*Stream) i32 {
+pub fn streamClose(stream: ?*Stream) callconv(.c) i32 {
     if (stream == null) return Status.err_invalid;
     const s = stream.?;
     s.close() catch |err| return errorToStatus(err);
     return Status.ok;
 }
 
-pub export fn destroyNativeSpanFeed(stream: ?*Stream) i32 {
+pub fn destroyNativeSpanFeed(stream: ?*Stream) callconv(.c) i32 {
     if (stream == null) return Status.err_invalid;
     const s = stream.?;
     s.tryDestroy() catch |err| return errorToStatus(err);
     return Status.ok;
 }
 
-pub export fn streamReleaseSpan(stream: ?*Stream, slot_index: u32, release_id: u64) i32 {
+pub fn streamReleaseSpan(stream: ?*Stream, slot_index: u32, release_id: u64) callconv(.c) i32 {
     const s = stream orelse return Status.err_invalid;
     s.releaseSpan(slot_index, release_id) catch |err| return errorToStatus(err);
     return Status.ok;
@@ -1052,7 +1052,7 @@ pub export fn streamReleaseSpan(stream: ?*Stream, slot_index: u32, release_id: u
 /// but a write that would exceed it returns err_no_space without writing
 /// any bytes. A write that exactly fills the chunk succeeds; the next
 /// write will move to a new chunk (committing the full one first).
-pub export fn streamWrite(stream: ?*Stream, src_ptr: ?[*]const u8, len: u32) i32 {
+pub fn streamWrite(stream: ?*Stream, src_ptr: ?[*]const u8, len: u32) callconv(.c) i32 {
     if (stream == null) return Status.err_invalid;
     const s = stream.?;
     if (len == 0) return Status.ok;
@@ -1065,7 +1065,7 @@ pub export fn streamWrite(stream: ?*Stream, src_ptr: ?[*]const u8, len: u32) i32
 /// Commits the pending span accumulated by streamWrite and emits DataAvailable.
 /// Only needed when auto_commit_on_full is disabled or to flush a partially
 /// filled chunk.
-pub export fn streamCommit(stream: ?*Stream) i32 {
+pub fn streamCommit(stream: ?*Stream) callconv(.c) i32 {
     if (stream == null) return Status.err_invalid;
     const s = stream.?;
     s.commit() catch |err| return errorToStatus(err);
@@ -1080,7 +1080,7 @@ pub export fn streamCommit(stream: ?*Stream) i32 {
 /// directly into the chunk buffer). Only one reservation can be active at
 /// a time; the stream is locked until streamCommitReserved is called.
 /// Returns at most one chunk's worth of available space.
-pub export fn streamReserve(stream: ?*Stream, min_len: u32, out_ptr: ?*ReserveInfo) i32 {
+pub fn streamReserve(stream: ?*Stream, min_len: u32, out_ptr: ?*ReserveInfo) callconv(.c) i32 {
     if (stream == null or out_ptr == null) return Status.err_invalid;
     const s = stream.?;
     const info = s.reserve(min_len) catch |err| return errorToStatus(err);
@@ -1090,28 +1090,28 @@ pub export fn streamReserve(stream: ?*Stream, min_len: u32, out_ptr: ?*ReserveIn
 
 /// Commits len bytes of the previously reserved region and emits DataAvailable.
 /// Must be called after streamReserve. len must not exceed the reserved length.
-pub export fn streamCommitReserved(stream: ?*Stream, len: u32) i32 {
+pub fn streamCommitReserved(stream: ?*Stream, len: u32) callconv(.c) i32 {
     if (stream == null) return Status.err_invalid;
     const s = stream.?;
     s.commitReserved(len) catch |err| return errorToStatus(err);
     return Status.ok;
 }
 
-pub export fn streamSetOptions(stream: ?*Stream, options_ptr: ?*const Options) i32 {
+pub fn streamSetOptions(stream: ?*Stream, options_ptr: ?*const Options) callconv(.c) i32 {
     if (stream == null or options_ptr == null) return Status.err_invalid;
     const s = stream.?;
     s.setOptions(options_ptr.?.*) catch |err| return errorToStatus(err);
     return Status.ok;
 }
 
-pub export fn streamGetStats(stream: ?*Stream, stats_ptr: ?*Stats) i32 {
+pub fn streamGetStats(stream: ?*Stream, stats_ptr: ?*Stats) callconv(.c) i32 {
     if (stream == null or stats_ptr == null) return Status.err_invalid;
     const s = stream.?;
     stats_ptr.?.* = s.getStats();
     return Status.ok;
 }
 
-pub export fn streamDrainSpans(stream: ?*Stream, out_ptr: ?*SpanInfo, max_spans: u32) u32 {
+pub fn streamDrainSpans(stream: ?*Stream, out_ptr: ?*SpanInfo, max_spans: u32) callconv(.c) u32 {
     if (stream == null or out_ptr == null or max_spans == 0) return 0;
     const s = stream.?;
     const out = @as([*]SpanInfo, @ptrCast(out_ptr.?))[0..max_spans];

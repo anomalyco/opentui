@@ -476,16 +476,18 @@ describe("scene paint encoding", () => {
     ["the smallest zIndex", { zIndex: -0x8000_0000 }, null],
     ["the largest zIndex", { zIndex: 0x7fff_ffff }, null],
     ["opacity 0 and all border sides", { opacity: 0, border: 15 }, null],
-    ["opacity 1 and finite translations", { opacity: 1, translateX: -1e300, translateY: 1e300 }, null],
+    ["opacity 1 and f32 translations", { opacity: 1, translateX: -3.4e38, translateY: 3.4e38 }, null],
     ["a border reset with a style", { borderStyle: "heavy", resetBorderCharacters: true }, null],
     ["a zIndex above i32", { zIndex: 0x8000_0000 }, RangeError],
     ["a fractional zIndex", { zIndex: 0.5 }, RangeError],
-    ["opacity above 1", { opacity: 1.01 }, RangeError],
-    ["opacity below 0", { opacity: -0.01 }, RangeError],
+    ["opacity above 1", { opacity: 1.01 }, "flush"],
+    ["opacity below 0", { opacity: -0.01 }, "flush"],
     ["NaN opacity", { opacity: NaN }, RangeError],
     ["an infinite translation", { translateX: Infinity }, RangeError],
     ["a NaN translation", { translateY: NaN }, RangeError],
-    ["a fifth border side", { border: 16 }, RangeError],
+    ["a translation beyond f32", { translateX: 1e39 }, RangeError],
+    ["a vertical translation beyond f32", { translateY: -1e39 }, RangeError],
+    ["a fifth border side", { border: 16 }, "flush"],
     ["a numeric shouldFill", { shouldFill: 1 }, TypeError],
     ["a string focusable", { focusable: "yes" }, TypeError],
     ["an unknown border style", { borderStyle: "dotted" }, TypeError],
@@ -506,6 +508,9 @@ describe("scene paint encoding", () => {
         // Values the encoder accepts must also pass native flush validation.
         stage()
         lib.sceneFlush(context, staging)
+      } else if (expected === "flush") {
+        stage()
+        expect(() => lib.sceneFlush(context, staging)).toThrow("InvalidArgument after 0 of 1 staged entries")
       } else {
         expect(stage).toThrow(expected)
         expect(staging.count).toBe(0)

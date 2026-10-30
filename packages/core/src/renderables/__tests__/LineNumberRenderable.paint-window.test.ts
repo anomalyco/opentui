@@ -6,7 +6,9 @@ import { RGBA } from "../../lib/RGBA.js"
 import { Selection } from "../../lib/selection.js"
 import { TreeSitterClient } from "../../lib/tree-sitter/index.js"
 import { SyntaxStyle } from "../../syntax-style.js"
+import { setRendererCapabilities } from "../../testing/terminal-capabilities.js"
 import { createTestRenderer, type TestRendererSetup } from "../../testing/test-renderer.js"
+import { NativePaintRecorder, type NativeBufferDraw } from "../../zig.js"
 import { BoxRenderable } from "../Box.js"
 import { CodeRenderable } from "../Code.js"
 import { DiffRenderable } from "../Diff.js"
@@ -67,37 +69,41 @@ async function document(content: string, width = 32, height = 6) {
   return { scroll, card, text, numbers, gutter: numbers["gutter"]! }
 }
 
+// Renders a frame and returns the DRAW records it made.
+async function recordedDraws(): Promise<NativeBufferDraw[]> {
+  const draw = NativePaintRecorder.prototype.draw
+  const draws: NativeBufferDraw[] = []
+  NativePaintRecorder.prototype.draw = function (this: NativePaintRecorder, options: NativeBufferDraw) {
+    draws.push(options)
+    draw.call(this, options)
+  }
+  try {
+    await setup.renderOnce()
+  } finally {
+    NativePaintRecorder.prototype.draw = draw
+  }
+  return draws
+}
+
 describe("LineNumber paint window", () => {
-  test("unrelated text updates reuse the gutter raster while gutter changes repaint it", async () => {
-    setup = await createTestRenderer({ width: 24, height: 5 })
-    const ticker = new TextRenderable(setup.renderer, { content: "tick-0", height: 1, flexShrink: 0 })
-    const text = new TextRenderable(setup.renderer, { content: "one\ntwo\nthree", flexGrow: 1 })
-    const numbers = new LineNumberRenderable(setup.renderer, { target: text, flexShrink: 0 })
-    setup.renderer.root.add(ticker)
-    setup.renderer.root.add(numbers)
-    await setup.flush()
-
-    const raster = numbers["gutter"]!["frameBuffer"]!
-    const clear = raster.clear.bind(raster)
-    let paints = 0
-    raster.clear = (...args) => {
-      paints++
-      clear(...args)
+  // Signs align by the glyph widths that drawing uses: a family is 2 cells in unicode and 8 in wcwidth, a tab
+  // spans cells, and 設 is 2 cells wide.
+  test("signs align by their native width, also after the width method changes", async () => {
+    setup = await createTestRenderer({ width: 24, height: 3 })
+    const text = new TextRenderable(setup.renderer, { content: "a\nb\nc" })
+    const lineSigns = new Map([
+      [0, { before: "👩‍👩‍👧‍👧" }],
+      [1, { before: "+" }],
+      [2, { before: "x\ty", after: "設" }],
+    ])
+    setup.renderer.root.add(new LineNumberRenderable(setup.renderer, { target: text, lineSigns, marginLeft: 2 }))
+    const rows: string[] = []
+    for (const unicode of ["unicode", "wcwidth"] as const) {
+      setRendererCapabilities(setup.renderer, { unicode })
+      await setup.renderOnce()
+      rows.push(setup.captureCharFrame().split("\n")[1].trimEnd())
     }
-    ticker.content = "tick-1"
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("tick-1")
-    expect(setup.captureCharFrame()).toContain("3 three")
-    expect(paints).toBe(0)
-
-    numbers.setLineNumbers(new Map([[0, 9]]))
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("9 one")
-    expect(paints).toBe(1)
-    ticker.content = "tick-2"
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("9 one")
-    expect(paints).toBe(1)
+    expect(rows).toEqual(["     + 2   b", "         + 2   b"])
   })
 
   test("fractional target scrolling and ancestor translation match native cell coordinates", async () => {
@@ -163,7 +169,7 @@ describe("LineNumber paint window", () => {
     }
   })
 
-  test("cached gutter distinguishes the first row from a wrapped continuation at the same raster size", async () => {
+  test("gutter distinguishes the first row from a wrapped continuation across resizes", async () => {
     setup = await createTestRenderer({ width: 14, height: 3 })
     const text = new TextRenderable(setup.renderer, {
       content: "abcdefghijklmno",
@@ -171,23 +177,29 @@ describe("LineNumber paint window", () => {
       height: 1,
       flexGrow: 1,
     })
-    const numbers = new LineNumberRenderable(setup.renderer, { target: text, minHeight: 3, flexShrink: 0 })
+    const numbers = new LineNumberRenderable(setup.renderer, {
+      target: text,
+      minHeight: 3,
+      minWidth: 5,
+      flexShrink: 0,
+      bg: "#405060",
+    })
     setup.renderer.root.add(numbers)
     await setup.flush()
-    const raster = numbers["gutter"]!["frameBuffer"]!
-    expect(raster.height).toBe(3)
     expect(text.getLineSources(0, 4)).toEqual([0, 0])
-    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghijk")
+    // The row below the last source keeps the gutter background and gets no number.
+    const lastRow = setup.renderer.currentRenderBuffer.withBuffers(({ bg }) => Array.from(bg.slice(112, 116)))
+    expect(lastRow).toEqual([64, 80, 96, 255])
+    expect(setup.captureCharFrame().split("\n")[2]).toBe(" ".repeat(14))
+    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghi")
     setup.resize(14, 2)
     await setup.flush()
-    expect(numbers["gutter"]!["frameBuffer"]!.height).toBe(2)
-    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghijk")
+    expect(setup.captureCharFrame().split("\n")[0]).toContain("1 abcdefghi")
     setup.resize(14, 3)
     await setup.flush()
     text.scrollY = 1
     await setup.renderOnce()
-    expect(numbers["gutter"]!["frameBuffer"]!.height).toBe(3)
-    expect(setup.captureCharFrame().split("\n")[0]).toBe("   o          ")
+    expect(setup.captureCharFrame().split("\n")[0]).toBe("     o        ")
   })
 
   test("remapped sources refresh when the target paints before its gutter", async () => {
@@ -228,7 +240,6 @@ describe("LineNumber paint window", () => {
     expect(text.virtualLineCount).toBe(count)
     expect(text.getLineSources(1, 2)).toEqual([20, 21])
     expect(setup.captureCharFrame().split("\n")[1]).toContain("22 x")
-    expect(numbers["gutter"]!["frameBuffer"]!.height).toBe(3)
   })
 
   test("ordinary Text paint does not invoke the complete native lineInfo getter", async () => {
@@ -245,7 +256,7 @@ describe("LineNumber paint window", () => {
     expect(setup.captureCharFrame()).toContain("1 plain")
   })
 
-  test("bounds raster allocation and background work, not natural document geometry", async () => {
+  test("records only the visible rows, not natural document geometry", async () => {
     const doc = await document(Array.from({ length: 10000 }, (_, i) => `row-${i + 1}`).join("\n"))
     doc.numbers.highlightLines(0, 9999, { gutter: "#304050", content: "#203040" })
     const colors = doc.numbers.getLineColors().content
@@ -262,17 +273,12 @@ describe("LineNumber paint window", () => {
       gutterLookups++
       return gutterGet(line)
     }
-    let layoutRasterHeight = 0
-    doc.gutter.onSizeChange = () => {
-      layoutRasterHeight = Math.max(layoutRasterHeight, doc.gutter["frameBuffer"]?.height ?? 0)
-    }
     await setup.renderOnce()
     expect(doc.text.height).toBe(10000)
     expect(doc.numbers.height).toBe(10000)
     expect(doc.gutter.height).toBe(10000)
     expect(doc.scroll.scrollHeight).toBe(10000)
-    expect(layoutRasterHeight).toBeLessThanOrEqual(6)
-    expect(doc.gutter["frameBuffer"]!.height).toBe(6)
+    expect(doc.gutter["frameBuffer"]).toBeNull()
     expect(lookups).toBeLessThanOrEqual(6)
     expect(gutterLookups).toBeLessThanOrEqual(6)
     expect(setup.captureCharFrame()).toContain("1 row-1")
@@ -282,11 +288,11 @@ describe("LineNumber paint window", () => {
     doc.scroll.scrollTo(5000)
     lookups = 0
     gutterLookups = 0
-    await setup.renderOnce()
+    // Each of the six rows records a content fill, a gutter fill and its number; the first row also its two signs.
+    expect(await recordedDraws()).toHaveLength(20)
     expect(doc.text.scrollY).toBe(0)
     expect(doc.gutter.y).toBe(-5000)
     expect(setup.captureCharFrame().split("\n")[0]).toMatch(/\+\s+12345! row-5001/)
-    expect(doc.gutter["frameBuffer"]!.height).toBe(6)
     expect(lookups).toBeLessThanOrEqual(6)
     expect(gutterLookups).toBeLessThanOrEqual(6)
 
@@ -296,7 +302,7 @@ describe("LineNumber paint window", () => {
     expect(doc.scroll.scrollHeight).toBe(10000)
   })
 
-  test("offscreen hunks inside a visible card do not request row metadata or allocate rasters", async () => {
+  test("offscreen hunks inside a visible card do not request row metadata or record draws", async () => {
     const doc = await document("visible")
     const below = new ObservedText(setup.renderer, {
       content: Array.from({ length: 2000 }, () => "below").join("\n"),
@@ -308,11 +314,11 @@ describe("LineNumber paint window", () => {
     await setup.renderOnce()
     below.lineInfoReads = 0
     below.sourceRows = 0
-    await setup.renderOnce()
+    const draws = await recordedDraws()
     expect(numbers.y).toBeGreaterThanOrEqual(6)
     expect(below.lineInfoReads).toBe(0)
     expect(below.sourceRows).toBe(0)
-    expect(numbers["gutter"]!["frameBuffer"]).toBeNull()
+    expect(draws.filter((draw) => "y" in draw && (draw.y ?? 0) >= 6)).toEqual([])
     doc.card.translateX = 1000
     doc.text.lineInfoReads = 0
     doc.text.sourceRows = 0
@@ -328,14 +334,17 @@ describe("LineNumber paint window", () => {
     doc.scroll.scrollTo(5000)
     doc.text.lineInfoReads = 0
     doc.text.sourceRows = 0
-    const getLines = spyOn(
-      (setup.renderer.nativeScene.driver.renderLib as any).opentui.symbols,
-      "ot_scene_get_text_lines",
-    )
+    const symbols = (setup.renderer.nativeScene.driver.renderLib as any).opentui.symbols
+    const getLines = spyOn(symbols, "ot_scene_get_text_lines")
+    // The gutter records into the frame: a scroll makes no native draw call.
+    const draws = spyOn(symbols, "ot_buffer_draw")
     await setup.renderOnce()
     // Native copies only the requested rows (argument 4 is the row capacity), not the whole table (main #1462).
     const copied = getLines.mock.calls.reduce((sum, args: unknown[]) => sum + (args[4] as number), 0)
+    const drawCalls = draws.mock.calls.length
     getLines.mockRestore()
+    draws.mockRestore()
+    expect(drawCalls).toBe(0)
     expect(doc.text.scrollHeight).toBe(10000)
     expect(doc.text.lineInfoReads).toBe(0)
     expect(doc.text.sourceRows).toBe(13) // Six backgrounds, six gutter rows and their preceding source.
@@ -394,16 +403,14 @@ describe("LineNumber paint window", () => {
       expect(new TextDecoder().decode(buffer.getRealCharBytes(true))).toContain("30 row-30")
       const offset = (29 * buffer.width + doc.text.x) * 4
       expect(buffer.withBuffers((cells) => Array.from(cells.bg.slice(offset, offset + 4)))).toEqual([32, 48, 64, 255])
-      expect(doc.gutter["frameBuffer"]!.height).toBe(30)
-      await setup.renderOnce()
-      expect(doc.gutter["frameBuffer"]!.height).toBe(6)
       expect(doc.gutter.height).toBe(30)
     } finally {
       buffer.destroy()
     }
   })
 
-  test("moving window matches full-raster translucent color and ancestor opacity composition", async () => {
+  // Translucent colors blend per primitive under the opacity stack, on both sides.
+  test("moving window matches a full-height draw with translucent colors and ancestor opacity", async () => {
     const doc = await document(Array.from({ length: 40 }, (_, i) => `row-${i + 1}`).join("\n"))
     doc.numbers.bg = RGBA.fromValues(0.2, 0.3, 0.4, 0.35)
     doc.numbers.fg = RGBA.fromValues(0.9, 0.8, 0.7, 0.65)
@@ -413,41 +420,34 @@ describe("LineNumber paint window", () => {
     })
     doc.numbers.setLineSign(20, { before: "+", beforeColor: RGBA.fromValues(1, 0, 0, 0.5) })
     await setup.renderOnce()
-    const full = OptimizedBuffer.create(32, 40, setup.renderer.widthMethod, {
-      respectAlpha: true,
-      owner: setup.renderer.nativeScene,
+    const [full, actual] = [40, 6].map((height) => {
+      const buffer = OptimizedBuffer.create(32, height, setup.renderer.widthMethod, {
+        respectAlpha: true,
+        owner: setup.renderer.nativeScene,
+      })
+      buffer.clear(RGBA.fromValues(0.1, 0.2, 0.3, 1))
+      buffer.pushOpacity(0.6)
+      buffer.pushOpacity(0.7)
+      return buffer
     })
-    const expected = OptimizedBuffer.create(32, 6, setup.renderer.widthMethod, {
-      respectAlpha: true,
-      owner: setup.renderer.nativeScene,
-    })
-    const actual = OptimizedBuffer.create(32, 6, setup.renderer.widthMethod, {
-      respectAlpha: true,
-      owner: setup.renderer.nativeScene,
-    })
+    // Rows [from, from + 6) of each cell array.
+    const rows = (buffer: OptimizedBuffer, from: number) =>
+      buffer.withBuffers(({ char, fg, bg, attributes }) =>
+        [char, fg, bg, attributes].map((cells) => {
+          const per = cells.length / buffer.width / buffer.height
+          return Array.from(cells.slice(from * 32 * per, (from + 6) * 32 * per))
+        }),
+      )
     try {
-      full.clear(RGBA.fromValues(0, 0, 0, 0))
       doc.gutter["renderSelf"](full)
-      for (const buffer of [expected, actual]) {
-        buffer.clear(RGBA.fromValues(0.1, 0.2, 0.3, 1))
-        buffer.pushOpacity(0.6)
-        buffer.pushOpacity(0.7)
-      }
-      expected.drawFrameBuffer(0, -20, doc.gutter["frameBuffer"]!)
       doc.scroll.scrollTo(20)
       await setup.renderOnce()
       doc.gutter["renderSelf"](actual)
-      actual.withBuffers((actualCells) => {
-        expected.withBuffers((expectedCells) => {
-          expect(actualCells.char).toEqual(expectedCells.char)
-          expect(actualCells.fg).toEqual(expectedCells.fg)
-          expect(actualCells.bg).toEqual(expectedCells.bg)
-          expect(actualCells.attributes).toEqual(expectedCells.attributes)
-        })
-      })
+      expect(rows(actual, 0)).toEqual(rows(full, 20))
+      // Line 20's translucent color blends over the translucent background per primitive (group opacity: 45,53,67).
+      expect(actual.withBuffers(({ bg }) => Array.from(bg.slice(4, 8)))).toEqual([47, 54, 68, 255])
     } finally {
       full.destroy()
-      expected.destroy()
       actual.destroy()
     }
   })
@@ -497,7 +497,6 @@ describe("LineNumber paint window", () => {
             expect(code).toBeInstanceOf(CodeRenderable)
             if (!(code instanceof CodeRenderable)) throw new Error("Expected a CodeRenderable")
             expect(gutter.height).toBeGreaterThanOrEqual(code.virtualLineCount)
-            expect(gutter["frameBuffer"]!.height).toBeLessThanOrEqual(6)
           }
         }
       }

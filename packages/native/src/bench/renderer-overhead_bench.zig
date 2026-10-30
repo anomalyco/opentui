@@ -35,7 +35,7 @@ fn runScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool,
     var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, WIDTH, HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     drawFrame(test_renderer.renderer.getNextBuffer(), 0, .full_change);
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
 
     var stats: bench_utils.BenchStats = .{};
     for (0..WARMUP_SAMPLES + SAMPLES) |sample| {
@@ -44,9 +44,8 @@ fn runScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool,
             drawFrame(test_renderer.renderer.getNextBuffer(), sample * BATCH_SIZE + batch, scenario);
             test_renderer.memory.bytes.clearRetainingCapacity();
             test_renderer.memory.last_write_start = 0;
-            test_renderer.memory.last_write_len = 0;
             const timer = bench_utils.BenchTimer.start(io);
-            _ = test_renderer.renderer.render(false);
+            _ = test_renderer.render(false);
             elapsed += timer.read();
         }
         if (sample >= WARMUP_SAMPLES) stats.record(elapsed / BATCH_SIZE);

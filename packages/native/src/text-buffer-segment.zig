@@ -5,6 +5,7 @@ const buffer = @import("buffer.zig");
 const mem_registry_mod = @import("mem-registry.zig");
 
 const utf8 = @import("utf8.zig");
+const uucode = @import("uucode");
 
 pub const RGBA = buffer.RGBA;
 pub const TextSelection = buffer.TextSelection;
@@ -35,14 +36,6 @@ pub const WordLayoutInfo = struct {
     },
 };
 
-const CachedMeasure = struct {
-    wrap_width: u32,
-    first_width: u32,
-    tab_width: u8,
-    width_method: utf8.WidthMethod,
-    result: WordMeasureSummary,
-};
-
 /// Cached layout is keyed by tab width and width method. A chunk belongs to one text buffer,
 /// whose control display never changes, so the keys omit it.
 pub const TextChunkColdState = struct {
@@ -59,7 +52,6 @@ pub const TextChunkColdState = struct {
     next_layout_cache: ?*TextChunkColdState = null,
     layout_used: bool = false,
     line_breaks_ready: bool = false,
-    measure_word: ?CachedMeasure = null,
 };
 
 /// Layout arrays are disposable; the cold states and rope history remain arena-owned.
@@ -67,8 +59,14 @@ pub const TextChunkColdState = struct {
 pub const ChunkLayoutCache = struct {
     allocator: Allocator,
     first: ?*TextChunkColdState = null,
+    /// Every arena reset or swap of the owning buffer clears the cache first, so views use
+    /// this count to tell that rope nodes they kept may be gone.
+    clears: u64 = 0,
+    /// Freed entries. Word-break storage borrows entry slices and must not outlive one.
+    releases: u64 = 0,
 
     pub fn clear(self: *ChunkLayoutCache) void {
+        self.clears +%= 1;
         self.release(false);
     }
 
@@ -89,6 +87,7 @@ pub const ChunkLayoutCache = struct {
                 continue;
             }
             entry.* = cold.next_layout_cache;
+            self.releases +%= 1;
             self.allocator.free(cold.wrap_breaks.?.ptr[0..cold.wrap_breaks_capacity]);
             cold.cjk_breaks.deinit(self.allocator);
             cold.wrap_breaks = null;
@@ -100,11 +99,6 @@ pub const ChunkLayoutCache = struct {
             cold.line_breaks_ready = false;
         }
     }
-};
-
-pub const WordMeasureSummary = struct {
-    line_count: u32,
-    width_max: u32,
 };
 
 /// A chunk represents a contiguous sequence of UTF-8 bytes from a specific memory buffer
@@ -175,41 +169,6 @@ pub const TextChunk = struct {
             .wrap_breaks = cached,
             .cjk_breaks = cold.cjk_breaks.items,
             .word_classes = cold.word_classes,
-        };
-    }
-
-    pub fn getWordMeasureSummary(
-        self: *const TextChunk,
-        wrap_width: u32,
-        first_width: u32,
-        tab_width: u8,
-        width_method: utf8.WidthMethod,
-    ) ?WordMeasureSummary {
-        const cold = self.cold orelse return null;
-        const cached = cold.measure_word orelse return null;
-        if (cached.wrap_width != wrap_width or
-            cached.first_width != first_width or
-            cached.tab_width != tab_width or
-            cached.width_method != width_method) return null;
-        return cached.result;
-    }
-
-    pub fn setWordMeasureSummary(
-        self: *const TextChunk,
-        allocator: Allocator,
-        wrap_width: u32,
-        first_width: u32,
-        tab_width: u8,
-        width_method: utf8.WidthMethod,
-        summary: WordMeasureSummary,
-    ) TextBufferError!void {
-        const cold = try self.getOrCreateCold(allocator);
-        cold.measure_word = .{
-            .wrap_width = wrap_width,
-            .first_width = first_width,
-            .tab_width = tab_width,
-            .width_method = width_method,
-            .result = summary,
         };
     }
 
@@ -480,6 +439,11 @@ pub const Segment = union(enum) {
         };
     }
 
+    /// Text without bytes, as a split can leave on one side.
+    pub fn isVoid(self: *const Segment) bool {
+        return self.* == .text and self.text.byte_start == self.text.byte_end;
+    }
+
     pub fn getBytes(self: *const Segment, mem_registry: *const MemRegistry) []const u8 {
         return switch (self.*) {
             .text => |chunk| chunk.getBytes(mem_registry),
@@ -528,6 +492,55 @@ pub const Segment = union(enum) {
         if ((left_chunk.flags & ~TextChunk.Flags.HAS_TAB) != (right_chunk.flags & ~TextChunk.Flags.HAS_TAB)) return false;
 
         return true;
+    }
+
+    /// Where a grapheme crosses the end of `left` into `right`: it is `left[tail..] ++ right[0..head]`.
+    /// Null when that junction is a grapheme break. `left` must start a grapheme.
+    pub fn findJunction(left: []const u8, right: []const u8, method: utf8.WidthMethod) ?struct { tail: u32, head: u32 } {
+        // Splits leave no text without bytes, and appends skip empty text.
+        std.debug.assert(right.len > 0);
+        if (left.len == 0) return null;
+        var pos = codepointStartBefore(left, left.len);
+        var cp = utf8.decodeUtf8Unchecked(left, pos).cp;
+        if (breaksInEveryState(cp, utf8.decodeUtf8Unchecked(right, 0).cp, method)) return null;
+        // A code point that breaks from the one before in every state starts a grapheme.
+        while (pos > 0) {
+            const prev_pos = codepointStartBefore(left, pos);
+            const prev_cp = utf8.decodeUtf8Unchecked(left, prev_pos).cp;
+            if (breaksInEveryState(prev_cp, cp, method)) break;
+            pos = prev_pos;
+            cp = prev_cp;
+        }
+        var state: uucode.grapheme.BreakState = .default;
+        var prev: ?u21 = null;
+        var tail = pos;
+        while (pos < left.len) : (prev = cp) {
+            cp = utf8.decodeUtf8Unchecked(left, pos).cp;
+            if (utf8.isGraphemeBreak(prev, cp, &state, method)) tail = pos;
+            pos += utf8.decodeUtf8Unchecked(left, pos).len;
+        }
+        var head: usize = 0;
+        while (head < right.len) : (head += utf8.decodeUtf8Unchecked(right, head).len) {
+            cp = utf8.decodeUtf8Unchecked(right, head).cp;
+            if (utf8.isGraphemeBreak(prev, cp, &state, method)) break;
+            prev = cp;
+        }
+        if (head == 0) return null;
+        return .{ .tail = @intCast(tail), .head = @intCast(head) };
+    }
+
+    fn breaksInEveryState(prev: u21, cp: u21, method: utf8.WidthMethod) bool {
+        inline for (comptime std.meta.tags(uucode.grapheme.BreakState)) |initial| {
+            var state = initial;
+            if (!utf8.isGraphemeBreak(prev, cp, &state, method)) return false;
+        }
+        return true;
+    }
+
+    fn codepointStartBefore(bytes: []const u8, end: usize) usize {
+        var pos = end - 1;
+        while (pos > 0 and bytes[pos] & 0xC0 == 0x80) pos -= 1;
+        return pos;
     }
 
     /// Boundary normalization action

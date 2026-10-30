@@ -141,6 +141,9 @@ jobs:
           cp packages/native/src/vendor/libwebp/PATENTS artifacts/example-notices/PATENTS-LIBWEBP
           cp packages/native/src/vendor/libwebp/AUTHORS artifacts/example-notices/AUTHORS-LIBWEBP
           cp packages/native/src/vendor/lcms2/LICENSE artifacts/example-notices/LICENSE-LCMS2
+          cp packages/native/src/vendor/ffmpeg/COPYING.LGPLv2.1 artifacts/example-notices/LICENSE-FFMPEG
+          cp packages/native/src/vendor/ffmpeg/README.md artifacts/example-notices/FFMPEG-SOURCE.md
+          cp packages/native/src/vendor/ffmpeg/LICENSE-ZLIB artifacts/example-notices/LICENSE-ZLIB
 
       # Create separate zips for each platform's examples
       - name: Package examples - darwin-x64
@@ -208,6 +211,9 @@ jobs:
             test -f "$directory/LICENSE-STB" || (echo "❌ stb notice missing from $directory" && exit 1)
             test -f "$directory/LICENSE-WUFFS" || (echo "❌ Wuffs notice missing from $directory" && exit 1)
             test -f "$directory/LICENSE-LCMS2" || (echo "❌ Little CMS notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-FFMPEG" || (echo "❌ FFmpeg notice missing from $directory" && exit 1)
+            test -f "$directory/FFMPEG-SOURCE.md" || (echo "❌ FFmpeg source notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-ZLIB" || (echo "❌ zlib notice missing from $directory" && exit 1)
           done
 
           echo ""

@@ -269,10 +269,6 @@ test "Context diagnostics capture renderer and buffer failures without invoking 
     const renderer_id = try owner.createSession(.{});
     try owner.attachSessionRenderer(renderer_id, 2, 1, .{ .remote_mode = .remote });
     const value = try owner.raw().getSessionRenderer(renderer_id);
-    failing.fail_index = failing.alloc_index;
-    value.hitGridPushScissorRect(0, 0, 2, 1);
-    try std.testing.expect(failing.has_induced_failure);
-    failing.fail_index = std.math.maxInt(usize);
 
     const text_id = try owner.createTextBuffer(.unicode);
     try owner.textBufferSetText(text_id, "\u{4e2d}");
@@ -289,12 +285,11 @@ test "Context diagnostics capture renderer and buffer failures without invoking 
         .logger = &owner.logger,
     }));
     var events: [3]logger.Diagnostic = undefined;
-    try std.testing.expectEqual(@as(u32, 3), drain(&owner.diagnostics, &events));
+    try std.testing.expectEqual(@as(u32, 2), drain(&owner.diagnostics, &events));
     try std.testing.expectEqual(@as(u64, 0), owner.diagnostics.dropped_count);
-    for (events) |event| try std.testing.expectEqual(.warn, event.level);
-    try std.testing.expectEqualStrings("Failed to push hit-grid scissor rect: error.OutOfMemory", events[0].message[0..events[0].message_len]);
-    try std.testing.expectEqualStrings("drawTextBuffer failed: error.OutOfMemory", events[1].message[0..events[1].message_len]);
-    try std.testing.expectEqualStrings("OptimizedBuffer.init: Invalid dimensions 0x1", events[2].message[0..events[2].message_len]);
+    for (events[0..2]) |event| try std.testing.expectEqual(.warn, event.level);
+    try std.testing.expectEqualStrings("drawTextBuffer failed: error.OutOfMemory", events[0].message[0..events[0].message_len]);
+    try std.testing.expectEqualStrings("OptimizedBuffer.init: Invalid dimensions 0x1", events[1].message[0..events[1].message_len]);
     try std.testing.expectEqual(@as(u32, 0), LegacyProbe.calls.load(.monotonic));
     try std.testing.expectError(error.InvalidDimensions, buffer.OptimizedBuffer.init(std.testing.allocator, 0, 1, .{
         .link_pool = &owner.links,

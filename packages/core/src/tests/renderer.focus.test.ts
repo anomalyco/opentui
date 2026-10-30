@@ -78,6 +78,44 @@ test("detaching a focused child clears former ancestor focus projections", () =>
   expect(child.focused).toBe(true)
   parent.add(child)
   expect(parent.hasFocusedDescendant).toBe(true)
+  // Only a focused node counts: the renderer can point at one that has not taken focus.
+  child.blur()
+  testRenderer.focusRenderable(child)
+  expect(parent.hasFocusedDescendant).toBe(false)
+})
+
+// A paint hook marks its node clean; a focus change, or moving, removing or destroying a subtree that holds
+// focus, must mark every former and new ancestor dirty again.
+test.each<[string, (nodes: Record<"left" | "right" | "mid" | "child", BoxRenderable>) => void]>([
+  ["blurred", ({ child }) => child.blur()],
+  ["moved", ({ right, mid }) => right.add(mid)],
+  ["removed", ({ left, mid }) => left.remove(mid)],
+  ["destroyed", ({ mid }) => mid.destroy()],
+  // A destroy listener that clears the renderer's focus must not stop the marks.
+  [
+    "destroyed by a listener that blurs",
+    ({ mid, child }) => {
+      mid.on("destroyed", () => testRenderer.blurRenderable(child))
+      mid.destroy()
+    },
+  ],
+])("a focused subtree %s marks its ancestors dirty", async (name, change) => {
+  const [top, side, left, right, mid] = [0, 1, 2, 3, 4].map(() => new BoxRenderable(testRenderer, { renderAfter() {} }))
+  const child = new BoxRenderable(testRenderer, { focusable: true })
+  for (const [parent, node] of [
+    [testRenderer.root, top],
+    [testRenderer.root, side],
+    [top, left],
+    [side, right],
+    [left, mid],
+    [mid, child],
+  ] as const)
+    parent.add(node)
+  child.focus()
+  await testRenderer.idle()
+  expect([top.isDirty, side.isDirty]).toEqual([false, false])
+  change({ left, right, mid, child })
+  expect([top.isDirty, side.isDirty]).toEqual([true, name === "moved"])
 })
 
 test("disabling focusability releases focus and input subscriptions", async () => {

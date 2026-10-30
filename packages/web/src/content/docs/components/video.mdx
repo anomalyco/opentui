@@ -1,0 +1,102 @@
+---
+title: Video
+description: Play MP4 video with Kitty, Sixel, or Unicode blocks and native audio
+skill:
+  intents: [video, video-renderable, video-playback, mp4]
+---
+
+# Video
+
+`VideoRenderable` plays an MP4 file with H.264 video and optional AAC audio. Decoding, the media clock, audio, and frame drawing run in native code. Decoded frames never cross into JavaScript.
+
+## Availability
+
+| Field           | Availability          |
+| --------------- | --------------------- |
+| Package         | `@opentui/core`       |
+| Core renderable | `VideoRenderable`     |
+| React           | `<video>` (automatic) |
+| Solid           | `<video>` (automatic) |
+| Status          | Built in              |
+
+## Renderable API
+
+```typescript
+import { VideoRenderable, createCliRenderer } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+const video = new VideoRenderable(renderer, {
+  id: "player",
+  source: "./clip.mp4",
+  width: 60,
+  height: 20,
+  autoplay: true,
+  loop: true,
+  onError: console.error,
+})
+
+renderer.root.add(video)
+```
+
+`source` is a file path. Opening is synchronous: `ready` and `videoMetadata` are set when the setter returns. `onReady`, `onError`, and the `onPlay` of an autoplay run in a microtask, so callbacks assigned after `source` still receive the result. Setting `autoplay` after `source` starts the open source if it has not started yet. Replacing `source` keeps playback running if it was. Setting it to `undefined` closes the player.
+
+## React
+
+```tsx
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+
+const renderer = await createCliRenderer()
+createRoot(renderer).render(<video source="./clip.mp4" autoplay loop style={{ width: 60, height: 20 }} />)
+```
+
+## Solid
+
+```tsx
+import { createCliRenderer } from "@opentui/core"
+import { render } from "@opentui/solid"
+
+const renderer = await createCliRenderer()
+await render(() => <video source="./clip.mp4" autoplay loop style={{ width: 60, height: 20 }} />, renderer)
+```
+
+## Playback
+
+- While a video plays, it ticks on the renderer's animation clock at `maxFps`. Each tick renders a frame and reads playback state, drawn or not, so a hidden or scrolled-out video keeps time, ends, and loops. A native audio thread refills audio between ticks. Each paint draws the current frame.
+- With an audio track, audio output is the media clock. Without audio, or if the audio device fails, playback follows the wall clock.
+- Frames present at the source frame rate or `maxFps`, whichever is lower.
+- `seek()` clamps to `[0, duration]`. Seeking past the end does not wrap, even when `loop` is on.
+- Frames draw like an [Image](/docs/components/image) with `protocol: "auto"`. `fit` works the same way.
+- With Kitty output, the decoder lowers its decode size while frames take longer than the frame interval, and raises it again after they recover. `qualityTier` reports the step; `0` is full size.
+- Set `OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL=1` to try VideoToolbox decoding on macOS. See [Environment variables](/docs/reference/env-vars).
+
+## Options and state
+
+| Member              | Type                               | Description                                                                     |
+| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
+| `source`            | `string \| undefined`              | MP4 file path. An empty string closes the player                                |
+| `fit`               | `"fit" \| "cover" \| "fill"`       | Destination sizing. Defaults to `"fit"`                                         |
+| `autoplay`          | `boolean`                          | Plays each source once it opens                                                 |
+| `loop`              | `boolean`                          | Restarts at the end                                                             |
+| `muted`             | `boolean`                          | Silences audio. The audio clock keeps running                                   |
+| `volume`            | `number`                           | Non-negative and within the 32-bit float range. Defaults to `1`                 |
+| `avSyncOffsetMs`    | `number`                           | From -60000 to 60000. Positive values show frames earlier relative to the audio |
+| `maxFps`            | `number`                           | Integer presentation-rate cap from 1 to 120. Defaults to 30                     |
+| `ready`             | `boolean`                          | Whether a source is open                                                        |
+| `videoMetadata`     | `VideoMetadata \| null`            | `width`, `height`, `fps`, `duration`, and `hasAudio`. Zero is unknown           |
+| `playing`, `paused` | `boolean`                          | Playback state. Before a source opens, the requested state                      |
+| `ended`             | `boolean`                          | Whether playback reached the end without looping                                |
+| `currentTime`       | `number`                           | Media time in seconds. Assigning it seeks                                       |
+| `duration`          | `number`                           | Duration in seconds                                                             |
+| `qualityTier`       | `number`                           | Adaptive decode-size step for Kitty output                                      |
+| `play()`, `pause()` | `() => void`                       | Start or stop playback. `toggle()` switches                                     |
+| `seek(time)`        | `(seconds: number) => void`        | Seek. `seekBy(delta)` and `seekToMs(ms)` are relative and millisecond           |
+| Callbacks           | `onReady`, `onError`, `onEnd`, ... | `onPlay`, `onPause`, `onSeek`, and `onTimeUpdate` report changes                |
+
+Options set before a source opens apply when it opens. An option value out of range throws a `RangeError` and keeps the previous value.
+
+Open, seek, and decode failures call `onError` with the native detail. A failed decode stops playback at its position and keeps the last frame; `play()` and `seek()` retry, and `play()` after a failed open opens the source again. An audio failure keeps playback running silently on the wall clock.
+
+## Related components
+
+Use [Image](/docs/components/image) for still images. See [Audio](/docs/core-concepts/audio) for sound that is not tied to a video.

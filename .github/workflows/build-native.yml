@@ -18,7 +18,6 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ZIG_VERSION: 0.17.0
 
 jobs:
   build-native:
@@ -29,16 +28,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.1
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
 
       - name: Prepare release versions
         if: ${{ inputs.prepareVersion != '' }}
@@ -49,6 +45,15 @@ jobs:
 
       - name: Setup cross-platform symbol tools
         uses: ./.github/actions/setup-native-symbol-tools
+
+      # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+      - name: Restore FFmpeg build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
 
       - name: Build packages (cross-compile for all platforms)
         run: |
@@ -134,6 +139,9 @@ jobs:
           cp packages/native/src/vendor/libwebp/PATENTS artifacts/native-notices/PATENTS-LIBWEBP
           cp packages/native/src/vendor/libwebp/AUTHORS artifacts/native-notices/AUTHORS-LIBWEBP
           cp packages/native/src/vendor/lcms2/LICENSE artifacts/native-notices/LICENSE-LCMS2
+          cp packages/native/src/vendor/ffmpeg/COPYING.LGPLv2.1 artifacts/native-notices/LICENSE-FFMPEG
+          cp packages/native/src/vendor/ffmpeg/README.md artifacts/native-notices/FFMPEG-SOURCE.md
+          cp packages/native/src/vendor/ffmpeg/LICENSE-ZLIB artifacts/native-notices/LICENSE-ZLIB
 
       # Create separate zips for each platform's native binaries
       - name: Package native binaries - darwin-x64
@@ -332,6 +340,9 @@ jobs:
             test -f "$directory/LICENSE-STB" || (echo "❌ stb notice missing from $directory" && exit 1)
             test -f "$directory/LICENSE-WUFFS" || (echo "❌ Wuffs notice missing from $directory" && exit 1)
             test -f "$directory/LICENSE-LCMS2" || (echo "❌ Little CMS notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-FFMPEG" || (echo "❌ FFmpeg notice missing from $directory" && exit 1)
+            test -f "$directory/FFMPEG-SOURCE.md" || (echo "❌ FFmpeg source notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-ZLIB" || (echo "❌ zlib notice missing from $directory" && exit 1)
           done
 
           echo ""

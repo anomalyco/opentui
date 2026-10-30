@@ -373,9 +373,10 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
 test "Context scene measure maps invalid host sizes to zero without a Yoga warning" {
     const Host = struct {
         var width: f32 = 0;
+        var half = false;
 
-        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, _: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
-            result.* = .{ .width = width, .height = 1 };
+        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, height: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
+            result.* = .{ .width = width, .height = if (half) height / 2 else 1 };
         }
     };
     const owner = try context.Context.init(std.testing.allocator, std.testing.io, .{});
@@ -395,6 +396,14 @@ test "Context scene measure maps invalid host sizes to zero without a Yoga warni
         try std.testing.expectEqual(@as(f32, if (width == 3) 3 else 0), measured.width);
         try std.testing.expectEqual(@as(f32, 1), measured.height);
         try std.testing.expect(owner.diagnostics.pop() == null);
+    }
+    // Half the offered height: a host measure may use the cap beyond clamping, so a larger
+    // cap measures again.
+    Host.half = true;
+    try owner.sceneMarkDirty(node);
+    for ([_]f32{ 10, 20 }) |height| {
+        try owner.sceneSetStyle(root, 4, 1, 0, 1, height, 1);
+        try std.testing.expectEqual(height / 2, (try layout(owner, node)).height);
     }
 }
 
@@ -473,7 +482,6 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     value.terminal.caps.hyperlinks = true;
     const current = value.getCurrentBuffer();
     const next = value.getNextBuffer();
-    value.addToHitGrid(0, 0, 1, 1, 11);
     try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
     try std.testing.expect((try drain(owner, id, &output)).len > 0);
     try std.testing.expectEqual(@as(u32, 0), current.grapheme_tracker.used_ids.capacity());
@@ -483,7 +491,6 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     try drawTrackedCells(next, 1, 'k');
     const glyph_id = gp.graphemeIdFromChar(next.buffer.char[0]);
     const link_id = ansi.TextAttributes.getLinkId(next.buffer.attributes[0]);
-    value.addToHitGrid(0, 0, 1, 1, 22);
 
     failing.fail_index = failing.alloc_index;
     failing.resize_fail_index = failing.resize_index;
@@ -492,16 +499,14 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     try std.testing.expectEqual(previous_written, (try owner.raw().getSession(id)).getStats().bytes_written);
     try std.testing.expectEqual(previous_stats, value.getRenderStats());
     try std.testing.expectEqualSlices(u32, &previous_chars, current.buffer.char);
-    try std.testing.expectEqual(@as(u32, 11), value.checkHit(0, 0));
     try std.testing.expectEqual(@as(u32, 1), try owner.graphemes.getRefcount(glyph_id));
     try std.testing.expectEqual(@as(u32, 1), try owner.links.getRefcount(link_id));
 
     failing.fail_index = std.math.maxInt(usize);
     failing.resize_fail_index = std.math.maxInt(usize);
-    value.addToHitGrid(0, 0, 1, 1, 22);
     try std.testing.expectEqual(.pending, try owner.renderSession(id, false));
     const bytes = try drain(owner, id, &output);
-    try std.testing.expectEqual(@as(u32, 22), value.checkHit(0, 0));
+    try std.testing.expectEqual(previous_stats.frameCount + 1, value.getRenderStats().frameCount);
     try std.testing.expect(std.mem.find(u8, bytes, "k\xcc\x81") != null);
     try std.testing.expect(std.mem.find(u8, bytes, try owner.links.get(link_id)) != null);
 }

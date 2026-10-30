@@ -1,0 +1,193 @@
+base 0.6.8
++ @opentui/core/testing: property TestRendererOptions.nativeSceneFullFrame?: boolean
+- @opentui/core: enum-member NativeSceneFrame.Yield
+- @opentui/core: function detectLinks(chunks: TextChunk[], context: { content: string; highlights: SimpleHighlight[]; sourceRanges?: Array<{ start: number; end: number; }>; }): TextChunk[]
++ @opentui/core: function detectLinks(chunks: TextChunk[], context: { content: string; highlights: SimpleHighlight[]; sourceRanges?: Array<{ start: number; end: number; }>; syntaxStyle?: SyntaxStyle; }): TextChunk[]
+- @opentui/core: method FFIRenderLib.sceneFrameStep(context: NativeContextHandle, session: SessionHandle, previous: NativeSceneFrameRequest | null, options: NativeSceneFrameOptions, maxWorkItems?: number, recording?: Uint8Array | null): NativeSceneFrameRequest
++ @opentui/core: method FFIRenderLib.sceneFrameStep(context: NativeContextHandle, session: SessionHandle, previous: NativeSceneFrameRequest | null, options: NativeSceneFrameOptions, recording?: Uint8Array | null): NativeSceneFrameRequest
++ @opentui/core: method FFIRenderLib.sessionInputExpect(context: NativeContextHandle, session: SessionHandle, flags: number): void
++ @opentui/core: method FFIRenderLib.sessionInputFeed(context: NativeContextHandle, session: SessionHandle, bytes: Uint8Array, nowNs: bigint, records: Uint8Array, payload: Uint8Array): NativeInputDrain
++ @opentui/core: method FFIRenderLib.sessionInputReset(context: NativeContextHandle, session: SessionHandle, flags: number): void
+- @opentui/core: static protected method Renderable.defineNativeIntegration(integration: NativeRenderableIntegration): NativeRenderableIntegration
++ @opentui/core: property CliRendererConfig.experimental_nativeInput?: boolean
+- @opentui/core: property CliRendererConfig.nativeSceneWorkBudget?: number
+- @opentui/core: readonly property NativeRenderableIntegration.construction?: "prototype" | "fields"
+- @opentui/core: property NativeSceneFrameRequest.geometryRevision?: number
++ @opentui/core: protected readonly property Renderable._paintHeight: number
++ @opentui/core: protected readonly property Renderable._paintWidth: number
+- @opentui/core: property Renderable.renderAfter?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
++ @opentui/core: property Renderable.renderAfter: PaintHook | undefined
+- @opentui/core: property Renderable.renderBefore?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
++ @opentui/core: property Renderable.renderBefore: PaintHook | undefined
+- @opentui/core: protected property TextBufferRenderable._textBufferSyntaxStyle: SyntaxStyle
+- @opentui/core: type NativeRenderStats = { nativeLastFrameTime: number; nativeAverageFrameTime: number; nativeFrameCount: number; cellsUpdated: number; averageCellsUpdated: number; nativeRenderTime?: number; nativeStdoutWriteTime?: number; }
++ @opentui/core: type NativeRenderStats = { nativeLastFrameTime: number; nativeAverageFrameTime: number; nativeFrameCount: number; cellsUpdated: number; averageCellsUpdated: number; nativeRenderTime?: number; nativeStdoutWriteTime?: number; frameWork: NativeFrameWork; }
+- opentui.h: const OT_CONTEXT_ABI_VERSION = 1
++ opentui.h: const OT_CONTEXT_ABI_VERSION = 2
++ opentui.h: const OT_INPUT_EVENTS_MIN = 4
++ opentui.h: const OT_INPUT_EXPECT_CURSOR_POSITION = 4
++ opentui.h: const OT_INPUT_EXPECT_KITTY_KEYBOARD = 2
++ opentui.h: const OT_INPUT_EXPECT_REPLIES = 1
++ opentui.h: const OT_INPUT_FOCUS = 4
++ opentui.h: const OT_INPUT_FOCUS_IN = 1
++ opentui.h: const OT_INPUT_FOCUS_OUT = 0
++ opentui.h: const OT_INPUT_KEY = 1
++ opentui.h: const OT_INPUT_KEY_BACKSPACE = 127
++ opentui.h: const OT_INPUT_KEY_CAPS_LOCK = 57358
++ opentui.h: const OT_INPUT_KEY_DELETE = 57349
++ opentui.h: const OT_INPUT_KEY_DOWN = 57353
++ opentui.h: const OT_INPUT_KEY_END = 57357
++ opentui.h: const OT_INPUT_KEY_ENTER = 13
++ opentui.h: const OT_INPUT_KEY_ESCAPE = 27
++ opentui.h: const OT_INPUT_KEY_F1 = 57364
++ opentui.h: const OT_INPUT_KEY_F35 = 57398
++ opentui.h: const OT_INPUT_KEY_HOME = 57356
++ opentui.h: const OT_INPUT_KEY_INSERT = 57348
++ opentui.h: const OT_INPUT_KEY_ISO_LEVEL3_SHIFT = 57453
++ opentui.h: const OT_INPUT_KEY_ISO_LEVEL5_SHIFT = 57454
++ opentui.h: const OT_INPUT_KEY_KITTY = 1
++ opentui.h: const OT_INPUT_KEY_KP_0 = 57399
++ opentui.h: const OT_INPUT_KEY_KP_9 = 57408
++ opentui.h: const OT_INPUT_KEY_KP_ADD = 57413
++ opentui.h: const OT_INPUT_KEY_KP_BEGIN = 57427
++ opentui.h: const OT_INPUT_KEY_KP_DECIMAL = 57409
++ opentui.h: const OT_INPUT_KEY_KP_DELETE = 57426
++ opentui.h: const OT_INPUT_KEY_KP_DIVIDE = 57410
++ opentui.h: const OT_INPUT_KEY_KP_DOWN = 57420
++ opentui.h: const OT_INPUT_KEY_KP_END = 57424
++ opentui.h: const OT_INPUT_KEY_KP_ENTER = 57414
++ opentui.h: const OT_INPUT_KEY_KP_EQUAL = 57415
++ opentui.h: const OT_INPUT_KEY_KP_HOME = 57423
++ opentui.h: const OT_INPUT_KEY_KP_INSERT = 57425
++ opentui.h: const OT_INPUT_KEY_KP_LEFT = 57417
++ opentui.h: const OT_INPUT_KEY_KP_MULTIPLY = 57411
++ opentui.h: const OT_INPUT_KEY_KP_PAGE_DOWN = 57422
++ opentui.h: const OT_INPUT_KEY_KP_PAGE_UP = 57421
++ opentui.h: const OT_INPUT_KEY_KP_RIGHT = 57418
++ opentui.h: const OT_INPUT_KEY_KP_SEPARATOR = 57416
++ opentui.h: const OT_INPUT_KEY_KP_SUBTRACT = 57412
++ opentui.h: const OT_INPUT_KEY_KP_UP = 57419
++ opentui.h: const OT_INPUT_KEY_LEFT = 57350
++ opentui.h: const OT_INPUT_KEY_LEFT_ALT = 57443
++ opentui.h: const OT_INPUT_KEY_LEFT_CONTROL = 57442
++ opentui.h: const OT_INPUT_KEY_LEFT_HYPER = 57445
++ opentui.h: const OT_INPUT_KEY_LEFT_META = 57446
++ opentui.h: const OT_INPUT_KEY_LEFT_SHIFT = 57441
++ opentui.h: const OT_INPUT_KEY_LEFT_SUPER = 57444
++ opentui.h: const OT_INPUT_KEY_LOWER_VOLUME = 57438
++ opentui.h: const OT_INPUT_KEY_MEDIA_FAST_FORWARD = 57433
++ opentui.h: const OT_INPUT_KEY_MEDIA_PAUSE = 57429
++ opentui.h: const OT_INPUT_KEY_MEDIA_PLAY = 57428
++ opentui.h: const OT_INPUT_KEY_MEDIA_PLAY_PAUSE = 57430
++ opentui.h: const OT_INPUT_KEY_MEDIA_RECORD = 57437
++ opentui.h: const OT_INPUT_KEY_MEDIA_REVERSE = 57431
++ opentui.h: const OT_INPUT_KEY_MEDIA_REWIND = 57434
++ opentui.h: const OT_INPUT_KEY_MEDIA_STOP = 57432
++ opentui.h: const OT_INPUT_KEY_MEDIA_TRACK_NEXT = 57435
++ opentui.h: const OT_INPUT_KEY_MEDIA_TRACK_PREVIOUS = 57436
++ opentui.h: const OT_INPUT_KEY_MENU = 57363
++ opentui.h: const OT_INPUT_KEY_MUTE_VOLUME = 57440
++ opentui.h: const OT_INPUT_KEY_NUM_LOCK = 57360
++ opentui.h: const OT_INPUT_KEY_PAGE_DOWN = 57355
++ opentui.h: const OT_INPUT_KEY_PAGE_UP = 57354
++ opentui.h: const OT_INPUT_KEY_PAUSE = 57362
++ opentui.h: const OT_INPUT_KEY_PRESS = 1
++ opentui.h: const OT_INPUT_KEY_PRINT_SCREEN = 57361
++ opentui.h: const OT_INPUT_KEY_RAISE_VOLUME = 57439
++ opentui.h: const OT_INPUT_KEY_RELEASE = 3
++ opentui.h: const OT_INPUT_KEY_REPEAT = 2
++ opentui.h: const OT_INPUT_KEY_RIGHT = 57351
++ opentui.h: const OT_INPUT_KEY_RIGHT_ALT = 57449
++ opentui.h: const OT_INPUT_KEY_RIGHT_CONTROL = 57448
++ opentui.h: const OT_INPUT_KEY_RIGHT_HYPER = 57451
++ opentui.h: const OT_INPUT_KEY_RIGHT_META = 57452
++ opentui.h: const OT_INPUT_KEY_RIGHT_SHIFT = 57447
++ opentui.h: const OT_INPUT_KEY_RIGHT_SUPER = 57450
++ opentui.h: const OT_INPUT_KEY_SCROLL_LOCK = 57359
++ opentui.h: const OT_INPUT_KEY_TAB = 9
++ opentui.h: const OT_INPUT_KEY_TEXT_TRUNCATED = 2
++ opentui.h: const OT_INPUT_KEY_UP = 57352
++ opentui.h: const OT_INPUT_MOD_ALT = 2
++ opentui.h: const OT_INPUT_MOD_CAPS_LOCK = 64
++ opentui.h: const OT_INPUT_MOD_CTRL = 4
++ opentui.h: const OT_INPUT_MOD_HYPER = 16
++ opentui.h: const OT_INPUT_MOD_META = 32
++ opentui.h: const OT_INPUT_MOD_NUM_LOCK = 128
++ opentui.h: const OT_INPUT_MOD_SHIFT = 1
++ opentui.h: const OT_INPUT_MOD_SUPER = 8
++ opentui.h: const OT_INPUT_MOUSE = 2
++ opentui.h: const OT_INPUT_MOUSE_BUTTON_NONE = 255
++ opentui.h: const OT_INPUT_MOUSE_DOWN = 1
++ opentui.h: const OT_INPUT_MOUSE_DRAG = 4
++ opentui.h: const OT_INPUT_MOUSE_MOVE = 3
++ opentui.h: const OT_INPUT_MOUSE_SCROLL = 5
++ opentui.h: const OT_INPUT_MOUSE_UP = 2
++ opentui.h: const OT_INPUT_PASTE = 3
++ opentui.h: const OT_INPUT_PASTE_END = 2
++ opentui.h: const OT_INPUT_PASTE_START = 1
++ opentui.h: const OT_INPUT_PAYLOAD_BYTES_MIN = 4384
++ opentui.h: const OT_INPUT_REPLY = 5
++ opentui.h: const OT_INPUT_REPLY_APC = 5
++ opentui.h: const OT_INPUT_REPLY_CSI = 1
++ opentui.h: const OT_INPUT_REPLY_CURSOR_POSITION = 2
++ opentui.h: const OT_INPUT_REPLY_DCS = 4
++ opentui.h: const OT_INPUT_REPLY_FRAGMENT = 1
++ opentui.h: const OT_INPUT_REPLY_OSC = 3
++ opentui.h: const OT_INPUT_REPLY_SS3 = 2
++ opentui.h: const OT_INPUT_RESET_KEEP_REPLY = 1
++ opentui.h: const OT_INPUT_TIMEOUT_NS = 20000000
++ opentui.h: const OT_SCENE_DEBUG_FULL_FRAME = 1
+- opentui.h: const OT_SCENE_FRAME_YIELD = 5
++ opentui.h: const OT_SCENE_FULL_PATH_FORCED = 1
++ opentui.h: const OT_SCENE_FULL_PATH_IMAGES = 4
++ opentui.h: const OT_SCENE_FULL_PATH_SCREEN = 2
++ opentui.h: const OT_STYLE_RUN_FLAG = 2147483648
++ opentui.h: field ot_input_drain.abi_version: uint32_t, offset 4
++ opentui.h: field ot_input_drain.consumed: uint32_t, offset 8
++ opentui.h: field ot_input_drain.count: uint32_t, offset 12
++ opentui.h: field ot_input_drain.deadline_ns: uint64_t, offset 24
++ opentui.h: field ot_input_drain.discarded: uint32_t, offset 20
++ opentui.h: field ot_input_drain.payload_len: uint32_t, offset 16
++ opentui.h: field ot_input_drain.struct_size: uint32_t, offset 0
++ opentui.h: field ot_input_event.action: uint8_t, offset 1
++ opentui.h: field ot_input_event.base_code: uint32_t, offset 8
++ opentui.h: field ot_input_event.code: uint32_t, offset 4
++ opentui.h: field ot_input_event.flags: uint8_t, offset 3
++ opentui.h: field ot_input_event.kind: uint8_t, offset 0
++ opentui.h: field ot_input_event.modifiers: uint8_t, offset 2
++ opentui.h: field ot_input_event.raw_len: uint32_t, offset 20
++ opentui.h: field ot_input_event.raw_offset: uint32_t, offset 16
++ opentui.h: field ot_input_event.text_len: uint32_t, offset 28
++ opentui.h: field ot_input_event.text_offset: uint32_t, offset 24
++ opentui.h: field ot_input_event.x: uint16_t, offset 12
++ opentui.h: field ot_input_event.y: uint16_t, offset 14
++ opentui.h: field ot_scene_stats.candidate_visits: uint64_t, offset 72
++ opentui.h: field ot_scene_stats.cells_cleared: uint64_t, offset 160
++ opentui.h: field ot_scene_stats.feedback_operations: uint64_t, offset 112
++ opentui.h: field ot_scene_stats.full_path_reasons: uint32_t, offset 208
++ opentui.h: field ot_scene_stats.geometry_reads: uint64_t, offset 96
++ opentui.h: field ot_scene_stats.hit_cells_cleared: uint64_t, offset 176
++ opentui.h: field ot_scene_stats.hit_cells_compared: uint64_t, offset 184
++ opentui.h: field ot_scene_stats.hit_cells_written: uint64_t, offset 168
++ opentui.h: field ot_scene_stats.host_requests: uint32_t, offset 212
++ opentui.h: field ot_scene_stats.layout_rounds: uint32_t, offset 216
++ opentui.h: field ot_scene_stats.member_cells: uint64_t, offset 152
++ opentui.h: field ot_scene_stats.members_painted: uint64_t, offset 144
++ opentui.h: field ot_scene_stats.overlap_tests: uint64_t, offset 136
++ opentui.h: field ot_scene_stats.paint_visits: uint64_t, offset 80
++ opentui.h: field ot_scene_stats.reserved: uint32_t, offset 220
++ opentui.h: field ot_scene_stats.rows_compared: uint64_t, offset 192
++ opentui.h: field ot_scene_stats.rows_diffed: uint64_t, offset 200
++ opentui.h: field ot_scene_stats.view_preparations: uint64_t, offset 88
++ opentui.h: field ot_scene_stats.viewport_child_refreshes: uint64_t, offset 128
++ opentui.h: field ot_scene_stats.visibility_steps: uint64_t, offset 120
++ opentui.h: field ot_scene_stats.work_frame_id: uint64_t, offset 64
++ opentui.h: field ot_scene_stats.yoga_solves: uint64_t, offset 104
+- opentui.h: function ot_scene_frame_step_with_geometry(ot_context *, const ot_handle *session, const ot_scene_frame_request *previous, const ot_scene_frame_options *, uint32_t max_work_items, const uint8_t *recording, uint32_t recording_length, ot_scene_frame_request *out_request, ot_scene_frame_geometry *out_geometry): ot_status
++ opentui.h: function ot_scene_frame_step_with_geometry(ot_context *, const ot_handle *session, const ot_scene_frame_request *previous, const ot_scene_frame_options *, const uint8_t *recording, uint32_t recording_length, ot_scene_frame_request *out_request, ot_scene_frame_geometry *out_geometry): ot_status
++ opentui.h: function ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags): ot_status
++ opentui.h: function ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags): ot_status
++ opentui.h: function ot_session_input_feed(ot_context *context, const ot_handle *session, const uint8_t *bytes, uint32_t byte_count, uint64_t now_ns, ot_input_event *records, uint32_t capacity, uint8_t *payload, uint32_t payload_capacity, ot_input_drain *out_drain): ot_status
++ opentui.h: function ot_session_input_reset(ot_context *context, const ot_handle *session, uint32_t flags): ot_status
++ opentui.h: struct ot_input_drain
++ opentui.h: struct ot_input_event

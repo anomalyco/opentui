@@ -242,6 +242,8 @@ describe("documentation search ranking against the published index", () => {
     expect(lookup(entries, "renderer")[0]?.entry.url).toBe("/docs/core-concepts/renderer")
     expect(lookup(entries, "keymap")[0]?.entry.url).toBe("/docs/keymap/overview")
     expect(lookup(entries, "solid")[0]?.entry.url).toBe("/docs/bindings/solid")
+    expect(lookup(entries, "releases")[0]?.entry.url).toBe("/docs/releases")
+    expect(lookup(entries, "changelog")[0]?.entry.url).toBe("/docs/releases")
   })
 
   test("symbol queries prefer the page that owns the symbol", () => {
@@ -256,7 +258,7 @@ describe("documentation search ranking against the published index", () => {
     expect(lookup(entries, "ot_scene_frame_step_with_geometry")[0]?.entry.url).toBe("/docs/native/frames")
     expect(lookup(entries, "ot_scene_flush")[0]?.entry.url).toBe("/docs/native/frames")
     expect(lookup(entries, "ot_session_poll_kitty_image_transport")[0]?.entry.url).toBe("/docs/native/host-io-time")
-    expect(lookup(entries, "defineNativeIntegration")[0]?.entry.url).toBe("/docs/extend/custom-renderables")
+    expect(lookup(entries, "refreshHooks")[0]?.entry.url).toBe("/docs/extend/custom-renderables")
     expect(lookup(entries, "ot_context_create")[0]?.entry.url).toBe("/docs/native/c")
     expect(lookup(entries, "Context.init")[0]?.entry.url).toBe("/docs/native/zig")
   })

@@ -431,6 +431,26 @@ describe("ExtmarksController", () => {
       expect(extmark?.end).toBe(13)
     })
 
+    it("should adjust extmark positions after typing, pasting, newline, and delete on a later line", async () => {
+      await setup("ab\ncd efgh")
+
+      const id = extmarks.create({ start: 6, end: 10 })
+
+      textarea.focus()
+      textarea.cursorOffset = 3
+      textarea.insertChar("X")
+      await currentMockInput.pasteBracketedText("YZ")
+      const typed = extmarks.create({ start: 3, end: 6 })
+      textarea.newLine()
+      currentMockInput.pressKey("DELETE")
+
+      expect(extmarks.get(typed)).toMatchObject({ start: 3, end: 6 })
+      const extmark = extmarks.get(id)
+      expect(textarea.plainText).toBe("ab\nXYZ\nd efgh")
+      expect(extmark?.start).toBe(9)
+      expect(extmark?.end).toBe(13)
+    })
+
     it("should expand extmark when inserting inside", async () => {
       await setup("Hello World")
 

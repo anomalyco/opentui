@@ -5,7 +5,7 @@ description: Scroll and cull child content in a bounded viewport
 
 # ScrollBox
 
-`ScrollBox` scrolls arbitrary child renderables and manages its own [ScrollBar](/docs/components/scrollbar) instances. Use a standalone ScrollBar only when another model owns the scroll position.
+`ScrollBox` scrolls arbitrary child renderables. Its scroll position, sticky edge, and scrollbars are native state of its own scene node, so scrolling and following new content need no layout pass and no host round trip. Use a standalone [ScrollBar](/docs/components/scrollbar) only when another model owns the scroll position.
 
 ## Availability
 
@@ -52,12 +52,22 @@ A bordered list of source files initially shows its first five rows:
 ```text terminal=scrollbox-top
 offset: 0 / 7
 ┌──────────────────────────────┐
-│01  src/index.ts             ▀│
-│02  src/app.ts                │
+│01  src/index.ts             █│
+│02  src/app.ts               █│
 │03  src/layout.ts             │
 │04  src/theme.ts              │
 │05  src/events.ts             │
 └──────────────────────────────┘
+```
+
+### Headers above a growing ScrollBox
+
+A ScrollBox with `flexGrow` and no `flexBasis` asks for the full height of its content. Once the content is taller than the space, Yoga shrinks the siblings above it as well, and can shrink a one-row header to zero rows. A node with zero rows is not drawn. To keep the header, give it `flexShrink: 0`, or give the ScrollBox `flexBasis: 0`:
+
+```typescript
+const column = new BoxRenderable(renderer, { flexDirection: "column", height: "100%" })
+column.add(new TextRenderable(renderer, { content: "filter: (type)", flexShrink: 0 }))
+column.add(new ScrollBoxRenderable(renderer, { flexGrow: 1, minHeight: 0 }))
 ```
 
 ## Sticky scroll
@@ -144,7 +154,7 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 
 ## Customizing sub-components
 
-ScrollBox contains several internal components that you can style individually:
+The wrapper, viewport, and content areas take a background color each. The viewport also takes padding in whole cells, and the content takes the Yoga layout properties of a box (direction, alignment, padding, gap, sizes). Other box options of these parts are ignored:
 
 ```typescript
 const scrollbox = new ScrollBoxRenderable(renderer, {
@@ -183,6 +193,10 @@ scrollbox.scrollBy({ x: 10, y: 5 })
 scrollbox.scrollBy(1, "viewport")
 ```
 
+`scrollBy` and `scrollTo` scroll at once against the current layout and apply again after the next frame's layout, so
+a scroll made in the same tick as a content change lands against the new content. A delta adds to a target that is
+still waiting for that layout.
+
 ### scrollTo
 
 Scroll to an absolute position:
@@ -195,6 +209,9 @@ scrollbox.scrollTo(0)
 scrollbox.scrollTo({ x: 0, y: 100 })
 ```
 
+A position at or past the end, such as `scrollTo(scrollbox.scrollHeight)` or `scrollTo(Infinity)`, stays at the end
+after the content grows. `NaN` throws a `RangeError`.
+
 The same list after `scrollTo(5)`:
 
 ```text terminal=scrollbox-scrolled
@@ -202,8 +219,8 @@ offset: 5 / 7
 ┌──────────────────────────────┐
 │06  src/input.ts              │
 │07  src/scroll.ts             │
-│08  src/render.ts             │
-│09  src/state.ts             ▀│
+│08  src/render.ts            █│
+│09  src/state.ts             █│
 │10  src/config.ts             │
 └──────────────────────────────┘
 ```
@@ -218,7 +235,39 @@ both edges of an axis. Otherwise, the method scrolls to reveal the nearest edge.
 scrollbox.scrollChildIntoView("table-row-42")
 ```
 
-Use it when you focus an offscreen element, such as a search result or a new form field.
+Use it when you focus an offscreen element, such as a search result or a new form field. Pass the renderable instead of
+an id, and an `align` of `"start"` or `"end"` to put that edge of the child at the viewport's edge, `inset` cells inside:
+
+```typescript
+scrollbox.scrollChildIntoView(message, { align: "start", inset: 1 })
+```
+
+Like `scrollTo`, the call applies again after the next frame's layout, so a child that moves in that frame still ends
+up in view.
+
+### anchor
+
+Keep a child at its place in the viewport while content above it changes, for example while older messages load above
+the reader. The anchor holds through every layout until you release it, scroll to the end, or the child leaves the
+ScrollBox. It takes precedence over sticky scrolling; a scroll moves the place it keeps. Release takes effect at once,
+so release it in `afterLayout`: the frame that lays out the new messages still holds the place.
+
+```typescript
+const release = scrollbox.anchor(firstVisibleRow)
+await loadOlderMessages()
+scrollbox.afterLayout(release)
+```
+
+### afterLayout
+
+Run a callback once in the next frame, after its layout and before it paints. Layout reads in the callback are current,
+and a scroll it makes shows in that frame, so no frame shows the content at the old position.
+
+```typescript
+scrollbox.afterLayout(() => scrollbox.scrollChildIntoView(newRow, { align: "end" }))
+```
+
+The callback waits while the ScrollBox is hidden. Destroying the ScrollBox drops it.
 
 ## Keyboard navigation
 
@@ -255,17 +304,19 @@ When focused, ScrollBox responds to keyboard input:
 | `scrollWidth`  | `number` | Total scrollable width (read-only)           |
 | `scrollHeight` | `number` | Total scrollable height (read-only)          |
 
-## Internal components
+## Parts
 
-ScrollBox exposes its internal components for advanced use:
+ScrollBox exposes its parts for geometry, events, and styling. They are views of the ScrollBox's native state, not renderables: they have no children of their own and cannot be added to another node.
 
 ```typescript
-scrollbox.wrapper // BoxRenderable - outer wrapper
-scrollbox.viewport // BoxRenderable - visible area
-scrollbox.content // ContentRenderable - holds children
-scrollbox.horizontalScrollBar // ScrollBarRenderable
-scrollbox.verticalScrollBar // ScrollBarRenderable
+scrollbox.wrapper // x, y, width, height, backgroundColor
+scrollbox.viewport // geometry, padding, backgroundColor, "resize" and onSizeChange
+scrollbox.content // geometry, layout properties, backgroundColor, "resize" and onSizeChange; add() adds to the ScrollBox
+scrollbox.horizontalScrollBar // scrollPosition, scrollBy(), visible, showArrows, trackOptions, "change" and onChange
+scrollbox.verticalScrollBar
 ```
+
+The part classes `ScrollBoxWrapper`, `ScrollBoxViewport`, `ScrollBoxContent`, and `ScrollBoxBar` are exported for type annotations. Children of a ScrollBox report the ScrollBox as their `parent`. A press on a scrollbar or one of its arrows targets the ScrollBox.
 
 ## Related concepts
 

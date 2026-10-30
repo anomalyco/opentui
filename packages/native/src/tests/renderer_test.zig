@@ -14,14 +14,18 @@ const test_renderer_mod = @import("test-renderer.zig");
 const terminal_image_test = @import("terminal-image_test.zig");
 const owned_styled = @import("owned-styled-text.zig");
 const utils = @import("../utils.zig");
+const native_span_feed = @import("../native-span-feed.zig");
+const terminal_mod = @import("../terminal.zig");
 
 const CliRenderer = renderer.CliRenderer;
 const TextBuffer = text_buffer.TextBuffer;
 const TextBufferView = text_buffer_view.TextBufferView;
 const OptimizedBuffer = buffer.OptimizedBuffer;
 const RGBA = text_buffer.RGBA;
-const TestMemoryOutput = test_renderer_mod.TestMemoryOutput;
 const TestRenderer = test_renderer_mod.TestRenderer;
+const renderPresented = test_renderer_mod.renderPresented;
+const FixedSink = test_renderer_mod.FixedSink;
+const discard = test_renderer_mod.discard;
 
 test "standalone renderer pools survive either owner teardown order" {
     const allocator = std.testing.allocator;
@@ -48,7 +52,7 @@ test "standalone renderer pools survive either owner teardown order" {
             ids[i] = try links[i].acquire(urls[i]);
             defer links[i].decref(ids[i]) catch unreachable;
             try target.getNextBuffer().drawText(glyphs[i], 0, 0, ansi.rgbColor(255, 255, 255, 255), null, ansi.TextAttributes.setLinkId(0, ids[i]));
-            try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(true));
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, renderers[i].?.render(true));
             try std.testing.expect(std.mem.find(u8, renderers[i].?.lastOutput(), glyphs[i]) != null);
             try std.testing.expect(std.mem.find(u8, renderers[i].?.lastOutput(), urls[i]) != null);
         }
@@ -65,7 +69,7 @@ test "standalone renderer pools survive either owner teardown order" {
         const target = renderers[remaining].?.renderer;
         try std.testing.expectEqualStrings(urls[remaining], try links[remaining].get(ids[remaining]));
         try target.getNextBuffer().drawText(glyphs[remaining], 1, 0, ansi.rgbColor(255, 255, 255, 255), null, ansi.TextAttributes.setLinkId(0, ids[remaining]));
-        try std.testing.expectEqual(renderer.RenderStatus.rendered, target.render(true));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, renderers[remaining].?.render(true));
         try std.testing.expect(std.mem.find(u8, renderers[remaining].?.lastOutput(), glyphs[remaining]) != null);
         try std.testing.expect(std.mem.find(u8, renderers[remaining].?.lastOutput(), urls[remaining]) != null);
         renderers[remaining].?.deinit();
@@ -88,13 +92,14 @@ test "standalone renderer construction failures preserve borrowed pools" {
             defer links.decref(link_id) catch unreachable;
             var env = std.process.Environ.Map.init(std.testing.allocator);
             defer env.deinit();
+            const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
+            defer feed.destroy();
             const result = CliRenderer.createWithOptions(allocator, 4, 1, &pool, .{
                 .link_pool = &links,
-                .output = .memory,
+                .feed = feed,
                 .env_map = &env,
-                .clearOnShutdown = false,
             });
-            if (result) |value| value.destroy() else |_| {}
+            if (result) |value| value.destroyStorage() else |_| {}
             try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(glyph_id));
             try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(link_id));
             try std.testing.expectEqualStrings("e\xcc\x81", try pool.get(glyph_id));
@@ -138,40 +143,6 @@ fn drawTranslucentSixelGeometry(
     try std.testing.expect(try target.drawImage(value, image_handle, 0, 0, cell_width, cell_height, 4, 4, 0, 0, 4, 4, .sixel));
 }
 
-const CountingOutput = struct {
-    writes: u32 = 0,
-
-    fn bufferedOutput(self: *CountingOutput) @import("../renderer-output.zig").BufferedOutput {
-        return .{ .ctx = self, .write_fn = write, .thread_safe = true };
-    }
-
-    fn write(ctx: *anyopaque, data: []const u8) void {
-        const self: *CountingOutput = @ptrCast(@alignCast(ctx));
-        _ = data;
-        self.writes += 1;
-    }
-};
-
-const SlowThreadSafeOutput = struct {
-    delay_ns: u64,
-    writes: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    payloads: [2][64]u8 = @splat(@splat(0)),
-    lengths: [2]usize = @splat(0),
-
-    fn bufferedOutput(self: *SlowThreadSafeOutput) @import("../renderer-output.zig").BufferedOutput {
-        return .{ .ctx = self, .write_fn = write, .thread_safe = true };
-    }
-
-    fn write(ctx: *anyopaque, data: []const u8) void {
-        const self: *SlowThreadSafeOutput = @ptrCast(@alignCast(ctx));
-        const index = self.writes.fetchAdd(1, .monotonic);
-        if (index < self.payloads.len) {
-            self.lengths[index] = @min(data.len, self.payloads[index].len);
-            @memcpy(self.payloads[index][0..self.lengths[index]], data[0..self.lengths[index]]);
-        }
-        io.sleep(.fromNanoseconds(self.delay_ns), .awake) catch unreachable;
-    }
-};
 test "renderer emits Kitty image once and leaves unchanged frame empty" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -185,12 +156,12 @@ test "renderer emits Kitty image once and leaves unchanged frame empty" {
     test_renderer.renderer.terminal.multiplexer = .none;
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t,f=24,s=1,v=1,i=") != null);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1073741823") != null);
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     try std.testing.expectEqual(@as(usize, 0), test_renderer.memory.lastWrite().len);
 
     const r = test_renderer.renderer;
@@ -220,22 +191,22 @@ test "renderer emits Sixel only with known pixel dimensions" {
     test_renderer.renderer.terminal.multiplexer = .none;
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
     try std.testing.expectEqual(@as(u64, 1), test_renderer.renderer.sixelCacheMisses);
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
     try std.testing.expectEqual(@as(u64, 1), test_renderer.renderer.sixelCacheHits);
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 1, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expectEqual(@as(u64, 2), test_renderer.renderer.sixelCacheHits);
 
     try test_renderer.renderer.getNextBuffer().pushOpacity(0.5);
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 1, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
     test_renderer.renderer.getNextBuffer().popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expectEqual(@as(u64, 2), test_renderer.renderer.sixelCacheMisses);
 }
 
@@ -255,14 +226,14 @@ test "renderer separates translucent Sixel cache entries by cell geometry" {
     fresh_renderer.renderer.terminal.caps.sixel = true;
 
     try drawTranslucentSixelGeometry(cached_renderer.renderer.getNextBuffer(), value, image_handle, 1, 4);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cached_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, cached_renderer.render(true));
     try drawTranslucentSixelGeometry(cached_renderer.renderer.getNextBuffer(), value, image_handle, 2, 2);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cached_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, cached_renderer.render(true));
     try std.testing.expectEqual(@as(u64, 0), cached_renderer.renderer.sixelCacheHits);
     try std.testing.expectEqual(@as(u64, 2), cached_renderer.renderer.sixelCacheMisses);
 
     try drawTranslucentSixelGeometry(fresh_renderer.renderer.getNextBuffer(), value, image_handle, 2, 2);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, fresh_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, fresh_renderer.render(true));
 
     try std.testing.expectEqualSlices(
         u8,
@@ -289,7 +260,7 @@ test "renderer does not copy identity Sixel geometry" {
     test_renderer.renderer.terminal.caps.sixel = true;
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(!source_allocator.has_induced_failure);
     try std.testing.expectEqual(source_allocations_before_render, source_allocator.allocations);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
@@ -317,12 +288,12 @@ test "renderer repaints unchanged upper Sixel after an overlapping lower image c
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(blue, blue_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(green, green_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(blue, blue_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "\x1bP0;1;0q"));
@@ -348,12 +319,12 @@ test "renderer repaints overlapping Sixel images when their order changes" {
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(blue, blue_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(blue, blue_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "\x1bP0;1;0q"));
@@ -386,14 +357,14 @@ test "renderer propagates Sixel repaint through an overlap chain" {
     try std.testing.expect(try next.drawImage(blue, blue_handle, 1, 0, 2, 1, 2, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(white, white_handle, 2, 0, 2, 1, 2, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(red, red_handle, 5, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(green, green_handle, 0, 0, 2, 1, 2, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(blue, blue_handle, 1, 0, 2, 1, 2, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(white, white_handle, 2, 0, 2, 1, 2, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(red, red_handle, 5, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
 
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q"));
 }
@@ -417,11 +388,11 @@ test "renderer repaints lower Sixel after removing an overlapping upper image" {
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(blue, blue_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, "\x1bP0;1;0q"));
@@ -450,12 +421,12 @@ test "renderer repaints lower Sixel when an overlapping upper image becomes tran
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(blue, blue_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(transparent, transparent_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, "\x1bP0;1;0q"));
@@ -473,12 +444,12 @@ test "renderer honors per-placement protocol overrides" {
     const image_handle: u32 = 1;
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t") != null);
 
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .blocks));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t") == null);
 }
 
@@ -495,7 +466,7 @@ test "renderer does not send forced Sixel to Apple Terminal" {
     const image_handle: u32 = 1;
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1bP0;1;0q") == null);
     try std.testing.expect(std.mem.find(u8, output, "█") != null);
@@ -516,7 +487,7 @@ test "renderer honors forced Sixel through tmux independently of tmux DA" {
     test_renderer.renderer.terminal.processCapabilityResponse("\x1b[?62;4c");
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1bPtmux;") != null);
     try std.testing.expect(std.mem.find(u8, output, "\x1b\x1bP0;1;0q") != null);
@@ -531,10 +502,13 @@ test "renderer enables focus tracking after late tmux detection without passthro
 
     var writer = DiscardTerminalWriter{};
     try test_renderer.renderer.terminal.queryTerminalSend(&writer);
-    // tmux before 3.6 answers XTVERSION but not DECRQM.
-    test_renderer.renderer.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
+    // tmux before 3.6 answers XTVERSION but not DECRQM. A Session applies a reply like this.
+    test_renderer.renderer.terminal.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
+    var features: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer features.deinit();
+    try test_renderer.renderer.terminal.enableDetectedFeatures(&features.writer, false);
 
-    const output = test_renderer.memory.lastWrite();
+    const output = features.written();
     try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.focusSet) != null);
     try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.tmuxDcsStart) == null);
 }
@@ -551,7 +525,7 @@ test "renderer does not send forced Sixel to Kitty" {
     test_renderer.renderer.terminal.processCapabilityResponse("\x1bP>|kitty(0.48.2)\x1b\\");
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1bP0;1;0q") == null);
     try std.testing.expect(std.mem.find(u8, output, "█") != null);
@@ -568,7 +542,7 @@ test "renderer honors global image protocol override for auto placements" {
     const image_handle: u32 = 1;
     test_renderer.renderer.terminal.image_protocol = .kitty;
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t") != null);
 }
 
@@ -583,12 +557,12 @@ test "renderer keeps unresolved Sixel fallback frames as no-ops" {
     const image_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const first = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, first, "\x1bP0;1;0q") == null);
     try std.testing.expect(std.mem.find(u8, first, "█") != null);
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     try std.testing.expectEqual(@as(usize, 0), test_renderer.memory.lastWrite().len);
 }
 
@@ -603,7 +577,7 @@ test "renderer repaints a final blocks placement over Sixel" {
     const image_handle: u32 = 1;
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .blocks));
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
     const output = test_renderer.memory.lastWrite();
     const sixel = std.mem.find(u8, output, "\x1bP0;1;0q") orelse return error.TestUnexpectedResult;
     const block = std.mem.findLast(u8, output, "█") orelse return error.TestUnexpectedResult;
@@ -624,25 +598,25 @@ test "renderer does not retransmit Sixel when overlay text changes" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try next.drawText("1", 1, 0, fg, bg, 0);
-    _ = test_renderer.renderer.render(false);
+    _ = test_renderer.render(false);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") == null);
     try std.testing.expect(std.mem.findScalar(u8, test_renderer.memory.lastWrite(), '1') != null);
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try next.drawText("2", 1, 0, fg, bg, 0);
-    _ = test_renderer.renderer.render(false);
+    _ = test_renderer.render(false);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") == null);
     try std.testing.expect(std.mem.findScalar(u8, test_renderer.memory.lastWrite(), '2') != null);
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    _ = test_renderer.renderer.render(false);
+    _ = test_renderer.render(false);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
 }
 
@@ -659,7 +633,7 @@ test "renderer replays a wide grapheme that starts before a Sixel placement" {
     const next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 1, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try next.drawText("界", 0, 0, ansi.rgbColor(255, 255, 255, 0), ansi.rgbColor(0, 0, 0, 0), 0);
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
 
     const output = test_renderer.memory.lastWrite();
     const sixel = std.mem.find(u8, output, "\x1bP0;1;0q") orelse return error.TestUnexpectedResult;
@@ -686,7 +660,7 @@ test "renderer preserves terminal semantics when replaying cells over Sixel" {
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 3, 1, 6, 2, 0, 0, 1, 1, .sixel));
     try next.drawText("界", 0, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(0, 0, 0, 255), linked_bold);
     try next.drawText("X", 2, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(0, 0, 0, 255), 0);
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
 
     const output = test_renderer.memory.lastWrite();
     const sixel = std.mem.findLast(u8, output, "\x1bP0;1;0q") orelse return error.TestUnexpectedResult;
@@ -696,6 +670,30 @@ test "renderer preserves terminal semantics when replaying cells over Sixel" {
     try std.testing.expect(std.mem.find(u8, replay, "\x1b]8;;\x1b\\") != null);
     try std.testing.expect(std.mem.find(u8, replay, "\x1b]66;w=2;界\x1b\\") != null);
     try std.testing.expect(std.mem.find(u8, replay, "\x1b[0m\x1b[1;3H") != null);
+}
+
+test "renderer explicit width gives OSC 66 at most 7 cells and pads a wider glyph with spaces" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    const men = "\u{1f468}" ++ utils.repeat(u8, "\u{200d}\u{1f468}", 7);
+    // Kitty clamps w to 7 and foot ignores a larger w, so the spaces keep | at the glyph's last cell + 1.
+    const rows = [_]struct { []const u8, []const u8 }{
+        .{ family, "\x1b]66;w=6;" ++ family ++ "\x1b\\|" },
+        .{ family ++ "\u{200d}\u{1f466}", "\x1b]66;w=7;" ++ family ++ "\u{200d}\u{1f466}\x1b\\ |" },
+        .{ men, "\x1b]66;w=7;" ++ men ++ "\x1b\\" ++ utils.repeat(u8, " ", 9) ++ "|" },
+    };
+    for (rows) |row| {
+        var test_renderer = try TestRenderer.create(std.testing.allocator, 20, 1, &pools.graphemes, &pools.links);
+        defer test_renderer.deinit();
+        test_renderer.renderer.terminal.caps.unicode = .wcwidth;
+        test_renderer.renderer.terminal.caps.explicit_width = true;
+        test_renderer.renderer.syncWidthMethod();
+        var line: [64]u8 = undefined;
+        try test_renderer.renderer.getNextBuffer().drawText(try std.fmt.bufPrint(&line, "{s}|", .{row[0]}), 0, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(0, 0, 0, 255), 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
+        try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), row[1]) != null);
+    }
 }
 
 test "renderer preserves Malayalam report after Ghostty probe replies" {
@@ -709,9 +707,9 @@ test "renderer preserves Malayalam report after Ghostty probe replies" {
 
     var writer = DiscardTerminalWriter{};
     try test_renderer.renderer.terminal.queryTerminalSend(&writer);
-    test_renderer.renderer.processCapabilityResponse("\x1b[1;5R");
-    test_renderer.renderer.processCapabilityResponse("\x1b[1;1R");
-    test_renderer.renderer.processCapabilityResponse("\x1b[1;1R\x1bP>|ghostty 1.3.1\x1b\\");
+    test_renderer.renderer.terminal.processCapabilityResponse("\x1b[1;5R");
+    test_renderer.renderer.terminal.processCapabilityResponse("\x1b[1;1R");
+    test_renderer.renderer.terminal.processCapabilityResponse("\x1b[1;1R\x1bP>|ghostty 1.3.1\x1b\\");
 
     const report = "OpenCode search configuration പരിശോധിക്കൽ";
     try test_renderer.renderer.getNextBuffer().drawText(
@@ -730,7 +728,7 @@ test "renderer preserves Malayalam report after Ghostty probe replies" {
         ansi.rgbColor(0, 0, 0, 255),
         0,
     );
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1b]66;") == null);
@@ -766,7 +764,7 @@ test "renderer preserves wide grapheme when continuation and next cell colors ma
         const background = ansi.rgbColor(0, 0, 0, 255);
         var next = test_renderer.renderer.getNextBuffer();
         try next.drawText(text, 0, 0, foreground, background, 0);
-        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
         next = test_renderer.renderer.getNextBuffer();
         try next.drawText(text, 0, 0, foreground, background, 0);
@@ -781,7 +779,7 @@ test "renderer preserves wide grapheme when continuation and next cell colors ma
             cell.fg = color;
             next.setRaw(@intCast(x), 0, cell);
         }
-        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
 
         var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{
             .cols = 6,
@@ -812,7 +810,7 @@ test "renderer updates text after a default-ignorable code point where Ghostty s
         for ([_][]const u8{ "bcdef", "bcdeZ" }, [_]bool{ true, false }) |tail, force| {
             var line: [16]u8 = undefined;
             try test_renderer.renderer.getNextBuffer().drawText(try std.fmt.bufPrint(&line, "{s}{s}", .{ row[0], tail }), 0, 0, white, black, 0);
-            try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(force));
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(force));
         }
         var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 8, .rows = 1 });
         defer terminal.deinit(std.testing.allocator);
@@ -838,11 +836,11 @@ test "renderer closes each attributed run before the next run starts" {
     for (0..8) |bit| for (runs) |run| for ([_]u32{ 1, 2 }) |follower_y| for ([_]bool{ false, true }) |force| {
         var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, &pools.graphemes, &pools.links);
         defer test_renderer.deinit();
-        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
         const next = test_renderer.renderer.getNextBuffer();
         try next.drawText(run[0], run[1], 0, white, black, @as(u32, 1) << @intCast(bit));
         try next.drawText("b", 0, follower_y, white, black, 0);
-        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(force));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(force));
 
         var terminal: ghostty_vt.vt.Terminal = try .init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 3 });
         defer terminal.deinit(std.testing.allocator);
@@ -869,7 +867,7 @@ fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, protocol));
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, protocol));
@@ -878,7 +876,7 @@ fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
     try std.testing.expectEqual(@as(u32, ' '), next.get(0, 0).?.char);
     try std.testing.expectEqual(ansi.rgbColor(0, 0, 255, 255), next.get(0, 0).?.bg);
     try std.testing.expect(gp.isImageChar(next.get(1, 0).?.char));
-    _ = test_renderer.renderer.render(false);
+    _ = test_renderer.render(false);
     const covered_output = test_renderer.memory.lastWrite();
     try std.testing.expect(covered_output.len > 0);
     try std.testing.expect(std.mem.find(u8, covered_output, "\x1b_Ga=t") == null);
@@ -889,7 +887,7 @@ fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, protocol));
     try std.testing.expectEqual(@as(usize, 1), next.image_placements.items.len);
-    _ = test_renderer.renderer.render(false);
+    _ = test_renderer.render(false);
     const restored_output = test_renderer.memory.lastWrite();
     switch (protocol) {
         .kitty => {
@@ -931,12 +929,12 @@ test "renderer covers Kitty cells without hiding the rest of the image" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
     next.fillRect(0, 0, 1, 1, ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.5));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, covered, "\x1b_Ga=t") == null);
     try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
@@ -947,12 +945,12 @@ test "renderer covers Kitty cells without hiding the rest of the image" {
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
     next.fillRect(0, 0, 1, 1, ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.5));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     try std.testing.expectEqual(@as(usize, 0), test_renderer.memory.lastWrite().len);
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const restored = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, restored, "\x1b_Ga=t") == null);
     try expectKittyPlacementDeleted(&test_renderer, restored, 1, kitty_run_id_min);
@@ -970,12 +968,12 @@ test "renderer deletes a fully covered Kitty placement" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
     try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
     try std.testing.expect(std.mem.find(u8, covered, "a=p") == null);
@@ -993,13 +991,13 @@ test "renderer moves a Kitty placement without an image-wide delete" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     // Scrolling moves the placement. The image data stays on the terminal, so
     // only the old placement is deleted before the put at the new position.
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const moved = test_renderer.memory.lastWrite();
     try expectKittyPlacementDeleted(&test_renderer, moved, 1, 1);
     try std.testing.expect(std.mem.find(u8, moved, "\x1b_Ga=t") == null);
@@ -1027,7 +1025,7 @@ test "renderer keeps a Kitty image whole under an overlapping Kitty image" {
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
     try std.testing.expect(try next.drawImage(transparent, transparent_handle, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const layered = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, layered, ",p=1,c=2,r=1,x=0,y=0,w=2,h=1,C=1,z=-1073741823") != null);
     try std.testing.expect(std.mem.find(u8, layered, ",p=2,c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1073741822") != null);
@@ -1038,7 +1036,7 @@ test "renderer keeps a Kitty image whole under an overlapping Kitty image" {
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
     try std.testing.expect(try next.drawImage(transparent, transparent_handle, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     try next.drawText("X", 1, 0, .{ 255, 255, 255, 255 }, null, 0);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
     try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
     try expectKittyPlacementDeleted(&test_renderer, covered, 2, 2);
@@ -1059,7 +1057,7 @@ test "renderer merges uncovered Kitty rows into one placement" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 3, 0, 0, 0, 0, 2, 3, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     // Covering the top-left cell leaves one run on row 0 and two identical
     // rows below it, which become a single two-row rectangle. Run ids are
@@ -1067,7 +1065,7 @@ test "renderer merges uncovered Kitty rows into one placement" {
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 3, 0, 0, 0, 0, 2, 3, .kitty));
     next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const covered = test_renderer.memory.lastWrite();
     try expectKittyPlacementDeleted(&test_renderer, covered, 1, 1);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, covered, "a=p"));
@@ -1076,7 +1074,7 @@ test "renderer merges uncovered Kitty rows into one placement" {
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 3, 0, 0, 0, 0, 2, 3, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const restored = test_renderer.memory.lastWrite();
     try expectKittyPlacementDeleted(&test_renderer, restored, 1, kitty_run_id_min);
     try expectKittyPlacementDeleted(&test_renderer, restored, 1, kitty_run_id_min + 1);
@@ -1106,7 +1104,7 @@ test "renderer deletes committed Kitty runs after a failed frame" {
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
     next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), ",p=2147483648,c=1,r=1,x=1,y=0,w=1,h=1") != null);
 
     // Coverage moves, the run delete is written, then Sixel preparation fails
@@ -1118,7 +1116,7 @@ test "renderer deletes committed Kitty runs after a failed frame" {
     const written_before = test_renderer.memory.bytes.items.len;
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     test_renderer.renderer.allocator = failing.allocator();
-    const status = test_renderer.renderer.render(false);
+    const status = test_renderer.render(false);
     test_renderer.renderer.allocator = std.testing.allocator;
     try std.testing.expect(failing.has_induced_failure);
     try std.testing.expectEqual(renderer.RenderStatus.failed, status);
@@ -1129,7 +1127,7 @@ test "renderer deletes committed Kitty runs after a failed frame" {
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
     next.fillRect(1, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const recovered = test_renderer.memory.lastWrite();
     try expectKittyPlacementDeleted(&test_renderer, recovered, 1, kitty_run_id_min);
     try std.testing.expect(std.mem.find(u8, recovered, "\x1b_Ga=t") == null);
@@ -1150,12 +1148,12 @@ test "renderer splits changed background runs around clean Kitty image cells" {
     var next = test_renderer.renderer.getNextBuffer();
     next.fillRect(0, 0, 5, 1, ansi.rgbColor(8, 11, 18, 255));
     try std.testing.expect(try next.drawImage(value, image_handle, 1, 0, 2, 1, 2, 2, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     next.fillRect(0, 0, 5, 1, ansi.rgbColor(32, 43, 61, 255));
     try std.testing.expect(try next.drawImage(value, image_handle, 1, 0, 2, 1, 2, 2, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1b[1;1H") != null);
@@ -1190,11 +1188,11 @@ test "renderer clears old Sixel pixels when replacing an image" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(opaque_image, opaque_handle, 0, 0, 2, 1, 2, 2, 0, 0, 2, 1, .sixel));
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(replacement, replacement_handle, 0, 0, 2, 1, 2, 2, 0, 0, 2, 1, .sixel));
-    _ = test_renderer.renderer.render(false);
+    _ = test_renderer.render(false);
     const output = test_renderer.memory.lastWrite();
     const sixel = std.mem.find(u8, output, "\x1bP0;1;0q") orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.findScalar(u8, output[0..sixel], ' ') != null);
@@ -1296,18 +1294,18 @@ test "renderer dims sixel placements by opacity instead of hiding them" {
     try next.pushOpacity(0.4);
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 2, 2, 0, 0, 2, 2, .sixel));
     next.popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try expectSinglePaintedSixelColor(test_renderer.memory.lastWrite(), .{ 35, 45 }, .{ 0, 2 }, .{ 0, 2 });
 
     // The same placement over an opaque blue background must dim toward blue:
     // 0.4 * red + 0.6 * blue = (102, 0, 153) -> (40, 0, 60).
     test_renderer.renderer.setBackgroundColor(ansi.rgbColor(0, 0, 255, 255));
-    _ = test_renderer.renderer.render(true);
+    _ = test_renderer.render(true);
     next = test_renderer.renderer.getNextBuffer();
     try next.pushOpacity(0.4);
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 2, 2, 0, 0, 2, 2, .sixel));
     next.popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try expectSinglePaintedSixelColor(test_renderer.memory.lastWrite(), .{ 35, 45 }, .{ 0, 2 }, .{ 55, 65 });
 
     // Opacity 0.75 over the same blue background: (191, 0, 64) -> (75, 0, 25).
@@ -1316,13 +1314,13 @@ test "renderer dims sixel placements by opacity instead of hiding them" {
     try next.pushOpacity(0.75);
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 2, 2, 0, 0, 2, 2, .sixel));
     next.popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try expectSinglePaintedSixelColor(test_renderer.memory.lastWrite(), .{ 70, 80 }, .{ 0, 2 }, .{ 20, 30 });
 
     // Full opacity is unaffected by the background: pure red (100, 0, 0).
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 1, 1, 2, 2, 0, 0, 2, 2, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try expectSinglePaintedSixelColor(test_renderer.memory.lastWrite(), .{ 95, 100 }, .{ 0, 2 }, .{ 0, 2 });
 }
 
@@ -1348,7 +1346,7 @@ test "renderer materializes lazy ICC PNGs before applying Sixel opacity" {
     try next.pushOpacity(0.5);
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 3, 1, 3, 1, 0, 0, 3, 1, .sixel));
     next.popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
     try std.testing.expectEqual(@as(usize, 0), value.pixels.len);
 }
@@ -1371,7 +1369,7 @@ test "renderer keeps image alpha holes transparent while dimming by opacity" {
     try next.pushOpacity(0.6);
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 2, 1, 2, 1, 0, 0, 2, 1, .sixel));
     next.popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     const output = test_renderer.memory.lastWrite();
     var colors: [8]PaintedSixelColor = undefined;
@@ -1387,34 +1385,18 @@ test "renderer keeps image alpha holes transparent while dimming by opacity" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, payload, "@"));
 }
 
-test "buffered backend grows and commits a complete large frame" {
-    var memory = TestMemoryOutput.init(std.testing.allocator);
-    defer memory.deinit();
-    var backend = try renderer.BufferedBackend.create(std.testing.allocator, memory.bufferedOutput());
-    defer backend.deinit();
-    backend.beginFrame();
-    var writer = backend.writer();
-    const oversized = try std.testing.allocator.alloc(u8, renderer.OUTPUT_BUFFER_SIZE + 1);
-    defer std.testing.allocator.free(oversized);
-    @memset(oversized, 42);
-    try writer.writeAll(oversized);
-    try std.testing.expectEqual(@import("../renderer-output.zig").WriteStatus.ok, backend.endFrame());
-    try std.testing.expectEqual(oversized.len, memory.bytes.items.len);
-    try std.testing.expectEqualSlices(u8, oversized, memory.bytes.items);
-}
-
 fn createWithOptionsOnce(allocator: std.mem.Allocator, width: u32, height: u32) !void {
     var pools = TestPools.init(allocator);
     defer pools.deinit();
 
-    var memory = TestMemoryOutput.init(allocator);
-    defer memory.deinit();
+    const feed = try native_span_feed.Stream.create(allocator, null);
+    defer feed.destroy();
 
     var cli_renderer = try CliRenderer.createWithOptions(allocator, width, height, &pools.graphemes, .{
         .link_pool = &pools.links,
-        .output = .{ .buffered = memory.bufferedOutput() },
+        .feed = feed,
     });
-    cli_renderer.destroy();
+    cli_renderer.destroyStorage();
 }
 
 test "renderer - createWithOptions late allocation failure cleans up" {
@@ -1453,6 +1435,16 @@ test "renderer - create and destroy" {
     try std.testing.expectEqual(@as(u32, 24), cli_renderer.height);
 }
 
+/// The OSC 52 sequence a Session writes, in a buffer of the exact computed size.
+fn clipboardSequence(cli: *CliRenderer, payload: []const u8) ![]u8 {
+    const bytes = try std.testing.allocator.alloc(u8, try cli.terminal.clipboardSequenceSize(payload.len));
+    errdefer std.testing.allocator.free(bytes);
+    var writer: std.Io.Writer = .fixed(bytes);
+    try cli.terminal.writeClipboard(&writer, .clipboard, payload);
+    try std.testing.expectEqual(bytes.len, writer.buffered().len);
+    return bytes;
+}
+
 test "renderer - clipboard allocates one exact encoded sequence" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -1461,9 +1453,9 @@ test "renderer - clipboard allocates one exact encoded sequence" {
     defer test_renderer.deinit();
 
     const payload: [2048]u8 = @splat('A');
-    try std.testing.expect(test_renderer.renderer.copyToClipboardOSC52(.clipboard, &payload));
+    const output = try clipboardSequence(test_renderer.renderer, &payload);
+    defer std.testing.allocator.free(output);
 
-    const output = test_renderer.lastOutput();
     try std.testing.expectEqual(std.base64.standard.Encoder.calcSize(payload.len) + 9, output.len);
     try std.testing.expect(std.mem.startsWith(u8, output, "\x1b]52;c;QUFB"));
     try std.testing.expect(std.mem.endsWith(u8, output, "QUE=\x1b\\"));
@@ -1479,11 +1471,11 @@ test "renderer - clipboard wraps OSC 52 in tmux DCS passthrough" {
     defer test_renderer.deinit();
 
     const payload: [2048]u8 = @splat('A');
-    try std.testing.expect(test_renderer.renderer.copyToClipboardOSC52(.clipboard, &payload));
+    const output = try clipboardSequence(test_renderer.renderer, &payload);
+    defer std.testing.allocator.free(output);
 
     // Envelope: "\x1bPtmux;" (7) + bare sequence (base64 + 9) with both inner
     // ESC bytes doubled (+2) + "\x1b\\" (2) = base64 + 20.
-    const output = test_renderer.lastOutput();
     try std.testing.expectEqual(std.base64.standard.Encoder.calcSize(payload.len) + 20, output.len);
     try std.testing.expect(std.mem.startsWith(u8, output, "\x1bPtmux;\x1b\x1b]52;c;QUFB"));
     try std.testing.expect(std.mem.endsWith(u8, output, "QUE=\x1b\x1b\\\x1b\\"));
@@ -1499,12 +1491,12 @@ test "renderer - clipboard chunks OSC 52 in screen DCS passthrough" {
     defer test_renderer.deinit();
 
     const payload: [2048]u8 = @splat('A');
-    try std.testing.expect(test_renderer.renderer.copyToClipboardOSC52(.clipboard, &payload));
+    const output = try clipboardSequence(test_renderer.renderer, &payload);
+    defer std.testing.allocator.free(output);
 
     // Sequence: base64 (2732) + OSC 52 framing with BEL (8) = 2740 bytes,
     // split into 11 chunks of at most 252 bytes, each wrapped in
     // "\x1bP" .. "\x1b\\" (+4 per chunk) = 2784 total.
-    const output = test_renderer.lastOutput();
     try std.testing.expectEqual(@as(usize, 2784), output.len);
     try std.testing.expect(std.mem.startsWith(u8, output, "\x1bP\x1b]52;c;QUFB"));
     try std.testing.expect(std.mem.endsWith(u8, output, "QUE=\x07\x1b\\"));
@@ -1542,7 +1534,7 @@ test "renderer - simple text rendering to currentRenderBuffer" {
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const current_buffer = cli_renderer.getCurrentBuffer();
 
@@ -1583,7 +1575,7 @@ test "renderer - multi-line text rendering" {
 
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const current_buffer = cli_renderer.getCurrentBuffer();
 
@@ -1624,7 +1616,7 @@ test "renderer - emoji (wide grapheme) rendering" {
 
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const current_buffer = cli_renderer.getCurrentBuffer();
 
@@ -1681,7 +1673,7 @@ test "renderer - CJK characters rendering" {
 
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const current_buffer = cli_renderer.getCurrentBuffer();
 
@@ -1734,7 +1726,7 @@ test "renderer - mixed ASCII, emoji, and CJK" {
 
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const current_buffer = cli_renderer.getCurrentBuffer();
 
@@ -1790,21 +1782,22 @@ test "renderer - resize updates dimensions" {
     try std.testing.expectEqual(@as(u32, 40), cli_renderer.height);
 }
 
-test "renderer - resize allocation failures preserve both buffers and hit grids" {
+test "renderer - resize allocation failures preserve both buffers and published hits" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
     defer links.deinit();
     for ([_][2]u32{ .{ 4, 1 }, .{ 3, 2 } }) |dimensions| {
-        const allocation_count: usize = if (dimensions[0] * dimensions[1] > 4) 12 else 10;
-        for (0..allocation_count) |fail_index| {
+        for (0..10) |fail_index| {
             var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
+            defer feed.destroy();
             const target = try CliRenderer.createWithOptions(failing.allocator(), 2, 2, &pool, .{
                 .io = io,
-                .output = .memory,
+                .feed = feed,
                 .link_pool = &links,
             });
-            defer target.destroy();
+            defer target.destroyStorage();
             const grapheme_id = try pool.acquire("\xf0\x9f\x98\x80");
             const link_id = try links.acquire("https://resize.invalid");
             const cell: buffer.Cell = .{
@@ -1817,8 +1810,7 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             target.nextRenderBuffer.set(0, 0, cell);
             try pool.decref(grapheme_id);
             try links.decref(link_id);
-            target.currentHitGrid[3] = 42;
-            target.nextHitGrid[3] = 43;
+            target.presented_hits_frame = 42;
             target.terminal.setCursorPosition(2, 2, true);
             var current = try target.currentRenderBuffer.acquireLease();
             defer current.release();
@@ -1826,8 +1818,6 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             defer next.release();
             const current_snapshot = try current.snapshot();
             const next_snapshot = try next.snapshot();
-            const current_hits = target.currentHitGrid;
-            const next_hits = target.nextHitGrid;
             const live_bytes = failing.allocated_bytes - failing.freed_bytes;
             failing.fail_index = failing.alloc_index + fail_index;
 
@@ -1835,19 +1825,14 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             try std.testing.expectEqual(live_bytes, failing.allocated_bytes - failing.freed_bytes);
             try std.testing.expectEqual(@as(u32, 2), target.width);
             try std.testing.expectEqual(@as(u32, 2), target.height);
-            try std.testing.expectEqual(@as(u32, 2), target.hitGridWidth);
-            try std.testing.expectEqual(@as(u32, 2), target.hitGridHeight);
             try std.testing.expectEqualDeep(current_snapshot, try current.snapshot());
             try std.testing.expectEqualDeep(next_snapshot, try next.snapshot());
             try std.testing.expectEqual(current.storage.?, target.currentRenderBuffer.storage);
             try std.testing.expectEqual(next.storage.?, target.nextRenderBuffer.storage);
             try std.testing.expectEqualDeep(cell, target.currentRenderBuffer.get(0, 0).?);
             try std.testing.expectEqualDeep(cell, target.nextRenderBuffer.get(0, 0).?);
-            try std.testing.expectEqual(current_hits.ptr, target.currentHitGrid.ptr);
-            try std.testing.expectEqual(next_hits.ptr, target.nextHitGrid.ptr);
-            try std.testing.expectEqual(@as(u32, 42), target.checkHit(1, 1));
-            try std.testing.expectEqual(@as(u32, 43), target.nextHitGrid[3]);
-            try std.testing.expect(!target.hitGridResizeInvalidated);
+            try std.testing.expectEqual(@as(u64, 42), target.presented_hits_frame);
+            try std.testing.expectEqual(@as(u64, 0), target.hits_generation);
             try std.testing.expectEqual(@as(u32, 2), target.terminal.getCursorPosition().y);
             try std.testing.expectEqual(@as(u32, 2), try pool.getRefcount(grapheme_id));
             try std.testing.expectEqual(@as(u32, 2), try links.getRefcount(link_id));
@@ -1861,11 +1846,8 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
                 try std.testing.expectEqual(dimensions[1], frame.height);
                 try std.testing.expectEqual(@as(u64, 2), frame.storage.generation);
             }
-            try std.testing.expectEqual(dimensions[0], target.hitGridWidth);
-            try std.testing.expectEqual(dimensions[1], target.hitGridHeight);
-            for (target.currentHitGrid) |hit| try std.testing.expectEqual(@as(u32, 0), hit);
-            for (target.nextHitGrid) |hit| try std.testing.expectEqual(@as(u32, 0), hit);
-            try std.testing.expect(target.hitGridResizeInvalidated);
+            try std.testing.expectEqual(@as(u64, 0), target.presented_hits_frame);
+            try std.testing.expectEqual(@as(u64, 1), target.hits_generation);
             try std.testing.expect(!current.isCurrent());
             try std.testing.expect(!next.isCurrent());
             try std.testing.expectEqual(cell.char, current_snapshot.buffer.char[0]);
@@ -1876,31 +1858,6 @@ test "renderer - resize allocation failures preserve both buffers and hit grids"
             try target.resize(dimensions[0], dimensions[1]);
         }
     }
-}
-
-test "renderer - resize clears stale hit grid coordinates" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        4,
-        2,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    cli_renderer.addToCurrentHitGridClipped(2, 0, 1, 1, 99);
-    try std.testing.expectEqual(@as(u32, 99), cli_renderer.checkHit(2, 0));
-
-    try cli_renderer.resize(2, 2);
-
-    try std.testing.expectEqual(@as(u32, 0), cli_renderer.checkHit(0, 1));
-
-    _ = cli_renderer.render(false);
-    try std.testing.expect(cli_renderer.getHitGridDirty());
 }
 
 test "renderer - background color setting" {
@@ -1945,7 +1902,8 @@ test "renderer - theme color query tracks pending background restore" {
     const cli_renderer = test_cli_renderer.renderer;
 
     cli_renderer.setBackgroundColor(ansi.rgbaFromFloats(0.1, 0.2, 0.3, 1.0));
-    cli_renderer.queryThemeColors();
+    var writer = DiscardTerminalWriter{};
+    try cli_renderer.terminal.queryThemeColors(&writer);
     try std.testing.expectEqual(ansi.rgbaFromFloats(0.1, 0.2, 0.3, 1.0), cli_renderer.backgroundColor);
 }
 
@@ -1973,7 +1931,7 @@ test "renderer - empty text buffer renders correctly" {
 
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 }
 
 test "renderer - multiple renders update currentRenderBuffer" {
@@ -1999,7 +1957,7 @@ test "renderer - multiple renders update currentRenderBuffer" {
     try tb.setText("Hello");
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     var current_buffer = cli_renderer.getCurrentBuffer();
     var first_cell = current_buffer.get(0, 0);
@@ -2009,7 +1967,7 @@ test "renderer - multiple renders update currentRenderBuffer" {
     try tb.setText("World");
     const next_buffer2 = cli_renderer.getNextBuffer();
     next_buffer2.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     current_buffer = cli_renderer.getCurrentBuffer();
     first_cell = current_buffer.get(0, 0);
@@ -2055,7 +2013,6 @@ test "renderer - 1000 frame render loop with owned styled text" {
     const fg_color = ansi.rgbaFromFloats(1.0, 0.8, 0.6, 1.0);
     const bg_color = ansi.rgbaFromFloats(0.1, 0.1, 0.2, 1.0);
     var current: ?owned_styled.Result = null;
-    defer if (current) |c| c.style.deinit();
 
     var frame: u32 = 0;
     while (frame < 1000) : (frame += 1) {
@@ -2073,7 +2030,7 @@ test "renderer - 1000 frame render loop with owned styled text" {
         next_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
         next_buffer.drawFrameBuffer(0, 0, opt_buffer, null, null, null, null);
 
-        _ = cli_renderer.render(false);
+        _ = test_cli_renderer.render(false);
 
         if (frame % 100 == 0) {
             const current_buffer = cli_renderer.getCurrentBuffer();
@@ -2131,7 +2088,6 @@ test "renderer - grapheme pool refcounting with frame buffer fast path" {
     const bg_color = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0);
 
     var current: ?owned_styled.Result = null;
-    defer if (current) |c| c.style.deinit();
     try owned_styled.replaceInPlace(tb, &current, &.{.{
         .text = "👋",
         .fg = fg_color,
@@ -2159,7 +2115,7 @@ test "renderer - grapheme pool refcounting with frame buffer fast path" {
         frame_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
     }
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const current_buffer = cli_renderer.getCurrentBuffer();
     const rendered_cell = current_buffer.get(0, 0);
@@ -2185,7 +2141,7 @@ test "renderer - unchanged grapheme should not churn IDs across frames" {
 
     const first_next_buffer = cli_renderer.getNextBuffer();
     try first_next_buffer.drawText("👋", 0, 0, fg, bg, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const first_output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, first_output, "👋") != null);
@@ -2208,7 +2164,7 @@ test "renderer - unchanged grapheme should not churn IDs across frames" {
     // otherwise diff/write treats unchanged cells as modified every frame.
     try std.testing.expectEqual(first_gid, second_gid);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const second_output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, second_output, "👋") == null);
@@ -2220,14 +2176,10 @@ test "renderer - grows frame output instead of committing cells whose ANSI was d
 
     const width: u32 = 1000;
     const height: u32 = 160;
-    for ([_]bool{ false, true }) |threaded| {
-        var test_cli_renderer = if (threaded)
-            try TestRenderer.createThreadSafe(std.testing.allocator, width, height, &pools.graphemes, &pools.links)
-        else
-            try TestRenderer.create(std.testing.allocator, width, height, &pools.graphemes, &pools.links);
+    {
+        var test_cli_renderer = try TestRenderer.create(std.testing.allocator, width, height, &pools.graphemes, &pools.links);
         defer test_cli_renderer.deinit();
         const cli_renderer = test_cli_renderer.renderer;
-        if (threaded) cli_renderer.setUseThread(true);
         const next = cli_renderer.getNextBuffer();
         const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
 
@@ -2248,14 +2200,13 @@ test "renderer - grows frame output instead of committing cells whose ANSI was d
             0,
         );
 
-        _ = cli_renderer.render(false);
-        if (threaded) cli_renderer.setUseThread(false);
+        _ = test_cli_renderer.render(false);
         const output = test_cli_renderer.lastOutput();
         const current = cli_renderer.getCurrentBuffer();
 
         // Guard that this test actually exercises the growth path: the frame
-        // must not fit in the default output buffer.
-        try std.testing.expect(output.len > renderer.OUTPUT_BUFFER_SIZE);
+        // must not fit in many feed chunks.
+        try std.testing.expect(output.len > 2 * 1024 * 1024);
         try std.testing.expect(current.get(width - 24, height - 1).?.char == 'F');
         try std.testing.expect(std.mem.find(u8, output, "EARLY_SCROLL_CHANGED") != null);
         try std.testing.expect(std.mem.find(u8, output, "FULL_TOOL_RESULT_MARKER") != null);
@@ -2289,7 +2240,7 @@ test "renderer - hyperlinks enabled with OSC 8 output" {
     const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
     try next_buffer.drawText("Click here", 0, 0, fg, bg, attributes);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
 
@@ -2337,7 +2288,7 @@ test "renderer - hyperlinks disabled no OSC 8 output" {
     const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
     try next_buffer.drawText("Click here", 0, 0, fg, bg, attributes);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
 
@@ -2383,7 +2334,7 @@ test "renderer - link transition mid-line" {
     // Draw no link
     try next_buffer.drawText("Normal", 13, 0, fg, bg, 0);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
 
@@ -2433,7 +2384,7 @@ test "renderer - hyperlink spanning multiple rows uses same id" {
     // Continue the same link on row 1
     try next_buffer.drawText("Here", 0, 1, fg, bg, attributes);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
 
@@ -2482,7 +2433,7 @@ test "renderer - explicit default and indexed tags use ANSI default/indexed outp
         .attributes = 0,
     });
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, output, "\x1b[39m") != null);
@@ -2514,7 +2465,7 @@ test "renderer - indexed snapshots fall back to rgb and explicit bg default rese
         .attributes = 0,
     });
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, output, "\x1b[38;2;51;102;153m") != null);
@@ -2543,7 +2494,7 @@ test "renderer - rgb colors fall back to ANSI256 mapping from auto remote forwar
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, ansi.rgbaFromFloats(0.95, 0.1, 0.1, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 0);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, output, "\x1b[38;5;") != null);
@@ -2575,7 +2526,7 @@ test "renderer - rgb fallback uses published palette state" {
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, target, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 0);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, output, "\x1b[38;5;42m") != null);
@@ -2607,13 +2558,13 @@ test "renderer - palette epoch changes force repaint and use new palette mapping
 
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, target, bg, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const first_output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, first_output, "\x1b[38;5;42m") != null);
 
     try next_buffer.drawText("A", 0, 0, target, bg, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const second_output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, second_output, "A") == null);
@@ -2623,7 +2574,7 @@ test "renderer - palette epoch changes force repaint and use new palette mapping
     cli_renderer.setPaletteState(palette_b[0..], ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), bg, 2);
 
     try next_buffer.drawText("A", 0, 0, target, bg, 0);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const third_output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, third_output, "A") != null);
@@ -2649,7 +2600,7 @@ test "renderer - transparent rgb backgrounds still emit 49 reset" {
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, output, "\x1b[49m") != null);
@@ -2674,7 +2625,7 @@ test "renderer - default cursor style emits reset cursor ANSI" {
     const cli_renderer = test_cli_renderer.renderer;
 
     cli_renderer.terminal.setCursorPosition(4, 2, true);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
 
@@ -2710,7 +2661,7 @@ test "renderer - explicit_cursor_positioning emits cursor move after wide graphe
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
 
@@ -2743,7 +2694,7 @@ test "renderer - explicit_cursor_positioning produces more cursor moves" {
 
     const next_buffer1 = cli_renderer1.getNextBuffer();
     next_buffer1.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer1.render(false);
+    _ = test_cli_renderer1.render(false);
     const output_without = test_cli_renderer1.lastOutput();
 
     var test_cli_renderer2 = try TestRenderer.create(
@@ -2761,7 +2712,7 @@ test "renderer - explicit_cursor_positioning produces more cursor moves" {
 
     const next_buffer2 = cli_renderer2.getNextBuffer();
     next_buffer2.drawTextBuffer(view, 0, 0);
-    _ = cli_renderer2.render(false);
+    _ = test_cli_renderer2.render(false);
     const output_with = test_cli_renderer2.lastOutput();
 
     var count_without: usize = 0;
@@ -2820,14 +2771,14 @@ test "renderer - explicit_cursor_positioning with CJK characters" {
     const next_buffer = cli_renderer.getNextBuffer();
     next_buffer.drawTextBuffer(view, 0, 0);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
     const output = test_cli_renderer.lastOutput();
 
     try std.testing.expect(std.mem.find(u8, output, "\x1b[1;3H") != null);
 }
 
-test "renderer - commitSplitFooterSnapshot writes append before footer repaint in one output" {
+test "renderer - split commit writes append before footer repaint in one output" {
     // Terminals ignore a scroll region of fewer than two rows, so a pane of one row or none sets 1;2r too.
     for ([_]u32{ 2, 1, 0 }) |pinned| {
         var pools = TestPools.init(std.testing.allocator);
@@ -2859,7 +2810,7 @@ test "renderer - commitSplitFooterSnapshot writes append before footer repaint i
         // 1) append payload is emitted in the same sync frame as repaint
         // 2) DECSTBM is active only during append when pinned
         // 3) footer repaint cursor move happens after append payload
-        _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 11, false, true, pinned, false, true, true);
+        _ = test_cli_renderer.commitSplit(snapshot, 11, false, true, pinned, false);
 
         const output = test_cli_renderer.lastOutput();
         const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet) orelse return error.TestUnexpectedResult;
@@ -2889,7 +2840,7 @@ test "renderer - pinned split scrollback repaints live native images after appen
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
     defer snapshot.deinit();
@@ -2897,13 +2848,73 @@ test "renderer - pinned split scrollback repaints live native images after appen
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 4, false, true, 2, false, true, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, result.status);
+    const result = test_renderer.commitSplit(snapshot, 4, false, true, 2, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, result);
 
     const output = test_renderer.memory.lastWrite();
     const append_index = std.mem.find(u8, output, "line") orelse return error.TestUnexpectedResult;
     const placement_index = std.mem.find(u8, output, "\x1b_Ga=p") orelse return error.TestUnexpectedResult;
     try std.testing.expect(placement_index > append_index);
+}
+
+test "renderer - frames carry the sync envelope unless a remote endpoint lacks 2026 or runs under a host multiplexer" {
+    // `da1`: width probes disabled, 2026 not reported, and DA1 ends the replies.
+    const Reply = enum { reported, not_reported, pending, da1 };
+    const Mode = terminal_mod.SynchronizedOutput;
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer snapshot.deinit();
+    try snapshot.drawText("line", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+    const snapshots = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 4, .start_on_new_line = false, .trailing_newline = true }};
+    const bools = [_]bool{ false, true };
+    // `host`: the host says a multiplexer runs between the app and the link. `client_tmux`: the terminal's
+    // environment names one, as a client's does; it must not count.
+    for (bools) |remote| for (bools) |host| for (bools) |client_tmux| for (bools) |xtversion| for (bools) |sentinel| for (std.enums.values(Reply)) |reply| for (std.enums.values(Mode)) |mode| {
+        errdefer std.debug.print("remote={} host={} client_tmux={} xtversion={} sentinel={} reply={t} mode={t}\n", .{ remote, host, client_tmux, xtversion, sentinel, reply, mode });
+        const env_all = [_]test_renderer_mod.TestEnvVar{
+            .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0" },
+            .{ .key = "OPENTUI_FORCE_EXPLICIT_WIDTH", .value = "0" },
+        };
+        const env = env_all[@intFromBool(!client_tmux)..if (reply == .da1) 2 else 1];
+        var test_renderer = try TestRenderer.createWithEnv(std.testing.allocator, 8, 2, &pools.graphemes, &pools.links, env);
+        defer test_renderer.deinit();
+        const term = &test_renderer.renderer.terminal;
+        term.opts.remote_mode = if (remote) .remote else .local;
+        term.synchronized_output = mode;
+        term.multiplexer_on_host = host;
+        term.reply_sentinel = sentinel;
+        var writer = DiscardTerminalWriter{};
+        try term.queryTerminalSend(&writer);
+        // Replies come in query order: XTVERSION, the startup cursor report, DECRQM, then the width probe's report
+        // or DA1. A pending reply has only the cursor report, which precedes DECRQM. A tmux on either side of the
+        // link answers XTVERSION, so the answer alone does not drop the envelope.
+        if (xtversion) term.processCapabilityResponse("\x1bP>|tmux 3.8\x1b\\");
+        term.processCapabilityResponse("\x1b[3;1R");
+        if (reply == .reported) term.processCapabilityResponse("\x1b[?2026;2$y");
+        if (reply != .pending) term.processCapabilityResponse(if (reply == .da1) "\x1b[?62;22c" else "\x1b[1;1R");
+
+        const dropped = remote and reply != .pending and (reply != .reported or host);
+        const envelope = mode == .always or (mode == .auto and !dropped);
+        _ = test_renderer.renderer.resetSplitScrollback(1, 1);
+        try test_renderer.renderer.getNextBuffer().drawText("ab", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+        // A full frame and a split frame without footer paint close the envelope in different places.
+        for (0..2) |frame| {
+            const status = if (frame == 0) test_renderer.render(true) else test_renderer.renderSplit(.{
+                .snapshots = &snapshots,
+                .pinned_render_offset = 1,
+                .paint_footer = false,
+                .suspended = false,
+            }, false);
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, status);
+            const output = test_renderer.lastOutput();
+            try std.testing.expect(output.len != 0);
+            try std.testing.expectEqual(envelope, std.mem.startsWith(u8, output, ansi.ANSI.syncSet));
+            try std.testing.expectEqual(envelope, std.mem.endsWith(u8, output, ansi.ANSI.syncReset));
+            try std.testing.expectEqual(@intFromBool(envelope), std.mem.count(u8, output, ansi.ANSI.syncSet));
+            try std.testing.expectEqual(@intFromBool(envelope), std.mem.count(u8, output, ansi.ANSI.syncReset));
+        }
+    };
 }
 
 test "renderer - split scrollback materializes image fallback cells" {
@@ -2919,7 +2930,7 @@ test "renderer - split scrollback materializes image fallback cells" {
     try std.testing.expect(try snapshot.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     try snapshot.drawText("X", 1, 0, .{ 255, 255, 255, 255 }, null, 0);
     _ = test_renderer.renderer.resetSplitScrollback(2, 2);
-    _ = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 2, false, true, 2, false, true, true);
+    _ = test_renderer.commitSplit(snapshot, 2, false, true, 2, false);
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.findScalar(u8, output, 'X') != null);
     try std.testing.expect(std.mem.find(u8, output, "\x1b_G") == null);
@@ -2942,8 +2953,8 @@ test "renderer - split scrollback uses native Kitty when Kitty is selected" {
     try std.testing.expect(try snapshot.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     _ = test_renderer.renderer.resetSplitScrollback(2, 2);
 
-    const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 1, false, true, 2, false, true, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, result.status);
+    const result = test_renderer.commitSplit(snapshot, 1, false, true, 2, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, result);
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") != null);
@@ -2970,8 +2981,8 @@ test "renderer - split scrollback covered Kitty image uses blocks" {
     try snapshot.drawText("X", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
     _ = test_renderer.renderer.resetSplitScrollback(2, 2);
 
-    const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 2, false, true, 2, false, true, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, result.status);
+    const result = test_renderer.commitSplit(snapshot, 2, false, true, 2, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, result);
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=p") == null);
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") == null);
@@ -3000,8 +3011,8 @@ test "renderer - split scrollback images remain addressable before and across pi
                 try snapshot.drawText("end", 0, @intCast(height + 1), .{ 255, 255, 255, 255 }, null, 0);
                 _ = test_renderer.renderer.resetSplitScrollback(seed_rows, 6);
 
-                const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 4, true, true, 6, false, true, true);
-                try std.testing.expectEqual(renderer.RenderStatus.rendered, result.status);
+                const result = test_renderer.commitSplit(snapshot, 4, true, true, 6, false);
+                try std.testing.expectEqual(renderer.RenderStatus.rendered, result);
                 const output = test_renderer.memory.lastWrite();
                 const placement = std.mem.find(u8, output, if (sixel) "\x1bP0;1;0q" else "\x1b_Ga=p");
                 try std.testing.expectEqual(height <= 6, placement != null);
@@ -3046,19 +3057,19 @@ test "renderer - failed Kitty scrollback preparation does not publish the batch"
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     test_renderer.renderer.allocator = failing.allocator();
-    const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 1, false, true, 2, false, true, true);
+    const result = test_renderer.commitSplit(snapshot, 1, false, true, 2, false);
     test_renderer.renderer.allocator = std.testing.allocator;
 
     try std.testing.expect(failing.has_induced_failure);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, result.status);
+    try std.testing.expectEqual(renderer.RenderStatus.failed, result);
     try std.testing.expectEqual(@as(usize, 0), test_renderer.memory.lastWrite().len);
     try std.testing.expectEqualDeep(split_scrollback, test_renderer.renderer.splitScrollback);
     try std.testing.expectEqual(render_offset, test_renderer.renderer.renderOffset);
     try std.testing.expectEqual(@as(usize, 1), snapshot.image_placements.items.len);
     try std.testing.expectEqual(@as(?u32, std.math.maxInt(u32)), test_renderer.renderer.kittyHistoryNextImageId);
 
-    const retry = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 1, false, true, 2, false, true, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, retry.status);
+    const retry = test_renderer.commitSplit(snapshot, 1, false, true, 2, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, retry);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t") != null);
 }
 
@@ -3076,8 +3087,8 @@ test "renderer - split scrollback emits native Sixel images when placement geome
     try std.testing.expect(try snapshot.drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
     _ = test_renderer.renderer.resetSplitScrollback(2, 2);
 
-    const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 1, false, true, 2, false, true, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, result.status);
+    const result = test_renderer.commitSplit(snapshot, 1, false, true, 2, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, result);
 
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1bP0;1;0q") != null);
@@ -3089,13 +3100,13 @@ test "renderer - split scrollback emits native Sixel images when placement geome
     defer covered.deinit();
     try std.testing.expect(try covered.drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
     try covered.drawText("X", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
-    const covered_result = test_renderer.renderer.commitSplitFooterSnapshotBatched(covered, 1, false, true, 2, false, true, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, covered_result.status);
+    const covered_result = test_renderer.commitSplit(covered, 1, false, true, 2, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, covered_result);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") == null);
     try std.testing.expect(std.mem.findScalar(u8, test_renderer.memory.lastWrite(), 'X') != null);
 }
 
-test "renderer - commitSplitFooterSnapshot settling phase moves footer downward" {
+test "renderer - split commit settling phase moves footer downward" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3130,7 +3141,7 @@ test "renderer - commitSplitFooterSnapshot settling phase moves footer downward"
     const appended = "settle";
     // During settling we intentionally avoid bounded DECSTBM and instead clear rows
     // that transition from footer surface to scrollback before append.
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 6, false, true, 3, false, true, true);
+    _ = test_cli_renderer.commitSplit(snapshot, 6, false, true, 3, false);
 
     const output = test_cli_renderer.lastOutput();
     const settling_clear_index = std.mem.find(u8, output, "\x1b[1;1H\x1b[J");
@@ -3155,7 +3166,7 @@ test "renderer - commitSplitFooterSnapshot settling phase moves footer downward"
     try std.testing.expect(stale_footer_clear_top_index.? < append_index.?);
 }
 
-test "renderer - commitSplitFooterSnapshot multiline settling enables bounded scroll at pin" {
+test "renderer - split commit multiline settling enables bounded scroll at pin" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3188,7 +3199,7 @@ test "renderer - commitSplitFooterSnapshot multiline settling enables bounded sc
     try snapshot.drawText("line-a", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
     try snapshot.drawText("line-b", 0, 1, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 6, false, true, 3, false, true, true);
+    _ = test_cli_renderer.commitSplit(snapshot, 6, false, true, 3, false);
 
     const output = test_cli_renderer.lastOutput();
     const expanded_region_index = std.mem.find(u8, output, "\x1b[1;3r");
@@ -3200,7 +3211,7 @@ test "renderer - commitSplitFooterSnapshot multiline settling enables bounded sc
     try std.testing.expect(expanded_region_index.? < collapsed_region_index.?);
 }
 
-test "renderer - commitSplitFooterSnapshot multiline short final row keeps continuation column" {
+test "renderer - split commit multiline short final row keeps continuation column" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3233,7 +3244,7 @@ test "renderer - commitSplitFooterSnapshot multiline short final row keeps conti
     try first_snapshot.drawText("1234567890123456", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
     try first_snapshot.drawText("short", 0, 2, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(first_snapshot, 16, false, false, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(first_snapshot, 16, false, false, 2, false);
 
     try std.testing.expectEqual(@as(u32, 5), cli_renderer.splitScrollback.tail_column);
 
@@ -3248,7 +3259,7 @@ test "renderer - commitSplitFooterSnapshot multiline short final row keeps conti
     second_snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
     try second_snapshot.drawText(",", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(second_snapshot, 1, false, false, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(second_snapshot, 1, false, false, 2, false);
 
     const output = test_cli_renderer.lastOutput();
     const move_index = std.mem.find(u8, output, "\x1b[2;6H");
@@ -3260,7 +3271,7 @@ test "renderer - commitSplitFooterSnapshot multiline short final row keeps conti
     try std.testing.expect(std.mem.find(u8, output, "\x1b[2;17H") == null);
 }
 
-test "renderer - commitSplitFooterSnapshot exact-width continuation preserves autowrap" {
+test "renderer - split commit exact-width continuation preserves autowrap" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3292,7 +3303,7 @@ test "renderer - commitSplitFooterSnapshot exact-width continuation preserves au
     first_snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
     try first_snapshot.drawText("12345678901234567890", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(first_snapshot, 20, false, false, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(first_snapshot, 20, false, false, 2, false);
 
     var second_snapshot = try OptimizedBuffer.init(
         std.testing.allocator,
@@ -3305,7 +3316,7 @@ test "renderer - commitSplitFooterSnapshot exact-width continuation preserves au
     second_snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
     try second_snapshot.drawText(" letters", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(second_snapshot, 8, false, false, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(second_snapshot, 8, false, false, 2, false);
 
     const output = test_cli_renderer.lastOutput();
     const wrap_index = std.mem.find(u8, output, "\x1b[2;20H\r\n");
@@ -3317,7 +3328,7 @@ test "renderer - commitSplitFooterSnapshot exact-width continuation preserves au
     try std.testing.expect(wrap_index.? < text_index.?);
 }
 
-test "renderer - commitSplitFooterSnapshot does not emit continuation spaces for wide graphemes" {
+test "renderer - split commit does not emit continuation spaces for wide graphemes" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3350,7 +3361,7 @@ test "renderer - commitSplitFooterSnapshot does not emit continuation spaces for
     try snapshot.drawText("│甲│乙│丙│", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
     try snapshot.drawText("│😀│🚀│🧪│", 0, 1, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 10, false, false, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(snapshot, 10, false, false, 2, false);
 
     const output = test_cli_renderer.lastOutput();
 
@@ -3364,155 +3375,97 @@ test "renderer - commitSplitFooterSnapshot does not emit continuation spaces for
     try std.testing.expect(std.mem.find(u8, output, "🧪 ") == null);
 }
 
-test "renderer - repaintSplitFooter repaints footer without append payload" {
+test "renderer - split repaint writes the footer and its pending transition in one ordered frame" {
+    const Case = struct {
+        height: u32,
+        reset: [2]u32,
+        render_offset: ?u32 = null,
+        viewport_scroll: u32 = 0,
+        transition: renderer.SplitFooterTransition = .{},
+        pinned: u32,
+        // Each sequence's first occurrence follows the previous one's.
+        ordered: []const []const u8,
+        absent: []const []const u8 = &.{},
+        output_offset: ?u32 = null,
+    };
+    const cases = [_]Case{
+        // No append payload: the footer repaints without clearing its rows.
+        .{ .height = 3, .reset = .{ 2, 2 }, .pinned = 2, .ordered = &.{ ansi.ANSI.syncSet, "FOOT" }, .absent = &.{ "\x1b[3;1H\x1b[2K", "\x1b[3;1H\x1b[J" } },
+        .{
+            .height = 1,
+            .reset = .{ 4, 4 },
+            .render_offset = 3,
+            .transition = .{ .mode = .viewport_scroll, .source_top_line = 4, .source_height = 2, .target_top_line = 5, .target_height = 1, .scroll_lines = 1 },
+            .pinned = 4,
+            .ordered = &.{ ansi.ANSI.syncSet, "\x1b[1T", "\x1b[5;1H", "FOOT" },
+        },
+        // A gap that already exists scrolls by the explicit split delta.
+        .{
+            .height = 8,
+            .reset = .{ 6, 6 },
+            .render_offset = 6,
+            .viewport_scroll = 2,
+            .transition = .{ .mode = .viewport_scroll, .source_top_line = 7, .source_height = 4, .target_top_line = 3, .target_height = 8, .scroll_lines = 2 },
+            .pinned = 2,
+            .ordered = &.{"\x1b[2S"},
+            .absent = &.{"\x1b[4S"},
+            .output_offset = 2,
+        },
+        .{
+            .height = 3,
+            .reset = .{ 1, 7 },
+            .transition = .{ .mode = .clear_stale_rows, .source_top_line = 2, .source_height = 4, .target_top_line = 2, .target_height = 3, .scroll_lines = 0 },
+            .pinned = 7,
+            .ordered = &.{ ansi.ANSI.syncSet, "\x1b[5;1H\x1b[2K", "FOOT" },
+        },
+    };
+    for (cases, 0..) |case, index| {
+        errdefer std.debug.print("split repaint case {d}\n", .{index});
+        var pools = TestPools.init(std.testing.allocator);
+        defer pools.deinit();
+        var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 12, case.height, &pools.graphemes, &pools.links);
+        defer test_cli_renderer.deinit();
+        const cli_renderer = test_cli_renderer.renderer;
+        _ = cli_renderer.resetSplitScrollback(case.reset[0], case.reset[1]);
+        if (case.viewport_scroll != 0) cli_renderer.splitScrollback.noteViewportScroll(case.viewport_scroll);
+        if (case.render_offset) |offset| cli_renderer.renderOffset = offset;
+        cli_renderer.pendingSplitFooterTransition = case.transition;
+        try cli_renderer.getNextBuffer().drawText("FOOT", 0, 0, ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 0);
+
+        _ = test_cli_renderer.repaintSplit(case.pinned, true);
+
+        const output = test_cli_renderer.lastOutput();
+        var previous: usize = 0;
+        for (case.ordered, 0..) |sequence, position| {
+            const found = std.mem.find(u8, output, sequence) orelse return error.TestUnexpectedResult;
+            if (position != 0) try std.testing.expect(previous < found);
+            previous = found;
+        }
+        for (case.absent) |sequence| try std.testing.expect(std.mem.find(u8, output, sequence) == null);
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
+        if (case.output_offset) |offset| try std.testing.expectEqual(offset, cli_renderer.getSplitOutputOffset(case.pinned));
+    }
+}
+
+test "renderer - split repaint frames record frame cost" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        3,
-        &pools.graphemes,
-        &pools.links,
-    );
+    var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 12, 3, &pools.graphemes, &pools.links);
     defer test_cli_renderer.deinit();
     const cli_renderer = test_cli_renderer.renderer;
 
     _ = cli_renderer.resetSplitScrollback(2, 2);
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = cli_renderer.repaintSplitFooter(2, true);
-
-    const output = test_cli_renderer.lastOutput();
-    const footer_text_index = std.mem.find(u8, output, "FOOT");
-    const footer_clear_index = std.mem.find(u8, output, "\x1b[3;1H\x1b[2K");
-    const footer_erase_below_index = std.mem.find(u8, output, "\x1b[3;1H\x1b[J");
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-
-    try std.testing.expect(footer_text_index != null);
-    try std.testing.expect(footer_clear_index == null);
-    try std.testing.expect(footer_erase_below_index == null);
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(sync_index.? < footer_text_index.?);
+    const stale = std.math.maxInt(u32);
+    cli_renderer.lastFrameCostUs = stale;
+    const frames = cli_renderer.renderStats.frameCount;
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_cli_renderer.repaintSplit(2, true));
+    try std.testing.expectEqual(frames + 1, cli_renderer.renderStats.frameCount);
+    try std.testing.expect(cli_renderer.lastFrameCostUs != stale);
 }
 
-test "renderer - repaintSplitFooter applies pending viewport scroll transition in one frame" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        1,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    _ = cli_renderer.resetSplitScrollback(4, 4);
-    cli_renderer.setRenderOffset(3);
-    cli_renderer.setPendingSplitFooterTransition(.viewport_scroll, 4, 2, 5, 1, 1);
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = cli_renderer.repaintSplitFooter(4, true);
-
-    const output = test_cli_renderer.lastOutput();
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-    const scroll_index = std.mem.find(u8, output, "\x1b[1T");
-    const footer_move_index = std.mem.find(u8, output, "\x1b[5;1H");
-    const footer_text_index = std.mem.find(u8, output, "FOOT");
-
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(scroll_index != null);
-    try std.testing.expect(footer_move_index != null);
-    try std.testing.expect(footer_text_index != null);
-    try std.testing.expect(sync_index.? < scroll_index.?);
-    try std.testing.expect(scroll_index.? < footer_move_index.?);
-    try std.testing.expect(footer_move_index.? < footer_text_index.?);
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
-}
-
-test "renderer - repaintSplitFooter viewport scroll uses explicit split scroll delta when gap already exists" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        8,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    _ = cli_renderer.resetSplitScrollback(6, 6);
-    cli_renderer.splitScrollback.noteViewportScroll(2);
-    cli_renderer.setRenderOffset(6);
-    cli_renderer.setPendingSplitFooterTransition(.viewport_scroll, 7, 4, 3, 8, 2);
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = cli_renderer.repaintSplitFooter(2, true);
-
-    const output = test_cli_renderer.lastOutput();
-    try std.testing.expect(std.mem.find(u8, output, "\x1b[2S") != null);
-    try std.testing.expect(std.mem.find(u8, output, "\x1b[4S") == null);
-    try std.testing.expectEqual(@as(u32, 2), cli_renderer.getSplitOutputOffset(2));
-}
-
-test "renderer - repaintSplitFooter applies pending stale row clear transition in one frame" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        3,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    _ = cli_renderer.resetSplitScrollback(1, 7);
-    cli_renderer.setPendingSplitFooterTransition(.clear_stale_rows, 2, 4, 2, 3, 0);
-
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
-
-    _ = cli_renderer.repaintSplitFooter(7, true);
-
-    const output = test_cli_renderer.lastOutput();
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-    const clear_index = std.mem.find(u8, output, "\x1b[5;1H\x1b[2K");
-    const footer_text_index = std.mem.find(u8, output, "FOOT");
-
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(clear_index != null);
-    try std.testing.expect(footer_text_index != null);
-    try std.testing.expect(sync_index.? < clear_index.?);
-    try std.testing.expect(clear_index.? < footer_text_index.?);
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
-}
-
-test "renderer - commitSplitFooterSnapshot appends styled snapshot with snapshot links before footer repaint" {
+test "renderer - split commit appends styled snapshot with snapshot links before footer repaint" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     var snapshot_links = link.LinkPool.init(std.testing.allocator);
@@ -3556,7 +3509,7 @@ test "renderer - commitSplitFooterSnapshot appends styled snapshot with snapshot
     const link_attributes = ansi.TextAttributes.setLinkId(0, snapshot_link_id);
     try snapshot.drawText("SHOT", 0, 1, ansi.rgbaFromFloats(0.2, 0.8, 0.9, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), link_attributes);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 8, true, true, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(snapshot, 8, true, true, 2, false);
 
     const output = test_cli_renderer.lastOutput();
     const snapshot_text_index = std.mem.find(u8, output, "SNAP");
@@ -3575,7 +3528,7 @@ test "renderer - commitSplitFooterSnapshot appends styled snapshot with snapshot
     try std.testing.expect(std.mem.find(u8, output, "https://renderer.invalid") == null);
 }
 
-test "renderer - commitSplitFooterSnapshot preserves indexed and default color tags" {
+test "renderer - split commit preserves indexed and default color tags" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3616,7 +3569,7 @@ test "renderer - commitSplitFooterSnapshot preserves indexed and default color t
         .attributes = 0,
     });
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 2, true, false, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(snapshot, 2, true, false, 2, false);
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, output, "A") != null);
@@ -3627,7 +3580,7 @@ test "renderer - commitSplitFooterSnapshot preserves indexed and default color t
     try std.testing.expect(std.mem.find(u8, output, "\x1b[38;2;51;102;153m") == null);
 }
 
-test "renderer - commitSplitFooterSnapshot does not emit NUL padding for short rows" {
+test "renderer - split commit does not emit NUL padding for short rows" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3660,7 +3613,7 @@ test "renderer - commitSplitFooterSnapshot does not emit NUL padding for short r
     try snapshot.drawText("[tool:bash] Shell", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
     try snapshot.drawText("$ pwd", 0, 1, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 16, true, true, 2, false, true, true);
+    _ = test_cli_renderer.commitSplit(snapshot, 16, true, true, 2, false);
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.findScalar(u8, output, 0) == null);
@@ -3708,27 +3661,11 @@ test "renderer - batched split commits share single sync frame" {
     second_snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 32);
     try second_snapshot.drawText("SECOND", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(
-        first_snapshot,
-        10,
-        true,
-        true,
-        2,
-        false,
-        true,
-        false,
-    );
-
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(
-        second_snapshot,
-        10,
-        true,
-        true,
-        2,
-        false,
-        false,
-        true,
-    );
+    const snapshots = [_]renderer.SplitSnapshot{
+        .{ .snapshot = first_snapshot, .row_columns = 10, .start_on_new_line = true },
+        .{ .snapshot = second_snapshot, .row_columns = 10, .start_on_new_line = true },
+    };
+    _ = test_cli_renderer.renderSplit(.{ .snapshots = &snapshots, .pinned_render_offset = 2, .paint_footer = true, .suspended = false }, false);
 
     const output = test_cli_renderer.lastOutput();
     // Batching should keep both commits inside one synchronized update envelope.
@@ -3753,9 +3690,9 @@ test "renderer - unchanged frame with unchanged cursor emits no output" {
     const cli_renderer = test_cli_renderer.renderer;
 
     cli_renderer.terminal.setCursorPosition(3, 2, true);
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
 
-    _ = cli_renderer.render(false);
+    _ = test_cli_renderer.render(false);
     const output = test_cli_renderer.lastOutput();
 
     // No-op frames must be byte-empty; otherwise repeated sync/cursor toggles can
@@ -3763,252 +3700,7 @@ test "renderer - unchanged frame with unchanged cursor emits no output" {
     try std.testing.expectEqual(@as(usize, 0), output.len);
 }
 
-test "renderer - buffered debug dump includes non-threaded last render" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        4,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-    try std.testing.expect(!cli_renderer.backend.isUseThread());
-
-    const fg = RGBA{ 1.0, 1.0, 1.0, 1.0 };
-    const bg = RGBA{ 0.0, 0.0, 0.0, 1.0 };
-    const next_buffer = cli_renderer.getNextBuffer();
-    try next_buffer.drawText("DUMP", 0, 0, fg, bg, 0);
-
-    _ = cli_renderer.render(false);
-
-    var dump_buf: [4096]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&dump_buf);
-    cli_renderer.backend.dumpTo(&writer);
-    const dump = writer.buffered();
-
-    try std.testing.expect(std.mem.find(u8, dump, "DUMP") != null);
-    try std.testing.expect(std.mem.find(u8, dump, "(no output rendered yet)") == null);
-}
-
 // ---- FeedBackend tests ----
-
-const native_span_feed = @import("../native-span-feed.zig");
-
-test "FeedBackend - suspend from a published frame callback delivers mode exits" {
-    var link_pool_storage = link.LinkPool.init(std.testing.allocator);
-    defer link_pool_storage.deinit();
-    const link_pool = &link_pool_storage;
-    const Callback = struct {
-        var target: ?*CliRenderer = null;
-        fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (event != @backingInt(native_span_feed.EventId.DataAvailable)) return;
-            const cli = target orelse return;
-            target = null;
-            cli.suspendRenderer();
-        }
-    };
-    var pool_storage = gp.GraphemePool.init(std.testing.allocator);
-    defer pool_storage.deinit();
-    const pool = &pool_storage;
-
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
-    defer feed.destroy();
-    const cli = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, pool, .{
-        .link_pool = link_pool,
-        .remote_mode = .remote,
-        .output = .{ .feed = feed },
-    });
-    defer cli.destroy();
-    cli.terminalSetup = true;
-    cli.useAlternateScreen = true;
-    cli.terminal.state.alt_screen = true;
-    cli.terminal.state.kitty_keyboard = true;
-    cli.terminal.state.kitty_keyboard_flags = 5;
-    Callback.target = cli;
-    defer Callback.target = null;
-    feed.setCallback(&Callback.notify);
-    try feed.attach();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli.render(true));
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    const count = feed.drainSpans(&spans);
-    defer for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    try std.testing.expect(count >= 2);
-    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.syncReset) != null);
-    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.switchToMainScreen) != null);
-    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.csiUPop) != null);
-    try std.testing.expect(!cli.terminal.state.alt_screen);
-    try std.testing.expect(!cli.terminal.state.kitty_keyboard);
-}
-
-test "FeedBackend - suspend from a published split batch callback preserves state" {
-    var link_pool_storage = link.LinkPool.init(std.testing.allocator);
-    defer link_pool_storage.deinit();
-    const link_pool = &link_pool_storage;
-    const Callback = struct {
-        var target: ?*CliRenderer = null;
-        fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (event != @backingInt(native_span_feed.EventId.DataAvailable)) return;
-            const cli = target orelse return;
-            target = null;
-            cli.suspendRenderer();
-        }
-    };
-    var pool_storage = gp.GraphemePool.init(std.testing.allocator);
-    defer pool_storage.deinit();
-    const pool = &pool_storage;
-
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
-    defer feed.destroy();
-    const cli = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, pool, .{
-        .link_pool = link_pool,
-        .remote_mode = .remote,
-        .output = .{ .feed = feed },
-    });
-    defer cli.destroy();
-    cli.terminalSetup = true;
-    cli.useAlternateScreen = true;
-    cli.terminal.state.alt_screen = true;
-    cli.terminal.state.kitty_keyboard = true;
-    cli.terminal.state.kitty_keyboard_flags = 5;
-    _ = cli.resetSplitScrollback(1, 4);
-    cli.currentHitGrid[0] = 42;
-    cli.nextHitGrid[0] = 43;
-    const snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = link_pool, .pool = pool });
-    defer snapshot.deinit();
-    try snapshot.drawText("kept", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
-    Callback.target = cli;
-    defer Callback.target = null;
-    feed.setCallback(&Callback.notify);
-    try feed.attach();
-
-    const first = cli.commitSplitFooterSnapshotBatched(snapshot, 4, false, true, 4, false, true, false);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, first.status);
-    try std.testing.expect(cli.splitBatchActive);
-    try std.testing.expect(Callback.target == cli);
-    const final = cli.commitSplitFooterSnapshotBatched(snapshot, 4, false, true, 4, false, false, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, final.status);
-    try std.testing.expect(Callback.target == null);
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    const count = feed.drainSpans(&spans);
-    defer for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    try std.testing.expect(count >= 2);
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, spans[0].slice(), "kept"));
-    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.syncReset) != null);
-    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.switchToMainScreen) != null);
-    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.csiUPop) != null);
-    try std.testing.expectEqual(@as(u32, 3), cli.splitScrollback.published_rows);
-    try std.testing.expectEqual(@as(u32, 3), final.renderOffset);
-    try std.testing.expectEqual(@as(u32, 43), cli.currentHitGrid[0]);
-    try std.testing.expect(!cli.splitBatchActive);
-    try std.testing.expect(!cli.terminal.state.alt_screen);
-    try std.testing.expect(!cli.terminal.state.kitty_keyboard);
-}
-
-test "FeedBackend - shutdown cancels an unfinished split batch and retries rejected controls" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var options = native_span_feed.defaultOptions();
-    options.chunk_size = 4096;
-    options.initial_chunks = 1;
-    options.max_bytes = 4096;
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, options);
-    defer feed.destroy();
-    const cli = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, &pools.graphemes, .{
-        .link_pool = &pools.links,
-        .remote_mode = .remote,
-        .output = .{ .feed = feed },
-    });
-    defer cli.destroy();
-    cli.terminalSetup = true;
-    cli.useAlternateScreen = true;
-    cli.terminal.state.alt_screen = true;
-    cli.terminal.state.kitty_keyboard = true;
-    cli.terminal.state.kitty_keyboard_flags = 5;
-    _ = cli.resetSplitScrollback(1, 2);
-    const previous = cli.splitScrollback;
-    const snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
-    defer snapshot.deinit();
-    try snapshot.drawText("lost", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
-    const first = cli.commitSplitFooterSnapshotBatched(snapshot, 4, false, true, 2, false, true, false);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, first.status);
-    try std.testing.expect(cli.splitBatchActive);
-    cli.suspendRenderer();
-    try std.testing.expect(!cli.splitBatchActive);
-    try std.testing.expectEqual(previous, cli.splitScrollback);
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    var count = feed.drainSpans(&spans);
-    var found_alt = false;
-    var found_keyboard = false;
-    for (spans[0..count]) |span| {
-        defer feed.markSpanConsumed(span);
-        found_alt = found_alt or std.mem.find(u8, span.slice(), ansi.ANSI.switchToMainScreen) != null;
-        found_keyboard = found_keyboard or std.mem.find(u8, span.slice(), ansi.ANSI.csiUPop) != null;
-        try std.testing.expect(std.mem.find(u8, span.slice(), "lost") == null);
-    }
-    try std.testing.expect(found_alt and found_keyboard);
-
-    cli.terminal.state.alt_screen = true;
-    cli.terminal.state.kitty_keyboard = true;
-    cli.terminal.state.kitty_keyboard_flags = 5;
-    try feed.writeAtomic(&@as([4096]u8, @splat('x')));
-    cli.suspendRenderer();
-    try std.testing.expect(cli.terminal.state.alt_screen);
-    try std.testing.expect(cli.terminal.state.kitty_keyboard);
-    count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    cli.suspendRenderer();
-    try std.testing.expect(!cli.terminal.state.alt_screen);
-    try std.testing.expect(!cli.terminal.state.kitty_keyboard);
-    count = feed.drainSpans(&spans);
-    defer for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    try std.testing.expect(count > 0);
-    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.switchToMainScreen) != null);
-    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.csiUPop) != null);
-}
-
-test "FeedBackend - renderer writes through feed" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
-    var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 80, 24, &pools.graphemes, .{
-        .link_pool = &pools.links,
-        .remote_mode = .remote,
-        .output = .{ .feed = feed },
-    });
-    // LIFO: renderer destroys first (needs the feed alive for shutdown writes).
-    defer feed.destroy();
-    defer cli_renderer.destroy();
-
-    const fg = RGBA{ 1.0, 1.0, 1.0, 1.0 };
-    const bg = RGBA{ 0.0, 0.0, 0.0, 1.0 };
-    const next_buffer = cli_renderer.getNextBuffer();
-    try next_buffer.drawText("Hello", 0, 0, fg, bg, 0);
-
-    _ = cli_renderer.render(false);
-
-    var span_out: [32]native_span_feed.SpanInfo = undefined;
-    const count = feed.drainSpans(&span_out);
-    defer for (span_out[0..count]) |span| feed.markSpanConsumed(span);
-    try std.testing.expect(count > 0);
-
-    var total_bytes: usize = 0;
-    var found_hello = false;
-    for (span_out[0..count]) |span| {
-        total_bytes += span.len;
-        const slice = span.slice();
-        if (std.mem.find(u8, slice, "Hello") != null) {
-            found_hello = true;
-        }
-    }
-    try std.testing.expect(total_bytes > 0);
-    try std.testing.expect(found_hello);
-}
 
 test "FeedBackend - shouldSkipFrame when span queue saturated" {
     var pools = TestPools.init(std.testing.allocator);
@@ -4021,30 +3713,32 @@ test "FeedBackend - shouldSkipFrame when span queue saturated" {
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 80, 24, &pools.graphemes, .{
         .link_pool = &pools.links,
         .remote_mode = .remote,
-        .output = .{ .feed = feed },
+        .feed = feed,
     });
     // LIFO: renderer destroys first.
     defer feed.destroy();
-    defer cli_renderer.destroy();
+    defer cli_renderer.destroyStorage();
 
-    // Render a few frames to build up pending spans. Each render commits one
-    // span, so after 2 renders without draining we should be at capacity.
+    // Present two frames, then let two raw writes the host has not consumed
+    // fill the span queue.
     const fg = RGBA{ 1.0, 1.0, 1.0, 1.0 };
     const bg = RGBA{ 0.0, 0.0, 0.0, 1.0 };
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, fg, bg, 0);
-    _ = cli_renderer.render(false);
+    _ = try renderPresented(cli_renderer, false, discard);
 
     try next_buffer.drawText("B", 0, 0, fg, bg, 0);
-    _ = cli_renderer.render(false);
+    _ = try renderPresented(cli_renderer, false, discard);
 
+    try feed.writeAtomic("raw");
+    try feed.writeAtomic("raw");
     try std.testing.expect(cli_renderer.backend.shouldSkipFrame());
 
     // Catch-up semantics: a skipped render must NOT advance lastRenderTime,
     // so the next non-skipped frame sees the full accumulated delta.
     const before = cli_renderer.lastRenderTime;
     try next_buffer.drawText("C", 0, 0, fg, bg, 0);
-    const status = cli_renderer.render(false);
+    const status = try cli_renderer.renderDeferred(false);
     try std.testing.expectEqual(before, cli_renderer.lastRenderTime);
     try std.testing.expectEqual(renderer.RenderStatus.skipped, status);
 
@@ -4059,7 +3753,7 @@ test "FeedBackend - high water includes drained spans until all consumers releas
     opts.span_queue_capacity = 2;
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     defer feed.destroy();
-    var backend = renderer.FeedBackend.create(feed);
+    var backend = renderer.FeedBackend.createWithIo(io, feed);
     defer backend.deinit();
 
     // Two spans in one chunk exercise refcounts, not just the number of chunks.
@@ -4090,70 +3784,6 @@ test "FeedBackend - high water includes drained spans until all consumers releas
     try std.testing.expectEqual(.ok, backend.prepareFrame());
 }
 
-test "FeedBackend - split control batches bypass high water but retain atomic limits" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    for ([_]bool{ false, true }) |bounded| {
-        var opts = native_span_feed.defaultOptions();
-        opts.chunk_size = 64;
-        opts.initial_chunks = 1;
-        opts.span_queue_capacity = 1;
-        opts.max_bytes = if (bounded) 64 else 0;
-        const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
-        defer feed.destroy();
-        const cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 20, 4, &pools.graphemes, .{
-            .link_pool = &pools.links,
-            .remote_mode = .remote,
-            .output = .{ .feed = feed },
-        });
-        defer cli_renderer.destroy();
-        const snapshot = try OptimizedBuffer.init(std.testing.allocator, 16, 1, .{
-            .link_pool = &pools.links,
-            .pool = &pools.graphemes,
-            .width_method = .unicode,
-        });
-        defer snapshot.deinit();
-        const text = "captured-text";
-        try snapshot.drawText(text, 0, 0, .{ 1, 1, 1, 1 }, null, 0);
-        try feed.writeAtomic("held");
-        var held: [1]native_span_feed.SpanInfo = undefined;
-        try std.testing.expectEqual(@as(u32, 1), feed.drainSpans(&held));
-        try std.testing.expectEqual(@as(u32, 0), feed.getStats().pending_spans);
-
-        const ordinary = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, text.len, false, true, 3, false, true, true);
-        try std.testing.expectEqual(renderer.RenderStatus.skipped, ordinary.status);
-        const before = cli_renderer.splitScrollback;
-        const control = cli_renderer.commitSplitFooterSnapshotWithOptions(
-            snapshot,
-            text.len,
-            false,
-            true,
-            3,
-            false,
-            .{ .control_output = true },
-        );
-        try std.testing.expectEqual(if (bounded) renderer.RenderStatus.skipped else .rendered, control.status);
-        try std.testing.expectEqualStrings("held", held[0].slice());
-        try std.testing.expectEqual(.skipped, cli_renderer.backend.prepareFrame());
-
-        var spans: [32]native_span_feed.SpanInfo = undefined;
-        const count = feed.drainSpans(&spans);
-        if (bounded) {
-            try std.testing.expectEqual(@as(u32, 0), count);
-            try std.testing.expectEqual(before, cli_renderer.splitScrollback);
-        } else {
-            var bytes: [2048]u8 = undefined;
-            var writer: std.Io.Writer = .fixed(&bytes);
-            for (spans[0..count]) |span| try writer.writeAll(span.slice());
-            try std.testing.expect(std.mem.find(u8, writer.buffered(), text) != null);
-        }
-        for (spans[0..count]) |span| feed.markSpanConsumed(span);
-        feed.markSpanConsumed(held[0]);
-        try std.testing.expectEqual(.ok, cli_renderer.backend.prepareFrame());
-    }
-}
-
 test "FeedBackend - prepareFrame commits existing pending bytes before new frames" {
     var opts = native_span_feed.defaultOptions();
     opts.chunk_size = 64;
@@ -4163,7 +3793,7 @@ test "FeedBackend - prepareFrame commits existing pending bytes before new frame
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     defer feed.destroy();
 
-    var backend = renderer.FeedBackend.create(feed);
+    var backend = renderer.FeedBackend.createWithIo(io, feed);
 
     try feed.write("pending");
     try std.testing.expect(feed.hasPendingBytes());
@@ -4189,7 +3819,7 @@ test "FeedBackend - failed frame publishes no partial bytes" {
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     defer feed.destroy();
 
-    var backend = renderer.FeedBackend.create(feed);
+    var backend = renderer.FeedBackend.createWithIo(io, feed);
     defer backend.deinit();
 
     backend.beginFrame();
@@ -4217,10 +3847,10 @@ test "FeedBackend - failed split batch restores unpublished scrollback state" {
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 40, 4, &pools.graphemes, .{
         .link_pool = &pools.links,
         .remote_mode = .remote,
-        .output = .{ .feed = feed },
+        .feed = feed,
     });
     defer feed.destroy();
-    defer cli_renderer.destroy();
+    defer cli_renderer.destroyStorage();
 
     var snapshot = try OptimizedBuffer.init(
         std.testing.allocator,
@@ -4235,10 +3865,9 @@ test "FeedBackend - failed split batch restores unpublished scrollback state" {
     const before_scrollback = cli_renderer.splitScrollback;
     const before_offset = cli_renderer.renderOffset;
 
-    const first = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 32, false, true, 3, false, true, false);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, first.status);
-    const final = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 32, false, true, 3, false, false, true);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, final.status);
+    const snapshots = [_]renderer.SplitSnapshot{ .{ .snapshot = snapshot, .row_columns = 32 }, .{ .snapshot = snapshot, .row_columns = 32 } };
+    const split: renderer.SplitRender = .{ .snapshots = &snapshots, .pinned_render_offset = 3, .paint_footer = true, .suspended = false };
+    try std.testing.expectEqual(renderer.RenderStatus.failed, try cli_renderer.renderSplitDeferred(split, false));
 
     try std.testing.expectEqual(before_scrollback, cli_renderer.splitScrollback);
     try std.testing.expectEqual(before_offset, cli_renderer.renderOffset);
@@ -4260,28 +3889,27 @@ test "FeedBackend - skipped split repaint restores unpublished transition state"
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, &pools.graphemes, .{
         .link_pool = &pools.links,
         .remote_mode = .remote,
-        .output = .{ .feed = feed },
-        .clearOnShutdown = false,
+        .feed = feed,
     });
     defer feed.destroy();
-    defer cli_renderer.destroy();
+    defer cli_renderer.destroyStorage();
 
     _ = cli_renderer.resetSplitScrollback(2, 2);
-    cli_renderer.setPendingSplitFooterTransition(.viewport_scroll, 1, 1, 2, 1, 1);
+    cli_renderer.pendingSplitFooterTransition = .{ .mode = .viewport_scroll, .source_top_line = 1, .source_height = 1, .target_top_line = 2, .target_height = 1, .scroll_lines = 1 };
     const before_scrollback = cli_renderer.splitScrollback;
     const before_offset = cli_renderer.renderOffset;
     const before_transition = cli_renderer.pendingSplitFooterTransition;
 
     const blocker: [65]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
-    const result = cli_renderer.repaintSplitFooter(2, true);
-    try std.testing.expectEqual(renderer.RenderStatus.skipped, result.status);
+    const repaint: renderer.SplitRender = .{ .snapshots = &.{}, .pinned_render_offset = 2, .paint_footer = true, .suspended = false };
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, try cli_renderer.renderSplitDeferred(repaint, true));
     try std.testing.expectEqual(before_scrollback, cli_renderer.splitScrollback);
     try std.testing.expectEqual(before_offset, cli_renderer.renderOffset);
     try std.testing.expectEqual(before_transition, cli_renderer.pendingSplitFooterTransition);
 }
 
-test "FeedBackend - skipped ordinary render retries split transition" {
+test "FeedBackend - skipped split repaint retries its transition" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -4295,21 +3923,22 @@ test "FeedBackend - skipped ordinary render retries split transition" {
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, &pools.graphemes, .{
         .link_pool = &pools.links,
         .remote_mode = .remote,
-        .output = .{ .feed = feed },
-        .clearOnShutdown = false,
+        .feed = feed,
     });
     defer feed.destroy();
-    defer cli_renderer.destroy();
+    defer cli_renderer.destroyStorage();
 
     _ = cli_renderer.resetSplitScrollback(2, 2);
-    cli_renderer.setPendingSplitFooterTransition(.viewport_scroll, 1, 1, 2, 1, 1);
+    cli_renderer.pendingSplitFooterTransition = .{ .mode = .viewport_scroll, .source_top_line = 1, .source_height = 1, .target_top_line = 2, .target_height = 1, .scroll_lines = 1 };
     const before_scrollback = cli_renderer.splitScrollback;
     const before_offset = cli_renderer.renderOffset;
     const before_transition = cli_renderer.pendingSplitFooterTransition;
 
     const blocker: [193]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(true));
+    const repaint: renderer.SplitRender = .{ .snapshots = &.{}, .pinned_render_offset = 2, .paint_footer = true, .suspended = false };
+    try std.testing.expectError(error.SplitRenderPending, cli_renderer.renderDeferred(true));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, try cli_renderer.renderSplitDeferred(repaint, true));
     try std.testing.expectEqual(before_scrollback, cli_renderer.splitScrollback);
     try std.testing.expectEqual(before_offset, cli_renderer.renderOffset);
     try std.testing.expectEqual(before_transition, cli_renderer.pendingSplitFooterTransition);
@@ -4318,7 +3947,8 @@ test "FeedBackend - skipped ordinary render retries split transition" {
     var count = feed.drainSpans(&spans);
     for (spans[0..count]) |span| feed.markSpanConsumed(span);
 
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try cli_renderer.renderSplitDeferred(repaint, true));
+    try cli_renderer.completePresentation(.presented);
     count = feed.drainSpans(&spans);
     var output: [256]u8 = undefined;
     var output_len: usize = 0;
@@ -4345,33 +3975,27 @@ test "FeedBackend - skipped frame keeps the published hit grid and clears its pa
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 1, 1, &pools.graphemes, .{
         .link_pool = &pools.links,
         .remote_mode = .remote,
-        .output = .{ .feed = feed },
-        .clearOnShutdown = false,
+        .feed = feed,
     });
     defer feed.destroy();
-    defer cli_renderer.destroy();
+    defer cli_renderer.destroyStorage();
 
-    cli_renderer.addToHitGrid(0, 0, 1, 1, 11);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.render(true));
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    var count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
+    cli_renderer.scene_work = .{ .work_frame_id = 11 };
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, true, discard));
+    try std.testing.expectEqual(@as(u64, 11), cli_renderer.presented_hits_frame);
     const cleared_char = cli_renderer.getNextBuffer().buffer.char[0];
 
-    cli_renderer.addToHitGrid(0, 0, 1, 1, 22);
+    cli_renderer.scene_work = .{ .work_frame_id = 22 };
     try cli_renderer.getNextBuffer().drawText("X", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
     const blocker: [193]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(true));
-    try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, try renderPresented(cli_renderer, true, discard));
+    try std.testing.expectEqual(@as(u64, 11), cli_renderer.presented_hits_frame);
     try std.testing.expectEqual(cleared_char, cli_renderer.getNextBuffer().buffer.char[0]);
 
-    count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
-    cli_renderer.addToHitGrid(0, 0, 1, 1, 22);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.render(true));
-    try std.testing.expectEqual(@as(u32, 22), cli_renderer.checkHit(0, 0));
+    cli_renderer.scene_work = .{ .work_frame_id = 22 };
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, true, discard));
+    try std.testing.expectEqual(@as(u64, 22), cli_renderer.presented_hits_frame);
 }
 
 test "FeedBackend - skipped frame retries unsent terminal controls" {
@@ -4388,17 +4012,13 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 1, 1, &pools.graphemes, .{
         .link_pool = &pools.links,
         .remote_mode = .remote,
-        .output = .{ .feed = feed },
-        .clearOnShutdown = false,
+        .feed = feed,
     });
     defer feed.destroy();
-    defer cli_renderer.destroy();
+    defer cli_renderer.destroyStorage();
 
     cli_renderer.terminal.setCursorPosition(1, 1, true);
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.render(false));
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    var count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, false, discard));
 
     cli_renderer.terminal.setCursorColor(ansi.rgbColor(0x12, 0x34, 0x56, 255));
     cli_renderer.terminal.setCursorStyle(.line, false);
@@ -4406,25 +4026,15 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
 
     const blocker: [65]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, try renderPresented(cli_renderer, false, discard));
 
-    count = feed.drainSpans(&spans);
-    for (spans[0..count]) |span| feed.markSpanConsumed(span);
-
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli_renderer.render(false));
-    count = feed.drainSpans(&spans);
-    var output: [256]u8 = undefined;
-    var output_len: usize = 0;
-    for (spans[0..count]) |span| {
-        const bytes = span.slice();
-        @memcpy(output[output_len .. output_len + bytes.len], bytes);
-        output_len += bytes.len;
-        feed.markSpanConsumed(span);
-    }
-
-    try std.testing.expect(std.mem.find(u8, output[0..output_len], "\x1b]12;#123456\x07") != null);
-    try std.testing.expect(std.mem.find(u8, output[0..output_len], ansi.ANSI.cursorLine) != null);
-    try std.testing.expect(std.mem.find(u8, output[0..output_len], "\x1b]22;pointer\x1b\\") != null);
+    var storage: [256]u8 = undefined;
+    var sink = FixedSink.init(&storage);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli_renderer, false, &sink));
+    const output = sink.bytes();
+    try std.testing.expect(std.mem.find(u8, output, "\x1b]12;#123456\x07") != null);
+    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.cursorLine) != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b]22;pointer\x1b\\") != null);
 }
 
 test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
@@ -4441,10 +4051,10 @@ test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 8, 4, &pools.graphemes, .{
         .link_pool = &pools.links,
         .remote_mode = .remote,
-        .output = .{ .feed = feed },
+        .feed = feed,
     });
     defer feed.destroy();
-    defer cli_renderer.destroy();
+    defer cli_renderer.destroyStorage();
     cli_renderer.terminal.caps.sixel = true;
 
     const pixels = try std.testing.allocator.alloc(u8, 32 * 16 * 4);
@@ -4474,11 +4084,10 @@ test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
         16,
         .sixel,
     ));
-    try std.testing.expectEqual(renderer.RenderStatus.failed, cli_renderer.render(true));
-
-    var spans: [8]native_span_feed.SpanInfo = undefined;
-    const count = feed.drainSpans(&spans);
-    try std.testing.expectEqual(@as(u32, 0), count);
+    var storage: [256]u8 = undefined;
+    var sink = FixedSink.init(&storage);
+    try std.testing.expectEqual(renderer.RenderStatus.failed, try renderPresented(cli_renderer, true, &sink));
+    try std.testing.expectEqual(@as(usize, 0), sink.bytes().len);
 }
 
 test "FeedBackend - writeOut publishes nothing when the queue is blocked" {
@@ -4492,7 +4101,7 @@ test "FeedBackend - writeOut publishes nothing when the queue is blocked" {
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     defer feed.destroy();
 
-    var backend = renderer.FeedBackend.create(feed);
+    var backend = renderer.FeedBackend.createWithIo(io, feed);
 
     try feed.write("queued");
     try feed.commit();
@@ -4511,52 +4120,7 @@ test "FeedBackend - writeOut publishes nothing when the queue is blocked" {
     try std.testing.expectEqual(@as(u32, 0), count);
 }
 
-test "FeedBackend - writeOutMultiple publishes no partial batch" {
-    var opts = native_span_feed.defaultOptions();
-    opts.chunk_size = 32;
-    opts.initial_chunks = 1;
-    opts.max_bytes = 32;
-    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
-    opts.auto_commit_on_full = 0;
-
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
-    defer feed.destroy();
-
-    var backend = renderer.FeedBackend.create(feed);
-    const failed_batch = [_][]const u8{
-        "pending",
-        "this-write-is-too-large-for-the-current-chunk",
-    };
-
-    backend.writeOutMultiple(&failed_batch);
-    try std.testing.expect(!feed.hasPendingBytes());
-    try std.testing.expectEqual(.ok, backend.prepareFrame());
-
-    var span_out: [4]native_span_feed.SpanInfo = undefined;
-    const count = feed.drainSpans(&span_out);
-    try std.testing.expectEqual(@as(u32, 0), count);
-}
-
-test "FeedBackend - supportsThreading is false" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
-    var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 80, 24, &pools.graphemes, .{
-        .link_pool = &pools.links,
-        .remote_mode = .remote,
-        .output = .{ .feed = feed },
-    });
-    // LIFO: renderer destroys first.
-    defer feed.destroy();
-    defer cli_renderer.destroy();
-
-    try std.testing.expect(!cli_renderer.backend.supportsThreading());
-    cli_renderer.setUseThread(true); // no-op on feed backend
-    try std.testing.expect(!cli_renderer.backend.isUseThread());
-}
-
-test "two renderers on buffered backend have independent buffers" {
+test "two renderers have independent output" {
     var link_pool_storage = link.LinkPool.init(std.testing.allocator);
     defer link_pool_storage.deinit();
     const link_pool = &link_pool_storage;
@@ -4578,11 +4142,11 @@ test "two renderers on buffered backend have independent buffers" {
 
     const b1 = r1.getNextBuffer();
     try b1.drawText("AAA", 0, 0, fg, bg, 0);
-    _ = r1.render(false);
+    _ = test_r1.render(false);
 
     const b2 = r2.getNextBuffer();
     try b2.drawText("BBB", 0, 0, fg, bg, 0);
-    _ = r2.render(false);
+    _ = test_r2.render(false);
 
     const out1 = test_r1.lastOutput();
     const out2 = test_r2.lastOutput();
@@ -4591,151 +4155,6 @@ test "two renderers on buffered backend have independent buffers" {
     try std.testing.expect(std.mem.find(u8, out1, "BBB") == null);
     try std.testing.expect(std.mem.find(u8, out2, "BBB") != null);
     try std.testing.expect(std.mem.find(u8, out2, "AAA") == null);
-}
-
-test "threaded buffered destroy: no stale write after shutdown ANSI" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.createThreadSafe(std.testing.allocator, 80, 24, &pools.graphemes, &pools.links);
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    cli_renderer.setUseThread(true);
-    try std.testing.expect(cli_renderer.backend.isUseThread());
-
-    const fg = RGBA{ 1.0, 1.0, 1.0, 1.0 };
-    const bg = RGBA{ 0.0, 0.0, 0.0, 1.0 };
-    const nb = cli_renderer.getNextBuffer();
-    try nb.drawText("STALE", 0, 0, fg, bg, 0);
-    _ = cli_renderer.render(false);
-
-    // Toggle threading off and back on — flags must be reset so the new
-    // thread waits for a real renderRequested rather than replaying the
-    // stale currentOutputBuffer from the prior thread era.
-    cli_renderer.setUseThread(false);
-    try std.testing.expect(!cli_renderer.backend.isUseThread());
-
-    cli_renderer.setUseThread(true);
-    try std.testing.expect(cli_renderer.backend.isUseThread());
-
-    // The protocol invariant we assert: setUseThread toggles do not panic
-    // or deadlock, and internal state is clean for destroy() to run.
-}
-
-test "threaded buffered backend skips instead of blocking behind output" {
-    var output = SlowThreadSafeOutput{ .delay_ns = 200 * std.time.ns_per_ms };
-    var backend = try renderer.BufferedBackend.create(std.testing.allocator, output.bufferedOutput());
-    defer backend.deinit();
-    backend.setUseThread(true);
-
-    backend.beginFrame();
-    try backend.writer().writeAll("large graphics frame");
-    try std.testing.expectEqual(@import("../renderer-output.zig").WriteStatus.ok, backend.endFrame());
-
-    const start_time: std.Io.Timestamp = .now(io, .awake);
-    try std.testing.expectEqual(@import("../renderer-output.zig").WriteStatus.skipped, backend.prepareFrame());
-    try std.testing.expect(start_time.untilNow(io, .awake).toNanoseconds() < 100 * std.time.ns_per_ms);
-
-    backend.setUseThread(false);
-    try std.testing.expectEqualStrings("large graphics frame", output.payloads[0][0..output.lengths[0]]);
-
-    backend.setUseThread(true);
-    backend.beginFrame();
-    try std.testing.expectEqual(@import("../renderer-output.zig").WriteStatus.ok, backend.endFrame());
-
-    backend.beginFrame();
-    try backend.writer().writeAll("next graphics frame");
-    try std.testing.expectEqual(@import("../renderer-output.zig").WriteStatus.ok, backend.endFrame());
-    backend.setUseThread(false);
-    try std.testing.expectEqual(@as(u32, 2), output.writes.load(.monotonic));
-    try std.testing.expectEqualStrings("next graphics frame", output.payloads[1][0..output.lengths[1]]);
-}
-
-test "buffered backend reports a failed frame when growth allocation fails" {
-    const rout = @import("../renderer-output.zig");
-    var out = CountingOutput{};
-    var backend = try renderer.BufferedBackend.create(std.testing.allocator, out.bufferedOutput());
-    defer backend.deinit();
-    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0, .resize_fail_index = 0 });
-    backend.allocator = failing.allocator();
-    defer backend.allocator = std.testing.allocator;
-
-    backend.beginFrame();
-    var w = backend.writer();
-    const chunk: [4096]u8 = @splat('x');
-    var write_failed = false;
-    var written: usize = 0;
-    while (written <= renderer.OUTPUT_BUFFER_SIZE) : (written += chunk.len) {
-        w.writeAll(&chunk) catch {
-            write_failed = true;
-            break;
-        };
-    }
-    try std.testing.expect(write_failed);
-    try std.testing.expect(failing.has_induced_failure);
-
-    // A frame whose bytes were dropped must be reported as failed so the
-    // renderer can force a full repaint, and the truncated ANSI stream must
-    // not reach the terminal.
-    try std.testing.expectEqual(rout.WriteStatus.failed, backend.endFrame());
-    try std.testing.expectEqual(@as(u32, 0), out.writes);
-
-    // The failure is per-frame: a following frame that fits reports ok.
-    backend.beginFrame();
-    try backend.writer().writeAll("recovered");
-    try std.testing.expectEqual(rout.WriteStatus.ok, backend.endFrame());
-    try std.testing.expect(out.writes >= 1);
-}
-
-test "buffered backend releases oversized frame buffers after the spike passes" {
-    var gpa: std.heap.DebugAllocator(.{ .enable_memory_limit = true }) = .init;
-    defer std.debug.assert(gpa.deinit() == .ok);
-    var out = CountingOutput{};
-
-    var backend = try renderer.BufferedBackend.create(gpa.allocator(), out.bufferedOutput());
-    defer backend.deinit();
-
-    // One pathological frame that grows the active buffer to ~4x the default.
-    backend.beginFrame();
-    var w = backend.writer();
-    const chunk: [4096]u8 = @splat('x');
-    var written: usize = 0;
-    while (written < 4 * renderer.OUTPUT_BUFFER_SIZE) : (written += chunk.len) {
-        try w.writeAll(&chunk);
-    }
-    _ = backend.endFrame();
-    try std.testing.expect(gpa.total_requested_bytes > 3 * renderer.OUTPUT_BUFFER_SIZE);
-
-    // A long run of ordinary frames afterwards must release the spike memory
-    // instead of pinning it for the lifetime of the renderer.
-    var i: usize = 0;
-    while (i < 200) : (i += 1) {
-        backend.beginFrame();
-        try backend.writer().writeAll("small frame");
-        _ = backend.endFrame();
-    }
-
-    try std.testing.expect(gpa.total_requested_bytes <= 3 * renderer.OUTPUT_BUFFER_SIZE);
-}
-
-test "buffered backend frees grown buffers cleanly on deinit" {
-    // Regression guard for the alloc/free pairing: buffers grown by frame
-    // writes must be freed by the same allocator that grew them. deinit no
-    // longer takes an allocator parameter, so a mismatch is unrepresentable;
-    // std.testing.allocator verifies there is no leak and no invalid free.
-    var out = CountingOutput{};
-    var backend = try renderer.BufferedBackend.create(std.testing.allocator, out.bufferedOutput());
-    defer backend.deinit();
-
-    backend.beginFrame();
-    var w = backend.writer();
-    const chunk: [4096]u8 = @splat('x');
-    var written: usize = 0;
-    while (written < 2 * renderer.OUTPUT_BUFFER_SIZE) : (written += chunk.len) {
-        try w.writeAll(&chunk);
-    }
-    try std.testing.expectEqual(@import("../renderer-output.zig").WriteStatus.ok, backend.endFrame());
 }
 
 test "renderer scales kitty transmission alpha by placement opacity" {
@@ -4753,7 +4172,7 @@ test "renderer scales kitty transmission alpha by placement opacity" {
     try next.pushOpacity(0.5);
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     next.popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const output = test_renderer.memory.lastWrite();
 
     // Translucent placements transmit RGBA with the alpha channel scaled so the
@@ -4774,7 +4193,7 @@ test "renderer scales kitty transmission alpha by placement opacity" {
     try next.pushOpacity(0.25);
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     next.popOpacity();
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const second = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, second, "a=d,d=I") != null);
     const second_start = std.mem.find(u8, second, "\x1b_Ga=t").?;
@@ -4807,7 +4226,7 @@ test "renderer bounds sixel cache entries and evicts least recently used payload
         const image_handle: u32 = @intCast(index + 1);
         try std.testing.expect(try next.drawImage(images[index], image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
     }
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expectEqual(@as(u64, image_count), test_renderer.renderer.sixelCacheMisses);
     try std.testing.expect(test_renderer.renderer.sixelCache.count() <= 256);
     try std.testing.expect(test_renderer.renderer.sixelCacheBytes > 0);
@@ -4815,13 +4234,13 @@ test "renderer bounds sixel cache entries and evicts least recently used payload
     // The first payloads were the least recently used and must have been evicted.
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(images[0], 1, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expectEqual(@as(u64, image_count + 1), test_renderer.renderer.sixelCacheMisses);
 
     // A recently used payload is still cached.
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(images[image_count - 1], image_count, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expectEqual(@as(u64, 1), test_renderer.renderer.sixelCacheHits);
 }
 
@@ -4838,7 +4257,7 @@ test "renderer treats fully transparent sixel placements as empty without failin
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0") == null);
     try std.testing.expect(!test_renderer.renderer.imageRenderFailed);
     try std.testing.expect(!test_renderer.renderer.force_full_repaint);
@@ -4846,7 +4265,7 @@ test "renderer treats fully transparent sixel placements as empty without failin
     // The empty payload is cached; the placement stays a cheap no-op.
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expectEqual(@as(u64, 1), test_renderer.renderer.sixelCacheHits);
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0") == null);
     try std.testing.expect(!test_renderer.renderer.imageRenderFailed);
@@ -4865,7 +4284,7 @@ test "renderer retransmits sixel placements on a forced full repaint" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
 
     // A full repaint (failed-frame recovery, palette change) rewrites every
@@ -4873,7 +4292,7 @@ test "renderer retransmits sixel placements on a forced full repaint" {
     test_renderer.renderer.force_full_repaint = true;
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
 }
 
@@ -4894,7 +4313,7 @@ test "renderer leaves clean text alone when graphics content changes" {
     var next = test_renderer.renderer.getNextBuffer();
     try next.drawText("HELLO", 0, 3, .{ 255, 255, 255, 255 }, null, 0);
     try std.testing.expect(try next.drawImage(first, first_handle, 0, 0, 2, 2, 0, 0, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "HELLO") != null);
 
     // Replace the image while preserving text and placement geometry.
@@ -4903,7 +4322,7 @@ test "renderer leaves clean text alone when graphics content changes" {
     next = test_renderer.renderer.getNextBuffer();
     try next.drawText("HELLO", 0, 3, .{ 255, 255, 255, 255 }, null, 0);
     try std.testing.expect(try next.drawImage(second, second_handle, 0, 0, 2, 2, 0, 0, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") != null);
     try std.testing.expect(std.mem.find(u8, output, "HELLO") == null);
@@ -4926,11 +4345,11 @@ test "renderer clears dirty sixel cells as one batched space run" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(first, first_handle, 0, 0, 6, 1, 12, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(second, second_handle, 0, 0, 6, 1, 12, 2, 0, 0, 1, 1, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const output = test_renderer.memory.lastWrite();
     const sixel = std.mem.find(u8, output, "\x1bP0;1;0q") orelse return error.TestUnexpectedResult;
     // The six reserved cells clear with a single cursor move and six spaces;
@@ -4961,7 +4380,7 @@ test "renderer downscales large kitty stills to their placement pixel size" {
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 0, 0, 64, 64, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const output = test_renderer.memory.lastWrite();
 
     // The transmission carries the downscaled pixels and the placement crops
@@ -4979,7 +4398,7 @@ test "renderer downscales large kitty stills to their placement pixel size" {
     // Changing the placement pixel size invalidates the downscaled pixels.
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 2, 2, 20, 20, 0, 0, 64, 64, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const second = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, second, "a=d,d=I") != null);
     try std.testing.expect(std.mem.find(u8, second, "a=t,f=24,s=20,v=20") != null);
@@ -5000,7 +4419,7 @@ test "renderer transmits small kitty images at native size" {
     // untouched and kitty performs the scaling.
     const next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 0, 0, 8, 8, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "a=t,f=24,s=8,v=8") != null);
     try std.testing.expect(std.mem.find(u8, output, "x=0,y=0,w=8,h=8,C=1") != null);
@@ -5029,7 +4448,7 @@ test "renderer reuses the kitty transmit across source rectangle changes" {
     // selects the visible source rectangle.
     const next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 8, 12, 8, 8, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     const output = test_renderer.memory.lastWrite();
 
     try std.testing.expect(std.mem.find(u8, output, "a=t,f=24,s=64,v=64") != null);
@@ -5044,7 +4463,7 @@ test "renderer reuses the kitty transmit across source rectangle changes" {
     // transmit, just a re-placement referencing the retained image.
     const changed = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try changed.drawImage(value, value_handle, 0, 0, 2, 2, 16, 16, 16, 12, 8, 8, .auto));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     const changed_output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, changed_output, "a=d,d=I") == null);
     try std.testing.expect(std.mem.find(u8, changed_output, "a=t") == null);
@@ -5069,7 +4488,7 @@ test "renderer does not publish a frame when image dirty preparation fails" {
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     test_renderer.renderer.allocator = failing.allocator();
-    const status = test_renderer.renderer.render(true);
+    const status = test_renderer.render(true);
     test_renderer.renderer.allocator = std.testing.allocator;
 
     try std.testing.expect(failing.has_induced_failure);
@@ -5079,7 +4498,7 @@ test "renderer does not publish a frame when image dirty preparation fails" {
 
     const retry = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try retry.drawImage(value, value_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
     try std.testing.expectEqual(@as(usize, 1), test_renderer.renderer.currentImages.items.len);
 }
@@ -5102,7 +4521,7 @@ test "renderer does not publish a frame when Sixel preparation fails" {
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     test_renderer.renderer.allocator = failing.allocator();
-    const status = test_renderer.renderer.render(true);
+    const status = test_renderer.render(true);
     test_renderer.renderer.allocator = std.testing.allocator;
 
     try std.testing.expect(failing.has_induced_failure);
@@ -5112,7 +4531,7 @@ test "renderer does not publish a frame when Sixel preparation fails" {
 
     const retry = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try retry.drawImage(value, value_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1bP0;1;0q") != null);
     try std.testing.expectEqual(@as(usize, 1), test_renderer.renderer.currentImages.items.len);
 }
@@ -5134,7 +4553,7 @@ test "renderer does not publish Kitty output when image state staging fails" {
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     test_renderer.renderer.allocator = failing.allocator();
-    const status = test_renderer.renderer.render(true);
+    const status = test_renderer.render(true);
     test_renderer.renderer.allocator = std.testing.allocator;
 
     try std.testing.expect(failing.has_induced_failure);
@@ -5144,7 +4563,7 @@ test "renderer does not publish Kitty output when image state staging fails" {
 
     const retry = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try retry.drawImage(value, value_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t") != null);
     try std.testing.expectEqual(@as(usize, 1), test_renderer.renderer.currentImages.items.len);
 }
@@ -5167,12 +4586,12 @@ test "renderer clears an upper sixel hole when its lower image moves away" {
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(lower, lower_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(upper, upper_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(true));
 
     next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(lower, lower_handle, 1, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try next.drawImage(upper, upper_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.render(false));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b[1;1H") != null);
 }
 
@@ -5182,12 +4601,14 @@ test "renderer resize reports allocation and dimension failures without committi
     var links = link.LinkPool.init(std.testing.allocator);
     defer links.deinit();
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
+    defer feed.destroy();
     const target = try CliRenderer.createWithOptions(failing.allocator(), 2, 2, &pool, .{
         .io = std.testing.io,
-        .output = .memory,
+        .feed = feed,
         .link_pool = &links,
     });
-    defer target.destroy();
+    defer target.destroyStorage();
     try std.testing.expectError(error.InvalidDimensions, target.resize(0, 1));
     try std.testing.expectError(error.InvalidDimensions, target.resize(65536, 65536));
     failing.fail_index = failing.alloc_index;

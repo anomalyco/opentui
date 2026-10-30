@@ -1,4 +1,4 @@
-import { type RenderableOptions, Renderable } from "../Renderable.js"
+import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
 import type { KeyEvent, PasteEvent } from "../lib/KeyHandler.js"
 import { RGBA } from "../lib/RGBA.js"
 import type { RenderContext } from "../types.js"
@@ -40,11 +40,10 @@ const MOD_CAPS_LOCK = 1 << 4
 const MOD_NUM_LOCK = 1 << 5
 
 export class EmbeddedTerminalRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "custom",
     body: "host",
-    construction: "prototype",
-  })
+  }
 
   declare public selectable: boolean
   private readonly lib: RenderLib

@@ -51,11 +51,6 @@ interface CellPosition {
   colIdx: number
 }
 
-interface RowRange {
-  firstRow: number
-  lastRow: number
-}
-
 type TableSelectionMode = "single-cell" | "column-locked" | "grid"
 
 interface SelectionResolution {
@@ -126,7 +121,6 @@ export class TextTableRenderable extends Renderable {
 
   private _layout: TextTableLayout = this.createEmptyLayout()
   private _layoutDirty: boolean = true
-  private _rasterDirty: boolean = true
 
   private _cachedMeasureLayout: TextTableLayout | null = null
   private _cachedMeasureWidth: number | undefined = undefined
@@ -156,7 +150,7 @@ export class TextTableRenderable extends Renderable {
   } satisfies Partial<TextTableOptions>
 
   constructor(ctx: RenderContext, options: TextTableOptions = {}) {
-    super(ctx, { ...options, flexShrink: options.flexShrink ?? 0, buffered: true })
+    super(ctx, { ...options, flexShrink: options.flexShrink ?? 0 })
 
     try {
       this._content = options.content ?? this._defaultOptions.content
@@ -209,7 +203,7 @@ export class TextTableRenderable extends Renderable {
       for (const row of this._cells) {
         for (const cell of row) cell.textBufferView.setWrapMode(value)
       }
-      this.invalidateLayoutAndRaster()
+      this.invalidateLayout()
     })
   }
 
@@ -220,7 +214,7 @@ export class TextTableRenderable extends Renderable {
   public set columnWidthMode(value: TextTableColumnWidthMode) {
     if (this._columnWidthMode === value) return
     this._columnWidthMode = value
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get columnFitter(): TextTableColumnFitter {
@@ -231,7 +225,7 @@ export class TextTableRenderable extends Renderable {
     const next = this.resolveColumnFitter(value)
     if (this._columnFitter === next) return
     this._columnFitter = next
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get cellPadding(): number {
@@ -243,7 +237,7 @@ export class TextTableRenderable extends Renderable {
     if (this._cellPaddingX === next && this._cellPaddingY === next) return
     this._cellPaddingX = next
     this._cellPaddingY = next
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get cellPaddingX(): number {
@@ -254,7 +248,7 @@ export class TextTableRenderable extends Renderable {
     const next = this.resolveCellPadding(value)
     if (this._cellPaddingX === next) return
     this._cellPaddingX = next
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get cellPaddingY(): number {
@@ -265,7 +259,7 @@ export class TextTableRenderable extends Renderable {
     const next = this.resolveCellPadding(value)
     if (this._cellPaddingY === next) return
     this._cellPaddingY = next
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get columnGap(): number {
@@ -276,7 +270,7 @@ export class TextTableRenderable extends Renderable {
     const next = this.resolveColumnGap(value)
     if (this._columnGap === next) return
     this._columnGap = next
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get showBorders(): boolean {
@@ -286,7 +280,7 @@ export class TextTableRenderable extends Renderable {
   public set showBorders(value: boolean) {
     if (this._showBorders === value) return
     this._showBorders = value
-    this.invalidateRasterOnly()
+    this.requestRender()
   }
 
   public get outerBorder(): boolean {
@@ -301,7 +295,7 @@ export class TextTableRenderable extends Renderable {
 
     this._hasExplicitOuterBorder = value != null
     this._outerBorder = next
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get border(): boolean {
@@ -317,7 +311,7 @@ export class TextTableRenderable extends Renderable {
       this._outerBorder = value
     }
 
-    this.invalidateLayoutAndRaster()
+    this.invalidateLayout()
   }
 
   public get borderStyle(): BorderStyle {
@@ -328,7 +322,7 @@ export class TextTableRenderable extends Renderable {
     const next = parseBorderStyle(value, this._defaultOptions.borderStyle)
     if (this._borderStyle === next) return
     this._borderStyle = next
-    this.invalidateRasterOnly()
+    this.requestRender()
   }
 
   public get borderColor(): RGBA {
@@ -337,7 +331,7 @@ export class TextTableRenderable extends Renderable {
 
   public set borderColor(value: ColorInput) {
     this._borderColor = RGBA.clone(parseColor(value ?? this._defaultOptions.borderColor))
-    this.invalidateRasterOnly()
+    this.requestRender()
   }
 
   public get fg(): RGBA {
@@ -353,7 +347,7 @@ export class TextTableRenderable extends Renderable {
         cell.textBuffer.setDefaultFg(next)
       }
     }
-    this.invalidateRasterOnly()
+    this.requestRender()
   }
 
   public shouldStartSelection(x: number, y: number): boolean {
@@ -369,10 +363,8 @@ export class TextTableRenderable extends Renderable {
   public onSelectionChanged(selection: Selection | null): boolean {
     this.ensureLayoutReady()
 
-    const previousLocalSelection = this._lastLocalSelection
     const localSelection = convertGlobalToLocalSelection(selection, Math.trunc(this.x), Math.trunc(this.y))
     this._lastLocalSelection = localSelection
-    const dirtyRows = this.getDirtySelectionRowRange(previousLocalSelection, localSelection)
 
     if (!localSelection?.isActive) {
       this.resetCellSelections()
@@ -381,10 +373,7 @@ export class TextTableRenderable extends Renderable {
       this.applySelectionToCells(localSelection, selection?.isStart ?? false)
     }
 
-    if (dirtyRows !== null) {
-      this.redrawSelectionRows(dirtyRows.firstRow, dirtyRows.lastRow)
-    }
-
+    this.requestRender()
     return this.hasSelection()
   }
 
@@ -438,30 +427,24 @@ export class TextTableRenderable extends Renderable {
   }
 
   protected onResize(width: number, height: number): void {
-    this.invalidateLayoutAndRaster(false)
+    this.invalidateLayout(false)
     super.onResize(width, height)
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
     if (!this.visible || this.isDestroyed) return
 
-    if (this._layoutDirty) {
-      this.rebuildLayoutForCurrentWidth()
+    this.ensureLayoutReady()
+
+    const [x, y] = this._paintOrigin(buffer)
+    buffer.pushScissorRect(x, y, this._paintWidth, this._paintHeight)
+    if (buffer === this.frameBuffer) buffer.clear(this._backgroundColor)
+    else if (this._backgroundColor.a > 0) {
+      buffer.fillRect(x, y, this._paintWidth, this._paintHeight, this._backgroundColor)
     }
-
-    if (!this._rasterDirty) return
-
-    buffer.clear(this._backgroundColor)
-
-    if (this._rowCount === 0 || this._columnCount === 0) {
-      this._rasterDirty = false
-      return
-    }
-
-    this.drawBorders(buffer)
-    this.drawCells(buffer)
-
-    this._rasterDirty = false
+    this.drawBorders(buffer, x, y)
+    this.drawCells(buffer, x, y)
+    buffer.popScissorRect()
   }
 
   protected destroySelf(): void {
@@ -571,7 +554,7 @@ export class TextTableRenderable extends Renderable {
     this._rowCount = newRowCount
     this._columnCount = newColumnCount
     this.runCleanup((run) => {
-      run(() => this.invalidateLayoutAndRaster())
+      run(() => this.invalidateLayout())
       for (let rowIdx = 0; rowIdx < previous.length; rowIdx++) {
         for (let colIdx = 0; colIdx < previous[rowIdx].length; colIdx++) {
           const cell = previous[rowIdx][colIdx]
@@ -979,7 +962,7 @@ export class TextTableRenderable extends Renderable {
     )
   }
 
-  private drawBorders(buffer: OptimizedBuffer): void {
+  private drawBorders(buffer: OptimizedBuffer, x: number, y: number): void {
     if (!this._showBorders) {
       return
     }
@@ -990,68 +973,34 @@ export class TextTableRenderable extends Renderable {
       return
     }
 
+    // The grid takes buffer positions: shift the layout's offsets to the paint origin in its own arrays.
+    const { columnOffsets, rowOffsets, columnOffsetsI32, rowOffsetsI32 } = this._layout
+    columnOffsets.forEach((offset, index) => (columnOffsetsI32[index] = offset + x))
+    rowOffsets.forEach((offset, index) => (rowOffsetsI32[index] = offset + y))
     buffer.drawGrid({
       borderChars: BorderCharArrays[this._borderStyle],
       borderFg: this._borderColor,
       borderBg: this._borderBackgroundColor,
-      columnOffsets: this._layout.columnOffsetsI32,
-      rowOffsets: this._layout.rowOffsetsI32,
+      columnOffsets: columnOffsetsI32,
+      rowOffsets: rowOffsetsI32,
       drawInner: this._border,
       drawOuter: this._outerBorder,
     })
   }
 
-  private drawCells(buffer: OptimizedBuffer): void {
-    this.drawCellRange(buffer, 0, this._rowCount - 1)
-  }
-
-  private drawCellRange(buffer: OptimizedBuffer, firstRow: number, lastRow: number): void {
+  private drawCells(buffer: OptimizedBuffer, x: number, y: number): void {
     const colOffsets = this._layout.columnOffsets
     const rowOffsets = this._layout.rowOffsets
-    const cellPaddingX = this._cellPaddingX
+    const cellX = x + 1 + this._cellPaddingX
     const cellPaddingY = this._cellPaddingY
 
-    for (let rowIdx = firstRow; rowIdx <= lastRow; rowIdx++) {
-      const cellY = (rowOffsets[rowIdx] ?? 0) + 1 + cellPaddingY
+    for (let rowIdx = 0; rowIdx < this._rowCount; rowIdx++) {
+      const cellY = y + (rowOffsets[rowIdx] ?? 0) + 1 + cellPaddingY
 
       for (let colIdx = 0; colIdx < this._columnCount; colIdx++) {
         const cell = this._cells[rowIdx]?.[colIdx]
         if (!cell) continue
-        buffer.drawTextBuffer(cell.textBufferView, (colOffsets[colIdx] ?? 0) + 1 + cellPaddingX, cellY)
-      }
-    }
-  }
-
-  private redrawSelectionRows(firstRow: number, lastRow: number): void {
-    if (firstRow > lastRow) return
-
-    if (this._backgroundColor.a < 1) {
-      this.invalidateRasterOnly()
-      return
-    }
-
-    const buffer = this.frameBuffer
-    if (!buffer) return
-
-    this.clearCellRange(buffer, firstRow, lastRow)
-    this.drawCellRange(buffer, firstRow, lastRow)
-    this.requestRender()
-  }
-
-  private clearCellRange(buffer: OptimizedBuffer, firstRow: number, lastRow: number): void {
-    const colWidths = this._layout.columnWidths
-    const rowHeights = this._layout.rowHeights
-    const colOffsets = this._layout.columnOffsets
-    const rowOffsets = this._layout.rowOffsets
-
-    for (let rowIdx = firstRow; rowIdx <= lastRow; rowIdx++) {
-      const cellY = (rowOffsets[rowIdx] ?? 0) + 1
-      const rowHeight = rowHeights[rowIdx] ?? 1
-
-      for (let colIdx = 0; colIdx < this._columnCount; colIdx++) {
-        const cellX = (colOffsets[colIdx] ?? 0) + 1
-        // Only opaque backgrounds reach this direct redraw (see redrawSelectionRows).
-        buffer.fillRect(cellX, cellY, colWidths[colIdx] ?? 1, rowHeight, this._backgroundColor)
+        buffer.drawTextBuffer(cell.textBufferView, cellX + (colOffsets[colIdx] ?? 0), cellY)
       }
     }
   }
@@ -1253,34 +1202,6 @@ export class TextTableRenderable extends Renderable {
     return this._rowCount - 1
   }
 
-  private getSelectionRowRange(selection: LocalSelectionBounds | null): RowRange | null {
-    if (!selection?.isActive || this._rowCount === 0) return null
-
-    const minSelY = Math.min(selection.anchorY, selection.focusY)
-    const maxSelY = Math.max(selection.anchorY, selection.focusY)
-
-    return {
-      firstRow: this.findRowForLocalY(minSelY),
-      lastRow: this.findRowForLocalY(maxSelY),
-    }
-  }
-
-  private getDirtySelectionRowRange(
-    previousSelection: LocalSelectionBounds | null,
-    currentSelection: LocalSelectionBounds | null,
-  ): RowRange | null {
-    const previousRange = this.getSelectionRowRange(previousSelection)
-    const currentRange = this.getSelectionRowRange(currentSelection)
-
-    if (previousRange === null) return currentRange
-    if (currentRange === null) return previousRange
-
-    return {
-      firstRow: Math.min(previousRange.firstRow, currentRange.firstRow),
-      lastRow: Math.max(previousRange.lastRow, currentRange.lastRow),
-    }
-  }
-
   private resetRowSelection(rowIdx: number): void {
     const row = this._cells[rowIdx]
     if (!row) return
@@ -1353,9 +1274,8 @@ export class TextTableRenderable extends Renderable {
     return Math.max(0, Math.floor(value))
   }
 
-  private invalidateLayoutAndRaster(markYogaDirty: boolean = true): void {
+  private invalidateLayout(markYogaDirty: boolean = true): void {
     this._layoutDirty = true
-    this._rasterDirty = true
     this._cachedMeasureLayout = null
     this._cachedMeasureWidth = undefined
 
@@ -1363,11 +1283,6 @@ export class TextTableRenderable extends Renderable {
       this.invalidateIntrinsicSize()
     }
 
-    this.requestRender()
-  }
-
-  private invalidateRasterOnly(): void {
-    this._rasterDirty = true
     this.requestRender()
   }
 }

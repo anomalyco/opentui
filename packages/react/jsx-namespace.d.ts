@@ -18,6 +18,7 @@ import type {
   TabSelectProps,
   TextareaProps,
   TextProps,
+  VideoProps,
 } from "./src/types/components.js"
 
 export namespace JSX {
@@ -52,6 +53,7 @@ export namespace JSX {
     "tab-select": TabSelectProps
     "line-number": LineNumberProps
     image: ImageProps
+    video: VideoProps
     // Text modifiers
     b: SpanProps
     i: SpanProps

@@ -18,9 +18,11 @@ import { BoxRenderable, type BoxOptions } from "../renderables/Box.js"
 import { Align, Edge, FlexDirection, Gutter, Justify, PositionType, Unit, Wrap } from "../yoga.js"
 import { InputRenderable } from "../renderables/Input.js"
 import { SliderRenderable } from "../renderables/Slider.js"
+import { ImageRenderable } from "../renderables/Image.js"
+import { NativeImage } from "../image.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
-import { NativeError, NativeStatus } from "../zig.js"
+import { NativeError, NativeSceneHook, NativeStatus } from "../zig.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -69,10 +71,8 @@ class CountingRenderable extends Renderable {
   protected renderSelf(): void {
     this.renderCount += 1
   }
-
-  public getScreenPosition(): { x: number; y: number } {
-    return { x: this.screenX, y: this.screenY }
-  }
+  protected onUpdate(): void {}
+  protected onResize(): void {}
 }
 
 class TestFocusableRenderable extends Renderable {
@@ -189,115 +189,172 @@ describe("Renderable", () => {
     expect(renderable.live).toBe(true)
     expect(renderable.liveCount).toBe(1)
   })
-
-  test("screen position cache matches x/y after layout", async () => {
-    const parent = new CountingRenderable(testRenderer, {
-      id: "parent",
-      position: "absolute",
-      left: 10,
-      top: 4,
-      width: 30,
-      height: 10,
-    })
-    parent.translateX = 2
-    parent.translateY = 1
-
-    const child = new CountingRenderable(testRenderer, {
-      id: "child",
-      position: "absolute",
-      left: 3,
-      top: 2,
-      width: 8,
-      height: 4,
-    })
-    child.translateX = 1
-    child.translateY = 2
-
-    const grandchild = new CountingRenderable(testRenderer, {
-      id: "grandchild",
-      width: 4,
-      height: 2,
-    })
-    grandchild.translateX = 2
-    grandchild.translateY = 1
-
-    child.add(grandchild)
-    parent.add(child)
-    testRenderer.root.add(parent)
-
-    await renderOnce()
-
-    expect(parent.getScreenPosition()).toEqual({ x: parent.x, y: parent.y })
-    expect(child.getScreenPosition()).toEqual({ x: child.x, y: child.y })
-    expect(grandchild.getScreenPosition()).toEqual({ x: grandchild.x, y: grandchild.y })
-  })
-
-  test("screen position cache tracks translate changes on the next render", async () => {
-    const parent = new CountingRenderable(testRenderer, {
-      id: "parent",
-      position: "absolute",
-      left: 5,
-      top: 6,
-      width: 24,
-      height: 12,
-    })
-    const child = new CountingRenderable(testRenderer, {
-      id: "child",
-      width: 10,
-      height: 4,
-    })
-
-    parent.add(child)
-    testRenderer.root.add(parent)
-
-    await renderOnce()
-
-    parent.translateX = 7
-    parent.translateY = 3
-    child.translateX = 2
-    child.translateY = 5
-
-    expect(parent.screenX).toBe(parent.x)
-    expect(parent.screenY).toBe(parent.y)
-    expect(child.screenX).toBe(child.x)
-    expect(child.screenY).toBe(child.y)
-
-    await renderOnce()
-
-    expect(parent.getScreenPosition()).toEqual({ x: parent.x, y: parent.y })
-    expect(child.getScreenPosition()).toEqual({ x: child.x, y: child.y })
-  })
 })
 
-describe("Renderable - layout read caching invariants", () => {
-  test("grandchild screen position follows a translate-only ancestor move", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "cascade-parent",
-      position: "absolute",
-      left: 2,
-      top: 2,
-      width: 30,
-      height: 10,
-    })
-    const child = new TestRenderable(testRenderer, { id: "cascade-child", width: 20, height: 6 })
-    const grandchild = new TestRenderable(testRenderer, { id: "cascade-grandchild", width: 10, height: 2 })
+describe("Renderable - layout values beyond the cell range", () => {
+  // Issue 202: each value failed every frame. It must paint like the reference values, which fit i32 cells, both
+  // natively and from a host renderSelf, after a translate-only change (`then`, by default translateX + 1).
+  type Values = { [key: string]: unknown; child?: Values }
+  const signed = ["left", "top", "right", "bottom", "margin", "translateX", "translateY"]
+  const unsigned = ["width", "height", "minWidth", "minHeight", "maxWidth", "flexBasis", "padding", "gap"]
+  const rows: [Values, Values, Values?][] = [...signed, ...unsigned].flatMap((key) =>
+    [2 ** 31 - 1, 2 ** 31, 1e15, 3.4e38].flatMap((value) =>
+      (signed.includes(key) ? [1, -1] : [1]).map((sign): [Values, Values] => [
+        { [key]: sign * value },
+        { [key]: sign * 1e9 },
+      ]),
+    ),
+  )
+  rows.push(
+    // A node that crosses the screen from beyond the range keeps covering exactly its visible cells.
+    [
+      { left: -3e9, width: 1e10 },
+      { left: -3e8, width: 1e9 },
+    ],
+    [
+      { translateX: -3e9 + 2, width: 3e9 },
+      { translateX: -1e9 + 2, width: 1e9 },
+    ],
+    [
+      { left: -2e9, width: 3e9 },
+      { left: -2e8, width: 3e8 },
+    ],
+    // A node translated beyond the range and back keeps its size.
+    [{ translateX: 2 ** 31 }, { translateX: 1e9 }, { translateX: 0 }],
+    // Yoga overflows f32 on these sums.
+    [
+      { width: "auto", left: -3.4e38, right: -3.4e38 },
+      { width: "auto", left: -1e9, right: -1e9 },
+    ],
+    [
+      { left: 3.4e38, marginLeft: 3.4e38 },
+      { left: 1e9, marginLeft: 1e9 },
+    ],
+    [
+      { position: "relative", margin: -3.4e38, flexGrow: 1 },
+      { position: "relative", margin: -1e9, flexGrow: 1 },
+    ],
+    [
+      { width: 1e15, child: { margin: "-1e26%", flexGrow: 1 } },
+      { width: 1e9, child: { margin: "-100%", flexGrow: 1 } },
+    ],
+  )
+  class HostBox extends BoxRenderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      super.renderSelf(buffer)
+    }
+  }
+  const frame = async (Box: typeof BoxRenderable, { child, ...values }: Values, then?: Values) => {
+    const setup = await createTestRenderer({ width: 8, height: 4 })
+    const errors: string[] = []
+    setup.renderer.on("render:error", (event: { error: Error }) => errors.push(event.error.message))
+    try {
+      const box = new Box(setup.renderer, { position: "absolute", border: true, width: 4, height: 3 })
+      box.add(Object.assign(new TextRenderable(setup.renderer, { content: "a" }), child))
+      box.add(new TextRenderable(setup.renderer, { content: "b" }))
+      setup.renderer.root.add(box)
+      const ok = new TextRenderable(setup.renderer, { position: "absolute", left: 6, top: 3, content: "ok" })
+      setup.renderer.root.add(ok)
+      Object.assign(box, values)
+      await setup.renderOnce()
+      Object.assign(box, then ?? { translateX: box.translateX + 1 })
+      await setup.renderOnce()
+      const result = setup.captureCharFrame()
+      // Public sizes are Yoga's, wherever the node is.
+      const { width, height } = box.getLayout()
+      expect([box.width, box.height]).toEqual([Math.max(width, 1), Math.max(height, 1)])
+      expect(errors).toEqual([])
+      return result
+    } finally {
+      setup.renderer.destroy()
+    }
+  }
 
-    child.add(grandchild)
-    parent.add(child)
-    testRenderer.root.add(parent)
-    await renderOnce()
+  // A rest parameter keeps the callback's arity at zero, so Bun does not pass `done` for rows without `then`.
+  test.each(rows)("%o paints like %o", async (...[values, reference, then]) => {
+    for (const Box of [BoxRenderable, HostBox]) {
+      expect(await frame(Box, values, then)).toEqual(await frame(Box, reference, then))
+    }
+  })
 
-    const beforeX = grandchild.screenX
-    const beforeY = grandchild.screenY
+  class HostSlider extends SliderRenderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      super.renderSelf(buffer)
+    }
+  }
+  class HostImage extends ImageRenderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      super.renderSelf(buffer)
+    }
+  }
+  const scrollBox = (renderer: TestRenderer) => {
+    const scroll = new ScrollBoxRenderable(renderer, { position: "absolute", width: 6, height: 3 })
+    for (let i = 0; i < 20; i++) scroll.add(new TextRenderable(renderer, { content: `l${i}` }))
+    return scroll
+  }
+  const slider = (Slider: typeof SliderRenderable) => (renderer: TestRenderer) =>
+    new Slider(renderer, { position: "absolute", orientation: "horizontal", width: 4, height: 1, value: 50 })
+  const image = (renderer: TestRenderer) => {
+    const source = NativeImage.fromRgba(Uint8Array.of(12, 34, 56, 255), 1, 1)
+    // The renderable retains the source; the caller's reference must still be disposed.
+    try {
+      return new HostImage(renderer, { position: "absolute", width: 4, height: 2, fit: "fill", source })
+    } finally {
+      source.dispose()
+    }
+  }
+  // Widgets that read their own size: a ScrollBox scrolls, and host renderSelf draws with paint geometry.
+  test.each<[string, Values, Values, (renderer: TestRenderer) => Renderable]>([
+    ["ScrollBox", { height: 2 ** 31 }, { height: 1e9 }, scrollBox],
+    ["Slider", { width: 3e9 }, { width: 1e9 }, slider(SliderRenderable)],
+    ["host Slider", { width: 3e9 }, { width: 1e9 }, slider(HostSlider)],
+    ["host Image", { width: 3e9 }, { width: 1e9 }, image],
+    ["host Image", { left: -3e9, width: 1e10 }, { left: -3e8, width: 1e9 }, image],
+  ])("a %s at %o paints like %o", async (_, values, reference, make) => {
+    const frame = async (values: Values) => {
+      const setup = await createTestRenderer({ width: 8, height: 4 })
+      const errors: string[] = []
+      setup.renderer.on("render:error", (event: { error: Error }) => errors.push(event.error.message))
+      try {
+        const widget = make(setup.renderer)
+        setup.renderer.root.add(widget)
+        await (widget as ImageRenderable).loadPromise
+        await setup.renderOnce()
+        Object.assign(widget, values)
+        await setup.renderOnce()
+        if (widget instanceof ScrollBoxRenderable) widget.scrollTop = 3
+        await setup.renderOnce()
+        expect(errors).toEqual([])
+        return setup.captureCharFrame()
+      } finally {
+        setup.renderer.destroy()
+      }
+    }
+    expect(await frame(values)).toBe(await frame(reference))
+  })
 
-    // Translate does not touch yoga: no relayout happens, only ancestor
-    // screen positions move. Every descendant must follow on the next frame.
-    parent.translateX = 7
-    parent.translateY = 5
-    await renderOnce()
-
-    expect(grandchild.screenX).toBe(beforeX + 7)
-    expect(grandchild.screenY).toBe(beforeY + 5)
+  test.each([2 ** 31, -(2 ** 31), 3.4e38])("a ScrollBox at translateX %d updates the children it shows", async (x) => {
+    let count = 0
+    class Counted extends BoxRenderable {
+      protected onUpdate(): void {
+        count++
+      }
+    }
+    const updates = async (translateX: number) => {
+      const setup = await createTestRenderer({ width: 8, height: 4 })
+      try {
+        const scroll = new ScrollBoxRenderable(setup.renderer, { width: 8, height: 4 })
+        for (let i = 0; i < 20; i++) scroll.add(new Counted(setup.renderer, { height: 1 }))
+        setup.renderer.root.add(scroll)
+        scroll.translateX = translateX
+        count = 0
+        await setup.renderOnce()
+        return count
+      } finally {
+        setup.renderer.destroy()
+      }
+    }
+    expect([await updates(x), await updates(0)]).toEqual([4, 4])
   })
 })
 
@@ -328,6 +385,8 @@ describe("Renderable - declared style getters", () => {
     ["getMargin", (box) => box.getMargin(Edge.All), { margin: "auto" }, { unit: Unit.Auto, value: NaN }],
     ["getPadding Top", (box) => box.getPadding(Edge.Top), { padding: 2, paddingX: 3, paddingY: 4 }, unset],
     ["getGap", (box) => box.getGap(Gutter.Row), { rowGap: "30%" }, percent(30)],
+    // Native clamps summed styles to ±1e30, so Yoga's sums stay finite.
+    ["getMargin beyond 1e30", (box) => box.getMargin(Edge.Top), { marginTop: -3.4e38 }, point(Math.fround(-1e30))],
   ]
 
   test.each(cases)(
@@ -610,64 +669,30 @@ describe("Renderable - Child Management", () => {
     expect(second.isDestroyed).toBe(true)
   })
 
-  test("renderBefore position changes hit at the prepared position until the next frame", async () => {
-    testRenderer.requestRender = () => {}
-
-    const renderable = new TestRenderable(testRenderer, {
-      id: "hook-moved-hit-grid",
-      position: "absolute",
-      left: 2,
-      top: 3,
-      width: 4,
-      height: 2,
-      renderBefore: function () {
-        if (this.translateX === 0) {
-          this.translateX = 5
-        }
-      },
-    })
-
-    testRenderer.root.add(renderable)
-    await renderOnce()
-
-    expect(renderable.screenX).toBe(7)
-    expect(testRenderer.hitTest(2, 3)).toBe(renderable.num)
-    expect(testRenderer.hitTest(7, 3)).not.toBe(renderable.num)
-
-    await renderOnce()
-
-    expect(testRenderer.hitTest(7, 3)).toBe(renderable.num)
-    expect(testRenderer.hitTest(2, 3)).not.toBe(renderable.num)
-  })
-
-  test("renderBefore position changes compose frame buffers at the prepared position until the next frame", async () => {
+  test("renderBefore position changes hit and compose at the prepared position until the next frame", async () => {
     const setup = await createTestRenderer({ width: 12, height: 4 })
     try {
       class BufferedMark extends Renderable {
         protected renderSelf(buffer: OptimizedBuffer): void {
-          buffer.drawText("BB", 0, 0, RGBA.fromInts(255, 255, 255))
+          buffer.drawText("B".repeat(this.width), 0, 0, RGBA.fromInts(255, 255, 255))
         }
       }
       const renderable = new BufferedMark(setup.renderer, {
-        buffered: true,
-        position: "absolute",
-        left: 2,
-        top: 1,
-        width: 2,
-        height: 1,
+        ...{ buffered: true, position: "absolute", left: 2, top: 1, width: 2, height: 1 },
         renderBefore: function () {
           if (this.translateX === 0) this.translateX = 5
         },
       })
+      const frame = () => [setup.captureCharFrame().split("\n")[1], [2, 7].map((x) => setup.renderer.hitTest(x, 1))]
       setup.renderer.root.add(renderable)
       await setup.renderOnce()
-
-      expect(renderable.screenX).toBe(7)
-      expect(setup.captureCharFrame().split("\n")[1]).toBe("  BB        ")
-
+      expect([renderable.screenX, ...frame()]).toEqual([7, "  BB        ", [renderable.num, 0]])
       await setup.renderOnce()
-
-      expect(setup.captureCharFrame().split("\n")[1]).toBe("       BB   ")
+      expect(frame()).toEqual(["       BB   ", [0, renderable.num]])
+      // A buffered node that grows gets a larger buffer.
+      renderable.width = 4
+      await setup.renderOnce()
+      expect(frame()[0]).toBe("       BBBB ")
     } finally {
       setup.renderer.destroy()
       await setup.renderer.closed
@@ -1582,15 +1607,14 @@ describe("Renderable - tree model", () => {
 })
 
 describe("Renderable - hook installation", () => {
-  // Each way to provide a hook, on a plain subclass and on built-ins with a native body, runs the hook in frames.
-  // Clearing an optional hook stops it. Construction publishes prototype hooks; a scan before the frame finds fields.
-  // Text skips the generic paint decorations (`beforeAfter: false`, documented), and its constructor assigns its own
-  // lifecycle pass over a subclass method, as on `main`.
+  // Every hook install on subclasses with and without own hooks and on built-ins. Construction publishes host hooks
+  // once; reflection (a field, or defineProperty over a published hook) runs only after refreshHooks(), and a failed
+  // refresh keeps the old hooks. An onLifecyclePass field runs (attachment registers it). Text skips paint decorations.
   const skipped = (base: string, install: string, hook: string) =>
     base === "Text" &&
     (hook === "renderBefore" || hook === "renderAfter" || (install === "prototype" && hook === "onLifecyclePass"))
-  const hooks = ["renderSelf", "onUpdate", "renderBefore", "renderAfter", "onLifecyclePass"] as const
-  const bases = { Renderable: TestRenderable, Box: BoxRenderable, Text: TextRenderable } as const
+  const hooks = "renderSelf onUpdate onResize onLayoutResize renderBefore renderAfter onLifecyclePass".split(" ")
+  const bases = { Plain: TestRenderable, Own: CountingRenderable, Box: BoxRenderable, Text: TextRenderable } as const
   const installs = ["prototype", "field", "option", "assignment", "defineProperty"] as const
   const cases = (Object.keys(bases) as (keyof typeof bases)[]).flatMap((base) =>
     installs.flatMap((install) =>
@@ -1604,30 +1628,50 @@ describe("Renderable - hook installation", () => {
     let calls = 0
     const handler = () => void calls++
     const descriptor = { value: handler, writable: true, enumerable: true, configurable: true }
-    const Base = bases[base] as typeof TestRenderable
-    class Probe extends Base {
+    class Probe extends (bases[base] as typeof TestRenderable) {
       constructor(ctx: RenderContext, options: RenderableOptions) {
         super(ctx, options)
         if (install === "field") Object.defineProperty(this, hook, descriptor)
       }
     }
     if (install === "prototype") Object.defineProperty(Probe.prototype, hook, { ...descriptor, enumerable: false })
-    const node = new Probe(testRenderer, { width: 4, height: 1, ...(install === "option" && { [hook]: handler }) })
+    const scene = testRenderer.nativeScene
+    const [publish, published] = [scene.setHooks, [] as number[]]
+    let fail = false
+    scene.setHooks = (...args) => {
+      if (fail) throw new Error("native")
+      published.push(args[1])
+      return publish.apply(scene, args)
+    }
+    const options = install === "option" && { renderBefore() {}, renderAfter() {}, [hook]: handler }
+    const node = new Probe(testRenderer, { width: 4, height: 1, ...options })
+    const host = base === "Own" || install === "option" || (install === "prototype" && hook !== "onLifecyclePass")
+    expect(published.length).toBe(Number(host))
     testRenderer.root.add(node)
     if (install === "assignment") Reflect.set(node, hook, handler)
-    if (install === "defineProperty") {
-      Object.defineProperty(node, hook, descriptor)
-      node.refreshHooks()
-    }
+    if (install === "defineProperty")
+      (hook === "onLifecyclePass" || Reflect.set(node, hook, () => {})) && Object.defineProperty(node, hook, descriptor)
+    fail = Object.hasOwn(node, hook) && hook !== "onLifecyclePass"
+    if (fail) expect(() => node.refreshHooks()).toThrow("native")
+    fail = false
+    node.width = 5
+    if (hook.endsWith("Resize")) node.onLifecyclePass = () => {} // It must not drop the first frame's resize.
 
     await renderOnce()
     if (skipped(base, install, hook)) return expect(calls).toBe(0)
+    expect(hooks.filter((name) => name !== hook && Object.hasOwn(node, name))).toEqual([])
+    if (hook !== "onLifecyclePass") expect(calls > 0).toBe(!Object.hasOwn(node, hook))
+    if (Object.hasOwn(node, hook)) node.refreshHooks()
+    node.width = 6
+    await renderOnce()
     expect(calls).toBeGreaterThan(0)
-    if (hook === "renderSelf" || hook === "onUpdate") return
+    if (hook === "renderSelf" || hook.endsWith("Resize")) return
     Reflect.set(node, hook, null)
+    if (install === "prototype" || hook === "onUpdate") node.refreshHooks() // A data property shadows the setter.
     calls = 0
     await renderOnce()
     expect(calls).toBe(0)
+    if (hook === "onUpdate") expect(published.at(-1)! & NativeSceneHook.Update).toBe(0)
   })
 })
 

@@ -1,4 +1,4 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import type { RenderContext } from "../types.js"
 import { CodeRenderable, type CodeOptions } from "./Code.js"
 import { LineNumberRenderable, type GutterLayout, type LineSign, type LineColorConfig } from "./LineNumberRenderable.js"
@@ -81,10 +81,9 @@ const defaultColors = {
 }
 
 export class DiffRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     ...Renderable.nativeIntegration,
-    construction: "prototype",
-  })
+  }
   private _diff: string
   private _syncScroll: boolean = false
   private _view: "unified" | "split"

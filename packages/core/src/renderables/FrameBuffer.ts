@@ -1,19 +1,19 @@
-import { type RenderableOptions, Renderable } from "../Renderable.js"
+import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
 import { OptimizedBuffer } from "../buffer.js"
 import type { RenderContext } from "../types.js"
 
 export interface FrameBufferOptions extends RenderableOptions<FrameBufferRenderable> {
   width: number
   height: number
+  /** Blend the buffer's cells into the frame. Without it, the cells are copied, transparent ones too. */
   respectAlpha?: boolean
 }
 
 export class FrameBufferRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "custom",
     body: { native: this.prototype.renderSelf },
-    construction: "prototype",
-  })
+  }
 
   declare public frameBuffer: OptimizedBuffer
   protected respectAlpha: boolean
@@ -34,9 +34,9 @@ export class FrameBufferRenderable extends Renderable {
     }
   }
 
-  /** @internal Native class fields can replace the accessor after this constructor returns. */
+  /** @internal A subclass field can replace the accessor after this constructor returns; refreshHooks() rebinds it. */
   override _refreshNativeSceneSurface(): void {
-    if (this.respectAlpha === undefined || Object.getOwnPropertyDescriptor(this, "frameBuffer")?.get) return
+    if (Object.getOwnPropertyDescriptor(this, "frameBuffer")?.get) return
     let surface: OptimizedBuffer | null = this.frameBuffer
     this._ctx.nativeScene.setSurface(this, surface)
     Object.defineProperty(this, "frameBuffer", {

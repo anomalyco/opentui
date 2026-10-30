@@ -119,6 +119,8 @@ It never uses root I/O and never samples a clock itself.
 The C Context constructor gives each Context its own single-threaded `std.Io.Threaded` implementation. C callers cannot supply I/O.
 Direct Zig `Context.init(allocator, io, options)` takes the I/O implementation as an argument.
 Audio engines and host clipboard services are Context objects, but they use their own threads and clocks, not Context I/O.
+A `VIDEO` scene node's player uses a decode worker thread and, for a source with audio, a private audio engine with an audio thread that makes every engine call and refills audio while playing.
+Its media clock is the audio output or the awake monotonic clock, not Context I/O.
 
 Read [Frames and output](/docs/native/frames#pump-terminal-work-and-close) for the pump loop and output tickets.
 [Resources and ownership](/docs/native/resources#finish-work-before-destroying-owners) defines Context and lease cleanup.

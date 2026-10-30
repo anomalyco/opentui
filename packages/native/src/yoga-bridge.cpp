@@ -186,9 +186,13 @@ uint32_t otYogaNodeMarkDirty(YGNodeRef node) noexcept {
   return checked([&] { YGNodeMarkDirty(node); });
 }
 
-uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback) noexcept {
+uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback,
+                                  uint32_t height_cap_only_clamps) noexcept {
   if (!node || (callback && YGNodeGetChildCount(node))) return OT_YOGA_INVALID_ARGUMENT;
-  return checked([&] { YGNodeSetMeasureFunc(node, callback); });
+  return checked([&] {
+    YGNodeSetMeasureFunc(node, callback);
+    facebook::yoga::resolveRef(node)->setHeightCapOnlyClamps(height_cap_only_clamps != 0);
+  });
 }
 
 void otYogaNodeInvalidateMeasure(YGNodeRef node) noexcept {
@@ -490,7 +494,8 @@ void otYogaTestLogMessage(YGConfigConstRef config, const char* message) noexcept
                       message);
 }
 
-// Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate.
+// Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate, with the margin
+// patch.
 static bool cacheAxisReference(const OTYogaCacheAxis& axis, float point_scale) {
   using namespace facebook::yoga;
   const float effective = point_scale != 0
@@ -506,7 +511,7 @@ static bool cacheAxisReference(const OTYogaCacheAxis& axis, float point_scale) {
        (size >= axis.computed || inexactEquals(size, axis.computed))) ||
       (last_mode == SizingMode::FitContent && mode == SizingMode::FitContent &&
        isDefined(axis.last_available) && isDefined(size) && isDefined(axis.computed) &&
-       axis.last_available > size &&
+       axis.last_available - std::max(axis.margin, 0.0f) > size &&
        (axis.computed <= size || inexactEquals(size, axis.computed)));
 }
 
@@ -528,4 +533,17 @@ uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCa
       cacheAxisReference(*height, point_scale) << 1;
   return actual;
 }
+
+uint32_t otYogaTestLargerHeightCap(const OTYogaCacheAxis* width,
+                                   const OTYogaCacheAxis* height) noexcept {
+  using namespace facebook::yoga;
+  const CachedMeasurement cached{width->last_available, height->last_available,
+                                 static_cast<SizingMode>(width->last_mode),
+                                 static_cast<SizingMode>(height->last_mode), width->computed,
+                                 height->computed};
+  return canUseMeasurementForLargerHeightCap(
+      static_cast<SizingMode>(width->mode), width->available,
+      static_cast<SizingMode>(height->mode), height->available, cached, height->margin);
+}
 #endif
+

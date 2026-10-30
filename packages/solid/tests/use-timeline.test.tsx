@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test"
 import { createTimeline, type Timeline } from "@opentui/core"
 import { ManualClock } from "@opentui/core/testing"
-import { testRender, useTimeline } from "../index.js"
+import { createSignal } from "solid-js"
+import { onAnimationTick, testRender, useTimeline } from "../index.js"
 
 test("createTimeline without a renderer animates after render()", async () => {
   const clock = new ManualClock()
@@ -47,5 +48,39 @@ test("useTimeline keeps roots independent; createTimeline() without a renderer f
     first.renderer.destroy()
     second.renderer.destroy()
     await Promise.all([first.renderer.closed, second.renderer.closed])
+  }
+})
+
+test("onAnimationTick updates on the tick's own frame and pauses with an undefined rate", async () => {
+  const clock = new ManualClock()
+  const [fps, setFps] = createSignal<number | undefined>(20)
+  function App() {
+    const [count, setCount] = createSignal(0)
+    onAnimationTick(fps, (_deltaTime, ticks) => setCount((value) => value + ticks))
+    return <text>{String(count())}</text>
+  }
+  const setup = await testRender(App, { width: 4, height: 1, clock, targetFps: 60, maxFps: 60 })
+  try {
+    let frames = 0
+    setup.renderer.on("frame", () => frames++)
+    const run = async () => {
+      frames = 0
+      for (let i = 0; i < 4000; i++) {
+        if (i % 4 === 0) clock.advance(1)
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+      return [frames, setup.captureCharFrame().trim()]
+    }
+    const playing = await run()
+    setFps(undefined)
+    const paused = await run()
+    expect({ playing, paused, timers: clock.pendingTimerCount }).toEqual({
+      playing: [21, "20"],
+      paused: [0, "20"],
+      timers: 0,
+    })
+  } finally {
+    setup.renderer.destroy()
+    await setup.renderer.closed
   }
 })

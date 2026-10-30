@@ -364,6 +364,78 @@ fn addMacOSSystemLibraries(b: *std.Build, module: *std.Build.Module, sdk_path: [
     module.linkFramework("AudioToolbox", .{});
 }
 
+// Set by -Drequire-video. Release builds pass it so a missing FFmpeg prefix fails instead of shipping without video.
+var require_video = false;
+var video_unavailable_warned: std.StringHashMapUnmanaged(void) = .empty;
+
+// Names the FFmpeg prefix that scripts/build-ffmpeg.ts builds for this target, if any.
+fn ffmpegTargetName(b: *std.Build, target: std.Build.ResolvedTarget) ?[]const u8 {
+    const arch = switch (target.result.cpu.arch) {
+        .x86_64 => "x86_64",
+        .aarch64 => "aarch64",
+        else => return null,
+    };
+    const platform = switch (target.result.os.tag) {
+        .macos => "macos",
+        .windows => if (target.result.abi == .gnu) "windows" else return null,
+        .linux => if (target.result.abi.isMusl()) "linux-musl" else if (target.result.abi == .gnu) "linux" else return null,
+        else => return null,
+    };
+    return b.fmt("{s}-{s}", .{ arch, platform });
+}
+
+fn addVideoDependencies(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, macos_sdk_path: ?[]const u8) void {
+    const base_flags: []const []const u8 = switch (target.result.os.tag) {
+        .macos => &.{ "-std=c11", "-fvisibility=hidden", "-isysroot", macos_sdk_path.? },
+        else => &.{ "-std=c11", "-fvisibility=hidden" },
+    };
+    const unavailable_flags = appendCFlags(b, base_flags, &.{"-DOTV_NO_FFMPEG"});
+    const target_name = ffmpegTargetName(b, target) orelse {
+        module.addCSourceFile(.{ .file = b.path("src/video-shim.c"), .flags = unavailable_flags });
+        return;
+    };
+    const prefix = b.root.joinString(b.allocator, b.fmt(".cache/ffmpeg/prefix/{s}", .{target_name})) catch @panic("OOM");
+    // scripts/build-ffmpeg.ts writes this marker after a complete install.
+    if (!pathExists(b, b.pathJoin(&.{ prefix, "opentui-build" }))) {
+        if (require_video) {
+            std.debug.print(
+                "error: FFmpeg for {s} is missing at {s}.\nRun `bun scripts/build-ffmpeg.ts --target={s}` in packages/native (see src/vendor/ffmpeg/README.md).\n",
+                .{ target_name, prefix, target_name },
+            );
+            std.process.exit(1);
+        }
+        if (!video_unavailable_warned.contains(target_name)) {
+            video_unavailable_warned.put(b.allocator, target_name, {}) catch @panic("OOM");
+            std.debug.print(
+                "warning: FFmpeg for {s} is missing; building without video. Run `bun scripts/build-ffmpeg.ts --target={s}` in packages/native.\n",
+                .{ target_name, target_name },
+            );
+        }
+        module.addCSourceFile(.{ .file = b.path("src/video-shim.c"), .flags = unavailable_flags });
+        return;
+    }
+    module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
+    module.addCSourceFile(.{ .file = b.path("src/video-shim.c"), .flags = base_flags });
+    // Objects, not archives: a static libopentui would store archives as nested members other linkers cannot read.
+    const objects = std.Io.Dir.cwd().readFileAlloc(b.graph.io, b.pathJoin(&.{ prefix, "objects.txt" }), b.allocator, .limited(1 << 20)) catch |err| {
+        std.debug.print("error: cannot read the FFmpeg object list in {s}: {s}\n", .{ prefix, @errorName(err) });
+        std.process.exit(1);
+    };
+    var lines = std.mem.tokenizeAny(u8, objects, "\r\n");
+    while (lines.next()) |object| module.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ prefix, object }) });
+    switch (target.result.os.tag) {
+        .windows => module.linkSystemLibrary("bcrypt", .{}),
+        .macos => {
+            module.linkFramework("VideoToolbox", .{});
+            module.linkFramework("CoreMedia", .{});
+            module.linkFramework("CoreVideo", .{});
+            module.linkFramework("CoreServices", .{});
+            module.linkFramework("QuartzCore", .{});
+        },
+        else => {},
+    }
+}
+
 fn addNativeAudioDependencies(
     b: *std.Build,
     module: *std.Build.Module,
@@ -372,6 +444,7 @@ fn addNativeAudioDependencies(
 ) void {
     addMiniaudioShim(b, module, target, macos_sdk_path);
     addImageShim(b, module, target, macos_sdk_path);
+    addVideoDependencies(b, module, target, macos_sdk_path);
 
     switch (target.result.os.tag) {
         .macos => addMacOSSystemLibraries(b, module, macos_sdk_path.?),
@@ -555,6 +628,7 @@ pub fn build(b: *std.Build) void {
     const target_option = b.option([]const u8, "library-target", "Build static/shared libraries for a specific target (e.g., 'x86_64-linux-gnu.2.17').");
     const build_all = b.option(bool, "all", "Build for all supported targets") orelse false;
     const gpa_safe_stats = b.option(bool, "gpa-safe-stats", "Enable GPA safety checks for trustworthy allocator stats") orelse false;
+    require_video = b.option(bool, "require-video", "Fail when a target's FFmpeg prefix is missing instead of building without video") orelse false;
     const macos_sdk_path = resolveMacOSSDKPath(b);
     const build_options = b.addOptions();
     build_options.addOption(bool, "gpa_safe_stats", gpa_safe_stats);
@@ -717,9 +791,19 @@ pub fn build(b: *std.Build) void {
         .root_module = bench_mod,
     });
     bench_mod.link_libc = true;
-    addImageShim(b, bench_mod, native_target, macos_sdk_path);
+    // The scene bench drives a whole Context, which owns audio resources; this adds the image and video shims too.
+    addNativeAudioDependencies(b, bench_mod, native_target, macos_sdk_path);
     addYogaDependencies(b, bench_mod, false);
     if (native_target.result.os.tag == .macos) addMacOSSDKSearchPaths(b, bench_mod, macos_sdk_path.?);
+    // The benches in bench-isolated.zig compile as their own unit, so other benches cannot change their code.
+    const bench_isolated_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench-isolated.zig"),
+        .target = native_target,
+        .optimize = bench_optimize,
+        .link_libc = true,
+    });
+    applyDependencies(b, bench_isolated_mod, bench_optimize, native_target, build_options);
+    bench_mod.addObject(b.addObject(.{ .name = "opentui-bench-isolated", .root_module = bench_isolated_mod }));
     const run_bench = b.addRunArtifact(bench_exe);
     run_bench.addPassthruArgs();
     bench_step.dependOn(&run_bench.step);
@@ -905,6 +989,13 @@ fn createLibraries(
         .linkage = .dynamic,
     });
     if (target.result.os.tag == .linux and optimize != .debug) shared.build_id = .sha1;
+    // Zig's default DLL entry skips the MinGW CRT startup, so CRT state such as
+    // the DLL atexit table would stay uninitialized. MinGW's strtod registers
+    // there, and both the Zig code and FFmpeg call it, so this applies with or
+    // without video.
+    if (target.result.os.tag == .windows and target.result.abi == .gnu) {
+        shared.entry = .{ .symbol_name = "DllMainCRTStartup" };
+    }
     const static = b.addLibrary(.{
         // COFF uses .lib for both archives and DLL import libraries.
         .name = if (target.result.os.tag == .windows) "opentui-static" else LIB_NAME,

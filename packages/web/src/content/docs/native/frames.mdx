@@ -129,7 +129,7 @@ For each node, native code takes these steps before it paints the node's childre
 2. It plays the self phase, which replaces the node's native body. Without `RENDER_SELF`, the native body draws.
 3. For a focused editor node, it updates the terminal cursor and mouse pointer.
 4. It plays the after phase.
-5. When `use_mouse` is set, it adds the node to the _hit grid_. `ot_scene_hit_test` reads that grid after the frame is presented.
+5. When `use_mouse` is set, it adds the node's bounds to the _hit list_. `ot_scene_hit_test` reads that list after the frame is presented.
 
 An after hook on the box would therefore draw before the label, not after the whole subtree.
 Native code sorts siblings by `z_index` within each parent. It does not sort all nodes globally.
@@ -141,7 +141,7 @@ Two commands ignore the clip and opacity and act on the whole frame, like their 
 - A `DRAW` with `OT_BUFFER_DRAW_CLEAR` overwrites every cell, including cells that earlier nodes painted, and removes their image placements.
 - `COLOR_MATRIX` transforms every cell that it selects, inside or outside the clip.
 
-An `IMAGE` node with a backing buffer from `ot_scene_set_image` is an exception to these rules.
+An `IMAGE` or `VIDEO` node with a backing buffer from `ot_scene_set_image` or `ot_scene_set_video` is an exception to these rules.
 Native code clears that buffer, plays the node's phases into it in buffer coordinates with empty stacks, and then composes it into the frame.
 
 Native code reads each resource that a command names when it plays the command, not when the host records it.
@@ -267,13 +267,13 @@ Updates and resize notifications run during preparation, before painting.
 Native code calculates Yoga layout and prepares node geometry, clipping, and paint order.
 If a preparation hook changes the scene, native code repeats the necessary preparation.
 An update hook runs at most once per node per attempt.
+The relative order of update and resize calls between different nodes is not specified.
+A node with `OT_SCENE_HOOK_IDLE_UPDATE` that the latest layout round prepared as visible has used up its update for that frame.
+If an acknowledgement then gives it `OT_SCENE_HOOK_UPDATE`, directly or after other hook changes, its first update request comes in the next frame.
 
-Native code sorts a parent's children by `z_index` once per frame, when preparation reaches that parent.
-With update, resize, or layout-changed hooks, or with a Box viewport (`ot_scene_set_viewport`), the host can change the scene after that sort.
-It can do so in a hook acknowledgement.
-A later `z_index` change or reparent in the same attempt does not sort the children again.
-The frame keeps the earlier order, and a node moved into that parent paints after its siblings.
-The next frame sorts again.
+Native code sorts a parent's children by `z_index` before it paints them.
+A `z_index` change or reparent in a preparation hook's acknowledgement shows in the same frame.
+A change in a paint hook waits for the next frame, as described below.
 
 The host sets positive `max_layout_rounds` and `max_host_requests` limits in `ot_scene_frame_options`. They must stay the same for the whole attempt.
 If preparation needs more than `max_layout_rounds` rounds, the step returns `OT_LAYOUT_LIMIT`.
@@ -289,7 +289,7 @@ Paint hooks run after preparation and before painting. The prepared membership s
 | Change opacity, translation, or `z_index`                   | It paints with its prepared values. The next frame uses the new values |
 | Change a layout property, such as a width                   | It paints with its prepared layout. The next frame uses the new layout |
 | Insert a node                                               | It waits for the next prepared frame                                   |
-| Destroy a node, including itself                            | Native code skips it, its recording, and its hit-grid entry            |
+| Destroy a node, including itself                            | Native code skips it, its recording, and its hit-list entry            |
 | Hide a node with `display: none`                            | It still paints this frame. The next prepared frame drops it           |
 | Reparent or move a prepared node                            | It paints at its prepared position. The change waits a frame           |
 | Change clipping or inherited opacity                        | Prepared clipping and opacity stay fixed                               |

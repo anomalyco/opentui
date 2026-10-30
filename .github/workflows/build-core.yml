@@ -18,7 +18,6 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: 26.7.0
-  ZIG_VERSION: 0.17.0
 
 jobs:
   build:
@@ -27,6 +26,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -42,19 +44,35 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
-
       - name: Setup cross-platform symbol tools
         if: steps.bottle.outputs.cache-hit != 'true'
         uses: ./.github/actions/setup-native-symbol-tools
 
+      # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+      - name: Restore FFmpeg build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+
       - name: Build or package native libraries
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --all
+
+      # FFmpeg's configure and make need a POSIX host, so Windows native tests link this cross-built prefix.
+      # A bottle hit skips the FFmpeg build, so build the prefix here if the cache lacks it.
+      - name: Build Windows FFmpeg prefix
+        working-directory: packages/native
+        run: bun scripts/build-ffmpeg.ts --target=x86_64-windows
+
+      - name: Upload Windows FFmpeg prefix
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-x86_64-windows
+          path: packages/native/.cache/ffmpeg/prefix/x86_64-windows/
+          if-no-files-found: error
+          retention-days: 1
 
       # A saved bottle already passed this compile check for the same inputs.
       - name: Build custom target without Ghostty VT
@@ -78,7 +96,8 @@ jobs:
           name: native-symbols
           path: artifacts/native-symbols/*.zip
           if-no-files-found: error
-          retention-days: 1
+          # As long as the Windows crash dumps, which need the PDB.
+          retention-days: 7
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v7
@@ -111,6 +130,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig cache
+        id: zig-cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: test
+          save: true
+
+      - name: Restore Bun install cache
+        id: bun-cache
+        uses: ./.github/actions/restore-bun-cache
+        with:
+          save: true
+
       # Hash native files before install and test steps write into packages/native.
       - name: Restore native test result
         id: native-tested
@@ -129,19 +165,60 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
-
       - name: Install dependencies
         run: bun install
+
+      - name: Save Bun install cache
+        if: steps.bun-cache.outputs.save == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ steps.bun-cache.outputs.key }}
 
       - name: Enable Linux core dumps
         if: runner.os == 'Linux'
         uses: ./.github/actions/enable-linux-coredumps
+
+      # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+      - name: Restore FFmpeg build cache
+        id: ffmpeg
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+
+      # FFmpeg cannot build on Windows, so a cache miss waits for the build job's cross-built prefix.
+      - name: Wait for Windows FFmpeg prefix
+        if: runner.os == 'Windows' && steps.native-tested.outputs.cache-hit != 'true' && steps.ffmpeg.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun scripts/wait-for-job.ts --name "Build Native Libraries"
+
+      - name: Download Windows FFmpeg prefix
+        if: runner.os == 'Windows' && steps.native-tested.outputs.cache-hit != 'true' && steps.ffmpeg.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: ffmpeg-x86_64-windows
+          path: packages/native/.cache/ffmpeg/prefix/x86_64-windows/
+
+      # Windows Error Reporting writes a minidump when a node.exe that allows it crashes. Bun exits from its own
+      # crash handler first.
+      - name: Enable Windows crash dumps
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dir = "$env:GITHUB_WORKSPACE\.crash-dumps"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $wer = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+          New-ItemProperty -Force $wer -Name DontShowUI -PropertyType DWord -Value 1 | Out-Null
+          $key = "$wer\LocalDumps\node.exe"
+          New-Item -Force $key | Out-Null
+          New-ItemProperty -Force $key -Name DumpFolder -PropertyType ExpandString -Value $dir | Out-Null
+          New-ItemProperty -Force $key -Name DumpType -PropertyType DWord -Value 1 | Out-Null
+          New-ItemProperty -Force $key -Name DumpCount -PropertyType DWord -Value 3 | Out-Null
 
       # Native tests build from source, so they run before this job gets the cross-compiled library.
       - name: Run native tests
@@ -149,7 +226,7 @@ jobs:
         working-directory: packages/core
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
-          bun run test:native
+          bun run test:native -Drequire-video
           bun run test:native:lifetime
           echo "${{ github.sha }}" > ../../.native-tests-passed
 
@@ -167,6 +244,8 @@ jobs:
         uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
+          # This job downloads the build job's libraries instead of building them.
+          ffmpeg: false
 
       - name: Install native host bottle
         if: steps.bottle.outputs.cache-hit == 'true'
@@ -203,6 +282,14 @@ jobs:
           cd packages/core
           bun run build:lib
 
+      # Only a run that built the native tests holds their objects.
+      - name: Save Zig cache
+        if: steps.zig-cache.outputs.save == 'true' && steps.native-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .zig-cache
+          key: ${{ steps.zig-cache.outputs.key }}
+
       # Both lanes run the same tests on fixed paths under the temp directory, so the Node lane gets its own.
       - name: Run Bun and Node TypeScript tests
         working-directory: packages/core
@@ -236,6 +323,17 @@ jobs:
           echo "Bun tests exited with $bun_status, Node tests with $node_status"
           [ "$bun_status" = 0 ] && [ "$node_status" = 0 ]
 
+      # The step above runs the renderer with the legacy input parser. Run the tests that write bytes to
+      # the renderer's stdin again with the native one.
+      - name: Run input tests with the native input parser
+        if: runner.os == 'Linux'
+        working-directory: packages/core
+        env:
+          OTUI_NATIVE_INPUT_PARSER: "1"
+        run: |
+          ulimit -c unlimited
+          git grep -lF 'stdin.emit("data"' -- 'src/**/*.test.ts' | xargs bun test
+
       - name: Test packed distribution
         if: runner.os == 'Linux'
         working-directory: packages/core
@@ -260,6 +358,20 @@ jobs:
         with:
           name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
 
+      - name: Upload Windows crash dumps
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
+          # The DLL that crashed. Its PDB is in the native-symbols artifact of the same native inputs.
+          path: |
+            ${{ github.workspace }}/.crash-dumps
+            packages/core/node_modules/@opentui/core-win32-x64/opentui.dll
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: true
+
   # Each package's Windows tests take seconds, and a Windows runner takes about a minute to set up, so
   # the packages share this job. Their own workflows test them on Linux and macOS.
   packages-windows:
@@ -275,17 +387,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      # This job compiles only the ABI check, which the test key holds too.
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: test
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.1
-
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
 
       - name: Install dependencies
         run: bun install
@@ -295,6 +413,8 @@ jobs:
         uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
+          # This job downloads the build job's libraries instead of building them.
+          ffmpeg: false
 
       - name: Install native host bottle
         if: steps.bottle.outputs.cache-hit == 'true'
@@ -357,7 +477,10 @@ jobs:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup development Bun
         uses: oven-sh/setup-bun@v2

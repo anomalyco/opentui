@@ -8,6 +8,7 @@ import { EditBuffer } from "../edit-buffer.js"
 import { EditorView } from "../editor-view.js"
 import { TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
+import { RGBA } from "../lib/RGBA.js"
 import type { LineInfo, WidthMethod } from "../types.js"
 
 type Row = Record<string, any> & { id: string }
@@ -96,13 +97,14 @@ function runRow(row: Row, method: string, failures: string[]): void {
       for (const op of row.ops) applyOp(edit, op)
       const text = edit.getText()
       const editor = own(EditorView.create(edit, row.cols ?? 80, 1 << 10))
-      editor.setWrapMode(row.wrap ?? "none")
       if (want("result") !== undefined) check("result", text === want("result"))
       if (want("line_widths"))
         check("line_widths", same(editor.getLogicalLineInfo().lineWidthCols, want("line_widths")))
       if (want("max") !== undefined) check("max", editor.getLogicalLineInfo().lineWidthColsMax === want("max"))
       const logical = editor.getLogicalLineInfo()
       check("widest", logical.lineWidthColsMax === Math.max(0, ...logical.lineWidthCols))
+      // Logical line info reports wrapped rows once a wrap mode is set.
+      editor.setWrapMode(row.wrap ?? "none")
       check("fresh", same(layout(editor.getLineInfo()), layout(view(load([text])).lineInfo)))
       if (want("stops")) {
         edit.setCursor(0, 0)
@@ -165,6 +167,47 @@ function runRow(row: Row, method: string, failures: string[]): void {
       const target = view(buffer, null)
       target.setViewport(x, 0, row.cols ?? 80, 1)
       check("draw_at", same(drawRows(target, row.cols ?? 80, 1), expected.filter(Boolean)))
+    }
+    // At cols too, so a glyph that does not fit at the right edge is left out by every drawer.
+    for (const width of row.draw_text ? [80, row.cols ?? 80] : []) {
+      const target = own(OptimizedBuffer.create(width, 1, methods[method], { owner: context }))
+      // The row with its trailing blanks, so a glyph drawn in other columns shows.
+      const drawn = (draw: () => void): string => (target.clear(), draw(), decoder.decode(target.getRealCharBytes()))
+      const white = RGBA.fromValues(1, 1, 1, 1)
+      const layout = drawn(() => target.drawTextBuffer(unwrapped, 0, 0))
+      check("draw_text", drawn(() => target.drawText(text, 0, 0, white)) === layout)
+      const encoded = target.encodeUnicode(text)
+      const place = () =>
+        encoded.data.reduce((x, glyph) => (target.drawChar(glyph.char, x, 0, white, white), x + glyph.width), 0)
+      check("encode", drawn(place) === layout)
+      target.freeUnicode(encoded)
+    }
+    if (row.overdraw) {
+      const target = own(OptimizedBuffer.create(80, 1, methods[method], { owner: context }))
+      const white = RGBA.fromValues(1, 1, 1, 1)
+      const drawn = (draw: () => void): string => (target.clear(), draw(), decoder.decode(target.getRealCharBytes()))
+      const encoded = target.encodeUnicode(text)
+      // A mark (X or the two-cell 中) clears each glyph it covers: the row equals the other glyphs, then the mark.
+      let ok = true
+      const width = encoded.data.reduce((sum, glyph) => sum + glyph.width, 0)
+      for (let x = 0; x < width; x++) {
+        for (const [mark, cells] of [
+          ["X", 1],
+          ["中", 2],
+        ] as const) {
+          const over = drawn(() => (target.drawTextBuffer(unwrapped, 0, 0), target.drawText(mark, x, 0, white)))
+          const without = drawn(() => {
+            encoded.data.reduce((at, glyph) => {
+              if (at + glyph.width <= x || at >= x + cells) target.drawChar(glyph.char, at, 0, white, white)
+              return at + glyph.width
+            }, 0)
+            target.drawText(mark, x, 0, white)
+          })
+          ok &&= over === without
+        }
+      }
+      target.freeUnicode(encoded)
+      check("overdraw", ok)
     }
     for (const [start, end, expected] of want("select") ?? []) {
       const target = view(buffer, null)

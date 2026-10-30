@@ -50,8 +50,14 @@ export type YogaValueKindId = (typeof YogaValueKind)[keyof typeof YogaValueKind]
 
 type SceneStyleNode = { _getSceneHandle(owner: NativeScene): SceneNodeHandle }
 
-export function sceneSetEnum(scene: NativeScene, node: SceneStyleNode, kind: YogaEnumKindId, value: number): void {
-  scene.setStyle(node, NativeStyleGroup.Enum, kind, NATIVE_EDGE_NONE, Unit.Undefined, value)
+export function sceneSetEnum(
+  scene: NativeScene,
+  node: SceneStyleNode,
+  kind: YogaEnumKindId,
+  value: number,
+  flags: number = NativeStyleFlags.None,
+): void {
+  scene.setStyle(node, NativeStyleGroup.Enum, kind, NATIVE_EDGE_NONE, Unit.Undefined, value, flags)
 }
 
 export function sceneGetEnum(scene: NativeScene, node: SceneStyleNode, kind: YogaEnumKindId): number {
@@ -63,8 +69,9 @@ export function sceneSetFloat(
   node: SceneStyleNode,
   kind: YogaFloatKindId,
   value: number | undefined,
+  flags: number = NativeStyleFlags.None,
 ): void {
-  scene.setStyle(node, NativeStyleGroup.Float, kind, NATIVE_EDGE_NONE, Unit.Undefined, value ?? NaN)
+  scene.setStyle(node, NativeStyleGroup.Float, kind, NATIVE_EDGE_NONE, Unit.Undefined, value ?? NaN, flags)
 }
 
 export function sceneGetFloat(scene: NativeScene, node: SceneStyleNode, kind: YogaFloatKindId): number {
@@ -77,9 +84,10 @@ export function sceneSetValue(
   kind: YogaValueKindId,
   edge: number,
   valueInput: ValueInput,
+  flags: number = NativeStyleFlags.None,
 ): void {
   const value = parseYogaValue(valueInput)
-  scene.setStyle(node, NativeStyleGroup.Value, kind, edge, value.unit, value.value)
+  scene.setStyle(node, NativeStyleGroup.Value, kind, edge, value.unit, value.value, flags)
 }
 
 export function sceneGetValue(scene: NativeScene, node: SceneStyleNode, kind: YogaValueKindId, edge: number): Value {

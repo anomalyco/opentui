@@ -8,6 +8,8 @@ pub const timeout_ns: u64 = 20 * std.time.ns_per_ms;
 pub const unit_bytes_max: u16 = 4096;
 pub const sequence_bytes_max: u16 = 256;
 pub const key_text_bytes_max: u8 = 32;
+/// The longest reply prefix a held string checks: OSC `7501;`.
+pub const reply_prefix_bytes_max: u8 = 8;
 pub const params_max: u8 = 16;
 pub const subparams_max: u8 = 8;
 pub const events_per_byte_max: u32 = 4;
@@ -22,7 +24,9 @@ pub const Expectations = packed struct(u8) {
     replies: bool = false,
     kitty_keyboard: bool = false,
     cursor_position: bool = false,
-    _reserved: u5 = 0,
+    /// The host waits for the DA1 reply that ends its query batch, so replies need no deadline.
+    sentinel: bool = false,
+    _reserved: u4 = 0,
 };
 
 /// Kitty's modifier layout: the wire parameter minus one.
@@ -186,20 +190,26 @@ pub const Sink = struct {
 
 const State = union(enum) {
     ground,
-    /// Ground right after a lone Escape timed out; a `[` may continue a mouse report.
+    /// Ground right after a lone Escape timed out; a `[` may continue a mouse report, and
+    /// with `sentinel` an introducer may continue a reply.
     expired,
     utf8: struct { expected: u3, alt: bool },
     escape: struct { alt: bool },
-    recover,
+    /// The introducer after a timed-out Escape.
+    recover: u8,
     recover_sgr,
     /// `deferred`: timed out on a prefix that may still be a mouse report, a Kitty
-    /// key, or an awaited reply. It waits without a deadline (docs §6.6).
-    csi: struct { alt: bool, deferred: bool },
+    /// key, or an awaited reply. It waits without a deadline (docs §6.6). `held`: deferred or
+    /// recovered by `sentinel`; every byte must continue it, and it completes only as a reply.
+    /// `recovered`: its ESC was a timed-out Escape key, so a cut types its introducer.
+    csi: struct { alt: bool, deferred: bool, held: bool = false, recovered: bool = false },
     ss3: struct { alt: bool },
     /// `recovered`: the unit's ESC was reinstated after a timed-out Escape key.
     x10: struct { alt: bool, recovered: bool },
-    /// `kind` is `.osc`, `.dcs`, or `.apc`.
-    string: struct { kind: Protocol, escaped: bool },
+    /// `kind` is `.osc`, `.dcs`, or `.apc`. `deferred`: while `sentinel` is set, a string that
+    /// begins like a reply, or a bare introducer that timed out or was recovered; it continues
+    /// only while it matches a reply prefix. `recovered` as for `csi`.
+    string: struct { kind: Protocol, escaped: bool, deferred: bool = false, recovered: bool = false },
     /// `osc`: BEL also ends the discarded string, as it ends only OSC.
     discard: struct { string: bool, escaped: bool, osc: bool },
     paste: struct { matched: u3 },
@@ -218,6 +228,8 @@ pub const InputParser = struct {
     since_ns: u64 = 0,
     x10_button: u8 = 0,
     discarded_count: u32 = 0,
+    /// Bytes left in the feed batch after the current byte. A typed key arrives in a read of its own.
+    batch_left: u32 = 0,
 
     /// Parses bytes that arrived at now_ns and returns how many it consumed; it
     /// stops when the sink cannot hold one more byte's events. Zero bytes only
@@ -238,6 +250,7 @@ pub const InputParser = struct {
             }
             const count_before = sink.count;
             const payload_before = sink.payload_len;
+            self.batch_left = @intCast(bytes.len - consumed - 1);
             self.step(bytes[consumed], sink);
             std.debug.assert(sink.count - count_before <= events_per_byte_max);
             std.debug.assert(sink.payload_len - payload_before <= payload_per_byte_max);
@@ -251,8 +264,13 @@ pub const InputParser = struct {
     /// When the host should call feed with zero bytes, or null.
     pub fn deadlineNs(self: *const InputParser) ?u64 {
         const waits = switch (self.state) {
-            .ground, .expired, .paste => false,
+            // A UTF-8 lead byte's continuation bytes must follow, so no pause cuts a scalar short.
+            // Opt-in 8-bit Meta (urxvt meta8, rxvt --meta8, Eterm -8, iTerm2 Option as Meta) is read
+            // as UTF-8; an explicit "input is not UTF-8" mode could restore it without a timer.
+            .ground, .expired, .paste, .utf8 => false,
             .csi => |csi| !csi.deferred or !self.deferrable(),
+            .string => |string| !self.expect.sentinel or !(string.deferred or self.awaitedString()),
+            .discard => |discard| !self.expect.sentinel or !(discard.string and self.awaitedString()),
             else => true,
         };
         return if (waits) self.since_ns +| timeout_ns else null;
@@ -261,6 +279,7 @@ pub const InputParser = struct {
     /// Changes expectations without emitting; the next feed re-evaluates a deferred unit.
     pub fn setExpectations(self: *InputParser, expect: Expectations) void {
         std.debug.assert(expect._reserved == 0);
+        std.debug.assert(!expect.sentinel or expect.replies);
         self.expect = expect;
     }
 
@@ -269,9 +288,10 @@ pub const InputParser = struct {
     /// instead, deferred: it waits for its rest without a deadline (docs §11.5).
     pub fn reset(self: *InputParser, keep_reply: bool) void {
         self.x10_button = 0;
-        if (keep_reply and self.state == .csi and self.replyShaped()) {
+        if (keep_reply and self.state == .csi and (self.replyShaped() or self.sentinelHeld())) {
             // An ESC before the unit was a key pressed before the interruption.
-            self.state.csi = .{ .alt = false, .deferred = true };
+            const held = self.state.csi.held or self.sentinelHeld();
+            self.state.csi = .{ .alt = false, .deferred = true, .held = held };
             return;
         }
         self.state = .ground;
@@ -285,7 +305,8 @@ pub const InputParser = struct {
             .csi, .ss3 => std.debug.assert(self.unit_len >= 2 and self.unit_len <= sequence_bytes_max),
             .x10 => std.debug.assert(self.unit_len >= 3 and self.unit_len < 6),
             .recover_sgr => std.debug.assert(self.unit_len >= 3 and self.unit_len <= sequence_bytes_max),
-            .string => |string| std.debug.assert(self.unit_len >= @as(u16, 2) + @intFromBool(string.escaped)),
+            .string => |string| std.debug.assert(self.unit_len >= @as(u16, 2) + @intFromBool(string.escaped) and
+                (!string.deferred or self.unit_len - 2 < reply_prefix_bytes_max)),
             .paste => |paste| std.debug.assert(paste.matched < paste_end_marker.len),
             .ground, .expired, .escape, .recover, .discard => {},
         }
@@ -315,29 +336,29 @@ pub const InputParser = struct {
                     self.state = .expired;
                 }
             },
-            .recover => {
-                emitKey(sink, &.{"["}, '[', .{}, .{ .text = "[" });
+            .recover => |introducer| if (self.expect.sentinel) {
+                self.begin(heldUnit(introducer), introducer);
+            } else {
                 self.state = .ground;
+                emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .text = &.{introducer} });
             },
             .recover_sgr => {
                 self.state = .ground;
                 emitReply(sink, self.unit[1..self.unit_len], .csi, flags.reply_fragment);
             },
-            .utf8 => |utf8| self.utf8Fallback(utf8.alt, sink),
             .csi => |csi| {
                 if (!csi.deferred and self.deferrable()) {
-                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true } };
+                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true, .held = self.sentinelHeld() } };
                 } else self.cutShort(csi.alt, .csi, 0, sink);
             },
             .ss3 => |ss3| self.cutShort(ss3.alt, .ss3, 0, sink),
             .x10 => |x10| self.cutShort(x10.alt, .csi, @intFromBool(x10.recovered), sink),
-            .string => |string| {
-                self.state = .ground;
-                emitReply(sink, self.unit[0..self.unit_len], string.kind, flags.reply_fragment);
-            },
+            .string => |string| if (self.expect.sentinel and self.unit_len == 2) {
+                self.state.string.deferred = true;
+            } else self.cutShort(false, string.kind, 0, sink),
             // After 20 ms of silence the rest of the garbage is more likely typing.
             .discard => self.state = .ground,
-            .ground, .expired, .paste => unreachable,
+            .ground, .expired, .utf8, .paste => unreachable,
         }
     }
 
@@ -350,13 +371,13 @@ pub const InputParser = struct {
             std.debug.assert(iterations <= 3);
             switch (self.state) {
                 .ground => self.ground(b, false, .of(false, b), sink),
-                .expired => if (b == '[') {
-                    self.state = .recover;
+                .expired => if (b == '[' or (self.expect.sentinel and (b == ']' or b == 'P' or b == '_'))) {
+                    self.state = .{ .recover = b };
                 } else {
                     self.state = .ground;
                     pending = b;
                 },
-                .utf8 => |utf8| if (b & 0xc0 == 0x80) {
+                .utf8 => |utf8| if (utf8Continues(self.unit[0], self.unit_len, b)) {
                     self.append(b);
                     if (self.unit_len == utf8.expected) self.utf8Complete(utf8.alt, sink);
                 } else {
@@ -364,27 +385,30 @@ pub const InputParser = struct {
                     pending = b;
                 },
                 .escape => |esc| pending = self.escapeByte(b, esc.alt, sink),
-                .recover => switch (b) {
-                    '<' => {
-                        self.begin(.recover_sgr, '[');
-                        self.append(b);
-                    },
-                    'M' => {
-                        self.begin(.{ .x10 = .{ .alt = false, .recovered = true } }, '[');
-                        self.append(b);
-                    },
-                    else => {
-                        self.state = .ground;
-                        emitKey(sink, &.{"["}, '[', .{}, .{ .text = "[" });
-                        pending = b;
-                    },
+                .recover => |introducer| if (self.recovered(introducer, b)) |state| {
+                    // The Escape key was already emitted; the unit reinstates its ESC.
+                    self.begin(state, introducer);
+                    self.append(b);
+                } else {
+                    self.state = .ground;
+                    emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .text = &.{introducer} });
+                    pending = b;
                 },
                 .recover_sgr => pending = self.recoverSgrByte(b, sink),
-                .csi => |csi| if (csi.deferred) {
-                    if (self.continuesDeferred(b)) {
-                        self.state = .{ .csi = .{ .alt = csi.alt, .deferred = false } };
-                    } else self.cutShort(csi.alt, .csi, 0, sink);
+                .csi => |csi| if (!csi.deferred) {
+                    self.sequenceByte(b, csi.alt, true, sink);
+                } else if (!self.continuesDeferred(b, csi.held)) {
+                    self.cutShort(csi.alt, .csi, 0, sink);
                     pending = b;
+                } else if (!csi.held or b == '<' or b == 'M') {
+                    // A mouse report continues only a bare unit, which then is no longer held.
+                    self.state.csi = .{ .alt = csi.alt, .deferred = false };
+                    pending = b;
+                } else if (b >= 0x40) {
+                    // The only final bytes that continue a held unit are reply finals.
+                    self.append(b);
+                    self.state = .ground;
+                    self.dispatchCsi(csi.alt, true, sink);
                 } else self.sequenceByte(b, csi.alt, true, sink),
                 .ss3 => |ss3| self.sequenceByte(b, ss3.alt, false, sink),
                 .x10 => |x10| if (b >= 0x01 and b <= 0x1f) {
@@ -399,7 +423,19 @@ pub const InputParser = struct {
                         self.dispatchX10(x10.alt, sink);
                     }
                 },
-                .string => |string| pending = self.stringByte(b, string.kind, string.escaped, sink),
+                // With `sentinel`, a string whose first byte begins a reply is held, so it is checked
+                // against a reply prefix however soon that byte came.
+                .string => |string| if (string.deferred or (self.expect.sentinel and self.unit_len == 2 and beginsReply(self.unit[1], b))) {
+                    if (continuesPrefix(self.unit[1], self.unit[2..self.unit_len], b)) |complete| {
+                        self.append(b);
+                        self.state.string.deferred = !complete;
+                    } else {
+                        self.cutShort(false, string.kind, 0, sink);
+                        pending = b;
+                    }
+                } else {
+                    pending = self.stringByte(b, string.kind, string.escaped, sink);
+                },
                 .discard => |discard| pending = self.discardByte(b, discard),
                 .paste => |paste| self.pasteByte(b, paste.matched, sink),
             }
@@ -445,7 +481,7 @@ pub const InputParser = struct {
     fn utf8Complete(self: *InputParser, alt: bool, sink: *Sink) void {
         self.state = .ground;
         const bytes = self.unit[0..self.unit_len];
-        const scalar: u21 = std.unicode.utf8Decode(bytes) catch std.unicode.replacement_character;
+        const scalar: u21 = std.unicode.utf8Decode(bytes) catch unreachable;
         var buffer: [4]u8 = undefined;
         const text = if (alt) "" else utf8Encode(scalar, &buffer);
         emitKey(sink, if (alt) &.{ "\x1b", bytes } else &.{bytes}, scalar, .{ .alt = alt }, .{ .text = text });
@@ -538,7 +574,7 @@ pub const InputParser = struct {
             // rxvt ends Shift+Insert and similar keys with `$`, which is otherwise an intermediate.
             self.append(b);
             self.state = .ground;
-            if (csi) self.dispatchCsi(alt, sink) else self.dispatchSs3(alt, sink);
+            if (csi) self.dispatchCsi(alt, false, sink) else self.dispatchSs3(alt, sink);
         } else if (self.unit_len >= sequence_bytes_max) {
             self.state = .{ .discard = .{ .string = false, .escaped = false, .osc = false } };
             self.discarded_count +|= 1;
@@ -643,13 +679,24 @@ pub const InputParser = struct {
 
     /// Reports a unit ended by something other than its terminator as a fragment, from `start`
     /// (1 skips an ESC that recovery reinstated). After `ESC ESC`, the first Escape is a key.
+    /// A recovered unit that matched no reply shape yet was typing after an Escape key that was
+    /// already emitted, so its introducer is typed, as without `sentinel`.
     fn cutShort(self: *InputParser, alt: bool, protocol: Protocol, start: u16, sink: *Sink) void {
+        const typed = switch (self.state) {
+            .csi => |csi| csi.recovered and allDigits(self.unit[2..self.unit_len]),
+            .string => |string| string.recovered and string.deferred,
+            else => false,
+        };
         self.state = .ground;
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-        emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
+        if (!typed) return emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
+        const introducer = self.unit[1];
+        emitKey(sink, &.{self.unit[1..2]}, introducer, .{}, .{ .text = self.unit[1..2] });
+        if (self.unit_len > 2) emitReply(sink, self.unit[2..self.unit_len], protocol, flags.reply_fragment);
     }
 
-    fn dispatchCsi(self: *InputParser, alt: bool, sink: *Sink) void {
+    /// `reply_only`: a held unit, which never decodes as a key.
+    fn dispatchCsi(self: *InputParser, alt: bool, reply_only: bool, sink: *Sink) void {
         const unit = self.unit[0..self.unit_len];
         const params = unit[2 .. unit.len - 1];
         const final = unit[unit.len - 1];
@@ -677,7 +724,7 @@ pub const InputParser = struct {
             // Private-prefixed and intermediate-bearing sequences are never keys.
             const fields = Fields.parse(params) orelse break :decoded null;
             cursor_report = final == 'R' and fields.count == 2 and fields.single(0) != null and fields.single(1) != null;
-            break :decoded self.csiKey(&fields, final);
+            break :decoded if (reply_only) null else self.csiKey(&fields, final);
         };
         if (decoded) |value| return emitDecodedKey(sink, alt, unit, value);
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
@@ -740,10 +787,11 @@ pub const InputParser = struct {
     }
 
     /// Whether a timed-out CSI may still be a mouse report, a Kitty key, or an awaited
-    /// reply, which slow links can split (docs §6.6).
+    /// reply, which slow links can split (docs §6.6). A bare `ESC ESC [` would hold an Escape key.
     fn deferrable(self: *const InputParser) bool {
         const params = self.unit[2..self.unit_len];
-        if (params.len == 0) return false;
+        if (self.sentinelHeld()) return true;
+        if (params.len == 0) return !self.state.csi.alt;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
         return (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
@@ -763,11 +811,35 @@ pub const InputParser = struct {
         };
     }
 
-    /// Whether `b` continues a deferred CSI. Final bytes count only where they complete it.
-    fn continuesDeferred(self: *const InputParser, b: u8) bool {
+    /// Whether a string, or its discarded overflow, begins like a reply to a query the host sends.
+    /// Typed Alt+], Alt+Shift+P, and Alt+_ with a key that cannot begin a reply do not wait.
+    fn awaitedString(self: *const InputParser) bool {
+        return self.unit_len >= 3 and beginsReply(self.unit[1], self.unit[2]);
+    }
+
+    /// Whether a bare `ESC [` or a number may still begin a reply while the host awaits its sentinel.
+    fn sentinelHeld(self: *const InputParser) bool {
+        return self.expect.sentinel and allDigits(self.unit[2..self.unit_len]);
+    }
+
+    /// The unit that a timed-out Escape, `introducer`, and `b` resume, if they may begin one.
+    fn recovered(self: *const InputParser, introducer: u8, b: u8) ?State {
+        if (introducer == '[' and b == '<') return .recover_sgr;
+        if (introducer == '[' and b == 'M') return .{ .x10 = .{ .alt = false, .recovered = true } };
+        if (!self.expect.sentinel or !beginsReply(introducer, b)) return null;
+        return heldUnit(introducer);
+    }
+
+    /// Whether `b` continues a deferred CSI. Final bytes count only where they complete it, and
+    /// with `reply_only` only reply finals do.
+    fn continuesDeferred(self: *const InputParser, b: u8, reply_only: bool) bool {
         const params = self.unit[2..self.unit_len];
-        std.debug.assert(params.len > 0);
         const digit = isDigit(b);
+        // A reply prefix continues a bare unit only while the host awaits the sentinel.
+        if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
+            (self.expect.sentinel and beginsReply('[', b));
+        // Only `sentinel` defers these; a number continues toward a cursor or pixel size reply.
+        if (allDigits(params)) return digit or b == ';';
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
         const field = std.mem.trimEnd(u8, params, "$");
         const has_digit = isDigit(field[field.len - 1]);
@@ -783,7 +855,7 @@ pub const InputParser = struct {
                 };
             },
             else => {
-                const kitty = self.expect.kitty_keyboard;
+                const kitty = self.expect.kitty_keyboard and !reply_only;
                 const shape = Shape.of(params, kitty) orelse return false;
                 if (digit or b == ':' or b == ';') return true;
                 if (!has_digit) return false;
@@ -997,6 +1069,56 @@ fn isDigit(b: u8) bool {
     return b >= '0' and b <= '9';
 }
 
+/// Whether `b` after an introducer may begin a reply to a query the host sends: CSI `?` (DA1,
+/// DECRQM, Kitty flags) or a digit (cursor position, pixel size); OSC 4, 10 to 19, 99, 1337, and
+/// 7501; DCS XTVERSION `>` and XTGETTCAP digits; APC Kitty graphics `G`.
+fn beginsReply(introducer: u8, b: u8) bool {
+    return switch (introducer) {
+        '[' => b == '?' or isDigit(b),
+        ']' => isDigit(b),
+        'P' => b == '>' or isDigit(b),
+        '_' => b == 'G',
+        else => unreachable,
+    };
+}
+
+/// The unit that `sentinel` holds for a bare introducer after a timed-out Escape.
+fn heldUnit(introducer: u8) State {
+    return switch (introducer) {
+        '[' => .{ .csi = .{ .alt = false, .deferred = true, .held = true, .recovered = true } },
+        ']' => .{ .string = .{ .kind = .osc, .escaped = false, .deferred = true, .recovered = true } },
+        'P' => .{ .string = .{ .kind = .dcs, .escaped = false, .deferred = true, .recovered = true } },
+        '_' => .{ .string = .{ .kind = .apc, .escaped = false, .deferred = true, .recovered = true } },
+        else => unreachable,
+    };
+}
+
+/// Whether `b` extends a held string's `payload` toward a reply prefix: OSC digits and `;`, DCS
+/// `>|` or a digit and `+r` or `$r`, APC `G`, a key letter, and `=`. Null if it cannot; true
+/// once the prefix is complete.
+fn continuesPrefix(introducer: u8, payload: []const u8, b: u8) ?bool {
+    if (payload.len + 1 >= reply_prefix_bytes_max) return null;
+    switch (introducer) {
+        ']' => if (allDigits(payload)) {
+            if (isDigit(b)) return false;
+            if (b == ';' and payload.len > 0) return true;
+        },
+        'P' => {
+            if (payload.len == 0 and (b == '>' or isDigit(b))) return false;
+            if (std.mem.eql(u8, payload, ">") and b == '|') return true;
+            if (payload.len == 1 and isDigit(payload[0]) and (b == '+' or b == '$')) return false;
+            if (payload.len == 2 and isDigit(payload[0]) and (payload[1] == '+' or payload[1] == '$') and b == 'r') return true;
+        },
+        '_' => {
+            if (payload.len == 0 and b == 'G') return false;
+            if (payload.len == 1 and std.ascii.isAlphabetic(b)) return false;
+            if (payload.len == 2 and b == '=') return true;
+        },
+        else => unreachable,
+    }
+    return null;
+}
+
 fn allDigits(bytes: []const u8) bool {
     for (bytes) |b| if (!isDigit(b)) return false;
     return true;
@@ -1011,6 +1133,20 @@ fn parseDigits(bytes: []const u8) u32 {
     var value: u32 = 0;
     for (bytes) |b| value = value *| 10 +| (b - '0');
     return value;
+}
+
+/// Whether `b` can follow the `count` bytes of a scalar that starts with `lead`. The second byte's
+/// range excludes overlongs, surrogates, and scalars above U+10FFFF (Unicode Table 3-7), so a
+/// prefix that no byte can complete ends at once instead of waiting.
+fn utf8Continues(lead: u8, count: u16, b: u8) bool {
+    const low: u8, const high: u8 = if (count > 1) .{ 0x80, 0xbf } else switch (lead) {
+        0xe0 => .{ 0xa0, 0xbf },
+        0xed => .{ 0x80, 0x9f },
+        0xf0 => .{ 0x90, 0xbf },
+        0xf4 => .{ 0x80, 0x8f },
+        else => .{ 0x80, 0xbf },
+    };
+    return b >= low and b <= high;
 }
 
 fn utf8Encode(scalar: u21, buffer: *[4]u8) []const u8 {

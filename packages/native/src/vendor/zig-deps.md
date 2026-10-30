@@ -26,7 +26,7 @@ Both ports change only Zig code, and the update script gives both copies the sam
 generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga 3.2.1 with four changes, applied in this order:
+The Yoga source is upstream Yoga 3.2.1 with seven changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation through `yoga/OTAllocator.h`, so a test build can
   inject allocation failures. It also makes style updates, child insertion, and child moves leave the node
@@ -41,6 +41,20 @@ The Yoga source is upstream Yoga 3.2.1 with four changes, applied in this order:
   layout cache also compares available sizes exactly, because a subtree laid out for one fractional size
   rounds differently at another size that rounds to the same cell. Only the scene's config in
   `src/context.zig` sets the option; other configs keep upstream rounding and caching.
+- `yoga-finite-percent.patch` clamps a resolved percentage to ±1e30, so a deep percentage chain cannot
+  overflow f32 and stop layout on an indefinite available size.
+- `yoga-measure-height-cap.patch` lets a node mark its measure function as one that uses an "at most"
+  height only to clamp its result. Where Yoga would call such a function again because the cap grew,
+  it takes a cached size that was below the old cap at the same width, and stores it as a call's
+  result, so later cache decisions are the same as without the patch. A node with a percent margin,
+  padding, or minimum or maximum size keeps calling: no cache entry records the owner size. The native
+  text and editor measures set the mark; host measures do not.
+- `yoga-cache-margin.patch` subtracts the margin from the old size too in the cache's "stricter size" rule
+  (upstream PR facebook/yoga#1965). Upstream compares the new size without the margin with the old size
+  with it, so a measured node that grew by less than its margin kept its old size. Unlike #1965, only a
+  positive margin comes off the old size: a percent margin follows an owner size that no cache entry
+  records, so a negative one would accept a stale size. Upstream's rule is already valid for a negative
+  margin. Upstream fixes the owner size separately in facebook/yoga#2042.
 
 `src/tests/yoga_test.zig` tests each change.
 

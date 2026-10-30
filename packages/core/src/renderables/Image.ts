@@ -1,4 +1,4 @@
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, type RenderableOptions, type NativeRenderableIntegration } from "../Renderable.js"
 import { NativeImage, type ImageSource } from "../image.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { ImageRenderProtocol, RenderContext, TerminalCapabilities } from "../types.js"
@@ -36,12 +36,11 @@ function pixelResolution(ctx: RenderContext): { width: number; height: number } 
 }
 
 export class ImageRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "image",
     body: { native: this.prototype.renderSelf, buffered: true },
     bufferComposition: "native",
-    construction: "prototype",
-  })
+  }
 
   private _source: ImageRenderableSource | undefined
   private _image: NativeImage | null = null
@@ -204,14 +203,16 @@ export class ImageRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    if (!this._image || this.width <= 0 || this.height <= 0) return
-    const fitted =
-      this._fit === "cover" ? { width: this.width, height: this.height } : this.getFittedSize(this.width, this.height)
+    // Paint geometry fits drawImage's cell range; public sizes are Yoga's.
+    const width = this._paintWidth
+    const height = this._paintHeight
+    if (!this._image || width <= 0 || height <= 0) return
+    const fitted = this._fit === "cover" ? { width, height } : this.getFittedSize(width, height)
     if (fitted.width <= 0 || fitted.height <= 0) return
     const originX = this.buffered ? 0 : this._screenX
     const originY = this.buffered ? 0 : this._screenY
-    const x = originX + Math.floor((this.width - fitted.width) / 2)
-    const y = originY + Math.floor((this.height - fitted.height) / 2)
+    const x = originX + Math.floor((width - fitted.width) / 2)
+    const y = originY + Math.floor((height - fitted.height) / 2)
     const resolution = pixelResolution(this._ctx)
     const pixelWidth = resolution
       ? Math.max(1, Math.round((fitted.width * resolution.width) / this._ctx.terminalWidth!))
@@ -224,7 +225,7 @@ export class ImageRenderable extends Renderable {
     let sourceWidth = this._image.width
     let sourceHeight = this._image.height
     if (this._fit === "cover") {
-      const targetAspect = this.width / (this.height * this.cellAspectRatio)
+      const targetAspect = width / (height * this.cellAspectRatio)
       const sourceAspect = sourceWidth / sourceHeight
       if (sourceAspect > targetAspect) {
         sourceWidth = Math.max(1, Math.round(sourceHeight * targetAspect))

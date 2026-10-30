@@ -72,6 +72,7 @@ const NO_EXPECTATIONS: StdinParserProtocolContext = {
   pixelResolutionQueryActive: false,
   explicitWidthCprActive: false,
   startupCursorCprActive: false,
+  replySentinelActive: false,
 }
 const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
   [C.OT_INPUT_REPLY_CSI]: "csi",
@@ -82,7 +83,7 @@ const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
 }
 // Core's `code` for legacy sequences: the introducer, number, and final without modifiers.
 const LEGACY_CODE_RE = /^\x1b+(O|\[\[?)(?:(\d+)(?:;\d+)?([~^$])|(?:1;)?\d*([a-zA-Z]))/
-const LEGACY_SEQUENCE_RE = /^\x1b\x1b?[[O]/
+const LEGACY_SEQUENCE_RE = /^\x1b\x1b?[[O]./s
 const KEYPAD_TEXT = new Set(Object.values(printableKeypadText))
 
 function concat(parts: Uint8Array[]): Uint8Array {
@@ -107,7 +108,8 @@ function expectationFlags(context: StdinParserProtocolContext): number {
   return (
     (replies ? C.OT_INPUT_EXPECT_REPLIES : 0) |
     (context.kittyKeyboardEnabled ? C.OT_INPUT_EXPECT_KITTY_KEYBOARD : 0) |
-    (cursorPosition ? C.OT_INPUT_EXPECT_CURSOR_POSITION : 0)
+    (cursorPosition ? C.OT_INPUT_EXPECT_CURSOR_POSITION : 0) |
+    (context.replySentinelActive ? C.OT_INPUT_EXPECT_SENTINEL : 0)
   )
 }
 
@@ -180,6 +182,11 @@ export class NativeStdinParser {
     })
     // Callers need not drain: queued events reach the host through onTimeoutFlush.
     this.reconcileTimeout(this.events.length > 0)
+  }
+
+  /** A bracketed paste has started and not yet ended. */
+  public get pasting(): boolean {
+    return this.paste !== null
   }
 
   public push(data: Uint8Array): void {
@@ -433,8 +440,8 @@ function parsedKey(
   const raw = keyRaw(rawBytes)
   const text = textBytes.length === 0 ? "" : UTF8.decode(textBytes)
   const alt = (modifiers & C.OT_INPUT_MOD_ALT) !== 0
-  // Core sets option for a modifier parameter or an `ESC ESC` key sequence, not for ESC + character.
-  const option = alt && (kitty || LEGACY_SEQUENCE_RE.test(raw))
+  // Core sets option, and keeps a letter's case and Shift bit, only for a sequence: not for ESC + character.
+  const sequence = kitty || LEGACY_SEQUENCE_RE.test(raw)
   let shift = (modifiers & C.OT_INPUT_MOD_SHIFT) !== 0
   let name: string
   if (code === 0) {
@@ -447,7 +454,7 @@ function parsedKey(
   } else {
     name = String.fromCodePoint(code)
     // Core names a typed uppercase letter by its lowercase key with Shift; Alt keeps the case.
-    if (!kitty && code >= 0x41 && code <= 0x5a) {
+    if (!sequence && code >= 0x41 && code <= 0x5a) {
       shift = true
       if (!alt) name = name.toLowerCase()
     }
@@ -457,7 +464,7 @@ function parsedKey(
     ctrl: (modifiers & C.OT_INPUT_MOD_CTRL) !== 0,
     meta: alt || (modifiers & C.OT_INPUT_MOD_META) !== 0,
     shift,
-    option,
+    option: alt && sequence,
     sequence: text || raw,
     number: /^[0-9]$/.test(name),
     raw,

@@ -61,7 +61,7 @@ fn benchCoordsToOffsetCurrent(
                 // Access lines throughout the buffer
                 for (0..100) |i| {
                     const line: u32 = @intCast(i % 100);
-                    _ = iter_mod.coordsToOffset(&rope, line, 25);
+                    std.mem.doNotOptimizeAway(iter_mod.coordsToOffset(&rope, line, 25));
                 }
                 stats.record(timer.read());
             }
@@ -93,7 +93,7 @@ fn benchCoordsToOffsetCurrent(
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..100) |i| {
                     const line: u32 = @intCast((i * 10) % 1000);
-                    _ = iter_mod.coordsToOffset(&rope, line, 25);
+                    std.mem.doNotOptimizeAway(iter_mod.coordsToOffset(&rope, line, 25));
                 }
                 stats.record(timer.read());
             }
@@ -125,7 +125,7 @@ fn benchCoordsToOffsetCurrent(
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..100) |i| {
                     const line: u32 = @intCast((i * 100) % 10000);
-                    _ = iter_mod.coordsToOffset(&rope, line, 25);
+                    std.mem.doNotOptimizeAway(iter_mod.coordsToOffset(&rope, line, 25));
                 }
                 stats.record(timer.read());
             }
@@ -156,7 +156,7 @@ fn benchCoordsToOffsetCurrent(
 
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..100) |_| {
-                    _ = iter_mod.coordsToOffset(&rope, 999, 25); // Last line
+                    std.mem.doNotOptimizeAway(iter_mod.coordsToOffset(&rope, 999, 25)); // Last line
                 }
                 stats.record(timer.read());
             }
@@ -204,7 +204,7 @@ fn benchOffsetToCoordsCurrent(
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..100) |_| {
                     const offset = random.intRangeAtMost(u32, 0, total_width);
-                    _ = iter_mod.offsetToCoords(&rope, offset);
+                    std.mem.doNotOptimizeAway(iter_mod.offsetToCoords(&rope, offset));
                 }
                 stats.record(timer.read());
             }
@@ -240,7 +240,7 @@ fn benchOffsetToCoordsCurrent(
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..100) |_| {
                     const offset = random.intRangeAtMost(u32, 0, total_width);
-                    _ = iter_mod.offsetToCoords(&rope, offset);
+                    std.mem.doNotOptimizeAway(iter_mod.offsetToCoords(&rope, offset));
                 }
                 stats.record(timer.read());
             }
@@ -276,7 +276,7 @@ fn benchOffsetToCoordsCurrent(
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..100) |_| {
                     const offset = random.intRangeAtMost(u32, 0, total_width);
-                    _ = iter_mod.offsetToCoords(&rope, offset);
+                    std.mem.doNotOptimizeAway(iter_mod.offsetToCoords(&rope, offset));
                 }
                 stats.record(timer.read());
             }
@@ -319,7 +319,8 @@ fn benchGetLineCount(
 
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..100000) |_| {
-                    _ = iter_mod.getLineCount(&rope);
+                    std.mem.doNotOptimizeAway(&rope);
+                    std.mem.doNotOptimizeAway(iter_mod.getLineCount(&rope));
                 }
                 stats.record(timer.read());
             }

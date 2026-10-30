@@ -1,0 +1,17 @@
+--- a/yoga/style/StyleLength.h
++++ b/yoga/style/StyleLength.h
+@@ -75,8 +75,12 @@
+     switch (unit_) {
+       case Unit::Point:
+         return value_;
+-      case Unit::Percent:
+-        return FloatOptional{value_.unwrap() * referenceLength * 0.01f};
++      case Unit::Percent: {
++        // OpenTUI: keep sums of resolved lengths finite. NaN stays undefined.
++        const float resolved = value_.unwrap() * referenceLength * 0.01f;
++        return FloatOptional{
++            resolved > 1e30f ? 1e30f : resolved < -1e30f ? -1e30f : resolved};
++      }
+       default:
+         return FloatOptional{};
+     }

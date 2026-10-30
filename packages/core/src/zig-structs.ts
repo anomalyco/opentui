@@ -61,6 +61,7 @@ export type NativeFrameWork = {
   fullPathReasons: number
   hostRequests: number
   layoutRounds: number
+  damageRows: number
 }
 
 export type NativeRenderStats = {

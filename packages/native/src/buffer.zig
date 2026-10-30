@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ansi = @import("ansi.zig");
 const tb = @import("text-buffer.zig");
@@ -45,12 +46,13 @@ pub fn validateTextInput(text: []const u8) error{ TextLimit, InvalidUnicode }!vo
 /// The grapheme pool stores at most this many bytes per cluster.
 pub const grapheme_bytes_max = 128;
 
-/// Reports whether one cell may hold a cluster. The renderer prints cell text as is, so a
-/// control code point (C0, DEL, or C1) would move the terminal cursor, and the grapheme pool
-/// stores at most grapheme_bytes_max bytes. Checked draws write any other cluster as blank
-/// cells of its width instead of failing. Text layout gives a lone control zero width.
-pub fn isPrintableGlyph(bytes: []const u8) bool {
-    if (bytes.len > grapheme_bytes_max) return false;
+/// Reports whether one cell may hold a cluster `width` cells wide. The renderer prints cell text
+/// as is, so a control code point (C0, DEL, or C1) would move the terminal cursor, the grapheme
+/// pool stores at most grapheme_bytes_max bytes, and a cell spans at most gp.glyph_width_max cells.
+/// Checked draws write any other cluster as blank cells of its width instead of failing. Text
+/// layout gives a lone control zero width.
+pub fn isPrintableGlyph(bytes: []const u8, width: u32) bool {
+    if (bytes.len > grapheme_bytes_max or width > gp.glyph_width_max) return false;
     for (bytes, 0..) |byte, index| {
         if (byte < 0x20 or byte == 0x7f) return false;
         // U+0080..U+009F encode as C2 80..C2 9F.
@@ -480,6 +482,16 @@ pub const BufferLease = struct {
 /// A glyph that a text view draw wrote at column x of its current row.
 const MarkBase = struct { x: u32, char: u32 };
 
+/// A cell limit for a text draw.
+pub const TextFit = struct {
+    /// Cells right of x that the text may cover; zero means no limit.
+    max_width: u32 = 0,
+    /// For text wider than max_width: keep the glyphs that leave room for an ellipsis, then draw it.
+    ellipsis: bool = false,
+};
+
+const ellipsis_bytes = "\u{2026}";
+
 /// One glyph of a text row with at least one cell to draw.
 const TextGlyph = struct {
     bytes: []const u8,
@@ -494,7 +506,7 @@ const TextGlyph = struct {
 /// Places the glyphs of one text row for drawText and drawTextChecked. Controls and other
 /// zero-width clusters take no cells. A tab or a cluster that a cell cannot hold is blank
 /// (see isPrintableGlyph): its spaces clip one by one, also left of column 0. Any other glyph
-/// draws only when all of its cells are inside the target and its scissor. Every glyph
+/// draws only when all of its cells are left of end and inside the target's scissor. Every glyph
 /// advances by the width it is drawn with, so clipping never moves the visible glyphs.
 const TextRow = struct {
     target: *const OptimizedBuffer,
@@ -503,6 +515,8 @@ const TextRow = struct {
     clusters: []const utf8.RenderClusterInfo,
     x: i32,
     y: i32,
+    /// The column where the row stops: the target's width, or less for a fitted draw.
+    end: i64,
     byte_offset: usize = 0,
     cluster_index: usize = 0,
     advance_cells: u64 = 0,
@@ -510,9 +524,36 @@ const TextRow = struct {
     const tab_width: u8 = 2;
 
     fn next(self: *TextRow) ?TextGlyph {
-        const target = self.target;
         // A glyph is at most two cells per byte, so the columns fit in i64.
-        while (self.byte_offset < self.text.len and self.x + @as(i64, @intCast(self.advance_cells)) < target.width) {
+        while (self.x + @as(i64, @intCast(self.advance_cells)) < self.end) {
+            const glyph = self.nextGlyph() orelse return null;
+            const blank = !isPrintableGlyph(glyph.bytes, glyph.width);
+            // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
+            if (!blank and glyph.x < 0) continue;
+            const first: u32 = @intCast(@max(glyph.x, 0));
+            const end = @min(glyph.x + glyph.width, self.end);
+            const count: u32 = if (!blank) 1 else if (end > first) @intCast(end - first) else 0;
+            if (!self.isVisible(first, if (blank) count else glyph.width, blank)) continue;
+            return .{ .bytes = glyph.bytes, .x = first, .width = glyph.width, .blank = blank, .count = count };
+        }
+        return null;
+    }
+
+    /// The byte length of the glyphs that end at most `room` cells right of x, or null when the
+    /// whole row is at most `max_width` cells wide.
+    fn fitBytes(self: *TextRow, room: u64, max_width: u64) ?usize {
+        var kept: ?usize = null;
+        while (self.advance_cells <= max_width) {
+            const start = self.byte_offset;
+            _ = self.nextGlyph() orelse return null;
+            if (kept == null and self.advance_cells > room) kept = start;
+        }
+        return kept;
+    }
+
+    /// The next glyph with at least one cell, at column x plus the cells before it.
+    fn nextGlyph(self: *TextRow) ?struct { bytes: []const u8, x: i64, width: u32 } {
+        while (self.byte_offset < self.text.len) {
             const start = self.byte_offset;
             // Unchecked text can be invalid UTF-8, which ends a cluster at another byte.
             while (self.cluster_index < self.clusters.len and self.clusters[self.cluster_index].byte_start < start) {
@@ -529,28 +570,18 @@ const TextRow = struct {
                 self.byte_offset = @min(start + length, self.text.len);
             }
             const bytes = self.text[start..self.byte_offset];
-            const width = if (cluster != null and target.width_method != .wcwidth)
-                cluster.?.width_cols
-            else
-                utf8.getWidthAt(bytes, 0, tab_width, .hidden, target.width_method);
+            const width = if (cluster) |entry| entry.width_cols else utf8.getWidthAt(bytes, 0, tab_width, .hidden, self.target.width_method);
             if (width == 0) continue;
             const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
             self.advance_cells += width;
-            const blank = !isPrintableGlyph(bytes);
-            // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
-            if (!blank and glyph_x < 0) continue;
-            const first: u32 = @intCast(@max(glyph_x, 0));
-            const end = @min(glyph_x + width, target.width);
-            const count: u32 = if (!blank) 1 else if (end > first) @intCast(end - first) else 0;
-            if (!self.isVisible(first, if (blank) count else width, blank)) continue;
-            return .{ .bytes = bytes, .x = first, .width = width, .blank = blank, .count = count };
+            return .{ .bytes = bytes, .x = glyph_x, .width = width };
         }
         return null;
     }
 
-    /// Blank cells need one cell in the scissor; a glyph needs all of its cells in the target and scissor.
+    /// Blank cells need one cell in the scissor; a glyph needs all of its cells left of end and in the scissor.
     fn isVisible(self: *const TextRow, first: u32, cells: u32, blank: bool) bool {
-        if (cells > self.target.width - first) return false;
+        if (@as(i64, first) + cells > self.end) return false;
         for (0..cells) |offset| {
             const inside = self.target.isPointInScissor(@intCast(first + offset), self.y);
             if (blank and inside) return true;
@@ -573,6 +604,17 @@ pub const Cell = struct {
 
 inline fn isPrintableAscii(bytes: []const u8) bool {
     return bytes.len == 1 and bytes[0] >= 0x20 and bytes[0] < 0x7f;
+}
+
+/// Index of the first item whose field `key` is at least `value`; items are sorted by `key`.
+fn lowerBound(items: anytype, comptime key: []const u8, value: u32, comptime counter: std.meta.FieldEnum(text_work.Counts)) usize {
+    var lo: usize = 0;
+    var hi = items.len;
+    while (lo < hi) : (text_work.add(counter, 1)) {
+        const mid = lo + (hi - lo) / 2;
+        if (@field(items[mid], key) < value) lo = mid + 1 else hi = mid;
+    }
+    return lo;
 }
 
 inline fn makeCell(char: u32, fg: RGBA, bg: RGBA, attributes: u32) Cell {
@@ -690,6 +732,8 @@ pub const OptimizedBuffer = struct {
     scissor_stack: std.ArrayListUnmanaged(ClipRect),
     opacity_stack: std.ArrayListUnmanaged(f32),
     image_placements: *std.ArrayListUnmanaged(ImagePlacement),
+    // Text lines that draws visited.
+    test_text_lines: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
 
     const InitOptions = struct {
         respectAlpha: bool = false,
@@ -703,7 +747,6 @@ pub const OptimizedBuffer = struct {
 
     const BoxTitleLayout = struct {
         shouldDraw: bool = false,
-        x: i32 = 0,
         startX: i32 = 0,
         endX: i32 = 0,
     };
@@ -1007,6 +1050,24 @@ pub const OptimizedBuffer = struct {
         @memset(self.buffer.bg, bg);
     }
 
+    /// Clear rows [top, bottom) as clear does, releasing the grapheme and link references of
+    /// their cells. Wide graphemes stay within their row, so no span crosses the edge.
+    /// Placements stay; a buffer with placements is cleared whole.
+    pub fn clearRows(self: *OptimizedBuffer, top: u32, bottom: u32, bg: RGBA, char: ?u32) void {
+        assert(top <= bottom and bottom <= self.height);
+        const start = top * self.width;
+        const end = bottom * self.width;
+        for (self.buffer.char[start..end], self.buffer.attributes[start..end]) |cell, attributes| {
+            if (gp.isGraphemeChar(cell)) self.grapheme_tracker.remove(gp.graphemeIdFromChar(cell));
+            const link_id = ansi.TextAttributes.getLinkId(attributes);
+            if (link_id != 0) self.link_tracker.removeCellRef(link_id);
+        }
+        fillU32(self.buffer.char[start..end], char orelse DEFAULT_SPACE_CHAR);
+        fillU32(self.buffer.attributes[start..end], 0);
+        @memset(self.buffer.fg[start..end], ansi.rgbColor(255, 255, 255, 255));
+        @memset(self.buffer.bg[start..end], bg);
+    }
+
     fn clearImagePlacements(self: *OptimizedBuffer) void {
         for (self.image_placements.items) |placement| placement.image.deinit();
         self.image_placements.clearRetainingCapacity();
@@ -1133,21 +1194,19 @@ pub const OptimizedBuffer = struct {
         } else if (gp.isClusterChar(prev_char) and prev_char != cell.char) {
             // If overwriting a grapheme span (start or continuation) with a different char, clear that span first
             const row_start: u32 = y * self.width;
-            const row_end: u32 = row_start + self.width - 1;
-            const left = gp.charLeftExtent(prev_char);
-            const right = gp.charRightExtent(prev_char);
             const id = gp.graphemeIdFromChar(prev_char);
 
             if (new_start_id) |new_id| self.grapheme_tracker.add(new_id);
             tracker_replaced = true;
 
-            const span_start = index - @min(left, index - row_start);
-            const span_end = index + @min(right, row_end - index);
+            // The span's cells hold its ID and their offset from its start.
+            const span_start = index - @min(gp.charLeftExtent(prev_char), index - row_start);
+            const span_end = @min(span_start + gp.glyph_width_max, row_start + self.width);
 
-            var span_i: u32 = span_start;
-            while (span_i <= span_end) : (span_i += 1) {
+            for (span_start..span_end) |span_i| {
                 const span_char = self.buffer.char[span_i];
                 if (!gp.isClusterChar(span_char) or gp.graphemeIdFromChar(span_char) != id) continue;
+                if (gp.charLeftExtent(span_char) != span_i - span_start) continue;
                 // Overlaps can leave continuations after their start was replaced.
                 if (gp.isGraphemeChar(span_char)) self.grapheme_tracker.remove(id);
                 const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
@@ -1211,6 +1270,7 @@ pub const OptimizedBuffer = struct {
                             while (tail_i <= tail_end) : (tail_i += 1) {
                                 const tail_char = self.buffer.char[tail_i];
                                 if (!gp.isContinuationChar(tail_char) or gp.graphemeIdFromChar(tail_char) != old_id) continue;
+                                if (gp.charLeftExtent(tail_char) != tail_i - cont_index) continue;
                                 const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
                                 if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
                                 self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
@@ -1227,7 +1287,7 @@ pub const OptimizedBuffer = struct {
                 @memset(self.buffer.attributes[index + 1 .. index + 1 + right], cell.attributes);
                 var k: u32 = 1;
                 while (k <= right) : (k += 1) {
-                    self.buffer.char[index + k] = gp.packContinuation(k, right - k, id);
+                    self.buffer.char[index + k] = gp.packContinuation(k, id);
                     if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
                 }
             }
@@ -1800,6 +1860,21 @@ pub const OptimizedBuffer = struct {
         bg: ?RGBA,
         attributes: u32,
     ) error{ InvalidUnicode, InvalidOptions, TextLimit, UnsupportedResource, OutOfMemory, TrackerLimit }!void {
+        return self.drawTextFitted(text, x, y, fg, bg, attributes, .{});
+    }
+
+    /// drawTextChecked within fit.max_width cells from x (see TextFit).
+    pub fn drawTextFitted(
+        self: *OptimizedBuffer,
+        text: []const u8,
+        x: i32,
+        y: i32,
+        fg: RGBA,
+        bg: ?RGBA,
+        attributes: u32,
+        fit: TextFit,
+    ) error{ InvalidUnicode, InvalidOptions, TextLimit, UnsupportedResource, OutOfMemory, TrackerLimit }!void {
+        assert(!fit.ellipsis or fit.max_width > 0);
         if (text.len > text_bytes_max) return error.TextLimit;
         try self.checkImageResources();
         if (attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
@@ -1811,13 +1886,16 @@ pub const OptimizedBuffer = struct {
         try self.checkDrawState();
         const opacity = self.getCurrentOpacity();
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
-        if (utf8.isAsciiOnly(text)) {
+        // i64 holds any i32 position plus any u32 width.
+        const end: i64 = if (fit.max_width == 0) self.width else @min(self.width, @as(i64, x) + fit.max_width);
+        const ascii = utf8.isAsciiOnly(text);
+        if (ascii and !(fit.ellipsis and text.len > fit.max_width)) {
             // Printable ASCII is one cell per byte and takes no pool or tracker capacity, so it
             // skips the copy and the prepared runs. The bytes left of column 0 are clipped.
             const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
             var column: u32 = @intCast(nonNegative(x));
             for (text[clipped_byte_count..]) |byte| {
-                if (column >= self.width) break;
+                if (column >= end) break;
                 self.setTextCell(column, row, makeCell(byte, fg, bg orelse self.get(column, row).?.bg, attributes));
                 column += 1;
             }
@@ -1827,12 +1905,26 @@ pub const OptimizedBuffer = struct {
         var scratch_buffer: [4096]u8 = undefined;
         var scratch: std.heap.BufferFirstAllocator = .init(&scratch_buffer, self.allocator);
         const scratch_allocator = scratch.allocator();
-        // Pool growth can move input borrowed from this same pool.
-        const input = try scratch_allocator.dupe(u8, text);
-        defer scratch_allocator.free(input);
+        // Pool growth can move input borrowed from this same pool. The spare bytes hold an ellipsis.
+        const storage = try scratch_allocator.alloc(u8, text.len + ellipsis_bytes.len);
+        defer scratch_allocator.free(storage);
+        @memcpy(storage[0..text.len], text);
+        var input = storage[0..text.len];
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(scratch_allocator);
-        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, .hidden, utf8.isAsciiOnly(input), self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, .hidden, ascii, self.width_method, &clusters);
+        if (fit.ellipsis) {
+            var measure: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y, .end = std.math.maxInt(i64) };
+            const room = fit.max_width -| utf8.getWidthAt(ellipsis_bytes, 0, TextRow.tab_width, .hidden, self.width_method);
+            if (measure.fitBytes(room, fit.max_width)) |kept| {
+                // TextRow measures the ellipsis itself: metadata for the cut bytes no longer applies.
+                var count: usize = 0;
+                while (count < clusters.items.len and clusters.items[count].byte_start < kept) count += 1;
+                clusters.shrinkRetainingCapacity(count);
+                @memcpy(storage[kept..][0..ellipsis_bytes.len], ellipsis_bytes);
+                input = storage[0 .. kept + ellipsis_bytes.len];
+            }
+        }
 
         const PreparedRun = struct { x: u32, char: u32, count: u32 };
         var runs: std.ArrayListUnmanaged(PreparedRun) = .empty;
@@ -1843,7 +1935,7 @@ pub const OptimizedBuffer = struct {
             runs.deinit(scratch_allocator);
         }
         var grapheme_count: u32 = 0;
-        var layout: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y };
+        var layout: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y, .end = end };
         while (layout.next()) |glyph| {
             try runs.ensureUnusedCapacity(scratch_allocator, 1);
             const encoded: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else encoded: {
@@ -1886,7 +1978,7 @@ pub const OptimizedBuffer = struct {
         attributes: u32,
     ) BufferError!void {
         if (grapheme_bytes.len == 0 or cell_width == 0 or x >= self.width or y >= self.height) return;
-        if (x + cell_width > self.width) return;
+        if (x + cell_width > self.width or cell_width > gp.glyph_width_max) return;
         for (0..cell_width) |offset| {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
@@ -1926,7 +2018,7 @@ pub const OptimizedBuffer = struct {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
         if (!std.unicode.utf8ValidateSlice(grapheme_bytes)) return error.InvalidUnicode;
-        if (!isPrintableGlyph(grapheme_bytes)) {
+        if (!isPrintableGlyph(grapheme_bytes, cell_width)) {
             for (0..cell_width) |offset| {
                 self.set(x + @as(u32, @intCast(offset)), y, makeCell(DEFAULT_SPACE_CHAR, fg, bg, attributes));
             }
@@ -1980,7 +2072,7 @@ pub const OptimizedBuffer = struct {
         defer clusters.deinit(self.allocator);
         try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, .hidden, is_ascii_only, self.width_method, &clusters);
 
-        var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y) };
+        var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y), .end = self.width };
         while (layout.next()) |glyph| {
             const background = bg orelse self.get(glyph.x, y).?.bg;
             var retained_id: ?u32 = null;
@@ -2153,6 +2245,9 @@ pub const OptimizedBuffer = struct {
             image_id_map[source_id] = @intCast(self.image_placements.items.len);
         }
 
+        // A source without respectAlpha at full opacity is copied, as the fast path copies it,
+        // so the target's other cells cannot change the result.
+        const copies = opacity == 1.0 and !frameBuffer.respectAlpha and !imageAware;
         var dY = clippedStartY;
         while (dY <= clippedEndY) : (dY += 1) {
             var lastDrawnGraphemeId: ?u32 = null;
@@ -2186,7 +2281,7 @@ pub const OptimizedBuffer = struct {
                 const srcBg = frameBuffer.buffer.bg[srcIndex];
                 const srcAttr = frameBuffer.buffer.attributes[srcIndex];
 
-                if (ansi.alpha(srcBg) == 0 and ansi.alpha(srcFg) == 0) {
+                if (!copies and ansi.alpha(srcBg) == 0 and ansi.alpha(srcFg) == 0) {
                     if (gp.isImageChar(srcChar)) {
                         const current = self.get(@intCast(dX), @intCast(dY)) orelse continue;
                         self.set(@intCast(dX), @intCast(dY), makeCell(srcChar, current.fg, current.bg, current.attributes));
@@ -2200,11 +2295,7 @@ pub const OptimizedBuffer = struct {
                         if (graphemeId != lastDrawnGraphemeId) {
                             // We haven't drawn the start character for this grapheme (likely out of bounds to the left)
                             // Draw a space with the same attributes to fill the cell
-                            self.setCellWithAlphaBlendingCell(
-                                @intCast(dX),
-                                @intCast(dY),
-                                makeCell(DEFAULT_SPACE_CHAR, srcFg, srcBg, srcAttr),
-                            );
+                            self.copyOrBlendCell(copies, @intCast(dX), @intCast(dY), makeCell(DEFAULT_SPACE_CHAR, srcFg, srcBg, srcAttr));
                         }
                         continue;
                     }
@@ -2219,20 +2310,22 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    self.setCellWithAlphaBlendingCell(
-                        @intCast(dX),
-                        @intCast(dY),
-                        makeCell(srcChar, srcFg, srcBg, srcAttr),
-                    );
+                    self.copyOrBlendCell(copies, @intCast(dX), @intCast(dY), makeCell(srcChar, srcFg, srcBg, srcAttr));
                     continue;
                 }
 
                 const cell = makeCell(srcChar, srcFg, srcBg, srcAttr);
-                if (imageAware) {
+                if (copies) {
+                    self.set(@intCast(dX), @intCast(dY), cell);
+                } else if (imageAware) {
                     self.setCellWithAlphaBlendingRawImageAware(@intCast(dX), @intCast(dY), cell);
                 } else self.setCellWithAlphaBlendingRawCell(@intCast(dX), @intCast(dY), cell);
             }
         }
+    }
+
+    inline fn copyOrBlendCell(self: *OptimizedBuffer, copies: bool, x: u32, y: u32, cell: Cell) void {
+        if (copies) self.set(x, y, cell) else self.setCellWithAlphaBlendingCell(x, y, cell);
     }
 
     /// Draw a TextBufferView to this OptimizedBuffer with selection support and optional syntax highlighting
@@ -2309,17 +2402,16 @@ pub const OptimizedBuffer = struct {
 
         if (virtual_lines.len == 0) return;
 
-        const firstVisibleLine: u32 = if (y < 0) @abs(y) else 0;
         const bufferBottomY = self.height;
-        const lastPossibleLine = if (y >= @as(i32, @intCast(bufferBottomY)))
-            0
-        else if (y < 0)
-            @min(virtual_lines.len, firstVisibleLine + bufferBottomY)
-        else
-            @min(virtual_lines.len, bufferBottomY - @as(u32, @intCast(y)));
-
-        if (firstVisibleLine >= virtual_lines.len or lastPossibleLine == 0) return;
+        // Only lines on the buffer's and the scissor's rows can write a cell.
+        const scissor = self.getCurrentScissorRect() orelse ClipRect{ .x = 0, .y = 0, .width = 0, .height = bufferBottomY };
+        const rows_top: i64 = @max(0, scissor.y);
+        const rows_bottom = @min(@as(i64, bufferBottomY), @as(i64, scissor.y) + scissor.height);
+        const line_count: i64 = @intCast(virtual_lines.len);
+        const firstVisibleLine: u32 = @intCast(std.math.clamp(rows_top - @as(i64, y), 0, line_count));
+        const lastPossibleLine: u32 = @intCast(std.math.clamp(rows_bottom - @as(i64, y), 0, line_count));
         if (firstVisibleLine >= lastPossibleLine) return;
+        if (builtin.is_test) self.test_text_lines += lastPossibleLine - firstVisibleLine;
 
         const horizontal_offset: u32 = if (viewport) |vp| vp.x else 0;
         const viewport_width: u32 = if (viewport) |vp| vp.width else std.math.maxInt(u32);
@@ -2353,7 +2445,6 @@ pub const OptimizedBuffer = struct {
             const vline_span_info = view.getVirtualLineSpans(vline_idx);
             const spans = vline_span_info.spans;
             const col_offset = vline_span_info.source_col_start;
-            var span_idx: usize = 0;
             var lineFg = text_defaults.fg orelse ansi.rgbColor(255, 255, 255, 255);
             var lineBg = text_defaults.bg orelse ansi.rgbColor(0, 0, 0, 0);
             var lineAttributes = text_defaults.attributes orelse 0;
@@ -2361,11 +2452,10 @@ pub const OptimizedBuffer = struct {
             const defaultBg = lineBg;
             const defaultAttributes = lineAttributes;
 
-            // Find the span that contains the starting render position (col_offset + horizontal_offset)
+            // Spans run from column 0 with rising columns, so span k ends after column k and the one
+            // that holds `start_col` has an index of at most `start_col`.
             const start_col = col_offset + horizontal_offset;
-            while (span_idx < spans.len and spans[span_idx].next_col <= start_col) {
-                span_idx += 1;
-            }
+            var span_idx = lowerBound(spans[0..@min(spans.len, start_col)], "next_col", start_col +| 1, .span_search_steps);
 
             var next_change_col: u32 = if (span_idx < spans.len)
                 spans[span_idx].next_col
@@ -2373,17 +2463,15 @@ pub const OptimizedBuffer = struct {
                 std.math.maxInt(u32);
 
             // Apply the style at the starting position
-            if (span_idx < spans.len and spans[span_idx].col <= start_col and spans[span_idx].style_id != 0) {
-                if (text_buffer.getSyntaxStyle()) |style| {
-                    if (style.resolveById(spans[span_idx].style_id)) |resolved_style| {
-                        if (resolved_style.fg) |fg| {
-                            lineFg = fg;
-                        }
-                        if (resolved_style.bg) |bg| {
-                            lineBg = bg;
-                        }
-                        lineAttributes |= resolved_style.attributes;
+            if (span_idx < spans.len and spans[span_idx].col <= start_col) {
+                if (text_buffer.resolveStyle(spans[span_idx].style_id)) |resolved_style| {
+                    if (resolved_style.fg) |fg| {
+                        lineFg = fg;
                     }
+                    if (resolved_style.bg) |bg| {
+                        lineBg = bg;
+                    }
+                    lineAttributes |= resolved_style.attributes;
                 }
             }
 
@@ -2404,16 +2492,43 @@ pub const OptimizedBuffer = struct {
                 }
                 const col_end = vchunk.col_start_in_chunk + vchunk.width_cols;
                 var col = vchunk.col_start_in_chunk;
-                var special_idx: usize = 0;
                 var byte_offset = vchunk.byte_start_in_chunk;
                 const byte_end = vchunk.byte_start_in_chunk + vchunk.byte_len;
 
-                while (special_idx < render_clusters.len and render_clusters[special_idx].byte_start + render_clusters[special_idx].byte_len <= byte_offset) {
-                    special_idx += 1;
-                    text_work.add(.cluster_scan_steps, 1);
+                // Cluster k starts at byte k or later, so the first one at `byte_offset` has an index of at most `byte_offset`.
+                var special_idx = lowerBound(render_clusters[0..@min(render_clusters.len, byte_offset)], "byte_start", byte_offset, .cluster_scan_steps);
+
+                // Left of the viewport nothing draws and marks have no base, so skip whole chunks by
+                // width and resume at the last cluster that starts left of the viewport. The loop
+                // below steps over printable ASCII at one cell per byte and skips each other unit.
+                if (rendered_col_in_vline < horizontal_offset) {
+                    if (horizontal_offset - rendered_col_in_vline >= vchunk.width_cols) {
+                        text_work.add(.left_skip_steps, 1);
+                        document_cell_offset += vchunk.width_cols;
+                        rendered_col_in_vline += vchunk.width_cols;
+                        continue;
+                    }
+                    const target_col = col + (horizontal_offset - rendered_col_in_vline);
+                    const lo = special_idx + lowerBound(render_clusters[special_idx..], "col_start", target_col, .left_skip_steps);
+                    if (lo > special_idx) {
+                        byte_offset = render_clusters[lo - 1].byte_start;
+                        col = render_clusters[lo - 1].col_start;
+                        special_idx = lo - 1;
+                    }
+                    document_cell_offset += col - vchunk.col_start_in_chunk;
+                    rendered_col_in_vline += col - vchunk.col_start_in_chunk;
                 }
 
-                text_buffer_loop: while (byte_offset < byte_end) {
+                while (byte_offset < byte_end) {
+                    if (rendered_col_in_vline < horizontal_offset) {
+                        const gap_end = if (special_idx < render_clusters.len) @min(render_clusters[special_idx].byte_start, byte_end) else byte_end;
+                        const gap = chunk_bytes[byte_offset..][0..@min(gap_end -| byte_offset, horizontal_offset - rendered_col_in_vline)];
+                        const ascii_len: u32 = if (chunk.isAsciiOnly()) @intCast(gap.len) else @intCast(utf8.printableAsciiPrefixLen(gap));
+                        byte_offset += ascii_len;
+                        col += ascii_len;
+                        document_cell_offset += ascii_len;
+                        rendered_col_in_vline += ascii_len;
+                    }
                     const at_special = special_idx < render_clusters.len and render_clusters[special_idx].byte_start == byte_offset;
 
                     var grapheme_bytes: []const u8 = undefined;
@@ -2448,13 +2563,16 @@ pub const OptimizedBuffer = struct {
                     }
                     mark_base = null;
 
-                    if (rendered_col_in_vline < horizontal_offset) {
+                    if (rendered_col_in_vline + cluster_width_cols <= horizontal_offset) {
                         text_work.add(.left_skip_steps, 1);
                         document_cell_offset += cluster_width_cols;
                         rendered_col_in_vline += cluster_width_cols;
                         col += cluster_width_cols;
                         continue;
                     }
+                    // Nothing drew before a cluster that the viewport's left edge cuts, so it starts
+                    // left of the line's first column by its hidden part.
+                    if (rendered_col_in_vline < horizontal_offset) currentX -= @intCast(horizontal_offset - rendered_col_in_vline);
 
                     if (rendered_col_in_vline >= horizontal_offset + viewport_width) {
                         document_cell_offset += (col_end - col);
@@ -2480,8 +2598,8 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes);
-                    if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
+                    var is_blank = !ascii and !isPrintableGlyph(grapheme_bytes, cluster_width_cols);
+                    if (!is_blank and cluster_width_cols == 1 and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));
                         rendered_col_in_vline += cluster_width_cols;
@@ -2489,24 +2607,13 @@ pub const OptimizedBuffer = struct {
                         continue;
                     }
 
+                    // A wide glyph that an edge cuts draws its visible cells as blanks in its style.
                     if (cluster_width_cols > 1 and !is_blank) {
-                        if (rendered_col_in_vline + cluster_width_cols > horizontal_offset + viewport_width or
-                            currentX < 0 or currentX + @as(i32, @intCast(cluster_width_cols)) > @as(i32, @intCast(self.width)))
-                        {
-                            document_cell_offset += cluster_width_cols;
-                            currentX += @as(i32, @intCast(cluster_width_cols));
-                            rendered_col_in_vline += cluster_width_cols;
-                            col += cluster_width_cols;
-                            continue;
-                        }
-                        for (1..cluster_width_cols) |span_offset| {
-                            if (!self.isPointInScissor(currentX + @as(i32, @intCast(span_offset)), currentY)) {
-                                document_cell_offset += cluster_width_cols;
-                                currentX += @as(i32, @intCast(cluster_width_cols));
-                                rendered_col_in_vline += cluster_width_cols;
-                                col += cluster_width_cols;
-                                continue :text_buffer_loop;
-                            }
+                        is_blank = rendered_col_in_vline < horizontal_offset or
+                            rendered_col_in_vline + cluster_width_cols > horizontal_offset + viewport_width or
+                            currentX < 0 or currentX + @as(i32, @intCast(cluster_width_cols)) > @as(i32, @intCast(self.width));
+                        for (0..cluster_width_cols) |span_offset| {
+                            if (!self.isPointInScissor(currentX + @as(i32, @intCast(span_offset)), currentY)) is_blank = true;
                         }
                     }
 
@@ -2544,18 +2651,14 @@ pub const OptimizedBuffer = struct {
                         lineBg = defaultBg;
                         lineAttributes = defaultAttributes;
 
-                        if (text_buffer.getSyntaxStyle()) |style| {
-                            if (new_span.style_id != 0) {
-                                if (style.resolveById(new_span.style_id)) |resolved_style| {
-                                    if (resolved_style.fg) |fg| {
-                                        lineFg = fg;
-                                    }
-                                    if (resolved_style.bg) |bg| {
-                                        lineBg = bg;
-                                    }
-                                    lineAttributes |= resolved_style.attributes;
-                                }
+                        if (text_buffer.resolveStyle(new_span.style_id)) |resolved_style| {
+                            if (resolved_style.fg) |fg| {
+                                lineFg = fg;
                             }
+                            if (resolved_style.bg) |bg| {
+                                lineBg = bg;
+                            }
+                            lineAttributes |= resolved_style.attributes;
                         }
 
                         next_change_col = new_span.next_col;
@@ -2576,10 +2679,7 @@ pub const OptimizedBuffer = struct {
                                 lineAttributes = defaultAttributes;
                                 next_change_col = std.math.maxInt(u32);
                             } else {
-                                var suffix_span_idx: usize = 0;
-                                while (suffix_span_idx < spans.len and spans[suffix_span_idx].next_col <= suffix_col_pos) {
-                                    suffix_span_idx += 1;
-                                }
+                                const suffix_span_idx = lowerBound(spans, "next_col", suffix_col_pos +| 1, .span_search_steps);
                                 if (suffix_span_idx < spans.len) {
                                     span_idx = suffix_span_idx;
                                 }
@@ -2587,18 +2687,14 @@ pub const OptimizedBuffer = struct {
                                 lineFg = defaultFg;
                                 lineBg = defaultBg;
                                 lineAttributes = defaultAttributes;
-                                if (text_buffer.getSyntaxStyle()) |style| {
-                                    if (active_span.style_id != 0) {
-                                        if (style.resolveById(active_span.style_id)) |resolved_style| {
-                                            if (resolved_style.fg) |fg| {
-                                                lineFg = fg;
-                                            }
-                                            if (resolved_style.bg) |bg| {
-                                                lineBg = bg;
-                                            }
-                                            lineAttributes |= resolved_style.attributes;
-                                        }
+                                if (text_buffer.resolveStyle(active_span.style_id)) |resolved_style| {
+                                    if (resolved_style.fg) |fg| {
+                                        lineFg = fg;
                                     }
+                                    if (resolved_style.bg) |bg| {
+                                        lineBg = bg;
+                                    }
+                                    lineAttributes |= resolved_style.attributes;
                                 }
                                 next_change_col = active_span.next_col;
                             }
@@ -2672,7 +2768,7 @@ pub const OptimizedBuffer = struct {
                         while (tab_col < cluster_width_cols) : (tab_col += 1) {
                             if (rendered_col_in_vline + tab_col >= horizontal_offset + viewport_width) break;
                             const tab_x = currentX + @as(i32, @intCast(tab_col));
-                            if (tab_x < 0) continue;
+                            if (tab_x < 0 or rendered_col_in_vline + tab_col < horizontal_offset) continue;
                             if (tab_x >= @as(i32, @intCast(self.width))) break;
                             if (!self.isPointInScissor(tab_x, currentY)) continue;
 
@@ -2993,6 +3089,21 @@ pub const OptimizedBuffer = struct {
         return utf8.eastAsianWidth(@intCast(char)) == 1;
     }
 
+    /// A border cell on the transparent fast path writes what blending writes: a space keeps
+    /// the glyph below it. The fast path's preconditions rule out links, graphemes and image
+    /// markers under the box, so only a space needs the target cell.
+    inline fn setTransparentBorderCell(self: *OptimizedBuffer, x: u32, y: u32, char: u32, color: RGBA) void {
+        const index = self.coordsToIndex(x, y);
+        if (char != DEFAULT_SPACE_CHAR) {
+            self.buffer.char[index] = char;
+            self.buffer.fg[index] = color;
+            self.buffer.attributes[index] = 0;
+            return;
+        }
+        if (self.trySetTransparentTextCellFast(index, char, color, 0)) return;
+        self.setCellWithAlphaBlendingCell(x, y, makeCell(char, color, ansi.rgbColor(0, 0, 0, 0), 0));
+    }
+
     inline fn canUseTransparentBorderFastPath(
         self: *const OptimizedBuffer,
         borderChars: [*]const u32,
@@ -3154,8 +3265,8 @@ pub const OptimizedBuffer = struct {
         const isAtActualTop = startY == y;
         const isAtActualBottom = endY == y + @as(i32, @intCast(height)) - 1;
 
-        const titleLayout = self.computeBoxTitleLayout(title, borderSides.top, isAtActualTop, startX, endX, width, titleAlignment);
-        const bottomTitleLayout = self.computeBoxTitleLayout(bottomTitle, borderSides.bottom, isAtActualBottom, startX, endX, width, bottomTitleAlignment);
+        const titleLayout = self.computeBoxTitleLayout(title, borderSides.top, isAtActualTop, x, width, titleAlignment);
+        const bottomTitleLayout = self.computeBoxTitleLayout(bottomTitle, borderSides.bottom, isAtActualBottom, x, width, bottomTitleAlignment);
 
         if (shouldFill) {
             if (!borderSides.top and !borderSides.right and !borderSides.bottom and !borderSides.left) {
@@ -3209,10 +3320,7 @@ pub const OptimizedBuffer = struct {
                         }
 
                         if (useTransparentBorderFastPath) {
-                            const index = self.coordsToIndex(@intCast(drawX), @intCast(startY));
-                            self.buffer.char[index] = char;
-                            self.buffer.fg[index] = borderColor;
-                            self.buffer.attributes[index] = 0;
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(startY), char, borderColor);
                         } else if (useOpaqueBorderFastPath) {
                             self.set(@intCast(drawX), @intCast(startY), makeCell(char, borderColor, backgroundColor, 0));
                         } else {
@@ -3245,10 +3353,7 @@ pub const OptimizedBuffer = struct {
                         }
 
                         if (useTransparentBorderFastPath) {
-                            const index = self.coordsToIndex(@intCast(drawX), @intCast(endY));
-                            self.buffer.char[index] = char;
-                            self.buffer.fg[index] = borderColor;
-                            self.buffer.attributes[index] = 0;
+                            self.setTransparentBorderCell(@intCast(drawX), @intCast(endY), char, borderColor);
                         } else if (useOpaqueBorderFastPath) {
                             self.set(@intCast(drawX), @intCast(endY), makeCell(char, borderColor, backgroundColor, 0));
                         } else {
@@ -3273,10 +3378,7 @@ pub const OptimizedBuffer = struct {
                 // Left border
                 if (borderSides.left and isAtActualLeft and startX >= 0 and startX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        const index = self.coordsToIndex(@intCast(startX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@backingInt(BorderCharIndex.vertical)];
-                        self.buffer.fg[index] = borderColor;
-                        self.buffer.attributes[index] = 0;
+                        self.setTransparentBorderCell(@intCast(startX), @intCast(drawY), borderChars[@backingInt(BorderCharIndex.vertical)], borderColor);
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(startX),
@@ -3295,10 +3397,7 @@ pub const OptimizedBuffer = struct {
                 // Right border
                 if (borderSides.right and isAtActualRight and endX >= 0 and endX < @as(i32, @intCast(self.width))) {
                     if (useTransparentBorderFastPath) {
-                        const index = self.coordsToIndex(@intCast(endX), @intCast(drawY));
-                        self.buffer.char[index] = borderChars[@backingInt(BorderCharIndex.vertical)];
-                        self.buffer.fg[index] = borderColor;
-                        self.buffer.attributes[index] = 0;
+                        self.setTransparentBorderCell(@intCast(endX), @intCast(drawY), borderChars[@backingInt(BorderCharIndex.vertical)], borderColor);
                     } else if (useOpaqueBorderFastPath) {
                         self.set(
                             @intCast(endX),
@@ -3319,9 +3418,9 @@ pub const OptimizedBuffer = struct {
         if (titleLayout.shouldDraw) {
             if (title) |titleText| {
                 if (checked_titles) {
-                    try self.drawTextChecked(titleText, titleLayout.x, startY, titleColor, backgroundColor, 0);
+                    try self.drawTextChecked(titleText, titleLayout.startX, startY, titleColor, backgroundColor, 0);
                 } else {
-                    try self.drawText(titleText, @intCast(titleLayout.x), @intCast(startY), titleColor, backgroundColor, 0);
+                    try self.drawTextClipped(titleText, titleLayout.startX, startY, titleColor, backgroundColor, 0);
                 }
             }
         }
@@ -3329,9 +3428,9 @@ pub const OptimizedBuffer = struct {
         if (bottomTitleLayout.shouldDraw) {
             if (bottomTitle) |titleText| {
                 if (checked_titles) {
-                    try self.drawTextChecked(titleText, bottomTitleLayout.x, endY, titleColor, backgroundColor, 0);
+                    try self.drawTextChecked(titleText, bottomTitleLayout.startX, endY, titleColor, backgroundColor, 0);
                 } else {
-                    try self.drawText(titleText, @intCast(bottomTitleLayout.x), @intCast(endY), titleColor, backgroundColor, 0);
+                    try self.drawTextClipped(titleText, bottomTitleLayout.startX, endY, titleColor, backgroundColor, 0);
                 }
             }
         }
@@ -3342,15 +3441,14 @@ pub const OptimizedBuffer = struct {
         titleText: ?[]const u8,
         borderSide: bool,
         isAtActualSide: bool,
-        startX: i32,
-        endX: i32,
+        boxX: i32,
         width: u32,
         alignment: u8,
     ) BoxTitleLayout {
-        const text = titleText orelse return .{ .x = startX };
+        const text = titleText orelse return .{};
 
         if (text.len == 0 or !borderSide or !isAtActualSide) {
-            return .{ .x = startX };
+            return .{};
         }
 
         const is_ascii = utf8.isAsciiOnly(text);
@@ -3358,23 +3456,22 @@ pub const OptimizedBuffer = struct {
         const minTitleSpace = 4;
 
         if (@as(i32, @intCast(width)) < titleLength + minTitleSpace) {
-            return .{ .x = startX };
+            return .{};
         }
 
         const padding = 2;
-        var titleX = startX + padding;
+        var titleX = boxX + padding;
 
         if (alignment == 1) {
-            titleX = startX + @max(padding, @divFloor(@as(i32, @intCast(width)) - titleLength, 2));
+            titleX = boxX + @divFloor(@as(i32, @intCast(width)) - titleLength, 2);
         } else if (alignment == 2) {
-            titleX = startX + @as(i32, @intCast(width)) - padding - titleLength;
+            titleX = boxX + @as(i32, @intCast(width)) - padding - titleLength;
         }
-
-        titleX = @max(startX + padding, @min(titleX, endX - titleLength));
+        assert(titleX >= boxX + padding);
+        assert(titleX + titleLength < boxX + @as(i32, @intCast(width)));
 
         return .{
             .shouldDraw = true,
-            .x = titleX,
             .startX = titleX,
             .endX = titleX + titleLength - 1,
         };
