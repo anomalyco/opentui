@@ -1,0 +1,49 @@
+name: macOS tty probe
+
+# Throwaway: decides whether the stdout writer thread can turn on for macOS (#1858, PR 4).
+on:
+  push:
+    branches: [harden/macos-tty-probe]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  probe:
+    name: Probe (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26, macos-15-intel, macos-26-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Compile
+        run: cc -O2 -pthread -Wall -Wextra .github/probe/macos-tty-probe.c -o macos-tty-probe
+
+      - name: Run
+        # macOS has no timeout(1); perl's alarm kills a hung probe after 10 minutes.
+        run: perl -e 'alarm 600; exec @ARGV' ./macos-tty-probe 200 2>&1 | tee probe-output.txt
+
+      - name: Print output
+        if: always()
+        run: |
+          cat probe-output.txt
+          { echo '```'; cat probe-output.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-tty-probe-${{ matrix.os }}
+          path: probe-output.txt
+          if-no-files-found: error
