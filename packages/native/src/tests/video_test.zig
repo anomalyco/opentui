@@ -350,6 +350,9 @@ test "video scene crop decodes only the source region" {
         .{ .fit = .fill, .crop = .{ .left = 3, .top = 5, .width = 16, .height = 16 }, .size = .{ 16, 16 } },
         // swscale converts a 1x1 frame on another path, which rounds differently.
         .{ .fit = .fill, .crop = .{ .left = 159, .top = 89, .width = 1, .height = 1 }, .size = .{ 1, 1 } },
+        // Rows narrower than a SIMD store: swscale writes whole vectors past the last pixel.
+        .{ .fit = .fill, .crop = .{ .left = 10, .top = 10, .width = 2, .height = 2 }, .size = .{ 2, 2 } },
+        .{ .fit = .cover, .crop = .{ .left = 29, .top = 79, .width = 88, .height = 4 }, .size = .{ 4, 4 } },
         // The decode size stays within the region: 7/16 of the node.
         .{ .fit = .fill, .crop = .{ .left = 9, .top = 1, .width = 7, .height = 11 }, .size = .{ 7, 7 } },
         // A region outside the source shows the whole source.
@@ -372,6 +375,13 @@ test "video scene crop decodes only the source region" {
             try testing.expectEqualSlices(u8, whole.current_image.?.pixels[offset..][0 .. part.width * 4], frame.pixels[y * part.width * 4 ..][0 .. part.width * 4]);
         }
     }
+    // A clip at its own size takes swscale's unscaled path without a crop, too.
+    var detail: [256]u8 = undefined;
+    const odd = try video.Video.open(testing.allocator, "../core/src/tests/fixtures/video/odd-width-170x96.mp4", true, &detail);
+    defer odd.deinit();
+    _ = try odd.configureOutput(170, 96, false, null);
+    try testing.expect(try odd.update(0));
+    try testing.expectEqual(@as(u32, 170), odd.current_image.?.width());
     // A change while playing applies to the next paint, and playback goes on.
     value.video.failAudio("test");
     try f.owner.videoControl(node, video.Player.play, .{});
