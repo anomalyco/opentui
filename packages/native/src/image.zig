@@ -799,7 +799,14 @@ fn copyImage(allocator: Allocator, pixels: []const u8, metadata: Info) !*Image {
 }
 
 fn pixelsHaveTransparency(pixels: []const u8) bool {
-    var offset: usize = 3;
+    const vector_len = 64;
+    const color_mask = std.simd.repeat(vector_len, @Vector(4, u8){ 255, 255, 255, 0 });
+    var offset: usize = 0;
+    while (offset + vector_len <= pixels.len) : (offset += vector_len) {
+        const chunk: @Vector(vector_len, u8) = pixels[offset..][0..vector_len].*;
+        if (@reduce(.And, chunk | color_mask) != 255) return true;
+    }
+    offset += 3;
     while (offset < pixels.len) : (offset += 4) {
         if (pixels[offset] != 255) return true;
     }
@@ -1327,6 +1334,39 @@ pub fn copyPixels(image: *Image, destination: []u8, stride: u32, bgra: bool) Sta
         }
     }
     return .ok;
+}
+
+test "pixelsHaveTransparency matches a scalar alpha scan for every start, length, and alpha" {
+    var prng = std.Random.DefaultPrng.init(1858);
+    const random = prng.random();
+    var buffer: [2 * 64 + 9]u8 = undefined;
+    for (0..5) |start| {
+        // One planted byte below 255 on an opaque grid with random color channels:
+        // every vector lane and tail position, and none, for each length.
+        for (start..buffer.len + 1) |planted| {
+            random.bytes(&buffer);
+            for (start..buffer.len) |index| {
+                if ((index - start) % 4 == 3) buffer[index] = 255;
+            }
+            if (planted < buffer.len) buffer[planted] = random.uintLessThan(u8, 255);
+            for (start..buffer.len + 1) |end| try expectScalarTransparency(buffer[start..end]);
+        }
+    }
+    for (0..256) |_| {
+        var pixels: [1024]u8 = undefined;
+        random.bytes(&pixels);
+        for (&pixels) |*byte| {
+            if (random.uintLessThan(u16, 1024) != 0) byte.* = 255;
+        }
+        const start = random.uintLessThan(usize, 64);
+        try expectScalarTransparency(pixels[start..random.intRangeAtMost(usize, start, pixels.len)]);
+    }
+}
+
+fn expectScalarTransparency(pixels: []const u8) !void {
+    var expected = false;
+    for (pixels, 0..) |byte, index| expected = expected or (index % 4 == 3 and byte != 255);
+    try std.testing.expectEqual(expected, pixelsHaveTransparency(pixels));
 }
 
 test "Exif orientation parser handles little and big endian" {
