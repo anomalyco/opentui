@@ -455,8 +455,8 @@ void otv_close(otv_decoder **decoder_ptr) {
     av_channel_layout_uninit(&decoder->audio_source_layout);
     av_frame_free(&decoder->video_selected);
     av_frame_free(&decoder->video_lookahead);
-    free(decoder->scaled_rgba);
-    free(decoder->rgba);
+    av_freep(&decoder->scaled_rgba);
+    av_freep(&decoder->rgba);
     swr_free(&decoder->swr);
     av_frame_free(&decoder->sws_dst);
     sws_freeContext(decoder->sws);
@@ -473,8 +473,7 @@ int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, u
     decoder->output_cover = cover != 0;
     sws_freeContext(decoder->sws);
     decoder->sws = NULL;
-    free(decoder->rgba);
-    decoder->rgba = NULL;
+    av_freep(&decoder->rgba);
     decoder->rgba_size = 0;
     decoder->frame_pts_us = AV_NOPTS_VALUE;
     // The selected frame is presented again at the new size under a new serial.
@@ -529,6 +528,24 @@ int otv_seek(otv_decoder *decoder, int64_t target_us) {
     return OTV_OK;
 }
 
+// swscale's SIMD converters store whole vectors past a row's last pixel (yuv420_bgr32_ssse3
+// writes 16 pixels at a time), so RGBA rows get the 64-byte linesize and padded tail that
+// av_frame_get_buffer gives FFmpeg's own frames.
+static size_t rgba_linesize(uint32_t width) {
+    return FFALIGN((size_t)width * 4, 64);
+}
+
+static int ensure_rgba(otv_decoder *decoder, uint8_t **buffer, size_t *size, uint32_t width, uint32_t height) {
+    const size_t required = rgba_linesize(width) * height + 64;
+    if (required == *size) return OTV_OK;
+    av_freep(buffer);
+    *size = 0;
+    *buffer = av_malloc(required);
+    if (!*buffer) return fail_video(decoder, AVERROR(ENOMEM), "RGBA allocation");
+    *size = required;
+    return OTV_OK;
+}
+
 static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64_t pts) {
     if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
         if (!decoder->hw_transfer_frame) {
@@ -570,22 +587,12 @@ static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64
         decoder->sws_dst = av_frame_alloc();
         if (!decoder->sws_dst) return fail_video(decoder, AVERROR(ENOMEM), "sws frame allocation");
     }
-    const size_t required = (size_t)decoder->output_width * decoder->output_height * 4;
-    if (required != decoder->rgba_size) {
-        uint8_t *next = realloc(decoder->rgba, required);
-        if (!next) return fail_video(decoder, AVERROR(ENOMEM), "RGBA allocation");
-        decoder->rgba = next;
-        decoder->rgba_size = required;
-    }
-    const size_t scaled_size = (size_t)scaled_width * scaled_height * 4;
+    if (ensure_rgba(decoder, &decoder->rgba, &decoder->rgba_size, decoder->output_width, decoder->output_height) != OTV_OK)
+        return OTV_ERROR;
     uint8_t *scale_target = decoder->rgba;
     if (decoder->output_cover && (scaled_width != decoder->output_width || scaled_height != decoder->output_height)) {
-        if (scaled_size != decoder->scaled_rgba_size) {
-            uint8_t *next = realloc(decoder->scaled_rgba, scaled_size);
-            if (!next) return fail_video(decoder, AVERROR(ENOMEM), "cover allocation");
-            decoder->scaled_rgba = next;
-            decoder->scaled_rgba_size = scaled_size;
-        }
+        if (ensure_rgba(decoder, &decoder->scaled_rgba, &decoder->scaled_rgba_size, scaled_width, scaled_height) != OTV_OK)
+            return OTV_ERROR;
         scale_target = decoder->scaled_rgba;
     }
     AVFrame *scale_frame = decoder->sws_dst;
@@ -593,18 +600,19 @@ static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64
     scale_frame->width = (int)scaled_width;
     scale_frame->height = (int)scaled_height;
     scale_frame->data[0] = scale_target;
-    scale_frame->linesize[0] = (int)(scaled_width * 4);
+    scale_frame->linesize[0] = (int)rgba_linesize(scaled_width);
     int scaled = sws_scale_frame(decoder->sws, scale_frame, frame);
     scale_frame->data[0] = NULL;
     if (scaled < 0) return fail_video(decoder, scaled, "sws_scale_frame");
     if (scale_target != decoder->rgba) {
         const uint32_t crop_x = (scaled_width - decoder->output_width) / 2;
         const uint32_t crop_y = (scaled_height - decoder->output_height) / 2;
-        const size_t output_row = (size_t)decoder->output_width * 4;
+        const size_t output_row = rgba_linesize(decoder->output_width);
+        const size_t scaled_row = rgba_linesize(scaled_width);
         for (uint32_t y = 0; y < decoder->output_height; y++)
             memcpy(decoder->rgba + (size_t)y * output_row,
-                   decoder->scaled_rgba + ((size_t)(crop_y + y) * scaled_width + crop_x) * 4,
-                   output_row);
+                   decoder->scaled_rgba + (size_t)(crop_y + y) * scaled_row + (size_t)crop_x * 4,
+                   (size_t)decoder->output_width * 4);
     }
     decoder->frame_pts_us = pts;
     return OTV_OK;
@@ -696,7 +704,7 @@ int otv_decode_frame(otv_decoder *decoder, int64_t target_us, const uint8_t **ou
     *out_rgba = decoder->rgba;
     *out_width = decoder->output_width;
     *out_height = decoder->output_height;
-    *out_stride = decoder->output_width * 4;
+    *out_stride = (uint32_t)rgba_linesize(decoder->output_width);
     *out_pts_us = decoder->frame_pts_us;
     *out_serial = decoder->frame_serial;
     return OTV_OK;

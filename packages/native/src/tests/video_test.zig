@@ -54,6 +54,27 @@ test "video open reports metadata and decodes the first frame natively" {
     try testing.expectEqual(@as(u32, 80), frame.width());
     try testing.expectEqual(@as(u32, 45), frame.height());
     try testing.expectEqual(@as(u32, 0), frame.metadata.has_alpha);
+
+    // At its own size a clip takes swscale's unscaled converter, whose SIMD stores pass the end of
+    // a 170-pixel row; run under Valgrind, this wrote past the RGBA buffer.
+    var detail: [256]u8 = undefined;
+    const odd = try video.Video.open(testing.allocator, "../core/src/tests/fixtures/video/odd-width-170x96.mp4", true, &detail);
+    defer odd.deinit();
+    try odd.configureOutput(170, 96, false);
+    try testing.expect(try odd.update(0));
+    try testing.expectEqual([2]u32{ 170, 96 }, [2]u32{ odd.current_image.?.width(), odd.current_image.?.height() });
+    // Its bottom row crosses the colour bars: red, yellow, cyan. A wrong stride shears it away.
+    const bottom = odd.current_image.?.pixels[95 * 170 * 4 ..];
+    for ([_]struct { usize, [3]bool }{ .{ 0, .{ true, false, false } }, .{ 84, .{ true, true, false } }, .{ 169, .{ false, true, true } } }) |bar| {
+        for (0..3) |channel| try testing.expectEqual(bar[1][channel], bottom[bar[0] * 4 + channel] > 128);
+    }
+    // cover into 170x48 converts the same rows into a scratch buffer and keeps the middle half;
+    // both paths read padded rows through their own strides.
+    const whole = try testing.allocator.dupe(u8, odd.current_image.?.pixels);
+    defer testing.allocator.free(whole);
+    try odd.configureOutput(170, 48, true);
+    try testing.expect(try odd.update(0));
+    try testing.expectEqualSlices(u8, whole[24 * 170 * 4 ..][0 .. 48 * 170 * 4], odd.current_image.?.pixels);
 }
 
 test "video open failures expose the native error detail" {

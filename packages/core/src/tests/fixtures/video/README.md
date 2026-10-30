@@ -59,3 +59,13 @@ ffmpeg -f lavfi -i "testsrc2=size=160x90:rate=24:duration=2" -itsoffset 0.5 \
   -map_metadata -1 -fflags +bitexact -flags:v +bitexact -flags:a +bitexact -movflags +faststart \
   late-audio-160x90-0.5s.mp4
 ```
+
+`odd-width-170x96.mp4` is six 170x96 frames without audio. Its rows are not a whole number of swscale's 16-pixel
+SIMD stores. It contains only generated content.
+
+Generated with ffmpeg 9.0:
+
+```sh
+ffmpeg -f lavfi -i "testsrc2=size=170x96:rate=24:duration=0.25" -c:v libx264 -preset veryslow -crf 40 \
+  -pix_fmt yuv420p -bf 0 -map_metadata -1 -fflags +bitexact -flags:v +bitexact -movflags +faststart odd-width-170x96.mp4
+```
