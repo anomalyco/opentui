@@ -302,8 +302,11 @@ describe("VideoRenderable", () => {
       ["maxFps", 12, "videoSetMaxFps", 12],
     ] as const
     const spies = setters.map(([, , method]) => spyOn(lib, method))
+    const open = spyOn((lib as any).opentui.symbols, "ot_video_open")
     try {
       for (const [option, value] of setters) (video as any)[option] = value
+      expect(video.audio).toBe(true)
+      video.audio = false
       for (const spy of spies) expect(spy).not.toHaveBeenCalled()
       video.source = SILENT
       setters.forEach(([option, value, , applied], index) => {
@@ -311,8 +314,13 @@ describe("VideoRenderable", () => {
         expect(spies[index]).toHaveBeenCalledTimes(1)
         expect(spies[index].mock.calls[0][2]).toBe(applied)
       })
+      // Audio is chosen at open, so changing it reopens the source, with playback running.
+      video.play()
+      video.audio = undefined
+      expect(open.mock.calls.map((call: unknown[]) => call[4])).toEqual([1, 0])
+      expect(video.playing).toBe(true)
     } finally {
-      for (const spy of spies) spy.mockRestore()
+      for (const spy of [...spies, open]) spy.mockRestore()
     }
     expect(errors).toEqual([])
   })

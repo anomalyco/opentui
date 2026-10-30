@@ -27,6 +27,7 @@ describe("React Renderer | video element", () => {
           videoRef = renderable
         }}
         source={VIDEO_FIXTURE}
+        audio={false}
         maxFps={12}
         onReady={(metadata) => readies.push(metadata.width)}
         onError={(error) => failures.push(error.message)}
@@ -42,6 +43,7 @@ describe("React Renderer | video element", () => {
     expect(videoRef!.videoMetadata?.fps).toBe(24)
     expect(videoRef!.paused).toBe(true)
     expect(videoRef!.maxFps).toBe(12)
+    expect(videoRef!.audio).toBe(false)
   })
 
   it("swaps media when the source prop changes", async () => {

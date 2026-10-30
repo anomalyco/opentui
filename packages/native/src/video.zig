@@ -1047,8 +1047,9 @@ pub const Player = struct {
     // renderer frame carries that frame's cost.
     cost_frame: ?u64 = null,
 
-    pub fn open(allocator: Allocator, path: []const u8, error_out: []u8) !*Player {
-        const value = try Video.open(allocator, path, false, error_out);
+    /// Without audio no engine is created, so playback opens no audio device and follows the wall clock.
+    pub fn open(allocator: Allocator, path: []const u8, audio_enabled: bool, error_out: []u8) !*Player {
+        const value = try Video.open(allocator, path, !audio_enabled, error_out);
         errdefer value.deinit();
         const player = try allocator.create(Player);
         player.* = .{ .allocator = allocator, .video = value };

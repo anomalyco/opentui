@@ -26,6 +26,7 @@ describe("video component", () => {
         <video
           ref={videoRef}
           source={VIDEO_FIXTURE}
+          audio={false}
           maxFps={12}
           onReady={(metadata) => readies.push(metadata.width)}
           onError={(error) => failures.push(error.message)}
@@ -41,6 +42,7 @@ describe("video component", () => {
     expect(readies).toEqual([160])
     expect(videoRef!.paused).toBe(true)
     expect(videoRef!.maxFps).toBe(12)
+    expect(videoRef!.audio).toBe(false)
   })
 
   it("swaps media when the source signal changes", async () => {

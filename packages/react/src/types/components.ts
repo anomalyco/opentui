@@ -106,7 +106,16 @@ export type GetNonStyledProperties<TConstructor> =
                 : TConstructor extends RenderableConstructor<ImageRenderable>
                   ? NonStyledProps | "source"
                   : TConstructor extends RenderableConstructor<VideoRenderable>
-                    ? NonStyledProps | "source" | "autoplay" | "loop" | "muted" | "volume" | "avSyncOffsetMs" | "maxFps"
+                    ?
+                        | NonStyledProps
+                        | "source"
+                        | "autoplay"
+                        | "loop"
+                        | "audio"
+                        | "muted"
+                        | "volume"
+                        | "avSyncOffsetMs"
+                        | "maxFps"
                     : NonStyledProps
 
 // ============================================================================

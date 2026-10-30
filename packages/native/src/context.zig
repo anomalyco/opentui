@@ -2155,7 +2155,7 @@ pub const Context = struct {
     }
 
     /// Replaces the node's player. An empty path closes it. A failed open keeps no player.
-    pub fn videoOpen(self: *Context, handle: Handle, path: []const u8) !video.Info {
+    pub fn videoOpen(self: *Context, handle: Handle, path: []const u8, audio_enabled: bool) !video.Info {
         try self.beginMutation();
         defer self.mutating = false;
         const state = try self.videoState(handle);
@@ -2166,7 +2166,7 @@ pub const Context = struct {
         state.open_error = &.{};
         if (path.len == 0) return .{};
         var detail: [256]u8 = undefined;
-        state.player = video.Player.open(self.allocator, path, &detail) catch |err| {
+        state.player = video.Player.open(self.allocator, path, audio_enabled, &detail) catch |err| {
             state.open_error = self.allocator.dupe(u8, std.mem.sliceTo(&detail, 0)) catch &.{};
             return err;
         };

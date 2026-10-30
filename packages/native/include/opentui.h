@@ -1853,7 +1853,10 @@ ot_status ot_scene_set_image(ot_context *, const ot_handle *node, const ot_handl
  * controls still apply and succeed. A paused seek decodes its frame once the node has
  * painted, so decode failures return from the seek. Audio failures leave playback running silently on the wall clock. Control and
  * state calls on a node without an open player return OT_INVALID_PHASE.
+ * With OT_VIDEO_OPEN_NO_AUDIO, the only accepted flag, ot_video_open creates no audio engine: playback opens no
+ * audio device and follows the wall clock, and has_audio still reports the file's audio track.
  * In ot_video_info, zero duration_us or fps_num means unknown. */
+#define OT_VIDEO_OPEN_NO_AUDIO UINT32_C(1)
 typedef struct ot_video_info {
     int64_t duration_us;
     uint32_t width, height, fps_num, fps_den, has_audio, reserved;
@@ -1874,7 +1877,7 @@ typedef struct ot_video_state {
 } ot_video_state;
 ot_status ot_scene_set_video(ot_context *, const ot_handle *node, uint32_t fit, const ot_handle *buffer);
 ot_status ot_video_open(ot_context *, const ot_handle *node, const uint8_t *path, uint32_t path_length,
-    ot_video_info *out_info);
+    uint32_t flags, ot_video_info *out_info);
 ot_status ot_video_play(ot_context *, const ot_handle *node);
 ot_status ot_video_pause(ot_context *, const ot_handle *node);
 ot_status ot_video_seek(ot_context *, const ot_handle *node, int64_t time_us);

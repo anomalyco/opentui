@@ -19,6 +19,8 @@ export interface VideoRenderableOptions extends RenderableOptions<VideoRenderabl
   /** Plays each source once it opens. */
   autoplay?: boolean
   loop?: boolean
+  /** Opens the audio track. With false, playback opens no audio device and follows the wall clock. Defaults to true. */
+  audio?: boolean
   muted?: boolean
   volume?: number
   /** Positive values show frames earlier relative to the audio. */
@@ -70,6 +72,7 @@ export class VideoRenderable extends Renderable {
   private _source: string | undefined
   private _fit: ImageFit
   private _loop: boolean
+  private _audio: boolean
   private _muted: boolean
   private _volume: number
   private _avSyncOffsetMs: number
@@ -82,6 +85,8 @@ export class VideoRenderable extends Renderable {
   private stopTick?: () => void
   // Counts reported pauses, so a deferred onPlay that a pause overtook is dropped.
   private _pauses = 0
+  // Counts opens, so only the latest open reports; changing audio reopens the same source.
+  private _opens = 0
   public onReady?: (metadata: VideoMetadata) => void
   public onError?: (error: Error) => void
   public onEnd?: () => void
@@ -95,6 +100,7 @@ export class VideoRenderable extends Renderable {
     try {
       this._fit = options.fit ?? "fit"
       this._loop = options.loop ?? false
+      this._audio = options.audio ?? true
       this._muted = options.muted ?? false
       this._volume = options.volume ?? 1
       validateVolume(this._volume)
@@ -130,12 +136,13 @@ export class VideoRenderable extends Renderable {
   }
 
   private open(value: string | undefined, resume: boolean): void {
+    this._opens++
     this._source = value
     this._metadata = null
     this._playRequested = resume
     const native = this.native()
     try {
-      const info = native.lib.videoOpen(native.context, native.node, value ?? "")
+      const info = native.lib.videoOpen(native.context, native.node, value ?? "", this._audio)
       // An empty path closes the player, like no source.
       if (!value) return
       this._playRequested = false
@@ -160,7 +167,7 @@ export class VideoRenderable extends Renderable {
       const metadata = { ...this._metadata }
       // Frameworks assign handlers after the source; report the open once they are set.
       const pauses = this._pauses
-      this.afterOpen(value, () => {
+      this.afterOpen(() => {
         this.onReady?.(metadata)
         // A pause before this report already told handlers; a stale onPlay would contradict it.
         if (play && pauses === this._pauses) this.onPlay?.()
@@ -169,7 +176,7 @@ export class VideoRenderable extends Renderable {
       this._metadata = null
       this._playRequested = false
       const detail = this.errorDetail("")
-      this.afterOpen(value, () => this.reportError(error, detail))
+      this.afterOpen(() => this.reportError(error, detail))
     } finally {
       this.syncPlayback()
       this.requestRender()
@@ -196,6 +203,18 @@ export class VideoRenderable extends Renderable {
     const next = value ?? false
     if (this._loop === next || this.isDestroyed) return
     if (this.applyOption((native) => native.lib.videoSetLoop(native.context, native.node, next))) this._loop = next
+  }
+
+  public get audio(): boolean {
+    return this._audio
+  }
+
+  public set audio(value: boolean | null | undefined) {
+    const next = value ?? true
+    if (this._audio === next || this.isDestroyed) return
+    this._audio = next
+    // Native code chooses audio at open, and frameworks may set it after the source, so an open source reopens.
+    if (this._metadata) this.open(this._source, this.playing)
   }
 
   public get muted(): boolean {
@@ -263,7 +282,7 @@ export class VideoRenderable extends Renderable {
     })
     // Handlers may follow autoplay as well.
     const pauses = this._pauses
-    if (started) this.afterOpen(this._source, () => pauses === this._pauses && this.onPlay?.())
+    if (started) this.afterOpen(() => pauses === this._pauses && this.onPlay?.())
   }
 
   public get ready(): boolean {
@@ -477,9 +496,10 @@ export class VideoRenderable extends Renderable {
     this._ctx.nativeScene.setVideo(this, fit, this.buffered ? this.frameBuffer : null)
   }
 
-  private afterOpen(source: string | undefined, report: () => void): void {
+  private afterOpen(report: () => void): void {
+    const opens = this._opens
     queueMicrotask(() => {
-      if (this._source === source && !this.isDestroyed) report()
+      if (this._opens === opens && !this.isDestroyed) report()
     })
   }
 

@@ -312,7 +312,7 @@ test "video scene nodes paint the current frame through the image path" {
     try f.owner.sceneSetVideo(node, .fill, null);
     // Nothing paints before a source opens.
     try paint(f);
-    const info = try f.owner.videoOpen(node, asset);
+    const info = try f.owner.videoOpen(node, asset, true);
     try testing.expectEqual(@as(u32, 160), info.width);
     try paint(f);
     const value = try playerOf(f, node);
@@ -333,7 +333,7 @@ test "video scene repaints every committed frame while playing" {
     defer f.deinit();
     try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     value.video.failAudio("test");
     try f.owner.videoControl(node, video.Player.play, .{});
@@ -357,12 +357,13 @@ test "video scene playback advances frames natively and ends without looping" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
+    // Without audio, a source with an audio track has no engine and follows the wall clock.
+    _ = try f.owner.videoOpen(node, asset, false);
     const value = try playerOf(f, node);
-    // A failed audio device leaves the wall clock in charge.
-    value.video.failAudio("test");
     try f.owner.videoControl(node, video.Player.play, .{});
     try paint(f);
+    try testing.expect(value.video.audio_engine == null and value.video.audioStats() == null);
+    try testing.expectEqual(@as(u32, 0), value.video.getState().audio_active);
     const first = value.video.current_image.?.render_id;
     var advanced = false;
     for (0..200) |_| {
@@ -390,7 +391,7 @@ test "video scene loop restarts playback at the end" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     value.video.failAudio("test");
     try f.owner.videoControl(node, video.Player.setLoop, .{true});
@@ -418,7 +419,7 @@ test "video scene playback keeps its audio queue filled without paints" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     value.video.setAudioOffline(true);
     try f.owner.videoControl(node, video.Player.play, .{});
@@ -437,7 +438,7 @@ test "video scene playback ends and loops without paints" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     const value = try playerOf(f, node);
     const total = value.video.info.duration_us;
     try f.owner.videoControl(node, video.Player.play, .{});
@@ -461,7 +462,7 @@ test "video scene loops a clip shorter than a paint without recursing" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, single_frame_asset);
+    _ = try f.owner.videoOpen(node, single_frame_asset, true);
     try f.owner.videoControl(node, video.Player.setLoop, .{true});
     try f.owner.videoControl(node, video.Player.play, .{});
     for (0..5) |_| {
@@ -548,7 +549,7 @@ test "video rejects sync offsets that would overflow the media clock" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     const value = try playerOf(f, node);
     value.video.failAudio("test");
     try f.owner.videoControl(node, video.Player.play, .{});
@@ -568,7 +569,7 @@ test "video playback recovers from a failure on play and seek" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     const value = try playerOf(f, node);
     try paint(f);
     value.fail();
@@ -588,7 +589,7 @@ test "video playback failure keeps the position for the retry" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     const value = try playerOf(f, node);
     try f.owner.videoControl(node, video.Player.play, .{});
     try paint(f);
@@ -607,7 +608,7 @@ test "video settings apply while playback is failed" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     const value = try playerOf(f, node);
     try paint(f);
     value.fail();
@@ -625,7 +626,7 @@ test "video decode failures during playback fail the player" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     const value = try playerOf(f, node);
     try f.owner.videoControl(node, video.Player.play, .{});
     try paint(f);
@@ -644,7 +645,7 @@ test "video paused seek decodes its frame before the next paint" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     const value = try playerOf(f, node);
     try paint(f);
     try f.owner.videoControl(node, video.Player.seek, .{2_000_000});
@@ -683,7 +684,7 @@ test "video scene teardown during a decode and during audio leaks nothing" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const decoding = try videoNode(f);
-    _ = try f.owner.videoOpen(decoding, gop_asset);
+    _ = try f.owner.videoOpen(decoding, gop_asset, true);
     const gop = (try playerOf(f, decoding)).video;
     try gop.configureOutput(32, 18, false);
     try testing.expect(try gop.update(0));
@@ -694,7 +695,7 @@ test "video scene teardown during a decode and during audio leaks nothing" {
 
     const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_VIDEO, 3);
     try f.owner.sceneMoveNode(node, f.root, 0);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     value.video.setAudioOffline(true);
     try f.owner.videoControl(node, video.Player.play, .{});
@@ -939,7 +940,7 @@ test "video scene audio failure continues playback silently from the audio posit
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     value.video.setAudioOffline(true);
     try f.owner.videoControl(node, video.Player.play, .{});
@@ -963,7 +964,7 @@ test "video scene playback ends after the audio drains without paints" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     value.video.setAudioOffline(true);
     try f.owner.videoControl(node, video.Player.seek, .{value.video.info.duration_us - 200_000});
@@ -987,7 +988,7 @@ test "video scene seek while playing continues from the target" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, gop_asset);
+    _ = try f.owner.videoOpen(node, gop_asset, true);
     try f.owner.videoControl(node, video.Player.play, .{});
     try paint(f);
     try f.owner.videoControl(node, video.Player.seek, .{8_000_000});
@@ -1003,7 +1004,7 @@ test "video scene max fps accepts 1 to 120 and defaults to 30" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     try testing.expectEqual(@as(u32, 30), value.max_fps);
     try f.owner.videoControl(node, video.Player.setMaxFps, .{12});
@@ -1017,13 +1018,13 @@ test "video scene open failures keep their detail" {
     const f = try Fixture.init(testing.allocator, 8, 4, .{});
     defer f.deinit();
     const node = try videoNode(f);
-    try testing.expectError(error.OpenFailed, f.owner.videoOpen(node, missing));
+    try testing.expectError(error.OpenFailed, f.owner.videoOpen(node, missing, true));
     try testing.expect((try f.owner.videoGetError(node)).len > 0);
     try testing.expectError(error.NoPlayer, f.owner.videoControl(node, video.Player.play, .{}));
     const box = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
-    try testing.expectError(error.WrongKind, f.owner.videoOpen(box, asset));
+    try testing.expectError(error.WrongKind, f.owner.videoOpen(box, asset, true));
     // Closing clears the failure.
-    _ = try f.owner.videoOpen(node, "");
+    _ = try f.owner.videoOpen(node, "", true);
     try testing.expectEqual(@as(usize, 0), (try f.owner.videoGetError(node)).len);
 }
 
@@ -1082,7 +1083,7 @@ test "video scene decodes Kitty output smaller while frames overrun and recovers
     f.cli.terminal.image_protocol = .kitty;
     const node = try videoNode(f);
     try f.owner.sceneSetVideo(node, .fill, null);
-    _ = try f.owner.videoOpen(node, asset);
+    _ = try f.owner.videoOpen(node, asset, true);
     const value = try playerOf(f, node);
     value.video.failAudio("test");
     try f.owner.videoControl(node, video.Player.play, .{});
