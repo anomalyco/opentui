@@ -16,6 +16,7 @@ import {
   TextNodeRenderable,
   TextRenderable,
   TextTableRenderable,
+  VideoRenderable,
   type RenderContext,
   type TextNodeOptions,
 } from "@opentui/core"
@@ -336,11 +337,13 @@ const {
         if (isEditBufferRenderable(node) && previousStyle.selectionOccupancy && !nextStyle.selectionOccupancy) {
           node.selectionOccupancy = undefined
         }
-        if (node instanceof ImageRenderable) {
+        if (node instanceof ImageRenderable || node instanceof VideoRenderable) {
           for (const prop in previousStyle) {
             if (Object.prototype.hasOwnProperty.call(nextStyle, prop)) continue
-            if (prop !== "fit" && prop !== "protocol") continue
-            node[prop] = undefined
+            if (prop !== "fit" && prop !== "protocol" && prop !== "crop") continue
+            // A video has no protocol, and a removed fit is not reset yet.
+            if (node instanceof ImageRenderable) node[prop] = undefined
+            else if (prop === "crop") node.crop = undefined
           }
         }
         for (const prop in nextStyle) {

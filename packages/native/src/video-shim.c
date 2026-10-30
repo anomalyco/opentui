@@ -22,11 +22,12 @@ int otv_seek(otv_decoder *decoder, int64_t target_us) {
     (void)target_us;
     return OTV_ERROR;
 }
-int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover) {
+int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover, otv_region crop) {
     (void)decoder;
     (void)width;
     (void)height;
     (void)cover;
+    (void)crop;
     return OTV_ERROR;
 }
 int otv_decode_frame(otv_decoder *decoder, int64_t target_us, const uint8_t **out_rgba,
@@ -116,6 +117,7 @@ struct otv_decoder {
     uint32_t output_width;
     uint32_t output_height;
     int output_cover;
+    otv_region crop;
     struct SwsContext *sws;
     AVFrame *sws_dst;
     struct SwrContext *swr;
@@ -238,6 +240,41 @@ static void otv_attach_hw_device(otv_decoder *decoder, ot_stream_decoder *stream
     stream->codec->get_format = otv_select_pixel_format;
 }
 
+static int open_codec(otv_decoder *decoder, ot_stream_decoder *out, const AVCodec *codec, char *error,
+                      size_t error_size) {
+    out->codec = avcodec_alloc_context3(codec);
+    if (!out->codec) return fail_to(error, error_size, AVERROR(ENOMEM), "avcodec_alloc_context3");
+    int result = avcodec_parameters_to_context(out->codec, out->stream->codecpar);
+    if (result < 0) return fail_to(error, error_size, result, "avcodec_parameters_to_context");
+    out->codec->pkt_timebase = out->stream->time_base;
+    // The decoder skips `delay` samples once after opening, whatever packet comes first; after
+    // an initial seek that drops the frame holding the target. Demuxers mark the priming samples
+    // on the first packet instead, which also covers seeks back to the start.
+    out->codec->delay = 0;
+    // Enough threads to pipeline 4K decoding without drowning the process;
+    // uncapped auto detection spawns one per logical core.
+    int cpu_count = av_cpu_count();
+    int is_video = out->codec->codec_type == AVMEDIA_TYPE_VIDEO;
+    out->codec->thread_count = is_video ? (cpu_count > 8 ? 8 : cpu_count) : 1;
+    if (is_video) {
+        // Frames become native images, so sources beyond the image limits cannot play.
+        const int width = out->codec->width, height = out->codec->height;
+        if (width <= 0 || height <= 0) {
+            snprintf(error, error_size, "video size %dx%d is invalid", width, height);
+            return OTV_ERROR;
+        }
+        if (exceeds_limits(decoder, width, height)) {
+            snprintf(error, error_size, "video size %dx%d exceeds the image limits", width, height);
+            return OTV_ERROR;
+        }
+        out->codec->max_pixels = (int64_t)decoder->limits.max_pixels;
+        otv_attach_hw_device(decoder, out);
+    }
+    result = avcodec_open2(out->codec, codec, NULL);
+    if (result < 0) return fail_to(error, error_size, result, "avcodec_open2");
+    return OTV_OK;
+}
+
 static int open_stream(otv_decoder *decoder, const char *path, enum AVMediaType type,
                        enum AVCodecID required_codec, ot_stream_decoder *out) {
     memset(out, 0, sizeof(*out));
@@ -261,37 +298,7 @@ static int open_stream(otv_decoder *decoder, const char *path, enum AVMediaType 
                  avcodec_get_name(out->stream->codecpar->codec_id));
         return OTV_ERROR;
     }
-    codec = avcodec_find_decoder(required_codec);
-    if (!codec) return fail(decoder, AVERROR_DECODER_NOT_FOUND, "avcodec_find_decoder");
-    out->codec = avcodec_alloc_context3(codec);
-    if (!out->codec) return fail(decoder, AVERROR(ENOMEM), "avcodec_alloc_context3");
-    result = avcodec_parameters_to_context(out->codec, out->stream->codecpar);
-    if (result < 0) return fail(decoder, result, "avcodec_parameters_to_context");
-    out->codec->pkt_timebase = out->stream->time_base;
-    // The decoder skips `delay` samples once after opening, whatever packet comes first; after
-    // an initial seek that drops the frame holding the target. Demuxers mark the priming samples
-    // on the first packet instead, which also covers seeks back to the start.
-    out->codec->delay = 0;
-    // Enough threads to pipeline 4K decoding without drowning the process;
-    // uncapped auto detection spawns one per logical core.
-    int cpu_count = av_cpu_count();
-    out->codec->thread_count = type == AVMEDIA_TYPE_VIDEO ? (cpu_count > 8 ? 8 : cpu_count) : 1;
-    if (type == AVMEDIA_TYPE_VIDEO) {
-        // Frames become native images, so sources beyond the image limits cannot play.
-        const int width = out->codec->width, height = out->codec->height;
-        if (width <= 0 || height <= 0) {
-            snprintf(decoder->error, sizeof(decoder->error), "video size %dx%d is invalid", width, height);
-            return OTV_ERROR;
-        }
-        if (exceeds_limits(decoder, width, height)) {
-            snprintf(decoder->error, sizeof(decoder->error), "video size %dx%d exceeds the image limits", width, height);
-            return OTV_ERROR;
-        }
-        out->codec->max_pixels = (int64_t)decoder->limits.max_pixels;
-        otv_attach_hw_device(decoder, out);
-    }
-    result = avcodec_open2(out->codec, codec, NULL);
-    if (result < 0) return fail(decoder, result, "avcodec_open2");
+    if (open_codec(decoder, out, codec, decoder->error, sizeof(decoder->error)) != OTV_OK) return OTV_ERROR;
     out->packet = av_packet_alloc();
     out->frame = av_frame_alloc();
     if (!out->packet || !out->frame) return fail(decoder, AVERROR(ENOMEM), "allocate packet/frame");
@@ -455,8 +462,8 @@ void otv_close(otv_decoder **decoder_ptr) {
     av_channel_layout_uninit(&decoder->audio_source_layout);
     av_frame_free(&decoder->video_selected);
     av_frame_free(&decoder->video_lookahead);
-    free(decoder->scaled_rgba);
-    free(decoder->rgba);
+    av_freep(&decoder->scaled_rgba);
+    av_freep(&decoder->rgba);
     swr_free(&decoder->swr);
     av_frame_free(&decoder->sws_dst);
     sws_freeContext(decoder->sws);
@@ -466,15 +473,15 @@ void otv_close(otv_decoder **decoder_ptr) {
     *decoder_ptr = NULL;
 }
 
-int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover) {
+int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover, otv_region crop) {
     if (!decoder || width == 0 || height == 0) return OTV_ERROR;
     decoder->output_width = width;
     decoder->output_height = height;
     decoder->output_cover = cover != 0;
+    decoder->crop = crop;
     sws_freeContext(decoder->sws);
     decoder->sws = NULL;
-    free(decoder->rgba);
-    decoder->rgba = NULL;
+    av_freep(&decoder->rgba);
     decoder->rgba_size = 0;
     decoder->frame_pts_us = AV_NOPTS_VALUE;
     // The selected frame is presented again at the new size under a new serial.
@@ -489,7 +496,19 @@ static int seek_stream(otv_decoder *decoder, ot_stream_decoder *stream, int64_t 
     int result = avformat_seek_file(stream->format, stream->stream_index, INT64_MIN, timestamp, timestamp, AVSEEK_FLAG_BACKWARD);
     if (result < 0) result = av_seek_frame(stream->format, stream->stream_index, timestamp, AVSEEK_FLAG_BACKWARD);
     if (result < 0) return fail_to(stream->error, sizeof(stream->error), result, "avformat_seek_file");
-    avcodec_flush_buffers(stream->codec);
+    // The AAC flush keeps the last frame's window shapes, which the first frame after the seek
+    // would overlap with, so audio gets a new decoder.
+    if (stream == &decoder->audio) {
+        AVCodecContext *previous = stream->codec;
+        if (open_codec(decoder, stream, previous->codec, stream->error, sizeof(stream->error)) != OTV_OK) {
+            avcodec_free_context(&stream->codec);
+            stream->codec = previous;
+            return OTV_ERROR;
+        }
+        avcodec_free_context(&previous);
+    } else {
+        avcodec_flush_buffers(stream->codec);
+    }
     av_packet_unref(stream->packet);
     stream->packet_pending = 0;
     av_frame_unref(stream->frame);
@@ -529,6 +548,24 @@ int otv_seek(otv_decoder *decoder, int64_t target_us) {
     return OTV_OK;
 }
 
+// swscale's SIMD converters store whole vectors past a row's last pixel (yuv420_bgr32_ssse3
+// writes 16 pixels at a time), so RGBA rows get the 64-byte linesize and padded tail that
+// av_frame_get_buffer gives FFmpeg's own frames.
+static size_t rgba_linesize(uint32_t width) {
+    return FFALIGN((size_t)width * 4, 64);
+}
+
+static int ensure_rgba(otv_decoder *decoder, uint8_t **buffer, size_t *size, uint32_t width, uint32_t height) {
+    const size_t required = rgba_linesize(width) * height + 64;
+    if (required == *size) return OTV_OK;
+    av_freep(buffer);
+    *size = 0;
+    *buffer = av_malloc(required);
+    if (!*buffer) return fail_video(decoder, AVERROR(ENOMEM), "RGBA allocation");
+    *size = required;
+    return OTV_OK;
+}
+
 static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64_t pts) {
     if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
         if (!decoder->hw_transfer_frame) {
@@ -544,6 +581,22 @@ static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64
         transfer = av_frame_copy_props(decoder->hw_transfer_frame, frame);
         if (transfer < 0) return fail_video(decoder, transfer, "av_frame_copy_props");
         frame = decoder->hw_transfer_frame;
+    }
+    // A shallow copy whose plane pointers start at the crop, so swscale reads only the region.
+    // Unaligned keeps the exact left edge; chroma then starts at the sample that covers it.
+    AVFrame region;
+    if (decoder->crop.width != 0) {
+        const otv_region crop = decoder->crop;
+        if ((uint64_t)crop.left + crop.width > (uint32_t)frame->width || (uint64_t)crop.top + crop.height > (uint32_t)frame->height)
+            return fail_video(decoder, AVERROR(EINVAL), "crop outside the frame");
+        region = *frame;
+        region.crop_left = crop.left;
+        region.crop_top = crop.top;
+        region.crop_right = (size_t)frame->width - crop.left - crop.width;
+        region.crop_bottom = (size_t)frame->height - crop.top - crop.height;
+        int cropped = av_frame_apply_cropping(&region, AV_FRAME_CROP_UNALIGNED);
+        if (cropped < 0) return fail_video(decoder, cropped, "av_frame_apply_cropping");
+        frame = &region;
     }
     uint32_t scaled_width = decoder->output_width;
     uint32_t scaled_height = decoder->output_height;
@@ -570,22 +623,12 @@ static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64
         decoder->sws_dst = av_frame_alloc();
         if (!decoder->sws_dst) return fail_video(decoder, AVERROR(ENOMEM), "sws frame allocation");
     }
-    const size_t required = (size_t)decoder->output_width * decoder->output_height * 4;
-    if (required != decoder->rgba_size) {
-        uint8_t *next = realloc(decoder->rgba, required);
-        if (!next) return fail_video(decoder, AVERROR(ENOMEM), "RGBA allocation");
-        decoder->rgba = next;
-        decoder->rgba_size = required;
-    }
-    const size_t scaled_size = (size_t)scaled_width * scaled_height * 4;
+    if (ensure_rgba(decoder, &decoder->rgba, &decoder->rgba_size, decoder->output_width, decoder->output_height) != OTV_OK)
+        return OTV_ERROR;
     uint8_t *scale_target = decoder->rgba;
     if (decoder->output_cover && (scaled_width != decoder->output_width || scaled_height != decoder->output_height)) {
-        if (scaled_size != decoder->scaled_rgba_size) {
-            uint8_t *next = realloc(decoder->scaled_rgba, scaled_size);
-            if (!next) return fail_video(decoder, AVERROR(ENOMEM), "cover allocation");
-            decoder->scaled_rgba = next;
-            decoder->scaled_rgba_size = scaled_size;
-        }
+        if (ensure_rgba(decoder, &decoder->scaled_rgba, &decoder->scaled_rgba_size, scaled_width, scaled_height) != OTV_OK)
+            return OTV_ERROR;
         scale_target = decoder->scaled_rgba;
     }
     AVFrame *scale_frame = decoder->sws_dst;
@@ -593,18 +636,19 @@ static int convert_video_frame(otv_decoder *decoder, const AVFrame *frame, int64
     scale_frame->width = (int)scaled_width;
     scale_frame->height = (int)scaled_height;
     scale_frame->data[0] = scale_target;
-    scale_frame->linesize[0] = (int)(scaled_width * 4);
+    scale_frame->linesize[0] = (int)rgba_linesize(scaled_width);
     int scaled = sws_scale_frame(decoder->sws, scale_frame, frame);
     scale_frame->data[0] = NULL;
     if (scaled < 0) return fail_video(decoder, scaled, "sws_scale_frame");
     if (scale_target != decoder->rgba) {
         const uint32_t crop_x = (scaled_width - decoder->output_width) / 2;
         const uint32_t crop_y = (scaled_height - decoder->output_height) / 2;
-        const size_t output_row = (size_t)decoder->output_width * 4;
+        const size_t output_row = rgba_linesize(decoder->output_width);
+        const size_t scaled_row = rgba_linesize(scaled_width);
         for (uint32_t y = 0; y < decoder->output_height; y++)
             memcpy(decoder->rgba + (size_t)y * output_row,
-                   decoder->scaled_rgba + ((size_t)(crop_y + y) * scaled_width + crop_x) * 4,
-                   output_row);
+                   decoder->scaled_rgba + (size_t)(crop_y + y) * scaled_row + (size_t)crop_x * 4,
+                   (size_t)decoder->output_width * 4);
     }
     decoder->frame_pts_us = pts;
     return OTV_OK;
@@ -696,7 +740,7 @@ int otv_decode_frame(otv_decoder *decoder, int64_t target_us, const uint8_t **ou
     *out_rgba = decoder->rgba;
     *out_width = decoder->output_width;
     *out_height = decoder->output_height;
-    *out_stride = decoder->output_width * 4;
+    *out_stride = (uint32_t)rgba_linesize(decoder->output_width);
     *out_pts_us = decoder->frame_pts_us;
     *out_serial = decoder->frame_serial;
     return OTV_OK;

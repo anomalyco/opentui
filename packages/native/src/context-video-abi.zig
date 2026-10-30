@@ -158,6 +158,18 @@ test "Context video ABI checks nodes arguments and reports failures" {
     try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_video(context, &box, c.OT_IMAGE_FIT, null));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_video(null, &node, c.OT_IMAGE_FIT, null));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_video(context, null, c.OT_IMAGE_FIT, null));
+    // A crop is all zero, for the whole source, or has a positive size.
+    for ([_]struct { [4]u32, c.ot_status }{
+        .{ .{ 0, 0, 0, 0 }, c.OT_OK },
+        .{ .{ 3, 5, 1, 1 }, c.OT_OK },
+        .{ .{ 0, 0, 0, 1 }, c.OT_INVALID_ARGUMENT },
+        .{ .{ 0, 0, 1, 0 }, c.OT_INVALID_ARGUMENT },
+        .{ .{ 1, 0, 0, 0 }, c.OT_INVALID_ARGUMENT },
+        .{ .{ 0, 1, 0, 0 }, c.OT_INVALID_ARGUMENT },
+    }) |row| {
+        const crop = row[0];
+        try std.testing.expectEqual(row[1], abi.ot_scene_set_crop(context, &node, crop[0], crop[1], crop[2], crop[3]));
+    }
 
     var info: c.ot_video_info = undefined;
     const missing = "../core/src/tests/fixtures/video/missing.mp4";

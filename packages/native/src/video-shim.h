@@ -24,6 +24,14 @@ typedef struct {
     uint32_t max_height;
 } otv_limits;
 
+// A frame region in pixels; zero width selects the whole frame.
+typedef struct {
+    uint32_t left;
+    uint32_t top;
+    uint32_t width;
+    uint32_t height;
+} otv_region;
+
 enum {
     OTV_OK = 0,
     OTV_EOF = 1,
@@ -35,7 +43,8 @@ int otv_open(const char *path, const otv_limits *limits, otv_decoder **out_decod
                   char *error_out, uint32_t error_cap);
 void otv_close(otv_decoder **decoder);
 int otv_seek(otv_decoder *decoder, int64_t target_us);
-int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover);
+// Scales only the crop of each frame; cover crops the centre of the crop again.
+int otv_set_output_size(otv_decoder *decoder, uint32_t width, uint32_t height, uint32_t cover, otv_region crop);
 int otv_decode_frame(otv_decoder *decoder, int64_t target_us, const uint8_t **out_rgba,
                           uint32_t *out_width, uint32_t *out_height, uint32_t *out_stride,
                           int64_t *out_pts_us, uint64_t *out_serial);

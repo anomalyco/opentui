@@ -10,6 +10,7 @@ const renderer = @import("../renderer.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
 
 const asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4";
+const video_only_asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s-video-only.mp4";
 const missing = "../core/src/tests/fixtures/video/missing.mp4";
 const frame_us: u32 = 41_667;
 
@@ -45,7 +46,7 @@ test "video open reports metadata and decodes the first frame natively" {
     try testing.expectEqual(@as(u32, 2), value.info.audio_channels);
     try testing.expect(value.info.duration_us >= 1_900_000 and value.info.duration_us <= 2_100_000);
 
-    try value.configureOutput(80, 45, false);
+    _ = try value.configureOutput(80, 45, false, null);
     try testing.expect(try value.update(0));
     const state = value.getState();
     try testing.expectEqual(@as(u32, 1), state.has_frame);
@@ -54,6 +55,30 @@ test "video open reports metadata and decodes the first frame natively" {
     try testing.expectEqual(@as(u32, 80), frame.width());
     try testing.expectEqual(@as(u32, 45), frame.height());
     try testing.expectEqual(@as(u32, 0), frame.metadata.has_alpha);
+
+    // At its own size a clip takes swscale's unscaled converter, whose SIMD stores pass the end of
+    // a 170-pixel row; run under Valgrind, this wrote past the RGBA buffer.
+    var detail: [256]u8 = undefined;
+    const odd = try video.Video.open(testing.allocator, "../core/src/tests/fixtures/video/odd-width-170x96.mp4", true, &detail);
+    defer odd.deinit();
+    try odd.configureOutput(170, 96, false);
+    try testing.expect(try odd.update(0));
+    try testing.expectEqual([2]u32{ 170, 96 }, [2]u32{ odd.current_image.?.width(), odd.current_image.?.height() });
+    // The left column is red from row 8: a tight row lets one slice thread's overrun land on the
+    // first pixels of the next slice's first row.
+    for (16..96) |y| try testing.expect(odd.current_image.?.pixels[y * 170 * 4] > 128 and odd.current_image.?.pixels[y * 170 * 4 + 1] < 128);
+    // Its bottom row crosses the colour bars: red, yellow, cyan. A wrong stride shears it away.
+    const bottom = odd.current_image.?.pixels[95 * 170 * 4 ..];
+    for ([_]struct { usize, [3]bool }{ .{ 0, .{ true, false, false } }, .{ 84, .{ true, true, false } }, .{ 169, .{ false, true, true } } }) |bar| {
+        for (0..3) |channel| try testing.expectEqual(bar[1][channel], bottom[bar[0] * 4 + channel] > 128);
+    }
+    // cover into 170x48 converts the same rows into a scratch buffer and keeps the middle half;
+    // both paths read padded rows through their own strides.
+    const whole = try testing.allocator.dupe(u8, odd.current_image.?.pixels);
+    defer testing.allocator.free(whole);
+    try odd.configureOutput(170, 48, true);
+    try testing.expect(try odd.update(0));
+    try testing.expectEqualSlices(u8, whole[24 * 170 * 4 ..][0 .. 48 * 170 * 4], odd.current_image.?.pixels);
 }
 
 test "video open failures expose the native error detail" {
@@ -197,14 +222,22 @@ test "video seek replaces queued PCM and restarts the clock at the target" {
     value.play();
     try prebuffer(value);
     try mix(value, 4800);
-    try value.seek(1_000_000);
+    // A quarter period of the 440 Hz sine into the second: the new stream starts at a peak.
+    try value.seek(1_000_568);
     var state = value.getState();
     try testing.expectEqual(@as(u64, 0), state.audio_consumed_frames);
     try testing.expectEqual(@as(u64, 0), state.audio_produced_frames);
     try prebuffer(value);
-    try mix(value, 4800);
+    var output: [9600]f32 = undefined;
+    try testing.expectEqual(audio.Status.ok, value.mixOffline(&output, 4800));
     state = value.getState();
-    try testing.expectEqual(@as(i64, 1_100_000), state.current_time_us);
+    try testing.expectEqual(@as(i64, 1_100_568), state.current_time_us);
+    // It fades in from silence instead of stepping to the peak; the sine's own step is 0.0056.
+    var previous: f32 = 0;
+    for (output) |sample| {
+        try testing.expect(@abs(sample - previous) < 0.01);
+        previous = sample;
+    }
 }
 
 // Seeks while the audio thread refills: a seek repositions the audio decoder only between
@@ -249,7 +282,7 @@ test "video output reconfiguration keeps the current frame presentable" {
     defer value.deinit();
     try testing.expect(try value.update(0));
     const before = value.current_image.?;
-    try value.configureOutput(40, 20, true);
+    _ = try value.configureOutput(40, 20, true, null);
     try testing.expectEqual(before, value.current_image.?);
     try testing.expectEqual(@as(u32, 1), value.state.has_frame);
     try testing.expect(try value.update(0));
@@ -269,13 +302,13 @@ test "video experimental hardware decoding matches software or falls back to it"
     _ = Environment.unsetenv("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL");
     const accelerated = try hardware;
     defer accelerated.deinit();
-    try accelerated.configureOutput(64, 96, false);
+    _ = try accelerated.configureOutput(64, 96, false, null);
     try testing.expect(try accelerated.update(500_000));
 
     // H.264 reconstruction is bit-exact, so both paths produce the same pixels.
     const software = try openAsset(false);
     defer software.deinit();
-    try software.configureOutput(64, 96, false);
+    _ = try software.configureOutput(64, 96, false, null);
     try testing.expect(try software.update(500_000));
     try testing.expectEqualSlices(u8, software.current_image.?.pixels, accelerated.current_image.?.pixels);
 }
@@ -324,6 +357,77 @@ test "video scene nodes paint the current frame through the image path" {
     // The painted buffer retains the frame, so the decoder skips it until release.
     try testing.expect(frame.ref_count > 1);
     try testing.expectEqual(@as(usize, 1), f.cli.getNextBuffer().image_placements.items.len);
+}
+
+// A crop converts only its region of each frame: at 1:1 the frame equals that part of the
+// whole source. pixels names the source part of a 1:1 frame.
+test "video scene crop decodes only the source region" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    const node = try videoNode(f);
+    _ = try f.owner.videoOpen(node, asset, true);
+    const value = try playerOf(f, node);
+    const whole = try openAsset(true);
+    defer whole.deinit();
+    _ = try whole.configureOutput(160, 90, false, null);
+    try testing.expect(try whole.update(0));
+    const Region = image.Region;
+    const Row = struct { fit: image.Fit, crop: ?Region, size: [2]u32, pixels: ?Region = null };
+    // The node is 16x16 pixels: 8x4 cells of 2x4.
+    for ([_]Row{
+        .{ .fit = .fill, .crop = null, .size = .{ 16, 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 0, .width = 160, .height = 90 }, .size = .{ 16, 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 0, .width = 16, .height = 16 }, .size = .{ 16, 16 }, .pixels = .{ .left = 0, .top = 0, .width = 16, .height = 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 144, .top = 74, .width = 16, .height = 16 }, .size = .{ 16, 16 }, .pixels = .{ .left = 144, .top = 74, .width = 16, .height = 16 } },
+        // At odd offsets 4:2:0 chroma starts with the sample that covers the edge, so only the size is exact.
+        .{ .fit = .fill, .crop = .{ .left = 3, .top = 5, .width = 16, .height = 16 }, .size = .{ 16, 16 } },
+        // swscale converts a 1x1 frame on another path, which rounds differently.
+        .{ .fit = .fill, .crop = .{ .left = 159, .top = 89, .width = 1, .height = 1 }, .size = .{ 1, 1 } },
+        // Rows narrower than a SIMD store: swscale writes whole vectors past the last pixel.
+        .{ .fit = .fill, .crop = .{ .left = 10, .top = 10, .width = 2, .height = 2 }, .size = .{ 2, 2 } },
+        .{ .fit = .cover, .crop = .{ .left = 29, .top = 79, .width = 88, .height = 4 }, .size = .{ 4, 4 } },
+        // The decode size stays within the region: 7/16 of the node.
+        .{ .fit = .fill, .crop = .{ .left = 9, .top = 1, .width = 7, .height = 11 }, .size = .{ 7, 7 } },
+        // A region outside the source shows the whole source.
+        .{ .fit = .fill, .crop = .{ .left = 150, .top = 80, .width = 16, .height = 16 }, .size = .{ 16, 16 } },
+        .{ .fit = .fill, .crop = .{ .left = 0, .top = 0, .width = 161, .height = 1 }, .size = .{ 16, 16 } },
+        // fit fits the region's aspect: 80x20 shows as 8x1 cells.
+        .{ .fit = .fit, .crop = .{ .left = 40, .top = 30, .width = 80, .height = 20 }, .size = .{ 16, 4 } },
+        // cover crops the centre of the region: 32x16 into 16x16 keeps its middle half.
+        .{ .fit = .cover, .crop = .{ .left = 40, .top = 30, .width = 32, .height = 16 }, .size = .{ 16, 16 }, .pixels = .{ .left = 48, .top = 30, .width = 16, .height = 16 } },
+    }) |row| {
+        // Setting the video keeps the crop.
+        try f.owner.sceneSetCrop(node, row.crop);
+        try f.owner.sceneSetVideo(node, row.fit, null);
+        try paint(f);
+        const frame = value.video.current_image.?;
+        try testing.expectEqual(row.size, [2]u32{ frame.width(), frame.height() });
+        // The same output again publishes no new frame.
+        const published = value.video.published;
+        try paint(f);
+        try testing.expectEqual(published, value.video.published);
+        const part = row.pixels orelse continue;
+        for (0..part.height) |y| {
+            const offset = ((part.top + y) * 160 + part.left) * 4;
+            try testing.expectEqualSlices(u8, whole.current_image.?.pixels[offset..][0 .. part.width * 4], frame.pixels[y * part.width * 4 ..][0 .. part.width * 4]);
+        }
+    }
+    // A clip at its own size takes swscale's unscaled path without a crop, too.
+    var detail: [256]u8 = undefined;
+    const odd = try video.Video.open(testing.allocator, "../core/src/tests/fixtures/video/odd-width-170x96.mp4", true, &detail);
+    defer odd.deinit();
+    _ = try odd.configureOutput(170, 96, false, null);
+    try testing.expect(try odd.update(0));
+    try testing.expectEqual(@as(u32, 170), odd.current_image.?.width());
+    // A change while playing applies to the next paint, and playback goes on.
+    value.video.failAudio("test");
+    try f.owner.videoControl(node, video.Player.play, .{});
+    try paint(f);
+    try f.owner.sceneSetCrop(node, .{ .left = 10, .top = 10, .width = 8, .height = 8 });
+    try paint(f);
+    try testing.expectEqual([2]u32{ 8, 8 }, [2]u32{ value.video.current_image.?.width(), value.video.current_image.?.height() });
+    const state = try f.owner.videoGetState(node);
+    try testing.expect(state.playing and !state.failed);
 }
 
 // A playing video changes its cells without any scene input changing, so retained paint must
@@ -402,7 +506,46 @@ test "video scene loop restarts playback at the end" {
     const state = try f.owner.videoGetState(node);
     try testing.expect(state.playing);
     try testing.expect(!state.ended);
-    try testing.expect(state.current_time_us < 500_000);
+    // The loop carries the 20 ms that ran past the end.
+    try testing.expect(state.current_time_us >= 15_000 and state.current_time_us < 500_000);
+}
+
+// Five loops of state reads at about 120, 30 and 7 fps, and after stalls that pass the end by more
+// than the clip, with the wall clock moved back instead of sleeping; one row pauses and resumes at
+// every read. The end falls between reads. Each loop carries the time past the end, so none loses it.
+test "video player loops keep the clip duration at any tick interval" {
+    var detail: [256]u8 = undefined;
+    const value = try video.Player.open(testing.allocator, video_only_asset, true, &detail);
+    defer value.deinit();
+    const total = value.video.info.duration_us;
+    try value.setLoop(true);
+    try value.play();
+    const Row = struct { interval_us: i64, pause: bool = false };
+    const rows = [_]Row{
+        .{ .interval_us = 8_333 },
+        .{ .interval_us = 33_000 },
+        .{ .interval_us = 140_000 },
+        .{ .interval_us = 2 * total + 70_000 },
+        .{ .interval_us = 33_000, .pause = true },
+    };
+    for (rows) |row| {
+        const origin = std.Io.Clock.now(.awake, testing.io).toMicroseconds();
+        try value.seek(0);
+        var elapsed_us: i64 = 0;
+        var state: video.PlayerState = undefined;
+        while (elapsed_us < 5 * total) : (elapsed_us += row.interval_us) {
+            value.clock_start_us -= row.interval_us;
+            if (row.pause) {
+                try value.pause();
+                try value.play();
+            }
+            state = value.snapshot();
+        }
+        // Only the real time spent in seeks is lost; a loop that restarts at 0 loses up to an interval.
+        const expected = @mod(elapsed_us + std.Io.Clock.now(.awake, testing.io).toMicroseconds() - origin, total);
+        errdefer std.debug.print("interval {d}: expected {d}, read {d}\n", .{ row.interval_us, expected, state.current_time_us });
+        try testing.expect(@mod(expected - state.current_time_us, total) < 4_000);
+    }
 }
 
 const gop_asset = "../core/src/tests/fixtures/video/gop-160x90-24fps-12s.mp4";
@@ -479,7 +622,7 @@ test "video rejects sources beyond the image limits" {
     // A stream whose first frames fit can switch to a size beyond the limits.
     const value = try video.Video.open(testing.allocator, switch_asset, true, &detail);
     defer value.deinit();
-    try value.configureOutput(32, 18, false);
+    _ = try value.configureOutput(32, 18, false, null);
     try testing.expect(try value.update(0));
     try testing.expectError(error.DecodeFailed, value.update(1_200_000));
     try testing.expect(std.mem.indexOf(u8, value.lastError(), "6000x5000 exceeds the image limits") != null);
@@ -522,7 +665,7 @@ fn decodeDamagedWithStderrCaptured() !void {
         var detail: [256]u8 = undefined;
         const value = try video.Video.open(testing.allocator, path, true, &detail);
         defer value.deinit();
-        try value.configureOutput(32, 18, false);
+        _ = try value.configureOutput(32, 18, false, null);
         var target: i64 = 0;
         while (target < 2_000_000) : (target += frame_us) {
             _ = value.update(target) catch {
@@ -657,7 +800,7 @@ fn openGop() !*video.Video {
     var detail: [256]u8 = undefined;
     const value = try video.Video.open(testing.allocator, gop_asset, true, &detail);
     errdefer value.deinit();
-    try value.configureOutput(32, 18, false);
+    _ = try value.configureOutput(32, 18, false, null);
     return value;
 }
 
@@ -686,7 +829,7 @@ test "video scene teardown during a decode and during audio leaks nothing" {
     const decoding = try videoNode(f);
     _ = try f.owner.videoOpen(decoding, gop_asset, true);
     const gop = (try playerOf(f, decoding)).video;
-    try gop.configureOutput(32, 18, false);
+    _ = try gop.configureOutput(32, 18, false, null);
     try testing.expect(try gop.update(0));
     const before = gop.decodedFrames();
     try testing.expect(try gop.prepare(5_900_000));
@@ -720,7 +863,7 @@ test "video seek and teardown cancel a long decode" {
     const resized = value.decodedFrames();
     try testing.expect(try value.prepare(5_900_000));
     while (value.decodedFrames() == resized) std.atomic.spinLoopHint();
-    try value.configureOutput(16, 9, false);
+    _ = try value.configureOutput(16, 9, false, null);
     const stopped = value.decodedFrames();
     sleepMs(20);
     try testing.expectEqual(stopped, value.decodedFrames());
@@ -733,7 +876,7 @@ test "video paused output reconfiguration rescales the shown frame without decod
     try testing.expect(try value.update(5_500_000));
     const pts = value.state.frame_pts_us;
     const before = value.decodedFrames();
-    try value.configureOutput(40, 20, true);
+    _ = try value.configureOutput(40, 20, true, null);
     try testing.expect(try value.update(5_500_000));
     // At most the lookahead frame that tells the shown frame is still current.
     try testing.expect(value.decodedFrames() - before <= 1);
@@ -884,24 +1027,44 @@ test "video audio after a first seek starts at the target sample" {
         }
     }
     // A track that starts after the video plays silence until its first sample, so the sine
-    // that starts at 0.5 s stays at 0.5 s from the start and after a later seek.
+    // that starts at 0.5 s stays at 0.5 s. A seek decodes as on a freshly opened video after
+    // the whole track or 2048 frames at 1 s, also when it lands on the first packet.
     var detail: [256]u8 = undefined;
-    const late = try video.Video.open(testing.allocator, late_audio_asset, true, &detail);
-    defer late.deinit();
-    for ([_]i64{ 0, 250_000 }) |target_us| {
-        if (target_us > 0) try late.seek(target_us);
-        var frames: usize = 0;
-        while (true) {
-            const decoded = try late.readAudio(sought[frames * 2 ..], @intCast(@min(4096, sought.len / 2 - frames)));
-            if (decoded == 0) break;
-            frames += decoded;
+    for ([_][]const u8{ asset, late_audio_asset }) |path| {
+        for ([_]i64{ 0, 250_000, 1_000_000 }) |target_us| {
+            const fresh = try video.Video.open(testing.allocator, path, true, &detail);
+            defer fresh.deinit();
+            if (target_us > 0 or path.ptr == asset.ptr) try fresh.seek(target_us);
+            const fresh_frames = try readAllAudio(fresh, reference);
+            if (path.ptr == late_audio_asset.ptr and target_us < 500_000) {
+                const first = for (reference[0 .. fresh_frames * 2], 0..) |sample, index| {
+                    if (@abs(sample) > 0.05) break index / 2;
+                } else fresh_frames;
+                const expected: usize = @intCast(@divExact((500_000 - target_us) * 48, 1000));
+                try testing.expect(first >= expected and first < expected + 100);
+            }
+            for ([_]?u32{ null, 2048 }) |earlier_frames| {
+                const reused = try video.Video.open(testing.allocator, path, true, &detail);
+                defer reused.deinit();
+                if (earlier_frames) |count| {
+                    try reused.seek(1_000_000);
+                    _ = try reused.readAudio(sought, count);
+                } else _ = try readAllAudio(reused, sought);
+                try reused.seek(target_us);
+                const frames = try readAllAudio(reused, sought);
+                errdefer std.debug.print("{s} seek {d} after {?d} frames\n", .{ path, target_us, earlier_frames });
+                try testing.expectEqualSlices(f32, reference[0 .. fresh_frames * 2], sought[0 .. frames * 2]);
+            }
         }
-        const first = for (sought[0 .. frames * 2], 0..) |sample, index| {
-            if (@abs(sample) > 0.05) break index / 2;
-        } else frames;
-        const expected: usize = @intCast(@divExact((500_000 - target_us) * 48, 1000));
-        errdefer std.debug.print("seek {d}: first loud sample {d}, expected about {d}\n", .{ target_us, first, expected });
-        try testing.expect(first >= expected and first < expected + 100);
+    }
+}
+
+fn readAllAudio(value: *video.Video, output: []f32) !usize {
+    var frames: usize = 0;
+    while (true) {
+        const decoded = try value.readAudio(output[frames * 2 ..], @intCast(@min(4096, output.len / 2 - frames)));
+        if (decoded == 0) return frames;
+        frames += decoded;
     }
 }
 
@@ -913,7 +1076,7 @@ test "video output reconfiguration keeps the queued audio" {
     try prebuffer(value);
     try mix(value, 4800);
     const before = value.getState();
-    try value.configureOutput(40, 20, false);
+    _ = try value.configureOutput(40, 20, false, null);
     const after = value.getState();
     try testing.expectEqual(before.audio_consumed_frames, after.audio_consumed_frames);
     try testing.expect(after.audio_queued_frames >= before.audio_queued_frames);
@@ -963,28 +1126,48 @@ test "video scene audio failure continues playback silently from the audio posit
     try testing.expect(!(try f.owner.videoGetState(node)).failed);
 }
 
-test "video scene playback ends after the audio drains without paints" {
-    const f = try Fixture.init(testing.allocator, 8, 4, .{});
-    defer f.deinit();
-    const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset, true);
-    const value = try playerOf(f, node);
-    value.video.setAudioOffline(true);
-    try f.owner.videoControl(node, video.Player.seek, .{value.video.info.duration_us - 200_000});
-    try f.owner.videoControl(node, video.Player.play, .{});
-    // A device pulls the stream; only the audio thread publishes what it played.
-    var output: [960 * 2]f32 = undefined;
-    var state = try f.owner.videoGetState(node);
-    for (0..3000) |_| {
-        value.video.engine_lock.lockUncancelable(testing.io);
-        _ = audio.mixToBuffer(value.video.audio_engine.?, &output, 960, 2);
-        value.video.engine_lock.unlock(testing.io);
-        state = try f.owner.videoGetState(node);
-        if (state.ended) break;
-        sleepMs(1);
+// The only state read comes 30 ms after the audio drained: playback then ends, or loops to the
+// time since the drain. The second pass seeks while playing after that loop.
+test "video scene playback ends or loops after the audio drains without paints" {
+    for ([_]bool{ false, true }) |loop| {
+        const f = try Fixture.init(testing.allocator, 8, 4, .{});
+        defer f.deinit();
+        const node = try videoNode(f);
+        _ = try f.owner.videoOpen(node, asset, true);
+        const value = try playerOf(f, node);
+        value.video.setAudioOffline(true);
+        try f.owner.videoControl(node, video.Player.setLoop, .{loop});
+        for (0..@as(usize, if (loop) 2 else 1)) |pass| {
+            try f.owner.videoControl(node, video.Player.seek, .{value.video.info.duration_us - 200_000});
+            if (pass == 0) try f.owner.videoControl(node, video.Player.play, .{});
+            for (0..3000) |_| {
+                if (value.video.getState().audio_ended != 0) break;
+                sleepMs(1);
+            }
+            // A device pulls the whole queued tail; only the audio thread publishes what it played.
+            var output: [960 * 2]f32 = undefined;
+            const mixed_at = std.Io.Clock.now(.awake, testing.io).toMicroseconds();
+            for (0..12) |_| {
+                value.video.engine_lock.lockUncancelable(testing.io);
+                _ = audio.mixToBuffer(value.video.audio_engine.?, &output, 960, 2);
+                value.video.engine_lock.unlock(testing.io);
+            }
+            for (0..3000) |_| {
+                if (value.video.audioStats().?.state == audio.StreamState.ended) break;
+                sleepMs(1);
+            }
+            sleepMs(30);
+            // A later publish of the drained stream keeps the drain time.
+            try value.video.setVolume(0.5);
+            value.video.syncAudio();
+            const state = try f.owner.videoGetState(node);
+            try testing.expectEqual(!loop, state.ended);
+            try testing.expectEqual(loop, state.playing);
+            // The drain came after the mix began, so the carried time is at most the time since then.
+            const since_mix = std.Io.Clock.now(.awake, testing.io).toMicroseconds() - mixed_at;
+            if (loop) try testing.expect(state.current_time_us >= 25_000 and state.current_time_us <= since_mix);
+        }
     }
-    try testing.expect(state.ended);
-    try testing.expect(!state.playing);
 }
 
 test "video scene seek while playing continues from the target" {

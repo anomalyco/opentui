@@ -2127,8 +2127,23 @@ pub const Context = struct {
         }
         if (target) |value| try value.retain();
         if (source) |value| value.retain();
-        node.scene_node.?.control.image.deinit();
-        node.scene_node.?.control.image = .{ .source = source, .fit = fit, .protocol = protocol, .buffer = target };
+        const state = &node.scene_node.?.control.image;
+        const crop = state.crop;
+        state.deinit();
+        state.* = .{ .source = source, .fit = fit, .protocol = protocol, .buffer = target, .crop = crop };
+    }
+
+    /// Sets the source region an IMAGE or VIDEO node shows; null shows the whole source.
+    pub fn sceneSetCrop(self: *Context, handle: Handle, crop: ?image.Region) !void {
+        if (crop) |region| std.debug.assert(region.width > 0 and region.height > 0);
+        try self.beginMutation();
+        defer self.mutating = false;
+        const node = (try self.scenePaintNode(handle)).scene_node.?;
+        switch (node.kind) {
+            api.OT_SCENE_IMAGE => node.control.image.crop = crop,
+            api.OT_SCENE_VIDEO => node.control.video.image.crop = crop,
+            else => return error.WrongKind,
+        }
     }
 
     fn videoState(self: *Context, handle: Handle) !*scene.VideoState {
@@ -2150,8 +2165,9 @@ pub const Context = struct {
         const target = if (buffer_handle) |id| try self.getBuffer(id) else null;
         if (target) |value| try value.retain();
         const state = &node.scene_node.?.control.video;
+        const crop = state.image.crop;
         state.image.deinit();
-        state.image = .{ .fit = fit, .buffer = target };
+        state.image = .{ .fit = fit, .buffer = target, .crop = crop };
     }
 
     /// Replaces the node's player. An empty path closes it. A failed open keeps no player.
