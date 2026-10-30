@@ -386,11 +386,6 @@ pub fn waitThreadsGone() !void {
     while (live_threads.load(.acquire) != 0) try deadline.check();
 }
 
-pub fn waitState(state: *const std.atomic.Value(State), wanted: State) !void {
-    const deadline: Deadline = .init();
-    while (state.load(.acquire) != wanted) try deadline.check();
-}
-
 const Script = struct {
     results: []const SinkError!usize,
     index: *std.atomic.Value(usize),
@@ -567,6 +562,20 @@ test "stdout writer needs no pin for code in the main executable" {
     try testing.expect(pinLibrary());
 }
 
+var room_waits: std.atomic.Value(u32) = .init(0);
+
+/// The real fd, counting the thread's waits for room.
+const RoomSink = struct {
+    fd: FdSink,
+    pub fn write(self: RoomSink, bytes: []const u8) SinkError!usize {
+        return self.fd.write(bytes);
+    }
+    pub fn waitWritable(self: RoomSink) void {
+        _ = room_waits.fetchAdd(1, .release);
+        self.fd.waitWritable();
+    }
+};
+
 test "stdout writer starts no new write after an abandon, on a full non-blocking pipe" {
     if (!supported) return error.SkipZigTest;
     const fds = try testPipe(4096);
@@ -576,23 +585,25 @@ test "stdout writer starts no new write after an abandon, on a full non-blocking
     var fill: [4096]u8 = undefined;
     @memset(&fill, 'f');
     while (std.c.write(fds[1], &fill, fill.len) > 0) {}
-    const writer = try StdoutWriter.create(testing.allocator, .{ .fd = fds[1] }, .{});
+    room_waits.store(0, .release);
+    const writer = try Writer(RoomSink, ThreadRunner(null)).create(testing.allocator, .{ .fd = .{ .fd = fds[1] } }, .{});
     @memset(writer.buffer[0..4096], 'S');
     writer.start(4096);
-    try waitState(&writer.state, .writing);
-    try std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(30), .clock = .awake }, io());
+    // The write returned EAGAIN; abandon while the thread waits for room, then make room.
+    const deadline: Deadline = .init();
+    while (room_waits.load(.acquire) == 0) try deadline.check();
     writer.abandon();
     var stale: usize = 0;
     var buffer: [4096]u8 = undefined;
-    for (0..50) |_| {
+    for (0..2) |pass| {
+        // The second pass reads what the thread wrote before it exited.
+        if (pass == 1) try waitThreadsGone();
         while (true) {
             const rc = std.c.read(fds[0], &buffer, buffer.len);
             if (rc <= 0) break;
             for (buffer[0..@intCast(rc)]) |byte| stale += @intFromBool(byte == 'S');
         }
-        try std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(2), .clock = .awake }, io());
     }
-    try waitThreadsGone();
     try testing.expectEqual(@as(usize, 0), stale);
 }
 
