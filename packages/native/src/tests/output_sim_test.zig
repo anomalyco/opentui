@@ -662,6 +662,8 @@ const Sim = struct {
                 try self.requestRender();
             },
             .suspending => if (phase == .suspended) {
+                // The stop waits for the rest of a split key: split gaps stay below the parser's timeout.
+                if (self.pieces.getLastOrNull()) |last| if (last.at_ns >= self.now) return self.scheduleTurn(last.at_ns + 1);
                 self.transition = .none;
                 self.stats.suspends += 1;
                 // I7: the suspend promise resolves only once the restore bytes are in the pty.
@@ -1373,6 +1375,8 @@ test "OUTPUT SIM seeds" {
     };
     // A split arrow key typed at 58.1 ms, while the split startup replies are in flight.
     _ = try runOne(.{ .name = "split_input", .mode = .sync_drain, .seed = 22, .events = 10 });
+    // An arrow key cut after ESC [ at 518 ms, while a suspend is under way.
+    _ = try runOne(.{ .name = "split_input", .mode = .ticket, .seed = 73, .events = 30 });
 }
 
 /// Known `main` defects, recorded until their fix run deletes the row. A required row that
