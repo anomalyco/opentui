@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { Lexer } from "marked"
+import { Lexer, type Tokens } from "marked"
 import { parseMarkdownIncremental, type ParseState } from "../markdown-parser.js"
 
 test("first parse returns all tokens", () => {
@@ -117,6 +117,20 @@ test("code blocks are parsed correctly", () => {
   const codeToken = state.tokens.find((t) => t.type === "code")
   expect(codeToken).toBeDefined()
   expect((codeToken as any).lang).toBe("js")
+})
+
+test("single tildes stay literal and double tildes still strike through", () => {
+  const plain = parseMarkdownIncremental("按 3~5 倍放大，赢得 30~60%，约 ~5 分钟", null)
+  const plainParagraph = plain.tokens.find((token) => token.type === "paragraph") as Tokens.Paragraph
+
+  expect(plainParagraph.raw).toBe("按 3~5 倍放大，赢得 30~60%，约 ~5 分钟")
+  expect(plainParagraph.tokens.some((token) => token.type === "del")).toBe(false)
+
+  const struck = parseMarkdownIncremental("~~gone~~ text", null)
+  const struckParagraph = struck.tokens.find((token) => token.type === "paragraph") as Tokens.Paragraph
+  const del = struckParagraph.tokens.find((token) => token.type === "del") as Tokens.Del
+
+  expect(del.text).toBe("gone")
 })
 
 test("streaming scenario with incremental typing", () => {

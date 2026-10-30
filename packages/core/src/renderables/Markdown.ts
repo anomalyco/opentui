@@ -19,7 +19,7 @@ import {
 } from "./TextTable.js"
 import type { TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { infoStringToFiletype } from "../lib/tree-sitter/resolve-ft.js"
-import { parseMarkdownIncremental, type ParseState } from "./markdown-parser.js"
+import { markdownLexerOptions, parseMarkdownIncremental, type ParseState } from "./markdown-parser.js"
 import { detectLinks, normalizeMarkdownLinkTarget } from "../lib/detect-links.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import { MAX_LINK_URL_BYTES } from "../zig.js"
@@ -582,7 +582,7 @@ export class MarkdownRenderable extends Renderable {
     }
 
     if (chunks.length === 0 && "text" in token && typeof token.text === "string") {
-      this.renderInlineContent(Lexer.lexInline(token.text), chunks)
+      this.renderInlineContent(Lexer.lexInline(token.text, markdownLexerOptions), chunks)
     }
 
     return chunks.length > 0 ? new StyledText(chunks) : undefined
