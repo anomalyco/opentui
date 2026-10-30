@@ -113,7 +113,7 @@ try {
         "--experimental-ffi",
         "--import",
         "./scripts/test-node-hook.mjs",
-        "--test-concurrency=1",
+        "--test-concurrency=4",
         `--test-timeout=${nodeTestTimeoutMs}`,
         "--test",
         ...emittedAllowlist,
