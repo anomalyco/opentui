@@ -3132,7 +3132,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (prevSplitHeight === 0 && nextSplitHeight > 0) {
         scrollOutput = ANSI.scrollDown(this._terminalHeight - nextSplitHeight)
       } else if (splitViewportScrollLines > 0) {
-        scrollOutput = ANSI.scrollUp(splitViewportScrollLines)
+        // Grow the footer by scrolling the viewport up with line feeds on the screen's last row.
+        // SU (ANSI.scrollUp / CSI S) discards the rows that leave the top of the screen on xterm
+        // and xterm.js, so history above a bottom-pinned footer would be lost instead of reaching
+        // scrollback. scrollIntoHistory line-feeds on the last row push those rows into scrollback.
+        scrollOutput = ANSI.scrollIntoHistory(splitViewportScrollLines, this._terminalHeight)
       }
     }
     const clearOutput =
