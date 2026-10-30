@@ -1522,22 +1522,41 @@ pub const Session = struct {
         held.abandon(held.ptr);
     }
 
+    /// A close past its deadline: begins close, then discards the output queued before it, except the copy that
+    /// the host holds, so only that copy and the restoration remain.
+    pub fn dropOutput(self: *Session) Error!void {
+        try self.beginClose();
+        // Restoration packets enter only a drained queue. Once the first is queued, the queue holds nothing else.
+        const step = self.lifecycle.step;
+        if (self.lifecycle.image_index != 0 or (step != .idle and step != .delete_images)) return;
+        self.finishPresentation(.failed);
+        self.releaseQueued(if (self.pending) |ticket| ticket.len else 0);
+        if (self.output.closed and self.isDrained()) self.state = .closed;
+    }
+
+    /// Releases every queued span. The held span keeps `kept` bytes from its offset for a copy in flight.
+    fn releaseQueued(self: *Session, kept: u32) void {
+        if (self.span) |*span| {
+            if (kept == 0) {
+                self.output.releaseSpan(span.slot_index, span.release_id) catch unreachable;
+                self.span = null;
+                self.span_offset = 0;
+            } else span.len = self.span_offset + kept;
+        }
+        var spans: [1]feed.SpanInfo = undefined;
+        while (self.output.drainSpans(&spans) != 0) {
+            self.output.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
+        }
+    }
+
     /// Explicitly discards disconnected output. Copies belong to the host, so
     /// cancellation leaves no native borrow and never retries accepted bytes.
     pub fn cancel(self: *Session) void {
         self.abandonStdout();
         self.cancelSceneFrame();
         self.finishPresentation(.failed);
-        if (self.span) |span| {
-            self.output.releaseSpan(span.slot_index, span.release_id) catch unreachable;
-            self.span = null;
-        }
-        var spans: [1]feed.SpanInfo = undefined;
-        while (self.output.drainSpans(&spans) != 0) {
-            self.output.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
-        }
+        self.releaseQueued(0);
         self.output.close() catch unreachable;
-        self.span_offset = 0;
         self.pending = null;
         self.state = .cancelled;
         self.lifecycle.phase = .cancelled;

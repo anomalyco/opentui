@@ -1123,6 +1123,12 @@ pub const Context = struct {
         try (try self.getSession(handle)).beginClose();
     }
 
+    pub fn dropSessionOutput(self: *Context, handle: Handle) Error!void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        try (try self.getSession(handle)).dropOutput();
+    }
+
     pub fn cancelSession(self: *Context, handle: Handle) Error!void {
         try self.beginMutation();
         defer self.mutating = false;

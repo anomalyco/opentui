@@ -7181,6 +7181,14 @@ export class FFIRenderLib {
     )
   }
 
+  public sessionDropOutput(context: NativeContextHandle, session: SessionHandle): void {
+    const handle = encodeContextHandle(context, session)
+    nativeResult(
+      "ot_session_drop_output",
+      this.opentui.symbols.ot_session_drop_output(this.nativeContextPointer(context, "ot_session_drop_output"), handle),
+    )
+  }
+
   public sessionCancel(context: NativeContextHandle, session: SessionHandle): void {
     const handle = encodeContextHandle(context, session)
     nativeResult(

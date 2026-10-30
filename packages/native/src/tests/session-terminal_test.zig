@@ -501,6 +501,7 @@ test "Session terminal failed cleanup retains committed images and frame state u
     try f.drive(&now_ns, .active);
     try f.paint("old");
     try testing.expect(try f.cli.getNextBuffer().drawImage(pixels, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+    try testing.expect(try f.cli.getNextBuffer().drawImage(pixels, 2, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     try testing.expectEqual(.pending, try f.owner.renderSession(f.id, true));
     _ = try f.drain(&bytes);
     const image_state = f.cli.currentImages.items[0];
@@ -509,6 +510,8 @@ test "Session terminal failed cleanup retains committed images and frame state u
     try f.owner.beginSessionClose(f.id);
     try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
     const partial = (try f.owner.readOutput(f.id, bytes[0..1])).?;
+    // A late close keeps the first image's deletion, queued while the second is still to delete (#1875).
+    try f.owner.dropSessionOutput(f.id);
     try f.owner.completeOutput(f.id, partial, .written);
     const failed = (try f.owner.readOutput(f.id, &bytes)).?;
     const retained = f.value.getStats();
@@ -598,7 +601,9 @@ pub const Probe = struct {
 };
 
 test "Session exit pump preserves output order and restoration without clocks or sleeps" {
-    for ([_]bool{ false, true }) |closing| {
+    // A late close (`drop`) keeps the held copy and queued restoration, and drops the rest of the output.
+    for ([_][2]bool{ .{ false, false }, .{ true, false }, .{ false, true }, .{ true, true } }) |mode| {
+        const closing, const drop = mode;
         var failing = testing.FailingAllocator.init(testing.allocator, .{});
         var probe: Probe = .{};
         const io: std.Io = .{ .userdata = &probe, .vtable = &Probe.vtable };
@@ -620,6 +625,7 @@ test "Session exit pump preserves output order and restoration without clocks or
         const allocated = failing.allocated_bytes;
         failing.fail_index = failing.alloc_index;
         failing.resize_fail_index = failing.resize_index;
+        if (drop) try f.owner.dropSessionOutput(f.id);
         try testing.expectEqual(.output_pending, try f.value.pumpExit());
         try testing.expectEqualDeep(ticket, f.value.pending.?);
         try f.value.completeOutput(ticket, .written);
@@ -640,7 +646,8 @@ test "Session exit pump preserves output order and restoration without clocks or
         try testing.expectEqual(allocated, failing.allocated_bytes);
         try testing.expect(!failing.has_induced_failure);
         const output = bytes[0..len];
-        if (!closing) try testing.expect(std.mem.startsWith(u8, output, "queued-before-exit"));
+        if (!closing) try testing.expectEqual(!drop, std.mem.startsWith(u8, output, "queued-before-exit"));
+        if (drop) try testing.expect(std.mem.find(u8, output, "ueued") == null);
         try testing.expect(std.mem.find(u8, output, "\x1b[?1049l") != null);
         try testing.expect(std.mem.find(u8, output, "\x1b[?2004l") != null);
         try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.showCursor));
