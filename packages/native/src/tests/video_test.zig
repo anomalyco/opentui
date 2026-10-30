@@ -1112,6 +1112,16 @@ test "video scene decodes Kitty output smaller while frames overrun and recovers
     try paint(f);
     try testing.expectEqual(@as(u32, 16), value.video.current_image.?.width());
 
+    // Cheap frames that left an image upload waiting count as overruns.
+    const Committed = std.meta.Child(@TypeOf(f.cli.currentImages.items));
+    try f.cli.currentImages.append(f.cli.allocator, std.mem.zeroInit(Committed, .{ .placement_id = 9, .protocol = .kitty }));
+    index = 0;
+    while (index < 100 and (try f.owner.videoGetState(node)).quality_tier == 0) : (index += 1) {
+        try paintWithFrameCost(f, node, index, frame_us / 4);
+    }
+    try testing.expectEqual(@as(u32, 1), (try f.owner.videoGetState(node)).quality_tier);
+    f.cli.currentImages.clearRetainingCapacity();
+
     // Other protocols draw at the placement's pixel size, so they keep the full size.
     f.cli.terminal.image_protocol = .blocks;
     for (0..20) |step| try paintWithFrameCost(f, node, step, frame_us * 4);

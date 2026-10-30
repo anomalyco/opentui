@@ -403,6 +403,8 @@ pub const FeedBackend = struct {
     uploads: std.ArrayListUnmanaged(Upload) = .empty,
     upload: ?struct { start: usize, waited: bool, len: usize = 0, cut: bool = false } = null,
     keptUploadBytes: usize = 0,
+    /// The frame writes no cells or scrollback besides its images.
+    uploadsAlone: bool = false,
 
     lastWriteTimeUs: ?f64 = null,
 
@@ -551,8 +553,8 @@ pub const FeedBackend = struct {
     }
 
     /// Remove kept uploads, the last first, until the frame fits an empty queue. An
-    /// upload that already waited and does not fit even alone is too large: waiting
-    /// again would repeat this frame.
+    /// upload that already waited and does not fit a frame with nothing else is too
+    /// large: waiting again would repeat this frame.
     fn trimUploads(self: *FeedBackend) void {
         const others = self.frameBytes.items.len - self.keptUploadBytes;
         var index = self.uploads.items.len;
@@ -563,7 +565,8 @@ pub const FeedBackend = struct {
             const tail = self.frameBytes.items[upload.end..];
             std.mem.copyForwards(u8, self.frameBytes.items[upload.start..], tail);
             self.frameBytes.shrinkRetainingCapacity(upload.start + tail.len);
-            upload.state = if (upload.waited and others + upload.end - upload.start > self.uploadLimit()) .too_large else .deferred;
+            const alone = upload.waited and self.uploadsAlone;
+            upload.state = if (alone and others + upload.end - upload.start > self.uploadLimit()) .too_large else .deferred;
         }
     }
 
@@ -579,6 +582,7 @@ pub const FeedBackend = struct {
         self.uploads.clearRetainingCapacity();
         self.upload = null;
         self.keptUploadBytes = 0;
+        self.uploadsAlone = false;
         self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.clearRetainingCapacity();
     }

@@ -349,10 +349,11 @@ pub const CliRenderer = struct {
     presentationFailed: bool = false,
     /// Frames dropped because they are larger than one frame of output: the count of
     /// distinct contents dropped, the last one's size (0 once a frame is not dropped
-    /// for size), and its content, which is not encoded again until it changes.
+    /// for size), and a full repaint's content and size, which is not encoded again
+    /// until it changes.
     dropped_frames: u32 = 0,
     dropped_frame_bytes: u32 = 0,
-    dropped_content: ?u64 = null,
+    dropped_content: ?struct { hash: u64, bytes: u32 } = null,
     /// Set by a Session only while it commits a scene draft.
     scene_work: ?FrameWork = null,
     /// The draft's rows that can differ from the presented frame, or null for all rows.
@@ -989,9 +990,13 @@ pub const CliRenderer = struct {
         std.debug.assert(self.pendingPresentation == null and !self.presentationFailed);
         // A dropped scrollback commit is not held: the host drops the commit instead.
         const holds = split == null or split.?.snapshots.len == 0;
+        // The overlay is part of the frame that the hold compares.
+        const paint_footer = if (split) |options| options.paint_footer else true;
+        if (paint_footer) self.renderDebugOverlay();
         if (self.dropped_content) |content| {
-            if (holds and frameContentHash(self.nextRenderBuffer) == content) {
+            if (holds and frameContentHash(self.nextRenderBuffer) == content.hash) {
                 self.clearSkippedFrameState();
+                self.dropped_frame_bytes = content.bytes;
                 return .failed;
             }
         }
@@ -1003,8 +1008,6 @@ pub const CliRenderer = struct {
         }
 
         const now = std.Io.Clock.now(.awake, self.io).toMicroseconds();
-        const paint_footer = if (split) |options| options.paint_footer else true;
-        if (paint_footer) self.renderDebugOverlay();
         const start_split_state = self.splitFrameState();
         const previous_stats = self.renderStats;
         self.imageRenderFailed = false;
@@ -1061,9 +1064,12 @@ pub const CliRenderer = struct {
         if (status != .rendered) {
             if (b.oversizeBytes != 0) {
                 // A failed encode still syncs every cell, so the current buffer holds the dropped frame.
-                self.dropped_frames +%= 1;
+                // A diff can be larger than its full repaint: only a frame that wrote every cell is
+                // held and counted, and a scrollback commit, which the host drops, is counted too.
+                const full = self.renderStats.cellsUpdated == self.width * self.height;
+                if (full or !holds) self.dropped_frames +%= 1;
                 self.dropped_frame_bytes = @intCast(@min(b.oversizeBytes, std.math.maxInt(u32)));
-                self.dropped_content = if (holds) frameContentHash(self.currentRenderBuffer) else null;
+                if (holds and full) self.dropped_content = .{ .hash = frameContentHash(self.currentRenderBuffer), .bytes = self.dropped_frame_bytes };
             }
             self.renderStats = previous_stats;
             self.rollbackSplitFrame(start_split_state);
@@ -1789,10 +1795,13 @@ pub const CliRenderer = struct {
         return protocol;
     }
 
-    // Matching by size, not image, keeps each new video frame of the same size on blocks.
+    // The same image, or raw pixels whose size alone sets the upload (so each new video frame of
+    // the same size stays on blocks, while a compressible neighbor that takes this id does not).
     fn placementOversize(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) bool {
         const committed = self.currentImageForPlacement(placement.placement_id) orelse return false;
-        return committed.oversize and committed.pixel_width == placement.pixel_width and
+        const same = committed.image_handle == placement.image_handle or
+            (placement.image.encoded_png == null and self.kittyTransport.mode == .raw);
+        return committed.oversize and same and committed.pixel_width == placement.pixel_width and
             committed.pixel_height == placement.pixel_height and committed.source_width == placement.source_width and
             committed.source_height == placement.source_height;
     }
@@ -2155,7 +2164,7 @@ pub const CliRenderer = struct {
         tmux: bool,
     ) !void {
         const previous = if (!self.imageScreenInvalidated) (if (self.currentImageForPlacement(placement.placement_id)) |current|
-            if (current.protocol == .kitty and current.image_handle == placement.image_handle) current else null
+            if (current.protocol == .kitty and current.image_handle == placement.image_handle and !current.oversize) current else null
         else
             null) else null;
         const image_id = self.kittyImageId(placement.placement_id);
@@ -2506,6 +2515,7 @@ pub const CliRenderer = struct {
         _ = self.pollKittyImageTransport();
         const renderStartTime = std.Io.Clock.now(.awake, self.io).toMicroseconds();
         var cellsUpdated: u32 = 0;
+        var imageCellsCleared: u32 = 0;
         const palette_force = self.last_rendered_palette_epoch == null or self.last_rendered_palette_epoch.? != self.palette_epoch;
         const should_force = force or self.force_full_repaint or palette_force;
         const has_image_state = self.nextRenderBuffer.image_placements.items.len != 0 or self.currentImages.items.len != 0;
@@ -2671,6 +2681,7 @@ pub const CliRenderer = struct {
                     runLength = 0;
                     self.currentRenderBuffer.syncCell(x, y, cell);
                     cellsUpdated += 1;
+                    imageCellsCleared += 1;
                     continue;
                 }
 
@@ -2980,6 +2991,7 @@ pub const CliRenderer = struct {
         const renderTime = @as(f64, @floatFromInt(renderEndTime - renderStartTime));
 
         self.renderStats.cellsUpdated = cellsUpdated;
+        self.backend.uploadsAlone = !sync_started and cellsUpdated == imageCellsCleared;
         self.renderStats.renderTime = renderTime;
         self.last_rendered_palette_epoch = self.palette_epoch;
         if (self.imageRenderFailed) {
@@ -3088,6 +3100,8 @@ pub const CliRenderer = struct {
         for ([_][]CommittedImage{ self.currentImages.items, self.pendingImages.items }) |images| {
             for (images) |*image| {
                 if (image.protocol == .kitty) image.image_handle = 0;
+                // A new transport may send an image that was too large.
+                image.oversize = false;
             }
         }
         self.force_full_repaint = true;

@@ -1205,9 +1205,10 @@ ot_status ot_session_sync_detached(ot_context *, const ot_handle *session, const
  * wait, and one larger than a frame draws as blocks next. Submit another frame
  * while it is nonzero. A frame whose output without image uploads is larger than
  * the write limit returns FAILED: dropped_frame_bytes is then its size (saturated),
- * and dropped_frames counts each dropped content once. The same content returns
- * FAILED again without encoding until it changes; any other result sets
- * dropped_frame_bytes to 0. This copied record borrows no renderer or framebuffer
+ * and dropped_frames counts each dropped content once. A frame that wrote only some
+ * cells is counted once its full repaint fails too. The same content returns
+ * FAILED again, with its size, without encoding until it changes; any other result
+ * sets dropped_frame_bytes to 0. This copied record borrows no renderer or framebuffer
  * storage. */
 typedef struct ot_session_renderer_state {
     uint32_t struct_size;
