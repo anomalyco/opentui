@@ -620,7 +620,7 @@ test("box titles and arrow characters accept any text", async () => {
   const errors: unknown[] = []
   renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
   const box = new BoxRenderable(renderer, { border: true, width: 12, height: 3, bottomTitle: text })
-  const arrow = new ArrowRenderable(renderer, { direction: "up", arrowChars: { up: text } })
+  const arrow = new ArrowRenderable(renderer, { direction: "up", height: 1, arrowChars: { up: text } })
   renderer.root.add(box)
   renderer.root.add(arrow)
   box.title = text

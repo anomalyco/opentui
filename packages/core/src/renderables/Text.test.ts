@@ -5,6 +5,8 @@ import { RGBA } from "../lib/RGBA.js"
 import { stringToStyledText, StyledText } from "../lib/styled-text.js"
 import { createTestRenderer, type MockMouse, type TestRenderer } from "../testing/test-renderer.js"
 import { BoxRenderable } from "./Box.js"
+import { Renderable } from "../Renderable.js"
+import type { OptimizedBuffer } from "../buffer.js"
 import { CodeRenderable } from "./Code.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
@@ -1411,6 +1413,31 @@ describe("TextRenderable Selection", () => {
       await renderOnce()
 
       expect(text.height).toBe(1)
+    })
+
+    // GitHub #435: Yoga shrinks the middle text of a too-short column to zero rows. It paints
+    // nothing instead of overlapping the next text, and its height getter still reports one row.
+    // An empty renderable with its own renderSelf is zero rows tall too, so its hooks draw nothing.
+    it("hides a text that a short column shrinks to zero rows", async () => {
+      const column = new BoxRenderable(currentRenderer, { flexDirection: "column", height: 2 })
+      currentRenderer.root.add(column)
+      const texts = ["Line 1: short", "Line 2: Another line", "Line 3: end"].map(
+        (content) => new TextRenderable(currentRenderer, { content }),
+      )
+      for (const text of texts) column.add(text)
+      class Mark extends Renderable {
+        protected override renderSelf(buffer: OptimizedBuffer): void {
+          buffer.drawText("X".repeat(this.width), this.x, this.y, RGBA.fromInts(255, 255, 255))
+        }
+      }
+      column.add(new Mark(currentRenderer, { width: 6 }))
+      await renderOnce()
+
+      const rows = captureFrame()
+        .split("\n", 3)
+        .map((line) => line.trimEnd())
+      expect(rows).toEqual(["Line 1: short", "Line 3: end", ""])
+      expect(texts.map((text) => `${text.y} ${text.height}`)).toEqual(["0 1", "1 1", "1 1"])
     })
 
     it("should shrink width when replacing long line with shorter (wrapMode: none, position: absolute)", async () => {

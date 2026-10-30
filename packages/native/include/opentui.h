@@ -1026,8 +1026,10 @@ ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t 
  * copies the six actual Yoga computed values, including zero dimensions, and
  * sets screen_x/y to zero. OT_LAYOUT_PAINT copies prepared paint geometry, including
  * screen_x/y, with each axis that leaves the signed 32-bit cell range clamped to the
- * whole cells it paints within 2^22 of the origin, at least one; PUBLIC and YOGA keep
- * the unclamped values. During a RECORD request, mutations do not change those coordinates.
+ * whole cells it paints within 2^22 of the origin, at least one unless zero; PUBLIC and YOGA keep
+ * the unclamped values. PUBLIC raises a zero width or height to one cell; PAINT keeps
+ * it, and a node with a zero dimension paints and hits no cell.
+ * During a RECORD request, mutations do not change those coordinates.
  * These reads do not run layout. Other selectors reject without changing output.
  * A scroll node's children report YOGA values local to its content node, and their
  * screen_x/y compose through the viewport and content origins and the offset. */

@@ -1874,6 +1874,8 @@ pub const Context = struct {
         if (owned.text == null and owned.kind != api.OT_SCENE_BOX and owned.kind != api.OT_SCENE_SLIDER and owned.kind != api.OT_SCENE_ARROW) return error.WrongKind;
         if (x >= target.width or y >= target.height) return;
         const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
+        // A prepared text that Yoga sizes to zero paints nothing; an unprepared one draws its text.
+        if (owned.geometry_epoch != std.math.maxInt(u64) and (owned.layout.width == 0 or owned.layout.height == 0)) return;
         try text.prepareView();
         try target.drawTextBufferChecked(text.view, x, y);
     }
