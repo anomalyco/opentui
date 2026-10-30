@@ -766,7 +766,8 @@ pub const Scene = struct {
     members: std.ArrayListUnmanaged(Work) = .empty,
     // Advances with each candidates walk, which clears both lists first.
     candidates_gen: u64 = 0,
-    // Advances with each paint list, and with each change between frames that drops the list.
+    // Advances with each paint list, each solve, and each change between frames that drops the
+    // list.
     members_gen: u64 = 0,
     // Advances with each host request.
     last_request: u64 = 0,
@@ -2237,6 +2238,7 @@ pub const Scene = struct {
         // Every solve, a measurement-only one too, invalidates the geometry nodes hold.
         self.layout_epoch = epoch;
         self.selection_epoch +%= 1;
+        self.members_gen += 1;
         self.layout_width = cli.width;
         self.layout_height = cli.height;
         self.layout_pending = true;

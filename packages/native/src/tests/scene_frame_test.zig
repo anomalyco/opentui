@@ -249,7 +249,13 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
             try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1])).screenY);
             _ = try g.owner.sceneFrameCommit(g.id, try g.step(asked, options, c.OT_SCENE_FRAME_DONE, null), false);
             try drain(g.owner, g.id);
-            // A row detached after a frame painted it has no paint cells.
+            // A painted row reads its solved width after a measurement, and a row detached after
+            // a frame painted it has no paint cells.
+            if (shift == 0) {
+                try g.owner.sceneSetStyle(rows[2], 4, 0, 0, 1, 3, 1);
+                try g.owner.sceneMeasureLayout(g.id, g.root);
+                try testing.expectEqual(@as(f32, 3), (try g.owner.sceneGetPaintLayout(rows[2])).width);
+            }
             if (shift != -1) continue;
             try g.owner.sceneMoveNode(rows[1], null, 0);
             try testing.expectEqual(scene.Layout{}, try g.owner.sceneGetPaintLayout(rows[1]));
