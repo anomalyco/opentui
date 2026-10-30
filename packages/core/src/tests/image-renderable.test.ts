@@ -300,10 +300,10 @@ describe("ImageRenderable image loading", () => {
 
   test("a crop change applies to the loaded image and a rejected one keeps the previous crop", async () => {
     const errors: unknown[] = []
-    const renderable = new ImageRenderable(renderer, {
-      source: NativeImage.fromRgba(new Uint8Array(4 * 4 * 4), 4, 4),
-      onError: (error) => errors.push(error),
-    })
+    const source = NativeImage.fromRgba(new Uint8Array(4 * 4 * 4), 4, 4)
+    const renderable = new ImageRenderable(renderer, { source, onError: (error) => errors.push(error) })
+    // The renderable retains the source; this reference must still be disposed.
+    source.dispose()
     await renderable.loadPromise
     renderable.crop = { left: 2, top: 0, width: 2, height: 1 }
     expect(renderable.getFittedSize(4, 4, 1)).toEqual({ width: 4, height: 2 })
