@@ -7,6 +7,7 @@ const link = @import("link.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
+const stdout_writer = @import("stdout-writer.zig");
 const input_parser = @import("input-parser.zig");
 const scene = @import("scene.zig");
 const native_span_feed = @import("native-span-feed.zig");
@@ -1087,6 +1088,21 @@ pub const Context = struct {
         defer self.mutating = false;
         return (try self.getSession(handle)).drainStdout(self.io, max_bytes);
     }
+
+    /// Process stdout from a Session-owned native thread; see `Session.postStdout`.
+    pub fn postStdout(self: *Context, handle: Handle, max_bytes: u32, wait: bool) Error!session.PostResult {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return (try self.getSession(handle)).postStdout(stdout_writer.StdoutWriter, StdoutCreate{}, max_bytes, wait);
+    }
+
+    const StdoutCreate = struct {
+        pub fn create(_: StdoutCreate) error{UnsupportedResource}!*stdout_writer.StdoutWriter {
+            if (comptime !stdout_writer.supported) return error.UnsupportedResource;
+            if (!stdout_writer.stdoutSupported() or !stdout_writer.pinLibrary()) return error.UnsupportedResource;
+            return stdout_writer.StdoutWriter.create(std.heap.c_allocator, .{ .fd = 1 }, .{});
+        }
+    };
 
     pub fn completeOutput(
         self: *Context,

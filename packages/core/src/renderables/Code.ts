@@ -147,7 +147,8 @@ export class CodeRenderable extends TextBufferRenderable {
   set content(value: string) {
     if (this._content === value) return
     this.runMutation(() => {
-      if (this._streaming && this._filetype && !this._drawUnstyledText) {
+      // Streaming keeps the shown highlight until the next one lands (_hadInitialContent implies _streaming).
+      if (this._hadInitialContent && this._shouldRenderTextBuffer && this._filetype && !this._drawUnstyledText) {
         this._content = value
         this.invalidateHighlights()
         this.requestRender()
@@ -353,7 +354,7 @@ export class CodeRenderable extends TextBufferRenderable {
     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText
 
     if (this._streaming && !isInitialContent) {
-      this.setShouldRenderTextBuffer(true)
+      if (this._drawUnstyledText) this.setShouldRenderTextBuffer(true)
     } else if (shouldDrawUnstyledNow) {
       if (this._initialStyledText) {
         this.textBuffer.setStyledText(this._initialStyledText)

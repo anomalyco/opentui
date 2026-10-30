@@ -73,7 +73,8 @@ jobs:
           name: native-symbols
           path: artifacts/native-symbols/*.zip
           if-no-files-found: error
-          retention-days: 1
+          # As long as the Windows crash dumps, which need the PDB.
+          retention-days: 7
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v7
@@ -154,6 +155,23 @@ jobs:
       - name: Enable Linux core dumps
         if: runner.os == 'Linux'
         uses: ./.github/actions/enable-linux-coredumps
+
+      # Windows Error Reporting writes a minidump when a node.exe that allows it crashes. Bun exits from its own
+      # crash handler first.
+      - name: Enable Windows crash dumps
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dir = "$env:GITHUB_WORKSPACE\.crash-dumps"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $wer = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+          New-ItemProperty -Force $wer -Name DontShowUI -PropertyType DWord -Value 1 | Out-Null
+          $key = "$wer\LocalDumps\node.exe"
+          New-Item -Force $key | Out-Null
+          New-ItemProperty -Force $key -Name DumpFolder -PropertyType ExpandString -Value $dir | Out-Null
+          New-ItemProperty -Force $key -Name DumpType -PropertyType DWord -Value 1 | Out-Null
+          New-ItemProperty -Force $key -Name DumpCount -PropertyType DWord -Value 3 | Out-Null
 
       # Native tests build from source, so they run before this job gets the cross-compiled library.
       - name: Run native tests
@@ -290,6 +308,20 @@ jobs:
         uses: ./.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
+
+      - name: Upload Windows crash dumps
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
+          # The DLL that crashed. Its PDB is in the native-symbols artifact of the same native inputs.
+          path: |
+            ${{ github.workspace }}/.crash-dumps
+            packages/core/node_modules/@opentui/core-win32-x64/opentui.dll
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: true
 
   # Each package's Windows tests take seconds, and a Windows runner takes about a minute to set up, so
   # the packages share this job. Their own workflows test them on Linux and macOS.

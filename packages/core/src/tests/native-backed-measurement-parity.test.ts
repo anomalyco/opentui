@@ -35,7 +35,7 @@ for (const kind of ["text", "textarea"] as const) {
   describe(`native-backed ${kind} measurement parity`, () => {
     const create = (
       content: string,
-      options: Pick<TextOptions, "wrapMode" | "alignSelf" | "position" | "left" | "top"> = {},
+      options: Pick<TextOptions, "wrapMode" | "alignSelf" | "position" | "left" | "top" | "margin"> = {},
     ) =>
       kind === "text"
         ? new TextRenderable(renderer, { content, ...options })
@@ -75,6 +75,19 @@ for (const kind of ["text", "textarea"] as const) {
         await renderOnce()
         expectLayout(node, width, 1)
       }
+    })
+
+    test("wraps as a fresh layout after its parent grows by less than its margin", async () => {
+      const parent = new BoxRenderable(renderer, { width: 20 })
+      const content = "the quick brown fox jumps over the lazy dog and keeps running far away"
+      const node = create(content, { wrapMode: "word", alignSelf: "flex-start", margin: 1 })
+      parent.add(node)
+      renderer.root.add(parent)
+      await renderOnce()
+      expectLayout(node, 18, 4)
+      parent.width = 21
+      await renderOnce()
+      expectLayout(node, 19, 4)
     })
 
     test("measures initially absolute content without AtMost clamping", async () => {

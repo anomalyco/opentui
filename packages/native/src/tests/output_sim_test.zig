@@ -5,10 +5,12 @@
 //! and one write per turn, a 1 ms retry after a 0-byte drain, one frame in flight, input,
 //! replies, resizes, suspend, and the end of the run (close, exit, crash).
 //!
-//! Output modes are today's two paths: `sync_drain` (fd 1: `drainOutput` with `SimSink` on the
-//! owner, which blocks the owner while the pty is full) and `ticket` (a Writable: `readOutput`,
-//! an asynchronous host write, `completeOutput`). Every run checks the invariants listed at
-//! `Stats`; the 388 stall (I1) is recorded, not asserted.
+//! Output modes: `sync_drain` (fd 1 today: `drainOutput` with `SimSink` on the owner, which
+//! blocks the owner while the pty is full), `ticket` (a Writable: `readOutput`, an asynchronous
+//! host write, `completeOutput`), and `writer` (fd 1 with the stdout writer: the owner posts and
+//! polls, and a stepped writer "thread" picks, writes and publishes as separate world events).
+//! Every run checks the invariants listed at `Stats`; the 388 stall (I1) is recorded in
+//! `sync_drain` and must be zero in `writer`.
 //!
 //! Replay one run: OUTPUT_SIM_SEED=<n> OUTPUT_SIM_PRESET=<name> [OUTPUT_SIM_MODE=ticket]
 //! [OUTPUT_SIM_SIZE=100x32] [OUTPUT_SIM_EVENTS=<n>] [OUTPUT_SIM_TRACE=1]
@@ -25,6 +27,7 @@ const fixture = @import("scene_fixture_test.zig");
 const vt_decode = @import("vt-decode.zig");
 const presets = @import("output-sim/presets.zig");
 const link_model = @import("output-sim/link.zig");
+const stdout_writer = @import("../stdout-writer.zig");
 
 const ms = std.time.ns_per_ms;
 /// The model's own storage. The Context's goes through `ContextAllocator`.
@@ -62,6 +65,15 @@ const Stats = struct {
     owner_writes: u64 = 0,
     /// I1, recorded: owner time inside sink writes, and keys that waited for it.
     blocked_ns: u64 = 0,
+    /// I1 in writer mode: owner sink writes before the run's end (exit may still drain).
+    owner_running_writes: u32 = 0,
+    /// Writer mode: polls that found the copy still in flight, and copies taken back at exit.
+    writer_polls: u64 = 0,
+    writer_reclaims: u32 = 0,
+    /// Writers created while the run ends: exit after a take-back starts no new thread.
+    exit_writers: u32 = 0,
+    /// I12: a collect that left the writer idle while output was queued.
+    writer_idle_gaps: u32 = 0,
     keys_sent: u64 = 0,
     keys_seen: u64 = 0,
     keys_delayed: u64 = 0,
@@ -113,7 +125,7 @@ const Stats = struct {
 };
 
 /// Invariant counters that must stay zero, unless a known `main` defect is allowed.
-const invariant_fields = [_][]const u8{ "second_frames", "feed_overflows", "cut_tokens", "cuts_mid_span", "frame_mismatches", "quiescent_mismatches", "restore_missing", "modes_left", "stale_bytes", "slow_drains", "bad_failures", "discontinuities", "reply_errors", "input_mismatches" };
+const invariant_fields = [_][]const u8{ "second_frames", "feed_overflows", "cut_tokens", "cuts_mid_span", "frame_mismatches", "quiescent_mismatches", "restore_missing", "modes_left", "stale_bytes", "slow_drains", "bad_failures", "discontinuities", "reply_errors", "input_mismatches", "writer_idle_gaps" };
 
 /// Owner events run on the JS thread; world events are the link, outside writers and input.
 const Kind = enum {
@@ -132,6 +144,10 @@ const Kind = enum {
     external,
     input_arrive,
     key_send,
+    /// The writer thread's steps, each a world event with its own tiebreak.
+    writer_pick,
+    writer_write,
+    writer_publish,
 
     fn owner(kind: Kind) bool {
         return @intFromEnum(kind) < @intFromEnum(Kind.tick);
@@ -260,6 +276,16 @@ const Sim = struct {
     /// An error from world events run inside a blocking sink write, which drainOutput would
     /// otherwise take for a transport failure.
     inner_error: ?anyerror = null,
+    // Writer mode: the writer the Session holds, or one cancel left writing (it frees itself on
+    // its publish); its step chain's generation; its blocking write in the pty's queue; and the
+    // owner's poll backoff.
+    writer: ?*SimWriter = null,
+    writer_orphan: bool = false,
+    writer_generation: u64 = 0,
+    writer_queued: ?struct { limit: usize, hangup_after: ?presets.FaultKind, span_left: usize } = null,
+    writer_ok: bool = false,
+    post_since: u64 = 0,
+    polls: u32 = 0,
 
     fn init(sim: *Sim, env: presets.Env, random: std.Random, debug: *ContextAllocator, script_events: u32, print_trace: bool) !void {
         const f = try fixture.Fixture.init(debug.allocator(), env.cols, env.rows, .{
@@ -306,8 +332,9 @@ const Sim = struct {
         self.world_queue.deinit(gpa);
         gpa.free(self.host_buffer);
         // A run that stopped early leaves the Session busy; cancel it so the Context can go.
-        self.f.owner.cancelSession(self.f.id) catch {};
+        self.cancel();
         self.f.deinit();
+        if (self.writer_orphan) if (self.writer) |writer| gpa.destroy(writer);
     }
 
     fn sessionValue(self: *Sim) *session.Session {
@@ -490,6 +517,7 @@ const Sim = struct {
                 try self.sendInput(if (self.random.uintLessThan(u32, 3) == 0) "\x1b[A" else "x", self.now);
                 try self.post(.key_send, self.jittered(self.env.events.key_period_ns), 0);
             },
+            .writer_pick, .writer_write, .writer_publish => try self.writerStep(event),
             .input_arrive => {
                 self.arrived_input = self.pieces.items[event.arg].end;
                 self.pieces.items[event.arg].blocked_ns = self.stats.blocked_ns;
@@ -630,10 +658,23 @@ const Sim = struct {
             try self.afterOutput();
         };
         const expired = if (self.close_deadline) |deadline| self.now >= deadline else false;
+        // Writer mode, as the driver: collect (and start the next copy) before the pump, so the
+        // pump sees output the writer finished, even on a late turn.
+        if (self.env.output_mode == .writer and self.sessionValue().pending_post) {
+            if (!try self.postWriter(drain_budget)) return;
+            if (self.sessionValue().pending_post) {
+                if (expired) {
+                    self.cancel();
+                    self.stats.restore_missing += 1;
+                    return self.endAfterOwner();
+                }
+                return self.schedulePoll();
+            }
+        }
         const result = owner.pumpSession(self.f.id, self.now, 1) catch |err| return self.onError(err);
         if (expired and result.status != .closed) {
             // The driver cancels without restoration when graceful close times out.
-            owner.cancelSession(self.f.id) catch unreachable;
+            self.cancel();
             self.stats.restore_missing += 1;
             return self.endAfterOwner();
         }
@@ -662,6 +703,8 @@ const Sim = struct {
                 try self.requestRender();
             },
             .suspending => if (phase == .suspended) {
+                // The stop waits for the rest of a split key: split gaps stay below the parser's timeout.
+                if (self.pieces.getLastOrNull()) |last| if (last.at_ns >= self.now) return self.scheduleTurn(last.at_ns + 1);
                 self.transition = .none;
                 self.stats.suspends += 1;
                 // I7: the suspend promise resolves only once the restore bytes are in the pty.
@@ -680,6 +723,11 @@ const Sim = struct {
                 const written = owner.drainOutput(self.f.id, SimSink{ .sim = self }, drain_budget) catch |err| return self.onError(err);
                 try self.afterOutput();
                 try self.scheduleTurn(if (written == 0) self.now + ms else self.now);
+            },
+            .writer => {
+                if (!try self.postWriter(drain_budget)) return;
+                if (self.sessionValue().pending_post) return self.schedulePoll();
+                try self.scheduleTurn(self.now);
             },
             .ticket => {
                 self.link.expectContinuous(self.sessionValue().completed_bytes);
@@ -724,6 +772,123 @@ const Sim = struct {
             else => {},
         };
         return .{ .limit = len };
+    }
+
+    // Writer mode: the driver's post and poll, and the writer thread's steps.
+
+    /// One post as the driver's: collect a finished copy and start the next. False: the
+    /// transport failed and `onError` took it.
+    fn postWriter(self: *Sim, max_bytes: u32) !bool {
+        const value = self.sessionValue();
+        const was_posted = value.pending_post;
+        const result = value.postStdout(SimWriter, SimCreate{ .sim = self }, max_bytes, false) catch |err| {
+            self.syncWriter();
+            try self.onError(err);
+            return false;
+        };
+        self.syncWriter();
+        // I12: collecting starts the next copy in the same call when output is queued.
+        if (result.written != 0 and !result.in_flight and max_bytes != 0 and (value.span != null or value.output.hasPendingSpans())) {
+            self.stats.writer_idle_gaps += 1;
+        }
+        if (result.written != 0) try self.afterOutput();
+        if (result.in_flight) {
+            if (!was_posted or result.written != 0) {
+                try self.startedWriter();
+            } else {
+                self.polls += 1;
+                self.stats.writer_polls += 1;
+            }
+        }
+        return true;
+    }
+
+    fn startedWriter(self: *Sim) !void {
+        self.writer_generation += 1;
+        try self.post(.writer_pick, self.now, self.writer_generation);
+        self.post_since = self.now;
+        self.polls = 0;
+        self.stats.owner_writes += 1;
+        self.noteWrite();
+    }
+
+    /// The driver's backoff: the next turn for the first 64 polls within 0.5 ms, then an eighth
+    /// of the copy's age, from 1 ms to 50 ms.
+    fn schedulePoll(self: *Sim) !void {
+        const age = self.now - self.post_since;
+        const delay: u64 = if (self.polls < 64 and age < ms / 2) 0 else std.math.clamp(age / 8, ms, 50 * ms);
+        try self.scheduleTurn(self.now + delay);
+    }
+
+    /// The writer the Session holds; a writer that cancel left writing stays until its publish.
+    fn syncWriter(self: *Sim) void {
+        if (self.writer_orphan) return;
+        self.writer = if (self.sessionValue().stdout_post) |held| @ptrCast(@alignCast(held.ptr)) else null;
+    }
+
+    fn cancel(self: *Sim) void {
+        if (self.writer) |writer| if (!self.writer_orphan and writer.state.load(.acquire) == .writing) {
+            self.writer_orphan = true;
+        };
+        self.f.owner.cancelSession(self.f.id) catch {};
+        self.syncWriter();
+    }
+
+    fn writerStep(self: *Sim, event: Event) !void {
+        if (event.arg != self.writer_generation) return;
+        const writer = self.writer orelse return;
+        switch (event.kind) {
+            .writer_pick => {
+                if (self.env.writer_stops_ns) |at| if (self.now >= at) return;
+                if (writer.pick()) try self.post(.writer_write, self.now, event.arg);
+            },
+            .writer_write => switch (writer.writeStep()) {
+                .more => {
+                    const wake = self.link.nextWake(self.now) orelse self.now;
+                    try self.post(.writer_write, @max(wake, self.now + 1), event.arg);
+                },
+                .written, .failed => |step| {
+                    if (self.inner_error) |err| return err;
+                    self.writer_ok = step == .written;
+                    try self.post(.writer_publish, self.now, event.arg);
+                },
+            },
+            .writer_publish => if (!writer.publish(self.writer_ok)) {
+                // Cancel stopped it while it wrote: the thread frees it.
+                writer.allocator.destroy(writer);
+                self.writer = null;
+                self.writer_orphan = false;
+            },
+            else => unreachable,
+        }
+    }
+
+    /// The exit wait: the world runs (the writer steps included) until the writer's state
+    /// changes. A bounded wait gives up after the grace a real exit gives a thread to start.
+    fn waitWriter(self: *Sim, expected: stdout_writer.State, bounded: bool) void {
+        const limit = self.now + 100 * ms;
+        var steps: u32 = 0;
+        while (self.writer) |writer| : (steps += 1) {
+            if (steps > 4_000_000) @panic("OUTPUT SIM: the exit wait made no progress");
+            if (writer.state.load(.acquire) != expected) return;
+            const next = self.world_queue.peek() orelse {
+                if (bounded) return;
+                @panic("OUTPUT SIM: the exit wait has no event left");
+            };
+            if (bounded and next.at_ns > limit) {
+                self.now = @max(self.now, limit);
+                return;
+            }
+            const event = self.world_queue.pop().?;
+            // A wait while the run runs would be the owner waiting on output (I1).
+            if (!self.ended and self.phase != .ending) self.stats.blocked_ns += event.at_ns -| self.now;
+            self.now = @max(self.now, event.at_ns);
+            self.traceEvent(event);
+            self.runWorld(event) catch |err| {
+                self.inner_error = err;
+                return;
+            };
+        }
     }
 
     fn afterOutput(self: *Sim) !void {
@@ -829,13 +994,14 @@ const Sim = struct {
             cut = 1 + self.random.uintLessThan(usize, bytes.len - 1);
             gap = self.random.uintAtMost(u64, gap_max);
         };
-        try self.input.appendSlice(gpa, bytes[0..cut]);
-        try self.pieces.append(gpa, .{ .end = @intCast(self.input.items.len), .at_ns = at_ns });
-        try self.post(.input_arrive, at_ns, self.pieces.items.len - 1);
-        if (cut == bytes.len) return;
-        try self.input.appendSlice(gpa, bytes[cut..]);
-        try self.pieces.append(gpa, .{ .end = @intCast(self.input.items.len), .at_ns = at_ns + gap });
-        try self.post(.input_arrive, at_ns + gap, self.pieces.items.len - 1);
+        for ([_][]const u8{ bytes[0..cut], bytes[cut..] }, [_]u64{ at_ns, at_ns + gap }) |piece, sent_at| {
+            if (piece.len == 0) continue;
+            // One ordered stream: a piece arrives after the one before it, never with it.
+            const at = if (self.pieces.getLastOrNull()) |last| @max(sent_at, last.at_ns + 1) else sent_at;
+            try self.input.appendSlice(gpa, piece);
+            try self.pieces.append(gpa, .{ .end = @intCast(self.input.items.len), .at_ns = at });
+            try self.post(.input_arrive, at, self.pieces.items.len - 1);
+        }
     }
 
     fn readInput(self: *Sim) !void {
@@ -1065,7 +1231,7 @@ const Sim = struct {
             },
             .crash => {
                 self.stats.crashes += 1;
-                owner.cancelSession(self.f.id) catch unreachable;
+                self.cancel();
                 try self.endAfterOwner();
             },
         }
@@ -1082,6 +1248,19 @@ const Sim = struct {
                 owner.completeOutput(self.f.id, host.ticket, .written) catch return false;
             }
         }
+        // The writer: wait for the running copy without a limit, then deliver the rest through it.
+        var via_writer = self.env.output_mode == .writer and self.sessionValue().stdout_post != null;
+        if (via_writer) {
+            const posted = self.sessionValue().pending_post;
+            const done = self.sessionValue().postStdout(SimWriter, SimCreate{ .sim = self }, 0, true) catch return false;
+            self.syncWriter();
+            if (self.inner_error) |err| return err;
+            // A copy the thread never picked up came back: drain from here, without a new writer.
+            if (posted and done.written == 0) {
+                self.stats.writer_reclaims += 1;
+                via_writer = false;
+            }
+        }
         while (true) {
             const status = owner.raw().getSession(self.f.id) catch unreachable;
             switch (status.pumpExit() catch return false) {
@@ -1092,6 +1271,21 @@ const Sim = struct {
             }
             // A Writable cannot finish asynchronously at exit.
             if (self.env.output_mode == .ticket) return false;
+            if (via_writer) {
+                const value = self.sessionValue();
+                const started = value.postStdout(SimWriter, SimCreate{ .sim = self }, drain_budget, false) catch return false;
+                self.syncWriter();
+                if (started.in_flight) {
+                    try self.startedWriter();
+                    const done = value.postStdout(SimWriter, SimCreate{ .sim = self }, 0, true) catch return false;
+                    self.syncWriter();
+                    if (self.inner_error) |err| return err;
+                    if (done.written != 0) continue;
+                    // The thread never picked the copy up: it is back in the queue.
+                    self.stats.writer_reclaims += 1;
+                }
+                via_writer = false;
+            }
             const written = owner.drainOutput(self.f.id, SimSink{ .sim = self }, drain_budget) catch return false;
             if (written == 0) return false;
         }
@@ -1103,7 +1297,10 @@ const Sim = struct {
         // A process exit ends a Writable's write with it. After a cancel, the write that was
         // running may still finish (I8), and nothing after it.
         if (self.env.events.end == .exit) self.host = null;
-        const rest: u64 = if (self.host) |host| host.ticket.len - host.done else 0;
+        var rest: u64 = if (self.host) |host| host.ticket.len - host.done else 0;
+        if (self.writer_orphan) if (self.writer) |writer| {
+            rest += writer.len - writer.done;
+        };
         self.closed_at = self.link.session_end + rest;
         self.stats.virtual_ns = self.now;
         // The owner is done; the link drains on its own.
@@ -1176,6 +1373,7 @@ const SimSink = struct {
         const sim = self.sim;
         const link = &sim.link;
         sim.stats.owner_writes += 1;
+        if (!sim.ended and sim.phase != .ending) sim.stats.owner_running_writes += 1;
         link.expectContinuous(sim.sessionValue().completed_bytes);
         if (link.hangup) |kind| return if (kind == .epipe) error.BrokenPipe else error.InputOutput;
         const fault = sim.hangupLimit(@min(bytes.len, sim.env.partial_max orelse bytes.len));
@@ -1219,6 +1417,86 @@ const SimSink = struct {
     fn takeOwner(link: *link_model.Link) ?link_model.Writer {
         for (link.finished.items, 0..) |writer, index| if (writer.kind == .owner) return link.finished.orderedRemove(index);
         return null;
+    }
+};
+
+/// The writer thread's fd 1 in the model. A blocking write waits in the pty's queue, holding
+/// its write lock, until the pty takes the bytes; the stepped thread asks again on each step
+/// (WouldBlock until then). A non-blocking one takes what fits, as the writer does after EAGAIN.
+const WriterSink = struct {
+    sim: *Sim,
+
+    pub fn write(self: WriterSink, bytes: []const u8) stdout_writer.SinkError!usize {
+        return self.writeOrFail(bytes) catch |err| switch (err) {
+            error.WouldBlock, error.Failed => |e| e,
+            else => {
+                self.sim.inner_error = err;
+                return error.Failed;
+            },
+        };
+    }
+
+    pub fn waitWritable(_: WriterSink) void {}
+
+    fn writeOrFail(self: WriterSink, bytes: []const u8) anyerror!usize {
+        const sim = self.sim;
+        const link = &sim.link;
+        if (sim.writer_queued) |queued| {
+            const writer = SimSink.takeOwner(link) orelse return error.WouldBlock;
+            sim.writer_queued = null;
+            return finish(sim, writer.done, queued.limit, queued.hangup_after, queued.span_left);
+        }
+        const value = sim.sessionValue();
+        const done = sim.writer.?.done;
+        link.expectContinuous(value.completed_bytes + done);
+        if (link.hangup != null) return error.Failed;
+        const fault = sim.hangupLimit(@min(bytes.len, sim.env.partial_max orelse bytes.len));
+        if (fault.now) |kind| {
+            link.hangup = kind;
+            return error.Failed;
+        }
+        // What is left of the Session's span after this write: a write that stops short of
+        // it ends mid-span (I5's strict count).
+        const span_left = value.span.?.len - value.span_offset - done;
+        if (sim.nonblocking()) {
+            const count = try link.writeNow(bytes[0..fault.limit]);
+            try sim.wakeLink();
+            if (count == 0) return error.WouldBlock;
+            return finish(sim, count, fault.limit, fault.after, span_left);
+        }
+        try link.enqueue(.{ .kind = .owner, .bytes = bytes, .limit = fault.limit });
+        try sim.wakeLink();
+        sim.writer_queued = .{ .limit = fault.limit, .hangup_after = fault.after, .span_left = span_left };
+        return self.writeOrFail(bytes);
+    }
+
+    fn finish(sim: *Sim, count: usize, limit: usize, hangup_after: ?presets.FaultKind, span_left: usize) usize {
+        if (count == limit) sim.link.hangup = hangup_after;
+        sim.link.mid_span = count < span_left and sim.link.hangup == null;
+        return count;
+    }
+};
+
+/// The stepped runner: no thread. The world runs the writer's steps; the exit wait runs the
+/// world until the writer's state changes.
+const SimRunner = struct {
+    pub const threaded = false;
+    pub const hook = null;
+    sim: *Sim,
+
+    pub fn waitChange(self: SimRunner, _: anytype, expected: stdout_writer.State, bounded: bool) void {
+        self.sim.waitWriter(expected, bounded);
+    }
+};
+
+const SimWriter = stdout_writer.Writer(WriterSink, SimRunner);
+
+const SimCreate = struct {
+    sim: *Sim,
+
+    pub fn create(self: SimCreate) error{UnsupportedResource}!*SimWriter {
+        if (self.sim.phase == .ending) self.sim.stats.exit_writers += 1;
+        return SimWriter.create(gpa, .{ .sim = self.sim }, .{ .sim = self.sim });
     }
 };
 
@@ -1337,6 +1615,9 @@ test "OUTPUT SIM seeds" {
         .{ .presets = &presets.named, .mode = .sync_drain, .seeds = 6 },
         .{ .presets = &presets.sweep, .mode = .sync_drain, .seeds = null },
         .{ .presets = &presets.ticket, .mode = .ticket, .seeds = 2 },
+        .{ .presets = &presets.named, .mode = .writer, .seeds = 6 },
+        .{ .presets = &presets.sweep, .mode = .writer, .seeds = null },
+        .{ .presets = &presets.writer_only, .mode = .writer, .seeds = null },
     };
     var failures: u32 = 0;
     var cuts: u64 = 0;
@@ -1370,11 +1651,15 @@ test "OUTPUT SIM seeds" {
     for (presets.named, traces) |preset, expected| for (expected[0..replays], 0..) |trace, seed| {
         try testing.expectEqual(trace, (try runOne(.{ .name = preset.name, .mode = .sync_drain, .seed = seed })).trace);
     };
+    // A split arrow key typed at 58.1 ms, while the split startup replies are in flight.
+    _ = try runOne(.{ .name = "split_input", .mode = .sync_drain, .seed = 22, .events = 10 });
+    // An arrow key cut after ESC [ at 518 ms, while a suspend is under way.
+    _ = try runOne(.{ .name = "split_input", .mode = .ticket, .seed = 73, .events = 30 });
 }
 
 /// Known `main` defects, recorded until their fix run deletes the row. A required row that
 /// no longer reproduces fails, so a fix shows up here.
-const Known = struct { preset: []const u8, field: []const u8, required: bool = true };
+const Known = struct { preset: []const u8, field: []const u8, required: bool = true, mode: presets.OutputMode = .sync_drain };
 
 const known = [_]Known{
     // D2: exit with fd 1 non-blocking gives up on a 0-byte drain, so the restore never leaves.
@@ -1390,13 +1675,18 @@ const known = [_]Known{
     .{ .preset = "nonblock_flip", .field = "cuts_mid_span", .required = false },
     .{ .preset = "exit_nonblocking", .field = "cuts_mid_span", .required = false },
     .{ .preset = "macos_chunked", .field = "cuts_mid_span" },
+    // The writer on a non-blocking fd writes what fits and polls, as the drain did: outside
+    // writers may enter mid-span, and the XNU model lets them into a blocking write. D2 and D3
+    // have no writer row: exit waits for the writer and restores (R30), and keys are read at once.
+    .{ .preset = "nonblock_flip", .field = "cuts_mid_span", .required = false, .mode = .writer },
+    .{ .preset = "exit_nonblocking", .field = "cuts_mid_span", .required = false, .mode = .writer },
+    .{ .preset = "macos_chunked", .field = "cuts_mid_span", .required = false, .mode = .writer },
 };
 
-/// Every known row is a `sync_drain` row: the ticket path runs without them.
+/// The ticket path runs without known rows.
 fn findKnown(name: []const u8, mode: presets.OutputMode, field: []const u8) ?Known {
-    if (mode != .sync_drain) return null;
     for (known) |row| {
-        if (std.mem.eql(u8, row.preset, name) and std.mem.eql(u8, row.field, field)) return row;
+        if (row.mode == mode and std.mem.eql(u8, row.preset, name) and std.mem.eql(u8, row.field, field)) return row;
     }
     return null;
 }
@@ -1413,9 +1703,24 @@ fn allowed(name: []const u8, mode: presets.OutputMode, field: []const u8) bool {
 fn expectMinimums(name: []const u8, mode: presets.OutputMode, total: Stats) !void {
     errdefer printStats(name, mode, total);
     const env = presets.find(name).?;
+    if (mode == .writer) {
+        // I1 in writer mode: the owner never writes while the run runs, and no key waits.
+        try testing.expectEqual(@as(u32, 0), total.owner_running_writes);
+        try testing.expectEqual(@as(u64, 0), total.blocked_ns);
+        try testing.expectEqual(@as(u64, 0), total.keys_delayed);
+        try testing.expectEqual(@as(u64, 0), total.key_wait_max_ns);
+    }
+    if (env.writer_stops_ns != null) {
+        // The thread stops; every exit takes the posted copy back and still restores (R8).
+        try testing.expectEqual(total.runs, total.exits);
+        try testing.expectEqual(total.runs, total.writer_reclaims);
+        try testing.expectEqual(@as(u32, 0), total.exit_writers);
+        return;
+    }
     try testing.expect(total.presented > 0 and total.commits >= total.presented);
-    // Frames that span several writes or tickets occur.
-    try testing.expect(total.multi_ticket_frames > 0);
+    // Frames that span several writes or tickets occur. A writer copy holds a whole 64 KiB
+    // chunk, so only seeds with 4 KiB chunks split frames: the named presets' six have some.
+    if (mode != .writer or total.runs >= 6) try testing.expect(total.multi_ticket_frames > 0);
     if (env.faults.len != 0 and env.faults[0].kind == .eio) {
         // Every run hangs up, inside a frame in some, and the Session fails at once (I10).
         try testing.expectEqual(total.runs, total.hangups);

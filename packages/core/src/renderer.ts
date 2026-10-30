@@ -430,10 +430,12 @@ type ExternalOutputCommit = {
   startOnNewLine: boolean
   trailingNewline: boolean
   nativeSnapshot?: ContextBufferHandle
+  // Captured stdout only: the commit ends its terminal row (a newline, a wrap, or the last column).
+  endsRow?: boolean
 }
 
 // One captured stdout row of `cells` terminal cells.
-type StdoutRow = { line: string; cells: number; trailingNewline: boolean }
+type StdoutRow = { line: string; cells: number; trailingNewline: boolean; endsRow: boolean }
 
 const STDOUT_TAB_WIDTH = 8
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -463,7 +465,19 @@ function snapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): numbe
   })
 }
 
-type QueuedCommit = ExternalOutputCommit & { cells: number; rowWidths: readonly number[] }
+// `bytes` estimates the memory of a captured stdout row, 0 for writer commits; `dropped` counts a marker's rows.
+type QueuedCommit = ExternalOutputCommit & {
+  cells: number
+  rowWidths: readonly number[]
+  bytes: number
+  dropped: number
+}
+
+// About 9,700 queued 80-column rows: 40 s of output at 8 rows per frame and 30 frames per second. A queued captured row
+// costs about 3 KiB plus 48 bytes per cell (RSS measured on Linux x64).
+const CAPTURED_STDOUT_MAX_BYTES = 64 * 1024 * 1024
+const CAPTURED_STDOUT_HIGH_WATER_BYTES = CAPTURED_STDOUT_MAX_BYTES / 2
+const capturedRowBytes = (cells: number) => 3072 + 48 * cells
 
 /** Runs every cleanup, then rethrows the first failure. */
 function runCleanups(cleanups: readonly (() => void)[]): void {
@@ -478,12 +492,18 @@ function runCleanups(cleanups: readonly (() => void)[]): void {
   if (failure) throw failure.error
 }
 
-// Unbounded, as on main. One native split render admits at most the Session output capacity at 24 bytes per snapshot
-// cell, so each batch takes head commits up to that many cells, and a larger single commit is refused.
+// Captured stdout is bounded in bytes (see `collapse`); writer commits are not. One native split render admits at most
+// the Session output capacity at 24 bytes per snapshot cell, so each batch takes head commits up to that many cells,
+// and a larger single commit is refused.
 class ExternalOutputQueue {
   private commits: QueuedCommit[] = []
+  capturedBytes = 0
+  private drainPending = false
 
-  constructor(private readonly maxCells: number) {}
+  constructor(
+    private readonly maxCells: number,
+    private readonly onDrain: () => void,
+  ) {}
 
   owns(snapshot: OptimizedBuffer): boolean {
     return this.commits.some((commit) => commit.snapshot === snapshot)
@@ -493,7 +513,7 @@ class ExternalOutputQueue {
     return this.commits.length
   }
 
-  writeSnapshots(commits: readonly ExternalOutputCommit[]): readonly QueuedCommit[] {
+  writeSnapshots(commits: readonly ExternalOutputCommit[], captured: boolean): readonly QueuedCommit[] {
     // Every frame renders the queue head, so one invalid entry would fail every later frame and the close flush.
     for (const { rowColumns, snapshot } of commits) {
       if (!Number.isInteger(rowColumns) || rowColumns < 0 || rowColumns > snapshot.width) {
@@ -503,14 +523,100 @@ class ExternalOutputQueue {
         throw new Error("Scrollback snapshot exceeds the Session output capacity")
       }
     }
-    // Queued snapshots never change, so tail-column predictions read each one once, here.
-    const entries = commits.map((commit) => ({
-      ...commit,
-      cells: commit.snapshot.width * commit.snapshot.height,
-      rowWidths: snapshotRowWidths(commit.snapshot, commit.rowColumns),
-    }))
-    for (const entry of entries) this.commits.push(entry)
+    const entries = commits.map((commit) => this.entry(commit, captured, 0))
+    for (const entry of entries) {
+      this.commits.push(entry)
+      this.capturedBytes += entry.bytes
+    }
     return entries
+  }
+
+  private entry(commit: ExternalOutputCommit, captured: boolean, dropped: number): QueuedCommit {
+    const cells = commit.snapshot.width * commit.snapshot.height
+    // Queued snapshots never change, so tail-column predictions read each one once, here.
+    const rowWidths = snapshotRowWidths(commit.snapshot, commit.rowColumns)
+    return { ...commit, cells, rowWidths, bytes: captured ? capturedRowBytes(cells) : 0, dropped }
+  }
+
+  /** False from the high-water mark on, until frames take the captured bytes below it again. */
+  writable(): boolean {
+    if (this.capturedBytes >= CAPTURED_STDOUT_HIGH_WATER_BYTES) this.drainPending = true
+    return !this.drainPending
+  }
+
+  /** True once per refusal: when the captured bytes are below the high-water mark, or at close (`force`). */
+  takeDrain(force = false): boolean {
+    if (!this.drainPending || (!force && this.capturedBytes >= CAPTURED_STDOUT_HIGH_WATER_BYTES)) return false
+    this.drainPending = false
+    return true
+  }
+
+  /**
+   * Past the bound, or with `trimmed` rows already cut from the write that starts at `incoming`, removes the oldest
+   * captured rows from `start` on until the captured bytes reach the high-water mark, finishing a terminal row it has
+   * started. Each run of removed rows, and the trimmed rows, becomes one `marker` row in its place; an earlier marker
+   * adds its count. Runs pass writer rows and end at kept captured rows and at the replay `boundary`, whose new count
+   * it returns.
+   */
+  collapse(
+    limits: { start: number; boundary: number; incoming: number; trimmed: number },
+    marker: (rows: number) => ExternalOutputCommit,
+  ): { markers: ExternalOutputCommit[]; removed: Set<OptimizedBuffer>; boundary: number } | null {
+    if (this.capturedBytes <= CAPTURED_STDOUT_MAX_BYTES && limits.trimmed === 0) return null
+    const kept: QueuedCommit[] = []
+    const removed = new Set<OptimizedBuffer>()
+    const runs: { index: number; rows: number }[] = []
+    let bytes = this.capturedBytes
+    let open = false
+    let partial = false
+    let boundary = -1
+    const endRow = () => {
+      if (partial) runs.at(-1)!.rows += 1
+      partial = false
+    }
+    const close = () => {
+      endRow()
+      open = false
+    }
+    for (const [index, commit] of this.commits.entries()) {
+      if (index === limits.boundary) {
+        close()
+        boundary = kept.length + runs.length
+      }
+      if (index === limits.incoming && limits.trimmed > 0) {
+        if (!open) runs.push({ index: kept.length, rows: 0 })
+        runs.at(-1)!.rows += limits.trimmed
+        open = true
+        partial = false
+      }
+      if (index < limits.start || commit.bytes === 0 || (bytes <= CAPTURED_STDOUT_HIGH_WATER_BYTES && !partial)) {
+        // A writer row ends a dropped row, not the run: the drops on both sides share one marker.
+        if (commit.bytes === 0) endRow()
+        else close()
+        kept.push(commit)
+        continue
+      }
+      if (!open) runs.push({ index: kept.length, rows: 0 })
+      open = true
+      partial = !commit.endsRow
+      runs.at(-1)!.rows += commit.dropped || (commit.endsRow ? 1 : 0)
+      removed.add(commit.snapshot)
+      bytes -= commit.bytes
+    }
+    close()
+    if (runs.length === 0) return null
+    const markers = runs.map((run) => marker(run.rows))
+    for (let run = runs.length - 1; run >= 0; run--) {
+      const entry = this.entry(markers[run]!, true, runs[run]!.rows)
+      kept.splice(runs[run]!.index, 0, entry)
+      this.capturedBytes += entry.bytes
+    }
+    const gone = this.commits.filter((commit) => removed.has(commit.snapshot))
+    this.commits = kept
+    // The write that overflowed is refused, and no drain follows until frames take rows.
+    this.drainPending = true
+    this.release(gone, false)
+    return { markers, removed, boundary: boundary < 0 ? kept.length : boundary }
   }
 
   /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
@@ -538,7 +644,15 @@ class ExternalOutputQueue {
   }
 
   drop(count: number): void {
-    for (const commit of this.commits.splice(0, count)) commit.snapshot.destroy()
+    this.release(this.commits.splice(0, count))
+  }
+
+  private release(removed: readonly QueuedCommit[], drain = true): void {
+    for (const commit of removed) {
+      this.capturedBytes -= commit.bytes
+      commit.snapshot.destroy()
+    }
+    if (drain && this.drainPending && this.capturedBytes < CAPTURED_STDOUT_HIGH_WATER_BYTES) this.onDrain()
   }
 
   clear(): void {
@@ -1355,7 +1469,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         },
       )
       this.nativeSession = driver
-      this.externalOutputQueue = new ExternalOutputQueue(Number(driver.maxWriteBytes / 24n))
+      // The level is checked again on the tick: a write in between can refill the queue. Close emits its own.
+      this.externalOutputQueue = new ExternalOutputQueue(Number(driver.maxWriteBytes / 24n), () =>
+        process.nextTick(() => !this._isDestroyed && this.externalOutputQueue.takeDrain() && this.stdout.emit("drain")),
+      )
       this.nativeDestroyWait = Promise.withResolvers<void>()
       this.nativeClosed = this.nativeSession.closed
         .finally(() => this.nativeDestroyWait!.promise)
@@ -2720,21 +2837,25 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     ])
   }
 
-  private enqueueSplitCommits(commits: readonly ExternalOutputCommit[]): void {
+  private enqueueSplitCommits(commits: readonly ExternalOutputCommit[], captured = false): void {
     for (const commit of commits) commit.nativeSnapshot = commit.snapshot._getSceneHandle(this.nativeScene)
     const width = Math.max(this.width, 1)
     let column = this.getPendingSplitTailColumn()
-    for (const entry of this.externalOutputQueue.writeSnapshots(commits)) {
+    for (const entry of this.externalOutputQueue.writeSnapshots(commits, captured)) {
       column = this.getSplitTailColumnAfterCommit(entry, column, width)
     }
     this.queuedSplitTail = { column, width }
     this.requestRender()
+    if (!captured) this.emitExternalOutput(commits)
+  }
+
+  private emitExternalOutput(commits: readonly ExternalOutputCommit[]): void {
     if (this.listenerCount(CliRenderEvents.EXTERNAL_OUTPUT) > 0) {
       for (const commit of commits) this.emit(CliRenderEvents.EXTERNAL_OUTPUT, commit)
     }
   }
 
-  private splitStdoutRows(text: string): StdoutRow[] {
+  private splitStdoutRows(text: string, tailColumn: number): StdoutRow[] {
     // Captured stdout arrives as an arbitrary byte stream, but split append commits
     // are row-based (line text + whether that row ended with '\n'). We normalize
     // here because native split append expects already-decoded row intent, not raw
@@ -2747,7 +2868,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Chunk rows at the renderer width in display cells, never inside a grapheme, so
     // each commit maps to one terminal row append and keeps every cell.
     const width = Math.max(1, this.width)
-    const tailColumn = this.getPendingSplitTailColumn()
     const rows: StdoutRow[] = []
     // Wrapped chunks of the current logical row start at this index; '\r' drops them.
     let rowStart = 0
@@ -2764,7 +2884,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       if (segment === "\n" || segment === "\r\n") {
         // Newline-only rows still need a commit so native split scrollback advances.
-        rows.push({ line, cells, trailingNewline: true })
+        rows.push({ line, cells, trailingNewline: true, endsRow: true })
         rowStart = rows.length
         line = ""
         cells = 0
@@ -2780,7 +2900,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (column > 0 && column + graphemeCells > width) {
         // A grapheme that does not fit starts a terminal row; pad a wide one's skipped cell so native counts the row.
         const padding = Math.max(0, width - column)
-        rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false })
+        rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false, endsRow: true })
         line = ""
         cells = 0
       }
@@ -2789,14 +2909,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (line.length > 0) {
-      rows.push({ line, cells, trailingNewline: false })
+      const column = (rows.length === 0 && tailColumn < width ? tailColumn : 0) + cells
+      rows.push({ line, cells, trailingNewline: false, endsRow: column >= width })
     }
 
     return rows
   }
 
-  private createStdoutSnapshotCommits(text: string): ExternalOutputCommit[] {
-    const rows = this.splitStdoutRows(text)
+  private createStdoutSnapshotCommits(rows: readonly StdoutRow[]): ExternalOutputCommit[] {
     if (rows.length === 0) {
       return []
     }
@@ -2827,7 +2947,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         height: 1,
       })
       snapshotRoot.add(snapshotRenderable)
-      for (const { line, cells, trailingNewline } of rows) {
+      for (const { line, cells, trailingNewline, endsRow } of rows) {
         const snapshotWidth = Math.max(1, cells)
         snapshotContext.width = snapshotWidth
         snapshotRoot.resize(snapshotWidth, 1)
@@ -2837,7 +2957,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           id: "captured-stdout-snapshot",
           owner: this.nativeScene,
         })
-        commits.push({ snapshot, rowColumns: cells, startOnNewLine: false, trailingNewline })
+        commits.push({ snapshot, rowColumns: cells, startOnNewLine: false, trailingNewline, endsRow })
         snapshotContext.renderSnapshot(snapshotRoot, snapshot)
       }
       return commits
@@ -2856,6 +2976,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
     const resolvedCallback = typeof encoding === "function" ? encoding : callback
+    let writable = true
 
     if (this._externalOutputMode === "capture-stdout" && this._screenMode === "split-footer" && this._splitHeight > 0) {
       // Decode the bytes a terminal would receive; a split UTF-8 sequence waits for the write that completes it.
@@ -2866,22 +2987,53 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // Capture mode intentionally diverts stdout into split commit snapshots
       // instead of writing directly to process stdout. Native flushing will append
       // and repaint in one controlled frame, which is what avoids footer flicker.
-      const commits = this.createStdoutSnapshotCommits(text)
+      const queue = this.externalOutputQueue
+      const rows = this.splitStdoutRows(text, this.getPendingSplitTailColumn())
+      // A write that overflows the bound keeps at most its newest half bound of rows: a collapse drops the rest anyway.
+      let added = rows.reduce((sum, row) => sum + capturedRowBytes(Math.max(1, row.cells)), 0)
+      let trimmed = 0
+      if (queue.capturedBytes + added > CAPTURED_STDOUT_MAX_BYTES) {
+        while (added > CAPTURED_STDOUT_HIGH_WATER_BYTES) added -= capturedRowBytes(Math.max(1, rows[trimmed++]!.cells))
+      }
+      const commits = this.createStdoutSnapshotCommits(rows.slice(trimmed))
       try {
-        this.enqueueSplitCommits(commits)
+        this.enqueueSplitCommits(commits, true)
       } catch (error) {
         for (const commit of commits) {
-          if (!this.externalOutputQueue.owns(commit.snapshot)) commit.snapshot.destroy()
+          if (!queue.owns(commit.snapshot)) commit.snapshot.destroy()
         }
         throw error
       }
+      // Rows handed to native stay. Rows ahead of a replay reset go like others; the reset's count follows them.
+      const limits = {
+        start: this.nativeSplitAcceptedCount,
+        boundary: this.pendingNativeReplay?.remaining ?? Infinity,
+        incoming: queue.size - commits.length,
+        trimmed,
+      }
+      const collapsed = queue.collapse(limits, (rows) => this.createDroppedRowCommit(rows))
+      if (collapsed) {
+        this.queuedSplitTail = null
+        if (this.pendingNativeReplay) this.pendingNativeReplay.remaining = collapsed.boundary
+      }
+      // Reported in queue order, after the collapse: a listener may write again.
+      this.emitExternalOutput(collapsed?.markers ?? [])
+      this.emitExternalOutput(commits.filter((commit) => !collapsed?.removed.has(commit.snapshot)))
+      writable = queue.writable()
     }
 
     if (typeof resolvedCallback === "function") {
       process.nextTick(resolvedCallback)
     }
 
-    return true
+    return writable
+  }
+
+  private createDroppedRowCommit(rows: number): ExternalOutputCommit {
+    const text = `[${rows} lines dropped]`.slice(0, Math.max(1, this.width))
+    const [commit] = this.createStdoutSnapshotCommits(this.splitStdoutRows(text, 0))
+    commit!.nativeSnapshot = commit!.snapshot._getSceneHandle(this.nativeScene)
+    return { ...commit!, startOnNewLine: true, trailingNewline: true, endsRow: true }
   }
 
   private getSplitPinnedRenderOffset(): number {
@@ -4829,6 +4981,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         console.error("Native split output cancelled during close:", error)
       }
     })
+    // A refused writer wakes after the queued rows and the terminal restore, when stdout is no longer captured.
+    const drain = () => this.externalOutputQueue.takeDrain(true) && this.stdout.emit("drain")
+    void this.nativeClosed.then(drain, drain)
     this.finalizeDestroy()
   }
 
@@ -5351,6 +5506,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           continue
         }
       }
+      // A collapse during the flush can shorten the queue below the count.
+      remaining = Math.min(remaining, this.externalOutputQueue.size)
       if (remaining === 0) break
       const commits = this.externalOutputQueue.batch(
         Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
@@ -5370,6 +5527,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         await driver.idle()
         continue
       }
+      this.nativeSplitAcceptedCount = commits.length
       await driver.whenPresented()
       remaining -= commits.length
       this.completeNativeSplitCommits(commits)
