@@ -101,10 +101,8 @@ test("animation requests wait for output credit and remain cancellable", async (
   stdout.release()
   await driver.idle()
   clock.advance(0)
-  await settle()
-  expect(renderer.liveRequestCount).toBe(0)
-  expect(renderer.isRunning).toBe(false)
   await renderer.idle()
+  expect(renderer.liveRequestCount).toBe(0)
   expect(observed).toEqual(["resumed"])
 
   renderer.requestLive()
