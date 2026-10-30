@@ -3,6 +3,7 @@ import { createTimeline, type Timeline } from "@opentui/core"
 import { act, useState } from "react"
 import { ManualClock } from "@opentui/core/testing"
 
+import { useAnimationTick } from "../src/hooks/use-animation-tick.js"
 import { useTimeline } from "../src/hooks/use-timeline.js"
 import { testRender } from "../src/test-utils.js"
 
@@ -74,4 +75,38 @@ test("useTimeline keeps roots independent; createTimeline() without a renderer f
     act(() => second.renderer.destroy())
     await Promise.all([first.renderer.closed, second.renderer.closed])
   }
+})
+
+test("useAnimationTick commits state in the tick's own frame and pauses with an undefined rate", async () => {
+  const clock = new ManualClock()
+  let setFps: (fps: number | undefined) => void = () => {}
+  function App() {
+    const [fps, updateFps] = useState<number | undefined>(20)
+    const [count, setCount] = useState(0)
+    setFps = updateFps
+    useAnimationTick(fps, (_deltaTime, ticks) => setCount((value) => value + ticks))
+    return <text>{count}</text>
+  }
+  testSetup = await testRender(<App />, { width: 4, height: 1, clock, targetFps: 60, maxFps: 60 })
+  let frames = 0
+  testSetup.renderer.on("frame", () => frames++)
+  // Ticks commit outside act(), as in an app; act() around them would hide what flushSync does.
+  const run = async () => {
+    frames = 0
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: false })
+    for (let i = 0; i < 4000; i++) {
+      if (i % 4 === 0) clock.advance(1)
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+    return [frames, testSetup!.captureCharFrame().trim()]
+  }
+  const playing = await run()
+  act(() => setFps(undefined))
+  const paused = await run()
+  expect({ playing, paused, timers: clock.pendingTimerCount }).toEqual({
+    playing: [21, "20"],
+    paused: [1, "20"],
+    timers: 0,
+  })
 })

@@ -3,7 +3,6 @@
  *
  * Detects various terminal capability response sequences:
  * - DECRPM (DEC Request Mode): ESC[?...;N$y where N is 0,1,2,3,4
- * - CPR (Cursor Position Report): ESC[row;colR (used for width detection)
  * - XTVersion: ESC P >| ... ESC \
  * - Kitty Graphics: ESC _ G ... ESC \
  * - Kitty Keyboard Query: ESC[?Nu where N is 0,1,2,etc
@@ -21,15 +20,6 @@
 export function isCapabilityResponse(sequence: string): boolean {
   // DECRPM: ESC[?digits;digits$y
   if (/\x1b\[\?\d+(?:;\d+)*\$y/.test(sequence)) {
-    return true
-  }
-
-  // CPR for explicit width/scaled text detection: ESC[1;NR where N >= 2
-  // The column number tells us how many characters were rendered with width annotations
-  // ESC[1;1R means no width support (cursor didn't move)
-  // ESC[1;2R or higher means width support (cursor moved after rendering)
-  // We accept any column >= 2 to handle cases where cursor wasn't at exact home position
-  if (/\x1b\[1;(?!1R)\d+R/.test(sequence)) {
     return true
   }
 
@@ -78,6 +68,15 @@ export function isCapabilityResponse(sequence: string): boolean {
   }
 
   return false
+}
+
+/**
+ * Check if a cursor position report answers the explicit width or scaled text probe: ESC[1;NR with N >= 2.
+ * ESC[1;1R means the cursor did not move, so the terminal has no width support. Shift, Alt and Ctrl+F3 send the
+ * same bytes, so only a report the parser classified as one may be checked.
+ */
+export function isExplicitWidthReport(sequence: string): boolean {
+  return /\x1b\[1;(?!1R)\d+R/.test(sequence)
 }
 
 /**

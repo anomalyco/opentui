@@ -43,7 +43,7 @@ pub const EncodedUnicode = struct {
             const bytes = input[start..byte_offset];
             const width = utf8.getGraphemeWidthAt(bytes, 0, tab_width, .hidden, width_method);
             if (width == 0) continue;
-            if (!buffer.isPrintableGlyph(bytes)) {
+            if (!buffer.isPrintableGlyph(bytes, width)) {
                 result.appendNTimesAssumeCapacity(.{ .width = 1, .char = buffer.DEFAULT_SPACE_CHAR }, width);
                 continue;
             }

@@ -342,11 +342,15 @@ pub fn Rope(comptime T: type) type {
 
             pub const LeafSplitResult = struct { left: T, right: T };
 
+            /// Leaves that replace two neighbors; `more` asks to check the last of them against the next leaf.
+            /// `span` holds the weights, within `joined`, of the grapheme that crosses the old boundary.
+            pub const LeafJoin = struct { left: ?T = null, joined: T, right: ?T = null, span: ?[2]u32 = null, more: bool };
+
             pub const LeafSplitFn = struct {
                 ctx: ?*anyopaque = null,
                 splitFn: *const fn (allocator: Allocator, ctx: ?*anyopaque, leaf: *const T, weight_in_leaf: u32) error{ OutOfBounds, OutOfMemory }!LeafSplitResult,
-                /// Joins two leaves that `T.canMerge` accepts. Without it, they stay apart.
-                mergeFn: ?*const fn (ctx: ?*anyopaque, left: *const T, right: *const T) T = null,
+                /// Joins or reshapes two neighboring leaves, or returns null to keep them. Without it, they stay apart.
+                joinFn: ?*const fn (ctx: ?*anyopaque, left: *const T, right: *const T) error{OutOfMemory}!?LeafJoin = null,
 
                 pub fn call(self: *const @This(), allocator: Allocator, leaf: *const T, weight: u32) error{ OutOfBounds, OutOfMemory }!LeafSplitResult {
                     return self.splitFn(allocator, self.ctx, leaf, weight);
@@ -375,7 +379,11 @@ pub fn Rope(comptime T: type) type {
                         }
 
                         const split_result = try split_leaf_fn.call(allocator, &l.data, target_weight);
-                        const left_node = try new_leaf(allocator, split_result.left);
+                        // An empty left piece, as when a wide grapheme straddles the weight, leaves no
+                        // leaf that would sit between the leaves a join must see. A split keeps the
+                        // grapheme that passes the weight, so the right piece holds bytes.
+                        if (@hasDecl(T, "isVoid")) std.debug.assert(!split_result.right.isVoid());
+                        const left_node = if (@hasDecl(T, "isVoid") and split_result.left.isVoid()) empty_leaf else try new_leaf(allocator, split_result.left);
                         const right_node = try new_leaf(allocator, split_result.right);
                         return .{ .left = left_node, .right = right_node };
                     },
@@ -651,7 +659,7 @@ pub fn Rope(comptime T: type) type {
         }
 
         pub fn concat(self: *Self, other: *const Self) !void {
-            self.root = try self.joinWithBoundary(self.root, other.root, null);
+            self.root = try self.joinWithBoundary(self.root, other.root, null, null);
         }
 
         pub fn split(self: *Self, index: u32) !Self {
@@ -710,7 +718,7 @@ pub fn Rope(comptime T: type) type {
             const first_split = try Node.split_at(self.root, start, self.allocator, self.empty_leaf);
             const second_split = try Node.split_at(first_split.right, end - start, self.allocator, self.empty_leaf);
 
-            self.root = try self.joinWithBoundary(first_split.left, second_split.right, null);
+            self.root = try self.joinWithBoundary(first_split.left, second_split.right, null, null);
             try self.applyEndsInvariant();
         }
 
@@ -721,8 +729,8 @@ pub fn Rope(comptime T: type) type {
 
             const split_result = try Node.split_at(self.root, index, self.allocator, self.empty_leaf);
 
-            const left_joined = try self.joinWithBoundary(split_result.left, insert_root, null);
-            self.root = try self.joinWithBoundary(left_joined, split_result.right, null);
+            const left_joined = try self.joinWithBoundary(split_result.left, insert_root, null, null);
+            self.root = try self.joinWithBoundary(left_joined, split_result.right, null, null);
             try self.applyEndsInvariant();
         }
 
@@ -863,7 +871,12 @@ pub fn Rope(comptime T: type) type {
             return split_result.left;
         }
 
-        fn joinWithBoundary(self: *Self, left: *const Node, right: *const Node, leaf_fn: ?*const Node.LeafSplitFn) error{OutOfMemory}!*const Node {
+        /// The weights, in a joined rope, of the grapheme that holds the junction; empty at a break.
+        pub const JoinSpan = struct { start: u32, end: u32 };
+
+        fn joinWithBoundary(self: *Self, left: *const Node, right: *const Node, leaf_fn: ?*const Node.LeafSplitFn, span: ?*JoinSpan) error{OutOfMemory}!*const Node {
+            // The rewrite drops or adds only weightless markers.
+            if (span) |held| held.* = .{ .start = left.metrics().weight(), .end = left.metrics().weight() };
             if (!boundary_enabled or !@hasDecl(T, "rewriteBoundary")) {
                 return try Node.join_balanced(left, right, self.allocator);
             }
@@ -886,17 +899,27 @@ pub fn Rope(comptime T: type) type {
                 return try Node.join_balanced(left_with_insert, R, self.allocator);
             }
 
-            // Merge after the rewrite: dropping an orphaned linestart can bring two text leaves together.
-            const l_last = getLastLeafIn(L);
-            const r_first = getFirstLeafIn(R);
-            if (@hasDecl(T, "canMerge") and leaf_fn != null and leaf_fn.?.mergeFn != null and
-                l_last != null and r_first != null and T.canMerge(l_last.?, r_first.?))
-            {
-                const merged = leaf_fn.?.mergeFn.?(leaf_fn.?.ctx, l_last.?, r_first.?);
-                const merged_leaf = try Node.new_leaf(self.allocator, merged);
+            // Join after the rewrite: dropping an orphaned linestart can bring two text leaves together.
+            const join_fn = if (leaf_fn) |f| f.joinFn orelse null else null;
+            var open = span != null;
+            var held = false;
+            while (join_fn) |join| {
+                const joined = try join(leaf_fn.?.ctx, getLastLeafIn(L) orelse break, getFirstLeafIn(R) orelse break) orelse break;
                 L = try dropLast(L, self.allocator, self.empty_leaf);
                 R = try dropFirst(R, self.allocator, self.empty_leaf);
-                L = try Node.join_balanced(L, merged_leaf, self.allocator);
+                // The last leaf placed on the left meets the next leaf on the right in the next round.
+                for ([_]?T{ joined.left, joined.joined, joined.right }, 0..) |maybe_leaf, i| {
+                    if (i == 1 and open) if (joined.span) |within| {
+                        const base = L.metrics().weight();
+                        if (!held) span.?.start = base + within[0];
+                        span.?.end = base + within[1];
+                        held = true;
+                    };
+                    if (maybe_leaf) |leaf| L = try Node.join_balanced(L, try Node.new_leaf(self.allocator, leaf), self.allocator);
+                }
+                // The grapheme can go on into the next leaf only from a joined leaf that it ends.
+                open = open and joined.span != null and joined.right == null and span.?.end == L.metrics().weight();
+                if (!joined.more) break;
             }
 
             return try Node.join_balanced(L, R, self.allocator);
@@ -928,27 +951,33 @@ pub fn Rope(comptime T: type) type {
         }
 
         /// Puts `items` in place of the range right of the start split and left of the end split.
-        pub fn replaceRangeByWeight(self: *Self, start: u32, end: u32, start_bias: Node.Bias, end_bias: Node.Bias, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !void {
+        /// Returns the grapheme that holds the end of `items` (or of the range, without items).
+        pub fn replaceRangeByWeight(self: *Self, start: u32, end: u32, start_bias: Node.Bias, end_bias: Node.Bias, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !JoinSpan {
             std.debug.assert(start <= end);
             const first_split = try Node.split_at_weight(self.root, start, start_bias, self.allocator, self.empty_leaf, split_leaf_fn);
             const second_split = try Node.split_at_weight(first_split.right, end - start, end_bias, self.allocator, self.empty_leaf, split_leaf_fn);
 
-            const left = if (items.len == 0) first_split.left else try self.joinWithBoundary(first_split.left, try rootFromSlice(self.allocator, items), split_leaf_fn);
-            self.root = try self.joinWithBoundary(left, second_split.right, split_leaf_fn);
+            const left = if (items.len == 0) first_split.left else try self.joinWithBoundary(first_split.left, try rootFromSlice(self.allocator, items), split_leaf_fn, null);
+            var span: JoinSpan = undefined;
+            self.root = try self.joinWithBoundary(left, second_split.right, split_leaf_fn, &span);
             try self.applyEndsInvariant();
+            return span;
         }
 
         /// `bias` picks the side of the zero-weight leaves at `weight`, so the tree shape cannot.
-        pub fn insertSliceByWeight(self: *Self, weight: u32, bias: Node.Bias, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !void {
-            if (items.len == 0) return;
+        /// Returns the grapheme that holds the end of `items`.
+        pub fn insertSliceByWeight(self: *Self, weight: u32, bias: Node.Bias, items: []const T, split_leaf_fn: *const Node.LeafSplitFn) !JoinSpan {
+            if (items.len == 0) return .{ .start = weight, .end = weight };
 
             const insert_root = try rootFromSlice(self.allocator, items);
 
             const split_result = try Node.split_at_weight(self.root, weight, bias, self.allocator, self.empty_leaf, split_leaf_fn);
 
-            const left_joined = try self.joinWithBoundary(split_result.left, insert_root, split_leaf_fn);
-            self.root = try self.joinWithBoundary(left_joined, split_result.right, split_leaf_fn);
+            const left_joined = try self.joinWithBoundary(split_result.left, insert_root, split_leaf_fn, null);
+            var span: JoinSpan = undefined;
+            self.root = try self.joinWithBoundary(left_joined, split_result.right, split_leaf_fn, &span);
             try self.applyEndsInvariant();
+            return span;
         }
 
         pub const WeightFindResult = struct { leaf: *const T, start_weight: u32, leaf_index: u32 };

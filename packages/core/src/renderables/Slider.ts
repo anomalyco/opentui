@@ -290,67 +290,6 @@ export class SliderRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    const x = this.x
-    const y = this.y
-    const width = this.width
-    const height = this.height
-    const bufferWidth = buffer.width
-    const bufferHeight = buffer.height
-    const left = Math.max(0, Math.trunc(x))
-    const top = Math.max(0, Math.trunc(y))
-    const right = Math.min(bufferWidth, Math.trunc(x) + Math.trunc(width))
-    const bottom = Math.min(bufferHeight, Math.trunc(y) + Math.trunc(height))
-    // Clip the truncated rectangle before passing its unsigned origin to FFI.
-    if (right > left && bottom > top) {
-      buffer.fillRect(left, top, right - left, bottom - top, this._backgroundColor)
-    }
-
-    const horizontal = this.orientation === "horizontal"
-    const origin = horizontal ? x : y
-    const crossOrigin = horizontal ? y : x
-    const length = horizontal ? width : height
-    const crossLength = horizontal ? height : width
-    const limit = horizontal ? bufferWidth : bufferHeight
-    const crossLimit = horizontal ? bufferHeight : bufferWidth
-    const thumb = this._ctx.nativeScene.getSliderThumb(this)
-    const virtualThumbSize = thumb.size
-    const virtualThumbStart = thumb.start
-    const virtualThumbEnd = virtualThumbStart + virtualThumbSize
-
-    // Truncation maps (-1, 1) onto cell zero. Keep a neighbor at each bound for
-    // floating-point rounding, then check the actual transformed coordinates.
-    const start = Math.max(0, Math.floor(virtualThumbStart / 2), Math.floor(-1 - origin))
-    const end = Math.min(Math.floor(length), Math.ceil(virtualThumbEnd / 2), Math.ceil(limit - origin) + 1)
-    const crossStart = Math.max(0, Math.floor(-1 - crossOrigin))
-    const crossEnd = Math.min(Math.ceil(crossLength), Math.ceil(crossLimit - crossOrigin) + 1)
-
-    for (let along = start; along < end; along++) {
-      const cell = Math.trunc(origin + along)
-      if (cell < 0 || cell >= limit) continue
-
-      const virtualCellStart = along * 2
-      const thumbStartInCell = Math.max(virtualThumbStart, virtualCellStart)
-      const coverage = Math.min(virtualThumbEnd, virtualCellStart + 2) - thumbStartInCell
-      let char = " "
-      if (coverage >= 2) {
-        char = "█"
-      } else if (horizontal) {
-        char = thumbStartInCell === virtualCellStart ? "▌" : "▐"
-      } else if (coverage > 0) {
-        char = thumbStartInCell === virtualCellStart ? "▀" : "▄"
-      }
-
-      for (let across = crossStart; across < crossEnd; across++) {
-        const crossCell = Math.trunc(crossOrigin + across)
-        if (crossCell < 0 || crossCell >= crossLimit) continue
-        buffer.setCellWithAlphaBlending(
-          horizontal ? cell : crossCell,
-          horizontal ? crossCell : cell,
-          char,
-          this._foregroundColor,
-          this._backgroundColor,
-        )
-      }
-    }
+    this._drawNativeBody(buffer)
   }
 }

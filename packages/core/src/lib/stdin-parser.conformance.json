@@ -50,6 +50,8 @@
     ["ESC ESC [A (Alt+Up)", ["\u001b\u001b[A"], ["key(\"up\" meta)"]],
     ["ESC, timeout, ESC, timeout, ESC", ["\u001b", null, "\u001b", null, "\u001b"], ["key(\"escape\")", "key(\"escape\")", "key(\"escape\")"]],
     ["ESC, timeout, SGR wheel-up without ESC", ["\u001b", null, "[<64;38;15M"], ["key(\"escape\")", "mouse(scroll 37,14 b0)"]],
+    ["UTF-8 character split by a pause", [[226], null, [156, 147]], ["key(\"✓\")"], "344"],
+    ["4-byte character, a pause after every byte", [[240], null, [159], null, [145], null, [141]], ["key(\"👍\")"], "344"],
     ["Shift+F3, xterm form", ["\u001b[1;2R"], ["key(\"f3\" shift)"], "196"],
     ["Alt+F3, xterm form", ["\u001b[1;3R"], ["key(\"f3\" meta)"], "196"],
     ["Ctrl+F3, xterm form", ["\u001b[1;5R"], ["key(\"f3\" ctrl)"], "196"],

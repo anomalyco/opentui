@@ -3,6 +3,8 @@ const link = @import("../link.zig");
 const builtin = @import("builtin");
 const kitty = @import("../kitty-transport.zig");
 const image = @import("../image.zig");
+const feed_mod = @import("../native-span-feed.zig");
+const test_renderer = @import("test-renderer.zig");
 
 const FileIo = struct {
     clocks: u32 = 0,
@@ -191,8 +193,7 @@ const FileReferenceOutput = struct {
     missing: u32 = 0,
     raw_references: u32 = 0,
 
-    fn write(ctx: *anyopaque, bytes: []const u8) void {
-        const self: *FileReferenceOutput = @ptrCast(@alignCast(ctx));
+    pub fn write(self: *FileReferenceOutput, bytes: []const u8) void {
         self.raw_references += @intCast(std.mem.count(u8, bytes, "\x1b_Ga=t,f="));
         var offset: usize = 0;
         while (std.mem.findPos(u8, bytes, offset, "\x1b_Ga=t,t=f,")) |start| {
@@ -233,18 +234,21 @@ fn checkRawKittyExpiry(case: ExpiryCase) !void {
     try environment.put("TMPDIR", directory[0..directory_len]);
     var supplied: FileIo = .{};
     var output: FileReferenceOutput = .{};
+    const feed = try feed_mod.Stream.create(std.testing.allocator, null);
+    defer feed.destroy();
     const cli = try renderer.CliRenderer.createWithOptions(std.testing.allocator, 3, 1, &pool, .{
         .link_pool = link_pool,
         .io = supplied.io(),
         .env_map = &environment,
-        .output = .{ .buffered = .{ .ctx = &output, .write_fn = FileReferenceOutput.write } },
+        .feed = feed,
     });
-    defer cli.destroy();
+    defer cli.destroyStorage();
     try std.testing.expect(!cli.host_driven_time);
     cli.terminal.graphics_enabled = true;
     cli.terminal.caps.kitty_graphics = true;
-    cli.setupTerminal(false);
     try std.testing.expect(cli.setKittyImageTransport(2));
+    cli.startKittyFileProbeFromSession();
+    test_renderer.deliverFeed(feed, &output);
     try std.testing.expectEqual(.probing, cli.kittyTransport.file_state);
     var reply_buffer: [80]u8 = undefined;
     for ([_]u32{ cli.kittyTransport.query_id, cli.kittyTransport.upload_probe_id }) |id| {
@@ -257,7 +261,7 @@ fn checkRawKittyExpiry(case: ExpiryCase) !void {
     defer value.deinit();
     output = .{};
     try std.testing.expect(try cli.getNextBuffer().drawImage(value, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try test_renderer.renderPresented(cli, true, &output));
     try std.testing.expectEqual(@as(u32, 1), output.references);
     try std.testing.expectEqual(@as(u32, 0), output.missing);
     try std.testing.expectEqual(@as(u32, 1), cli.kittyTransport.pendingCount());
@@ -271,7 +275,7 @@ fn checkRawKittyExpiry(case: ExpiryCase) !void {
         try std.testing.expect(try cli.getNextBuffer().drawImage(value, @intCast(x + 1), @intCast(x), 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     }
     output = .{};
-    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, try test_renderer.renderPresented(cli, false, &output));
     try std.testing.expectEqual(@as(u32, 0), output.missing);
     if (case == .already_expired) {
         try std.testing.expectEqual(@as(u32, 0), output.references);
@@ -298,7 +302,7 @@ fn checkRawKittyExpiry(case: ExpiryCase) !void {
             try std.testing.expect(try cli.getNextBuffer().drawImage(value, @intCast(x + 1), @intCast(x), 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
         }
         output = .{};
-        try std.testing.expectEqual(renderer.RenderStatus.rendered, cli.render(false));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, try test_renderer.renderPresented(cli, false, &output));
         try std.testing.expectEqual(@as(u32, 0), output.references);
         try std.testing.expectEqual(@as(u32, 3), output.raw_references);
         try std.testing.expectEqual(.timeout, cli.kittyTransport.file_state);

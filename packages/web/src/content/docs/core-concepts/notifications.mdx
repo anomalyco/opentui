@@ -36,7 +36,7 @@ renderer.on("capabilities", (capabilities) => {
 })
 ```
 
-`createCliRenderer()` starts terminal queries, but it does not wait for all replies before it resolves. The renderer updates `capabilities` and emits the `capabilities` event as replies arrive. The startup capability handler stops after 5 seconds.
+`createCliRenderer()` starts terminal queries, but it does not wait for all replies before it resolves. The renderer updates `capabilities` and emits the `capabilities` event as replies arrive, also when a reply comes after startup. The event fires only when the capabilities change.
 
 A `false` value can mean that no protocol is supported. It can also mean that asynchronous detection has not selected one yet. Remote and multiplexer sessions often start in this state. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for the complete detection lifecycle.
 

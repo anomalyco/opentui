@@ -72,7 +72,7 @@ export type ScenarioResult = {
   sceneNodes?: SceneNodeCounts
 }
 
-// Counts include the renderer root and internal ScrollBox/scrollbar nodes.
+// Counts include the renderer root.
 export type SceneNodeCounts = { initial: number; timedMin: number; timedMax: number; limit: number }
 
 export type ParityEvidence = {
@@ -726,12 +726,7 @@ function createLogSceneScenario(mode: "unchanged" | "append" | "scroll"): Scenar
       ctx.renderer.root.add(scrollBox)
 
       const nodes: Renderable[] = [ctx.renderer.root]
-      for (const node of nodes) {
-        // ScrollBox.getChildren() delegates to content, hiding the internal tree.
-        nodes.push(
-          ...(node instanceof ScrollBoxRenderable ? [node.wrapper, node.verticalScrollBar] : node.getChildren()),
-        )
-      }
+      for (const node of nodes) nodes.push(...node.getChildren())
       const internalNodeCount = nodes.length
       const append = () => {
         const index = nodes.length - internalNodeCount
@@ -818,8 +813,8 @@ async function verifyScene(scenario: ScenarioDefinition): Promise<ParityEvidence
     if (runtime.log) {
       assert.equal(
         runtime.layoutOnlyBoxesPerIteration,
-        4,
-        "log layout-only box count must include every internal box, but not the renderer root",
+        1,
+        "log layout-only box count must be the ScrollBox, not the renderer root",
       )
     }
     const iterationSteps = ["iteration-0", "iteration-1", "iteration-2", "iteration-3"]
@@ -899,7 +894,7 @@ async function verifyScene(scenario: ScenarioDefinition): Promise<ParityEvidence
         }
         if (step === "scroll") assert.equal(scrollBox.scrollTop, scrollTop - 1)
         if (step === "scroll-restore") assert.equal(scrollBox.scrollTop, scrollTop + 1)
-        if (step !== "cleanup") assert.equal(scrollBox.content.translateY + scrollBox.scrollTop, 0)
+        if (step !== "cleanup") assert.equal(scrollBox.content.y + scrollBox.scrollTop, scrollBox.viewport.y)
         if (step === "resize") {
           assert.equal(ctx.renderer.width, width - 13)
           assert.equal(ctx.renderer.height, height - 3)

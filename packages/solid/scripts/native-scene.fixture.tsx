@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { RGBA, TextAttributes, type BoxRenderable, type TextRenderable } from "@opentui/core"
 import { createTestRenderer, ManualClock } from "@opentui/core/testing"
-import { batch, createSignal, For } from "solid-js"
+import { batch, createSignal, For, Show } from "solid-js"
 import { Dynamic, insert, render, type JSX } from "@opentui/solid"
 import { jsx } from "@opentui/solid/jsx-runtime"
 
@@ -239,6 +239,80 @@ export async function keyedScene() {
   for (const node of nodes.values()) assert.equal(node.isDestroyed, true)
 }
 
+export async function emptyPlaceholderScene() {
+  const [visible, setVisible] = createSignal(true)
+  let single!: TextRenderable
+  let multiple!: TextRenderable
+  await withScene(
+    () => (
+      <box>
+        <text id="before">Before</text>
+        <text ref={single} id="single">
+          <Show when={visible()} fallback="">
+            <span>Mounted</span>
+          </Show>
+        </text>
+        <text ref={multiple} id="multiple">
+          <Show when={visible()} fallback="">
+            <span>Alpha</span>
+            <span>Bravo</span>
+          </Show>
+        </text>
+        <text id="after">After</text>
+      </box>
+    ),
+    async (setup) => {
+      const parent = setup.renderer.root.getChildren()[0]!
+      for (let cycle = 0; cycle < 3; cycle++) {
+        setVisible(false)
+        await setup.renderOnce()
+        assert.deepEqual(
+          single.textNode.gatherWithInheritedStyle().map((chunk) => chunk.text),
+          [""],
+        )
+        assert.deepEqual(
+          multiple.textNode.gatherWithInheritedStyle().map((chunk) => chunk.text),
+          [""],
+        )
+        assert.deepEqual([single.getTextChildren().length, multiple.getTextChildren().length], [1, 1])
+        assert.deepEqual(
+          setup
+            .captureCharFrame()
+            .split("\n")
+            .map((line) => line.trimEnd())
+            .slice(0, 4),
+          ["Before", "", "", "After"],
+        )
+
+        setVisible(true)
+        await setup.renderOnce()
+        assert.deepEqual(
+          single.textNode.gatherWithInheritedStyle().map((chunk) => chunk.text),
+          ["Mounted"],
+        )
+        assert.deepEqual(
+          multiple.textNode.gatherWithInheritedStyle().map((chunk) => chunk.text),
+          ["Alpha", "Bravo"],
+        )
+        assert.deepEqual([single.getTextChildren().length, multiple.getTextChildren().length], [1, 2])
+        assert.deepEqual(
+          parent.getChildren().map((child) => child.id),
+          ["before", "single", "multiple", "after"],
+        )
+        assert.deepEqual(
+          setup
+            .captureCharFrame()
+            .split("\n")
+            .map((line) => line.trimEnd())
+            .slice(0, 4),
+          ["Before", "Mounted", "AlphaBravo", "After"],
+        )
+      }
+    },
+  )
+  assert.deepEqual([single.isDestroyed, multiple.isDestroyed], [true, true])
+}
+
 export async function run() {
   await refSpreadScene()
   await optionalAttributesScene()
@@ -246,4 +320,5 @@ export async function run() {
   await inlineScene()
   await runtimeScene()
   await keyedScene()
+  await emptyPlaceholderScene()
 }

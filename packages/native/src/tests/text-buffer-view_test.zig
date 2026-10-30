@@ -4373,44 +4373,30 @@ test "TextBufferView word wrapping - does not split 'uses' across lines" {
     try std.testing.expect(!split_found);
 }
 
-/// Whether a chunk boundary falls inside a grapheme cluster in a way that wrapping cannot
-/// see across chunks yet (U04 X1): a join with visible width (an emoji modifier, ZWJ
-/// sequence, or flag pair) or, in word mode, a combining mark that changes the word class
-/// of the cluster before it (after a space or symbol) or sits in text with CJK words,
-/// whose break policy changes when a chunk joins the previous one.
-fn splitsGrapheme(tb: *TextBuffer, mode: text_buffer_view.WrapMode) bool {
+/// Every chunk boundary inside a line is a grapheme boundary of the line's text (E4).
+pub fn expectGraphemeBoundaries(tb: *TextBuffer) !void {
     const utf8 = @import("../utf8.zig");
-    var text: [1024]u8 = undefined;
-    var codepoints = std.unicode.Utf8View.initUnchecked(text[0..tb.getPlainTextIntoBuffer(&text)]).iterator();
-    const has_cjk_words = while (codepoints.nextCodepoint()) |cp| {
-        if (cp > 0x7F and utf8.isWordCodepoint(cp)) break true;
-    } else false;
-    var previous: ?[]const u8 = null;
+    var state: @import("uucode").grapheme.BreakState = .default;
+    var prev: ?u21 = null;
     var index: u32 = 0;
     while (index < tb.rope().count()) : (index += 1) {
         const chunk = tb.rope().get(index).?.asText() orelse {
-            previous = null;
+            prev = null;
             continue;
         };
         const bytes = chunk.getBytes(tb.memRegistry());
-        if (previous) |left| if (left.len > 0 and bytes.len > 0) {
-            // Replay the left chunk from its last grapheme with cells so the break state knows its context.
-            var state: @import("uucode").grapheme.BreakState = .default;
-            var last: ?u21 = null;
-            var pos = if (utf8.getPrevGraphemeStart(left, left.len, tb.tabWidth(), .hidden, .unicode)) |grapheme| grapheme.start_offset else 0;
-            while (pos < left.len) : (pos += utf8.decodeUtf8Unchecked(left, pos).len) {
-                const cp = utf8.decodeUtf8Unchecked(left, pos).cp;
-                _ = utf8.isGraphemeBreak(last, cp, &state, .unicode);
-                last = cp;
+        if (bytes.len == 0) return error.TestUnexpectedResult;
+        var pos: usize = 0;
+        while (pos < bytes.len) : (pos += utf8.decodeUtf8Unchecked(bytes, pos).len) {
+            const cp = utf8.decodeUtf8Unchecked(bytes, pos).cp;
+            const is_break = utf8.isGraphemeBreak(prev, cp, &state, tb.widthMethod());
+            if (pos == 0 and !is_break) {
+                std.debug.print("chunk {d} \"{f}\" continues a grapheme\n", .{ index, std.zig.fmtString(bytes) });
+                return error.TestUnexpectedResult;
             }
-            const first = utf8.decodeUtf8Unchecked(bytes, 0).cp;
-            const combining = first != 0x200D and utf8.findGraphemePosByWidth(bytes, 0, tb.tabWidth(), .hidden, false, false, .unicode).byte_offset > 0;
-            const allow_combining = mode == .char or (!has_cjk_words and last.? <= 0x7F and utf8.isWordCodepoint(last.?));
-            if (!(allow_combining and combining) and !utf8.isGraphemeBreak(last, first, &state, .unicode)) return true;
-        };
-        previous = bytes;
+            prev = cp;
+        }
     }
-    return false;
 }
 
 fn lineBytes(line: text_buffer_view.VirtualLine, tb: *TextBuffer, out: []u8) []const u8 {
@@ -4541,16 +4527,16 @@ test "TextBufferView a line that moves to or from line 0 wraps for its new row" 
 
 // Each view keeps its layout across the edits of an iteration, as an editor does, and re-lays out
 // only the lines that changed. A twin with `force_full_layout` on the same buffer checks that
-// exactly, with no exception; a fresh buffer checks it where chunk boundaries do not split a
-// grapheme (E4).
+// exactly, and a fresh buffer with the same text checks the edited chunks.
 test "TextBufferView edited text wraps like freshly loaded text" {
     const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     const tokens = [_][]const u8{
-        "a",     "b",        " ",                  "\t", "\n",       "\u{65e5}", "e\u{301}", "\u{1f44d}\u{1f3fd}", "\u{1f468}\u{200d}\u{1f469}",
-        "-",     "\u{200b}", "\u{1f1fa}\u{1f1f8}", "x",  "\u{ac00}", "\u{301}",  "\u{304b}", "\r\n",               "\r",
-        "word ",
+        "a",              "b",        " ",                  "\t",        "\n",        "\u{65e5}",  "e\u{301}", "\u{1f44d}\u{1f3fd}", "\u{1f468}\u{200d}\u{1f469}",
+        "-",              "\u{200b}", "\u{1f1fa}\u{1f1f8}", "x",         "\u{ac00}",  "\u{301}",   "\u{304b}", "\r\n",               "\r",
+        "word ",          "\u{fe0f}", "\u{200d}",           "\u{1f3fd}", "\u{1f1fa}", "\u{1f1f8}", "\u{1100}", "\u{1161}",           "\u{e33}",
+        "\u{915}\u{94d}", "\u{937}",
     };
     const modes = [_]text_buffer_view.WrapMode{ .none, .char, .word };
     const widths = [_]u32{ 1, 2, 3, 4, 7, 80 };
@@ -4594,6 +4580,8 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                     var offset = random.uintAtMost(u32, total);
                     if (edit.tb.cursorUnitBoundsAtOffset(offset)) |bounds| offset = bounds.start;
                     try edit.setCursorByOffset(offset);
+                    // Also the editor's own stops, which in wcwidth fall inside a grapheme (record 339).
+                    for (0..random.uintLessThan(u8, 3)) |_| edit.moveRight();
                     // Up to 6 tokens at once is a paste.
                     for (0..random.intRangeAtMost(usize, 1, 6)) |_| try edit.insertText(tokens[random.uintLessThan(usize, tokens.len)]);
                 },
@@ -4611,6 +4599,7 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                 },
                 else => unreachable,
             }
+            try expectGraphemeBoundaries(edit.tb);
             // Views read at different times see different ranges of changed lines. A count read
             // lays out without truncating.
             for (views) |pair| switch (random.uintLessThan(u8, 5)) {
@@ -4620,7 +4609,7 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                 2 => try expectSameMeasure(pair[0], pair[1]),
                 else => {
                     try expectSameAsFullLayout(pair[0], pair[1]);
-                    if (!pair[0].truncate and !splitsGrapheme(edit.tb, pair[0].wrap_mode)) try expectSameWrap(pair[0]);
+                    if (!pair[0].truncate) try expectSameWrap(pair[0]);
                     try expectSameMeasure(pair[0], pair[1]);
                 },
             };

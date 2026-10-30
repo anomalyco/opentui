@@ -170,6 +170,8 @@ export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> ex
   visible?: boolean
   buffered?: boolean
   live?: boolean
+  /** Ticks `onAnimationTick` at this rate on the renderer's shared animation clock while the node is visible. */
+  animationFps?: number
   opacity?: number
 
   // Draw-only hooks for custom decorations. They run after layout and viewport
@@ -211,6 +213,11 @@ export interface NativeRenderableIntegration {
     readonly update?: {
       readonly idle: (deltaTime: number) => void
       readonly active: (renderable: Renderable) => boolean
+    }
+    /** A scroll node's SCROLL request, asked for only while `active` holds. */
+    readonly scroll?: {
+      readonly active: (renderable: Renderable) => boolean
+      readonly notify: (renderable: Renderable) => void
     }
   }
   readonly beforeAfter?: boolean
@@ -337,11 +344,13 @@ export abstract class Renderable extends BaseRenderable {
 
   protected _focusable: boolean = (this.constructor as typeof Renderable).defaultFocusable
   protected _focused: boolean = false
-  protected _hasFocusedDescendant: boolean = false
   protected keypressHandler: ((key: KeyEvent) => void) | null = null
   protected pasteHandler: ((event: PasteEvent) => void) | null = null
 
   private _live: boolean = false
+  private _animationFps: number | undefined
+  private stopAnimationTick: (() => void) | undefined
+  private animationDrawnFrame = -1
   protected _liveCount: number = 0
 
   private _sizeChangeListener: (() => void) | undefined = undefined
@@ -430,6 +439,7 @@ export abstract class Renderable extends BaseRenderable {
       if (this.buffered) {
         this.createFrameBuffer()
       }
+      this.animationFps = options.animationFps
     } catch (error) {
       try {
         this.destroyLayoutBacking()
@@ -445,6 +455,7 @@ export abstract class Renderable extends BaseRenderable {
     try {
       this.destroyLayoutBacking((run) => {
         this._isDestroyed = true
+        this.updateAnimationTick()
         Renderable.renderablesByNumber.delete(this.num)
         if (cleanup) run(() => cleanup(run))
         if (this.frameBuffer) {
@@ -542,6 +553,7 @@ export abstract class Renderable extends BaseRenderable {
           this.propagateLiveCount(-1)
         }
       }
+      this.updateAnimationTick()
 
       if (this._focused) {
         this.blur()
@@ -620,22 +632,9 @@ export abstract class Renderable extends BaseRenderable {
     })
   }
 
-  protected propagateFocusChange(hasFocus: boolean): void {
-    let parent = this.parent
-    while (parent) {
-      if (!hasFocus) {
-        hasFocus = parent._childrenInLayoutOrder.some(
-          (child) => !child._isDestroyed && (child._focused || child._hasFocusedDescendant),
-        )
-      }
-      if (parent._hasFocusedDescendant !== hasFocus) {
-        parent._hasFocusedDescendant = hasFocus
-        parent.markDirty()
-      }
-      hasFocus ||= parent._focused
-      parent = parent.parent
-    }
-
+  /** Ancestors can paint focus within, so a focus change marks them dirty. */
+  protected propagateFocusChange(_hasFocus: boolean): void {
+    for (let parent = this.parent; parent; parent = parent.parent) parent.markDirty()
     this.requestRender()
   }
 
@@ -663,7 +662,10 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get hasFocusedDescendant(): boolean {
-    return this._hasFocusedDescendant
+    const focused = this._ctx.currentFocusedRenderable
+    if (!focused?._focused || focused._isDestroyed) return false
+    for (let parent = focused.parent; parent; parent = parent.parent) if (parent === this) return true
+    return false
   }
 
   public get live(): boolean {
@@ -692,6 +694,41 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   protected onLiveCountChanged(previous: number): void {}
+
+  public get animationFps(): number | undefined {
+    return this._animationFps
+  }
+
+  public set animationFps(value: number | undefined) {
+    value ??= undefined // Frameworks clear a prop with null.
+    if (value !== undefined && !(value > 0 && value < Infinity)) {
+      throw new RangeError(`animationFps must be positive and finite, got ${value}`)
+    }
+    if (this._animationFps === value) return
+    const toggled = (this._animationFps === undefined) !== (value === undefined)
+    this._animationFps = value
+    // The update hook marks the frames that draw the node.
+    if (toggled) this.refreshNativeSceneHooks()
+    this.updateAnimationTick()
+  }
+
+  // Ticks only while the node is drawn. A hidden, culled or removed node gets no update, so the first tick after a
+  // frame without one stops the clock, and the node's next update starts it again.
+  private updateAnimationTick(): void {
+    this.stopAnimationTick?.()
+    this.stopAnimationTick = undefined
+    if (this._animationFps === undefined || !this._visible || this._isDestroyed) return
+    this.stopAnimationTick = this._ctx.onAnimationTick(this._animationFps, (deltaTime, ticks, time) => {
+      if (this.animationDrawnFrame < this._ctx.frameId - 1) {
+        this.stopAnimationTick?.()
+        this.stopAnimationTick = undefined
+        return
+      }
+      this.onAnimationTick(deltaTime, ticks, time)
+    })
+  }
+
+  protected onAnimationTick(deltaTime: number, ticks: number, time: number): void {}
 
   public handleKeyPress?(key: KeyEvent): boolean
   public handlePaste?(event: PasteEvent): void
@@ -757,6 +794,16 @@ export abstract class Renderable extends BaseRenderable {
 
   protected get _screenY(): number {
     return this._paintLayout?.screenY ?? this.screenY
+  }
+
+  /** @internal Where the body paints: the buffer's origin when the node paints its own buffer. */
+  protected _paintOrigin(buffer: OptimizedBuffer): [number, number] {
+    return buffer === this.frameBuffer ? [0, 0] : [Math.trunc(this._screenX), Math.trunc(this._screenY)]
+  }
+
+  /** @internal Record or draw the native body at its paint origin. */
+  protected _drawNativeBody(buffer: OptimizedBuffer): void {
+    this._ctx.nativeScene.drawBody(this, buffer, ...this._paintOrigin(buffer))
   }
 
   // Paint geometry is clamped to the cell range that drawing accepts; public sizes are Yoga's.
@@ -915,7 +962,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public getChildrenSortedByPrimaryAxis(): Renderable[] {
-    const axis = isRowFlexDirection(this.getFlexDirection()) ? "screenX" : "screenY"
+    const axis = this.primaryAxis === "row" ? "screenX" : "screenY"
     if (this._childrenInLayoutOrder.length < 2) return [...this._childrenInLayoutOrder]
     // Selection traverses children in screen order, including ancestor translations.
     const children = this._childrenInLayoutOrder.map((child) => ({ child, coordinate: child[axis] }))
@@ -1567,21 +1614,7 @@ export abstract class Renderable extends BaseRenderable {
       const index = anchorIndex - (previous === target && previousIndex !== -1 && previousIndex < anchorIndex ? 1 : 0)
       let counts: Map<Renderable, { before: number; after: number }> | undefined
       let lifecycle: Map<Set<Renderable>, boolean> | undefined
-      let focus: Map<Renderable, boolean> | undefined
-      let focusPaths: Renderable[][] | undefined
       if (previous !== target) {
-        if (child._focused || child._hasFocusedDescendant) {
-          focus = new Map()
-          focusPaths = []
-          for (const start of [previous, target]) {
-            const path: Renderable[] = []
-            for (let parent = start; parent; parent = parent.parent) {
-              focus.set(parent, parent._hasFocusedDescendant)
-              path.push(parent)
-            }
-            focusPaths.push(path)
-          }
-        }
         if (child._liveCount > 0) {
           counts = new Map()
           for (const [start, delta] of [
@@ -1610,24 +1643,15 @@ export abstract class Renderable extends BaseRenderable {
       target._childrenInLayoutOrder.splice(index, 0, child)
       child.parent = target
       if (counts) for (const [parent, count] of counts) parent._liveCount = count.after
-      if (focusPaths)
-        for (const path of focusPaths) {
-          for (const parent of path) {
-            parent._hasFocusedDescendant = parent._childrenInLayoutOrder.some(
-              (node) => node._focused || node._hasFocusedDescendant,
-            )
-          }
-        }
       if (lifecycle)
         for (const [passes, active] of lifecycle) {
           if (active) passes.add(child)
           else passes.delete(child)
         }
       this.runCleanup((run) => {
-        if (focus)
-          for (const [parent, focused] of focus) {
-            if (parent._hasFocusedDescendant !== focused) parent.markDirty()
-          }
+        if (previous !== target && (child._focused || child.hasFocusedDescendant))
+          for (const start of [previous, target])
+            for (let parent = start; parent; parent = parent.parent) parent.markDirty()
         if (counts) for (const [parent, count] of counts) run(() => parent.onLiveCountChanged(count.before))
         if (previous && previous !== target) run(() => child.onRemove())
         if (previous && previous !== target) run(() => previous.requestRender())
@@ -1754,7 +1778,7 @@ export abstract class Renderable extends BaseRenderable {
       this._ctx.nativeScene.moveNode(renderable, null, 0)
       this.removeLayoutChildAt(index)
       this.runCleanup((run) => {
-        if (renderable._focused || renderable._hasFocusedDescendant) {
+        if (renderable._focused || renderable.hasFocusedDescendant) {
           run(() => renderable.propagateFocusChange(false))
         }
         if (renderable._liveCount > 0) run(() => this.propagateLiveCount(-renderable._liveCount))
@@ -1884,6 +1908,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   private hostUpdateFlags(onUpdate: unknown): number {
+    if (this._animationFps !== undefined) return NativeSceneHook.Update
     const update = this.nativeIntegration.lifecycle?.update
     if (update && onUpdate === update.idle) {
       return update.active(this) ? NativeSceneHook.Update : NativeSceneHook.IdleUpdate
@@ -1916,6 +1941,7 @@ export abstract class Renderable extends BaseRenderable {
         (hooks.renderAfter ? NativeSceneHook.RenderAfter : 0) |
         (this.usesNativeDrawing(hooks.renderSelf) ? 0 : NativeSceneHook.RenderSelf) |
         this.hostUpdateFlags(hooks.onUpdate) |
+        (integration.lifecycle?.scroll?.active(this) ? NativeSceneHook.Scroll : 0) |
         (resize || sizeChange || (pending.resize ?? this.listenerCount("resize")) > 0 ? NativeSceneHook.Resize : 0) |
         ((pending.layout ?? this.listenerCount(LayoutEvents.LAYOUT_CHANGED)) > 0 ? NativeSceneHook.LayoutChanged : 0)
       const generation = this._nativeSceneHookGeneration + 1n
@@ -1945,6 +1971,10 @@ export abstract class Renderable extends BaseRenderable {
     try {
       switch (request.kind) {
         case NativeSceneFrame.Update:
+          if (this._animationFps !== undefined) {
+            this.animationDrawnFrame = this._ctx.frameId
+            if (!this.stopAnimationTick) this.updateAnimationTick()
+          }
           this._hooks.onUpdate.call(this, deltaTime)
           break
         case NativeSceneFrame.Resize:
@@ -1961,6 +1991,9 @@ export abstract class Renderable extends BaseRenderable {
           break
         case NativeSceneFrame.LayoutChanged:
           this.emit(LayoutEvents.LAYOUT_CHANGED)
+          break
+        case NativeSceneFrame.Scroll:
+          this.nativeIntegration.lifecycle?.scroll?.notify(this)
           break
       }
     } finally {
@@ -2040,18 +2073,13 @@ export abstract class Renderable extends BaseRenderable {
     this.assertMutable()
     this.destroyLayoutBacking((run) => {
       run(() => this.destroyOwnedResources())
+      // Read before listeners run: one may move or clear the focus.
+      const heldFocus = this._focused || this.hasFocusedDescendant
       this._isDestroyed = true
+      this.updateAnimationTick()
       run(() => this.emit(RenderableEvents.DESTROYED))
 
-      if (this._focused || this._hasFocusedDescendant) {
-        run(() => {
-          // Listeners can move focus, or clear it before throwing during blur.
-          const current = this._ctx.currentFocusedRenderable
-          let focused = current
-          while (focused && focused !== this) focused = focused.parent
-          if (!current || focused === this) this.propagateFocusChange(false)
-        })
-      }
+      if (heldFocus) run(() => this.propagateFocusChange(false))
       if (this.parent) {
         const parent = this.parent
         run(() => parent.remove(this))

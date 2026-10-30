@@ -65,6 +65,8 @@ const operations: Record<string, (buffer: OptimizedBuffer) => void> = {
     buffer.drawText(undefined as never, 8, 2, white)
     buffer.drawText(null as never, 8, 2, white)
     buffer.drawText("clipped text", -3, height - 1, white)
+    buffer.drawTextFit("漢字かな", 5, 1, 5, red, blue, true)
+    buffer.drawTextFit("abcdef", -2, 2, 7, red)
   },
   "clear, fills, cells, characters, and boxes": (buffer) => {
     buffer.drawText("gone", 0, 0, white)
@@ -148,7 +150,7 @@ const operations: Record<string, (buffer: OptimizedBuffer) => void> = {
     view.destroy()
     edit.destroy()
   },
-  "scene text": (buffer) => scene().drawText(sceneText, buffer, 3, 0),
+  "scene text": (buffer) => scene().drawBody(sceneText, buffer, 3, 0),
   // One image shares the scene's Context; the other is copied into it from the automatic image Context.
   images: (buffer) => {
     const shared = NativeImage.fromRgba(pixels, 4, 4, 16, { owner: scene().resourceContext })
@@ -182,7 +184,7 @@ const rejectedCalls: ((buffer: OptimizedBuffer) => void)[] = [
   (buffer) => buffer.drawGrayscaleBuffer(0.5, 0, new Float32Array(1), 1, 1),
   (buffer) => buffer.colorMatrixUniform(sepia, 1, -1 as never),
   (buffer) => buffer.colorMatrix(sepia, [0, 0, 1] as never),
-  (buffer) => scene().drawText(sceneText, buffer, 0.5, 0),
+  (buffer) => scene().drawBody(sceneText, buffer, 0.5, 0),
   (buffer) => buffer.drawImage(pixel, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, "bogus" as never),
   (buffer) => {
     const encoded = buffer.encodeUnicode("👋")

@@ -211,6 +211,8 @@ export enum NativeEditPositionQuery {
   Offset = 4,
   Coords = 5,
   LineStart = 6,
+  End = 7,
+  PrevChar = 8,
 }
 
 export enum NativeEditorStyleMask {
@@ -354,6 +356,7 @@ export enum NativeStyleGroup {
 export enum NativeStyleFlags {
   None = nativeConstants.OT_STYLE_FLAGS_NONE,
   DisableFlexShrink = nativeConstants.OT_STYLE_DISABLE_FLEX_SHRINK,
+  Content = nativeConstants.OT_STYLE_CONTENT,
 }
 
 /** ENUM/FLOAT/DIMENSION writes occupy this unused-edge slot. */
@@ -396,6 +399,7 @@ export enum NativeSceneHook {
   RenderAfter = nativeConstants.OT_SCENE_HOOK_RENDER_AFTER,
   RenderSelf = nativeConstants.OT_SCENE_HOOK_RENDER_SELF,
   IdleUpdate = nativeConstants.OT_SCENE_HOOK_IDLE_UPDATE,
+  Scroll = nativeConstants.OT_SCENE_HOOK_SCROLL,
 }
 
 export enum NativeSceneFrame {
@@ -404,6 +408,7 @@ export enum NativeSceneFrame {
   Resize = nativeConstants.OT_SCENE_FRAME_RESIZE,
   LayoutChanged = nativeConstants.OT_SCENE_FRAME_LAYOUT_CHANGED,
   Record = nativeConstants.OT_SCENE_FRAME_RECORD,
+  Scroll = nativeConstants.OT_SCENE_FRAME_SCROLL,
 }
 
 export enum NativeScenePaintPhase {
@@ -513,7 +518,14 @@ type BufferDrawColors = { foreground?: RGBA; background?: RGBA }
 export type NativeBufferDraw =
   | { operation: "clear"; background?: RGBA }
   | (BufferDrawPosition & { operation: "fill"; width?: number; height?: number; background?: RGBA })
-  | (BufferDrawPosition & BufferDrawColors & { operation: "text"; text?: string; attributes?: number })
+  | (BufferDrawPosition &
+      BufferDrawColors & {
+        operation: "text"
+        text?: string
+        attributes?: number
+        maxWidth?: number
+        ellipsis?: boolean
+      })
   | (BufferDrawPosition &
       BufferDrawColors & { operation: "cell" | "cellBlend" | "char"; char?: number; attributes?: number })
   | (BufferDrawPosition &
@@ -586,6 +598,95 @@ export interface NativeSceneArrowOptions {
   foregroundColor: RGBA
   backgroundColor: RGBA
   text?: string
+}
+
+export interface NativeSceneScrollBarOptions {
+  policy: "auto" | "always" | "never"
+  overlay: boolean
+  thickness: number
+  gap: number
+  arrows: boolean
+  foregroundColor: RGBA
+  backgroundColor: RGBA
+}
+
+/** Viewport padding is left, top, right, bottom; bars are horizontal, vertical. */
+export interface NativeSceneScrollOptions {
+  scrollX: boolean
+  scrollY: boolean
+  follow: "none" | "top" | "bottom" | "left" | "right"
+  culling: boolean
+  padding: readonly number[]
+  fills: readonly (RGBA | undefined)[]
+  bars: readonly NativeSceneScrollBarOptions[]
+}
+
+export interface NativeSceneRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface NativeSceneScrollBarState {
+  visible: boolean
+  track: NativeSceneRect
+  startArrow: NativeSceneRect
+  endArrow: NativeSceneRect
+  thumbStart: number
+  thumbSize: number
+}
+
+/** Axis 0 is x, axis 1 is y. `content` is local to the box; the other rects are screen cells. `changes` holds the
+ * OT_SCENE_SCROLL_CHANGED_* bits of the last SCROLL request. */
+export interface NativeSceneScrollState {
+  changes: number
+  offset: [number, number]
+  max: [number, number]
+  content: NativeSceneRect
+  viewport: NativeSceneRect
+  bars: [NativeSceneScrollBarState, NativeSceneScrollBarState]
+}
+
+const SCENE_SCROLL_FOLLOW = ["none", "top", "bottom", "left", "right"] as const
+const SCENE_SCROLL_BAR_POLICY = ["auto", "always", "never"] as const
+const SCENE_SCROLL_REQUESTS = ["into-view", "anchor", "layout"] as const
+const SCENE_SCROLL_ALIGNS = ["nearest", "start", "end"] as const
+
+function readSceneRect(values: Float64Array, index: number): NativeSceneRect {
+  return { x: values[index], y: values[index + 1], width: values[index + 2], height: values[index + 3] }
+}
+
+/** The state of a scroll node before its first frame. */
+export function emptySceneScrollState(): NativeSceneScrollState {
+  return readSceneScrollState(new Uint32Array(nativeLayouts.ot_scene_scroll_state.size / 4))
+}
+
+function readSceneScrollState(record: Uint32Array): NativeSceneScrollState {
+  const { fields } = nativeLayouts.ot_scene_scroll_state
+  const bar = nativeLayouts.ot_scene_scroll_bar_state
+  const values = new Float64Array(record.buffer)
+  const readBar = (axis: number): NativeSceneScrollBarState => {
+    const base = fields.bars.offset + axis * bar.size
+    return {
+      visible: record[(base + bar.fields.visible.offset) / 4] !== 0,
+      track: readSceneRect(values, (base + bar.fields.track.offset) / 8),
+      startArrow: readSceneRect(values, (base + bar.fields.start_arrow.offset) / 8),
+      endArrow: readSceneRect(values, (base + bar.fields.end_arrow.offset) / 8),
+      thumbStart: values[(base + bar.fields.thumb_start.offset) / 8],
+      thumbSize: values[(base + bar.fields.thumb_size.offset) / 8],
+    }
+  }
+  const offset = fields.offset.offset / 8
+  const max = fields.max.offset / 8
+  return {
+    changes: record[fields.changes.offset / 4],
+    offset: [values[offset], values[offset + 1]],
+    max: [values[max], values[max + 1]],
+    content: readSceneRect(values, fields.content.offset / 8),
+    viewport: readSceneRect(values, fields.viewport.offset / 8),
+    bars: [readBar(0), readBar(1)],
+  }
 }
 
 export interface NativeSessionBufferLease {
@@ -671,7 +772,16 @@ export interface NativeSessionTerminalOptions {
   mouseMovement?: boolean
   kittyKeyboardFlags?: number
   clearOnClose?: boolean
+  /** End the startup query batch with DA1 (the reply sentinel). Defaults to false. */
+  replySentinel?: boolean
+  /** Wrap frames in synchronized output (DEC mode 2026). Defaults to "auto". */
+  synchronizedOutput?: SynchronizedOutput
+  /** The output passes through tmux, screen or Zellij on this host. Defaults to false. */
+  hostMultiplexer?: boolean
 }
+
+/** "auto" leaves synchronized output out for a remote terminal without mode 2026 or under a multiplexer on the app's host. */
+export type SynchronizedOutput = "auto" | "always" | "never"
 
 export enum NativeSessionTerminalPhase {
   Uninitialized = 0,
@@ -713,7 +823,8 @@ export type NativeSessionControl =
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
   | { kind: "program-status"; status: ProgramStatus }
-  | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background" }
+  | { kind: "query-pixel-resolution"; sentinel?: boolean }
+  | { kind: "restore-modes" | "query-theme-colors" | "reset-background" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
   position?: { x: number; y: number; visible: boolean }
@@ -1024,7 +1135,6 @@ function readFrameWork(
   const result: Record<string, number> = {}
   let counting = false
   for (const [field, { offset, type }] of Object.entries(layout.fields)) {
-    if (field === "reserved") break
     counting ||= field === "work_frame_id"
     if (!counting) continue
     const name = field.replace(/_(.)/g, (_, letter: string) => letter.toUpperCase())
@@ -1076,6 +1186,12 @@ function toFFIU64(value: bigint, label: string): bigint {
 function toFFIBool(value: boolean, label: string): 0 | 1 {
   if (typeof value !== "boolean") throw new TypeError(`${label} must be a boolean`)
   return ffiBool(value)
+}
+
+const SYNCHRONIZED_OUTPUT_FLAGS: Record<SynchronizedOutput, number> = {
+  auto: 0,
+  always: nativeConstants.OT_TERMINAL_SYNC_ALWAYS,
+  never: nativeConstants.OT_TERMINAL_SYNC_NEVER,
 }
 
 function toFFIF32(value: number, label: string, allowNaN = false): number {
@@ -1480,8 +1596,10 @@ function encodeBufferDrawRecord(
       const fields = nativeLayouts.ot_buffer_draw_text_record.fields
       encodeDrawPosition(signed, fields, options, base)
       words[word + fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
-      if (encodeDrawColors(colors, fields, options, base))
-        words[word + header.flags.offset / 4] = nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND
+      words[word + fields.max_width.offset / 4] = toSafeFFIU32Length(options.maxWidth ?? 0, "Buffer text width")
+      words[word + header.flags.offset / 4] =
+        (encodeDrawColors(colors, fields, options, base) ? nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND : 0) |
+        (options.ellipsis ? nativeConstants.OT_BUFFER_DRAW_FIT_ELLIPSIS : 0)
       break
     }
     case "cell":
@@ -2457,7 +2575,7 @@ export class NativePaintRecorder {
     })
   }
 
-  /** Draw a text-buffer view, editor view, or scene text node. */
+  /** Draw a text-buffer view, editor view, or scene node body. */
   view(operation: "text" | "editor" | "scene", source: ContextObjectHandle, x: number, y: number): void {
     this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_view
@@ -2466,7 +2584,7 @@ export class NativePaintRecorder {
           ? nativeConstants.OT_SCENE_RECORD_TEXT_VIEW
           : operation === "editor"
             ? nativeConstants.OT_SCENE_RECORD_EDITOR_VIEW
-            : nativeConstants.OT_SCENE_RECORD_SCENE_TEXT,
+            : nativeConstants.OT_SCENE_RECORD_SCENE_BODY,
         layout.size,
       )
       this.encodeHandle(source, base + layout.fields.source.offset)
@@ -4737,7 +4855,7 @@ export class FFIRenderLib {
     )
   }
 
-  public contextDrawSceneText(
+  public contextDrawSceneBody(
     { context, target, frame }: NativeDrawingTarget,
     node: SceneNodeHandle,
     x: number,
@@ -4747,12 +4865,12 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = toFFII32(x, "Scene text x")
-    const row = toFFII32(y, "Scene text y")
-    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
+    const column = toFFII32(x, "Scene body x")
+    const row = toFFII32(y, "Scene body y")
+    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_body")
     nativeResult(
-      "ot_buffer_draw_scene_text",
-      this.opentui.symbols.ot_buffer_draw_scene_text(pointer, destination, request, source, column, row),
+      "ot_buffer_draw_scene_body",
+      this.opentui.symbols.ot_buffer_draw_scene_body(pointer, destination, request, source, column, row),
     )
   }
 
@@ -6369,13 +6487,20 @@ export class FFIRenderLib {
   ): void {
     const layout = nativeLayouts.ot_session_terminal_options
     const handle = encodeContextHandle(context, session)
+    const synchronizedOutput = options.synchronizedOutput ?? "auto"
+    if (!Object.hasOwn(SYNCHRONIZED_OUTPUT_FLAGS, synchronizedOutput)) {
+      throw new TypeError("Session synchronizedOutput must be auto, always, or never")
+    }
     const flag = (value: boolean | undefined, label: string, bit: number) =>
       toFFIBool(value ?? true, `Session ${label}`) ? bit : 0
     const flags =
       flag(options.useAlternateScreen, "useAlternateScreen", nativeConstants.OT_TERMINAL_ALTERNATE_SCREEN) |
       flag(options.mouse, "mouse", nativeConstants.OT_TERMINAL_MOUSE) |
       flag(options.mouseMovement, "mouseMovement", nativeConstants.OT_TERMINAL_MOUSE_MOVEMENT) |
-      flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE)
+      flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE) |
+      (options.replySentinel ? nativeConstants.OT_TERMINAL_REPLY_SENTINEL : 0) |
+      SYNCHRONIZED_OUTPUT_FLAGS[synchronizedOutput] |
+      (options.hostMultiplexer ? nativeConstants.OT_TERMINAL_HOST_MULTIPLEXER : 0)
     const record = createContextRecord(layout)
     record[layout.fields.flags.offset / 4] = flags
     record[layout.fields.kitty_keyboard_flags.offset / 4] = toSafeFFIU32Length(
@@ -6557,6 +6682,7 @@ export class FFIRenderLib {
         break
       case "query-pixel-resolution":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_PIXEL_RESOLUTION
+        record[layout.fields.argument.offset / 4] = command.sentinel ? 1 : 0
         break
       case "query-theme-colors":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_THEME_COLORS
@@ -7311,6 +7437,147 @@ export class FFIRenderLib {
         bytes?.length ?? 0,
       ),
     )
+  }
+
+  public sceneSetScroll(context: NativeContextHandle, node: SceneNodeHandle, options: NativeSceneScrollOptions): void {
+    const layout = nativeLayouts.ot_scene_scroll_options
+    const bar = nativeLayouts.ot_scene_scroll_bar_options
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const record = createContextRecord(layout)
+    const floats = new Float32Array(record.buffer)
+    const colors = new Uint16Array(record.buffer)
+    const follow = SCENE_SCROLL_FOLLOW.indexOf(options.follow)
+    if (follow < 0) throw new TypeError("Unknown scene scroll follow edge")
+    const fields = layout.fields
+    record[fields.axes.offset / 4] =
+      (options.scrollX ? nativeConstants.OT_SCENE_SCROLL_X : 0) |
+      (options.scrollY ? nativeConstants.OT_SCENE_SCROLL_Y : 0)
+    record[fields.follow.offset / 4] = follow
+    record[fields.culling.offset / 4] = toFFIBool(options.culling, "Scene scroll culling")
+    for (let edge = 0; edge < 4; edge++) floats[fields.padding.offset / 4 + edge] = options.padding[edge]
+    let fills = 0
+    for (const [index, field] of (
+      ["wrapper_background", "viewport_background", "content_background"] as const
+    ).entries()) {
+      const color = options.fills[index]
+      if (!color) continue
+      fills |= 1 << index
+      contextBufferColor(color, colors, fields[field].offset / 2)
+    }
+    record[fields.fills.offset / 4] = fills
+    for (let axis = 0; axis < 2; axis++) {
+      const base = fields.bars.offset + axis * bar.size
+      const value = options.bars[axis]
+      const policy = SCENE_SCROLL_BAR_POLICY.indexOf(value.policy)
+      if (policy < 0) throw new TypeError("Unknown scene scroll bar policy")
+      record[(base + bar.fields.policy.offset) / 4] = policy
+      record[(base + bar.fields.placement.offset) / 4] = toFFIBool(value.overlay, "Scene scroll bar overlay")
+      record[(base + bar.fields.thickness.offset) / 4] = toSafeFFIU32Length(
+        value.thickness,
+        "Scene scroll bar thickness",
+      )
+      record[(base + bar.fields.gap.offset) / 4] = toSafeFFIU32Length(value.gap, "Scene scroll bar gap")
+      record[(base + bar.fields.arrows.offset) / 4] = toFFIBool(value.arrows, "Scene scroll bar arrows")
+      contextBufferColor(value.foregroundColor, colors, (base + bar.fields.track_foreground.offset) / 2)
+      contextBufferColor(value.backgroundColor, colors, (base + bar.fields.track_background.offset) / 2)
+    }
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_scroll")
+    nativeResult("ot_scene_set_scroll", this.opentui.symbols.ot_scene_set_scroll(pointer, handle, record))
+  }
+
+  /** `axis` is 0 for the horizontal bar and 1 for the vertical bar; `end` is 0 for the start arrow. */
+  public sceneSetScrollArrow(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    axis: number,
+    end: number,
+    options: Omit<NativeSceneArrowOptions, "direction">,
+  ): void {
+    const layout = nativeLayouts.ot_scene_arrow_options
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const record = createContextRecord(layout)
+    record[layout.fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes, "Scene arrow attributes")
+    const colors = new Uint16Array(record.buffer)
+    contextBufferColor(options.foregroundColor, colors, layout.fields.foreground.offset / 2)
+    contextBufferColor(options.backgroundColor, colors, layout.fields.background.offset / 2)
+    const text = options.text
+    const bytes = text === undefined ? null : sessionBytes(this.encoder.encode(text), "Scene arrow text length")
+    if (bytes && bytes.length > NATIVE_BUFFER_TEXT_BYTES_MAX) throw new RangeError("Scene arrow text is too long")
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_scroll_arrow")
+    nativeResult(
+      "ot_scene_set_scroll_arrow",
+      this.opentui.symbols.ot_scene_set_scroll_arrow(
+        pointer,
+        handle,
+        toSafeFFIU32Length(axis, "Scene scroll axis"),
+        toSafeFFIU32Length(end, "Scene scroll arrow end"),
+        record,
+        bytes?.length === 0 ? new Uint8Array(1) : bytes,
+        bytes?.length ?? 0,
+      ),
+    )
+  }
+
+  /** An explicit scroll; a relative axis adds its value to the offset, and `reapply` applies the targets again after
+   * the next frame's layout. Returns the state after it. */
+  public sceneScrollTo(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    x: number,
+    y: number,
+    relativeX: boolean,
+    relativeY: boolean,
+    reapply = false,
+  ): NativeSceneScrollState {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
+    const flags =
+      (relativeX ? nativeConstants.OT_SCENE_SCROLL_RELATIVE_X : 0) |
+      (relativeY ? nativeConstants.OT_SCENE_SCROLL_RELATIVE_Y : 0) |
+      (reapply ? nativeConstants.OT_SCENE_SCROLL_REAPPLY : 0)
+    const pointer = this.nativeContextPointer(context, "ot_scene_scroll_to")
+    nativeResult("ot_scene_scroll_to", this.opentui.symbols.ot_scene_scroll_to(pointer, handle, x, y, flags, output))
+    return readSceneScrollState(output)
+  }
+
+  /** An into-view, anchor, or layout request (see `ot_scene_scroll_request`). Returns the state after it. */
+  public sceneScrollRequest(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    kind: "into-view" | "anchor" | "layout",
+    target: SceneNodeHandle | null,
+    align: "nearest" | "start" | "end" = "nearest",
+    inset = 0,
+  ): NativeSceneScrollState {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const encodedTarget = target === null ? null : encodeContextHandle(context, target)
+    const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
+    const pointer = this.nativeContextPointer(context, "ot_scene_scroll_request")
+    nativeResult(
+      "ot_scene_scroll_request",
+      this.opentui.symbols.ot_scene_scroll_request(
+        pointer,
+        handle,
+        SCENE_SCROLL_REQUESTS.indexOf(kind),
+        encodedTarget,
+        SCENE_SCROLL_ALIGNS.indexOf(align),
+        toSafeFFIU32Length(inset, "Scene scroll inset"),
+        output,
+      ),
+    )
+    return readSceneScrollState(output)
+  }
+
+  public sceneGetScroll(context: NativeContextHandle, node: SceneNodeHandle): NativeSceneScrollState {
+    const handle = encodeContextHandle(context, node)
+    const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
+    const pointer = this.nativeContextPointer(context, "ot_scene_get_scroll")
+    nativeResult("ot_scene_get_scroll", this.opentui.symbols.ot_scene_get_scroll(pointer, handle, output))
+    return readSceneScrollState(output)
   }
 
   public sceneSetTextOptions(

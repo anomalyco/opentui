@@ -28,6 +28,8 @@ import {
   type NativeSceneTextOptions,
   type NativeSceneSliderOptions,
   type NativeSceneArrowOptions,
+  type NativeSceneScrollOptions,
+  type NativeSceneScrollState,
   type NativeSceneEditorOptions,
   type ContextEditorViewHandle,
   type ContextTextBufferViewHandle,
@@ -451,6 +453,58 @@ export class NativeScene {
     )
   }
 
+  /** @internal A scroll write moves the box's children, so it bumps the layout revision like a frame step. */
+  setScroll(renderable: Renderable, options: NativeSceneScrollOptions): void {
+    this.flushStaged()
+    this.driver.renderLib.sceneSetScroll(this.driver.context, renderable._getSceneHandle(this), options)
+    this.changeLayout()
+  }
+
+  setScrollArrow(
+    renderable: Renderable,
+    axis: number,
+    end: number,
+    options: Omit<NativeSceneArrowOptions, "direction">,
+  ): void {
+    this.flushStaged()
+    this.driver.renderLib.sceneSetScrollArrow(this.driver.context, renderable._getSceneHandle(this), axis, end, options)
+  }
+
+  scrollTo(
+    renderable: Renderable,
+    x: number,
+    y: number,
+    relativeX: boolean,
+    relativeY: boolean,
+    reapply = false,
+  ): NativeSceneScrollState {
+    this.flushStaged()
+    const handle = renderable._getSceneHandle(this)
+    const state = this.driver.renderLib.sceneScrollTo(this.driver.context, handle, x, y, relativeX, relativeY, reapply)
+    this.changeLayout()
+    return state
+  }
+
+  scrollRequest(
+    renderable: Renderable,
+    kind: "into-view" | "anchor" | "layout",
+    target: Renderable | null,
+    align?: "nearest" | "start" | "end",
+    inset?: number,
+  ): NativeSceneScrollState {
+    this.flushStaged()
+    const { renderLib: lib, context } = this.driver
+    const handle = renderable._getSceneHandle(this)
+    const state = lib.sceneScrollRequest(context, handle, kind, target?._getSceneHandle(this) ?? null, align, inset)
+    this.changeLayout()
+    return state
+  }
+
+  getScroll(renderable: Renderable): NativeSceneScrollState {
+    this.flushStaged()
+    return this.driver.renderLib.sceneGetScroll(this.driver.context, renderable._getSceneHandle(this))
+  }
+
   setEditorView(renderable: Renderable, view: ContextEditorViewHandle): void {
     this.flushStaged()
     this.driver.renderLib.sceneSetEditorView(this.driver.context, renderable._getSceneHandle(this), view)
@@ -486,10 +540,10 @@ export class NativeScene {
     return this.driver.renderLib.sceneGetText(this.driver.context, renderable._getSceneHandle(this))
   }
 
-  /** @internal Inherited Text drawing records or draws at the caller's position. */
-  drawText(renderable: Renderable, buffer: OptimizedBuffer, x: number, y: number): void {
+  /** @internal Inherited Text and Box drawing records or draws the native body at the caller's position. */
+  drawBody(renderable: Renderable, buffer: OptimizedBuffer, x: number, y: number): void {
     this.flushStaged()
-    buffer._drawSceneText(this, renderable._getSceneHandle(this), x, y)
+    buffer._drawSceneBody(this, renderable._getSceneHandle(this), x, y)
   }
 
   setTextSelection(

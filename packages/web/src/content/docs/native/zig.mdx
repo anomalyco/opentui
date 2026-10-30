@@ -185,8 +185,9 @@ Use drawing methods to change cells. Do not write raw character entries.
 Pointers from `Context.raw()` getters are borrowed. Destroy the resource through the Context, not through the raw object's destructor.
 Keep callback data and borrowed environment state alive until the Context no longer needs them.
 
-The public module also exports raw primitives such as `CliRenderer` and `OptimizedBuffer`.
+The public module also exports raw primitives such as `OptimizedBuffer`.
 Each raw primitive has its own lifetime contract. Importing the module does not give raw objects the Context's checks.
+A `CliRenderer` exists only as a Session's renderer. Borrow it with `Context.raw().getSessionRenderer`; the Session renders and destroys it.
 
 For host drawing, call `sceneFrameStepWithRecording` until it returns a `DONE` draft.
 Then commit the draft with `sceneFrameCommit`, as above.

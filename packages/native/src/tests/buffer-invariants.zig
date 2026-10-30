@@ -26,6 +26,7 @@ pub fn expectBufferInvariants(target: *const buffer.OptimizedBuffer) !void {
             const start = target.buffer.char[index - left];
             try std.testing.expect(gp.isGraphemeChar(start));
             try std.testing.expectEqual(gp.graphemeIdFromChar(start), gp.graphemeIdFromChar(char));
+            try std.testing.expect(left <= gp.charRightExtent(start));
             continue;
         }
         if (gp.isGraphemeChar(char)) {

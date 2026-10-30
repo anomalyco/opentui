@@ -5,6 +5,7 @@ const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const ansi = @import("../ansi.zig");
+const scene_record = @import("../scene-record.zig");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 
 const options: scene.FrameOptions = .{
@@ -35,9 +36,16 @@ pub fn drawHeader(comptime T: type, operation: u32) c.ot_buffer_draw_header {
     return .{ .struct_size = @sizeOf(T), .abi_version = c.OT_CONTEXT_ABI_VERSION, .operation = operation, .flags = 0 };
 }
 
+/// White text; the black background applies with OT_BUFFER_DRAW_HAS_BACKGROUND.
+fn textRecord(x: i32, y: i32, max_width: u32, flags: u32) c.ot_buffer_draw_text_record {
+    var header = drawHeader(c.ot_buffer_draw_text_record, c.OT_BUFFER_DRAW_TEXT);
+    header.flags = flags;
+    return .{ .header = header, .x = x, .y = y, .attributes = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 }, .max_width = max_width };
+}
+
 /// Builds an 8-byte aligned paint recording.
 pub const Recording = struct {
-    bytes: [2048]u8 align(8) = undefined,
+    bytes: [8192]u8 align(8) = undefined,
     len: usize = 0,
 
     pub fn slot(self: *Recording, index: u32, phase: u32) void {
@@ -45,14 +53,7 @@ pub const Recording = struct {
     }
 
     pub fn text(self: *Recording, value: []const u8, x: i32, y: i32) void {
-        self.draw(c.ot_buffer_draw_text_record{
-            .header = drawHeader(c.ot_buffer_draw_text_record, c.OT_BUFFER_DRAW_TEXT),
-            .x = x,
-            .y = y,
-            .attributes = 0,
-            .foreground = .{ 255, 255, 255, 255 },
-            .background = .{ 0, 0, 0, 0 },
-        }, null, value, "");
+        self.draw(textRecord(x, y, 0, 0), null, value, "");
     }
 
     pub fn fill(self: *Recording, x: i32, y: i32, width: u32, background: [4]u16) void {
@@ -350,12 +351,107 @@ test "Scene record reads referenced resources at playback and skips destroyed on
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
-const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, image, unicode };
+const BodyCase = struct { paint: scene.Paint, details: scene.BoxDetails = .{}, focus: enum { none, child, self } = .none };
+
+fn bodyScene(f: Fixture, case: BodyCase) !context.Handle {
+    const parent = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try f.owner.sceneSetStyle(parent, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, 10, 1);
+    try f.owner.sceneSetStyle(parent, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_POINT, 4, 1);
+    try f.owner.sceneMoveNode(parent, f.root, 0);
+    const box = try placedIn(f, parent, c.OT_SCENE_BOX, 3, 6, 3);
+    var paint = case.paint;
+    paint.translateX = 1;
+    try f.owner.sceneSetPaint(box, paint);
+    try f.owner.sceneSetBoxDetails(box, case.details);
+    const child = try placedIn(f, box, c.OT_SCENE_BOX, 4, 1, 1);
+    try f.owner.sceneSetPaint(child, .{ .focusable = true });
+    if (case.focus != .none) try f.owner.sceneSetFocus(if (case.focus == .child) child else box, true);
+    return box;
+}
+
+fn placedIn(f: Fixture, parent: context.Handle, kind: u32, num: u32, width: f32, height: f32) !context.Handle {
+    const child = try f.owner.sceneCreateNode(f.id, kind, num);
+    try f.owner.sceneSetStyle(child, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, width, 1);
+    try f.owner.sceneSetStyle(child, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_POINT, height, 1);
+    try f.owner.sceneMoveNode(child, parent, 0);
+    return child;
+}
+
+test "Scene record box body paints like the native box" {
+    const all = c.OT_BORDER_ALL;
+    const red: [4]u16 = .{ 200, 0, 0, 255 };
+    const cases = [_]BodyCase{
+        .{ .paint = .{ .borderSides = all, .background = .{ 0, 0, 90, 255 } } },
+        .{ .paint = .{ .borderSides = c.OT_BORDER_TOP | c.OT_BORDER_LEFT, .borderStyle = 1, .shouldFill = 0 }, .details = .{ .title = "ab", .bottom_title = "cd", .title_alignment = 1, .bottom_title_alignment = 2, .title_color = red } },
+        .{ .paint = .{ .borderSides = all }, .details = .{ .custom_border_chars = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' } } },
+        // Focus within: the focusable box or its child holds focus.
+        .{ .paint = .{ .borderSides = all, .focusable = true }, .details = .{ .title = "f" }, .focus = .child },
+        .{ .paint = .{ .borderSides = all, .focusable = true }, .focus = .self },
+    };
+    for (cases) |case| {
+        const twins = [2]Fixture{ try Fixture.init(testing.allocator, 10, 4, .{ .output = transport }), try Fixture.init(testing.allocator, 10, 4, .{ .output = transport }) };
+        defer for (twins) |twin| twin.deinit();
+        _ = try bodyScene(twins[0], case);
+        const box = try bodyScene(twins[1], case);
+        try twins[1].owner.sceneSetHooks(box, c.OT_SCENE_HOOK_RENDER_SELF, 1, 6, 3);
+        const native = try twins[0].step(null, options, c.OT_SCENE_FRAME_DONE, null);
+        const request = try twins[1].step(null, options, c.OT_SCENE_FRAME_RECORD, null);
+        const slot = (try twins[1].owner.sceneFramePaintSlots(twins[1].id, request))[0];
+        var recording: Recording = .{};
+        recording.slot(0, c.OT_SCENE_RECORD_PHASE_SELF);
+        recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(box), .x = @intFromFloat(slot.layout.screenX), .y = @intFromFloat(slot.layout.screenY) }, &.{});
+        const done = try submit(twins[1], request, &recording);
+        try twins[0].expectSameCells(twins[1]);
+        try twins[0].owner.sceneFrameCancel(twins[0].id, native.frame_id);
+        try twins[1].owner.sceneFrameCancel(twins[1].id, done.frame_id);
+    }
+}
+
+test "Scene body draws nothing unprepared, clips to the target under any scissor, and rejects kinds without a body" {
+    const f = try Fixture.init(testing.allocator, 4, 2, .{ .output = transport });
+    defer f.deinit();
+    const target = try f.owner.createBuffer(200, 2, .{});
+    const unprepared = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try f.owner.sceneSetPaint(unprepared, .{ .borderSides = c.OT_BORDER_ALL, .background = .{ 0, 0, 90, 255 } });
+    const blank = (try f.owner.raw().getBuffer(target)).buffer.char[0];
+    const min = std.math.minInt(i32);
+    const max = std.math.maxInt(i32);
+    for ([_][2]i32{ .{ min, min }, .{ min, 0 }, .{ 0, min }, .{ max, 0 }, .{ 0, 0 }, .{ 3, 1 } }) |at| {
+        try f.owner.drawSceneBody(target, null, unprepared, at[0], at[1]);
+    }
+    for ((try f.owner.raw().getBuffer(target)).buffer.char) |char| try testing.expectEqual(blank, char);
+    // A prepared box far beyond the cell range keeps the cells its edges cover.
+    const wide = try placedIn(f, f.root, c.OT_SCENE_BOX, 3, 3e9, 2);
+    try f.owner.sceneSetPaint(wide, .{ .borderSides = c.OT_BORDER_ALL });
+    // A one-column gutter laid out at column 5 draws where the host asks.
+    const gutter = try placedIn(f, f.root, c.OT_SCENE_BOX, 6, 1, 2);
+    try f.owner.sceneSetPaint(gutter, .{ .borderSides = c.OT_BORDER_LEFT, .translateX = 5 });
+    try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, false, 0);
+    try f.owner.drawSceneBody(target, null, gutter, 0, 0);
+    try testing.expectEqual(@as(u32, 0x2502), (try f.owner.raw().getBuffer(target)).get(0, 0).?.char);
+    const slider = try placedIn(f, f.root, c.OT_SCENE_SLIDER, 4, 4, 1);
+    // Within the cell range where it is laid out, but not where the host draws it.
+    const long = try placedIn(f, f.root, c.OT_SCENE_BOX, 5, 2147483520, 2);
+    try f.owner.sceneSetPaint(long, .{ .borderSides = c.OT_BORDER_ALL, .translateX = -100 });
+    try @import("scene_fixture_test.zig").repaint(f.owner, f.id, options.background, false, 0);
+    try f.owner.drawSceneBody(target, null, long, 150, 0);
+    for ([_]i32{ min, -1 }) |x| try f.owner.drawSceneBody(target, null, wide, x, 0);
+    try testing.expectEqual(@as(u32, 0x2500), (try f.owner.raw().getBuffer(target)).get(0, 0).?.char);
+    try (try f.owner.raw().getBuffer(target)).pushScissorRect(-5, -5, 10, 10);
+    try f.owner.drawSceneBody(target, null, slider, -1, 0);
+    const view = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT_VIEW, 8);
+    try testing.expectError(error.WrongKind, f.owner.drawSceneBody(target, null, view, 0, 0));
+}
+
+const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, scene_box, image, unicode };
 
 const Resources = struct {
+    text: context.Handle,
+    edit: context.Handle,
     text_view: context.Handle,
     editor_view: context.Handle,
     scene_text: context.Handle,
+    scene_box: context.Handle,
     image: context.Handle,
     unicode: context.Handle,
 
@@ -366,11 +462,17 @@ const Resources = struct {
         try f.owner.editSetText(edit, "edit", false);
         const scene_text = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 9);
         try f.owner.sceneSetText(scene_text, "node");
+        // Never placed, so never prepared: corrupted coordinates must still draw nothing.
+        const scene_box = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 10);
+        try f.owner.sceneSetPaint(scene_box, .{ .borderSides = c.OT_BORDER_ALL });
         const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
         return .{
+            .text = text,
+            .edit = edit,
             .text_view = try f.owner.createTextBufferView(text),
             .editor_view = try f.owner.createEditorView(edit, 4, 1),
             .scene_text = scene_text,
+            .scene_box = scene_box,
             .image = try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 }),
             .unicode = try f.owner.createUnicode("uZ", .unicode),
         };
@@ -411,7 +513,8 @@ fn appendCommand(recording: *Recording, command: Command, resources: Resources) 
         },
         .text_view => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_TEXT_VIEW), .source = cHandle(resources.text_view), .x = 2, .y = 1 }, &.{}),
         .editor_view => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_EDITOR_VIEW), .source = cHandle(resources.editor_view), .x = 2, .y = 1 }, &.{}),
-        .scene_text => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_TEXT), .source = cHandle(resources.scene_text), .x = 2, .y = 1 }, &.{}),
+        .scene_text => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(resources.scene_text), .x = 2, .y = 1 }, &.{}),
+        .scene_box => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(resources.scene_box), .x = 2, .y = 1 }, &.{}),
         .image => recording.append(c.ot_scene_record_image{ .header = recordHeader(c.OT_SCENE_RECORD_IMAGE), .image = cHandle(resources.image), .options = .{ .struct_size = @sizeOf(c.ot_image_draw_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 0, .protocol = c.OT_IMAGE_PROTOCOL_BLOCKS, .x = 8, .y = 2, .width = 2, .height = 1, .pixel_width = 0, .pixel_height = 0, .source_x = 0, .source_y = 0, .source_width = 0, .source_height = 0, .reserved = .{ 0, 0 } } }, &.{}),
         .unicode => recording.append(c.ot_scene_record_unicode{ .header = recordHeader(c.OT_SCENE_RECORD_UNICODE), .unicode = cHandle(resources.unicode), .index = 1, .x = 11, .y = 3, .attributes = 1, .foreground = white, .background = blue }, &.{}),
     }
@@ -596,6 +699,7 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
     valid.stack(c.OT_BUFFER_STACK_PUSH_SCISSOR, 1, 3, 1);
     valid.slot(1, c.OT_SCENE_RECORD_PHASE_AFTER);
     valid.text("ok", 5, 2);
+    valid.draw(textRecord(4, 3, 5, c.OT_BUFFER_DRAW_HAS_BACKGROUND | c.OT_BUFFER_DRAW_FIT_ELLIPSIS), null, "\u{8a2d}\u{5b9a}\u{3068}", "");
     try f.owner.sceneFrameCancel(f.id, (try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &valid)).frame_id);
     for (0..512) |seed| {
         var prng = std.Random.DefaultPrng.init(seed);
@@ -619,6 +723,88 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
     }
 }
 
+// A fitted text draw writes no cell at or past x + max_width, never splits a glyph, and puts "…" right
+// after the kept glyphs only when it cut the text. Each row draws over x cells, so a blank cell shows
+// where a tab drew. Rows decode as ot_buffer_draw does and draw into an owned buffer, and play as a
+// recorded DRAW; both give the row.
+test "Scene record and direct text draws fit text to a cell width" {
+    const Row = struct { text: []const u8, x: i32 = 0, max_width: u32, ellipsis: bool = false, scissor: bool = false, legacy: bool = false, row: []const u8 };
+    const rows = [_]Row{
+        .{ .text = "abcdef", .max_width = 4, .row = "abcdxxxxxx" },
+        .{ .text = "abcde", .max_width = 4, .ellipsis = true, .row = "abc…xxxxxx" },
+        .{ .text = "abcd", .max_width = 4, .ellipsis = true, .row = "abcdxxxxxx" },
+        .{ .text = "設定とオプション", .max_width = 8, .row = "設定とオxx" },
+        .{ .text = "設定とオプション", .max_width = 8, .ellipsis = true, .row = "設定と…xxx" },
+        .{ .text = "設定", .max_width = 4, .ellipsis = true, .row = "設定xxxxxx" },
+        .{ .text = "abcdef😀xy", .max_width = 7, .row = "abcdefxxxx" },
+        .{ .text = "abcdef😀xy", .max_width = 8, .ellipsis = true, .row = "abcdef…xxx" },
+        // A ZWJ family and a combining mark stay whole.
+        .{ .text = "a👨‍👩‍👧b", .max_width = 3, .ellipsis = true, .row = "a…xxxxxxxx" },
+        .{ .text = "e\u{301}abc", .max_width = 3, .ellipsis = true, .row = "e\u{301}a…xxxxxxx" },
+        // A tab clips cell by cell at the limit; with an ellipsis it is not kept.
+        .{ .text = "ab\tc", .max_width = 3, .row = "ab xxxxxxx" },
+        .{ .text = "ab\tc", .max_width = 3, .ellipsis = true, .row = "ab…xxxxxxx" },
+        // Four bytes, five cells.
+        .{ .text = "ab\tc", .max_width = 4, .ellipsis = true, .row = "ab…xxxxxxx" },
+        .{ .text = "界a", .max_width = 1, .row = "xxxxxxxxxx" },
+        .{ .text = "界a", .max_width = 1, .ellipsis = true, .row = "…xxxxxxxxx" },
+        .{ .text = "界ab", .max_width = 2, .row = "界xxxxxxxx" },
+        .{ .text = "界ab", .max_width = 2, .ellipsis = true, .row = "…xxxxxxxxx" },
+        // Cells left of column 0 and right of the target count toward the limit.
+        .{ .text = "abcdef", .x = -2, .max_width = 5, .ellipsis = true, .row = "cd…xxxxxxx" },
+        .{ .text = "設定とオプション", .x = -1, .max_width = 5, .ellipsis = true, .row = "x定…xxxxxx" },
+        .{ .text = "abcdefghijkl", .x = 8, .max_width = 5, .ellipsis = true, .row = "xxxxxxxxab" },
+        .{ .text = "abcdef", .max_width = 5, .ellipsis = true, .scissor = true, .row = "xbcxxxxxxx" },
+        // No limit: max_width 0, or a record from before max_width.
+        .{ .text = "abcdefghijkl", .max_width = 0, .row = "abcdefghij" },
+        .{ .text = "abcdefghijkl", .max_width = 5, .legacy = true, .row = "abcdefghij" },
+    };
+    const width = 10;
+    const f = try Fixture.init(testing.allocator, width, rows.len, .{ .output = transport });
+    defer f.deinit();
+    try f.owner.sceneSetHooks(try placed(f, c.OT_SCENE_CUSTOM, 2, 0, 0, width), c.OT_SCENE_HOOK_RENDER_AFTER, 1, width, 1);
+    const direct = try f.owner.createBuffer(width, rows.len, .{});
+    const target = try f.owner.raw().getBuffer(direct);
+    var recording: Recording = .{};
+    recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+    for (rows, 0..) |row, index| {
+        const y: i32 = @intCast(index);
+        var record = textRecord(row.x, y, row.max_width, c.OT_BUFFER_DRAW_HAS_BACKGROUND | @as(u32, if (row.ellipsis) c.OT_BUFFER_DRAW_FIT_ELLIPSIS else 0));
+        if (row.legacy) record.header.struct_size = @offsetOf(c.ot_buffer_draw_text_record, "max_width");
+        recording.text("x" ** width, 0, y);
+        try f.owner.drawBufferText(direct, "x" ** width, 0, y, .{ 255, 255, 255, 255 }, null, 0);
+        if (row.scissor) {
+            recording.append(c.ot_scene_record_stack{ .header = recordHeader(c.OT_SCENE_RECORD_STACK), .operation = c.OT_BUFFER_STACK_PUSH_SCISSOR, .x = 1, .y = y, .width = 2, .height = 1, .opacity = 1 }, &.{});
+            try target.pushScissorRect(1, y, 2, 1);
+        }
+        if (row.legacy) recording.draw(std.mem.asBytes(&record)[0..@offsetOf(c.ot_buffer_draw_text_record, "max_width")].*, null, row.text, "") else recording.draw(record, null, row.text, "");
+        var draw: context.BufferDraw = undefined;
+        try scene_record.bufferDrawFromC(&record.header, &draw);
+        try f.owner.drawBuffer(direct, null, &draw, row.text, "");
+        if (row.scissor) {
+            recording.stack(c.OT_BUFFER_STACK_POP_SCISSOR, 0, 0, 1);
+            target.popScissorRect();
+        }
+    }
+    const done = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &recording);
+    var text: [1024]u8 = undefined;
+    for ([_]*const @import("../buffer.zig").OptimizedBuffer{ target, f.cli.getNextBuffer() }) |cells| {
+        var lines = std.mem.splitScalar(u8, text[0..try cells.writeResolvedChars(&text, true)], '\n');
+        for (rows) |row| {
+            errdefer std.debug.print("row={any}\n", .{row});
+            try testing.expectEqualStrings(row.row, lines.next().?);
+        }
+    }
+    try f.owner.sceneFrameCancel(f.id, done.frame_id);
+    // Other sizes, other flags, and an ellipsis without a limit are rejected.
+    for ([_][2]u32{ .{ 40, 0 }, .{ 52, 0 }, .{ 48, 32 }, .{ 48, c.OT_BUFFER_DRAW_FIT_ELLIPSIS } }) |invalid| {
+        var record = textRecord(0, 0, 0, invalid[1]);
+        record.header.struct_size = invalid[0];
+        var draw: context.BufferDraw = undefined;
+        try testing.expectError(error.InvalidOptions, scene_record.bufferDrawFromC(&record.header, &draw));
+    }
+}
+
 test "Scene image paints a fill wider than its pixel range" {
     const f = try Fixture.init(testing.allocator, 4, 2, .{ .output = transport });
     defer f.deinit();
@@ -635,4 +821,233 @@ test "Scene image paints a fill wider than its pixel range" {
     }
     try testing.expect(cells[0] != ' ');
     try testing.expectEqual([3]u32{ cells[0], cells[0], cells[0] }, cells);
+}
+
+fn fingerprint(f: Fixture, recording: *const Recording, hooks: u32) !scene_record.Fingerprint {
+    const slots = [_]scene.PaintSlot{.{ .node = f.root, .num = 1, .hooks = hooks, .hook_generation = 1, .layout = .{}, .public_layout = null, .clip = .{ .x = 0, .y = 0, .width = 1, .height = 1 }, .opacity = 1 }};
+    var segments: [1]scene_record.Segments = undefined;
+    try scene_record.index(recording.view(), &slots, &segments);
+    return scene_record.fingerprint(f.owner, try f.owner.raw().getRenderable(f.root), recording.view(), segments[0], hooks, 1);
+}
+
+fn appendClear(recording: *Recording) void {
+    recording.draw(c.ot_buffer_draw_clear{ .header = drawHeader(c.ot_buffer_draw_clear, c.OT_BUFFER_DRAW_CLEAR), .background = .{ 0, 0, 255, 255 } }, null, "", "");
+}
+
+// Rows each command can write before the member clip bounds them (max reaches the clip bottom),
+// and whether it acts outside the clip, draws an image, or reads unfingerprinted cells.
+test "Scene record fingerprints bound the rows each command kind writes" {
+    const f = try Fixture.init(testing.allocator, 12, 4, .{ .output = transport });
+    defer f.deinit();
+    const resources = try Resources.init(f);
+    const source = try f.owner.createBuffer(2, 3, .{});
+    const max = std.math.maxInt(i64);
+    const Draw = enum { text, fill, compose, stale_compose, clear, grid, stack };
+    const rows = [_]struct { command: union(enum) { command: Command, draw: Draw }, print: scene_record.Fingerprint }{
+        .{ .command = .{ .command = .box }, .print = .{ .top = 0, .bottom = 3 } },
+        .{ .command = .{ .command = .grid }, .print = .{ .top = 0, .bottom = 4 } },
+        .{ .command = .{ .command = .packed_cells }, .print = .{ .top = 1, .bottom = 2 } },
+        .{ .command = .{ .command = .supersample }, .print = .{ .top = 2, .bottom = max } },
+        .{ .command = .{ .command = .grayscale }, .print = .{ .top = 3, .bottom = 4 } },
+        // With and without a mask.
+        .{ .command = .{ .command = .color_matrix }, .print = .{ .non_local = true } },
+        .{ .command = .{ .command = .text_view }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .editor_view }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .scene_text }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .scene_box }, .print = .{ .top = 1, .bottom = max } },
+        .{ .command = .{ .command = .image }, .print = .{ .image = true } },
+        .{ .command = .{ .command = .unicode }, .print = .{ .top = 3, .bottom = 4 } },
+        .{ .command = .{ .draw = .text }, .print = .{ .top = 2, .bottom = 3 } },
+        .{ .command = .{ .draw = .fill }, .print = .{ .top = -1, .bottom = 0 } },
+        // A source's height bounds a composition; a stale source draws nothing.
+        .{ .command = .{ .draw = .compose }, .print = .{ .top = 0, .bottom = 3, .stable = false } },
+        .{ .command = .{ .draw = .stale_compose }, .print = .{ .stable = false } },
+        .{ .command = .{ .draw = .clear }, .print = .{ .non_local = true } },
+        // The fewest offsets a grid draws with.
+        .{ .command = .{ .draw = .grid }, .print = .{ .top = 1, .bottom = 4 } },
+        .{ .command = .{ .draw = .stack }, .print = .{} },
+    };
+    var seen: std.EnumSet(scene_record.Command) = .initEmpty();
+    for (rows) |row| {
+        var recording: Recording = .{};
+        recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+        switch (row.command) {
+            .command => |command| appendCommand(&recording, command, resources),
+            .draw => |draw| switch (draw) {
+                .text => recording.text("ab", 1, 2),
+                .fill => recording.fill(0, -1, 3, .{ 0, 0, 0, 255 }),
+                .compose => recording.compose(source, 0),
+                .stale_compose => recording.compose(resources.text, 0),
+                .clear => appendClear(&recording),
+                .grid => recording.append(c.ot_scene_record_grid{ .header = recordHeader(c.OT_SCENE_RECORD_GRID), .options = .{ .struct_size = @sizeOf(c.ot_buffer_grid_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = c.OT_BUFFER_GRID_OUTER, .reserved = 0, .foreground = .{ 255, 255, 255, 255 }, .background = .{ 0, 0, 0, 255 }, .border_chars = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' } }, .column_count = 2, .row_count = 2 }, std.mem.sliceAsBytes(&[_]i32{ 0, 4, 1, 3 })),
+                .stack => recording.stack(c.OT_BUFFER_STACK_PUSH_SCISSOR, 0, 1, 1),
+            },
+        }
+        const header: *const c.ot_scene_record_header = @ptrCast(@alignCast(recording.view()[std.mem.alignForward(usize, @sizeOf(c.ot_scene_record_slot), 8)..].ptr));
+        seen.insert(std.enums.fromInt(scene_record.Command, header.operation).?);
+        var print = try fingerprint(f, &recording, c.OT_SCENE_HOOK_RENDER_AFTER);
+        print.digest = 0;
+        try testing.expectEqual(row.print, print);
+    }
+    // Each command type needs a row.
+    try testing.expect(seen.eql(.initFull()));
+}
+
+const FrameWork = @import("../renderer.zig").FrameWork;
+const Hooked = enum { same, text, outside, back, above, below, offscreen, offscreen_text, offscreen_draw, onscreen, phase, unphase, hooks, unicode, unicode_gone, view, view_text, editor, editor_text, editor_styled, editor_unstyled, body, body_text, body_box, body_resize, body_focus, body_focused, body_blur, view_styled, view_unstyled, view_bind, view_resize, compose, compose_write, view_again, stale, stale_again, clear, clear_again, clear_gone, matrix, matrix_gone, image, image_gone };
+
+// A box on row 1 of a 10 x 6 screen records one command per frame. Each row changes the recording or
+// a resource it reads and expects the rows the frame damages and its full-path reasons. The
+// lists stay kept (B5a) and an unchanged recording paints nothing. The table runs without VERIFY,
+// then with it: VERIFY must pass and change no count.
+test "Scene record frames keep unchanged recordings and damage the rows changed ones write" {
+    var results: [2][std.meta.fields(Hooked).len]FrameWork = undefined;
+    for ([_]bool{ false, true }, &results) |verify, *counts| try hookedTable(verify, counts);
+    try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
+}
+
+fn presentHooked(f: Fixture, recording: *const Recording) !FrameWork {
+    const done = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), recording);
+    _ = try f.owner.sceneFrameCommit(f.id, done, false);
+    try @import("scene_frame_test.zig").drain(f.owner, f.id);
+    return (try f.owner.sceneGetStats(f.id)).frameWork;
+}
+
+fn hookedTable(verify: bool, counts: []FrameWork) !void {
+    const f = try Fixture.init(testing.allocator, 10, 6, .{});
+    defer f.deinit();
+    if (verify) try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
+    const hooked = try node(f.owner, f.id, f.root, 1, 2, 0);
+    try f.owner.sceneSetPaint(hooked, .{ .translateY = 1, .background = .{ 2, 0, 0, 255 } });
+    // A box on row 0 whose body the hook draws on row 3.
+    const other = try node(f.owner, f.id, f.root, 1, 3, 1);
+    try f.owner.sceneSetPaint(other, .{ .translateX = 2, .borderSides = c.OT_BORDER_ALL, .focusable = true });
+    // A text view node at column 4 of row 0, bound later to the view a hook draws.
+    const bound = try node(f.owner, f.id, f.root, c.OT_SCENE_TEXT_VIEW, 4, 2);
+    try f.owner.sceneSetStyle(bound, 4, 0, 0, 1, 4, 1);
+    var style: context.Handle = undefined;
+    try f.owner.sceneSetHooks(hooked, before_after, 1, 2, 1);
+    const resources = try Resources.init(f);
+    const source = try f.owner.createBuffer(2, 1, .{});
+    var first: Recording = .{};
+    first.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+    first.text("a", 0, 1);
+    _ = try presentHooked(f, &first);
+    const non_local = c.OT_SCENE_FULL_PATH_NON_LOCAL;
+    const rows = [_]struct { change: Hooked, damage: u32, reasons: u32 = 0, kept: bool = true }{
+        .{ .change = .same, .damage = 0 },
+        .{ .change = .text, .damage = 1 },
+        // A hook draws outside its node but inside its clip: its rows reach the row it wrote.
+        .{ .change = .outside, .damage = 4 },
+        .{ .change = .back, .damage = 4 },
+        // Rows outside the clip, and a node moved out of it, add no damage.
+        .{ .change = .above, .damage = 1 },
+        .{ .change = .below, .damage = 1 },
+        .{ .change = .offscreen, .damage = 1, .kept = false },
+        .{ .change = .offscreen_text, .damage = 0 },
+        // A node outside its clip that draws inside it damages only the rows it draws.
+        .{ .change = .offscreen_draw, .damage = 1 },
+        .{ .change = .onscreen, .damage = 2, .kept = false },
+        // Equal bytes in another phase, or with the node's body replaced, paint other cells.
+        .{ .change = .phase, .damage = 1 },
+        .{ .change = .unphase, .damage = 1 },
+        .{ .change = .hooks, .damage = 1, .kept = false },
+        // A destroyed resource draws nothing: equal bytes, other cells.
+        .{ .change = .unicode, .damage = 3 },
+        .{ .change = .unicode_gone, .damage = 3 },
+        // A view reaches the clip bottom. Edits to what a recording reads repaint equal bytes.
+        .{ .change = .view, .damage = 5 },
+        .{ .change = .view_text, .damage = 5 },
+        .{ .change = .editor, .damage = 5 },
+        .{ .change = .editor_text, .damage = 5 },
+        .{ .change = .editor_styled, .damage = 5 },
+        .{ .change = .editor_unstyled, .damage = 5 },
+        .{ .change = .body, .damage = 5 },
+        .{ .change = .body_text, .damage = 5, .kept = false },
+        // A body reads its node's paint size and focus; a view reads whether its style lives.
+        .{ .change = .body_box, .damage = 5 },
+        .{ .change = .body_resize, .damage = 6, .kept = false },
+        .{ .change = .body_focus, .damage = 6, .kept = false },
+        .{ .change = .body_focused, .damage = 0 },
+        .{ .change = .body_blur, .damage = 6, .kept = false },
+        .{ .change = .view_styled, .damage = 5 },
+        .{ .change = .view_unstyled, .damage = 5 },
+        // A view bound to another node takes that node's size, which no epoch tracks: the
+        // recording repaints on every frame, as a composed buffer does.
+        .{ .change = .view_bind, .damage = 6, .kept = false },
+        .{ .change = .view_resize, .damage = 6, .kept = false },
+        // A composed buffer repaints on every frame, written or not.
+        .{ .change = .compose, .damage = 6 },
+        .{ .change = .compose_write, .damage = 2 },
+        .{ .change = .view_again, .damage = 6 },
+        // A destroyed view draws nothing, then stays unchanged.
+        .{ .change = .stale, .damage = 6, .kept = false },
+        .{ .change = .stale_again, .damage = 0 },
+        // Non-local commands repaint in full; removing one repaints every row.
+        .{ .change = .clear, .damage = 6, .reasons = non_local },
+        .{ .change = .clear_again, .damage = 6, .reasons = non_local },
+        .{ .change = .clear_gone, .damage = 6 },
+        .{ .change = .matrix, .damage = 6, .reasons = non_local },
+        .{ .change = .matrix_gone, .damage = 6 },
+        // As an image node: the frame after one is full too.
+        .{ .change = .image, .damage = 6, .reasons = FrameWork.full_path_images },
+        .{ .change = .image_gone, .damage = 6, .reasons = FrameWork.full_path_images | FrameWork.full_path_unretained },
+    };
+    comptime std.debug.assert(rows.len == std.meta.fields(Hooked).len);
+    for (rows, counts) |row, *count| {
+        errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
+        var recording: Recording = .{};
+        recording.slot(0, if (row.change == .phase) c.OT_SCENE_RECORD_PHASE_BEFORE else c.OT_SCENE_RECORD_PHASE_AFTER);
+        switch (row.change) {
+            .same, .clear_gone, .matrix_gone, .image_gone => recording.text("a", 0, 1),
+            .text, .back, .onscreen, .phase, .unphase, .hooks => recording.text("b", 0, 1),
+            .above => recording.text("b", 0, -2),
+            .below => recording.text("b", 0, 6),
+            .offscreen => recording.text("b", 0, 8),
+            .offscreen_text => recording.text("c", 0, 8),
+            .offscreen_draw => recording.text("c", 0, 3),
+            .unicode, .unicode_gone => appendCommand(&recording, .unicode, resources),
+            .outside => recording.text("b", 0, 4),
+            .view, .view_text, .view_again, .view_styled, .view_unstyled, .view_bind, .view_resize, .stale, .stale_again => appendCommand(&recording, .text_view, resources),
+            .body_box, .body_resize, .body_focus, .body_focused, .body_blur => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_BODY), .source = cHandle(other), .x = 0, .y = 3 }, &.{}),
+            .editor, .editor_text, .editor_styled, .editor_unstyled => appendCommand(&recording, .editor_view, resources),
+            .body, .body_text => appendCommand(&recording, .scene_text, resources),
+            .compose, .compose_write => recording.compose(source, 0),
+            .clear, .clear_again => appendClear(&recording),
+            .matrix => appendCommand(&recording, .color_matrix, resources),
+            .image => appendCommand(&recording, .image, resources),
+        }
+        switch (row.change) {
+            .view_text => try f.owner.textBufferSetText(resources.text, "edited"),
+            .editor_text => try f.owner.editSetText(resources.edit, "edited", false),
+            .body_text => try f.owner.sceneSetText(resources.scene_text, "edited"),
+            .body_resize => try f.owner.sceneSetStyle(other, 4, 0, 0, 1, 4, 1),
+            .body_focus, .body_blur => try f.owner.sceneSetFocus(other, row.change == .body_focus),
+            .offscreen, .onscreen => try f.owner.scenePatchPaint(hooked, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (row.change == .offscreen) 8 else 1 }),
+            .editor_styled => {
+                style = try f.owner.createSyntaxStyle();
+                try f.owner.editSetSyntaxStyle(resources.edit, style);
+            },
+            .editor_unstyled => try f.owner.destroy(style),
+            .view_bind => try f.owner.sceneSetTextView(bound, resources.text_view),
+            .view_resize => try f.owner.sceneSetStyle(bound, 4, 0, 0, 1, 2, 1),
+            .view_styled => {
+                style = try f.owner.createSyntaxStyle();
+                try f.owner.textBufferSetSyntaxStyle(resources.text, style);
+            },
+            .view_unstyled => try f.owner.destroy(style),
+            .compose_write => try f.owner.drawBufferText(source, "w", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0),
+            .stale => try f.owner.destroy(resources.text_view),
+            .hooks => try f.owner.sceneSetHooks(hooked, before_after | c.OT_SCENE_HOOK_RENDER_SELF, 2, 2, 1),
+            .unicode_gone => try f.owner.destroy(resources.unicode),
+            else => {},
+        }
+        count.* = try presentHooked(f, &recording);
+        try testing.expectEqual(row.damage, count.damage_rows);
+        try testing.expectEqual(row.reasons, count.full_path_reasons);
+        // Kept lists (B5a) serve both unchanged and changed recordings.
+        if (row.kept) try testing.expectEqual(@as(u64, 0), count.candidate_visits);
+        if (row.damage == 0) try testing.expectEqual(@as(u64, 0), count.members_painted);
+        if (row.change == .back) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, 4).?.char);
+    }
 }

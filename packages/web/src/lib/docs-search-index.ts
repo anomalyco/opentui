@@ -41,6 +41,15 @@ async function loadDocsSearchIndex(): Promise<SearchEntry[]> {
     entries.push(...searchEntriesForPage(page, stripFrontmatter(source)))
   }
 
+  entries.push({
+    chapter: "Releases",
+    title: "Releases",
+    navTitle: "Releases",
+    url: "/docs/releases",
+    text: "Release notes and API changes of each OpenTUI release.",
+    symbols: ["changelog"],
+  })
+
   return entries
 }
 

@@ -9,6 +9,7 @@ import type {
   RuntimeMatcher,
 } from "../../types.js"
 import type { ConditionService } from "../conditions.js"
+import { markSupplied } from "../values.js"
 
 export function mergeRequirement(target: EventData, name: string, value: unknown, source: string): void {
   if (Object.prototype.hasOwnProperty.call(target, name) && !Object.is(target[name], value)) {
@@ -47,6 +48,7 @@ export function createFieldCompilerContext<TTarget extends object, TEvent extend
 
   return {
     require(name: string, value: unknown) {
+      markSupplied(value)
       mergeRequirement(options.requirements, name, value, source)
     },
     attr(name: string, value: unknown) {
@@ -54,6 +56,7 @@ export function createFieldCompilerContext<TTarget extends object, TEvent extend
         throw new Error(`Keymap ${source} cannot publish attrs`)
       }
 
+      markSupplied(value)
       mergeAttribute(options.attrs, name, value, source)
     },
     activeWhen(matcher: (() => boolean) | ReactiveMatcher) {
