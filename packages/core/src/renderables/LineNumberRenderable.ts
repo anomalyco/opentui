@@ -1,8 +1,8 @@
 import { Renderable, type BaseRenderable, type RenderableOptions } from "../Renderable.js"
-import { OptimizedBuffer } from "../buffer.js"
+import type { OptimizedBuffer } from "../buffer.js"
 import type { RenderContext, LineInfoProvider } from "../types.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
-import { stringWidth } from "../platform/runtime.js"
+import type { WidthMethod } from "../types.js"
 import { MeasureMode } from "../yoga.js"
 
 export interface LineSign {
@@ -44,6 +44,7 @@ export interface GutterLayout {
 
 const DEFAULT_GUTTER_FG = "#888888"
 const DEFAULT_GUTTER_BG = "transparent"
+const transparent = RGBA.fromValues(0, 0, 0, 0)
 
 function cloneLineSign(sign: LineSign): LineSign {
   return {
@@ -67,8 +68,9 @@ class GutterRenderable extends Renderable {
   private _maxBeforeWidth: number = 0
   private _maxAfterWidth: number = 0
   private _lastKnownLineCount: number = 0
-  private _paintedSources?: number[]
-  private _paintedSourceOffset: number = 0
+  // Native widths of the non-ASCII signs, for the width method they were measured with.
+  private _signWidths = new Map<string, number>()
+  private _signWidthMethod?: WidthMethod
 
   constructor(
     ctx: RenderContext,
@@ -92,7 +94,6 @@ class GutterRenderable extends Renderable {
       height: "auto",
       flexGrow: 0,
       flexShrink: 0,
-      // Window-sized raster cache is not a Yoga-sized buffered surface.
     })
     try {
       this.target = target
@@ -112,7 +113,9 @@ class GutterRenderable extends Renderable {
       // Use lifecycle pass to detect line count changes BEFORE layout
       this.onLifecyclePass = () => {
         const currentLineCount = this.target.virtualLineCount
-        if (currentLineCount !== this._lastKnownLineCount) {
+        const signsStale = this._ctx.widthMethod !== this._signWidthMethod
+        if (signsStale) this.calculateSignWidths()
+        if (currentLineCount !== this._lastKnownLineCount || signsStale) {
           this._lastKnownLineCount = currentLineCount
           this.invalidateIntrinsicSize()
           this.requestRender()
@@ -183,17 +186,29 @@ class GutterRenderable extends Renderable {
   private calculateSignWidths(): void {
     this._maxBeforeWidth = 0
     this._maxAfterWidth = this._layout.minAfterWidth
+    this._signWidths.clear()
+    this._signWidthMethod = this._ctx.widthMethod
 
     for (const sign of this._lineSigns.values()) {
-      if (sign.before) {
-        const width = stringWidth(sign.before)
-        this._maxBeforeWidth = Math.max(this._maxBeforeWidth, width)
-      }
-      if (sign.after) {
-        const width = stringWidth(sign.after)
-        this._maxAfterWidth = Math.max(this._maxAfterWidth, width)
-      }
+      if (sign.before) this._maxBeforeWidth = Math.max(this._maxBeforeWidth, this.signWidth(sign.before))
+      if (sign.after) this._maxAfterWidth = Math.max(this._maxAfterWidth, this.signWidth(sign.after))
     }
+  }
+
+  // Printable ASCII is one cell per byte; other signs are measured once with the glyph widths that drawing uses.
+  private signWidth(sign: string): number {
+    if (/^[\x20-\x7e]*$/.test(sign)) return sign.length
+    let width = this._signWidths.get(sign)
+    if (width !== undefined) return width
+    const { context, renderLib } = this._ctx.nativeScene.driver
+    const unicode = renderLib.createContextUnicode(context, sign, this._signWidthMethod!)
+    try {
+      width = renderLib.getContextUnicode(context, unicode).reduce((sum, glyph) => sum + glyph.width, 0)
+    } finally {
+      renderLib.destroyContextUnicode(context, unicode)
+    }
+    this._signWidths.set(sign, width)
+    return width
   }
 
   private calculateWidth(): number {
@@ -267,114 +282,57 @@ class GutterRenderable extends Renderable {
     return this._lineSigns
   }
 
-  // The destination's paint window, not Yoga's document height, owns raster allocation.
-  protected override createFrameBuffer(): void {}
-  protected override handleFrameBufferResize(): void {}
-
+  // Draws the visible rows at the paint origin every frame. An opaque line color replaces the row's background fill,
+  // and glyphs blend over the fills with a transparent background.
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    // Match native integer-cell drawing before deriving the source window.
-    const x = Math.trunc(this._screenX)
-    const y = Math.trunc(this._screenY)
+    const [x, y] = this._paintOrigin(buffer)
     const start = Math.max(0, -y)
     const end = Math.min(this.height, buffer.height - y)
     if (end <= start || x >= buffer.width || x + this.width <= 0) return
 
-    if (!this.frameBuffer) {
-      this.frameBuffer = OptimizedBuffer.create(this.width, end - start, this._ctx.widthMethod, {
-        respectAlpha: true,
-        id: `framebuffer-${this.id}`,
-        owner: this._ctx.nativeScene,
-      })
-    } else if (this.frameBuffer.width !== this.width || this.frameBuffer.height !== end - start) {
-      this.frameBuffer.resize(this.width, end - start)
-      this._paintedSources = undefined
-    }
-
-    // Repaint only requested rows. Outer scrolling changes y without changing target.scrollY,
-    // and source mappings can change without changing the number of visual rows.
-    this.refreshFrameBuffer(this.frameBuffer, Math.trunc(this.target.scrollY) + start)
-    this.markClean()
-    buffer.drawFrameBuffer(x, y + start, this.frameBuffer)
-  }
-
-  private refreshFrameBuffer(buffer: OptimizedBuffer, startLine: number): void {
-    // Get the logical line index of the line *before* the first visible line
-    // This helps determine if the first visible line is a wrapped continuation
+    // The source of the row above the window tells whether the first row continues a wrapped line.
+    const startLine = Math.trunc(this.target.scrollY) + start
     const sourceStart = Math.max(0, startLine - 1)
     const sourceOffset = startLine - sourceStart
-    const sources = getLineSources(this.target, sourceStart, buffer.height + sourceOffset)
-    const paintedSources = this._paintedSources
-    // Row IDs also catch remapping changes without relying on the target's paint order or dirty flag.
-    if (
-      !this.isDirty &&
-      sourceOffset === this._paintedSourceOffset &&
-      paintedSources &&
-      sources.length === paintedSources.length &&
-      sources.every((source, i) => source === paintedSources[i])
-    ) {
-      return
-    }
-    buffer.clear(this._bg)
+    const sources = getLineSources(this.target, sourceStart, end - start + sourceOffset)
     let lastSource = sourceOffset > 0 ? sources[0] : -1
 
-    for (let i = 0; i < buffer.height; i++) {
-      const visualLineIndex = sourceOffset + i
-      if (visualLineIndex >= sources.length) break
+    for (let i = sourceOffset; i < end - start + sourceOffset; i++) {
+      const row = y + start + i - sourceOffset
+      const logicalLine = sources[i]
+      const lineBg = this._lineColorsGutter.get(logicalLine)
+      if (!lineBg || lineBg.a < 1) buffer.fillRect(x, row, this.width, 1, this._bg)
+      if (lineBg) buffer.fillRect(x, row, this.width, 1, lineBg)
 
-      const logicalLine = sources[visualLineIndex]
-      const lineBg = this._lineColorsGutter.get(logicalLine) ?? this._bg
-
-      // Fill background for this line if it has a custom color
-      if (lineBg !== this._bg) {
-        buffer.fillRect(0, i, this.width, 1, lineBg)
-      }
-
-      // Draw line number only for the first visual line of a logical line (wrapping)
-      if (logicalLine === lastSource) {
-        // Continuation line, maybe draw a dot or nothing
-      } else {
-        let currentX = 0
-
-        // Draw 'before' sign if present
+      // Only the first visual row of a logical line gets its number and signs.
+      if (logicalLine !== undefined && logicalLine !== lastSource) {
         const sign = this._lineSigns.get(logicalLine)
         if (sign?.before) {
-          const beforeWidth = stringWidth(sign.before)
-          // Pad to max before width for alignment
-          const padding = this._maxBeforeWidth - beforeWidth
-          currentX += padding
+          // Padded to the widest before sign, for alignment.
+          const beforeX = x + this._maxBeforeWidth - this.signWidth(sign.before)
           const beforeColor = sign.beforeColor ? parseColor(sign.beforeColor) : this._fg
-          buffer.drawText(sign.before, currentX, i, beforeColor, lineBg)
-          currentX += beforeWidth
-        } else if (this._maxBeforeWidth > 0) {
-          currentX += this._maxBeforeWidth
+          buffer.drawText(sign.before, beforeX, row, beforeColor, transparent)
         }
 
-        // Draw line number (right-aligned in its space, after the left padding)
+        // The number is right-aligned in its space, after the left padding.
         if (!this._hideLineNumbers.has(logicalLine)) {
-          // Use custom line number if provided, otherwise use calculated line number
           const customLineNum = this._lineNumbers.get(logicalLine)
-          const lineNum = customLineNum !== undefined ? customLineNum : logicalLine + 1 + this._lineNumberOffset
-          const lineNumStr = lineNum.toString()
-          const lineNumWidth = lineNumStr.length
-          const lineNumX = this.width - this._maxAfterWidth - this._layout.paddingRight - lineNumWidth
-
+          const lineNumStr = (customLineNum ?? logicalLine + 1 + this._lineNumberOffset).toString()
+          const lineNumX = this.width - this._maxAfterWidth - this._layout.paddingRight - lineNumStr.length
           if (lineNumX >= this._maxBeforeWidth + this._layout.paddingLeft) {
-            buffer.drawText(lineNumStr, lineNumX, i, this._fg, lineBg)
+            buffer.drawText(lineNumStr, x + lineNumX, row, this._fg, transparent)
           }
         }
 
-        // Draw 'after' sign if present
         if (sign?.after) {
-          const afterX = this.width - this._layout.paddingRight - this._maxAfterWidth
+          const afterX = x + this.width - this._layout.paddingRight - this._maxAfterWidth
           const afterColor = sign.afterColor ? parseColor(sign.afterColor) : this._fg
-          buffer.drawText(sign.after, afterX, i, afterColor, lineBg)
+          buffer.drawText(sign.after, afterX, row, afterColor, transparent)
         }
       }
 
       lastSource = logicalLine
     }
-    this._paintedSources = sources.slice()
-    this._paintedSourceOffset = sourceOffset
   }
 }
 
