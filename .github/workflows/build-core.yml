@@ -244,6 +244,8 @@ jobs:
         uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
+          # This job downloads the build job's libraries instead of building them.
+          ffmpeg: false
 
       - name: Install native host bottle
         if: steps.bottle.outputs.cache-hit == 'true'
@@ -411,6 +413,8 @@ jobs:
         uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
+          # This job downloads the build job's libraries instead of building them.
+          ffmpeg: false
 
       - name: Install native host bottle
         if: steps.bottle.outputs.cache-hit == 'true'

@@ -61,6 +61,16 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+      - name: Restore FFmpeg build cache
+        if: steps.changes.outputs.build_native == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/native/.cache/ffmpeg/prefix
+            packages/native/.cache/ffmpeg/downloads
+          key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}
+
       - name: Build native library
         if: steps.changes.outputs.build_native == 'true'
         working-directory: packages/core

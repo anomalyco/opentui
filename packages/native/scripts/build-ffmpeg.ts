@@ -69,10 +69,18 @@ function digest(path: string): string {
 }
 
 async function download(url: string, path: string, sha256: string, name: string): Promise<void> {
-  if (!existsSync(path) || digest(path) !== sha256) {
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`Failed to download ${name}: HTTP ${response.status}`)
-    writeFileSync(path, new Uint8Array(await response.arrayBuffer()))
+  // Source hosts reset connections now and then; retry before failing the build.
+  for (let attempt = 1; !existsSync(path) || digest(path) !== sha256; attempt++) {
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      writeFileSync(path, new Uint8Array(await response.arrayBuffer()))
+      break
+    } catch (error) {
+      if (attempt === 4) throw new Error(`Failed to download ${name} from ${url}`, { cause: error })
+      console.warn(`Download of ${name} failed (${error}); retrying in ${attempt * 5} s`)
+      await new Promise((resolve) => setTimeout(resolve, attempt * 5_000))
+    }
   }
   if (digest(path) !== sha256) throw new Error(`${name} archive SHA-256 mismatch`)
 }
