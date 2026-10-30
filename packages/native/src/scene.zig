@@ -766,9 +766,8 @@ pub const Scene = struct {
     members: std.ArrayListUnmanaged(Work) = .empty,
     // Advances with each candidates walk, which clears both lists first.
     candidates_gen: u64 = 0,
-    // Advances with each paint list, and when a moved culling parent drops the list; it starts
-    // past every node's painted_gen.
-    members_gen: u64 = 1,
+    // Advances with each paint list, and with each change between frames that drops the list.
+    members_gen: u64 = 0,
     // Advances with each host request.
     last_request: u64 = 0,
     last_feedback_id: u64 = 0,
@@ -1648,6 +1647,8 @@ pub const Scene = struct {
     pub fn clearPreparation(self: *Scene) void {
         self.candidates.clearRetainingCapacity();
         self.members.clearRetainingCapacity();
+        // A change between frames moves what the list painted; a RECORD reply's does not.
+        if (self.attempt == null) self.members_gen += 1;
     }
 
     pub fn cancelFrame(self: *Scene) void {

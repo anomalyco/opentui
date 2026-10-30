@@ -241,12 +241,18 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
             } else try g.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = shift });
             if (shift == -2) {
                 try testing.expectEqual(@as(f64, -2), (try g.owner.sceneGetPaintLayout(rows[0])).screenY);
+                // Childless rows hold nothing to prepare.
+                try testing.expectEqual(@as(u64, 0), g.state.test_subtree_preparations);
                 break;
             }
             const asked = try g.step(null, options, c.OT_SCENE_FRAME_UPDATE, rows[1]);
             try testing.expectEqual(1 + shift, (try g.owner.sceneGetPaintLayout(rows[1])).screenY);
             _ = try g.owner.sceneFrameCommit(g.id, try g.step(asked, options, c.OT_SCENE_FRAME_DONE, null), false);
             try drain(g.owner, g.id);
+            // A row detached after a frame painted it has no paint cells.
+            if (shift != -1) continue;
+            try g.owner.sceneMoveNode(rows[1], null, 0);
+            try testing.expectEqual(scene.Layout{}, try g.owner.sceneGetPaintLayout(rows[1]));
         }
     }
 }
@@ -2562,7 +2568,7 @@ test "Scene scroll node frames ask the host nothing and toggle bars a bounded nu
     try testing.expectEqual(@as(u32, 0), idle.damage_rows);
 }
 
-const Culled = enum { scroll_in_reply, bars_in_reply, row_bars_in_reply, read_moved, first_frame_read, solve_read, translated_read, translate_in_reply, held_read, body_after_reply, moved_out, idle_update, shown_then_update, hidden_row, stale_viewport };
+const Culled = enum { scroll_in_reply, bars_in_reply, row_bars_in_reply, created_in_reply, detached_out, destroyed_parent, body_offscreen, cancelled_solve, read_moved, first_frame_read, solve_read, translated_read, translate_in_reply, held_read, body_after_reply, moved_out, idle_update, shown_then_update, hidden_row, stale_viewport };
 const always_bars: scene.ScrollOptions = .{ .bars = @splat(.{ .policy = c.OT_SCENE_SCROLL_BAR_ALWAYS }) };
 
 /// H (root child 0), V (`shown` rows tall, clipping), its content with V as the viewport and 16
@@ -2606,6 +2612,31 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
             .moved_out => try f.owner.sceneMoveNode(list[19], list[20], 0),
             .idle_update => try feedbackHook(f, list[19], c.OT_SCENE_HOOK_UPDATE),
             .bars_in_reply => for (list[22..]) |box| try f.owner.sceneSetScroll(box, always_bars),
+            .created_in_reply => for ([_]context.Handle{ list[3], list[19] }, 98..) |parent, num| {
+                const created = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(num));
+                try f.owner.sceneSetHooks(created, c.OT_SCENE_HOOK_UPDATE, 1, 1, 1);
+                try f.owner.sceneMoveNode(created, parent, 0);
+            },
+            .detached_out => {
+                try f.owner.sceneMoveNode(list[19], null, 0);
+                try f.owner.sceneMoveNode(list[19], list[20], 0);
+            },
+            .destroyed_parent => {
+                try f.owner.sceneDestroyNode(list[21]);
+                try f.owner.sceneMoveNode(list[19], list[20], 0);
+            },
+            .body_offscreen => {
+                try f.owner.drawSceneBody(list[22], null, list[19], 0, 0);
+                var drawn: u64 = 0;
+                const target = (try f.owner.raw().getBuffer(list[22])).buffer;
+                for (target.char) |char| drawn += @intFromBool(char != target.char[target.char.len - 1]);
+                try log.append(testing.allocator, .{ 0, 0, 0, drawn, 0, 0 });
+            },
+            .cancelled_solve => {
+                try f.owner.sceneFrameCancel(f.id, request.frame_id);
+                const after = try f.owner.sceneGetPaintLayout(list[19]);
+                return log.append(testing.allocator, .{ 0, 0, 0, @bitCast(@as(f64, after.width)), @bitCast(after.screenY), 0 });
+            },
             .row_bars_in_reply => {
                 try f.owner.sceneSetScroll(list[3], always_bars);
                 try f.owner.sceneMoveNode(try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 99), list[3], 0);
@@ -2659,10 +2690,11 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 .solve_read => 3,
                 .body_after_reply => 2,
                 .row_bars_in_reply => 1,
-                .moved_out, .held_read => 15,
+                .body_offscreen, .cancelled_solve => 3,
+                .moved_out, .held_read, .detached_out, .destroyed_parent => 15,
                 else => 0,
             };
-            try culledScene(f, &list, if (case == .solve_read) 4 else 2, row);
+            try culledScene(f, &list, if (case == .solve_read or case == .body_offscreen or case == .cancelled_solve) 4 else 2, row);
             g_slot = list[19].slot;
             try feedbackHook(f, list[0], if (case == .body_after_reply) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE);
             switch (case) {
@@ -2672,7 +2704,11 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                     try f.owner.sceneSetPaint(list[19], .{ .borderSides = c.OT_BORDER_ALL });
                     try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 8, 1);
                 },
-                .moved_out => {
+                .moved_out, .detached_out, .destroyed_parent => {
+                    if (case == .destroyed_parent) {
+                        try feedbackNode(f, &list, 21, c.OT_SCENE_BOX, list[18], 1);
+                        try f.owner.sceneMoveNode(list[19], list[21], 0);
+                    }
                     try feedbackNode(f, &list, 20, c.OT_SCENE_BOX, f.root, 2);
                     try f.owner.sceneSetStyle(list[20], 4, 0, 0, 1, 3, 1);
                     try f.owner.sceneSetStyle(list[19], 4, 0, 0, c.OT_UNIT_AUTO, 0, 1);
@@ -2696,11 +2732,16 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 },
                 .held_read => try feedbackNode(f, &list, 20, c.OT_SCENE_BOX, list[18], 1),
                 .shown_then_update, .hidden_row => try f.owner.sceneSetStyle(list[if (case == .hidden_row) 3 else 19], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0),
+                .body_offscreen, .cancelled_solve => {
+                    try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 4, 1);
+                    try f.owner.sceneSetPaint(list[19], .{ .borderSides = c.OT_BORDER_ALL });
+                    list[22] = try f.owner.createBuffer(8, 1, .{});
+                },
                 else => {},
             }
             const g_hooks: u32 = switch (case) {
                 .idle_update, .shown_then_update, .hidden_row => c.OT_SCENE_HOOK_IDLE_UPDATE,
-                .body_after_reply, .moved_out => c.OT_SCENE_HOOK_UPDATE,
+                .body_after_reply, .moved_out, .detached_out, .destroyed_parent => c.OT_SCENE_HOOK_UPDATE,
                 else => 0,
             };
             if (g_hooks != 0) try feedbackHook(f, list[19], g_hooks);
@@ -2710,7 +2751,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 .held_read => try f.owner.scenePatchPaint(list[2], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -5 }),
                 // A solve while the node is hidden lays it out at no size.
                 .shown_then_update => try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 5, 1),
-                .solve_read => {
+                .solve_read, .body_offscreen, .cancelled_solve => {
                     try f.owner.sceneSetStyle(list[1], 4, 1, 0, 1, 2, 1);
                     try f.owner.sceneSetStyle(list[19], 4, 0, 0, 1, 7, 1);
                 },
@@ -2718,7 +2759,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 else => {},
             }
             // The next frame walks the candidates again, or keeps them for the scroll.
-            if (case != .read_moved and case != .solve_read and case != .translated_read and case != .held_read and case != .translate_in_reply) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_OPACITY, .{ .opacity = 0.5 });
+            if (case != .read_moved and case != .solve_read and case != .body_offscreen and case != .cancelled_solve and case != .translated_read and case != .held_read and case != .translate_in_reply) try f.owner.scenePatchPaint(list[0], c.OT_SCENE_PROPERTY_OPACITY, .{ .opacity = 0.5 });
             result.* = culledFrame(f, case, &list, log, true);
         }
         results[0] catch |err| {
