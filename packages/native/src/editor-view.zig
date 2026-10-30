@@ -121,6 +121,9 @@ pub const EditorView = struct {
 
         edit_buffer.events.on(.cursorChanged, self.cursor_changed_listener) catch return EditorViewError.OutOfMemory;
 
+        // Editable views preserve whitespaces on the continuation line
+        text_buffer_view.setPreserveWrappedWhitespace(true);
+
         text_buffer_view.setViewport(.{
             .x = 0,
             .y = 0,
@@ -914,6 +917,7 @@ pub const EditorView = struct {
         if (self.placeholder_active) {
             self.text_buffer_view.switchToOriginalBuffer();
             self.placeholder_active = false;
+            self.text_buffer_view.setPreserveWrappedWhitespace(true);
         }
         if (self.placeholder_buffer) |placeholder| {
             placeholder.deinit();
@@ -971,6 +975,7 @@ pub const EditorView = struct {
             self.text_buffer_view.switchToOriginalBuffer();
             self.placeholder_active = false;
         }
+        self.text_buffer_view.setPreserveWrappedWhitespace(!self.placeholder_active);
     }
 
     pub fn setTabIndicator(self: *EditorView, indicator: ?u32) void {

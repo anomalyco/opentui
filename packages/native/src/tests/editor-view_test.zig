@@ -501,7 +501,7 @@ test "EditorView - moveUpVisual resolves wrapped boundary with canonical convers
     try std.testing.expectEqual(@as(u32, 5), cursor.visual_col);
 }
 
-test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
+test "EditorView - preserves overflowing whitespace on continuation line" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -510,44 +510,34 @@ test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
     var ev = try EditorView.init(std.testing.allocator, eb, 5, 2);
     defer ev.deinit();
     ev.setWrapMode(.word);
-
-    try eb.setText("hello  world");
-    for ([_]u32{ 5, 6 }) |logical_col| {
-        const cursor = ev.logicalToVisualCursor(0, logical_col);
-        try std.testing.expectEqual(@as(u32, 0), cursor.visual_row);
-        try std.testing.expectEqual(@as(u32, 5), cursor.visual_col);
-    }
-    const spaces_boundary = ev.logicalToVisualCursor(0, 7);
-    try std.testing.expectEqual(@as(u32, 1), spaces_boundary.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), spaces_boundary.visual_col);
-
     eb.setTabWidth(4);
-    try eb.setText("hello\tworld");
-    for ([_]u32{ 5, 8 }) |logical_col| {
-        const cursor = ev.logicalToVisualCursor(0, logical_col);
-        try std.testing.expectEqual(@as(u32, 0), cursor.visual_row);
-        try std.testing.expectEqual(@as(u32, 5), cursor.visual_col);
+
+    const cases = [_]struct { text: []const u8, whitespace_width: u32, line_count: u32 }{
+        .{ .text = "hello  ", .whitespace_width = 2, .line_count = 2 },
+        .{ .text = "hello  world", .whitespace_width = 2, .line_count = 3 },
+        .{ .text = "hello\t", .whitespace_width = 4, .line_count = 2 },
+        .{ .text = "hello\tworld", .whitespace_width = 4, .line_count = 3 },
+    };
+    for (cases) |case| {
+        try eb.setText(case.text);
+        try std.testing.expectEqual(case.line_count, ev.getTotalVirtualLineCount());
+        for (0..case.whitespace_width) |visual_col| {
+            const cursor = ev.logicalToVisualCursor(0, 5 + @as(u32, @intCast(visual_col)));
+            try std.testing.expectEqual([2]u32{ 1, @intCast(visual_col) }, [2]u32{ cursor.visual_row, cursor.visual_col });
+        }
+        const after_whitespace = ev.logicalToVisualCursor(0, 5 + case.whitespace_width);
+        try std.testing.expectEqual(@as(u32, if (case.line_count == 2) 1 else 2), after_whitespace.visual_row);
+        try std.testing.expectEqual(if (case.line_count == 2) case.whitespace_width else 0, after_whitespace.visual_col);
+
+        try eb.setCursor(0, 0);
+        ev.moveDownVisual();
+        const moved_down = ev.getVisualCursor();
+        try std.testing.expectEqual([3]u32{ 1, 0, 5 }, [3]u32{ moved_down.visual_row, moved_down.visual_col, moved_down.logical_col });
+
+        ev.moveUpVisual();
+        const moved_up = ev.getVisualCursor();
+        try std.testing.expectEqual([3]u32{ 0, 0, 0 }, [3]u32{ moved_up.visual_row, moved_up.visual_col, moved_up.logical_col });
     }
-    const tab_boundary = ev.logicalToVisualCursor(0, 9);
-    try std.testing.expectEqual(@as(u32, 1), tab_boundary.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), tab_boundary.visual_col);
-
-    try eb.setCursor(0, 8);
-    try std.testing.expectEqual(@as(u32, 5), ev.getVisualCursor().visual_col);
-    ev.moveDownVisual();
-    const moved = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 1), moved.visual_row);
-    try std.testing.expect(moved.visual_col <= 5);
-
-    var opt_buffer = try opt_buffer_mod.OptimizedBuffer.init(
-        std.testing.allocator,
-        5,
-        2,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
-    );
-    defer opt_buffer.deinit();
-    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
-    opt_buffer.drawEditorView(ev, 0, 0);
 }
 
 test "EditorView - VisualCursor with multiple logical lines and wrapping" {
