@@ -578,8 +578,10 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
     else if (end === "destroy mid-stream") expect(closed, label).toBe(fd === "blocking" ? "closed" : late)
     if (closed === "closed" || closed === late) {
       expect(link.restored(offset), label).toBe(true)
-      // A frame cut by a late close does not leave its synchronized update open (#1875).
+      // A frame cut by a late close does not leave its synchronized update open, and the restore leaves the
+      // alternate screen exactly as often as it was entered (#1875).
       expect(link.stream.lastIndexOf("\x1b[?2026h") <= link.stream.lastIndexOf("\x1b[?2026l"), label).toBe(true)
+      expect(link.stream.split("\x1b[?1049h").length, label).toBe(link.stream.split("\x1b[?1049l").length)
     }
     // The writer holds the close while the link takes its copies (#1870), and a blocking drain over the stall. Both
     // fd paths hold it while the link takes bytes (#1875), up to the cap and a copy in flight.

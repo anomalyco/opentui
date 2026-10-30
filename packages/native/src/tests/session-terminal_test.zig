@@ -661,13 +661,16 @@ test "Session exit pump preserves output order and restoration without clocks or
 test "Session late close restores the modes that dropped output changed" {
     // A drop can cut a frame inside its synchronized update, or drop a queued packet that the terminal model
     // already counts as written. The far terminal must still end on the main screen with its modes reset. Raw
-    // output after a completed suspend is dropped too, whatever images the suspend deleted.
-    for ([_]enum { frame, kitty_off, kitty_switch, main_screen, after_suspend }{ .frame, .kitty_off, .kitty_switch, .main_screen, .after_suspend }) |case| {
-        const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
+    // output after a completed suspend is dropped too, whatever images the suspend deleted. Each screen switch
+    // counts as made only once it reached the terminal: the restore leaves the alternate screen exactly once and
+    // clears only the main screen it ends on.
+    const Case = enum { frame, kitty_off, kitty_switch, main_screen, after_suspend, main_done, alt_dropped, in_flight };
+    for ([_]Case{ .frame, .kitty_off, .kitty_switch, .main_screen, .after_suspend, .main_done, .alt_dropped, .in_flight }) |case| {
+        const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, .{ .chunk_size = 4096, .chunk_count = 8, .span_capacity = 8, .control_capacity = 4096 }, .{});
         defer f.deinit();
         var now_ns: u64 = 0;
         var bytes: [32 * 1024]u8 = undefined;
-        try f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 5 });
+        try f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 5, .use_alternate_screen = case != .alt_dropped });
         var len = (try f.driveOutput(&now_ns, .active, &bytes, 256)).len;
         const kitty_reply: session.Control = .{ .capability_response = "\x1b[?0u" };
         if (case != .kitty_switch) {
@@ -686,13 +689,22 @@ test "Session late close restores the modes that dropped output changed" {
             try f.owner.suspendSession(f.id);
             len += (try f.driveOutput(&now_ns, .suspended, bytes[len..], 256)).len;
         }
-        if (case != .frame) try f.value.write("x");
-        const ticket = if (case == .after_suspend) null else (try f.value.readOutput(bytes[len .. len + 16])).?;
+        if (case == .main_done) {
+            try f.value.setScreen(false, 4, 2, "");
+            len += (try f.drain(bytes[len..])).len;
+        }
+        if (case == .in_flight) try f.value.setScreen(false, 4, 2, "") else if (case != .frame) try f.value.write("x");
+        const ticket = if (case == .after_suspend) null else (try f.value.readOutput(bytes[len .. len + @as(usize, if (case == .in_flight) 256 else 16)])).?;
         switch (case) {
             .frame, .after_suspend => {},
             .kitty_off => try f.value.control(.{ .kitty_keyboard_flags = 0 }),
             .kitty_switch => try f.value.control(kitty_reply),
-            .main_screen => try f.value.setScreen(false, 4, 2, ""),
+            .main_screen => {
+                try f.value.setScreen(false, 4, 2, "");
+                try f.value.control(.{ .title = "t" });
+            },
+            .main_done, .in_flight => try f.value.write("y"),
+            .alt_dropped => try f.value.setScreen(true, 4, 2, ""),
         }
         try f.owner.dropSessionOutput(f.id);
         if (ticket) |held| {
@@ -713,7 +725,16 @@ test "Session late close restores the modes that dropped output changed" {
         defer far.deinit(testing.allocator);
         var stream = far.vtStream();
         defer stream.deinit();
+        stream.nextSlice("pre\r\n");
         stream.nextSlice(output);
+        try testing.expectEqual(std.mem.count(u8, output, "\x1b[?1049h"), std.mem.count(u8, output, "\x1b[?1049l"));
+        const shown = try far.plainString(testing.allocator);
+        defer testing.allocator.free(shown);
+        // A session that ends on the alternate screen leaves the shell's screen as it was; one on the main screen
+        // clears its own rows.
+        const ends_main = case == .main_done or case == .alt_dropped or case == .in_flight;
+        try testing.expectEqual(!ends_main, std.mem.startsWith(u8, shown, "pre"));
+        try testing.expectEqual(@as(usize, @intFromBool(ends_main)), std.mem.count(u8, output, "\x1b[H\x1b[J"));
         try testing.expect(!far.modes.get(.synchronized_output));
         try testing.expectEqual(.primary, far.screens.active_key);
         for ([_]@TypeOf(far.screens.active_key){ .primary, .alternate }) |key| {

@@ -351,6 +351,9 @@ pub const Session = struct {
     last_request_id: u64 = 0,
     /// Successful ticket bytes, not retained span charges or discarded output.
     completed_bytes: u64 = 0,
+    /// The screen and Kitty keyboard as the terminal has them while a packet that may switch them is queued, up
+    /// to `end`. The model counts a switch once it is queued, so a late close that drops it restores these.
+    wire: struct { alt_screen: bool = false, use_alternate: bool = false, kitty_keyboard: bool = false, end: u64 = 0 } = .{},
     frame_end_offset: ?u64 = null,
     lifecycle: Lifecycle = .{},
     // Pump and Kitty polling share one accepted host clock.
@@ -603,6 +606,7 @@ pub const Session = struct {
         if (trailing_output.len > bytes.len - writer.buffered().len) return error.InvalidOptions;
         try writer.writeAll(trailing_output);
         try value.resizeWithOutput(width, height, writer.buffered());
+        self.queueSwitch(value);
         candidate.state.cursor = value.terminal.state.cursor;
         value.terminal.state = candidate.state;
         value.useAlternateScreen = alternate;
@@ -1124,12 +1128,22 @@ pub const Session = struct {
             try self.output.writeReservedControlAtomic(writer.buffered());
         }
         if (owned_environment) candidate.opts.env_map = &value.terminal.host_env_map.?;
+        self.queueSwitch(value);
         value.terminal = candidate;
         self.lifecycle = progress;
         value.syncWidthMethod();
         if (command != null and command.? == .capability_response) {
             value.invalidateTerminalState();
         }
+    }
+
+    /// A packet that may switch the screen or Kitty keyboard was queued; the model has not taken it yet.
+    fn queueSwitch(self: *Session, value: *const renderer.CliRenderer) void {
+        if (self.completed_bytes >= self.wire.end) {
+            const state = value.terminal.state;
+            self.wire = .{ .alt_screen = state.alt_screen, .use_alternate = value.useAlternateScreen, .kitty_keyboard = state.kitty_keyboard };
+        }
+        self.wire.end = self.output.getStats().bytes_written;
     }
 
     fn writeControlPacket(command: Control, candidate: *terminal.Terminal, progress: *Lifecycle, writer: *std.Io.Writer) !void {
@@ -1533,14 +1547,18 @@ pub const Session = struct {
         const step = self.lifecycle.step;
         if (step != .idle and (step != .delete_images or self.lifecycle.image_index != 0)) return;
         self.finishPresentation(.failed);
-        if (self.releaseQueued(if (self.pending) |ticket| ticket.len else 0)) {
-            // Dropped packets may have changed the terminal model without reaching the terminal: reset every
-            // mode the Session turned on.
+        const kept: u32 = if (self.pending) |ticket| ticket.len else 0;
+        if (self.releaseQueued(kept)) {
+            // Dropped packets may have changed the terminal model without reaching the terminal: take the screen
+            // and Kitty keyboard back to what the terminal has, and reset the other input modes.
             self.lifecycle.dropped = true;
             if (self.renderer) |value| {
                 const state = &value.terminal.state;
-                state.alt_screen = state.alt_screen or state.alt_screen_was_entered;
-                state.kitty_keyboard = state.kitty_keyboard or state.kitty_keyboard_was_pushed;
+                if (self.completed_bytes + kept < self.wire.end) {
+                    state.alt_screen = self.wire.alt_screen;
+                    state.kitty_keyboard = self.wire.kitty_keyboard;
+                    value.useAlternateScreen = self.wire.use_alternate;
+                }
                 state.modify_other_keys = true;
                 state.bracketed_paste = true;
                 state.focus_tracking = true;
