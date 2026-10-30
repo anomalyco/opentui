@@ -1340,27 +1340,21 @@ test "pixelsHaveTransparency matches a scalar alpha scan for every start, length
     var prng = std.Random.DefaultPrng.init(1858);
     const random = prng.random();
     var buffer: [2 * 64 + 9]u8 = undefined;
+    const alphas = [_]u8{ 0, 127, 191, 223, 239, 247, 251, 253, 254 };
     for (0..5) |start| {
-        // One planted byte below 255 on an opaque grid with random color channels:
-        // every vector lane and tail position, and none, for each length.
+        // One planted byte (0, or 255 with one bit cleared) on an opaque grid with random color
+        // channels: each value on vector and tail lanes, every position, and none, for each length.
         for (start..buffer.len + 1) |planted| {
             random.bytes(&buffer);
             for (start..buffer.len) |index| {
                 if ((index - start) % 4 == 3) buffer[index] = 255;
             }
-            if (planted < buffer.len) buffer[planted] = random.uintLessThan(u8, 255);
+            if (planted < buffer.len) buffer[planted] = alphas[planted % alphas.len];
             for (start..buffer.len + 1) |end| try expectScalarTransparency(buffer[start..end]);
         }
     }
-    for (0..256) |_| {
-        var pixels: [1024]u8 = undefined;
-        random.bytes(&pixels);
-        for (&pixels) |*byte| {
-            if (random.uintLessThan(u16, 1024) != 0) byte.* = 255;
-        }
-        const start = random.uintLessThan(usize, 64);
-        try expectScalarTransparency(pixels[start..random.intRangeAtMost(usize, start, pixels.len)]);
-    }
+    // Two equal alphas in one block must not cancel.
+    try expectScalarTransparency(&([_]u8{255} ** 56 ++ [_]u8{0} ** 8));
 }
 
 fn expectScalarTransparency(pixels: []const u8) !void {
