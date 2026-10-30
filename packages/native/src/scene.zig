@@ -3538,8 +3538,6 @@ fn composedLayout(value: *const native.NativeRenderable, comptime source: enum {
     var result = try localLayout(value, source);
     if (source == .solved) {
         if (std.math.isNan(result.width) or std.math.isNan(result.height)) return .{};
-        result.width = @max(result.width, 1);
-        result.height = @max(result.height, 1);
     }
     result.screenX = 0;
     result.screenY = 0;

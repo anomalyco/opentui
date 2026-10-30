@@ -1513,8 +1513,8 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // writes between frames 412, shared text changes shown 440, style changes shown 174, view
     // binds 338, selections 238, equal re-sends 365, palette changes 82, frames showing a scroll
     // node with children 587, scrolls and option changes 110, SCROLL requests 26, an arrow left
-    // of the screen 1,160, a drawn view's node resized 112, framed box records 1,160, frames that prepared a
-    // culled row's subtree where it showed 68.
+    // of the screen 1,160, a drawn view's node resized 112, framed box records 1,160, and frames
+    // that prepared a culled row's subtree where it showed 96.
     const minimums: Stats = .{
         // SCROLL requests that deliver a LAYOUT request: 9 in one run.
         .scroll_layouts = 2,
@@ -1563,7 +1563,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .arrows_beside = 280,
         .view_resizes = 26,
         .framed_boxes = 290,
-        .subtree_preparations = 17,
+        .subtree_preparations = 24,
     };
     inline for (std.meta.fields(Stats)) |field| {
         if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
