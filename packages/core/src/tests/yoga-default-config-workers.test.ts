@@ -10,10 +10,13 @@ test(
   () => {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js"
     const runtimeArgs = "bun" in process.versions ? [] : process.execArgv.filter((arg) => !arg.startsWith("--test"))
+    // Outside libuv's job object, an unhandled exception in the child reaches Windows Error Reporting.
+    // Node's spawnSync honors `detached`, but its types leave it out.
+    const options = { encoding: "utf8" as const, timeout: childTimeoutMs, detached: process.platform === "win32" }
     const child = spawnSync(
       process.execPath,
       [...runtimeArgs, fileURLToPath(new URL(`yoga-default-config-worker-child.${extension}`, import.meta.url))],
-      { encoding: "utf8", timeout: childTimeoutMs },
+      options,
     )
     const stdout = child.stdout.trim()
     const passed = child.status === 0 && stdout === "default config survived: 3"
