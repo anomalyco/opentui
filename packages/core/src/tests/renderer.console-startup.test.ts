@@ -737,6 +737,34 @@ test("CliRenderer preserves split render offset when switching to passthrough", 
   expect((renderer as any).renderOffset).toBe(before)
 })
 
+test("CliRenderer keeps split render offset across an alternate-screen roundtrip", async () => {
+  const result = await createTestRenderer({
+    width: 30,
+    height: 8,
+    screenMode: "split-footer",
+    footerHeight: 2,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+
+  ;(renderer as any).stdout.write("one\ntwo\nthree")
+  await result.renderOnce()
+  expect((renderer as any).renderOffset).toBe(3)
+
+  renderer.externalOutputMode = "passthrough"
+  renderer.screenMode = "alternate-screen"
+  renderer.screenMode = "split-footer"
+  renderer.externalOutputMode = "capture-stdout"
+  await result.renderOnce()
+  expect((renderer as any).renderOffset).toBe(3)
+
+  ;(renderer as any).stdout.write("\nfour")
+  await result.renderOnce()
+  expect((renderer as any).renderOffset).toBe(4)
+})
+
 test("CliRenderer does not force split repaint when switching to passthrough with no pending output", async () => {
   const result = await createTestRenderer({
     screenMode: "split-footer",
