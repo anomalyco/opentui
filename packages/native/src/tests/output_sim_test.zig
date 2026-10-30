@@ -829,13 +829,14 @@ const Sim = struct {
             cut = 1 + self.random.uintLessThan(usize, bytes.len - 1);
             gap = self.random.uintAtMost(u64, gap_max);
         };
-        try self.input.appendSlice(gpa, bytes[0..cut]);
-        try self.pieces.append(gpa, .{ .end = @intCast(self.input.items.len), .at_ns = at_ns });
-        try self.post(.input_arrive, at_ns, self.pieces.items.len - 1);
-        if (cut == bytes.len) return;
-        try self.input.appendSlice(gpa, bytes[cut..]);
-        try self.pieces.append(gpa, .{ .end = @intCast(self.input.items.len), .at_ns = at_ns + gap });
-        try self.post(.input_arrive, at_ns + gap, self.pieces.items.len - 1);
+        for ([_][]const u8{ bytes[0..cut], bytes[cut..] }, [_]u64{ at_ns, at_ns + gap }) |piece, sent_at| {
+            if (piece.len == 0) continue;
+            // One ordered stream: a piece arrives after the one before it, never with it.
+            const at = if (self.pieces.getLastOrNull()) |last| @max(sent_at, last.at_ns + 1) else sent_at;
+            try self.input.appendSlice(gpa, piece);
+            try self.pieces.append(gpa, .{ .end = @intCast(self.input.items.len), .at_ns = at });
+            try self.post(.input_arrive, at, self.pieces.items.len - 1);
+        }
     }
 
     fn readInput(self: *Sim) !void {
@@ -1370,6 +1371,8 @@ test "OUTPUT SIM seeds" {
     for (presets.named, traces) |preset, expected| for (expected[0..replays], 0..) |trace, seed| {
         try testing.expectEqual(trace, (try runOne(.{ .name = preset.name, .mode = .sync_drain, .seed = seed })).trace);
     };
+    // A split arrow key typed at 58.1 ms, while the split startup replies are in flight.
+    _ = try runOne(.{ .name = "split_input", .mode = .sync_drain, .seed = 22, .events = 10 });
 }
 
 /// Known `main` defects, recorded until their fix run deletes the row. A required row that
