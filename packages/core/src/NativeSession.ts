@@ -751,15 +751,14 @@ export class NativeSession {
     try {
       if (this._error) throw this._error
       const now = this.scheduler.now()
-      // A late turn still counts output acknowledged before the deadline and one bounded pump step.
-      const expired = this.closeDeadlineNs !== null && now >= this.closeDeadlineNs
+      // A late turn counts acknowledged output and one pump step; a writer copy in flight holds the deadline (#1870).
+      const expired = !this.stdoutPost && this.closeDeadlineNs !== null && now >= this.closeDeadlineNs
       if (this.output?.completed) {
         if (this.output.ticket) this.lib.sessionCompleteOutput(this.context, this.session, this.output.ticket, true)
         this.output = null
         this.completePresentation()
       }
-      // Collect the writer's copy (and start the next) before the pump, so the pump sees output
-      // the writer finished, even on a turn after the close deadline.
+      // Collect the writer's copy (and start the next) before the pump, so the pump sees output the writer finished.
       if (this.stdoutPost) this.postStdout(now, this.sink.writableLength === 0 && this.sink.writableCorked === 0)
       if (this.stdoutPost) deadlineNs = this.pollDeadline(now)
       const result = this.output || this.stdoutPost ? null : this.lib.sessionPump(this.context, this.session, now, 1)
@@ -807,9 +806,8 @@ export class NativeSession {
     } catch (error) {
       this.finish(asError(error))
     } finally {
-      if (this.closeDeadlineNs !== null && (deadlineNs === null || this.closeDeadlineNs < deadlineNs)) {
-        deadlineNs = this.closeDeadlineNs
-      }
+      const closeNs = this.stdoutPost ? null : this.closeDeadlineNs
+      if (closeNs !== null && (deadlineNs === null || closeNs < deadlineNs)) deadlineNs = closeNs
       if (deadlineNs !== null) this.schedule(deadlineNs)
     }
   }
@@ -859,6 +857,7 @@ export class NativeSession {
       false,
     )
     if (written > 0) this.completePresentation()
+    if (this.closeDeadlineNs !== null) this.closeDeadlineNs = now + this.closeTimeoutNs
     if (!inFlight) this.stdoutPost = null
     else if (!posted || written > 0) this.stdoutPost = { since: now, polls: 0 }
     else posted.polls++
