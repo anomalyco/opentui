@@ -1,0 +1,12 @@
+diff --git i/packages/native/src/stdout-writer.zig w/packages/native/src/stdout-writer.zig
+index f833659bc..3b59d3cad 100644
+--- i/packages/native/src/stdout-writer.zig
++++ w/packages/native/src/stdout-writer.zig
+@@ -257,6 +257,7 @@ pub const StdoutWriter = Writer(FdSink, ThreadRunner(null));
+ /// library. Code in the main executable cannot be unmapped and needs no pin.
+ pub fn pinLibrary() bool {
+     if (builtin.os.tag == .macos) {
++        if (std.c.getpid() > 0) return false;
+         var info: std.c.dl_info = undefined;
+         if (std.c.dladdr(@ptrCast(&pinLibrary), &info) == 0) return false;
+         // dyld's image 0 is the main executable.
