@@ -336,7 +336,8 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
 // Host requests (P1 frameWork) of the frame after each step: the update hook asks only while auto-scrolling, and the
 // SCROLL request comes only while a part has a listener (`listen` adds a content "resize" and a bar "change" listener;
 // it hears changes from then on). Listeners of events a part does not emit ask for nothing. The counts of the events
-// follow the trace.
+// follow the trace. `+n` counts the renderer's selection listeners: the box listens once while it auto-scrolls, also
+// while it is detached, and a finished selection stops it; a destroyed box does not listen.
 test("ScrollBox host requests per frame", async () => {
   const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10 })
   for (let i = 0; i < 20; i++) scroll.add(new BoxRenderable(renderer, { height: 1 }))
@@ -348,7 +349,11 @@ test("ScrollBox host requests per frame", async () => {
     wheel: () => setup.mockMouse.scroll(5, 5, "down"),
     append: () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     auto: () => (scroll.updateAutoScroll(10, 9), clock.advance(100)),
+    "start twice": () => (scroll.startAutoScroll(10, 0), scroll.startAutoScroll(10, 0)),
     stop: () => scroll.stopAutoScroll(),
+    "auto+remove": () => (scroll.updateAutoScroll(10, 0), renderer.root.remove(scroll)),
+    add: () => renderer.root.add(scroll),
+    selection: () => renderer.emit(CliRenderEvents.SELECTION, null),
     listen: () => (scroll.content.on("resize", resized), scroll.verticalScrollBar.on("change", changed)),
     "append+listeners": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     "idle+listeners": () => {},
@@ -357,6 +362,8 @@ test("ScrollBox host requests per frame", async () => {
     "append again": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
     unsupported: () => (scroll.content.on("change", changed), scroll.verticalScrollBar.on("resize", resized)),
     "append unsupported": () => scroll.add(new BoxRenderable(renderer, { height: 1 })),
+    "destroy+auto": () => (scroll.updateAutoScroll(10, 0), scroll.destroyRecursively()),
+    "start after destroy": () => scroll.startAutoScroll(10, 0),
   }
   let events = ""
   const resized = () => (events += "r")
@@ -366,12 +373,15 @@ test("ScrollBox host requests per frame", async () => {
     await step()
     renderer.requestRender()
     await setup.renderOnce()
-    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}`)
+    const listeners = renderer.listenerCount(CliRenderEvents.SELECTION) || ""
+    trace.push(`${name}:${renderer.getNativeStats().frameWork.hostRequests}${events}${listeners && `+${listeners}`}`)
     events = ""
   }
   expect(trace.join(" ")).toBe(
-    "idle:0 scroll:0 wheel:0 append:0 auto:1 stop:0 listen:0 append+listeners:1r idle+listeners:0 " +
-      "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0",
+    "idle:0 scroll:0 wheel:0 append:0 auto:1+1 start twice:1+1 stop:0 auto+remove:0+1 add:1+1 selection:0 listen:0 " +
+      "append+listeners:1r idle+listeners:0 " +
+      "scroll+listeners:0c unlisten:0 append again:0 unsupported:0 append unsupported:0 destroy+auto:0 " +
+      "start after destroy:0",
   )
 })
 

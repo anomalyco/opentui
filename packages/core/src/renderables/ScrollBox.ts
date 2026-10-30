@@ -96,7 +96,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
   public readonly verticalScrollBar: ScrollBoxBar
 
   protected static override readonly defaultFocusable = true
-  private selectionListener?: () => void
+  // A finished selection ends a drag's auto-scroll; the box listens only while it auto-scrolls.
+  private readonly selectionListener = (): void => this.stopAutoScroll()
 
   private autoScrollMouseX: number = 0
   private autoScrollMouseY: number = 0
@@ -262,15 +263,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
       this._applyScrollArrows(1)
       this.content._assign({ ...forwardedContentPadding, ...contentOptions }, ScrollBoxContent.keys)
       this._refreshScrollHook()
-
-      this.selectionListener = () => {
-        if (this.isDestroyed) return
-        const selection = this._ctx.getSelection()
-        if (!selection || !selection.isDragging) {
-          this.stopAutoScroll()
-        }
-      }
-      this._ctx.on("selection", this.selectionListener)
       this.setNativeScenePaint()
     } catch (error) {
       this.abortConstruction(error, (run) => run(() => this.destroySelf()))
@@ -608,12 +600,14 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public startAutoScroll(mouseX: number, mouseY: number): void {
+    if (this.isDestroyed) return
     this.stopAutoScroll()
     this.autoScrollMouseX = mouseX
     this.autoScrollMouseY = mouseY
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
     this.isAutoScrolling = true
     this.live = true
+    this._ctx.on("selection", this.selectionListener)
     this.refreshNativeSceneHooks()
   }
 
@@ -641,6 +635,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.autoScrollAccumulatorY = 0
     // Auto-scroll is the only reason a ScrollBox goes live or asks for updates.
     if (wasAutoScrolling) {
+      this._ctx.off("selection", this.selectionListener)
       this.live = false
       this.refreshNativeSceneHooks()
     }
@@ -790,12 +785,10 @@ export class ScrollBoxRenderable extends BoxRenderable {
   protected destroySelf(): void {
     // Getters keep answering after the handle is gone, with the last presented state.
     if (!this.isFreed()) this._scrollState()
-    const selectionListener = this.selectionListener
-    this.selectionListener = undefined
     this.layoutCallbacks = []
     this.endBarPress()
     this.runCleanup((run) => {
-      if (selectionListener) run(() => this._ctx.off("selection", selectionListener))
+      run(() => this._ctx.off("selection", this.selectionListener))
       run(() => super.destroySelf())
     })
   }
