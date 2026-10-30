@@ -221,6 +221,154 @@ test.each(
   expect(terminal.printed(/line \d+/g)).toEqual(rows)
 })
 
+// Captured stdout holds at most 64 MiB of queued rows (9,776 79-cell rows); past that its oldest unwritten rows
+// collapse into "[N lines dropped]" rows. Terminals: stalled renders frames only while a writer waits for drain;
+// draining renders 8 commits per 64 rows; suspending starts to flush a nearly full queue at row 9,600; replaying asks
+// for a replay reset at row 9,000; interleaved puts a writer row before every
+// 399-cell row (3,020 of them reach the bound); burst writes 8 rows, holds them in
+// a frame, and writes the rest in one call.
+const capturedMaxBytes = 64 * 1024 * 1024
+test.each([
+  ["ignores", "stalled", 15_000, 79],
+  ["ignores", "stalled", 15_000, 78],
+  ["ignores", "draining", 15_000, 79],
+  ["ignores", "suspending", 10_000, 79],
+  ["ignores", "replaying", 15_000, 79],
+  ["ignores", "interleaved", 4_000, 399],
+  ["ignores", "burst", 20_000, 78],
+  ["respects", "draining", 12_000, 79],
+] as const)(
+  "a writer that %s backpressure on a %s terminal keeps %i %i-cell rows bounded",
+  async (mode, pace, rows, cells) => {
+    const terminal = await setupTerminal({ columns: Math.max(80, cells + 1) })
+    type Queue = { size: number; capturedBytes: number }
+    const queue = (terminal.renderer as unknown as { externalOutputQueue: Queue }).externalOutputQueue
+    const create = OptimizedBuffer.create
+    let created = 0
+    const spy = spyOn(OptimizedBuffer, "create").mockImplementation((...args) => (created++, create(...args)))
+    let refused = 0
+    // A refused writer stays refused until a drain, and a drain finds the queue below the high-water mark.
+    let unanswered = 0
+    const drains: boolean[] = []
+    terminal.stdout.on("drain", () => {
+      // After destroy, only once every queued row is written.
+      const flushed =
+        (!terminal.renderer.isDestroyed || queue.size === 0) && !terminal.renderer.getSchedulerState().isRendering
+      drains.push(unanswered > 0 && queue.capturedBytes < capturedMaxBytes / 2 && flushed)
+      unanswered = 0
+    })
+    let maxRows = 0
+    let maxBytes = 0
+    let wrongResults = 0
+    let suspended: Promise<void> | undefined
+    let held: Promise<void> | undefined
+    const text = (row: number) => `row ${row} `.padEnd(cells, ".") + "\n"
+    let row = 0
+    const apps: string[] = []
+    // The first frame after a refusal writes 10 more rows in its listener, more than the frame takes.
+    let refill = 0
+    terminal.renderer.on(CliRenderEvents.FRAME, () => {
+      for (; refill > 0 && row < rows - 1; refill--) terminal.stdout.write(text(++row))
+    })
+    for (; row < rows; row++) {
+      if ((row % 1000 === 500 || pace === "interleaved") && pace !== "burst")
+        writeRow(terminal, apps[apps.push(`app ${row}`) - 1]!)
+      const burst = pace === "burst" && row === 8
+      if (burst) {
+        terminal.stdout.hold()
+        held = terminal.frame()
+        await settle()
+        // A listener that writes again sees a consistent queue.
+        terminal.renderer.once(CliRenderEvents.EXTERNAL_OUTPUT, () => writeRow(terminal, "nested"))
+      }
+      if (pace === "suspending" && row === 9_600) {
+        suspended = terminal.renderer.suspend()
+        await settle()
+      }
+      if (pace === "replaying" && row === 9_000) terminal.renderer.resetSplitFooterForReplay()
+      const size = queue.size
+      const written = terminal.stdout.write(
+        burst ? Array.from({ length: rows - 8 }, (_, at) => text(at + 8)).join("") : text(row),
+      )
+      maxRows = Math.max(maxRows, queue.size)
+      maxBytes = Math.max(maxBytes, queue.capturedBytes)
+      // A write that collapses rows is refused even when it leaves the queue below half.
+      const collapsed = queue.size < size + (burst ? rows - 8 : 1)
+      if (written !== (queue.capturedBytes < capturedMaxBytes / 2 && unanswered === 0 && !collapsed)) wrongResults++
+      refused += written ? 0 : 1
+      unanswered += written ? 0 : 1
+      if (burst) break
+      refill = !written && mode === "respects" ? 10 : 0
+      if (!written && mode === "respects")
+        for (let frames = 0, wanted = drains.length + 1; drains.length < wanted && frames < 100; frames++)
+          await terminal.frame()
+      else if (row % 64 === 0 && pace === "draining") await terminal.frame()
+      else if (row % 64 === 0 && pace === "stalled") await settle()
+    }
+    spy.mockRestore()
+    terminal.stdout.release()
+    await held
+    await suspended
+    if (suspended) terminal.renderer.resume()
+    // A stalled terminal takes no rows, so nothing wakes a refused writer.
+    await settle()
+    if (pace === "stalled" || pace === "interleaved") expect(drains).toEqual([])
+    terminal.renderer.destroy()
+    await terminal.renderer.closed
+    // A queued 80-column row costs at least 6 KiB (7,018 bytes measured), so the bound holds fewer than 10,923 rows.
+    // Writer rows do not count; the interleaved row queues one before every row.
+    expect(maxRows).toBeLessThan(capturedMaxBytes / 6144 + (pace === "interleaved" ? rows : 0))
+    expect([maxBytes <= capturedMaxBytes, queue.capturedBytes]).toEqual([true, 0])
+    expect(wrongResults).toBe(0)
+    expect(refused).toBeGreaterThan(0)
+    expect(drains.every(Boolean)).toBe(true)
+    expect([unanswered, drains.length]).toEqual([0, mode === "respects" ? refused : drains.length])
+    // Whole terminal rows: each "N lines dropped" row stands alone where its rows were; writer rows are never dropped.
+    const output = terminal.stdout.text()
+    const matches = Array.from(output.matchAll(/\x1b\[49m(row \d+ \.*|app \d+|\[\d+ lines dropped\])\x1b\[0m\r\n/g))
+    const lines = matches.map(([, line]) => line!)
+    // A replay reset clears once, between the rows written before it and the rows after it.
+    const clear = pace === "replaying" ? output.indexOf("\x1b[2J") : Infinity
+    expect(output.indexOf("\x1b[2J", clear + 1)).toBe(-1)
+    let next = 0
+    let crossed = false
+    const kept: number[] = []
+    for (const { 1: line, index } of matches) {
+      if (line!.startsWith("app")) continue
+      if (index > clear && !crossed) expect(next).toBe(9_000)
+      crossed ||= index > clear
+      const count = Number(line!.match(/\d+/)![0])
+      if (!line!.startsWith("[")) kept.push(count)
+      if (!line!.startsWith("[")) expect(count).toBe(next)
+      next += line!.startsWith("[") ? count : 1
+    }
+    expect(next).toBe(rows)
+    // A later collapse adds an earlier marker's rows to its own, so no two markers stand together.
+    const adjacent = lines.some((line, index) => line.startsWith("[") && lines[index + 1]?.startsWith("["))
+    expect(adjacent).toBe(pace === "replaying" && adjacent)
+    expect(kept.length < rows).toBe(mode === "ignores")
+    // The newest rows always survive: as many as half the bound holds by the estimate, less a margin for markers.
+    const newest = Math.floor(capturedMaxBytes / 2 / (3_072 + 48 * cells)) - 100
+    expect(kept.slice(-newest)).toEqual(Array.from({ length: newest }, (_, index) => rows - newest + index))
+    if (pace === "stalled") expect(lines[0]![0]).toBe("[")
+    // Drops on both sides of writer rows share one marker.
+    if (pace === "interleaved") expect(lines.filter((line) => line[0] === "[")).toHaveLength(1)
+    if (pace === "burst") {
+      // Only the rows that stay are painted and reported, in queue order.
+      expect(created).toBeLessThan(capturedMaxBytes / 2 / 6144 + 12)
+      const reported = terminal.externalOutput
+        .take()
+        .map(({ text }) => text)
+        .filter((line) => line !== "nested")
+      expect(reported.map((line) => line.replace(/ \.+$/, ""))).toEqual(lines.map((line) => line.replace(/ \.+$/, "")))
+    } else {
+      expect(terminal.printed(/app \d+/g)).toEqual(apps)
+    }
+  },
+  // Each row writes thousands of rows; a loaded or slow runner needs more than the 5 s default.
+  30_000,
+)
+
 test("cancelling the last animation frame keeps the render that captured stdout requested", async () => {
   const { renderer, stdout, clock } = await setupTerminal()
   let callbacks = 0
@@ -361,6 +509,41 @@ test.each([
   for (const write of [text].flat()) stdout.write(write)
   expect(written).toEqual(commits)
 })
+
+// Without a newline every row continues the one before it, so the rows a collapse drops move the tail. The first
+// dropped dot ends the "partial" row, then 30 rows of 16 dots, then 12 dots that a writer row cuts short: 32 rows.
+// After it each dropped row holds 16 dots, up to the newest rows of a last write too large to keep whole. The writer
+// row does not split the 16-column marker row, which stands alone.
+test("a collapse drops whole terminal rows, counts them, and predicts the tail the terminal reaches", async () => {
+  const { renderer, stdout, frame } = await setupTerminal({ columns: 16 })
+  const tail = renderer as unknown as { getPendingSplitTailColumn(): number; splitTailColumn: number }
+  const create = OptimizedBuffer.create
+  const created: OptimizedBuffer[] = []
+  const spy = spyOn(OptimizedBuffer, "create").mockImplementation(
+    (...args) => created[created.push(create(...args)) - 1]!,
+  )
+  stdout.write("partial")
+  await frame()
+  for (let dot = 0; dot < 23_000; dot++) {
+    if (dot === 501) writeRow({ renderer } as Terminal, "app")
+    stdout.write(".")
+  }
+  stdout.write(".".repeat(300_000))
+  const predicted = tail.getPendingSplitTailColumn()
+  await renderer.suspend()
+  spy.mockRestore()
+  expect(tail.splitTailColumn).toBe(predicted)
+  const markers = Array.from(
+    stdout.text().matchAll(/\r\n(?:\x1b\[[0-9;]*[A-Za-z])*\[(\d+) lines d[a-z]*\x1b\[0m\r\n/g),
+    ([, rows]) => Number(rows),
+  )
+  const kept = stdout.text().split(".").length - 1
+  expect([markers.length, 323_000 - kept]).toEqual([1, 501 + 16 * (markers[0]! - 32)])
+  renderer.resume()
+  renderer.destroy()
+  await renderer.closed
+  expect(created.filter((buffer) => !(buffer as unknown as { _destroyed: boolean })._destroyed)).toEqual([])
+}, 30_000)
 
 // After the frame the published tail is 4; the queued newline resets it.
 test("the predicted tail column counts every cell of a trailing wide character", async () => {

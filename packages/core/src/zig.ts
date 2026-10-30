@@ -6927,6 +6927,26 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /** Collects a finished stdout writer copy and, when `maxBytes` is positive, starts the next. `wait` waits for
+   * the running copy (process exit). */
+  public sessionPostStdout(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    maxBytes: number,
+    wait: boolean,
+  ): { written: number; inFlight: boolean } {
+    const handle = encodeContextHandle(context, session)
+    const limit = toSafeFFIU32Length(maxBytes, "Stdout byte limit")
+    const state = new Uint32Array(1)
+    const written = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_session_post_stdout")
+    nativeResult(
+      "ot_session_post_stdout",
+      this.opentui.symbols.ot_session_post_stdout(pointer, handle, limit, wait ? 1 : 0, state, written),
+    )
+    return { written: written[0]!, inFlight: state[0] === 1 }
+  }
+
   public sessionCompleteOutput(
     context: NativeContextHandle,
     session: SessionHandle,

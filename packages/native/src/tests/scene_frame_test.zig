@@ -140,6 +140,7 @@ test "Scene frame cancellation revokes painted authority but pins scratch cells 
         defer f.deinit();
         const child = try f.owner.sceneCreateNode(f.id, 1, 2);
         try f.owner.sceneSetStyle(child, 4, 0, 0, 1, 1, 1);
+        try f.owner.sceneSetStyle(child, 4, 1, 0, 1, 1, 1);
         try f.owner.sceneMoveNode(child, f.root, 0);
         const first = try f.owner.sceneFrameStep(f.id, null, options);
         _ = try f.owner.sceneFrameCommit(f.id, first, true);
@@ -203,6 +204,7 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
     defer f.deinit();
     const child = try f.owner.sceneCreateNode(f.id, 1, 2);
     try f.owner.sceneSetStyle(child, 4, 0, 0, 1, 1, 1);
+    try f.owner.sceneSetStyle(child, 4, 1, 0, 1, 1, 1);
     try f.owner.sceneSetPaint(child, .{ .background = .{ 2, 0, 0, 255 } });
     try f.owner.sceneMoveNode(child, f.root, 0);
     try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_UPDATE, 1, 8, 1);
@@ -241,6 +243,7 @@ test "Scene hit tests answer from the last presented scene frame" {
     defer f.deinit();
     const box = try f.owner.sceneCreateNode(f.id, 1, 2);
     try f.owner.sceneSetStyle(box, 4, 0, 0, 1, 2, 1);
+    try f.owner.sceneSetStyle(box, 4, 1, 0, 1, 1, 1);
     try f.owner.sceneMoveNode(box, f.root, 0);
     const commits = [_]@import("../renderer.zig").SplitSnapshot{.{ .snapshot = f.cli.getCurrentBuffer(), .row_columns = 4 }};
     const Step = enum { present, excluded, draft, pending, cancel, skip, raw, split, resize_draft, resize };
@@ -326,6 +329,7 @@ test "Scene hit tests answer from the last presented scene frame" {
     // cell; a cell outside the screen walks none. Rows: x, y, number, members walked.
     const top = try f.owner.sceneCreateNode(f.id, 1, 3);
     try f.owner.sceneSetStyle(top, 4, 0, 0, 1, 1, 1);
+    try f.owner.sceneSetStyle(top, 4, 1, 0, 1, 1, 1);
     try f.owner.sceneMoveNode(top, box, 0);
     try f.owner.sceneSetPaint(box, .{});
     _ = try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false);
@@ -1111,15 +1115,16 @@ fn lifecycleTable(verify: bool, counts: []FrameWork) !void {
 // expects the damaged rows.
 test "Scene frame retained paint repaints arrow text outside its rect" {
     const Change = enum { none, text, color, move, band, beside };
-    const rows = [_]struct { scrollbar: bool, change: Change, height: f32 = 1, damage: u32 }{
+    const rows = [_]struct { scrollbar: bool, change: Change, width: f32 = 1, height: f32 = 1, damage: u32 }{
         .{ .scrollbar = false, .change = .none, .damage = 0 },
         .{ .scrollbar = false, .change = .text, .damage = 1 },
         .{ .scrollbar = false, .change = .color, .damage = 1 },
         .{ .scrollbar = false, .change = .move, .damage = 2 },
         .{ .scrollbar = false, .change = .band, .damage = 1 },
         .{ .scrollbar = false, .change = .beside, .damage = 0 },
-        // Every member lays out at least one row tall, so the text stays on the rect's rows.
-        .{ .scrollbar = false, .change = .text, .height = 0, .damage = 1 },
+        // A zero-size arrow paints no cell, so its text change damages no row.
+        .{ .scrollbar = false, .change = .text, .height = 0, .damage = 0 },
+        .{ .scrollbar = false, .change = .text, .width = 0, .damage = 0 },
         .{ .scrollbar = true, .change = .none, .damage = 0 },
         .{ .scrollbar = true, .change = .text, .damage = 2 },
         .{ .scrollbar = true, .change = .color, .damage = 2 },
@@ -1128,12 +1133,12 @@ test "Scene frame retained paint repaints arrow text outside its rect" {
     };
     const red = ansi.rgbColor(255, 0, 0, 255);
     for (rows) |row| {
-        errdefer std.debug.print("scrollbar {} change {s} height {d}\n", .{ row.scrollbar, @tagName(row.change), row.height });
+        errdefer std.debug.print("scrollbar {} change {s} size {d}x{d}\n", .{ row.scrollbar, @tagName(row.change), row.width, row.height });
         const f = try Fixture.init(testing.allocator, 6, 4, .{});
         defer f.deinit();
         try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
         const y: u32 = if (row.scrollbar) 2 else 1;
-        const node = try placedAt(f, f.root, if (row.scrollbar) c.OT_SCENE_BOX else c.OT_SCENE_ARROW, 2, if (row.scrollbar) -4 else -7, 1, if (row.scrollbar) 4 else 1, if (row.scrollbar) 2 else row.height);
+        const node = try placedAt(f, f.root, if (row.scrollbar) c.OT_SCENE_BOX else c.OT_SCENE_ARROW, 2, if (row.scrollbar) -4 else -7, 1, if (row.scrollbar) 4 else row.width, if (row.scrollbar) 2 else row.height);
         const label = try placedAt(f, f.root, c.OT_SCENE_TEXT, 3, 2, @floatFromInt(y), 4, 1);
         try f.owner.sceneSetText(label, "a");
         const aside = try placedAt(f, f.root, c.OT_SCENE_TEXT, 4, -7, @floatFromInt(y), 6, 1);
@@ -1153,8 +1158,9 @@ test "Scene frame retained paint repaints arrow text outside its rect" {
             const w = try presentWork(f, .{});
             const moved = changed and row.change == .move;
             const cell = f.cli.currentRenderBuffer.get(0, y + @intFromBool(moved)).?;
-            try testing.expectEqual(glyphs[@intFromBool(next)], cell.char);
-            try testing.expectEqual(arrow.foreground, cell.fg);
+            const empty = row.width == 0 or row.height == 0;
+            try testing.expectEqual(if (empty) ' ' else glyphs[@intFromBool(next)], cell.char);
+            if (!empty) try testing.expectEqual(arrow.foreground, cell.fg);
             if (moved) try testing.expectEqual(@as(u32, ' '), f.cli.currentRenderBuffer.get(0, y).?.char);
             if (changed) try testing.expectEqual(row.damage, w.damage_rows);
         }

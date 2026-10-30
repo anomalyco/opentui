@@ -1282,8 +1282,11 @@ test("CliRenderer split-footer passthrough ignores console capture writes", asyn
   renderer = result.renderer
   const requestRenderSpy = spyOn(renderer, "requestRender")
 
-  capture.write("stdout", "from console capture\n")
+  // The capture keeps the newest 1,000 writes, as the console log cache does.
+  for (let write = 0; write <= 1000; write++) capture.write("stdout", `${write}\n`)
 
+  expect(capture.size).toBe(1000)
+  expect(capture.claimOutput().slice(0, 4)).toBe("1\n2\n")
   expect(requestRenderSpy).toHaveBeenCalledTimes(0)
   expect((renderer as any).externalOutputQueue.size).toBe(0)
   requestRenderSpy.mockRestore()

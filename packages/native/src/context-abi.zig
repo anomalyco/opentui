@@ -1129,6 +1129,27 @@ pub fn ot_session_drain_stdout(
     return c.OT_OK;
 }
 
+pub fn ot_session_post_stdout(
+    context: ?*ContextHandle,
+    session_ptr: ?*const c.ot_handle,
+    max_bytes: u32,
+    wait: u32,
+    out_state_ptr: ?*u32,
+    out_written_ptr: ?*u32,
+) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out_state = out_state_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out_written = out_written_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (wait > 1) return sessionError(owner, error.InvalidOptions);
+    const result = owner.core.postStdout(handleFromC(id.*), max_bytes, wait == 1) catch |err| return sessionError(owner, err);
+    out_state.* = if (result.in_flight) c.OT_STDOUT_IN_FLIGHT else c.OT_STDOUT_IDLE;
+    out_written.* = result.written;
+    return c.OT_OK;
+}
+
 pub fn ot_session_setup_terminal(
     context: ?*ContextHandle,
     session_ptr: ?*const c.ot_handle,
@@ -4953,6 +4974,24 @@ test "Session native output ABI validates admission before writing and rejects c
     handle.owner_thread -= 1;
     try std.testing.expectEqual(c.OT_WRONG_THREAD, wrong_thread);
     try std.testing.expectEqual(@as(u32, 99), written);
+    // post_stdout (R29): wait above 1 and null outputs are invalid, and outputs stay unchanged; wait=1 without a
+    // writer is idle on every platform; a non-terminal fd 1 refuses before consuming output.
+    var state: u32 = 99;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_post_stdout(handle, &id, 4, 2, &state, &written));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_post_stdout(handle, &id, 4, 0, null, &written));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_post_stdout(handle, &id, 4, 0, &state, null));
+    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_session_post_stdout(handle, &foreign, 4, 0, &state, &written));
+    try std.testing.expectEqual(@as(u32, 99), state);
+    try std.testing.expectEqual(c.OT_OK, ot_session_post_stdout(handle, &id, 0, 1, &state, &written));
+    try std.testing.expectEqual(@as(u32, c.OT_STDOUT_IDLE), state);
+    try std.testing.expectEqual(@as(u32, 0), written);
+    const terminal = if (comptime builtin.os.tag == .windows) false else std.c.isatty(1) == 1;
+    if (!terminal) {
+        written = 99;
+        try std.testing.expectEqual(c.OT_UNSUPPORTED_RESOURCE, ot_session_post_stdout(handle, &id, 4, 0, &state, &written));
+        try std.testing.expectEqual(@as(u32, 99), written);
+        try std.testing.expectEqual(@as(u64, 0), (try handle.core.raw().getSession(native_id)).completed_bytes);
+    }
     try std.testing.expectEqual(@as(u32, 0), writer.calls);
     try std.testing.expectEqual(c.OT_OK, ot_session_drain_output(handle, &id, 4, &written, &writer, Writer.write));
     try std.testing.expectEqual(@as(u32, 2), written);
