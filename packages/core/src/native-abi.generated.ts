@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: a49b9c922dcb204d861bf6c9393c6cbbb68de0633bd139b4c617fe4800ea07bc
+// ABI audit SHA-256: 8a8e9907a567cc4db39eaffd19bbc436ad338ec1fb5aaae50b7af1bafc0eece4
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -788,7 +788,7 @@ export const nativeLayouts = {
       height: { offset: 12, size: 4, alignment: 4, type: "u32" },
       frame_count: { offset: 16, size: 8, alignment: 8, type: "u64" },
       frame_pending: { offset: 24, size: 4, alignment: 4, type: "u32" },
-      reserved: { offset: 28, size: 4, alignment: 4, type: "u32" },
+      image_uploads_pending: { offset: 28, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_buffer_options: {

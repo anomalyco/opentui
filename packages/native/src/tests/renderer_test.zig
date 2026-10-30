@@ -4036,57 +4036,124 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
     try std.testing.expect(std.mem.find(u8, output, "\x1b]22;pointer\x1b\\") != null);
 }
 
-test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
+// 413: a frame publishes the image uploads that fit it, in placement order, and later frames send
+// the rest; a frame that fits is published byte for byte, and an upload larger than a frame draws
+// as blocks. The limit is the first frame's measured cells plus the uploads in `fit`, plus `delta`.
+test "FeedBackend - image uploads wait for the frames they fit" {
+    const Row = struct {
+        name: []const u8,
+        protocol: image.RenderProtocol,
+        sizes: []const u32,
+        fit: u8,
+        delta: i64 = 0,
+        cells: bool = true,
+        text: bool = false,
+        resize: bool = false,
+        changing: bool = false,
+        uploads: []const []const u32,
+        blocks: u32 = 0,
+    };
+    const rows = [_]Row{
+        .{ .name = "kitty fits", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b11, .uploads = &.{&.{ 1, 2 }} },
+        .{ .name = "kitty one byte over", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b11, .delta = -1, .uploads = &.{ &.{1}, &.{2} } },
+        .{ .name = "kitty two of three", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .uploads = &.{ &.{ 1, 2 }, &.{3} } },
+        .{ .name = "kitty cells first", .protocol = .kitty, .sizes = &.{ 16, 16 }, .text = true, .fit = 0b01, .delta = -1, .uploads = &.{ &.{}, &.{ 1, 2 } } },
+        .{ .name = "kitty one a frame in order", .protocol = .kitty, .sizes = &.{ 16, 16, 16, 16 }, .fit = 0b0001, .uploads = &.{ &.{1}, &.{2}, &.{3}, &.{4} } },
+        .{ .name = "kitty resize while one waits", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .resize = true, .uploads = &.{ &.{ 1, 2 }, &.{3} } },
+        .{ .name = "kitty changing image does not starve", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b001, .changing = true, .uploads = &.{ &.{1}, &.{2}, &.{1}, &.{3} } },
+        .{ .name = "kitty alone over a frame", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .uploads = &.{&.{}}, .blocks = 1 },
+        .{ .name = "sixel fits", .protocol = .sixel, .sizes = &.{ 16, 16 }, .fit = 0b11, .uploads = &.{&.{ 1, 2 }} },
+        .{ .name = "sixel one byte over", .protocol = .sixel, .sizes = &.{ 16, 16 }, .fit = 0b11, .delta = -1, .uploads = &.{ &.{1}, &.{2} } },
+        .{ .name = "sixel later waits behind a waiting one", .protocol = .sixel, .sizes = &.{ 16, 32, 16 }, .fit = 0b101, .uploads = &.{ &.{1}, &.{}, &.{3} }, .blocks = 1 },
+        .{ .name = "sixel alone over a frame", .protocol = .sixel, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .uploads = &.{&.{}}, .blocks = 1 },
+    };
+    const Scene = struct {
+        fn draw(cli: *CliRenderer, images: []const *image.Image, row: Row, frame: u32) !void {
+            const next = cli.getNextBuffer();
+            if (row.text) for (0..next.height) |y| for (0..next.width) |x| {
+                const shade: u8 = @truncate(x * 7 + y * 31);
+                next.set(@intCast(x), @intCast(y), .{ .char = 'x', .fg = ansi.rgbColor(shade, 255 - shade, 9, 255), .bg = ansi.rgbColor(9, shade, 255 - shade, 255), .attributes = 0 });
+            };
+            for (images, row.sizes, 0..) |value, size, index| {
+                const handle: u32 = @intCast(index + 1 + if (row.changing and index == 0) frame * 16 else 0);
+                _ = try next.drawImage(value, handle, @intCast(index * 9), 0, size / 4, size / 8, size, size, 0, 0, size, size, row.protocol);
+            }
+        }
+    };
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
+    var pixels: [32 * 32 * 4]u8 = undefined;
+    for (&pixels, 0..) |*byte, index| byte.* = @truncate((index *% 2654435761) >> 11);
+    const small = try image.createFromRgba(std.testing.allocator, &pixels, 16, 16, 16 * 4);
+    defer small.deinit();
+    const big = try image.createFromRgba(std.testing.allocator, &pixels, 32, 32, 32 * 4);
+    defer big.deinit();
 
-    var opts = native_span_feed.defaultOptions();
-    opts.chunk_size = 256;
-    opts.initial_chunks = 1;
-    opts.max_bytes = 256;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
-    opts.auto_commit_on_full = 0;
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
-    var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 8, 4, &pools.graphemes, .{
-        .link_pool = &pools.links,
-        .remote_mode = .remote,
-        .feed = feed,
-    });
-    defer feed.destroy();
-    defer cli_renderer.destroyStorage();
-    cli_renderer.terminal.caps.sixel = true;
+    for (rows) |row| {
+        errdefer std.debug.print("row: {s}\n", .{row.name});
+        var drawn: [4]*image.Image = undefined;
+        for (row.sizes, 0..) |size, index| drawn[index] = if (size == 32) big else small;
+        // Measure the first frame and each upload without a limit.
+        var roomy = try TestRenderer.create(std.testing.allocator, 40, 6, &pools.graphemes, &pools.links);
+        defer roomy.deinit();
+        roomy.renderer.terminal.caps.sixel = true;
+        try Scene.draw(roomy.renderer, drawn[0..row.sizes.len], row, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, roomy.render(false));
+        var cells: i64 = @intCast(roomy.lastOutput().len);
+        var limit: i64 = row.delta;
+        for (roomy.renderer.backend.uploads.items) |upload| {
+            const bytes: i64 = @intCast(upload.end - upload.start);
+            cells -= bytes;
+            if (row.fit & (@as(u8, 1) << @intCast(upload.placement_id - 1)) != 0) limit += bytes;
+        }
+        if (row.cells) limit += cells;
 
-    const pixels = try std.testing.allocator.alloc(u8, 32 * 16 * 4);
-    defer std.testing.allocator.free(pixels);
-    for (0..32 * 16) |index| {
-        pixels[index * 4] = @truncate(index * 17);
-        pixels[index * 4 + 1] = @truncate(index * 31);
-        pixels[index * 4 + 2] = @truncate(index * 47);
-        pixels[index * 4 + 3] = 255;
+        var opts = native_span_feed.defaultOptions();
+        opts.chunk_size = 1;
+        opts.max_bytes = @intCast(limit);
+        opts.span_queue_capacity = @intCast(limit);
+        opts.auto_commit_on_full = 0;
+        const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
+        defer feed.destroy();
+        const cli = try CliRenderer.createWithOptions(std.testing.allocator, 40, 6, &pools.graphemes, .{ .link_pool = &pools.links, .feed = feed, .env_map = roomy.env_map });
+        defer cli.destroyStorage();
+        cli.terminal.caps.sixel = true;
+        cli.imageIdSalt = roomy.renderer.imageIdSalt;
+        var output: std.ArrayListUnmanaged(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        const Sink = struct {
+            list: *std.ArrayListUnmanaged(u8),
+            pub fn write(self: @This(), data: []const u8) void {
+                self.list.appendSlice(std.testing.allocator, data) catch unreachable;
+            }
+        };
+        // A final frame sends nothing, unless an image keeps changing.
+        for (0..row.uploads.len + @intFromBool(!row.changing)) |frame| {
+            if (row.resize and frame == 1) try cli.resize(41, 6);
+            try Scene.draw(cli, drawn[0..row.sizes.len], row, @intCast(frame));
+            output.clearRetainingCapacity();
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli, false, Sink{ .list = &output }));
+            // Uploads that cannot join the kept ones are cut while staging, so staging stays bounded.
+            try std.testing.expect(cli.backend.frameBytes.capacity <= 2 * limit);
+            var kept: [4]u32 = undefined;
+            var count: usize = 0;
+            for (cli.backend.uploads.items) |upload| if (upload.state == .kept and upload.end > upload.start) {
+                kept[count] = upload.placement_id;
+                count += 1;
+            };
+            const expected: []const u32 = if (frame < row.uploads.len) row.uploads[frame] else &.{};
+            try std.testing.expectEqualSlices(u32, expected, kept[0..count]);
+            const escapes = std.mem.count(u8, output.items, if (row.protocol == .kitty) "\x1b_Ga=t" else "\x1bP");
+            try std.testing.expectEqual(count, escapes);
+            if (frame == 0 and count == row.sizes.len) try std.testing.expectEqualStrings(roomy.lastOutput(), output.items);
+            // Adaptive image sizes see a frame that left uploads out as the costliest.
+            try std.testing.expectEqual(cli.imageUploadsPending() != 0, cli.imageFrameCostUs() == std.math.maxInt(u32));
+        }
+        if (!row.changing) try std.testing.expectEqual(@as(u32, 0), cli.imageUploadsPending());
+        var blocks: u32 = 0;
+        for (cli.currentImages.items) |committed| blocks += @intFromBool(committed.protocol == .fallback);
+        try std.testing.expectEqual(row.blocks, blocks);
     }
-    const value = try image.createFromRgba(std.testing.allocator, pixels, 32, 16, 32 * 4);
-    defer value.deinit();
-    const image_handle: u32 = 1;
-
-    try std.testing.expect(try cli_renderer.getNextBuffer().drawImage(
-        value,
-        image_handle,
-        0,
-        0,
-        8,
-        4,
-        32,
-        16,
-        0,
-        0,
-        32,
-        16,
-        .sixel,
-    ));
-    var storage: [256]u8 = undefined;
-    var sink = FixedSink.init(&storage);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, try renderPresented(cli_renderer, true, &sink));
-    try std.testing.expectEqual(@as(usize, 0), sink.bytes().len);
 }
 
 test "FeedBackend - writeOut publishes nothing when the queue is blocked" {

@@ -753,6 +753,8 @@ export interface NativeSessionRendererState {
   height: number
   frameCount: bigint
   framePending: boolean
+  /** Presented Kitty and Sixel placements whose image a later frame still sends. */
+  imageUploadsPending: number
 }
 
 export interface NativeSessionKittyImageTransportStatus {
@@ -6534,6 +6536,7 @@ export class FFIRenderLib {
       height: words[layout.fields.height.offset / 4],
       frameCount: output[layout.fields.frame_count.offset / 8],
       framePending: words[layout.fields.frame_pending.offset / 4] !== 0,
+      imageUploadsPending: words[layout.fields.image_uploads_pending.offset / 4],
     }
   }
 

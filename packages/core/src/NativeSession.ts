@@ -243,6 +243,8 @@ export class NativeSession {
   private readonly closeWait = completion()
   private idleWait: ReturnType<typeof completion> | null = null
   private presentationWait: ReturnType<typeof completion> | null = null
+  /** @internal Image uploads that later frames still send, read when the last waited frame presented. */
+  imageUploadsPending = 0
   private transition: { kind: "setup" | "suspend" | "resume"; wait: ReturnType<typeof completion> } | null = null
   private scheduled: { deadlineNs: bigint | null; cancel: () => void } | null = null
   private output: { ticket: NativeOutputTicket | null; completed: boolean; failed: boolean } | null = null
@@ -441,7 +443,11 @@ export class NativeSession {
   whenPresented(): Promise<void> {
     this.checkOpen()
     if (this.presentationWait) return this.presentationWait.promise
-    if (!this.lib.sessionGetRendererState(this.context, this.session).framePending) return Promise.resolve()
+    const state = this.lib.sessionGetRendererState(this.context, this.session)
+    if (!state.framePending) {
+      this.imageUploadsPending = state.imageUploadsPending
+      return Promise.resolve()
+    }
     const wait = (this.presentationWait = completion())
     this.schedule()
     return wait.promise
@@ -895,7 +901,10 @@ export class NativeSession {
   }
 
   private completePresentation(): void {
-    if (this.presentationWait && !this.lib.sessionGetRendererState(this.context, this.session).framePending) {
+    if (!this.presentationWait) return
+    const state = this.lib.sessionGetRendererState(this.context, this.session)
+    if (!state.framePending) {
+      this.imageUploadsPending = state.imageUploadsPending
       this.presentationWait.resolve()
       this.presentationWait = null
     }

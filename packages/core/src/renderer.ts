@@ -5474,6 +5474,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       else this.applyPendingExternalOutputModeIfReady()
     }
     this.forceFullRepaintRequested = false
+    // Image uploads that did not fit this frame go out in the next ones. Such a frame has bytes, so it was pending.
+    if (status === NativeSessionRenderStatus.Pending && this.nativeSession.imageUploadsPending) this.requestRender()
     return "rendered"
   }
 

@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test"
+import { NativeImage } from "../image.js"
 import { NativeSession } from "../NativeSession.js"
 import { RGBA } from "../lib/RGBA.js"
+import { ImageRenderable } from "../renderables/Image.js"
 import { CliRenderer, CliRenderEvents, createCliRenderer, type CliRendererConfig } from "../renderer.js"
 import { settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -261,3 +263,42 @@ for (const size of [
     if (reverted) expect(renderer.getNativeStats().cellsUpdated).toBe(renderer.width * renderer.height)
   })
 }
+
+/** Bytes that zlib and base64 cannot shrink. */
+function noise(seed: number, length: number): Uint8Array {
+  const bytes = new Uint8Array(length)
+  let x = 0x9e3779b9 + seed
+  for (let index = 0; index < length; index++) {
+    x ^= x << 13
+    x ^= x >>> 17
+    x ^= x << 5
+    bytes[index] = x & 0xff
+  }
+  return bytes
+}
+
+// 413: three 12 KB Kitty uploads exceed one frame of this Session (28,672 bytes). The frame sends two and the
+// renderer asks for the next frame, which sends the third; no frame fails.
+test("Kitty uploads that do not fit one frame go out in the next frames", async () => {
+  const { renderer, stdout, clock } = createAdmissionRenderer()
+  stdout.release()
+  for (let index = 0; index < 3; index++) {
+    const source = NativeImage.fromRgba(noise(index, 48 * 48 * 4), 48, 48)
+    renderer.root.add(
+      new ImageRenderable(renderer, {
+        source,
+        protocol: "kitty",
+        position: "absolute",
+        left: index * 10,
+        width: 8,
+        height: 4,
+      }),
+    )
+  }
+  for (let turn = 0; turn < 8; turn++) {
+    clock.advance(100)
+    await settle()
+  }
+  await renderer.idle()
+  expect(stdout.text().split("\x1b_Ga=t").length - 1).toBe(3)
+})

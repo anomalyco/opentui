@@ -188,6 +188,9 @@ const CommittedImage = struct {
     reservation_hash: u64 = 0,
     // Kitty runs placed for a partial reservation, ids KITTY_RUN_ID_MIN up.
     kitty_runs: u32 = 0,
+    // The upload alone was larger than one frame; the placement draws as blocks
+    // while its pixel size and source size stay the same.
+    oversize: bool = false,
 };
 
 // Run placement ids start above every buffer placement id. Kitty scopes
@@ -231,6 +234,8 @@ const ImageDirty = struct {
     background_hash: u64,
     lower_occupancy_hash: u64,
     propagated: bool = false,
+    // A Sixel whose upload waited paints over its cleared cells without clearing them again.
+    paint: bool = false,
     // Kitty reservation scan for this frame. Change detection, the Kitty
     // writer, and staging all read it, so the placement area is scanned once.
     reservation: PlacementReservation = .{ .intact = true, .hash = 0 },
@@ -1014,6 +1019,7 @@ pub const CliRenderer = struct {
             self.rollbackSplitFrame(start_split_state);
             return self.finishUnpublishedFrame(status);
         }
+        self.markUploads();
         // A Session hands over scene work only for frames that paint the footer.
         std.debug.assert(self.scene_work == null or paint_footer);
         self.pendingPresentation = .{
@@ -1033,6 +1039,12 @@ pub const CliRenderer = struct {
     fn recordFrameCost(self: *CliRenderer, started_us: i64) void {
         const elapsed = std.Io.Clock.now(.awake, self.io).toMicroseconds() - started_us;
         self.lastFrameCostUs = @intCast(std.math.clamp(elapsed, 0, std.math.maxInt(u32)));
+    }
+
+    /// The cost that adaptive image sizes follow: the last frame's, or the most
+    /// while an image waits because the uploads did not fit one frame.
+    pub fn imageFrameCostUs(self: *const CliRenderer) u32 {
+        return if (self.imageUploadsPending() != 0) std.math.maxInt(u32) else self.lastFrameCostUs;
     }
 
     fn splitOutputOffset(self: *const CliRenderer, surface_offset: u32) u32 {
@@ -1722,7 +1734,16 @@ pub const CliRenderer = struct {
     fn nextPlacementProtocol(self: *CliRenderer, placement: OptimizedBuffer.ImagePlacement) ImageProtocol {
         const protocol = self.resolveImageProtocol(placement.protocol);
         if (protocol == .sixel and !native_image.dimensionsWithinLimits(placement.pixel_width, placement.pixel_height)) return .fallback;
+        if (protocol != .fallback and self.placementOversize(placement)) return .fallback;
         return protocol;
+    }
+
+    // Matching by size, not image, keeps each new video frame of the same size on blocks.
+    fn placementOversize(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) bool {
+        const committed = self.currentImageForPlacement(placement.placement_id) orelse return false;
+        return committed.oversize and committed.pixel_width == placement.pixel_width and
+            committed.pixel_height == placement.pixel_height and committed.source_width == placement.source_width and
+            committed.source_height == placement.source_height;
     }
 
     // Existing overlay cells are repainted by normal cell diffing. The Sixel
@@ -1766,7 +1787,7 @@ pub const CliRenderer = struct {
         // Kitty replaces image data server side, so content changes do not
         // require clearing cells. Sixel pixels are the cells, so content and
         // blended-background changes repaint the rectangle.
-        if (protocol == .sixel and (committed.image_handle != placement.image_handle or
+        if (protocol == .sixel and ((committed.image_handle != placement.image_handle and committed.image_handle != 0) or
             committed.background_hash != background_hash or
             committed.lower_occupancy_hash != lower_occupancy_hash)) return true;
         return protocol == .sixel and self.placementExposed(placement);
@@ -1807,6 +1828,7 @@ pub const CliRenderer = struct {
                 0;
             self.imageDirty.appendAssumeCapacity(.{
                 .clear = self.placementNeedsClear(placement, protocol, background_hash, lower_occupancy_hash, forced),
+                .paint = protocol == .sixel and self.uploadWaited(placement),
                 .protocol = protocol,
                 .background_hash = background_hash,
                 .lower_occupancy_hash = lower_occupancy_hash,
@@ -1836,7 +1858,8 @@ pub const CliRenderer = struct {
 
     fn placementDirty(self: *const CliRenderer, placement_id: u32) bool {
         if (placement_id == 0 or placement_id > self.imageDirty.items.len) return true;
-        return self.imageDirty.items[placement_id - 1].clear;
+        const state = self.imageDirty.items[placement_id - 1];
+        return state.clear or state.paint;
     }
 
     fn placementFrameState(self: *const CliRenderer, char: u32) ?ImageDirty {
@@ -1889,6 +1912,7 @@ pub const CliRenderer = struct {
                     self.writeKittyReservationRuns({}, placement, 0, kittyDownscaleApplies(placement), false) catch unreachable
                 else
                     0,
+                .oversize = protocol == .fallback and self.placementOversize(placement),
             });
         }
     }
@@ -2126,7 +2150,10 @@ pub const CliRenderer = struct {
                 }
             }
         }
-        if (previous == null or retransmit) {
+        const transmits = previous == null or retransmit;
+        if (transmits) self.beginUpload(writer, placement);
+        defer if (transmits) self.endUpload(writer, placement.placement_id);
+        if (transmits) {
             const transmit = try self.kittyPlacementTransmit(placement, .escape);
             defer if (transmit.owned) transmit.image.deinit();
             const directory = if (self.kittyTransport.mode == .file) self.kittyTempDirectory() else "";
@@ -2178,16 +2205,66 @@ pub const CliRenderer = struct {
                 tmux,
             );
         }
-        for (next) |placement| {
-            if (self.nextPlacementProtocol(placement) != .kitty) continue;
-            try self.writeKittyPlacementUpdate(writer, placement, force_place, tmux);
+        // Uploads that waited go first, so a frame's upload budget cannot starve them.
+        for ([_]bool{ true, false }) |waited| {
+            for (next) |placement| {
+                if (self.nextPlacementProtocol(placement) != .kitty or self.uploadWaited(placement) != waited) continue;
+                try self.writeKittyPlacementUpdate(writer, placement, force_place, tmux);
+            }
         }
     }
 
+    // A deferred upload commits its placement with image handle 0.
+    fn uploadWaited(self: *const CliRenderer, placement: OptimizedBuffer.ImagePlacement) bool {
+        const committed = self.currentImageForPlacement(placement.placement_id) orelse return false;
+        return committed.image_handle == 0;
+    }
+
+    fn beginUpload(self: *CliRenderer, writer: anytype, placement: OptimizedBuffer.ImagePlacement) void {
+        writer.flush() catch {};
+        self.backend.beginUpload(self.uploadWaited(placement));
+    }
+
+    fn endUpload(self: *CliRenderer, writer: anytype, placement_id: u32) void {
+        writer.flush() catch {};
+        self.backend.endUpload(placement_id);
+    }
+
+    /// Mark the placements whose uploads the published frame left out.
+    fn markUploads(self: *CliRenderer) void {
+        for (self.backend.uploads.items) |upload| {
+            if (upload.state == .kept) continue;
+            const staged = &self.pendingImages.items[upload.placement_id - 1];
+            std.debug.assert(staged.placement_id == upload.placement_id);
+            if (staged.protocol == .kitty) self.kittyTransport.discard(self.kittyImageId(upload.placement_id));
+            if (upload.state == .too_large) staged.oversize = true else staged.image_handle = 0;
+        }
+    }
+
+    /// Committed native placements whose image a later frame still has to send.
+    pub fn imageUploadsPending(self: *const CliRenderer) u32 {
+        var count: u32 = 0;
+        for (self.currentImages.items) |image| {
+            count += @intFromBool(image.protocol != .fallback and (image.image_handle == 0 or image.oversize));
+        }
+        return count;
+    }
+
     fn writeSixelImages(self: *CliRenderer, writer: anytype) !void {
+        // Later Sixels paint over earlier ones, so after one waits, the rest wait too.
+        var waiting = false;
         for (self.nextRenderBuffer.image_placements.items) |placement| {
             if (self.nextPlacementProtocol(placement) != .sixel or !self.placementDirty(placement.placement_id)) continue;
             if (placement.pixel_width == 0 or placement.pixel_height == 0 or placement.x < 0 or placement.y < 0) continue;
+            if (waiting) {
+                self.backend.deferUpload(placement.placement_id);
+                continue;
+            }
+            self.beginUpload(writer, placement);
+            defer {
+                self.endUpload(writer, placement.placement_id);
+                waiting = self.backend.lastUploadWaits();
+            }
             const cache_key = SixelCacheKey{
                 .image_handle = placement.image_handle,
                 .source_x = placement.source_x,

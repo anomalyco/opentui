@@ -946,7 +946,7 @@ pub fn ot_session_get_renderer_state(
         .height = attached.height,
         .frame_count = attached.getRenderStats().frameCount,
         .frame_pending = @intFromBool(value.frame_end_offset != null),
-        .reserved = 0,
+        .image_uploads_pending = attached.imageUploadsPending(),
     };
     return c.OT_OK;
 }
