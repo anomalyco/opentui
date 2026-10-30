@@ -77,8 +77,9 @@ async function setupSlotTest(
 }
 
 describe("slot behavior stability without preload", () => {
-  it("keeps selection listeners stable while unregistering plugins for other slots", async () => {
+  it("keeps one fallback ScrollBox while unregistering plugins for other slots", async () => {
     const off: Array<() => void> = []
+    const boxes: ScrollBoxRenderable[] = []
     let mounts = 0
     let cleanups = 0
 
@@ -119,7 +120,9 @@ describe("slot behavior stability without preload", () => {
             cleanups += 1
           })
 
-          return scroll(useRenderer(), "fallback-scrollbox")
+          const box = scroll(useRenderer(), "fallback-scrollbox")
+          boxes.push(box)
+          return box
         }
 
         const Status = (props: { children?: JSX.Element }) => {
@@ -145,8 +148,8 @@ describe("slot behavior stability without preload", () => {
     try {
       await setup.renderOnce()
 
-      const baseline = setup.renderer.listenerCount("selection")
-      expect(baseline).toBe(0)
+      const live = () => boxes.filter((box) => !box.isDestroyed).length
+      expect(live()).toBe(0)
 
       const owner = off[0]
       if (!owner) throw new Error("missing owner unregister")
@@ -160,11 +163,9 @@ describe("slot behavior stability without preload", () => {
       await Bun.sleep(0)
       await setup.renderOnce()
 
-      const settled = setup.renderer.listenerCount("selection")
-
       expect(mounts).toBe(1)
       expect(cleanups).toBe(0)
-      expect(settled).toBe(1)
+      expect(live()).toBe(1)
     } finally {
       if (!setup.renderer.isDestroyed) {
         setup.renderer.destroy()

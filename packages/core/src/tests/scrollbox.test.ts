@@ -883,12 +883,13 @@ describe("ScrollBoxRenderable - destroyRecursively", () => {
   test("selection dispatch continues when an earlier listener destroys the ScrollBox", () => {
     const scrollbox = new ScrollBoxRenderable(testRenderer, { id: "scrollbox" })
     testRenderer.root.add(scrollbox)
+    scrollbox.startAutoScroll(0, 0)
 
     let laterCalls = 0
     testRenderer.prependOnceListener("selection", () => scrollbox.destroyRecursively())
     testRenderer.on("selection", () => laterCalls++)
     testRenderer.emit("selection", null)
-    expect(laterCalls).toBe(1)
+    expect([laterCalls, testRenderer.listenerCount("selection")]).toEqual([1, 1])
   })
 
   test("destroys internal ScrollBox components", () => {
@@ -1169,10 +1170,10 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
   })
 
   // A whole-tree rebuild each frame replaces a placeholder Markdown before any highlight lands; the box still measures
-  // the whole document, so it scrolls (#1853).
+  // the whole document, so it scrolls, and a removed box leaves no selection listener (#1853).
   test.each(["before", "after"])("markdown replaced %s its first frame, rebuilt each frame, measures", async (when) => {
     const doc = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")
-    const heights: number[] = []
+    const trace: string[] = []
     let previous: ScrollBoxRenderable | undefined
     for (let i = 0; i < 12; i++) {
       if (previous) testRenderer.root.remove(previous)
@@ -1187,9 +1188,9 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       if (when === "after") await renderOnce()
       markdown.content = doc
       await renderOnce()
-      heights.push(previous.scrollHeight)
+      trace.push(`${previous.scrollHeight}/${testRenderer.listenerCount("selection")}`)
     }
-    expect(heights).toEqual(Array(12).fill(30))
+    expect(trace).toEqual(Array(12).fill("30/0"))
   })
 
   test("maintains visibility when scrolling with many Code elements", async () => {
