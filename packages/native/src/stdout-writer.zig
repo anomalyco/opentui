@@ -448,12 +448,13 @@ test "stdout writer retries EINTR and EAGAIN, and fails a hangup, a zero count, 
     try waitThreadsGone();
 }
 
-/// Written by the writer thread before it exits; read after `waitThreadsGone`.
+/// Written by the writer thread before it publishes; read after the collect.
 var mask_blocked: std.posix.sigset_t = undefined;
 
-/// The calling thread's blocked signals. glibc writes only the kernel's part of the set.
+/// The calling thread's blocked signals. glibc's sigemptyset and sigprocmask write only the
+/// kernel's part of the set, so the rest is zeroed for comparisons.
 fn blockedSignals() std.posix.sigset_t {
-    var set = std.posix.sigemptyset();
+    var set = std.mem.zeroes(std.posix.sigset_t);
     std.posix.sigprocmask(std.posix.SIG.BLOCK, null, &set);
     return set;
 }
@@ -469,13 +470,16 @@ const MaskSink = struct {
 
 test "stdout writer blocks signals from its first instruction, except SIGTTOU and faults" {
     if (!supported) return error.SkipZigTest;
+    // Start from an empty mask, so a creator mask left blocked shows even after other tests.
+    var saved: std.posix.sigset_t = undefined;
+    std.debug.assert(std.c.pthread_sigmask(std.posix.SIG.SETMASK, &std.mem.zeroes(std.posix.sigset_t), &saved) == 0);
+    defer std.debug.assert(std.c.pthread_sigmask(std.posix.SIG.SETMASK, &saved, &saved) == 0);
     const before = blockedSignals();
     const writer = try Writer(MaskSink, ThreadRunner(null)).create(testing.allocator, .{}, .{});
+    defer writer.abandon();
     try testing.expectEqual(before, blockedSignals());
     writer.start(1);
     try testing.expectEqual(Outcome.written, writer.waitCollect(std.time.ns_per_s));
-    writer.abandon();
-    try waitThreadsGone();
     for ([_]std.posix.SIG{ .INT, .WINCH, .HUP, .PIPE, .TERM, .TSTP, .CONT, .ALRM, .CHLD, .USR1, .USR2 }) |sig| {
         try testing.expect(std.posix.sigismember(&mask_blocked, sig));
     }
