@@ -382,8 +382,9 @@ describe("VideoRenderable", () => {
       video.crop = crop
       await Promise.resolve()
       await setup.renderOnce()
-      expect(errors.map((e) => e.message)).toEqual(error ? [expect.stringContaining(error)] : [])
-      expect(video.crop).toEqual(error ? undefined : crop)
+      expect(errors.map((e) => e.message.includes(error))).toEqual(error ? [true] : [])
+      if (error) expect(video.crop).toBeUndefined()
+      else expect(video.crop).toEqual(crop)
       expect(spy.mock.calls.map((call) => call[2])).toEqual(error ? [] : [crop])
       expect(isDeepStrictEqual(setup.captureSpans(), whole)).toBe(!!error || name === "full")
       // An equal crop is no change; a nullish one shows the whole source again.
@@ -408,7 +409,7 @@ describe("VideoRenderable", () => {
     video.source = SILENT
     await Promise.resolve()
     // The open reports the crop that does not fit; it stays set and the node shows the whole frame.
-    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining("outside the 160x90 source")])
+    expect(errors.map((e) => e.message.includes("outside the 160x90 source"))).toEqual([true])
     expect(video.crop).toEqual(crop)
     video.play()
     video.crop = { left: 10, top: 10, width: 20, height: 20 }
@@ -424,7 +425,7 @@ describe("VideoRenderable", () => {
     late.crop = { left: 0, top: 0, width: 0, height: 45 }
     late.source = SILENT
     await Promise.resolve()
-    expect(errors.map((e) => e.message).slice(1)).toEqual([expect.stringContaining("positive u32 width")])
+    expect(errors.map((e) => e.message.includes("positive u32 width")).slice(1)).toEqual([true])
   })
 
   test("pausing before a deferred autoplay report drops its onPlay", async () => {

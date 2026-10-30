@@ -280,7 +280,7 @@ describe("ImageRenderable image loading", () => {
       const spans = setup.captureSpans()
       renderer.off("render:error", failed)
       node.destroy()
-      return { spans, errors: errors.map((error) => (error as Error).message), crop: node.crop }
+      return { spans, errors: errors.map((reported) => (reported as Error).message.includes(error)), crop: node.crop }
     }
     try {
       const region = error ? image : image.extract(crop)
@@ -288,7 +288,7 @@ describe("ImageRenderable image loading", () => {
       for (const Image of [ImageRenderable, HostImage]) {
         expect(await paint(Image, image, crop)).toEqual({
           spans: expected.spans,
-          errors: error ? [expect.stringContaining(error)] : [],
+          errors: error ? [true] : [],
           crop: error.includes("u32") ? undefined : crop,
         })
       }
