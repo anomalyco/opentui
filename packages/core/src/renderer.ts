@@ -5462,6 +5462,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     if (commits?.length === 1) {
       this.externalOutputQueue.drop(1)
+      // The dropped commit no longer sets where queued output ends.
+      this.queuedSplitTail = null
       if (this.pendingNativeReplay) this.pendingNativeReplay.remaining -= 1
     }
     if (counted) {

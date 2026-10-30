@@ -373,32 +373,34 @@ test("a scrollback commit too large for the output is dropped", async () => {
   renderer.on(CliRenderEvents.FRAME_DROPPED, (event) => dropped.push(event))
   const footer = new TextRenderable(renderer, { content: "footer-a" })
   renderer.root.add(footer)
-  const writeNoise = () =>
+  const writeNoise = (width = 80, trailingNewline = true) =>
     renderer.writeToScrollback((ctx) => ({
-      root: new Noise(ctx.renderContext, { position: "absolute", left: 0, top: 0, width: ctx.width, height: 17 }),
-      width: ctx.width,
+      root: new Noise(ctx.renderContext, { position: "absolute", left: 0, top: 0, width, height: 17 }),
+      width,
       height: 17,
       startOnNewLine: true,
-      trailingNewline: true,
+      trailingNewline,
     }))
   stdout.release()
   await renderer.setupTerminal()
   stdout.write("before\n")
-  writeNoise()
-  stdout.write("after\n")
-  for (let turn = 0; turn < 8; turn++) {
+  // The dropped commit ends mid-row at column 70; the next line continues "ab", not that column.
+  writeNoise(70, false)
+  stdout.write("ab")
+  renderer.once(CliRenderEvents.FRAME_DROPPED, () => stdout.write("1234567890\n"))
+  for (let turn = 0; turn < 40; turn++) {
     clock.advance(100)
     await settle()
   }
   footer.content = "ZZZZZZZZ"
   // Later commits batch again.
   for (const line of ["one", "two", "three"]) stdout.write(`${line}\n`)
-  for (let turn = 0; turn < 4; turn++) {
+  for (let turn = 0; turn < 40; turn++) {
     clock.advance(100)
     await settle()
   }
   const output = stdout.text()
-  expect({ events: dropped.length, before: output.includes("before"), after: output.includes("after") }).toEqual({
+  expect({ events: dropped.length, before: output.includes("before"), after: output.includes("1234567890") }).toEqual({
     events: 1,
     before: true,
     after: true,
