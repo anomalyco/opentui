@@ -59,8 +59,8 @@ changing other capability detection.
 queries. `OTUI_USE_CONSOLE=false` disables global `console.*` capture. The `consoleMode` renderer option changes only
 the overlay surface.
 
-On Linux, when stdout is a terminal, a native thread writes the renderer's output, so a slow link (ssh) does not
-block the JS thread. `OTUI_STDOUT_THREAD=false` or `0` writes it on the JS thread instead, as before.
+On Linux and macOS, when stdout is a terminal, a native thread writes the renderer's output, so a slow link (ssh) does
+not block the JS thread. `OTUI_STDOUT_THREAD=false` or `0` writes it on the JS thread instead, as before.
 
 When set, `OTUI_USE_ALTERNATE_SCREEN` overrides `screenMode`. A true value forces `"alternate-screen"`. Any other
 explicit value forces `"main-screen"`. When set, `OTUI_OVERRIDE_STDOUT` overrides `externalOutputMode`. A true value

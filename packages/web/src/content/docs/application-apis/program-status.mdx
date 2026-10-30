@@ -67,7 +67,8 @@ renderer.setProgramStatus({ state: "clear", id: "us-east" })
 
 `setProgramStatus()` returns `true` when OpenTUI queues the report. It returns `false` in these cases:
 
-- The renderer is destroyed.
+- The session failed, or the terminal is closing: from the microtask after `destroy()`, or when the process exits.
+  Reports made in `destroy` listeners, in `onDestroy`, or right after `destroy()` are still queued.
 - The terminal is not active, for example before `setupTerminal()` finishes or while the renderer is suspended.
 - The output queue is full.
 
@@ -90,7 +91,21 @@ renderer.on("capabilities", (capabilities) => {
 
 Records belong to the terminal, not to the renderer. When the process exits or the shell shows a new prompt, the
 terminal drops `working` and `blocked` records. `done` and `error` records stay until the terminal decides to remove
-them. OpenTUI does not clear records when the renderer is destroyed or suspended.
+them. `idle` records stay until they are replaced or cleared: a terminal may drop them when the process exits, but
+does not have to. OpenTUI does not clear records when the renderer is destroyed or suspended.
+
+To clear your records when the program exits, report from a `destroy` listener or from framework cleanup such as
+Solid's `onCleanup`. Both run before the terminal is restored, after `destroy()`, Ctrl+C, or an exit signal. A program
+that calls `process.exit()` without calling `destroy()` first gets no chance to report.
+
+```typescript
+renderer.on("destroy", () => {
+  renderer.setProgramStatus({ state: "clear", id: "build" })
+})
+```
+
+A `clear` without an `id` removes every record in the terminal, including `done` and `error` records and records that
+other programs left. Use it only when the program left no `done` or `error` record that the user should find.
 
 ## Multiplexers
 

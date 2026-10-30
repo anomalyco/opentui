@@ -9,7 +9,7 @@ let renderer: TestRenderer | null = null
 
 afterEach(async () => {
   renderer?.destroy()
-  await renderer?.closed
+  await renderer?.closed.catch(() => {})
   renderer = null
 })
 
@@ -50,8 +50,10 @@ describe("renderer program status", () => {
     for (const [status] of reports) expect(renderer.setProgramStatus(status)).toBe(true)
     await renderer.nativeScene.driver.idle()
     expect(stdout.text()).toBe(reports.map(([, body]) => `\x1b]7501;${body}\x1b\\`).join(""))
-    // The native session closes later, so only the renderer's own check can refuse this report.
+    // Reports are accepted until the close starts in the microtask after destroy(), then refused.
     renderer.destroy()
+    expect(renderer.setProgramStatus({ state: "done" })).toBe(true)
+    await Promise.resolve()
     expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
   })
 
@@ -76,6 +78,9 @@ describe("renderer program status", () => {
     }
     await renderer.nativeScene.driver.idle()
     expect(stdout.text()).toBe("")
+    // A failed session refuses, also before the renderer reacts to the failure.
+    stdout.emit("error", new Error("terminal gone"))
+    expect(renderer.setProgramStatus({ state: "done" })).toBe(false)
   })
 
   test("returns false when the report cannot be queued", async () => {
