@@ -63,6 +63,9 @@ test "video open reports metadata and decodes the first frame natively" {
     try odd.configureOutput(170, 96, false);
     try testing.expect(try odd.update(0));
     try testing.expectEqual([2]u32{ 170, 96 }, [2]u32{ odd.current_image.?.width(), odd.current_image.?.height() });
+    // The left column is red from row 8: a tight row lets one slice thread's overrun land on the
+    // first pixels of the next slice's first row.
+    for (16..96) |y| try testing.expect(odd.current_image.?.pixels[y * 170 * 4] > 128 and odd.current_image.?.pixels[y * 170 * 4 + 1] < 128);
     // Its bottom row crosses the colour bars: red, yellow, cyan. A wrong stride shears it away.
     const bottom = odd.current_image.?.pixels[95 * 170 * 4 ..];
     for ([_]struct { usize, [3]bool }{ .{ 0, .{ true, false, false } }, .{ 84, .{ true, true, false } }, .{ 169, .{ false, true, true } } }) |bar| {
