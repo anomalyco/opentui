@@ -1,6 +1,7 @@
 const std = @import("std");
 const link = @import("../link.zig");
 const test_pools = @import("test-pools.zig");
+const utils = @import("../utils.zig");
 
 const LinkPool = link.LinkPool;
 const LinkPoolError = link.LinkPoolError;
@@ -106,7 +107,7 @@ test "LinkTracker - checked URL membership is idempotent and rejects reference s
     try std.testing.expectEqual(@as(u32, 0), other.getLinkCount());
     try std.testing.expectEqual(id, try tracker.trackUrl(url));
     try std.testing.expectEqual(std.math.maxInt(u32), try pool.getRefcount(id));
-    try std.testing.expectError(error.UrlTooLong, tracker.trackUrl("x" ** (link.MAX_URL_LENGTH + 1)));
+    try std.testing.expectError(error.UrlTooLong, tracker.trackUrl(utils.repeat(u8, "x", link.MAX_URL_LENGTH + 1)));
 }
 
 test "LinkTracker - checked URL membership rolls back insertion failures" {

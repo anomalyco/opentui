@@ -6,6 +6,7 @@ const c = @import("context_abi_c");
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const ansi = @import("../ansi.zig");
+const utils = @import("../utils.zig");
 const fixture = @import("scene_fixture_test.zig");
 const Fixture = fixture.Fixture;
 
@@ -124,8 +125,8 @@ fn measureLayout(case: LayoutCase, gutters: ?[2]f32) !Measured {
         var buffer: [64]u8 = undefined;
         try f.owner.sceneSetText(row.*, switch (case.text) {
             .short => try std.fmt.bufPrint(&buffer, "Row {d}", .{index}),
-            .words => try std.fmt.bufPrint(&buffer, "Row {d} {s}", .{ index, ("lorem ipsum dolor sit amet " ** 3)[0 .. 27 * (index % 3)] }),
-            .wide => try std.fmt.bufPrint(&buffer, "Row {d} {s}", .{ index, "x" ** 30 }),
+            .words => try std.fmt.bufPrint(&buffer, "Row {d} {s}", .{ index, utils.repeat(u8, "lorem ipsum dolor sit amet ", 3)[0 .. 27 * (index % 3)] }),
+            .wide => try std.fmt.bufPrint(&buffer, "Row {d} {s}", .{ index, utils.repeat(u8, "x", 30) }),
         });
         if (case.nowrap) try f.owner.sceneSetTextOptions(row.*, .{ .wrap_mode = .none });
     }

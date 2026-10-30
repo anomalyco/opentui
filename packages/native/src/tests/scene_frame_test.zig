@@ -5,6 +5,7 @@ const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const yoga = @import("../yoga.zig");
 const c = @import("context_abi_c");
+const utils = @import("../utils.zig");
 const ansi = @import("../ansi.zig");
 const Recording = @import("scene_record_test.zig").Recording;
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
@@ -51,7 +52,7 @@ test "Scene frame authority checks every field in layout update record and paint
         try owner.sceneMoveNode(child, root, @intCast(index));
         if (index == 0) try owner.sceneSetHooks(child, 59, 1, 0, 0);
     }
-    var seen = [_]bool{false} ** 5;
+    var seen: [5]bool = @splat(false);
     var previous: ?scene.FrameRequest = null;
     for (0..128) |_| {
         const recording: ?[]const u8 = if (previous != null and previous.?.kind == c.OT_SCENE_FRAME_RECORD) &.{} else null;
@@ -60,14 +61,15 @@ test "Scene frame authority checks every field in layout update record and paint
         try testing.expectError(error.WrongSession, owner.sceneFrameAcquireBufferLease(other, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameAcquireBufferLease(foreign, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameCommit(foreign, request, true));
-        inline for (std.meta.fields(scene.FrameRequest)) |field| {
+        const request_info = @typeInfo(scene.FrameRequest).@"struct";
+        inline for (request_info.field_names, request_info.field_types) |name, Field| {
             var forged = request;
-            if (field.type == context.Handle) {
-                @field(forged, field.name).generation += 1;
+            if (Field == context.Handle) {
+                @field(forged, name).generation += 1;
             } else {
-                @field(forged, field.name) += 1;
+                @field(forged, name) += 1;
             }
-            const expected = if (comptime std.mem.eql(u8, field.name, "session")) error.WrongSession else error.StaleFrame;
+            const expected = if (comptime std.mem.eql(u8, name, "session")) error.WrongSession else error.StaleFrame;
             try testing.expectError(expected, owner.sceneFrameAcquireBufferLease(id, forged, .next));
             try testing.expectError(expected, owner.sceneFrameCommit(id, forged, true));
             try testing.expectError(expected, owner.sceneFrameStep(id, forged, options));
@@ -347,7 +349,7 @@ test "Scene hit tests answer from the last presented scene frame" {
             },
             .cancel => try f.owner.sceneFrameCancel(f.id, (try f.owner.scenePaint(f.id, options.background, true, 0)).frame_id),
             .skip => {
-                try f.owner.writeSession(f.id, &([_]u8{'x'} ** 8192));
+                try f.owner.writeSession(f.id, &@as([8192]u8, @splat('x')));
                 try testing.expectEqual(.skipped, try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false));
                 try drain(f.owner, f.id);
             },
@@ -542,7 +544,7 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     const cancelled = try f.owner.scenePaint(f.id, options.background, true, 0);
     try f.owner.sceneFrameCancel(f.id, cancelled.frame_id);
     try testing.expectEqual(presented, try work(f));
-    try f.owner.writeSession(f.id, &([_]u8{'x'} ** 8192));
+    try f.owner.writeSession(f.id, &@as([8192]u8, @splat('x')));
     try testing.expectEqual(.skipped, try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false));
     try testing.expectEqual(presented, try work(f));
     try drain(f.owner, f.id);
@@ -571,7 +573,7 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     var resized = plainWork(12, 3, 3, 1, 1, 3, FrameWork.full_path_unretained, 3);
     resized.cells_cleared = 24;
     try testing.expectEqual(resized, try presentWork(f, .{}));
-    const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
+    const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255 }, 4).*;
     const picture = try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 });
     const image_node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_IMAGE, 4);
     try f.owner.sceneSetStyle(image_node, 4, 0, 0, 1, 2, 1);
@@ -696,7 +698,7 @@ fn bandCase(case: BandCase, flags: u32) ![3]u64 {
         // cuts the box's corners or a wide glyph on a kept row fills the trackers.
         .space_border_tall, .space_border_tracker => {
             try f.owner.sceneSetPaint(box, .{ .borderSides = c.OT_BORDER_TOP, .background = .{ 0, 0, 0, 0 }, .borderColor = .{ 255, 0, 0, 255 } });
-            try f.owner.sceneSetBoxDetails(box, .{ .custom_border_chars = [_]u32{' '} ** 11 });
+            try f.owner.sceneSetBoxDetails(box, .{ .custom_border_chars = @splat(' ') });
             if (case == .space_border_tracker) try f.owner.sceneSetText(try placedAt(f, f.root, c.OT_SCENE_TEXT, 4, 0, 0, 6, 1), "\u{4e16}x");
         },
         // A hooked translucent box under rows 0-3 that the band meets in part: its body and
@@ -787,7 +789,7 @@ test "Scene frame band frames paint what a full repaint paints" {
 // later sibling, and below them a scroll node (rows 4-7) of six rows. Each row changes one input and expects the rows it damages and the full-path
 // reasons. The table runs without VERIFY, then with it: VERIFY must pass and change no count.
 test "Scene frame retained paint damages the rows of changed inputs only" {
-    var results: [2][std.meta.fields(Retained).len + 8]FrameWork = undefined;
+    var results: [2][@typeInfo(Retained).@"enum".field_names.len + 8]FrameWork = undefined;
     for ([_]bool{ false, true }, &results) |verify, *counts| try retainedTable(verify, counts);
     try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
 }
@@ -899,7 +901,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .image, .damage = 9, .reasons = FrameWork.full_path_images },
     };
     var image_node: context.Handle = undefined;
-    comptime std.debug.assert(rows.len + 6 <= std.meta.fields(Retained).len + 8);
+    comptime std.debug.assert(rows.len + 6 <= @typeInfo(Retained).@"enum".field_names.len + 8);
     for (rows, 0..) |row, row_index| {
         errdefer std.debug.print("row {s}, verify {}\n", .{ @tagName(row.change), verify });
         switch (row.change) {
@@ -966,7 +968,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
                 try drain(f.owner, f.id);
             },
             .skipped_commit => {
-                try f.owner.writeSession(f.id, &([_]u8{'x'} ** 8192));
+                try f.owner.writeSession(f.id, &@as([8192]u8, @splat('x')));
                 try testing.expectEqual(.skipped, try f.owner.sceneFrameCommit(f.id, try f.owner.scenePaint(f.id, options.background, true, 0), false));
                 try drain(f.owner, f.id);
             },
@@ -1000,7 +1002,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
                 try f.owner.sceneSetHooks(text, 0, 2, 6, 1);
             },
             .image => {
-                const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
+                const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255 }, 4).*;
                 image_node = try placedAt(f, f.root, c.OT_SCENE_IMAGE, 10, 4, 7, 2, 1);
                 try f.owner.sceneSetImage(image_node, try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 }), .fit, .blocks, null);
             },
@@ -1088,7 +1090,7 @@ test "Scene frame retained paint repaints in full after a skipped commit and und
     try testing.expectEqual(@as(u32, 0), unchanged.damage_rows);
     try testing.expectEqual(@as(u64, 0), unchanged.members_painted);
     try testing.expectEqual(@as(u64, 0), unchanged.cells_cleared);
-    try f.owner.writeSession(f.id, &([_]u8{'x'} ** 8192));
+    try f.owner.writeSession(f.id, &@as([8192]u8, @splat('x')));
     const skipped = try f.owner.scenePaint(f.id, options.background, true, 0);
     try testing.expectEqual(@as(u32, 0), f.state.frame_work.damage_rows);
     try testing.expectEqual(.skipped, try f.owner.sceneFrameCommit(f.id, skipped, false));
@@ -1111,7 +1113,7 @@ const Lifecycle = enum { unchanged, unbind_view, unbind_editor, failed_hooks, fa
 // filled buffers and never mutated (rows 1-2), and a box (row 3) skip paint when unchanged.
 // The table runs without VERIFY, then with it: VERIFY must pass and change no count.
 test "Scene frame retained paint repaints after failed, cancelled, and unbinding frames" {
-    var results: [2][std.meta.fields(Lifecycle).len]FrameWork = undefined;
+    var results: [2][@typeInfo(Lifecycle).@"enum".field_names.len]FrameWork = undefined;
     for ([_]bool{ false, true }, &results) |verify, *counts| try lifecycleTable(verify, counts);
     try testing.expectEqualSlices(FrameWork, &results[0], &results[1]);
 }
@@ -1179,7 +1181,7 @@ fn lifecycleTable(verify: bool, counts: []FrameWork) !void {
             .surface_image => {
                 const custom = try placedAt(f, f.root, c.OT_SCENE_CUSTOM, 6, 8, 4, 2, 1);
                 const surface = try f.owner.createBuffer(2, 1, .{});
-                const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
+                const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255 }, 4).*;
                 _ = try f.owner.drawBufferImage(surface, null, try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 }), .{ .width = 2, .height = 1, .protocol = .kitty });
                 try testing.expect((try f.owner.raw().getBuffer(surface)).image_placements.items.len != 0);
                 try f.owner.sceneSetSurface(custom, surface);
@@ -1508,7 +1510,7 @@ fn feedbackHook(f: Fixture, node: context.Handle, flags: u32) !void {
 
 fn feedbackScene(f: Fixture, row: FeedbackRow, nodes: []context.Handle) !void {
     const y = 2 + row.n;
-    const refresh = @intFromEnum(row.reply) >= @intFromEnum(Reply.refresh_mark);
+    const refresh = @backingInt(row.reply) >= @backingInt(Reply.refresh_mark);
     var parent = f.root;
     if (row.filter) {
         try feedbackNode(f, nodes, y + 3, c.OT_SCENE_BOX, f.root, 0);
@@ -1649,7 +1651,7 @@ test "Scene feedback runs children that replies mark in a later pass of the roun
             }
             log.clearRetainingCapacity();
             // A refresh row's A and Y resize, so the frame refreshes them before selection.
-            if (@intFromEnum(row.reply) >= @intFromEnum(Reply.refresh_mark)) {
+            if (@backingInt(row.reply) >= @backingInt(Reply.refresh_mark)) {
                 for ([_]usize{ 1, 2 + row.n }) |index| try f.owner.sceneSetStyle(list[index], 4, 0, 0, 1, 2, 1);
             }
             if (row.reply == .all_continue) try f.owner.sceneSetStyle(list[1], 4, 0, 0, 1, 2, 1);
@@ -2295,7 +2297,7 @@ test "Scene feedback passes keep the round and request counts at the limits" {
 test "Scene frame work counts viewport refresh and culling work" {
     const Frame = enum { first, unchanged, scroll, grow, options_prepare, options_color, measure_text, measure_same_text, editor_cursor, hidden, hidden_unchanged, cancelled, stale_reply, stale_requester, placed_reply, destroy_reply, destroy_hidden, full_scroll };
     const sizes = [_]u32{ 16, 256, 4096 };
-    const expected = [sizes.len][std.meta.fields(Frame).len][8]u64{
+    const expected = [sizes.len][@typeInfo(Frame).@"enum".field_names.len][8]u64{
         .{
             .{ 0, 0, 22, 0, 1, 16, 32, 6 }, // first
             .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // unchanged
@@ -2359,7 +2361,7 @@ test "Scene frame work counts viewport refresh and culling work" {
     };
     // VERIFY changes no count.
     for ([_]bool{ false, true }) |verify| {
-        var all: [sizes.len][std.meta.fields(Frame).len][8]u64 = undefined;
+        var all: [sizes.len][@typeInfo(Frame).@"enum".field_names.len][8]u64 = undefined;
         for (sizes, &all) |n, *actual| {
             const f = try Fixture.init(testing.allocator, 8, 4, .{ .limits = .{ .object_capacity = 8192 } });
             defer f.deinit();
@@ -2488,7 +2490,7 @@ test "Scene frame work counts viewport refresh and culling work" {
                         break :blk try presentStepped(f, NoReply{});
                     },
                 };
-                actual[@intFromEnum(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds, yoga.test_native_measures - measures, w.overlap_tests, w.paint_visits };
+                actual[@backingInt(frame)] = .{ w.viewport_child_refreshes, w.visibility_steps, w.view_preparations, w.host_requests, w.layout_rounds, yoga.test_native_measures - measures, w.overlap_tests, w.paint_visits };
             }
         }
         try testing.expectEqual(expected, all);
@@ -2551,7 +2553,7 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
             const child_steps = state.test_feedback_child_steps;
             const w = try target.frame(row.change);
             var actual: [21]u64 = undefined;
-            inline for (std.meta.fields(FrameWork)[1..], 0..) |field, index| actual[index] = @field(w, field.name);
+            inline for (@typeInfo(FrameWork).@"struct".field_names[1..], 0..) |name, index| actual[index] = @field(w, name);
             actual[18] = state.test_stamp_steps - stamps;
             actual[19] = state.test_record_lookups - lookups;
             actual[20] = state.test_feedback_child_steps - child_steps;

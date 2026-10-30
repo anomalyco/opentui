@@ -13,6 +13,7 @@ const transport: session.Options = .{
 };
 
 const Fixture = @import("session-terminal_test.zig").Fixture;
+const utils = @import("../utils.zig");
 
 test "Session controls gate inactive phases and reject malformed or over-limit inputs" {
     const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
@@ -48,10 +49,10 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
     _ = try f.drain(&bytes);
     _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
 
-    const long_title = [_]u8{'x'} ** (session.title_bytes_max + 1);
-    const long_response = [_]u8{'x'} ** (session.capability_response_bytes_max + 1);
-    const segment = "s" ** session.program_status_id_segment_bytes_max;
-    const long_text = [_]u8{'m'} ** (session.program_status_message_bytes_max + 1);
+    const long_title: [session.title_bytes_max + 1]u8 = @splat('x');
+    const long_response: [session.capability_response_bytes_max + 1]u8 = @splat('x');
+    const segment = utils.repeat(u8, "s", session.program_status_id_segment_bytes_max);
+    const long_text: [session.program_status_message_bytes_max + 1]u8 = @splat('m');
     const invalid = [_]session.Control{
         .{ .title = "nul\x00" },
         .{ .title = "\x1b]0;injected\x07" },
@@ -124,7 +125,7 @@ test "Session controls preserve rejected drafts and leave restoration capacity u
     try testing.expect(!f.value.lifecycle.mouse_movement);
     try testing.expectEqualDeep(reservation, f.value.output.control_sequence);
     _ = try f.drain(&bytes);
-    const blocker = [_]u8{'x'} ** (3 * 4096);
+    const blocker: [3 * 4096]u8 = @splat('x');
     try f.owner.writeSession(f.id, &blocker);
     const ticket = (try f.owner.readOutput(f.id, bytes[0..1])).?;
     const before = f.snapshot();
@@ -166,7 +167,7 @@ test "Session controls bound input and output without allocation after attachmen
     const allocated = failing.allocated_bytes;
     failing.fail_index = failing.alloc_index;
     failing.resize_fail_index = failing.resize_index;
-    const title = [_]u8{'t'} ** session.title_bytes_max;
+    const title: [session.title_bytes_max]u8 = @splat('t');
     try f.value.control(.{ .title = &title });
     const maximum = try f.drain(&bytes);
     try testing.expectEqual(session.control_packet_bytes_max, maximum.len);
@@ -187,21 +188,21 @@ test "Session controls bound input and output without allocation after attachmen
         try f.value.control(.{ .program_status = case[0] });
         try testing.expectEqualStrings(case[1], try f.drain(&bytes));
     }
-    const segment = "s" ** session.program_status_id_segment_bytes_max;
+    const segment = utils.repeat(u8, "s", session.program_status_id_segment_bytes_max);
     try f.value.control(.{ .program_status = .{
         .state = .blocked,
         .id = segment ++ "/" ++ segment ++ "/" ++ segment ++ "/" ++ segment[3..],
         .kind = .permission,
         .progress = 100,
         .app = segment,
-        .title = &([_]u8{'t'} ** session.program_status_title_bytes_max),
-        .message = &([_]u8{'m'} ** session.program_status_message_bytes_max),
+        .title = &@as([session.program_status_title_bytes_max]u8, @splat('t')),
+        .message = &@as([session.program_status_message_bytes_max]u8, @splat('m')),
     } });
     // 3220 pins every protocol limit; the bound must match the longest report exactly.
     const longest = try f.drain(&bytes);
     try testing.expectEqual(@as(usize, 3220), longest.len);
     try testing.expectEqual(session.program_status_bytes_max, longest.len);
-    var response = [_]u8{'v'} ** session.capability_response_bytes_max;
+    var response: [session.capability_response_bytes_max]u8 = @splat('v');
     @memcpy(response[0.."\x1bP>|kitty ".len], "\x1bP>|kitty ");
     @memcpy(response[response.len - 2 ..], "\x1b\\");
     for ([_]session.Control{
@@ -243,7 +244,7 @@ test "Session clipboard rejects pressure and allocation failures without consumi
     _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
     const reservation = f.value.output.control_sequence;
     const before = f.cli.terminal;
-    const blocker = [_]u8{'x'} ** (3 * 4096);
+    const blocker: [3 * 4096]u8 = @splat('x');
     try f.owner.writeSession(f.id, &blocker);
     const ticket = (try f.owner.readOutput(f.id, bytes[0..1])).?;
     const stats = f.value.getStats();
@@ -368,7 +369,7 @@ test "Session Kitty image transport is readable before setup and probes only whi
     try f.owner.setupSessionTerminal(f.id, .{});
     _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
     // The terminal never sees a probe that output cannot admit, so it must not wait for replies.
-    const blocker = [_]u8{'x'} ** (3 * 4096);
+    const blocker: [3 * 4096]u8 = @splat('x');
     try f.owner.writeSession(f.id, &blocker);
     const queued = f.value.getStats();
     try f.value.startKittyFileProbe();

@@ -117,8 +117,8 @@ pub const Info = extern struct {
     height: u32 = 0,
     source_width: u32 = 0,
     source_height: u32 = 0,
-    format: u32 = @intFromEnum(Format.unknown),
-    color_status: u32 = @intFromEnum(ColorStatus.assumed_srgb),
+    format: u32 = @backingInt(Format.unknown),
+    color_status: u32 = @backingInt(ColorStatus.assumed_srgb),
     orientation: u32 = 1,
     has_alpha: u32 = 0,
 };
@@ -251,7 +251,7 @@ pub const Image = struct {
         else
             try checkedPixelBytes(self.width(), self.height(), .{});
         if (self.pixels.len == expected_len) return self.pixels;
-        if (self.pixels.len != 0 or self.metadata.format != @intFromEnum(Format.png) or self.metadata.orientation != 1) {
+        if (self.pixels.len != 0 or self.metadata.format != @backingInt(Format.png) or self.metadata.orientation != 1) {
             return error.MalformedInput;
         }
         const png = self.encoded_png orelse return error.MalformedInput;
@@ -684,8 +684,8 @@ fn probeInternal(
             .height = if (swaps_jpeg_dimensions) width else height,
             .source_width = width,
             .source_height = height,
-            .format = @intFromEnum(Format.jpeg),
-            .color_status = @intFromEnum(ColorStatus.assumed_srgb),
+            .format = @backingInt(Format.jpeg),
+            .color_status = @backingInt(ColorStatus.assumed_srgb),
             .orientation = orientation,
             .has_alpha = 0,
         };
@@ -705,8 +705,8 @@ fn probeInternal(
             .height = height,
             .source_width = width,
             .source_height = height,
-            .format = @intFromEnum(Format.webp),
-            .color_status = @intFromEnum(ColorStatus.assumed_srgb),
+            .format = @backingInt(Format.webp),
+            .color_status = @backingInt(ColorStatus.assumed_srgb),
             .orientation = 1,
             .has_alpha = has_alpha,
         };
@@ -725,8 +725,8 @@ fn probeInternal(
             .height = height,
             .source_width = width,
             .source_height = height,
-            .format = @intFromEnum(Format.gif),
-            .color_status = @intFromEnum(ColorStatus.assumed_srgb),
+            .format = @backingInt(Format.gif),
+            .color_status = @backingInt(ColorStatus.assumed_srgb),
             .orientation = 1,
             .has_alpha = has_alpha,
         };
@@ -764,8 +764,8 @@ fn probeInternal(
         .height = if (swaps_dimensions) metadata.width else metadata.height,
         .source_width = metadata.width,
         .source_height = metadata.height,
-        .format = @intFromEnum(Format.png),
-        .color_status = @intFromEnum(metadata.color_status),
+        .format = @backingInt(Format.png),
+        .color_status = @backingInt(metadata.color_status),
         .orientation = metadata.orientation,
         .has_alpha = @intFromBool(metadata.has_alpha),
     };
@@ -785,7 +785,7 @@ pub fn inspectOwned(allocator: Allocator, data: []const u8, limits: Limits) !Inf
     var encoded_info: Info = .{};
     const probe_status = probeInternal(data, limits, &encoded_info, null, null, false);
     try errorFromStatus(probe_status);
-    if (encoded_info.format == @intFromEnum(Format.png) and encoded_info.has_alpha == 0 and encoded_info.orientation == 1) {
+    if (encoded_info.format == @backingInt(Format.png) and encoded_info.has_alpha == 0 and encoded_info.orientation == 1) {
         return encoded_info;
     }
 
@@ -855,8 +855,8 @@ pub fn createFromPixels(
         .height = height,
         .source_width = width,
         .source_height = height,
-        .format = @intFromEnum(Format.raw_rgba),
-        .color_status = @intFromEnum(ColorStatus.explicit_srgb),
+        .format = @backingInt(Format.raw_rgba),
+        .color_status = @backingInt(ColorStatus.explicit_srgb),
         .orientation = 1,
         .has_alpha = 0,
     });
@@ -868,7 +868,7 @@ pub fn createFromPixels(
 // Pool owners must stay private: every publication needs a fresh retained handle
 // because renderer caches key content by handle, not by the pixel allocation.
 pub fn updatePixels(image: *Image, pixels: []const u8, options: PixelImportOptions) !void {
-    if (image.metadata.format != @intFromEnum(Format.raw_rgba)) return error.InvalidArgument;
+    if (image.metadata.format != @backingInt(Format.raw_rgba)) return error.InvalidArgument;
     const row_bytes = try validateRgba(pixels, image.width(), image.height(), options.stride);
     if (image.ref_count != 1) return error.Busy;
     std.debug.assert(image.pixels.len == @as(usize, row_bytes) * image.height());
@@ -924,7 +924,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
         else => error.MalformedInput,
     };
 
-    const format: Format = @enumFromInt(image_info.format);
+    const format: Format = @fromBackingInt(@intCast(image_info.format));
     const decode_data = if (format == .png) data[0..effective_len] else data;
     const source_len = try checkedPixelBytes(image_info.source_width, image_info.source_height, limits);
     if (format == .png and retain_encoded_png and image_info.orientation == 1 and image_info.has_alpha == 0) {
@@ -992,7 +992,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
     }
     image_info.has_alpha = @intFromBool(pixelsHaveTransparency(source));
 
-    const color_status: ColorStatus = @enumFromInt(image_info.color_status);
+    const color_status: ColorStatus = @fromBackingInt(@intCast(image_info.color_status));
     if (image_info.orientation == 1) {
         const image = try allocator.create(Image);
         errdefer allocator.destroy(image);
@@ -1011,7 +1011,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
                 .source_width = image_info.source_width,
                 .source_height = image_info.source_height,
                 .format = image_info.format,
-                .color_status = @intFromEnum(color_status),
+                .color_status = @backingInt(color_status),
                 .orientation = 1,
                 .has_alpha = image_info.has_alpha,
             },
@@ -1029,7 +1029,7 @@ fn decodeInternal(allocator: Allocator, data: []const u8, limits: Limits, retain
             .source_width = image_info.source_width,
             .source_height = image_info.source_height,
             .format = image_info.format,
-            .color_status = @intFromEnum(color_status),
+            .color_status = @backingInt(color_status),
             .orientation = 1,
             .has_alpha = image_info.has_alpha,
         },
@@ -1240,7 +1240,7 @@ pub fn resize(allocator: Allocator, source: *Image, width: u32, height: u32, fil
         width,
         height,
         width * 4,
-        @intFromEnum(filter),
+        @backingInt(filter),
     ) != 0) return error.OutOfMemory;
     output.metadata.has_alpha = @intFromBool(pixelsHaveTransparency(output.pixels));
     return output;
@@ -1306,8 +1306,8 @@ pub fn composite(
     const output = try copyImage(allocator, base_pixels, base.metadata);
     errdefer output.deinit();
 
-    const start_x: u32 = if (left < 0) @intCast(-@as(i64, left)) else 0;
-    const start_y: u32 = if (top < 0) @intCast(-@as(i64, top)) else 0;
+    const start_x: u32 = if (left < 0) @abs(left) else 0;
+    const start_y: u32 = if (top < 0) @abs(top) else 0;
     const dest_x: u32 = if (left < 0) 0 else @intCast(left);
     const dest_y: u32 = if (top < 0) 0 else @intCast(top);
     if (start_x >= overlay.width() or start_y >= overlay.height() or dest_x >= base.width() or dest_y >= base.height()) return output;
@@ -1370,7 +1370,7 @@ test "pixelsHaveTransparency matches a scalar alpha scan for every start, length
         }
     }
     // Two equal alphas in one block must not cancel.
-    try expectScalarTransparency(&([_]u8{255} ** 56 ++ [_]u8{0} ** 8));
+    try expectScalarTransparency(&(@as([56]u8, @splat(255)) ++ @as([8]u8, @splat(0))));
 }
 
 fn expectScalarTransparency(pixels: []const u8) !void {

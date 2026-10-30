@@ -36,6 +36,7 @@ const Recording = @import("scene_record_test.zig").Recording;
 const expectBufferInvariants = @import("buffer-invariants.zig").expectBufferInvariants;
 const vt_decode = @import("vt-decode.zig");
 const ansi = @import("../ansi.zig");
+const utils = @import("../utils.zig");
 
 const node_count_max = 40;
 const root_slot = 0;
@@ -347,7 +348,7 @@ const Harness = struct {
             try twin.owner.drawBufferText(self.scratch[index], "\u{754c}", 0, 0, ansi.rgbColor(255, 255, 0, 255), ansi.rgbColor(0, 0, 255, 255), 0);
             self.stale[index] = try twin.owner.createTextBufferView(self.shared[index]);
             try twin.owner.destroy(self.stale[index]);
-            self.image[index] = try twin.owner.createImagePixels(&([_]u8{ 200, 40, 0, 255 } ** 4), 2, 2, .{ .stride = 8 });
+            self.image[index] = try twin.owner.createImagePixels(utils.repeat(u8, &.{ 200, 40, 0, 255 }, 4), 2, 2, .{ .stride = 8 });
             self.reader_text[index] = try twin.owner.createTextBuffer(.unicode);
             try twin.owner.textBufferSetText(self.reader_text[index], "rv");
             self.reader_edit[index] = try twin.owner.createEditBuffer(.unicode);
@@ -461,7 +462,7 @@ const Harness = struct {
                 };
                 const created = try f.owner.sceneCreateNode(f.id, kind, Model.num(value.slot));
                 if (value.kind == .scroll) try f.owner.sceneSetScroll(created, .{ .follow = c.OT_SCENE_SCROLL_FOLLOW_BOTTOM });
-                if (self.model.handles[value.slot] == null) self.model.handles[value.slot] = undefined;
+                if (self.model.handles[value.slot] == null) self.model.handles[value.slot] = .{ undefined, undefined };
                 self.model.handles[value.slot].?[twin] = created;
                 if (value.kind == .editor) {
                     const edit = try f.owner.createEditBuffer(.unicode);
@@ -1229,8 +1230,8 @@ const Harness = struct {
         self.stats.editor_cursors += @intFromBool(self.twins[candidate].state.editor_cursor_owned);
         self.stats.host_cursors += @intFromBool(cursor.visible and !self.twins[candidate].state.editor_cursor_owned);
         // Field by field: the struct's padding is unspecified.
-        inline for (std.meta.fields(renderer.FrameWork)) |field| {
-            self.stats.digest = std.hash.Wyhash.hash(self.stats.digest, std.mem.asBytes(&@field(work, field.name)));
+        inline for (@typeInfo(renderer.FrameWork).@"struct".field_names) |name| {
+            self.stats.digest = std.hash.Wyhash.hash(self.stats.digest, std.mem.asBytes(&@field(work, name)));
         }
     }
 
@@ -1493,7 +1494,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     for (0..64) |seed| {
         errdefer std.debug.print("seed {d}\n", .{seed});
         const stats = try runParity(seed, 256);
-        inline for (std.meta.fields(Stats)) |field| @field(total, field.name) +%= @field(stats, field.name);
+        inline for (@typeInfo(Stats).@"struct".field_names) |name| @field(total, name) +%= @field(stats, name);
     }
     // Every frame kind B2, B3, D2b, B4, and B5 rely on is reached in quantity, and each minimum
     // fails if the draw that produces its kind is removed. Minimums are about a quarter of the
@@ -1565,10 +1566,10 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .framed_boxes = 290,
         .subtree_preparations = 24,
     };
-    inline for (std.meta.fields(Stats)) |field| {
-        if (comptime std.mem.eql(u8, field.name, "frames") or std.mem.eql(u8, field.name, "digest")) continue;
-        errdefer std.debug.print("{s}: {d}\n", .{ field.name, @field(total, field.name) });
-        try testing.expect(@field(total, field.name) >= @field(minimums, field.name));
+    inline for (@typeInfo(Stats).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "frames") or std.mem.eql(u8, name, "digest")) continue;
+        errdefer std.debug.print("{s}: {d}\n", .{ name, @field(total, name) });
+        try testing.expect(@field(total, name) >= @field(minimums, name));
     }
     // Work counts read no clock: a seed that reaches reuse, every request kind, recordings,
     // and filtering replays to the same counts.

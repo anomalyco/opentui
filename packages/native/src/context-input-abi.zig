@@ -9,24 +9,24 @@ comptime {
     const Event = input_parser.Event;
     if (@sizeOf(Event) != @sizeOf(c.ot_input_event) or @alignOf(Event) != @alignOf(c.ot_input_event))
         @compileError("ot_input_event differs from input_parser.Event");
-    for (std.meta.fields(Event)) |field| {
-        if (@offsetOf(Event, field.name) != @offsetOf(c.ot_input_event, field.name))
-            @compileError("ot_input_event differs from input_parser.Event: " ++ field.name);
+    for (@typeInfo(Event).@"struct".field_names) |name| {
+        if (@offsetOf(Event, name) != @offsetOf(c.ot_input_event, name))
+            @compileError("ot_input_event differs from input_parser.Event: " ++ name);
     }
     @setEvalBranchQuota(20_000);
     // Every parser constant has an equal header twin named OT_INPUT_<prefix><NAME>.
-    for (std.meta.tags(input_parser.Kind)) |tag| checkTwin("", @tagName(tag), @intFromEnum(tag));
-    for (std.meta.tags(input_parser.KeyAction)) |tag| checkTwin("KEY_", @tagName(tag), @intFromEnum(tag));
-    for (std.meta.tags(input_parser.MouseAction)) |tag| checkTwin("MOUSE_", @tagName(tag), @intFromEnum(tag));
-    for (std.meta.tags(input_parser.Protocol)) |tag| checkTwin("REPLY_", @tagName(tag), @intFromEnum(tag));
-    for (std.meta.fields(input_parser.Modifiers), 0..) |field, bit| checkTwin("MOD_", field.name, 1 << bit);
-    const expectations = std.meta.fields(input_parser.Expectations);
-    for (expectations[0 .. expectations.len - 1], 0..) |field, bit| checkTwin("EXPECT_", field.name, 1 << bit);
-    for (@typeInfo(input_parser.flags).@"struct".decls) |decl| checkTwin("", decl.name, @field(input_parser.flags, decl.name));
-    for (@typeInfo(input_parser.key).@"struct".decls) |decl| {
+    for (std.meta.tags(input_parser.Kind)) |tag| checkTwin("", @tagName(tag), @backingInt(tag));
+    for (std.meta.tags(input_parser.KeyAction)) |tag| checkTwin("KEY_", @tagName(tag), @backingInt(tag));
+    for (std.meta.tags(input_parser.MouseAction)) |tag| checkTwin("MOUSE_", @tagName(tag), @backingInt(tag));
+    for (std.meta.tags(input_parser.Protocol)) |tag| checkTwin("REPLY_", @tagName(tag), @backingInt(tag));
+    for (@typeInfo(input_parser.Modifiers).@"struct".field_names, 0..) |name, bit| checkTwin("MOD_", name, 1 << bit);
+    const expectations = @typeInfo(input_parser.Expectations).@"struct".field_names;
+    for (expectations[0 .. expectations.len - 1], 0..) |name, bit| checkTwin("EXPECT_", name, 1 << bit);
+    for (@typeInfo(input_parser.flags).@"struct".decl_names) |name| checkTwin("", name, @field(input_parser.flags, name));
+    for (@typeInfo(input_parser.key).@"struct".decl_names) |name| {
         // Range bounds and the F(n) helper have no twin of their own.
-        if (std.mem.startsWith(u8, decl.name, "functional_") or std.mem.eql(u8, decl.name, "f")) continue;
-        checkTwin("KEY_", decl.name, @field(input_parser.key, decl.name));
+        if (std.mem.startsWith(u8, name, "functional_") or std.mem.eql(u8, name, "f")) continue;
+        checkTwin("KEY_", name, @field(input_parser.key, name));
     }
     checkTwin("KEY_", "f35", input_parser.key.f(35));
     checkTwin("KEY_", "iso_level5_shift", input_parser.key.functional_last);

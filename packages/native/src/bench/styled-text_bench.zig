@@ -229,7 +229,7 @@ fn benchSetStyledTextOperations(
             for (0..iterations) |_| {
                 const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
-                const parts = [_]Part{.{ .text = text, .fg = color }} ** 10;
+                const parts: [10]Part = @splat(.{ .text = text, .fg = color });
 
                 const timer = bench_utils.BenchTimer.start(io);
                 try commitOwnedStyledText(tb, allocator, &parts);

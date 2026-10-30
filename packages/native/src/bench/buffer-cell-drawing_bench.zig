@@ -4,6 +4,7 @@ const bench_utils = @import("../bench-utils.zig");
 const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
+const utils = @import("../utils.zig");
 
 pub const benchName = "Buffer Cell Drawing";
 
@@ -96,7 +97,7 @@ fn runScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool,
     defer link_pool.deinit();
     const target = try buffer.OptimizedBuffer.init(allocator, WIDTH, HEIGHT, .{ .pool = pool, .link_pool = &link_pool });
     defer target.deinit();
-    const text = "X" ** WIDTH;
+    const text = utils.repeat(u8, "X", WIDTH);
 
     var stats: bench_utils.BenchStats = .{};
     for (0..WARMUP_SAMPLES + SAMPLES) |sample| {

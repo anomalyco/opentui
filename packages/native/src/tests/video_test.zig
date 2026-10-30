@@ -61,7 +61,7 @@ test "video open reports metadata and decodes the first frame natively" {
     var detail: [256]u8 = undefined;
     const odd = try video.Video.open(testing.allocator, "../core/src/tests/fixtures/video/odd-width-170x96.mp4", true, &detail);
     defer odd.deinit();
-    try odd.configureOutput(170, 96, false);
+    _ = try odd.configureOutput(170, 96, false, null);
     try testing.expect(try odd.update(0));
     try testing.expectEqual([2]u32{ 170, 96 }, [2]u32{ odd.current_image.?.width(), odd.current_image.?.height() });
     // The left column is red from row 8: a tight row lets one slice thread's overrun land on the
@@ -76,7 +76,7 @@ test "video open reports metadata and decodes the first frame natively" {
     // both paths read padded rows through their own strides.
     const whole = try testing.allocator.dupe(u8, odd.current_image.?.pixels);
     defer testing.allocator.free(whole);
-    try odd.configureOutput(170, 48, true);
+    _ = try odd.configureOutput(170, 48, true, null);
     try testing.expect(try odd.update(0));
     try testing.expectEqualSlices(u8, whole[24 * 170 * 4 ..][0 .. 48 * 170 * 4], odd.current_image.?.pixels);
 }

@@ -14,6 +14,7 @@ const output = @import("renderer-output.zig");
 const terminal_image = @import("terminal-image.zig");
 const kitty_transport = @import("kitty-transport.zig");
 const native_image = @import("image.zig");
+const utils = @import("utils.zig");
 
 pub const RGBA = ansi.RGBA;
 pub const OptimizedBuffer = buf.OptimizedBuffer;
@@ -132,11 +133,11 @@ pub const FrameWork = struct {
     /// Adds the encoder's counts to a scene frame's counts.
     fn merge(self: FrameWork, encode: FrameWork) FrameWork {
         var result = self;
-        inline for (std.meta.fields(FrameWork)) |field| {
-            if (comptime std.mem.eql(u8, field.name, "full_path_reasons")) {
+        inline for (@typeInfo(FrameWork).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "full_path_reasons")) {
                 result.full_path_reasons |= encode.full_path_reasons;
             } else {
-                @field(result, field.name) += @field(encode, field.name);
+                @field(result, name) += @field(encode, name);
             }
         }
         return result;
@@ -1032,7 +1033,7 @@ pub const CliRenderer = struct {
 
     fn recordFrameCost(self: *CliRenderer, started_us: i64) void {
         const elapsed = std.Io.Clock.now(.awake, self.io).toMicroseconds() - started_us;
-        self.lastFrameCostUs = @intCast(std.math.clamp(elapsed, 0, std.math.maxInt(u32)));
+        self.lastFrameCostUs = utils.unsigned(u32, @min(utils.nonNegative(elapsed), std.math.maxInt(u32)));
     }
 
     fn splitOutputOffset(self: *const CliRenderer, surface_offset: u32) u32 {
@@ -2474,10 +2475,10 @@ pub const CliRenderer = struct {
                 self.encode_work.rows_compared += 1;
                 const row_start = @as(usize, y) * self.width;
                 const row_end = row_start + self.width;
-                if (std.mem.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
-                    std.mem.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.fg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.fg[row_start..row_end])) and
-                    std.mem.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.bg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.bg[row_start..row_end])) and
-                    std.mem.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
+                if (utils.eql(u32, self.currentRenderBuffer.buffer.char[row_start..row_end], self.nextRenderBuffer.buffer.char[row_start..row_end]) and
+                    utils.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.fg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.fg[row_start..row_end])) and
+                    utils.eql(u8, std.mem.sliceAsBytes(self.currentRenderBuffer.buffer.bg[row_start..row_end]), std.mem.sliceAsBytes(self.nextRenderBuffer.buffer.bg[row_start..row_end])) and
+                    utils.eql(u32, self.currentRenderBuffer.buffer.attributes[row_start..row_end], self.nextRenderBuffer.buffer.attributes[row_start..row_end])) continue;
             }
 
             self.encode_work.rows_diffed += 1;
@@ -2693,7 +2694,7 @@ pub const CliRenderer = struct {
                         }
                         if (gp.isContinuationChar(cell.char)) {
                             const start_x_i = x_i - @as(i32, @intCast(gp.charLeftExtent(cell.char)));
-                            const first_visible_placement_x = @max(placement.x, 0);
+                            const first_visible_placement_x = utils.nonNegative(placement.x);
                             if (start_x_i >= placement.x or x_i != first_visible_placement_x or start_x_i < 0) continue;
                             draw_x_i = start_x_i;
                             cell = self.nextRenderBuffer.get(@intCast(draw_x_i), @intCast(y_i)) orelse continue;
@@ -2780,7 +2781,7 @@ pub const CliRenderer = struct {
             const cursorG = ansi.green(cursorColor);
             const cursorB = ansi.blue(cursorColor);
 
-            const styleTag: u8 = @intFromEnum(cursorStyle.style);
+            const styleTag: u8 = @backingInt(cursorStyle.style);
             const styleChanged = (self.lastCursorStyleTag == null or self.lastCursorStyleTag.? != styleTag) or
                 (self.lastCursorBlinking == null or self.lastCursorBlinking.? != cursorStyle.blinking);
             const colorChanged = (self.lastCursorColorRGB == null or self.lastCursorColorRGB.?[0] != cursorR or self.lastCursorColorRGB.?[1] != cursorG or self.lastCursorColorRGB.?[2] != cursorB);
@@ -2924,10 +2925,10 @@ pub const CliRenderer = struct {
     pub fn kittyImageTransportStatus(self: *const CliRenderer) [6]u32 {
         const transport = &self.kittyTransport;
         return .{
-            @intFromEnum(transport.mode),
-            @intFromEnum(transport.effective),
-            @intFromEnum(transport.file_state),
-            @intFromEnum(transport.fallback),
+            @backingInt(transport.mode),
+            @backingInt(transport.effective),
+            @backingInt(transport.file_state),
+            @backingInt(transport.fallback),
             transport.pendingCount(),
             @intCast(transport.pendingBytes()),
         };

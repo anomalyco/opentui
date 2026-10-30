@@ -157,7 +157,7 @@ test "Session output copies input and advances only completed prefixes in byte o
     try testing.expectEqualDeep(queued, value.getStats());
     try testing.expectEqual(@as(u64, 0), value.last_request_id);
 
-    var out = [_]u8{'?'} ** 8;
+    var out: [8]u8 = @splat('?');
     const first = (try owner.readOutput(id, out[0..2])).?;
     try testing.expectEqualDeep(id, first.session);
     try testing.expectEqual(@as(u32, 2), first.len);

@@ -198,7 +198,7 @@ pub const Stream = struct {
 
     pub fn create(allocator: std.mem.Allocator, options: ?Options) StreamError!*Stream {
         const opts = normalizeOptions(options orelse defaultOptions());
-        if (opts.growth_policy > @intFromEnum(GrowthPolicy.block)) return StreamError.Invalid;
+        if (opts.growth_policy > @backingInt(GrowthPolicy.block)) return StreamError.Invalid;
         if (opts.max_bytes != 0 and @as(u64, opts.initial_chunks) * opts.chunk_size > opts.max_bytes) {
             return StreamError.MaxBytes;
         }
@@ -456,7 +456,7 @@ pub const Stream = struct {
                 if (self.isChunkFree(index)) free_chunks += 1;
             }
             if (free_chunks < required_chunks_usize) {
-                if (self.options.growth_policy == @intFromEnum(GrowthPolicy.block)) return StreamError.NoSpace;
+                if (self.options.growth_policy == @backingInt(GrowthPolicy.block)) return StreamError.NoSpace;
                 var missing = required_chunks_usize - free_chunks;
                 while (missing > 0) : (missing -= 1) try self.addChunkLocked();
             }
@@ -562,10 +562,10 @@ pub const Stream = struct {
         const producer_span: u64 = @intFromBool(self.pending_len != 0 or self.reserved_active);
         const control_slots = self.control_chunks - self.control_spans;
         const opts = self.options;
-        if (opts.max_bytes != 0 or opts.growth_policy == @intFromEnum(GrowthPolicy.block)) {
+        if (opts.max_bytes != 0 or opts.growth_policy == @backingInt(GrowthPolicy.block)) {
             std.debug.assert(spans + producer_span + control_slots + self.stagedSpans() <= opts.span_queue_capacity);
         }
-        if (opts.growth_policy == @intFromEnum(GrowthPolicy.block)) std.debug.assert(self.chunks.items.len == opts.initial_chunks);
+        if (opts.growth_policy == @backingInt(GrowthPolicy.block)) std.debug.assert(self.chunks.items.len == opts.initial_chunks);
         if (opts.max_bytes != 0) {
             std.debug.assert(@as(u64, self.chunks.items.len) * opts.chunk_size <= opts.max_bytes);
             std.debug.assert(self.controlHeldBytes() + bytes + self.pending_len + self.reserved_len + self.staged_bytes <= opts.max_bytes);
@@ -574,11 +574,11 @@ pub const Stream = struct {
 
     pub fn bounded(self: *Stream) bool {
         return self.options.max_bytes != 0 or
-            self.options.growth_policy == @intFromEnum(GrowthPolicy.block);
+            self.options.growth_policy == @backingInt(GrowthPolicy.block);
     }
 
     pub fn byteLimit(self: *Stream) u64 {
-        if (self.options.growth_policy == @intFromEnum(GrowthPolicy.block)) {
+        if (self.options.growth_policy == @backingInt(GrowthPolicy.block)) {
             const pool_bytes = @as(u64, self.options.chunk_size) * self.chunks.items.len;
             return if (self.options.max_bytes == 0) pool_bytes else @min(pool_bytes, self.options.max_bytes);
         }
@@ -638,7 +638,7 @@ pub const Stream = struct {
         var remaining = max_bytes;
         for ([_]u64{ self.controlHeldBytes(), self.span_ring.bytes, self.pending_len, self.reserved_len, self.staged_bytes, bytes }) |used| {
             if (used > remaining) {
-                return if (self.options.growth_policy == @intFromEnum(GrowthPolicy.block))
+                return if (self.options.growth_policy == @backingInt(GrowthPolicy.block))
                     StreamError.NoSpace
                 else
                     StreamError.MaxBytes;
@@ -653,7 +653,7 @@ pub const Stream = struct {
         for (0..self.chunks.items.len) |index| {
             if (self.isChunkFree(index)) return true;
         }
-        if (self.options.growth_policy == @intFromEnum(GrowthPolicy.block)) return false;
+        if (self.options.growth_policy == @backingInt(GrowthPolicy.block)) return false;
         if (self.chunks.items.len == std.math.maxInt(u32)) return false;
         const grown_bytes = (@as(u64, self.chunks.items.len) + 1) * self.options.chunk_size;
         return self.options.max_bytes == 0 or grown_bytes <= self.options.max_bytes;
@@ -680,7 +680,7 @@ pub const Stream = struct {
     pub fn setOptions(self: *Stream, options: Options) StreamError!void {
         if (self.producing) return StreamError.Busy;
         if (self.closed) return StreamError.Invalid;
-        if (options.growth_policy > @intFromEnum(GrowthPolicy.block)) return StreamError.Invalid;
+        if (options.growth_policy > @backingInt(GrowthPolicy.block)) return StreamError.Invalid;
         if (options.max_bytes != 0 and
             @as(u64, self.chunks.items.len) * self.options.chunk_size > options.max_bytes)
         {
@@ -904,7 +904,7 @@ pub const Stream = struct {
             index = (index + 1) % total;
         }
 
-        if (self.options.growth_policy == @intFromEnum(GrowthPolicy.block)) {
+        if (self.options.growth_policy == @backingInt(GrowthPolicy.block)) {
             return StreamError.NoSpace;
         }
 
@@ -953,10 +953,10 @@ pub const EventId = enum(u32) {
 };
 
 const Event = struct {
-    pub const ChunkAdded: u32 = @intFromEnum(EventId.ChunkAdded);
-    pub const Closed: u32 = @intFromEnum(EventId.Closed);
-    pub const Error: u32 = @intFromEnum(EventId.Error);
-    pub const DataAvailable: u32 = @intFromEnum(EventId.DataAvailable);
+    pub const ChunkAdded: u32 = @backingInt(EventId.ChunkAdded);
+    pub const Closed: u32 = @backingInt(EventId.Closed);
+    pub const Error: u32 = @backingInt(EventId.Error);
+    pub const DataAvailable: u32 = @backingInt(EventId.DataAvailable);
 };
 
 pub const Status = struct {
@@ -981,7 +981,7 @@ pub fn defaultOptions() Options {
         .chunk_size = 64 * 1024,
         .initial_chunks = 2,
         .max_bytes = 0,
-        .growth_policy = @intFromEnum(GrowthPolicy.grow),
+        .growth_policy = @backingInt(GrowthPolicy.grow),
         .auto_commit_on_full = 1,
         .span_queue_capacity = 0,
     };

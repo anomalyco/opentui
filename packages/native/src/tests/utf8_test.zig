@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
 const uucode = @import("uucode");
 const ghostty_vt = @import("../ghostty-vt.zig");
 
@@ -153,7 +154,7 @@ const line_break_golden_tests = [_]LineBreakTestCase{
     },
     .{
         .name = "very long line no breaks",
-        .input = "a" ** 1000,
+        .input = utils.repeat(u8, "a", 1000),
         .expected = &[_]usize{},
     },
     .{
@@ -2047,8 +2048,15 @@ test "calculateTextWidth: complex text with emojis and multiple scripts" {
 test "calculateTextWidth: validate against unicode-width-map.zon" {
     // Runs of code points with the width terminals draw them in.
     const Run = struct { first: u21, last: u21, width: u32 };
-    const runs = try std.zon.parse.fromSliceAlloc([]const Run, testing.allocator, @embedFile("unicode-width-map.zon"), null, .{});
-    defer std.zon.parse.free(testing.allocator, runs);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const runs = try std.zon.parse.fromSlice([]const Run, .{
+        .gpa = testing.allocator,
+        .arena = arena.allocator(),
+        .source = @embedFile("unicode-width-map.zon"),
+        .diagnostics = &diagnostics,
+    });
     var failures: usize = 0;
     for (runs) |run| for (run.first..run.last + 1) |cp| {
         var buf: [4]u8 = undefined;

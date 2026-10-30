@@ -67,7 +67,7 @@ test "Session split output rejects pressure without mutating image snapshots" {
     const before = snapshot.buffer.char[0..8].*;
     const refs = pixels.ref_count;
     const commits = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 8 }};
-    try value.write(&([_]u8{'x'} ** 8192));
+    try value.write(&@as([8192]u8, @splat('x')));
     try testing.expectEqual(session.RenderStatus.skipped, try value.renderSplit(null, &commits, 5, true));
     try testing.expectEqualSlices(u32, &before, snapshot.buffer.char);
     try testing.expectEqual(@as(usize, 1), snapshot.image_placements.items.len);
@@ -170,7 +170,7 @@ test "Session screen changes write mode packets only for an active terminal" {
         .{ .phase = .active, .alternate = false, .trailing = session.control_packet_bytes_max, .result = error.InvalidOptions },
         .{ .phase = .suspended, .alternate = false },
     };
-    const trailing = [_]u8{'t'} ** session.control_packet_bytes_max;
+    const trailing: [session.control_packet_bytes_max]u8 = @splat('t');
     for (cases) |case| {
         const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
         defer f.deinit();

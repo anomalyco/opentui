@@ -64,7 +64,7 @@ test "Context Yoga warnings use only their owning diagnostic queues with bounded
     const remaining = try second.raw().getRenderable(nodes[1]);
     try yoga.check(yoga.yogaNodeMarkDirtyChecked(remaining.yoga_node));
     try yoga.check(yoga.yogaNodeCalculateLayoutChecked(remaining.yoga_node, std.math.nan(f32), std.math.nan(f32), 1));
-    const long_message = [_:0]u8{'x'} ** (logger.Diagnostic.message_bytes_max + 1);
+    const long_message: [logger.Diagnostic.message_bytes_max + 1:0]u8 = @splat('x');
     yoga.testLogMessage(second.yoga_config.ref, &long_message);
     try std.testing.expectEqual(@as(u32, 2), drain(&second.diagnostics, &events));
     try std.testing.expect(events[1].truncated);
@@ -116,7 +116,7 @@ test "diagnostics truncate only over-limit messages and do not allocate while lo
     defer queue.deinit();
     const log: logger.Logger = .{ .diagnostics = &queue };
     failing.fail_index = failing.alloc_index;
-    const source = [_]u8{'x'} ** (logger.Diagnostic.message_bytes_max + 1);
+    const source: [logger.Diagnostic.message_bytes_max + 1]u8 = @splat('x');
     for ([_]usize{ source.len - 2, source.len - 1, source.len }) |length| {
         log.warn("{s}", .{source[0..length]});
     }
