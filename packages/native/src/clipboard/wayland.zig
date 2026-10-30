@@ -326,7 +326,7 @@ pub const Connection = struct {
         std.debug.assert(self.core_focus_users < std.math.maxInt(u32));
         self.core_focus_users += 1;
         if (self.core_focus_users > 1) return .pending;
-        std.debug.assert(!self.core_focus_lost and !self.core_selection_seen);
+        std.debug.assert(!self.core_focus_entered and !self.core_focus_lost and !self.core_selection_seen);
         self.core_focus_restart_count = 0;
         if (self.clipboard_offer) |offer| self.removeOffer(offer);
         self.clipboard_offer = null;
@@ -1135,7 +1135,7 @@ pub const Connection = struct {
         _: ?*anyopaque,
     ) callconv(.c) void {
         const self: *Connection = @ptrCast(@alignCast(data.?));
-        if (surface == self.helper_surface) self.core_focus_entered = true;
+        if (surface != null and surface == self.helper_surface) self.core_focus_entered = true;
     }
 
     fn keyboardLeave(data: ?*anyopaque, _: ?*WlProxy, _: u32, surface: ?*WlProxy) callconv(.c) void {
@@ -1927,11 +1927,9 @@ test "Wayland core data-device fallback is WSL-gated and read-only" {
 
 test "Wayland core helper acquisition fails closed outside Linux" {
     if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
-    var connection: Connection = undefined;
+    var connection = Connection.init(std.testing.allocator, undefined, "", "", 1);
     connection.core_data_device = true;
     connection.phase = .ready;
-    connection.core_focus_users = 0;
-    connection.clipboard_offer = null;
 
     try std.testing.expectEqual(Progress.failed, connection.acquireCoreSelection());
     try std.testing.expectEqual(@as(u32, 0), connection.core_focus_users);
@@ -1979,10 +1977,11 @@ test "Wayland core focus lifecycle rejects stale and unfocused offers" {
     Connection.deviceSelection(&connection, null, offer);
     try std.testing.expectEqual(@as(u8, 0), connection.offer_count);
     try std.testing.expect(connection.clipboard_offer == null);
-    // A leave for the destroyed helper arrives with a nil surface and must not mark the next read.
+    // Enter and leave for the destroyed helper arrive with a nil surface and must not mark the next read.
     connection.core_focus_lost = false;
+    Connection.keyboardEnter(&connection, null, 1, null, null);
     Connection.keyboardLeave(&connection, null, 1, null);
-    try std.testing.expect(!connection.core_focus_lost);
+    try std.testing.expect(!connection.core_focus_entered and !connection.core_focus_lost);
 
     connection.core_focus_entered = true;
     connection.core_focus_lost = false;
