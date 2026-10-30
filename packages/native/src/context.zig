@@ -7,6 +7,7 @@ const link = @import("link.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
+const stdout_writer = @import("stdout-writer.zig");
 const input_parser = @import("input-parser.zig");
 const scene = @import("scene.zig");
 const native_span_feed = @import("native-span-feed.zig");
@@ -1088,6 +1089,21 @@ pub const Context = struct {
         return (try self.getSession(handle)).drainStdout(self.io, max_bytes);
     }
 
+    /// Process stdout from a Session-owned native thread; see `Session.postStdout`.
+    pub fn postStdout(self: *Context, handle: Handle, max_bytes: u32, wait: bool) Error!session.PostResult {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return (try self.getSession(handle)).postStdout(stdout_writer.StdoutWriter, StdoutCreate{}, max_bytes, wait);
+    }
+
+    const StdoutCreate = struct {
+        pub fn create(_: StdoutCreate) error{UnsupportedResource}!*stdout_writer.StdoutWriter {
+            if (comptime !stdout_writer.supported) return error.UnsupportedResource;
+            if (!stdout_writer.stdoutSupported() or !stdout_writer.pinLibrary()) return error.UnsupportedResource;
+            return stdout_writer.StdoutWriter.create(std.heap.c_allocator, .{ .fd = 1 }, .{});
+        }
+    };
+
     pub fn completeOutput(
         self: *Context,
         handle: Handle,
@@ -1874,6 +1890,8 @@ pub const Context = struct {
         if (owned.text == null and owned.kind != api.OT_SCENE_BOX and owned.kind != api.OT_SCENE_SLIDER and owned.kind != api.OT_SCENE_ARROW) return error.WrongKind;
         if (x >= target.width or y >= target.height) return;
         const text = owned.text orelse return owned.owner.paintBody(&self.objects, target, node, x, y);
+        // A prepared text that Yoga sizes to zero paints nothing; an unprepared one draws its text.
+        if (owned.geometry_epoch != std.math.maxInt(u64) and (owned.layout.width == 0 or owned.layout.height == 0)) return;
         try text.prepareView();
         try target.drawTextBufferChecked(text.view, x, y);
     }

@@ -969,7 +969,7 @@ test "Yoga absolute-edge rounding patch is opt-in per config and keeps children 
     }
 }
 
-test "Yoga cache patches keep upstream cache decisions, round only comparable axes, and reuse sizes for larger height caps" {
+test "Yoga cache patches compare sizes without positive margins, round only comparable axes, and reuse sizes for larger height caps" {
     // 9.99995 is inexactly equal to 10: a size at the old cap may have been clamped.
     const values = [_]f32{ std.math.nan(f32), -1, 0, 9.6, 9.99995, 10, 10.4, 11 };
     const scales = [_]f32{ 0, 1, 2, 0.5 };
@@ -989,7 +989,7 @@ test "Yoga cache patches keep upstream cache decisions, round only comparable ax
                 .available = available,
                 .last_available = if (random.boolean()) available else values[random.uintLessThan(usize, values.len)],
                 .computed = values[random.uintLessThan(usize, values.len)],
-                .margin = @floatFromInt(random.uintLessThan(u32, 2)),
+                .margin = @floatFromInt(random.intRangeAtMost(i32, -1, 1)),
             };
         }
         const point_scale = scales[random.uintLessThan(usize, scales.len)];
@@ -1038,29 +1038,30 @@ test "Yoga cache patches keep upstream cache decisions, round only comparable ax
     }
 }
 
+const Leaf = struct {
+    len: u32 = 0,
+    absolute: bool = false,
+    calls: u64 = 0,
+    // NativeRenderable.measure over a text of `len` cells that wraps at any cell; it
+    // clamps to an undefined height as to a height of 1.
+    fn measure(target: ?*anyopaque, width: f32, width_mode: u32, height: f32, _: u32) callconv(.c) yoga.ExternalYogaSize {
+        const self: *@This() = @ptrCast(@alignCast(target.?));
+        self.calls += 1;
+        const wrap: u32 = if (width_mode == @intFromEnum(yoga.YogaMeasureMode.undefined) or !(width >= 1)) 0 else @intFromFloat(@min(@floor(width), 1e6));
+        const lines = if (wrap == 0) 1 else (self.len + wrap - 1) / wrap;
+        var size: yoga.ExternalYogaSize = .{ .width = @floatFromInt(@max(1, if (wrap == 0) self.len else @min(self.len, wrap))), .height = @floatFromInt(@max(1, lines)) };
+        if (width_mode == @intFromEnum(yoga.YogaMeasureMode.at_most) and !self.absolute) {
+            size.width = @min(width, size.width);
+            size.height = @min(if (std.math.isNan(height)) 1 else height, size.height);
+        }
+        return size;
+    }
+};
+
 // Twin trees take the same random styles, texts, and sizes; only the first twin's leaves
 // reuse a size for a larger height cap. Every layout must stay byte for byte the same.
 test "Yoga larger-height-cap reuse keeps every layout of random trees, texts, and sizes" {
     const api = @import("context_abi_c");
-    const Leaf = struct {
-        len: u32 = 0,
-        absolute: bool = false,
-        calls: u64 = 0,
-        // NativeRenderable.measure over a text of `len` cells that wraps at any cell; it
-        // clamps to an undefined height as to a height of 1.
-        fn measure(target: ?*anyopaque, width: f32, width_mode: u32, height: f32, _: u32) callconv(.c) yoga.ExternalYogaSize {
-            const self: *@This() = @ptrCast(@alignCast(target.?));
-            self.calls += 1;
-            const wrap: u32 = if (width_mode == @intFromEnum(yoga.YogaMeasureMode.undefined) or !(width >= 1)) 0 else @intFromFloat(@min(@floor(width), 1e6));
-            const lines = if (wrap == 0) 1 else (self.len + wrap - 1) / wrap;
-            var size: yoga.ExternalYogaSize = .{ .width = @floatFromInt(@max(1, if (wrap == 0) self.len else @min(self.len, wrap))), .height = @floatFromInt(@max(1, lines)) };
-            if (width_mode == @intFromEnum(yoga.YogaMeasureMode.at_most) and !self.absolute) {
-                size.width = @min(width, size.width);
-                size.height = @min(if (std.math.isNan(height)) 1 else height, size.height);
-            }
-            return size;
-        }
-    };
     const Twins = struct {
         nodes: [2]yoga.YGNodeRef,
         fn value(self: @This(), kind: yoga.YogaValueKind, edge: u32, unit: u32, v: f32) void {
@@ -1173,6 +1174,75 @@ test "Yoga larger-height-cap reuse keeps every layout of random trees, texts, an
         }
     }
     try std.testing.expect(calls[0] + 500 < calls[1]);
+}
+
+// Yoga's "stricter size" cache rule compared a new size without the margin with an old size
+// with it, so a leaf that grew by less than its margin kept its old size. Random measured and
+// empty leaves under a root whose size walks by up to 3 cells a solve; after each solve a fresh
+// copy of the tree, solved once, must give every node the same layout.
+test "Yoga incremental solves of measured leaves with margins equal fresh solves" {
+    const api = @import("context_abi_c");
+    const ltr = @intFromEnum(yoga.YogaDirection.ltr);
+    const point = @intFromEnum(yoga.YogaUnit.point);
+    const config = yoga.yogaConfigCreate();
+    defer std.debug.assert(yoga.yogaConfigFree(config));
+    yoga.configSetRoundsPositionsFromAbsoluteEdges(config, 1);
+    const edges = [_]u32{ api.OT_EDGE_LEFT, api.OT_EDGE_RIGHT, api.OT_EDGE_TOP, api.OT_EDGE_BOTTOM, api.OT_EDGE_ALL };
+    var prng = std.Random.DefaultPrng.init(0x374);
+    const random = prng.random();
+    for (0..300) |_| {
+        var nodes: [40]yoga.YGNodeRef = undefined;
+        var leaves: [40]Leaf = @splat(.{});
+        var measured: [40]bool = @splat(false);
+        var count: usize = 1;
+        nodes[0] = yoga.yogaNodeCreateWithConfig(config);
+        defer yoga.yogaNodeFreeRecursive(nodes[0]);
+        if (random.boolean()) yoga.yogaNodeStyleSetEnum(nodes[0], @intFromEnum(yoga.YogaEnumKind.flex_direction), @intFromEnum(yoga.YogaFlexDirection.row));
+        var width: f32 = @floatFromInt(random.intRangeAtMost(u32, 10, 80));
+        var height: f32 = @floatFromInt(random.intRangeAtMost(u32, 5, 40));
+        for (0..40) |_| {
+            const index = random.uintLessThan(usize, count);
+            switch (if (count < 6) 0 else random.uintLessThan(u32, 3)) {
+                0 => if (count < nodes.len) {
+                    const added = yoga.yogaNodeCreateWithConfig(config);
+                    yoga.yogaNodeInsertChild(nodes[0], added, @intCast(count - 1));
+                    leaves[count].len = random.uintAtMost(u32, 120);
+                    measured[count] = random.uintLessThan(u32, 3) != 0;
+                    if (measured[count]) try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(added, &leaves[count], &Leaf.measure, true));
+                    yoga.yogaNodeStyleSetFloat(added, @intFromEnum(yoga.YogaFloatKind.flex_shrink), @floatFromInt(random.uintLessThan(u32, 2)));
+                    if (random.uintLessThan(u32, 4) == 0) yoga.yogaNodeStyleSetFloat(added, @intFromEnum(yoga.YogaFloatKind.flex_grow), 1);
+                    if (random.uintLessThan(u32, 6) == 0) yoga.yogaNodeStyleSetValue(added, @intFromEnum(yoga.YogaValueKind.width), 0, point, @floatFromInt(random.intRangeAtMost(u32, 5, 30)));
+                    if (random.boolean()) yoga.yogaNodeStyleSetEnum(added, @intFromEnum(yoga.YogaEnumKind.align_self), random.intRangeAtMost(u32, api.OT_ALIGN_FLEX_START, api.OT_ALIGN_STRETCH));
+                    nodes[count] = added;
+                    count += 1;
+                },
+                1 => if (measured[index]) {
+                    leaves[index].len = random.uintAtMost(u32, 120);
+                    yoga.yogaNodeInvalidateMeasure(nodes[index]);
+                },
+                else => if (index != 0) yoga.yogaNodeStyleSetValue(nodes[index], @intFromEnum(yoga.YogaValueKind.margin), edges[random.uintLessThan(usize, edges.len)], point, @floatFromInt(random.uintAtMost(u32, 3))),
+            }
+            width = std.math.clamp(width + @as(f32, @floatFromInt(random.intRangeAtMost(i32, -3, 3))), 5, 90);
+            height = std.math.clamp(height + @as(f32, @floatFromInt(random.intRangeAtMost(i32, -3, 3))), 3, 50);
+            yoga.yogaNodeCalculateLayout(nodes[0], width, height, ltr);
+            var fresh: [40]yoga.YGNodeRef = undefined;
+            var fresh_leaves = leaves;
+            for (nodes[0..count], 0..) |node, i| {
+                fresh[i] = yoga.yogaNodeCreateWithConfig(config);
+                if (i > 0) yoga.yogaNodeInsertChild(fresh[0], fresh[i], @intCast(i - 1));
+                try yoga.check(yoga.yogaNodeCopyStyleChecked(fresh[i], node));
+                if (measured[i]) try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(fresh[i], &fresh_leaves[i], &Leaf.measure, true));
+            }
+            defer yoga.yogaNodeFreeRecursive(fresh[0]);
+            yoga.yogaNodeCalculateLayout(fresh[0], width, height, ltr);
+            for (nodes[0..count], fresh[0..count]) |node, fresh_node| {
+                var layouts: [2]yoga.ExternalYogaLayout = undefined;
+                yoga.yogaNodeGetComputedLayout(fresh_node, &layouts[0]);
+                yoga.yogaNodeGetComputedLayout(node, &layouts[1]);
+                try std.testing.expectEqual(layouts[0], layouts[1]);
+            }
+        }
+    }
 }
 
 test "Yoga host callback owners use config context and cannot clear another owner" {

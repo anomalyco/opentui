@@ -19,6 +19,8 @@ export class Capture extends EventEmitter {
   }
 
   write(stream: "stdout" | "stderr", data: string): void {
+    // Only an exit dump reads it, so keep the newest writes, as the console log cache does.
+    if (this.output.length >= 1000) this.output.shift()
     this.output.push({ stream, output: data })
     this.emit("write", stream, data)
   }

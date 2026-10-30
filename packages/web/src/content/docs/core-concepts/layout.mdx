@@ -196,6 +196,8 @@ A 32-column bordered row leaves 30 inner columns. Adding one column gives the mi
 
 Renderable getters expose computed integer geometry after a layout pass. OpenTUI clamps exposed `width` and `height` to at least one cell.
 
+Paint does not clamp. A node that Yoga sizes to zero width or height draws no cells and receives no mouse events, although its getters report one cell. Its children still paint unless the node clips them. For example, when a column is too short for its children, `flexShrink` can reduce a text to zero rows, and that text disappears. Give the text `flexShrink: 0` to keep it visible.
+
 ## Read style and geometry
 
 `x`, `y`, `width`, `height`, and `getLayout()` report computed geometry from the last layout pass.

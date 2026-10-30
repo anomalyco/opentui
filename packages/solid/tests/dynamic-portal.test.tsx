@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { testRender, Dynamic, LayoutSlotRenderable, Portal } from "../index.js"
 import { createSignal, Show } from "solid-js"
 import { createSpy } from "@opentui/core/testing"
-import type { BoxRenderable } from "@opentui/core"
+import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 
 let testSetup: Awaited<ReturnType<typeof testRender>>
 
@@ -249,15 +249,16 @@ describe("SolidJS Renderer - Dynamic and Portal Components", () => {
       expect(testSetup.renderer.root.getChildren().length).toBe(3)
     })
 
-    it("should release portal child listeners on unmount", async () => {
+    it("should destroy portal children on unmount", async () => {
       const [showPortal, setShowPortal] = createSignal(false)
+      let box: ScrollBoxRenderable | undefined
 
       testSetup = await testRender(
         () => (
           <box>
             <Show when={showPortal()}>
               <Portal>
-                <scrollbox>
+                <scrollbox ref={box}>
                   <text>Portal content</text>
                 </scrollbox>
               </Portal>
@@ -267,17 +268,14 @@ describe("SolidJS Renderer - Dynamic and Portal Components", () => {
         { width: 20, height: 5 },
       )
 
-      await testSetup.renderOnce()
-      const baseline = testSetup.renderer.listenerCount("selection")
-
       setShowPortal(true)
       await testSetup.renderOnce()
-      expect(testSetup.renderer.listenerCount("selection")).toBe(baseline + 1)
+      expect(box?.isDestroyed).toBe(false)
 
       setShowPortal(false)
       await testSetup.renderOnce()
       await Bun.sleep(0)
-      expect(testSetup.renderer.listenerCount("selection")).toBe(baseline)
+      expect(box?.isDestroyed).toBe(true)
     })
   })
 
