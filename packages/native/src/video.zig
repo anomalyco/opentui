@@ -218,6 +218,8 @@ const AudioStatus = struct {
     failed: bool = false,
     mixer_running: bool = false,
     applied_version: u32 = 0,
+    // When the stream was first seen drained, so the wall clock can take over from then.
+    ended_us: i64 = 0,
 };
 
 const Device = enum { idle, started, failed };
@@ -967,6 +969,8 @@ pub const Video = struct {
         self.audio_lock.lockUncancelable(io);
         defer self.audio_lock.unlock(io);
         if (generation != self.audio_control.generation) return stats.state;
+        const drained = known and stats.state == audio.StreamState.ended;
+        if (drained and self.audio_status.stats.state != audio.StreamState.ended) self.audio_status.ended_us = nowUs();
         if (known) self.audio_status.stats = stats;
         self.audio_status.produced_frames = self.audio_produced_frames;
         self.audio_status.ended = self.audio_ended;
@@ -1097,9 +1101,12 @@ pub const Player = struct {
         const state = self.video.getState();
         const audio_clock = state.audio_active != 0 or state.buffering != 0;
         if (self.audio_clock and !audio_clock) {
-            // Audio drained or failed: the wall clock continues from the audio position.
-            self.position_us = self.video.audioTimeUs(self.video.audioStatus());
-            self.clock_start_us = nowUs();
+            // Audio drained or failed: the wall clock continues from the audio position, and
+            // from the drain, so a loop also carries the time since the audio ended.
+            const status = self.video.audioStatus();
+            self.position_us = self.video.audioTimeUs(status);
+            const drained = status.stats.state == audio.StreamState.ended;
+            self.clock_start_us = if (drained) status.ended_us else nowUs();
         }
         self.audio_clock = audio_clock;
         const media = if (audio_clock) state.current_time_us else self.wallTime();

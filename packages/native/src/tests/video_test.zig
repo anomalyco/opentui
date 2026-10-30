@@ -999,28 +999,44 @@ test "video scene audio failure continues playback silently from the audio posit
     try testing.expect(!(try f.owner.videoGetState(node)).failed);
 }
 
-test "video scene playback ends after the audio drains without paints" {
-    const f = try Fixture.init(testing.allocator, 8, 4, .{});
-    defer f.deinit();
-    const node = try videoNode(f);
-    _ = try f.owner.videoOpen(node, asset);
-    const value = try playerOf(f, node);
-    value.video.setAudioOffline(true);
-    try f.owner.videoControl(node, video.Player.seek, .{value.video.info.duration_us - 200_000});
-    try f.owner.videoControl(node, video.Player.play, .{});
-    // A device pulls the stream; only the audio thread publishes what it played.
-    var output: [960 * 2]f32 = undefined;
-    var state = try f.owner.videoGetState(node);
-    for (0..3000) |_| {
-        value.video.engine_lock.lockUncancelable(testing.io);
-        _ = audio.mixToBuffer(value.video.audio_engine.?, &output, 960, 2);
-        value.video.engine_lock.unlock(testing.io);
-        state = try f.owner.videoGetState(node);
-        if (state.ended) break;
-        sleepMs(1);
+// The last state read comes 30 ms after the audio drained: playback then ends, or loops to the
+// time since the drain.
+test "video scene playback ends or loops after the audio drains without paints" {
+    for ([_]bool{ false, true }) |loop| {
+        const f = try Fixture.init(testing.allocator, 8, 4, .{});
+        defer f.deinit();
+        const node = try videoNode(f);
+        _ = try f.owner.videoOpen(node, asset);
+        const value = try playerOf(f, node);
+        value.video.setAudioOffline(true);
+        try f.owner.videoControl(node, video.Player.setLoop, .{loop});
+        try f.owner.videoControl(node, video.Player.seek, .{value.video.info.duration_us - 200_000});
+        try f.owner.videoControl(node, video.Player.play, .{});
+        for (0..3000) |_| {
+            if (value.video.getState().audio_ended != 0) break;
+            sleepMs(1);
+        }
+        try testing.expect((try f.owner.videoGetState(node)).buffering);
+        // A device pulls the whole queued tail; only the audio thread publishes what it played.
+        var output: [960 * 2]f32 = undefined;
+        for (0..12) |_| {
+            value.video.engine_lock.lockUncancelable(testing.io);
+            _ = audio.mixToBuffer(value.video.audio_engine.?, &output, 960, 2);
+            value.video.engine_lock.unlock(testing.io);
+        }
+        for (0..3000) |_| {
+            if (value.video.audioStats().?.state == audio.StreamState.ended) break;
+            sleepMs(1);
+        }
+        sleepMs(30);
+        // A later publish of the drained stream keeps the drain time.
+        try value.video.setVolume(0.5);
+        value.video.syncAudio();
+        const state = try f.owner.videoGetState(node);
+        try testing.expectEqual(!loop, state.ended);
+        try testing.expectEqual(loop, state.playing);
+        if (loop) try testing.expect(state.current_time_us >= 25_000 and state.current_time_us < 500_000);
     }
-    try testing.expect(state.ended);
-    try testing.expect(!state.playing);
 }
 
 test "video scene seek while playing continues from the target" {
