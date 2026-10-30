@@ -70,6 +70,13 @@ pub const Transport = struct {
         }
     }
 
+    /// Release the new lease of an upload that a published frame left out.
+    pub fn discard(self: *Transport, id: u32) void {
+        for (&self.leases) |*lease| {
+            if (lease.unpublished and lease.id == id) lease.release(self.io);
+        }
+    }
+
     /// Arm new leases without releasing files referenced by an encoded frame.
     /// Clamp at the end of the clock range so deadlines never wrap.
     pub fn arm(self: *Transport, now_ns: u64) void {

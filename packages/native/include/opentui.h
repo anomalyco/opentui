@@ -1200,7 +1200,16 @@ ot_status ot_session_sync_detached(ot_context *, const ot_handle *session, const
 
 /* Initialize struct_size and abi_version. The remaining fields are output-only.
  * frame_count counts complete presentations, not queued frames. frame_pending
- * is 0 or 1. This copied record borrows no renderer or framebuffer storage. */
+ * is 0 or 1. image_uploads_pending counts presented Kitty and Sixel placements
+ * whose image a later frame still sends: uploads that did not fit one frame
+ * wait, and one larger than a frame draws as blocks next. Submit another frame
+ * while it is nonzero. A frame whose output without image uploads is larger than
+ * the write limit returns FAILED: dropped_frame_bytes is then its size (saturated),
+ * and dropped_frames counts each dropped content once. A frame that wrote only some
+ * cells is counted once its full repaint fails too. The same content returns
+ * FAILED again, with its size, without encoding until it changes; any other result
+ * sets dropped_frame_bytes to 0. This copied record borrows no renderer or framebuffer
+ * storage. */
 typedef struct ot_session_renderer_state {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1208,7 +1217,9 @@ typedef struct ot_session_renderer_state {
     uint32_t height;
     uint64_t frame_count;
     uint32_t frame_pending;
-    uint32_t reserved;
+    uint32_t image_uploads_pending;
+    uint32_t dropped_frames;
+    uint32_t dropped_frame_bytes;
 } ot_session_renderer_state;
 
 #define OT_SESSION_BUFFER_CURRENT UINT32_C(0)

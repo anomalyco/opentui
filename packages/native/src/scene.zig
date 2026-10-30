@@ -3097,7 +3097,7 @@ pub const Scene = struct {
         // Kitty sends decoded pixels as is and the terminal scales them, so only
         // Kitty output adapts its decode size to the measured frame cost.
         if (cli.resolveImageProtocol(state.image.protocol) == .kitty) {
-            player.observeFrameCost(cli.renderStats.frameCount, cli.lastFrameCostUs);
+            player.observeFrameCost(cli.renderStats.frameCount, cli.imageFrameCostUs());
         } else player.quality = .{};
         // Decode at the drawn pixel size scaled by the quality tier, never above the source size.
         const pixel_width = @max(1, @round(width * cell_width));

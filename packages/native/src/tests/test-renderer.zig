@@ -162,7 +162,7 @@ pub const TestRenderer = struct {
         deliverFeed(self.feed, self.memory);
     }
 
-    fn present(self: *TestRenderer, result: anyerror!renderer.RenderStatus) renderer.RenderStatus {
+    pub fn present(self: *TestRenderer, result: anyerror!renderer.RenderStatus) renderer.RenderStatus {
         const status = result catch |err| switch (err) {
             error.PresentationFailed => return .failed,
             else => std.debug.panic("deferred render failed: {}", .{err}),

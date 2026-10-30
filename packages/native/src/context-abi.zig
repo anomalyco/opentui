@@ -959,7 +959,9 @@ pub fn ot_session_get_renderer_state(
         .height = attached.height,
         .frame_count = attached.getRenderStats().frameCount,
         .frame_pending = @intFromBool(value.frame_end_offset != null),
-        .reserved = 0,
+        .image_uploads_pending = attached.imageUploadsPending(),
+        .dropped_frames = attached.dropped_frames,
+        .dropped_frame_bytes = attached.dropped_frame_bytes,
     };
     return c.OT_OK;
 }

@@ -830,7 +830,7 @@ test "Scene image crop selects the source rectangle it fits" {
     defer f.deinit();
     // Cells are 10x20 pixels, so the 2x1 cell node is square.
     f.cli.image_resolution = .{ .terminal_width = 4, .terminal_height = 2, .pixel_width = 40, .pixel_height = 40 };
-    const pixels = [_]u8{ 200, 40, 0, 255 } ** 32;
+    const pixels = utils.repeat(u8, &.{ 200, 40, 0, 255 }, 32).*;
     const picture = try placed(f, c.OT_SCENE_IMAGE, 2, 0, 0, 2);
     const Region = @import("../image.zig").Region;
     const Row = struct { fit: @import("../image.zig").Fit, crop: ?Region, cells: u32, source: [4]u32 };

@@ -169,6 +169,12 @@ An `OT_OK` commit consumes the draft for every render outcome, including `OT_REN
 `OT_RENDER_FAILED` is a render outcome, not an `ot_status` error.
 Do not submit the ticket again. Pumping output does not repaint or retry the frame.
 
+Image uploads never make a frame too large: a frame sends the Kitty and Sixel uploads that fit and leaves their
+cells blank for the rest. `ot_session_get_renderer_state` then reports `image_uploads_pending`; submit more frames
+while it is nonzero. A frame whose other output is larger than the queue fails with `dropped_frame_bytes` set to
+its size. The same cells fail again without encoding until they change, and `dropped_frames` counts each dropped
+content once.
+
 If commit returns an error status, the draft stays live for a retry, and native code does not write the render outcome.
 For example, a frame-qualified lease makes commit return `OT_FRAME_BUSY` until you release the lease.
 

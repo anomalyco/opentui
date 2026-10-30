@@ -423,7 +423,9 @@ test "FeedBackend - formatted frame bounds and retry preserve atomic output" {
             try testing.expectEqual(.ok, backend.endFrame());
             try testing.expectEqual(size, drainAllSpans(stream));
         } else {
-            try testing.expectError(error.BufferFull, backend.writer().print("{s}", .{text[0..size]}));
+            // 413: a frame larger than the queue fails with its full size.
+            try backend.writer().print("{s}", .{text[0..size]});
+            try testing.expectEqual(size, backend.oversizeBytes);
             try testing.expectEqual(.failed, backend.endFrame());
             try testing.expect(!stream.hasPendingSpans());
         }

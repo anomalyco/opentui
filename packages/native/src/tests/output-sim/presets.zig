@@ -132,6 +132,8 @@ pub const sweep = [_]Preset{
     split_input,
     .{ .name = "producer_flood", .env = with(ssh_link, .{ .rate_bps = 16_000, .events = Mix{ .flood = true, .end = .crash, .settle = false } }), .ci_seeds = 2 },
     .{ .name = "partial_writes", .env = .{ .rate_bps = null, .partial_max = 512, .events = .{ .end = .exit } }, .ci_seeds = 2 },
+    // A cancel between the writer's short writes, with nothing inside the kernel.
+    .{ .name = "partial_crash", .env = .{ .rate_bps = 48_000, .partial_max = 256, .events = .{ .end = .crash, .settle = false } }, .ci_seeds = 2 },
 };
 
 /// The `ticket` (Writable) plan: the named presets, split input, and a cancel mid-write.

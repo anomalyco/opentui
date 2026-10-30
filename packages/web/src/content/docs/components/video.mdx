@@ -81,7 +81,7 @@ await render(() => <video source="./clip.mp4" autoplay loop style={{ width: 60, 
 - `seek()` clamps to `[0, duration]`. Seeking past the end does not wrap, even when `loop` is on.
 - Frames draw like an [Image](/docs/components/image) with `protocol: "auto"`. `fit` and `crop` work the same way.
 - With `crop`, the decoder scales and copies only that region of each frame, and Kitty output sends only the region. Each video still decodes the whole stream.
-- With Kitty output, the decoder lowers its decode size while frames take longer than the frame interval, and raises it again after they recover. `qualityTier` reports the step; `0` is full size.
+- With Kitty output, the decoder lowers its decode size while frames take longer than the frame interval or images wait because their data does not fit one frame, and raises it again after they recover. `qualityTier` reports the step; `0` is full size.
 - Set `OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL=1` to try VideoToolbox decoding on macOS. See [Environment variables](/docs/reference/env-vars).
 
 ## Options and state

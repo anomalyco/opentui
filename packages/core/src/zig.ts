@@ -754,6 +754,12 @@ export interface NativeSessionRendererState {
   height: number
   frameCount: bigint
   framePending: boolean
+  /** Presented Kitty and Sixel placements whose image a later frame still sends. */
+  imageUploadsPending: number
+  /** Distinct frame contents dropped because their output is larger than the write limit. */
+  droppedFrames: number
+  /** The size of the last attempt's frame when it was dropped for size, else 0. */
+  droppedFrameBytes: number
 }
 
 export interface NativeSessionKittyImageTransportStatus {
@@ -6548,6 +6554,9 @@ export class FFIRenderLib {
       height: words[layout.fields.height.offset / 4],
       frameCount: output[layout.fields.frame_count.offset / 8],
       framePending: words[layout.fields.frame_pending.offset / 4] !== 0,
+      imageUploadsPending: words[layout.fields.image_uploads_pending.offset / 4],
+      droppedFrames: words[layout.fields.dropped_frames.offset / 4],
+      droppedFrameBytes: words[layout.fields.dropped_frame_bytes.offset / 4],
     }
   }
 

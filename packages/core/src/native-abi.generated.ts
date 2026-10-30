@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: a7ed435fbc17275c6a6c5a6439718e1541c579ccb35cb9789dac2f2bf1abec27
+// ABI audit SHA-256: 1f1e8424bc1216febc37ed16ad59186b66b331cff98c6f8390c1262d97d68142
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -781,7 +781,7 @@ export const nativeLayouts = {
     },
   },
   ot_session_renderer_state: {
-    size: 32,
+    size: 40,
     alignment: 8,
     fields: {
       struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
@@ -790,7 +790,9 @@ export const nativeLayouts = {
       height: { offset: 12, size: 4, alignment: 4, type: "u32" },
       frame_count: { offset: 16, size: 8, alignment: 8, type: "u64" },
       frame_pending: { offset: 24, size: 4, alignment: 4, type: "u32" },
-      reserved: { offset: 28, size: 4, alignment: 4, type: "u32" },
+      image_uploads_pending: { offset: 28, size: 4, alignment: 4, type: "u32" },
+      dropped_frames: { offset: 32, size: 4, alignment: 4, type: "u32" },
+      dropped_frame_bytes: { offset: 36, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_buffer_options: {

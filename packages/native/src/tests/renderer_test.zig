@@ -3825,7 +3825,8 @@ test "FeedBackend - failed frame publishes no partial bytes" {
     backend.beginFrame();
     var failed_writer = backend.writer();
     try failed_writer.writeAll("pending");
-    try std.testing.expectError(error.BufferFull, failed_writer.writeAll("this-write-is-too-large-for-the-current-chunk"));
+    try failed_writer.writeAll("this-write-is-too-large-for-the-current-chunk");
+    try std.testing.expectEqual(@as(usize, 52), backend.oversizeBytes);
     try std.testing.expectEqual(.failed, backend.endFrame());
 
     var span_out: [4]native_span_feed.SpanInfo = undefined;
@@ -4037,57 +4038,306 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
     try std.testing.expect(std.mem.find(u8, output, "\x1b]22;pointer\x1b\\") != null);
 }
 
-test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
+// 413: a frame publishes the image uploads that fit it, in placement order, and later frames send
+// the rest; a frame that fits is published byte for byte, and an upload larger than a frame draws
+// as blocks. The limit is the first frame's measured cells plus the uploads in `fit`, plus `delta`.
+test "FeedBackend - image uploads wait for the frames they fit" {
+    const Row = struct {
+        name: []const u8,
+        protocol: image.RenderProtocol,
+        sizes: []const u32,
+        fit: u8,
+        delta: i64 = 0,
+        cells: bool = true,
+        text: bool = false,
+        resize: bool = false,
+        changing: bool = false,
+        // Noise rows drawn on frame 1 only; the pixel size growing by a pixel on frames 1 and 2.
+        text_rows: u32 = 0,
+        growing: bool = false,
+        overlap: bool = false,
+        // A Kitty transport (`kitty_transport.Mode`), a solid second image, the first image removed
+        // from that frame on, and a transport change after the last frame that must retry the image.
+        transport: u32 = 0,
+        solid_second: bool = false,
+        remove_first_at: ?u32 = null,
+        retransport: bool = false,
+        uploads: []const []const u32,
+        blocks: u32 = 0,
+    };
+    const rows = [_]Row{
+        .{ .name = "kitty fits", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b11, .uploads = &.{&.{ 1, 2 }} },
+        .{ .name = "kitty one byte over", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b11, .delta = -1, .uploads = &.{ &.{1}, &.{2} } },
+        .{ .name = "kitty two of three", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .uploads = &.{ &.{ 1, 2 }, &.{3} } },
+        .{ .name = "kitty cells first", .protocol = .kitty, .sizes = &.{ 16, 16 }, .text = true, .fit = 0b01, .delta = -1, .uploads = &.{ &.{}, &.{ 1, 2 } } },
+        .{ .name = "kitty one a frame in order", .protocol = .kitty, .sizes = &.{ 16, 16, 16, 16 }, .fit = 0b0001, .uploads = &.{ &.{1}, &.{2}, &.{3}, &.{4} } },
+        .{ .name = "kitty resize while one waits", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .resize = true, .uploads = &.{ &.{ 1, 2 }, &.{3} } },
+        .{ .name = "kitty changing image does not starve", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b001, .changing = true, .uploads = &.{ &.{1}, &.{2}, &.{1}, &.{3} } },
+        .{ .name = "kitty alone over a frame", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .retransport = true, .uploads = &.{&.{}}, .blocks = 1 },
+        .{ .name = "kitty alone over a frame, size changes twice", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .growing = true, .uploads = &.{ &.{}, &.{}, &.{}, &.{} }, .blocks = 1 },
+        .{ .name = "kitty waits behind a frame of cells", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .text_rows = 2, .uploads = &.{ &.{ 1, 2 }, &.{}, &.{3} } },
+        .{ .name = "kitty file transport cells first", .protocol = .kitty, .sizes = &.{ 16, 16 }, .text = true, .fit = 0b01, .delta = -1, .transport = 2, .uploads = &.{ &.{}, &.{ 1, 2 } } },
+        .{ .name = "kitty zlib neighbor of a removed oversize image", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b10, .transport = 1, .solid_second = true, .remove_first_at = 2, .uploads = &.{ &.{2}, &.{}, &.{1} } },
+        .{ .name = "sixel fits", .protocol = .sixel, .sizes = &.{ 16, 16 }, .fit = 0b11, .uploads = &.{&.{ 1, 2 }} },
+        .{ .name = "sixel one byte over", .protocol = .sixel, .sizes = &.{ 16, 16 }, .fit = 0b11, .delta = -1, .uploads = &.{ &.{1}, &.{2} } },
+        .{ .name = "sixel later waits behind a waiting one", .protocol = .sixel, .sizes = &.{ 16, 32, 16 }, .fit = 0b101, .uploads = &.{ &.{1}, &.{}, &.{3} }, .blocks = 1 },
+        .{ .name = "sixel waits over an overlapped one", .protocol = .sixel, .sizes = &.{ 16, 16 }, .fit = 0b01, .overlap = true, .uploads = &.{ &.{1}, &.{2} } },
+        .{ .name = "sixel alone over a frame", .protocol = .sixel, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .uploads = &.{&.{}}, .blocks = 1 },
+    };
+    const Scene = struct {
+        fn draw(cli: *CliRenderer, images: []const *image.Image, row: Row, frame: u32) !void {
+            const next = cli.getNextBuffer();
+            const noisy: usize = if (row.text) next.height else if (frame == 1) row.text_rows else 0;
+            for (next.height - noisy..next.height) |y| for (0..next.width) |x| {
+                const shade: u8 = @truncate(x * 7 + y * 31);
+                next.set(@intCast(x), @intCast(y), .{ .char = 'x', .fg = ansi.rgbColor(shade, 255 - shade, 9, 255), .bg = ansi.rgbColor(9, shade, 255 - shade, 255), .attributes = 0 });
+            };
+            for (images, row.sizes, 0..) |value, size, index| {
+                if (index == 0 and row.remove_first_at != null and frame >= row.remove_first_at.?) continue;
+                const handle: u32 = @intCast(index + 1 + if (row.changing and index == 0) frame * 16 else 0);
+                const pixels = size + if (row.growing) @min(frame, 2) else 0;
+                _ = try next.drawImage(value, handle, if (row.overlap) 0 else @intCast(index * 9), 0, size / 4, size / 8, pixels, pixels, 0, 0, size, size, row.protocol);
+            }
+        }
+    };
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
+    var pixels: [32 * 32 * 4]u8 = undefined;
+    for (&pixels, 0..) |*byte, index| byte.* = @truncate((index *% 2654435761) >> 11);
+    const small = try image.createFromRgba(std.testing.allocator, &pixels, 16, 16, 16 * 4);
+    defer small.deinit();
+    const big = try image.createFromRgba(std.testing.allocator, &pixels, 32, 32, 32 * 4);
+    defer big.deinit();
+    const solid = try image.createFromRgba(std.testing.allocator, utils.repeat(u8, &.{ 200, 30, 30, 255 }, 16 * 16), 16, 16, 16 * 4);
+    defer solid.deinit();
+    var random = std.Random.DefaultPrng.init(413);
+    random.random().bytes(pixels[0 .. 16 * 16 * 4]);
+    const noisy = try image.createFromRgba(std.testing.allocator, pixels[0 .. 16 * 16 * 4], 16, 16, 16 * 4);
+    defer noisy.deinit();
 
-    var opts = native_span_feed.defaultOptions();
-    opts.chunk_size = 256;
-    opts.initial_chunks = 1;
-    opts.max_bytes = 256;
-    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
-    opts.auto_commit_on_full = 0;
-    const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
-    var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 8, 4, &pools.graphemes, .{
-        .link_pool = &pools.links,
-        .remote_mode = .remote,
-        .feed = feed,
-    });
-    defer feed.destroy();
-    defer cli_renderer.destroyStorage();
-    cli_renderer.terminal.caps.sixel = true;
+    for (rows) |row| {
+        errdefer std.debug.print("row: {s}\n", .{row.name});
+        var drawn: [4]*image.Image = undefined;
+        if (row.transport == 2 and @import("builtin").os.tag == .windows) continue;
+        for (row.sizes, 0..) |size, index| drawn[index] = if (size == 32) big else if (row.solid_second) (if (index == 1) solid else noisy) else small;
+        // Measure the first frame and each upload without a limit.
+        var roomy = try TestRenderer.create(std.testing.allocator, 40, 6, &pools.graphemes, &pools.links);
+        defer roomy.deinit();
+        roomy.renderer.terminal.caps.sixel = true;
+        for ([_]*CliRenderer{roomy.renderer}) |target| {
+            _ = target.setKittyImageTransport(row.transport);
+            if (row.transport == 2) target.kittyTransport.file_state = .ready;
+        }
+        try Scene.draw(roomy.renderer, drawn[0..row.sizes.len], row, 0);
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, roomy.render(false));
+        var cells: i64 = @intCast(roomy.lastOutput().len);
+        var limit: i64 = row.delta;
+        for (roomy.renderer.backend.uploads.items) |upload| {
+            const bytes: i64 = @intCast(upload.end - upload.start);
+            cells -= bytes;
+            if (row.fit & (@as(u8, 1) << @intCast(upload.placement_id - 1)) != 0) limit += bytes;
+        }
+        if (row.cells) limit += cells;
 
-    const pixels = try std.testing.allocator.alloc(u8, 32 * 16 * 4);
-    defer std.testing.allocator.free(pixels);
-    for (0..32 * 16) |index| {
-        pixels[index * 4] = @truncate(index * 17);
-        pixels[index * 4 + 1] = @truncate(index * 31);
-        pixels[index * 4 + 2] = @truncate(index * 47);
-        pixels[index * 4 + 3] = 255;
+        var opts = native_span_feed.defaultOptions();
+        opts.chunk_size = 1;
+        opts.max_bytes = @intCast(limit);
+        opts.span_queue_capacity = @intCast(limit);
+        opts.auto_commit_on_full = 0;
+        const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
+        defer feed.destroy();
+        const cli = try CliRenderer.createWithOptions(std.testing.allocator, 40, 6, &pools.graphemes, .{ .link_pool = &pools.links, .feed = feed, .env_map = roomy.env_map });
+        defer cli.destroyStorage();
+        cli.terminal.caps.sixel = true;
+        cli.imageIdSalt = roomy.renderer.imageIdSalt;
+        _ = cli.setKittyImageTransport(row.transport);
+        if (row.transport == 2) cli.kittyTransport.file_state = .ready;
+        var output: std.ArrayListUnmanaged(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        const Sink = struct {
+            list: *std.ArrayListUnmanaged(u8),
+            pub fn write(self: @This(), data: []const u8) void {
+                self.list.appendSlice(std.testing.allocator, data) catch unreachable;
+            }
+        };
+        // A final frame sends nothing, unless an image keeps changing.
+        for (0..row.uploads.len + @intFromBool(!row.changing)) |frame| {
+            if (row.resize and frame == 1) try cli.resize(41, 6);
+            try Scene.draw(cli, drawn[0..row.sizes.len], row, @intCast(frame));
+            output.clearRetainingCapacity();
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, try renderPresented(cli, false, Sink{ .list = &output }));
+            // Uploads that cannot join the kept ones are cut while staging, so staging stays bounded.
+            try std.testing.expect(cli.backend.frameBytes.capacity <= 2 * limit);
+            var kept: [4]u32 = undefined;
+            var count: usize = 0;
+            for (cli.backend.uploads.items) |upload| if (upload.state == .kept and upload.end > upload.start) {
+                kept[count] = upload.placement_id;
+                count += 1;
+            };
+            const expected: []const u32 = if (frame < row.uploads.len) row.uploads[frame] else &.{};
+            try std.testing.expectEqualSlices(u32, expected, kept[0..count]);
+            const escapes = std.mem.count(u8, output.items, if (row.protocol == .kitty) "\x1b_Ga=t" else "\x1bP");
+            try std.testing.expectEqual(count, escapes);
+            if (frame == 0 and count == row.sizes.len) try std.testing.expectEqualStrings(roomy.lastOutput(), output.items);
+            // Trimming uploads keeps the frame's own controls.
+            if (output.items.len != 0) try std.testing.expect(std.mem.find(u8, output.items, ansi.ANSI.hideCursor) != null);
+            // A frame keeps nothing it left out: a file upload's lease goes too.
+            if (frame == 0 and row.transport == 2) try std.testing.expectEqual(@as(u32, 0), cli.kittyTransport.pendingCount());
+            // An image alone over a frame asks for the frame that draws it as blocks.
+            if (frame == 0 and row.blocks != 0 and row.sizes.len == 1) try std.testing.expectEqual(@as(u32, 1), cli.imageUploadsPending());
+            // Adaptive image sizes see a frame that left uploads out as the costliest.
+            try std.testing.expectEqual(cli.imageUploadsPending() != 0, cli.imageFrameCostUs() == std.math.maxInt(u32));
+        }
+        if (!row.changing) try std.testing.expectEqual(@as(u32, 0), cli.imageUploadsPending());
+        var blocks: u32 = 0;
+        for (cli.currentImages.items) |committed| blocks += @intFromBool(committed.protocol == .fallback);
+        try std.testing.expectEqual(row.blocks, blocks);
+        if (row.retransport) {
+            // A new transport may send the image: it is tried again.
+            _ = cli.setKittyImageTransport(1);
+            try Scene.draw(cli, drawn[0..row.sizes.len], row, @intCast(row.uploads.len + 1));
+            _ = try renderPresented(cli, false, discard);
+            try std.testing.expectEqual(@as(usize, 1), cli.backend.uploads.items.len);
+        }
     }
-    const value = try image.createFromRgba(std.testing.allocator, pixels, 32, 16, 32 * 4);
-    defer value.deinit();
-    const image_handle: u32 = 1;
+}
 
-    try std.testing.expect(try cli_renderer.getNextBuffer().drawImage(
-        value,
-        image_handle,
-        0,
-        0,
-        8,
-        4,
-        32,
-        16,
-        0,
-        0,
-        32,
-        16,
-        .sixel,
-    ));
-    var storage: [256]u8 = undefined;
-    var sink = FixedSink.init(&storage);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, try renderPresented(cli_renderer, true, &sink));
-    try std.testing.expectEqual(@as(usize, 0), sink.bytes().len);
+// 413: a frame whose cells or scrollback commit exceed one frame of output fails with its full size,
+// once per content: the same frame again fails without encoding, and a changed one is tried again.
+// Scrollback frames are not held, because the host drops the commit.
+test "FeedBackend - a frame larger than one frame of output is dropped once per content" {
+    // `limit`: the frame's size, one byte less, half, or between a full repaint of content 1 and its
+    // diff from content 0 (`checker`: content 0 uniform, content 1 a checkerboard of characters).
+    // `images`: a Sixel and a blocks image over the text; the Sixel upload is left out of the size,
+    // and the blocks cells hash like their placement. `overlay`: the debug overlay on an 80x24 screen.
+    // Steps: draw content N (`d`), a scrollback commit over it (`c`), a blank frame that fits (`b`),
+    // or a draw skipped behind queued output (`s`); then the status and the dropped count.
+    const Step = struct { do: u8, seed: u32 = 0, status: renderer.RenderStatus, dropped: u32 };
+    const Row = struct {
+        name: []const u8,
+        split: bool = false,
+        limit: enum { size, under, half, between },
+        images: bool = false,
+        overlay: bool = false,
+        checker: bool = false,
+        steps: []const Step,
+    };
+    const held: []const Step = &.{ .{ .do = 'd', .status = .failed, .dropped = 1 }, .{ .do = 'd', .status = .failed, .dropped = 1 }, .{ .do = 'd', .seed = 1, .status = .failed, .dropped = 2 } };
+    const rows = [_]Row{
+        .{ .name = "text fits", .limit = .size, .steps = &.{.{ .do = 'd', .status = .rendered, .dropped = 0 }} },
+        // One byte over, the last content fits as a diff after a frame that fits.
+        .{ .name = "text one byte over", .limit = .under, .steps = held ++ &[_]Step{ .{ .do = 'b', .status = .rendered, .dropped = 2 }, .{ .do = 'd', .seed = 1, .status = .rendered, .dropped = 2 } } },
+        .{ .name = "text twice the limit", .limit = .half, .steps = held },
+        .{ .name = "text held across a skipped frame", .limit = .half, .steps = &.{ .{ .do = 'd', .status = .failed, .dropped = 1 }, .{ .do = 's', .seed = 1, .status = .skipped, .dropped = 1 }, .{ .do = 'd', .status = .failed, .dropped = 1 } } },
+        .{ .name = "text held across a scrollback commit", .limit = .half, .steps = &.{ .{ .do = 'd', .status = .failed, .dropped = 1 }, .{ .do = 'c', .status = .failed, .dropped = 2 }, .{ .do = 'd', .status = .failed, .dropped = 2 } } },
+        .{ .name = "text and images twice the limit", .limit = .half, .images = true, .steps = held },
+        .{ .name = "text with the debug overlay", .limit = .half, .overlay = true, .steps = held },
+        // A diff larger than the full repaint is not held: the full repaint is tried and fits.
+        .{ .name = "a diff larger than its full repaint", .limit = .between, .checker = true, .steps = &.{ .{ .do = 'd', .status = .rendered, .dropped = 0 }, .{ .do = 'd', .seed = 1, .status = .failed, .dropped = 0 }, .{ .do = 'd', .seed = 1, .status = .rendered, .dropped = 0 } } },
+        .{ .name = "scrollback fits", .split = true, .limit = .size, .steps = &.{.{ .do = 'd', .status = .rendered, .dropped = 0 }} },
+        .{ .name = "scrollback one byte over", .split = true, .limit = .under, .steps = &.{ .{ .do = 'd', .status = .failed, .dropped = 1 }, .{ .do = 'd', .status = .failed, .dropped = 2 }, .{ .do = 'd', .seed = 1, .status = .failed, .dropped = 3 } } },
+        .{ .name = "scrollback twice the limit", .split = true, .limit = .half, .steps = &.{ .{ .do = 'd', .status = .failed, .dropped = 1 }, .{ .do = 'd', .status = .failed, .dropped = 2 }, .{ .do = 'd', .seed = 1, .status = .failed, .dropped = 3 } } },
+    };
+    var pixels: [16 * 16 * 4]u8 = undefined;
+    for (&pixels, 0..) |*byte, index| byte.* = @truncate((index *% 2654435761) >> 11);
+    const picture = try image.createFromRgba(std.testing.allocator, &pixels, 16, 16, 16 * 4);
+    defer picture.deinit();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var snapshot = try OptimizedBuffer.init(std.testing.allocator, 40, 8, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode, .respectAlpha = false });
+    defer snapshot.deinit();
+    const Scene = struct {
+        fn noise(target: *OptimizedBuffer, seed: u32) void {
+            for (0..target.height) |y| for (0..target.width) |x| {
+                const shade: u8 = @truncate(x * 7 + y * 31 + seed);
+                target.set(@intCast(x), @intCast(y), .{ .char = 'x', .fg = ansi.rgbColor(shade, 255 - shade, 9, 255), .bg = ansi.rgbColor(9, shade, 255 - shade, 255), .attributes = 0 });
+            };
+        }
+        fn render(cli: *CliRenderer, row: Row, source: *image.Image, commit: *OptimizedBuffer, seed: u32, split: bool) !renderer.RenderStatus {
+            cli.terminal.caps.sixel = true;
+            const next = cli.getNextBuffer();
+            if (row.checker) {
+                for (0..next.height) |y| for (0..next.width) |x| {
+                    const char: u32 = if (seed == 1 and (x + y) % 2 == 0) 'o' else 'x';
+                    next.set(@intCast(x), @intCast(y), .{ .char = char, .fg = ansi.rgbColor(200, 200, 200, 255), .bg = ansi.rgbColor(9, 9, 9, 255), .attributes = 0 });
+                };
+            } else if (!row.split) noise(next, if (row.images) 0 else seed);
+            // With images, a new seed changes only their source: a source change is a content change.
+            if (row.images) for ([_]image.RenderProtocol{ .sixel, .blocks }, 0..) |protocol, index| {
+                _ = try next.drawImage(source, @intCast(index + 1 + seed * 16), @intCast(index * 10), 1, 4, 2, 16, 16, 0, 0, 16, 16, protocol);
+            };
+            const snapshots = [_]renderer.SplitSnapshot{.{ .snapshot = commit, .row_columns = 40, .start_on_new_line = true }};
+            return if (split)
+                try cli.renderSplitDeferred(.{ .snapshots = &snapshots, .pinned_render_offset = 2, .paint_footer = true, .suspended = false }, false)
+            else
+                try cli.renderDeferred(false);
+        }
+        fn present(cli: *CliRenderer, feed: *native_span_feed.Stream, status: renderer.RenderStatus) !void {
+            test_renderer_mod.deliverFeed(feed, discard);
+            if (status == .rendered) try cli.completePresentation(.presented);
+        }
+    };
+    Scene.noise(snapshot, 0);
+    for (rows) |row| {
+        errdefer std.debug.print("row: {s}\n", .{row.name});
+        const width: u32 = if (row.overlay) 80 else 40;
+        const height: u32 = if (row.overlay) 24 else 6;
+        var roomy = try TestRenderer.create(std.testing.allocator, width, height, &pools.graphemes, &pools.links);
+        defer roomy.deinit();
+        roomy.renderer.setDebugOverlay(row.overlay, .topLeft);
+        const measured = if (row.split) roomy.commitSplit(snapshot, 40, true, true, 2, false) else roomy.present(Scene.render(roomy.renderer, row, picture, snapshot, 0, false));
+        try std.testing.expectEqual(renderer.RenderStatus.rendered, measured);
+        var size = roomy.lastOutput().len;
+        for (roomy.renderer.backend.uploads.items) |upload| size -= upload.end - upload.start;
+        var limit = switch (row.limit) {
+            .size, .between => size,
+            .under => size - 1,
+            .half => size / 2,
+        };
+        if (row.limit == .between) {
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, roomy.present(Scene.render(roomy.renderer, row, picture, snapshot, 1, false)));
+            const diff = roomy.lastOutput().len;
+            var fresh = try TestRenderer.create(std.testing.allocator, width, height, &pools.graphemes, &pools.links);
+            defer fresh.deinit();
+            try std.testing.expectEqual(renderer.RenderStatus.rendered, fresh.present(Scene.render(fresh.renderer, row, picture, snapshot, 1, false)));
+            const full = fresh.lastOutput().len;
+            try std.testing.expect(full < diff);
+            limit = (full + diff) / 2;
+        }
+
+        var opts = native_span_feed.defaultOptions();
+        opts.chunk_size = 1;
+        opts.max_bytes = limit;
+        opts.span_queue_capacity = @intCast(limit);
+        opts.auto_commit_on_full = 0;
+        const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
+        defer feed.destroy();
+        const cli = try CliRenderer.createWithOptions(std.testing.allocator, width, height, &pools.graphemes, .{ .link_pool = &pools.links, .feed = feed, .env_map = roomy.env_map });
+        defer cli.destroyStorage();
+        cli.setDebugOverlay(row.overlay, .topLeft);
+        for (row.steps, 0..) |step, index| {
+            const status = switch (step.do) {
+                'd', 'c' => try Scene.render(cli, row, picture, snapshot, step.seed, row.split or step.do == 'c'),
+                's' => blk: {
+                    const blocker = try std.testing.allocator.alloc(u8, limit);
+                    defer std.testing.allocator.free(blocker);
+                    @memset(blocker, 'x');
+                    try feed.writeAtomic(blocker);
+                    break :blk try Scene.render(cli, row, picture, snapshot, step.seed, false);
+                },
+                else => blk: {
+                    cli.getNextBuffer().clear(ansi.rgbColor(0, 0, 0, 255), null);
+                    break :blk try cli.renderDeferred(false);
+                },
+            };
+            try Scene.present(cli, feed, status);
+            try std.testing.expectEqual(step.status, status);
+            try std.testing.expectEqual(step.dropped, cli.dropped_frames);
+            // Every failure here is a size drop and says so, held or not.
+            try std.testing.expectEqual(status == .failed, cli.dropped_frame_bytes != 0);
+            if (index == 0 and status == .failed) try std.testing.expectEqual(size, cli.dropped_frame_bytes);
+        }
+    }
 }
 
 test "FeedBackend - writeOut publishes nothing when the queue is blocked" {

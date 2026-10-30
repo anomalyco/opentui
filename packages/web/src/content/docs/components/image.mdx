@@ -116,6 +116,8 @@ Overlapping images must use the same effective protocol. OpenTUI does not suppor
 
 Kitty preserves image alpha, Sixel treats alpha below 128 as transparent, and blocks blend sampled alpha. Placement opacity scales Kitty and block alpha. Sixel dims toward cell backgrounds. Direct, unbuffered fills, text, and box borders cover images at whole-cell granularity without blending.
 
+A frame writes at most one Session frame of output, about 8 MiB by default. When the Kitty or Sixel images of a frame don't fit, the frame draws its cells and sends the images that fit. The other images keep their cells blank and arrive in the next frames, the ones that waited first. Sixel images arrive in paint order. An image whose data alone is larger than a frame draws as blocks until its pixel size or source size changes.
+
 Use `OPENTUI_IMAGE_PROTOCOL=auto|kitty|sixel|blocks` to set the global default. `OPENTUI_GRAPHICS=false` disables Kitty and Sixel detection. See [Environment variables](/docs/reference/env-vars).
 
 Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel or Kitty cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer. Its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).

@@ -395,8 +395,27 @@ pub const FeedBackend = struct {
     /// when the frame fits once queued output drains (output pressure), else
     /// `.failed`. Neither publishes bytes; the renderer forces a full repaint.
     frameStatus: WriteStatus = .ok,
+    /// The encoded size of a frame that failed because it is larger than an empty
+    /// queue, counted to its end without image uploads; 0 otherwise.
+    oversizeBytes: usize = 0,
+
+    /// Image uploads of the frame, in write order. Their bytes are staged but not
+    /// charged to the feed: an upload that does not fit waits for a later frame.
+    uploads: std.ArrayListUnmanaged(Upload) = .empty,
+    upload: ?struct { start: usize, waited: bool, len: usize = 0, cut: bool = false } = null,
+    keptUploadBytes: usize = 0,
+    /// The frame writes no cells or scrollback besides its images.
+    uploadsAlone: bool = false,
 
     lastWriteTimeUs: ?f64 = null,
+
+    pub const Upload = struct {
+        start: usize,
+        end: usize,
+        placement_id: u32,
+        waited: bool,
+        state: enum { kept, deferred, too_large },
+    };
 
     pub fn createWithIo(io: std.Io, feed: *NativeSpanFeed.Stream) FeedBackend {
         return .{ .io = io, .feed = feed };
@@ -406,6 +425,7 @@ pub const FeedBackend = struct {
         // Feed memory is owned by the TypeScript side.
         self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.deinit(self.feed.allocator);
+        self.uploads.deinit(self.feed.allocator);
     }
 
     pub fn shouldSkipFrame(self: *FeedBackend) bool {
@@ -434,20 +454,41 @@ pub const FeedBackend = struct {
 
     fn frameWrite(self: *FeedBackend, data: []const u8) error{BufferFull}!void {
         if (builtin.is_test) self.frameWriteCount += 1;
-        if (self.frameStatus != .ok) return error.BufferFull;
-        const required = std.math.add(usize, self.frameBytes.items.len, data.len) catch {
+        if (self.upload) |*upload| {
+            // Cut an upload that cannot join the kept ones; endUpload classifies it by its full length.
+            upload.len +|= data.len;
+            if (upload.cut or self.frameStatus != .ok) return;
+            if (self.keptUploadBytes +| upload.len <= self.uploadLimit()) return self.stage(data);
+            self.frameBytes.shrinkRetainingCapacity(upload.start);
+            upload.cut = true;
+            return;
+        }
+        if (self.frameStatus != .ok) {
+            if (self.oversizeBytes == 0) return error.BufferFull;
+            // Count the rest of a frame that is too large without staging it. Accepting the
+            // bytes keeps writers from stopping inside a write, so the count is exact.
+            self.oversizeBytes +|= data.len;
+            return;
+        }
+        const required = std.math.add(usize, self.frameBytes.items.len - self.keptUploadBytes, data.len) catch {
             self.failFrame();
             return error.BufferFull;
         };
         self.feed.setStagedBytes(required) catch |err| {
             self.frameStatus = self.admissionStatus(required, err);
             self.failFrame();
-            return error.BufferFull;
+            if (self.oversizeBytes == 0) return error.BufferFull;
         };
+        if (self.frameStatus != .ok) return;
+        return self.stage(data);
+    }
+
+    fn stage(self: *FeedBackend, data: []const u8) error{BufferFull}!void {
+        const required = self.frameBytes.items.len + data.len;
         const max_bytes = self.feed.byteLimit();
         if (max_bytes != 0 and required > self.frameBytes.capacity) {
             const doubled = std.math.mul(usize, self.frameBytes.capacity, 2) catch required;
-            const capacity: usize = @intCast(@min(max_bytes, @max(required, @max(256, doubled))));
+            const capacity: usize = @intCast(@max(required, @min(max_bytes, @max(256, doubled))));
             self.frameBytes.ensureTotalCapacityPrecise(self.feed.allocator, capacity) catch {
                 self.failFrame();
                 return error.BufferFull;
@@ -463,8 +504,71 @@ pub const FeedBackend = struct {
     /// once its queued output drains. Anything else fails the frame.
     fn admissionStatus(self: *FeedBackend, frame_bytes: usize, err: NativeSpanFeed.StreamError) WriteStatus {
         if (err != error.NoSpace and err != error.MaxBytes) return .failed;
-        if (!self.feed.bounded() or frame_bytes > self.feed.atomicByteLimit()) return .failed;
-        return .skipped;
+        if (!self.feed.bounded()) return .failed;
+        if (frame_bytes <= self.feed.atomicByteLimit()) return .skipped;
+        self.oversizeBytes = frame_bytes;
+        return .failed;
+    }
+
+    fn uploadLimit(self: *FeedBackend) u64 {
+        return if (self.feed.bounded()) self.feed.atomicByteLimit() else std.math.maxInt(u64);
+    }
+
+    /// Open an upload at the end of the staged frame. The caller flushes its writer first.
+    /// `waited`: an earlier frame left this upload out.
+    pub fn beginUpload(self: *FeedBackend, waited: bool) void {
+        std.debug.assert(self.frameActive and self.upload == null);
+        self.upload = .{ .start = self.frameBytes.items.len, .waited = waited };
+    }
+
+    /// Close the open upload. One larger than an empty queue is too large; one cut
+    /// to keep the kept uploads within that size waits for a later frame.
+    pub fn endUpload(self: *FeedBackend, placement_id: u32) void {
+        const upload = self.upload.?;
+        self.upload = null;
+        if (self.frameStatus != .ok) return;
+        const state: @FieldType(Upload, "state") = if (upload.len > self.uploadLimit())
+            .too_large
+        else if (upload.cut) .deferred else .kept;
+        self.uploads.append(self.feed.allocator, .{
+            .start = upload.start,
+            .end = self.frameBytes.items.len,
+            .placement_id = placement_id,
+            .waited = upload.waited,
+            .state = state,
+        }) catch return self.failFrame();
+        if (state == .kept) self.keptUploadBytes += upload.len;
+    }
+
+    /// Record an upload that waits for a later frame without writing it.
+    pub fn deferUpload(self: *FeedBackend, placement_id: u32) void {
+        if (self.frameStatus != .ok) return;
+        const end = self.frameBytes.items.len;
+        self.uploads.append(self.feed.allocator, .{ .start = end, .end = end, .placement_id = placement_id, .waited = false, .state = .deferred }) catch
+            self.failFrame();
+    }
+
+    pub fn lastUploadWaits(self: *const FeedBackend) bool {
+        const items = self.uploads.items;
+        return items.len != 0 and items[items.len - 1].state != .kept;
+    }
+
+    /// Remove kept uploads, the last first, until the frame fits an empty queue. An
+    /// upload that already waited and does not fit a frame with nothing else is too
+    /// large: waiting again would repeat this frame.
+    fn trimUploads(self: *FeedBackend) void {
+        const others = self.frameBytes.items.len - self.keptUploadBytes;
+        var index = self.uploads.items.len;
+        while (self.frameBytes.items.len > self.uploadLimit() and index > 0) {
+            index -= 1;
+            const upload = &self.uploads.items[index];
+            if (upload.state != .kept) continue;
+            const tail = self.frameBytes.items[upload.end..];
+            std.mem.copyForwards(u8, self.frameBytes.items[upload.start..], tail);
+            self.frameBytes.shrinkRetainingCapacity(upload.start + tail.len);
+            const alone = upload.waited and self.uploadsAlone;
+            upload.state = if (alone and others + upload.end - upload.start > self.uploadLimit()) .too_large else .deferred;
+        }
     }
 
     pub fn writer(self: *FeedBackend) Writer {
@@ -475,6 +579,11 @@ pub const FeedBackend = struct {
         if (builtin.is_test) self.frameWriteCount = 0;
         self.frameStatus = .ok;
         self.frameActive = true;
+        self.oversizeBytes = 0;
+        self.uploads.clearRetainingCapacity();
+        self.upload = null;
+        self.keptUploadBytes = 0;
+        self.uploadsAlone = false;
         self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.clearRetainingCapacity();
     }
@@ -483,6 +592,7 @@ pub const FeedBackend = struct {
     /// output pressure can be its consequence.
     pub fn failFrame(self: *FeedBackend) void {
         if (self.frameStatus == .ok) self.frameStatus = .failed;
+        self.keptUploadBytes = 0;
         self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.clearRetainingCapacity();
     }
@@ -494,6 +604,7 @@ pub const FeedBackend = struct {
         self.feed.setStagedBytes(0) catch unreachable;
 
         if (status == .ok) {
+            self.trimUploads();
             notify = self.feed.writeAtomicUnnotified(self.frameBytes.items) catch |err| blk: {
                 status = self.admissionStatus(self.frameBytes.items.len, err);
                 break :blk false;
