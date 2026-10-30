@@ -395,11 +395,13 @@ fn addVideoDependencies(b: *std.Build, module: *std.Build.Module, target: std.Bu
         return;
     };
     const prefix = b.root.joinString(b.allocator, b.fmt(".cache/ffmpeg/prefix/{s}", .{target_name})) catch @panic("OOM");
-    // scripts/build-ffmpeg.ts writes this marker after a complete install.
-    if (!pathExists(b, b.pathJoin(&.{ prefix, "opentui-build" }))) {
+    // scripts/build-ffmpeg.ts writes this marker after a complete install. Its
+    // revision names the Zig version whose zig cc compiled the objects.
+    const marker = std.Io.Dir.cwd().readFileAlloc(b.graph.io, b.pathJoin(&.{ prefix, "opentui-build" }), b.allocator, .limited(64)) catch "";
+    if (!std.mem.endsWith(u8, marker, "-zig-" ++ builtin.zig_version_string)) {
         if (require_video) {
             std.debug.print(
-                "error: FFmpeg for {s} is missing at {s}.\nRun `bun scripts/build-ffmpeg.ts --target={s}` in packages/native (see src/vendor/ffmpeg/README.md).\n",
+                "error: FFmpeg for {s} at {s} is missing or built by another Zig version.\nRun `bun scripts/build-ffmpeg.ts --target={s}` in packages/native (see src/vendor/ffmpeg/README.md).\n",
                 .{ target_name, prefix, target_name },
             );
             std.process.exit(1);
@@ -407,7 +409,7 @@ fn addVideoDependencies(b: *std.Build, module: *std.Build.Module, target: std.Bu
         if (!video_unavailable_warned.contains(target_name)) {
             video_unavailable_warned.put(b.allocator, target_name, {}) catch @panic("OOM");
             std.debug.print(
-                "warning: FFmpeg for {s} is missing; building without video. Run `bun scripts/build-ffmpeg.ts --target={s}` in packages/native.\n",
+                "warning: FFmpeg for {s} is missing or built by another Zig version; building without video. Run `bun scripts/build-ffmpeg.ts --target={s}` in packages/native.\n",
                 .{ target_name, target_name },
             );
         }
