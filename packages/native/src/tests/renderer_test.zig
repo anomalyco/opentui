@@ -4062,6 +4062,13 @@ test "FeedBackend - image uploads wait for the frames they fit" {
         solid_second: bool = false,
         remove_first_at: ?u32 = null,
         retransport: bool = false,
+        // A pixel size for every image, a crop of its middle half, and the copy's size that the
+        // uploading frames send when the full image does not fit.
+        pixels: ?u32 = null,
+        crop: bool = false,
+        copy: ?u32 = null,
+        // The images move a cell right from this frame on.
+        move_at: ?u32 = null,
         uploads: []const []const u32,
         blocks: u32 = 0,
     };
@@ -4075,6 +4082,12 @@ test "FeedBackend - image uploads wait for the frames they fit" {
         .{ .name = "kitty changing image does not starve", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b001, .changing = true, .uploads = &.{ &.{1}, &.{2}, &.{1}, &.{3} } },
         .{ .name = "kitty alone over a frame", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .retransport = true, .uploads = &.{&.{}}, .blocks = 1 },
         .{ .name = "kitty alone over a frame, size changes twice", .protocol = .kitty, .sizes = &.{16}, .cells = false, .fit = 0b1, .delta = -1, .growing = true, .uploads = &.{ &.{}, &.{}, &.{}, &.{} }, .blocks = 1 },
+        // 419: the full 32x32 image is over the frame, a copy at the placement's 24x24 pixels fits.
+        // Moved later, the copy is placed again, not sent again.
+        .{ .name = "kitty copy at the placement fits", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .fit = 0, .delta = 3500, .copy = 24, .move_at = 2, .uploads = &.{ &.{}, &.{1}, &.{} } },
+        .{ .name = "kitty copy of a crop fits", .protocol = .kitty, .sizes = &.{32}, .pixels = 16, .crop = true, .fit = 0, .delta = 3500, .copy = 16, .uploads = &.{ &.{}, &.{1} } },
+        .{ .name = "kitty alone without a pixel size", .protocol = .kitty, .sizes = &.{32}, .pixels = 0, .cells = false, .fit = 0b1, .delta = -1, .uploads = &.{&.{}}, .blocks = 1 },
+        .{ .name = "kitty copy over a frame too", .protocol = .kitty, .sizes = &.{32}, .pixels = 24, .fit = 0, .delta = 2000, .uploads = &.{ &.{}, &.{} }, .blocks = 1 },
         .{ .name = "kitty waits behind a frame of cells", .protocol = .kitty, .sizes = &.{ 16, 16, 16 }, .fit = 0b011, .text_rows = 2, .uploads = &.{ &.{ 1, 2 }, &.{}, &.{3} } },
         .{ .name = "kitty file transport cells first", .protocol = .kitty, .sizes = &.{ 16, 16 }, .text = true, .fit = 0b01, .delta = -1, .transport = 2, .uploads = &.{ &.{}, &.{ 1, 2 } } },
         .{ .name = "kitty zlib neighbor of a removed oversize image", .protocol = .kitty, .sizes = &.{ 16, 16 }, .fit = 0b10, .transport = 1, .solid_second = true, .remove_first_at = 2, .uploads = &.{ &.{2}, &.{}, &.{1} } },
@@ -4095,8 +4108,10 @@ test "FeedBackend - image uploads wait for the frames they fit" {
             for (images, row.sizes, 0..) |value, size, index| {
                 if (index == 0 and row.remove_first_at != null and frame >= row.remove_first_at.?) continue;
                 const handle: u32 = @intCast(index + 1 + if (row.changing and index == 0) frame * 16 else 0);
-                const pixels = size + if (row.growing) @min(frame, 2) else 0;
-                _ = try next.drawImage(value, handle, if (row.overlap) 0 else @intCast(index * 9), 0, size / 4, size / 8, pixels, pixels, 0, 0, size, size, row.protocol);
+                const pixels = (row.pixels orelse size) + if (row.growing) @min(frame, 2) else 0;
+                const crop: u32 = if (row.crop) size / 4 else 0;
+                const moved: i32 = if (row.move_at != null and frame >= row.move_at.?) 1 else 0;
+                _ = try next.drawImage(value, handle, moved + if (row.overlap) 0 else @as(i32, @intCast(index * 9)), 0, size / 4, size / 8, pixels, pixels, crop, crop, size - 2 * crop, size - 2 * crop, row.protocol);
             }
         }
     };
@@ -4178,6 +4193,10 @@ test "FeedBackend - image uploads wait for the frames they fit" {
             try std.testing.expectEqualSlices(u32, expected, kept[0..count]);
             const escapes = std.mem.count(u8, output.items, if (row.protocol == .kitty) "\x1b_Ga=t" else "\x1bP");
             try std.testing.expectEqual(count, escapes);
+            if (row.copy) |copy| if (count != 0) {
+                var dims: [32]u8 = undefined;
+                try std.testing.expect(std.mem.find(u8, output.items, try std.fmt.bufPrint(&dims, "f=32,s={d},v={d},", .{ copy, copy })) != null);
+            };
             if (frame == 0 and count == row.sizes.len) try std.testing.expectEqualStrings(roomy.lastOutput(), output.items);
             // Trimming uploads keeps the frame's own controls.
             if (output.items.len != 0) try std.testing.expect(std.mem.find(u8, output.items, ansi.ANSI.hideCursor) != null);
