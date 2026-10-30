@@ -493,7 +493,10 @@ test "stdout writer abandoned inside a stuck write returns at once and frees its
     const writer = try StdoutWriter.create(scribbling, .{ .fd = fds[1] }, .{});
     @memset(&writer.buffer, 'y');
     writer.start(handover_max);
-    try waitState(&writer.state, .writing);
+    // Bytes in the pipe show the thread inside write(2). `.writing` alone also holds just before
+    // the call, and an abandon there stops the copy unwritten.
+    var ready: [1]std.c.pollfd = .{.{ .fd = fds[0], .events = std.c.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(1, std.c.poll(&ready, 1, 10_000));
     writer.abandon();
     // The owner is gone; the reader drains, the write returns, the publish fails, and the
     // thread frees the writer. The testing allocator reports a leak or a double free.

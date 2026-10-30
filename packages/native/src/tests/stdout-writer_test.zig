@@ -148,29 +148,25 @@ test "Session cancel with the writer stuck in write(2) returns at once; the thre
     if (!stdout_writer.supported) return error.SkipZigTest;
     const owner = try context.Context.init(testing.allocator, std.Io.failing, .{});
     defer owner.deinit() catch unreachable;
-    const id = try owner.createSession(options);
+    const id = try owner.createSession(.{ .chunk_size = 8192, .chunk_count = 16, .span_capacity = 16 });
     const value = try owner.raw().getSession(id);
     const fds = try pipe();
     defer for (fds) |fd| {
         _ = std.c.close(fd);
     };
-    var bytes: [4096]u8 = undefined;
+    var bytes: [8192]u8 = undefined;
     @memset(&bytes, 'z');
-    for (0..2) |_| try owner.writeSession(id, &bytes);
-    const create: PipeCreate = .{ .fd = fds[1] };
-    // The first copy fills the pipe; nobody reads, so the second blocks in write(2).
-    try testing.expect((try value.postStdout(PipeWriter, create, 65_536, false)).in_flight);
-    try testing.expectEqual(@as(u32, 4096), try collect(value, create));
-    try testing.expect((try value.postStdout(PipeWriter, create, 65_536, false)).in_flight);
-    const writer: *PipeWriter = @ptrCast(@alignCast(value.stdout_post.?.ptr));
-    try stdout_writer.waitState(&writer.state, .writing);
+    try owner.writeSession(id, &bytes);
+    // One copy twice the pipe's size: once bytes show, the thread is inside write(2) and blocked.
+    // Waiting for `.writing` alone also covers the moment before the call, where a cancel stops
+    // the copy unwritten.
+    try testing.expect((try value.postStdout(PipeWriter, PipeCreate{ .fd = fds[1] }, 65_536, false)).in_flight);
+    var ready: [1]std.c.pollfd = .{.{ .fd = fds[0], .events = std.c.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(1, std.c.poll(&ready, 1, 10_000));
     try owner.cancelSession(id);
     try testing.expect(value.stdout_post == null and value.pending == null);
-    // Behind the first copy, the rest of the running write still lands, then nothing (R9); the
-    // thread frees the writer.
-    var read: [4096]u8 = undefined;
-    try readExactly(fds[0], &read);
-    try readExactly(fds[0], &read);
+    // The rest of the running write still lands (R9); the thread frees the writer.
+    try readExactly(fds[0], &bytes);
     try waitThreadsGone();
 }
 
