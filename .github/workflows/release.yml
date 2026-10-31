@@ -22,7 +22,7 @@ permissions:
   contents: write
 
 env:
-  NODE_VERSION: 26.7.0
+  NODE_VERSION: 26.13.0
 
 jobs:
   # Decides whether this push is a release, and extracts the version and the dry-run flag.
