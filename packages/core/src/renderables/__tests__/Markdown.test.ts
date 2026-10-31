@@ -1885,6 +1885,32 @@ test("simple blockquote", async () => {
   `)
 })
 
+test.each([
+  ["coalesced", "> one", "> one\n> two"],
+  ["top-level", "> one", "> one\n> two"],
+  ["top-level", "1. a\n\n", "1. a\n\n1. b"],
+] as const)(
+  "non-streaming %s update to %j draws what a fresh render draws",
+  async (internalBlockMode, before, after) => {
+    const md = createMarkdownRenderable({ id: "markdown-updated", content: before, syntaxStyle, internalBlockMode })
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+
+    md.content = after
+    await renderMarkdownRenderable(md)
+    const updatedFrame = captureFrame()
+
+    renderer.root.remove(md)
+    md.destroyRecursively()
+
+    const fresh = createMarkdownRenderable({ id: "markdown-fresh", content: after, syntaxStyle, internalBlockMode })
+    renderer.root.add(fresh)
+    await renderMarkdownRenderable(fresh)
+
+    expect(updatedFrame).toBe(captureFrame())
+  },
+)
+
 test("blockquote uses markup.quote style for text and conceal style for bar", async () => {
   const quoteColor = RGBA.fromValues(0.25, 0.5, 0.75, 1)
   const concealColor = RGBA.fromValues(0.1, 0.2, 0.3, 1)
