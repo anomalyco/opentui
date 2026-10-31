@@ -12,7 +12,7 @@ export class KeyEvent implements ParsedKey {
   number: boolean
   raw: string
   eventType: KeyEventType
-  source: "raw" | "kitty"
+  source: "raw" | "kitty" | "win32"
   code?: string
   super?: boolean
   hyper?: boolean
