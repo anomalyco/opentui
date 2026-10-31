@@ -3397,6 +3397,11 @@ ot_status ot_session_complete_output(
  * cancel explicitly discards pending output after transport disconnection.
  * Neither operation waits or sleeps. */
 ot_status ot_session_close(ot_context *context, const ot_handle *session);
+/* A close past its deadline: begin closing if needed, then discard the output
+ * queued before the close, except the copy an outstanding ticket or stdout
+ * copy holds. Only that copy and terminal restoration remain; once restoration
+ * output is queued, this discards nothing. Continue pumping as after close. */
+ot_status ot_session_drop_output(ot_context *context, const ot_handle *session);
 /* Process-exit fallback: stop admission and visit one restoration work unit
  * without cursor-settle waits. Returns OT_PUMP_AGAIN, OT_PUMP_OUTPUT_PENDING, or
  * OT_PUMP_CLOSED. The host must still deliver and complete output in order.

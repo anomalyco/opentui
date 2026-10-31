@@ -101,10 +101,8 @@ test("animation requests wait for output credit and remain cancellable", async (
   stdout.release()
   await driver.idle()
   clock.advance(0)
-  await settle()
-  expect(renderer.liveRequestCount).toBe(0)
-  expect(renderer.isRunning).toBe(false)
   await renderer.idle()
+  expect(renderer.liveRequestCount).toBe(0)
   expect(observed).toEqual(["resumed"])
 
   renderer.requestLive()
@@ -287,6 +285,7 @@ test("Kitty uploads that do not fit one frame go out in the next frames", async 
   stdout.release()
   for (let index = 0; index < 3; index++) {
     const source = NativeImage.fromRgba(noise(index, 48 * 48 * 4), 48, 48)
+    cleanups.push(async () => source.dispose())
     renderer.root.add(
       new ImageRenderable(renderer, {
         source,

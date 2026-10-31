@@ -4992,8 +4992,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         void this.nativeSession.close()
       } catch (error) {
         this.externalOutputQueue.clear()
-        this.nativeSession.dispose()
-        console.error("Native split output cancelled during close:", error)
+        // A late close stops the flush and still restores (#1875).
+        if (!this.nativeSession.isCloseInterruption(error)) {
+          this.nativeSession.dispose()
+          console.error("Native split output cancelled during close:", error)
+        }
       }
     })
     // A refused writer wakes after the queued rows and the terminal restore, when stdout is no longer captured.
@@ -5384,8 +5387,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     } catch (error) {
       renderFailed = true
-      // Teardown abandons in-flight frames, and `closed` reports a Session failure once.
-      if (this.canRender) {
+      // Teardown and a late close abandon in-flight frames, and `closed` reports a Session failure once.
+      if (this.canRender && !this.nativeSession.isCloseInterruption(error)) {
         const renderError = error instanceof Error ? error : new Error(String(error))
         const event: CliRendererErrorEvent = { error: renderError, renderable: this.root.takeCurrentRenderable() }
         const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)

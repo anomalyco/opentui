@@ -286,6 +286,8 @@ const Lifecycle = struct {
     /// Enable has published, so restoration may clear the rendered main-screen
     /// area. Before that, the visible screen still holds shell output.
     screen_claimed: bool = false,
+    /// A late close dropped output, which may have cut a frame inside its synchronized update.
+    dropped: bool = false,
     image_index: usize = 0,
     deadline_ns: ?u64 = null,
 
@@ -349,6 +351,9 @@ pub const Session = struct {
     last_request_id: u64 = 0,
     /// Successful ticket bytes, not retained span charges or discarded output.
     completed_bytes: u64 = 0,
+    /// The screen and Kitty keyboard as the terminal has them while a packet that may switch them is queued, up
+    /// to `end`. The model counts a switch once it is queued, so a late close that drops it restores these.
+    wire: struct { alt_screen: bool = false, use_alternate: bool = false, kitty_keyboard: bool = false, end: u64 = 0 } = .{},
     frame_end_offset: ?u64 = null,
     lifecycle: Lifecycle = .{},
     // Pump and Kitty polling share one accepted host clock.
@@ -601,6 +606,7 @@ pub const Session = struct {
         if (trailing_output.len > bytes.len - writer.buffered().len) return error.InvalidOptions;
         try writer.writeAll(trailing_output);
         try value.resizeWithOutput(width, height, writer.buffered());
+        self.queueSwitch(value);
         candidate.state.cursor = value.terminal.state.cursor;
         value.terminal.state = candidate.state;
         value.useAlternateScreen = alternate;
@@ -1122,12 +1128,22 @@ pub const Session = struct {
             try self.output.writeReservedControlAtomic(writer.buffered());
         }
         if (owned_environment) candidate.opts.env_map = &value.terminal.host_env_map.?;
+        self.queueSwitch(value);
         value.terminal = candidate;
         self.lifecycle = progress;
         value.syncWidthMethod();
         if (command != null and command.? == .capability_response) {
             value.invalidateTerminalState();
         }
+    }
+
+    /// A packet that may switch the screen or Kitty keyboard was queued; the model has not taken it yet.
+    fn queueSwitch(self: *Session, value: *const renderer.CliRenderer) void {
+        if (self.completed_bytes >= self.wire.end) {
+            const state = value.terminal.state;
+            self.wire = .{ .alt_screen = state.alt_screen, .use_alternate = value.useAlternateScreen, .kitty_keyboard = state.kitty_keyboard };
+        }
+        self.wire.end = self.output.getStats().bytes_written;
     }
 
     fn writeControlPacket(command: Control, candidate: *terminal.Terminal, progress: *Lifecycle, writer: *std.Io.Writer) !void {
@@ -1221,6 +1237,7 @@ pub const Session = struct {
                 if (progress.image_index == value.currentImages.items.len) progress.step = .reset_input;
             },
             .reset_input => {
+                if (progress.dropped) try writer.writeAll(ansi.ANSI.syncReset);
                 try candidate.resetInputModes(writer);
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
@@ -1522,22 +1539,62 @@ pub const Session = struct {
         held.abandon(held.ptr);
     }
 
+    /// A close past its deadline: begins close, then discards the output queued before it, except the copy that
+    /// the host holds, so only that copy and the restoration remain.
+    pub fn dropOutput(self: *Session) Error!void {
+        try self.beginClose();
+        // Restoration packets enter only a drained queue. Once the first is queued, the queue holds nothing else.
+        const step = self.lifecycle.step;
+        if (step != .idle and (step != .delete_images or self.lifecycle.image_index != 0)) return;
+        self.finishPresentation(.failed);
+        const kept: u32 = if (self.pending) |ticket| ticket.len else 0;
+        if (self.releaseQueued(kept)) {
+            // Dropped packets may have changed the terminal model without reaching the terminal: take the screen
+            // and Kitty keyboard back to what the terminal has, and reset the other input modes.
+            self.lifecycle.dropped = true;
+            if (self.renderer) |value| {
+                const state = &value.terminal.state;
+                if (self.completed_bytes + kept < self.wire.end) {
+                    state.alt_screen = self.wire.alt_screen;
+                    state.kitty_keyboard = self.wire.kitty_keyboard;
+                    value.useAlternateScreen = self.wire.use_alternate;
+                }
+                state.modify_other_keys = true;
+                state.bracketed_paste = true;
+                state.focus_tracking = true;
+            }
+        }
+        if (self.output.closed and self.isDrained()) self.state = .closed;
+    }
+
+    /// Releases every queued span. The held span keeps `kept` bytes from its offset for a copy in flight.
+    /// Returns whether any bytes were released.
+    fn releaseQueued(self: *Session, kept: u32) bool {
+        var released = false;
+        if (self.span) |*span| {
+            released = span.len > self.span_offset + kept;
+            if (kept == 0) {
+                self.output.releaseSpan(span.slot_index, span.release_id) catch unreachable;
+                self.span = null;
+                self.span_offset = 0;
+            } else span.len = self.span_offset + kept;
+        }
+        var spans: [1]feed.SpanInfo = undefined;
+        while (self.output.drainSpans(&spans) != 0) {
+            self.output.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
+            released = true;
+        }
+        return released;
+    }
+
     /// Explicitly discards disconnected output. Copies belong to the host, so
     /// cancellation leaves no native borrow and never retries accepted bytes.
     pub fn cancel(self: *Session) void {
         self.abandonStdout();
         self.cancelSceneFrame();
         self.finishPresentation(.failed);
-        if (self.span) |span| {
-            self.output.releaseSpan(span.slot_index, span.release_id) catch unreachable;
-            self.span = null;
-        }
-        var spans: [1]feed.SpanInfo = undefined;
-        while (self.output.drainSpans(&spans) != 0) {
-            self.output.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
-        }
+        _ = self.releaseQueued(0);
         self.output.close() catch unreachable;
-        self.span_offset = 0;
         self.pending = null;
         self.state = .cancelled;
         self.lifecycle.phase = .cancelled;

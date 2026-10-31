@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import assert from "node:assert/strict"
 import { Writable } from "node:stream"
+import { clearEnvCache } from "../lib/env.js"
 import { NativeSession, type NativeSessionDriverOptions, type NativeSessionScheduler } from "../NativeSession.js"
 import { CliRenderer } from "../renderer.js"
 import { settle } from "../testing/harness.js"
@@ -106,17 +107,21 @@ function outcome(promise: Promise<void>): Promise<string> {
 }
 
 const timeout = "NativeSession graceful close timed out; output cancelled without restoration"
+const late = "NativeSession graceful close ran late; queued output was dropped"
 
+// #1875: at a deadline with nothing acknowledged, the queue is dropped and the write in flight kept. The close ends
+// late once that write completes, or times out if it does not complete within another deadline.
 test.each([
-  { name: "raw output acknowledged before the deadline closes", attach: false, release: true, expected: "closed" },
-  { name: "a write still in flight at the deadline times out", attach: false, release: false, expected: timeout },
-  { name: "restoration whose last settle wait is due closes", attach: true, release: true, expected: "closed" },
-])("a turn that runs late at the close deadline: $name", async ({ attach, release, expected }) => {
+  { name: "raw output acknowledged before the deadline closes", release: 9, expected: "closed" },
+  { name: "a write in flight at the deadline closes late without the queue", queue: true, release: 40, expected: late },
+  { name: "a write still in flight a deadline later times out", queue: true, expected: timeout },
+  { name: "restoration whose last settle wait is due closes", attach: true, expected: "closed" },
+])("a turn that runs late at the close deadline: $name", async ({ expected, ...row }) => {
   const scheduler = new ManualScheduler()
   const stdout = new RecordingWriteStream(4, 2, { highWaterMark: 1 })
   const driver = new NativeSession(stdout, { scheduler, closeTimeoutMs: 25, output })
   try {
-    if (attach) {
+    if (row.attach) {
       driver.attachRenderer({ width: 4, height: 2 })
       const setup = driver.setupTerminal()
       await scheduler.run()
@@ -126,16 +131,19 @@ test.each([
       expect(driver.write(Buffer.from("restore"))).toBe(true)
       await scheduler.run()
       expect(stdout.pendingWrite).toBe(true)
+      if (row.queue) expect(driver.write(Buffer.from("queued"))).toBe(true)
     }
     const closed = outcome(driver.close())
-    // Restoration waits 10 ms twice for the cursor to settle, so its last wait is due at 20 ms.
+    // Restoration waits 10 ms twice for the cursor to settle, so its last wait is due at 20 ms. The turn that is due
+    // before the deadline runs at it.
     await scheduler.run()
-    await scheduler.run(attach ? 10 : 9)
-    if (release) stdout.release()
-    // The turn that is due before the deadline runs at it.
-    await scheduler.run(25)
+    for (const ms of [row.attach ? 10 : 9, 25, 40, 50]) {
+      await scheduler.run(ms)
+      if (ms === row.release) stdout.release()
+    }
     expect(await closed).toBe(expected)
     expect(driver.disposed).toBe(true)
+    if (!row.attach) expect(stdout.text()).toBe("restore")
   } finally {
     stdout.release()
     driver.dispose()
@@ -391,9 +399,9 @@ test("environment limits reject before attachment and accept the boundary", () =
   }
 })
 
-function rendererFor(scheduler: ManualScheduler, stdout: Writable, clock: ManualClock) {
+function rendererFor(scheduler: ManualScheduler, stdout: Writable, clock: ManualClock, closeTimeoutMs?: number) {
   return new CliRenderer(createTestStdin(), stdout as NodeJS.WriteStream, 2, 1, {
-    nativeSession: new NativeSession(stdout, { scheduler }),
+    nativeSession: new NativeSession(stdout, { scheduler, closeTimeoutMs }),
     clock,
     remote: true,
     screenMode: "main-screen",
@@ -473,10 +481,38 @@ test("blocked output and host promises do not hold other renderers' input, resiz
   }
 })
 
+// #1875: a late close drops the frame the render loop waits for. Its presentation rejects, and the loop ends
+// without reporting an error for the closed Session.
+test("a late close rejects the dropped frame's presentation and the render loop ends quietly", async () => {
+  const scheduler = new ManualScheduler()
+  const clock = new ManualClock()
+  const stdout = new RecordingWriteStream(2, 1, { highWaterMark: 1 })
+  const renderer = rendererFor(scheduler, stdout, clock, 25)
+  const errors: unknown[] = []
+  renderer.on("render:error", (event) => errors.push(event.error))
+  try {
+    stdout.hold()
+    renderer.start()
+    await scheduler.turns(8)
+    const driver = renderer.nativeScene.driver
+    const presented = outcome(driver.whenPresented())
+    const closed = outcome(driver.close())
+    await scheduler.turns(40)
+    stdout.release()
+    await scheduler.turns(40)
+    expect([await presented, await closed, errors]).toEqual([late, late, []])
+  } finally {
+    stdout.release()
+    renderer.destroy()
+    renderer.nativeScene.driver.dispose()
+    await scheduler.turns(8)
+  }
+})
+
 /**
  * Process stdout through a scripted stdout writer (post_stdout over the ticket ABI): copy n's write ends at
  * `doneAt[n]` ms; `null` is a copy the thread never picks up, which wait=1 takes back unread. drain_stdout writes
- * through the ticket ABI too. Records each post's byte limit and counts drains.
+ * through the ticket ABI too. Records each post's byte limit, and counts drains and started copies.
  */
 async function withStdoutWriter(
   doneAt: readonly (number | null)[],
@@ -485,7 +521,7 @@ async function withStdoutWriter(
     driver: NativeSession,
     scheduler: ManualScheduler,
     posts: { maxBytes: number; wait: boolean; at: bigint }[],
-    drains: { count: number },
+    counts: { drains: number; copies: number },
   ) => Promise<void>,
 ): Promise<void> {
   const scheduler = new ManualScheduler()
@@ -495,13 +531,13 @@ async function withStdoutWriter(
   const postStdout = lib.sessionPostStdout
   const drainStdout = lib.sessionDrainStdout
   const posts: { maxBytes: number; wait: boolean; at: bigint }[] = []
-  const drains = { count: 0 }
+  const counts = { drains: 0, copies: 0 }
   let copy: { ticket: NonNullable<ReturnType<typeof lib.sessionReadOutput>>; done: bigint } | null = null
   let parked = false
   let started = 0
   Object.defineProperty(process, "stdout", { value: sink, configurable: true, writable: true })
   lib.sessionDrainStdout = (context, session) => {
-    drains.count++
+    counts.drains++
     const ticket = lib.sessionReadOutput(context, session, new Uint8Array(65_536))
     if (!ticket) return 0
     lib.sessionCompleteOutput(context, session, ticket, true)
@@ -530,13 +566,14 @@ async function withStdoutWriter(
     }
     const ticket = lib.sessionReadOutput(context, session, new Uint8Array(maxBytes))
     if (!ticket) return { written, inFlight: false }
+    counts.copies++
     copy = { ticket, done: BigInt(done!) * MS }
     return { written, inFlight: true }
   }
   try {
     const driver = new NativeSession(sink, { scheduler, output, closeTimeoutMs })
     try {
-      await run(driver, scheduler, posts, drains)
+      await run(driver, scheduler, posts, counts)
     } finally {
       if (!driver.disposed) driver.dispose()
     }
@@ -581,27 +618,70 @@ test("the stdout writer is polled in one task with a growing backoff, and a coll
   })
 })
 
-// #1870: the second copy ends at 300 ms, after the deadline. A grace shorter than the backoff leaves the polls as
-// they are: 175 in all, the last at 329 ms. With stdout corked the third copy waits with nothing in flight, so the
-// deadline restarted at the collect fires. A deadline from armCloseTimeout is held the same way.
+// #1870: the second copy ends at 300 ms, after the deadline: 175 polls in all, the last at 329 ms. A 1 ms grace caps
+// the close at 10 ms (#1875), which drops the copy queued behind the first, in flight until 300 ms; its polls still
+// back off. With stdout corked the third copy waits with nothing in flight, so the deadline restarted at the collect
+// drops it at 429 ms; the close ends late if stdout moves within another deadline. A copy collected at 900 ms with
+// stdout corked restarts the deadline past the cap, and the cap still drops at 1000 ms. A deadline from
+// armCloseTimeout is held the same way.
 test.each([
   { timeoutMs: 100, bytes: 6000, expected: "closed" },
-  { timeoutMs: 1, bytes: 6000, expected: "closed" },
+  { timeoutMs: 1, bytes: 6000, doneAt: [300], posts: 103, expected: late },
   { timeoutMs: 100, bytes: 9000, cork: true, expected: timeout },
+  { timeoutMs: 100, bytes: 9000, cork: true, uncork: 450, expected: late },
+  { timeoutMs: 100, bytes: 6000, doneAt: [900], cork: true, posts: 113, settledMs: 1100, expected: timeout },
   { timeoutMs: 100, bytes: 6000, arm: true, expected: "closed" },
 ])("a close waits for the writer's copy in flight past the deadline: %o", async ({ timeoutMs, bytes, ...row }) => {
-  await withStdoutWriter([10, 300], timeoutMs, async (driver, scheduler, posts) => {
+  await withStdoutWriter(row.doneAt ?? [10, 300], timeoutMs, async (driver, scheduler, posts) => {
     expect(driver.write(new Uint8Array(bytes).fill(98))).toBe(true)
     if (row.arm) driver.armCloseTimeout()
-    let closed = row.arm ? null : outcome(driver.close())
-    for (let ms = 0; ms <= 600; ms++) {
+    let settledMs = 0
+    const close = () => outcome(driver.close()).finally(() => (settledMs = Number(scheduler.time / MS)))
+    let closed = row.arm ? null : close()
+    for (let ms = 0; ms <= 1200; ms++) {
       if (row.cork && ms === 20) process.stdout.cork()
-      if (row.arm && ms === 350) closed = outcome(driver.close())
+      if (ms === row.uncork) process.stdout.uncork()
+      if (row.arm && ms === 350) closed = close()
       await scheduler.run(ms)
     }
     expect(await closed).toBe(row.expected)
-    expect(posts.length).toBe(175)
+    expect(posts.length).toBe(row.posts ?? 175)
+    if (row.settledMs) expect(settledMs).toBe(row.settledMs)
   })
+})
+
+// #1875: five copies, the first in flight until 1050 ms. The cap, ten deadlines after close, drops the other four, and
+// the close ends late once the first is written; a copy collected at the cap starts no other. An exit during the held
+// close, or during the split-footer flush before it (armed deadline), drops them at once, and on the drain path (no
+// writer) it drains none of them.
+test.each([
+  { firstMs: 1050, exitAt: null, drain: false },
+  { firstMs: 1000, exitAt: null, drain: false },
+  { firstMs: 1050, exitAt: 500, drain: false },
+  { firstMs: 1050, exitAt: 500, drain: false, arm: true },
+  { firstMs: 1050, exitAt: 0, drain: true },
+])("a held close keeps only the copy in flight: %o", async ({ firstMs, exitAt, drain, arm }) => {
+  if (drain) process.env.OTUI_STDOUT_THREAD = "0"
+  clearEnvCache()
+  try {
+    await withStdoutWriter(
+      [0, 1, 2, 3, 4].map((n) => firstMs + n),
+      100,
+      async (driver, scheduler, _posts, counts) => {
+        expect(driver.write(new Uint8Array(20_000).fill(99))).toBe(true)
+        const closed = arm ? driver.armCloseTimeout() : outcome(driver.close())
+        for (let ms = 0; ms <= 2100; ms += 10) {
+          if (ms === exitAt) expect(driver.restoreOnExit()).toBe(true)
+          await scheduler.run(ms)
+        }
+        expect(counts.copies + counts.drains).toBe(drain ? 0 : 1)
+        if (exitAt === null) expect(await closed).toBe(late)
+      },
+    )
+  } finally {
+    delete process.env.OTUI_STDOUT_THREAD
+    clearEnvCache()
+  }
 })
 
 test.each([
@@ -612,13 +692,13 @@ test.each([
   // The thread never picks up the copy posted before exit: no new writer during exit.
   { doneAt: [null], bytes: 100, posted: 0, drained: 1 },
 ])("exit restores through the stdout writer, or after a take-back through the drain: $doneAt", async (row) => {
-  await withStdoutWriter(row.doneAt, 100, async (driver, scheduler, posts, drains) => {
+  await withStdoutWriter(row.doneAt, 100, async (driver, scheduler, posts, counts) => {
     expect(driver.write(new Uint8Array(row.bytes).fill(97))).toBe(true)
     await scheduler.run(0)
     scheduler.time = MS
     const before = posts.length
     expect(driver.restoreOnExit()).toBe(true)
     expect(posts.slice(before).filter((post) => !post.wait && post.maxBytes > 0)).toHaveLength(row.posted)
-    expect(drains.count).toBe(row.drained)
+    expect(counts.drains).toBe(row.drained)
   })
 })

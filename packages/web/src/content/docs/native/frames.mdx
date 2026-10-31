@@ -350,6 +350,7 @@ Setup does not wait for terminal capability replies. Your host must still read i
 The native Session does not own your transport or restore host-side input settings.
 
 On graceful shutdown, call `ot_session_close` and continue pumping and delivering restoration output until closed.
+If the close runs past your deadline, call `ot_session_drop_output`. It discards the output queued before the close, except a copy you hold, and keeps the restoration.
 On transport loss, call `ot_session_cancel`. It discards pending output without claiming terminal restoration.
 Read [Host I/O and time](/docs/native/host-io-time) for the shared Session clock, image deadlines, and native file cleanup.
 

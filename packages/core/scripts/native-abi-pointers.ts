@@ -240,6 +240,7 @@ export const nativePointerPolicies = {
   ot_session_post_stdout: { 0: context, 1: buffer, 4: buffer, 5: buffer },
   ot_session_complete_output: { 0: context, 1: buffer, 2: buffer },
   ot_session_close: { 0: context, 1: buffer },
+  ot_session_drop_output: { 0: context, 1: buffer },
   ot_session_cancel: { 0: context, 1: buffer },
   ot_session_get_state: { 0: context, 1: buffer, 2: buffer },
   ot_session_destroy: { 0: context, 1: buffer },

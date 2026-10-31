@@ -1532,6 +1532,15 @@ pub fn ot_session_close(context: ?*ContextHandle, session_ptr: ?*const c.ot_hand
     return c.OT_OK;
 }
 
+pub fn ot_session_drop_output(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    owner.core.dropSessionOutput(handleFromC(id.*)) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_terminal_flush_input() callconv(.c) c.ot_status {
     @import("terminal.zig").flushInput();
     return c.OT_OK;

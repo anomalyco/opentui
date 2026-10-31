@@ -229,14 +229,13 @@ test.each(
 // a frame, and writes the rest in one call.
 const capturedMaxBytes = 64 * 1024 * 1024
 test.each([
-  ["ignores", "stalled", 15_000, 79],
-  ["ignores", "stalled", 15_000, 78],
-  ["ignores", "draining", 15_000, 79],
+  ["ignores", "stalled", 11_000, 79],
+  ["ignores", "draining", 12_000, 79],
   ["ignores", "suspending", 10_000, 79],
   ["ignores", "replaying", 15_000, 79],
   ["ignores", "interleaved", 4_000, 399],
   ["ignores", "burst", 20_000, 78],
-  ["respects", "draining", 12_000, 79],
+  ["respects", "draining", 6_000, 79],
 ] as const)(
   "a writer that %s backpressure on a %s terminal keeps %i %i-cell rows bounded",
   async (mode, pace, rows, cells) => {

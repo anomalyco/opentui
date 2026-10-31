@@ -26,6 +26,10 @@ const output = { chunkSize: 4096, spanCapacity: 128, maxBytes: 8_388_608n, contr
 // What suspend, exit and close must have handed to the link: the cursor shown and the alternate screen left.
 const restoration = ["\x1b[?25h", "\x1b[?1049l"]
 const timeout = "NativeSession graceful close timed out; output cancelled without restoration"
+const late = "NativeSession graceful close ran late; queued output was dropped"
+// The default close timeout, and the cap on the whole close (#1875).
+const deadlineMs = 1000
+const capMs = 10 * deadlineMs
 const fds = ["blocking", "nonblocking", "unsupported"] as const
 type Fd = (typeof fds)[number]
 // Width and height pairs.
@@ -37,6 +41,8 @@ const presets = {
   hangup_mid_frame: { rate: 48_000, capacity: 18_944 + 65_536, hangup: true, stall: 0 },
   // The link stalls for 4 s as the run ends, past the 1 s close timeout, with a write running.
   close_timeout: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 4000 },
+  // The link stalls past one close timeout and moves within the second.
+  close_slow: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 1500 },
   // The link stalls as the run ends and does not recover within the run.
   close_stuck: { rate: 48_000, capacity: 18_944 + 65_536, hangup: false, stall: 3_600_000 },
   // R23: split-footer captured stdout at about 1,000 lines a second, titles and a 1 MiB OSC 52 on a 16 KB/s link;
@@ -44,6 +50,8 @@ const presets = {
   producer_flood: { rate: 16_000, capacity: 18_944 + 65_536, hangup: false, stall: 0 },
 }
 type Preset = keyof typeof presets
+// A producer_flood seed whose queue outlasts the cap, on a non-blocking fd; it ends with an exit during the close.
+const floodExitSeed = 10
 // fd: the stdout writer thread; fd-off: OTUI_STDOUT_THREAD=0, today's drain on the JS thread.
 type Path = "writable" | "fd" | "fd-off"
 
@@ -320,7 +328,9 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
   const end = config.stall
     ? "destroy"
     : flood
-      ? "destroy mid-stream"
+      ? seed < floodExitSeed
+        ? "destroy mid-stream"
+        : "destroy, exit mid-stream"
       : (["destroy", "exit", "exit mid-stream", "destroy mid-stream"] as const)[draw(4)]!
   const label = `${preset} ${path}${fd ? `/${fd}` : ""} seed ${seed}`
   const stdout = Object.getOwnPropertyDescriptor(process, "stdout")!
@@ -516,7 +526,7 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
     const ended = world.now
     const offset = link.stream.length
     let restored = null as boolean | null
-    if (end.startsWith("exit") && !app.isDestroyed) {
+    const exit = () => {
       const restoreOnExit = driver.restoreOnExit
       driver.restoreOnExit = () => (restored = restoreOnExit.call(driver))
       calls.exiting = true
@@ -526,32 +536,64 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
       if (restored) expect(link.restored(offset), label).toBe(true)
       const restores = fd === "blocking" || (writer && fd === "nonblocking")
       if (restores && !link.failed) expect(restored, label).toBe(true)
-    } else {
+    }
+    const copyMs = rate === null ? 0 : Math.ceil((output.chunkSize * 1000) / rate)
+    if (end.startsWith("exit") && !app.isDestroyed) exit()
+    else {
       if (config.stall) link.stalledUntil = world.now + BigInt(config.stall) * MS
       app.destroy()
     }
-    // R27 (#1870): over a stall the close waits for the writer's copy in flight and restores once the link moves,
-    // or keeps waiting. The close timeout cancels any other wait, without claiming restoration.
+    if (end === "destroy, exit mid-stream") {
+      // #1875: an exit during a held close drops the queue and waits only for the copy in flight and the restore.
+      await world.until(() => closed !== "pending" || world.now - ended >= BigInt(deadlineMs / 2) * MS)
+      expect(closed, label).toBe("pending")
+      const before = link.stream.length
+      exit()
+      expect(link.stream.length - before, label).toBeLessThan(2 * output.chunkSize)
+    }
+    // R27 (#1870): over a stall the close waits for the writer's copy in flight. #1875: a close that takes no bytes
+    // for a close timeout, or runs past the cap, drops the queue, waits for the copy in flight and ends late after
+    // the restore; a second timeout without bytes cancels without restoration.
     const waits = config.stall > 0 && writer && fd !== "unsupported"
-    await world.until(() => closed !== "pending" || (waits && world.now - ended > 10_000n * MS))
+    await world.until(() => closed !== "pending" || (waits && world.now - ended > BigInt(capMs + 5000) * MS))
     // A graceful close completes and restores unless the link hung up. Exit drains synchronously, without the
     // close timeout, so only the queue bounds it.
     if (config.stall) {
-      expect(closed, label).toBe(!waits ? timeout : preset === "close_stuck" ? "pending" : "closed")
+      const drains = fd === "blocking" && !writer
+      const expected = waits
+        ? preset === "close_stuck"
+          ? "pending"
+          : "closed"
+        : drains
+          ? config.stall < capMs
+            ? "closed"
+            : late
+          : config.stall < 2 * deadlineMs
+            ? late
+            : timeout
+      expect(closed, label).toBe(expected)
       if (closed === "pending") driver.dispose()
       await world.until(() => closed !== "pending")
     } else if (end.startsWith("destroy") && !flood) expect(closed === "closed", label).toBe(!link.failed)
-    if (closed === "closed") expect(link.restored(offset), label).toBe(true)
-    // The writer holds the close while the link takes its copies (#1870), and a blocking drain over the stall.
-    const held =
-      (waits || fd === "blocking" ? config.stall : 0) +
-      (writer && rate ? ((link.stream.length - offset) * 1000) / rate : 0)
-    const closeBound = held + 1000 + (rate === null ? 0 : Math.ceil((output.chunkSize * 1000) / rate)) + 100
+    else if (end === "destroy mid-stream") expect(closed, label).toBe(fd === "blocking" ? "closed" : late)
+    if (closed === "closed" || closed === late) {
+      expect(link.restored(offset), label).toBe(true)
+      // A frame cut by a late close does not leave its synchronized update open, and the restore leaves the
+      // alternate screen exactly as often as it was entered (#1875).
+      expect(link.stream.lastIndexOf("\x1b[?2026h") <= link.stream.lastIndexOf("\x1b[?2026l"), label).toBe(true)
+      expect(link.stream.split("\x1b[?1049h").length, label).toBe(link.stream.split("\x1b[?1049l").length)
+    }
+    // The writer holds the close while the link takes its copies (#1870), and a blocking drain over the stall. Both
+    // fd paths hold it while the link takes bytes (#1875), up to the cap and a copy in flight.
+    const stallMs = waits || fd === "blocking" ? config.stall : 0
+    const moving = fd && fd !== "unsupported" && rate ? ((link.stream.length - offset) * 1000) / rate : 0
+    const held = stallMs + moving
+    const closeBound = Math.min(held + 2 * deadlineMs, Math.max(stallMs, capMs)) + copyMs + 100
     expect(Number((world.now - ended) / MS), label).toBeLessThanOrEqual(end.startsWith("destroy") ? closeBound : bound)
     // I8: nothing reaches the link after a close, and the driver leaves the sink.
     const afterClose = link.stream.length
     await world.until(() => world.settled)
-    if (closed === "closed") expect(link.stream.length, label).toBe(afterClose)
+    if (closed === "closed" || closed === late) expect(link.stream.length, label).toBe(afterClose)
     expect(sink.listenerCount("drain"), label).toBe(0)
     // R24: the writer rows ran the post model, with the drain only at exit; the unsupported writer falls back
     // after one refusal; today's paths never post.
@@ -594,12 +636,12 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
 // The Writable path matches the fd unsupported fallback up to exit, so it needs fewer seeds.
 const seeds: Record<Path, number> = { writable: 4, fd: 16, "fd-off": 16 }
 const rows = (Object.keys(presets) as Preset[]).flatMap((preset) =>
-  (preset === "producer_flood" ? (["fd"] as const) : (["writable", "fd", "fd-off"] as const)).flatMap((path) =>
-    Array.from({ length: presets[preset].stall ? 6 : preset === "producer_flood" ? 3 : seeds[path] }, (_, seed) => ({
-      preset,
-      path,
-      seed,
-    })),
+  (preset === "producer_flood" ? (["fd", "fd-off"] as const) : (["writable", "fd", "fd-off"] as const)).flatMap(
+    (path) =>
+      (preset === "producer_flood"
+        ? [0, 1, 2, floodExitSeed]
+        : Array.from({ length: presets[preset].stall ? 6 : seeds[path] }, (_, seed) => seed)
+      ).map((seed) => ({ preset, path, seed })),
   ),
 )
 
