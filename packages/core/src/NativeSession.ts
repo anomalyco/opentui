@@ -1,5 +1,6 @@
 import { Writable } from "node:stream"
 import { ResourceContext } from "./buffer.js"
+import { env, registerEnvVar } from "./lib/env.js"
 import {
   NativeError,
   NativeSessionPumpStatus,
@@ -22,6 +23,7 @@ import {
   type SessionHandle,
   type NativeSplitSnapshot,
 } from "./zig.js"
+import type { ProgramStatus } from "./types.js"
 
 export interface NativeSessionScheduler {
   /** Monotonic nanoseconds. */
@@ -35,7 +37,9 @@ export interface NativeSessionDriverOptions {
   output?: NativeSessionOptions
   /** Copy-buffer size for custom Writable destinations. Native stdout needs no buffer. */
   outputBufferSize?: number
-  /** Cancel if graceful close has not completed within this finite interval. */
+  /** Graceful close drops the queued output, restores and rejects as late once this long passes without written
+   * bytes and no write in progress, or ten times this long in all; a write in progress finishes first. Another
+   * interval without written bytes then cancels it unrestored. */
   closeTimeoutMs?: number
   scheduler?: NativeSessionScheduler
 }
@@ -53,6 +57,18 @@ const scheduler: NativeSessionScheduler = {
 }
 
 const emptyOutput = new Uint8Array(0)
+const stdoutBudget = 65_536
+// A local terminal's write ends within tens of microseconds, so the first polls run on the next turns.
+const immediatePolls = 64
+const immediateAgeNs = 500_000n
+
+registerEnvVar({
+  name: "OTUI_STDOUT_THREAD",
+  description:
+    "Write terminal stdout from a native thread so slow links never block the JS thread; false keeps it on the JS thread.",
+  type: "boolean",
+  default: true,
+})
 
 type ReadyTask = {
   callback: () => void
@@ -229,13 +245,21 @@ export class NativeSession {
   private readonly closeWait = completion()
   private idleWait: ReturnType<typeof completion> | null = null
   private presentationWait: ReturnType<typeof completion> | null = null
+  /** @internal Image uploads that later frames still send, read when the last waited frame presented. */
+  imageUploadsPending = 0
   private transition: { kind: "setup" | "suspend" | "resume"; wait: ReturnType<typeof completion> } | null = null
   private scheduled: { deadlineNs: bigint | null; cancel: () => void } | null = null
   private output: { ticket: NativeOutputTicket | null; completed: boolean; failed: boolean } | null = null
+  /** The stdout writer's copy in flight: when it started, and how many polls found it busy. */
+  private stdoutPost: { since: bigint; polls: number } | null = null
+  /** fd 1 output goes through the native writer thread until it reports unsupported. */
+  private stdoutWriter: boolean
   private blocked = false
   private sinkErrorSeen = false
   private detached = false
   private closeDeadlineNs: bigint | null = null
+  private closeCapNs: bigint | null = null
+  private closeLate: Error | null = null
   private closeRequested = false
   private closeInterruption: Error | null = null
   private stopped = false
@@ -273,6 +297,7 @@ export class NativeSession {
     this.outputBufferSize = size
     // Node workers route stdout through a Writable and do not expose fd 1.
     this.buffer = sink === process.stdout && process.stdout.fd === 1 ? null : new Uint8Array(size)
+    this.stdoutWriter = this.buffer === null && env.OTUI_STDOUT_THREAD !== false
     this.scheduler = sessionScheduler(options.scheduler ?? scheduler, (error) => {
       if (this.stopped) {
         if (this.canDetach()) this.detach()
@@ -334,6 +359,11 @@ export class NativeSession {
 
   get error(): Error | null {
     return this._error
+  }
+
+  /** The Session takes native work: it has not failed and is not closing or exiting. */
+  get open(): boolean {
+    return !this._error && !this.closeRequested && !this.exiting
   }
 
   usesOutput(sink: Writable): boolean {
@@ -417,7 +447,11 @@ export class NativeSession {
   whenPresented(): Promise<void> {
     this.checkOpen()
     if (this.presentationWait) return this.presentationWait.promise
-    if (!this.lib.sessionGetRendererState(this.context, this.session).framePending) return Promise.resolve()
+    const state = this.lib.sessionGetRendererState(this.context, this.session)
+    if (!state.framePending) {
+      this.imageUploadsPending = state.imageUploadsPending
+      return Promise.resolve()
+    }
     const wait = (this.presentationWait = completion())
     this.schedule()
     return wait.promise
@@ -446,6 +480,24 @@ export class NativeSession {
     const accepted = this.lib.sessionNotification(this.context, this.session, message, title)
     if (accepted) this.schedule()
     return accepted
+  }
+
+  /** Returns false while the terminal is inactive or output is full. Invalid reports throw. */
+  setProgramStatus(status: ProgramStatus): boolean {
+    this.checkOpen()
+    try {
+      this.lib.sessionControl(this.context, this.session, { kind: "program-status", status })
+    } catch (error) {
+      if (
+        error instanceof NativeError &&
+        (error.status === NativeStatus.InvalidPhase || error.status === NativeStatus.OutputBackpressure)
+      ) {
+        return false
+      }
+      throw error
+    }
+    this.schedule()
+    return true
   }
 
   setKittyImageTransport(mode: number): void {
@@ -516,6 +568,7 @@ export class NativeSession {
     try {
       this.closeRequested = true
       this.closeDeadlineNs ??= this.scheduler.now() + this.closeTimeoutNs
+      this.closeCapNs ??= this.scheduler.now() + 10n * this.closeTimeoutNs
       if (this.transition) {
         this.closeInterruption = new Error("NativeSession terminal transition interrupted by close")
         this.transition.wait.reject(this.closeInterruption)
@@ -535,12 +588,13 @@ export class NativeSession {
   armCloseTimeout(): void {
     this.checkOpen()
     this.closeDeadlineNs ??= this.scheduler.now() + this.closeTimeoutNs
+    this.closeCapNs ??= this.scheduler.now() + 10n * this.closeTimeoutNs
     this.schedule()
   }
 
-  /** Identifies this driver's close interruption, not transport or restoration success. */
+  /** Identifies this driver's close interruption or late close, not transport or restoration success. */
   isCloseInterruption(error: unknown): boolean {
-    return this.closeInterruption !== null && error === this.closeInterruption
+    return error != null && (error === this.closeInterruption || error === this.closeLate)
   }
 
   /**
@@ -577,6 +631,15 @@ export class NativeSession {
         if (this.output.ticket) this.lib.sessionCompleteOutput(this.context, this.session, this.output.ticket, true)
         this.output = null
       }
+      // The stdout writer: wait for its running copy without a limit, then deliver the rest
+      // through it, so a non-blocking fd waits for room instead of giving up.
+      // A copy posted but never picked up comes back unwritten: drain from then on, without a new thread.
+      let viaWriter =
+        this.stdoutWriter &&
+        (this.lib.sessionPostStdout(this.context, this.session, 0, true).written > 0 || !this.stdoutPost)
+      this.stdoutPost = null
+      // An exit during a held close drops the queue, as a late close does (#1875).
+      if (this.closeCapNs !== null) this.lib.sessionDropOutput(this.context, this.session)
       // The first pump stops admission. Only the bounded retained queue and native
       // restoration remain; neither user callbacks nor scheduled turns run here.
       for (;;) {
@@ -584,6 +647,10 @@ export class NativeSession {
         if (status === NativeSessionPumpStatus.Closed) return true
         if (status === NativeSessionPumpStatus.Again) continue
         if (status !== NativeSessionPumpStatus.OutputPending) throw new Error("Unexpected native exit pump status")
+        if (viaWriter) {
+          if (this.exitThroughWriter()) continue
+          viaWriter = false
+        }
         if (this.lib.sessionDrainStdout(this.context, this.session) === 0) return false
       }
     } catch (error) {
@@ -592,10 +659,22 @@ export class NativeSession {
     }
   }
 
+  /** One exit copy through the writer. False: no writer, or it never picked the copy up and
+   * gave it back; the synchronous drain takes over. */
+  private exitThroughWriter(): boolean {
+    try {
+      if (!this.lib.sessionPostStdout(this.context, this.session, stdoutBudget, false).inFlight) return false
+    } catch (error) {
+      if (error instanceof NativeError && error.status === NativeStatus.UnsupportedResource) return false
+      throw error
+    }
+    return this.lib.sessionPostStdout(this.context, this.session, 0, true).written > 0
+  }
+
   private checkOpen(): void {
     this.lib.getYogaHost().assertMutable()
     if (this._error) throw this._error
-    if (this.stopped || this.closeRequested) throw new Error("NativeSession is closing or disposed")
+    if (this.stopped || this.closeRequested) throw this.closeLate ?? new Error("NativeSession is closing or disposed")
     this.owner?.checkOpen()
   }
 
@@ -686,18 +765,41 @@ export class NativeSession {
     try {
       if (this._error) throw this._error
       const now = this.scheduler.now()
-      // A late turn still counts output acknowledged before the deadline and one bounded pump step.
-      const expired = this.closeDeadlineNs !== null && now >= this.closeDeadlineNs
+      // A late turn counts acknowledged output and one pump step; a writer copy in flight holds the deadline (#1870).
+      const expired = !this.stdoutPost && this.closeDeadlineNs !== null && now >= this.closeDeadlineNs
+      const capped = !this.closeLate && this.closeCapNs !== null && now >= this.closeCapNs
       if (this.output?.completed) {
         if (this.output.ticket) this.lib.sessionCompleteOutput(this.context, this.session, this.output.ticket, true)
         this.output = null
         this.completePresentation()
       }
-      const result = this.output ? null : this.lib.sessionPump(this.context, this.session, now, 1)
-      if (expired && result?.status !== NativeSessionPumpStatus.Closed) {
-        throw new Error("NativeSession graceful close timed out; output cancelled without restoration")
+      // Collect the writer's copy (and start the next) before the pump, so the pump sees output the writer finished.
+      const start = !capped && this.sink.writableLength === 0 && this.sink.writableCorked === 0
+      if (this.stdoutPost) this.postStdout(now, start)
+      if (this.stdoutPost) deadlineNs = this.pollDeadline(now)
+      const result = this.output || this.stdoutPost ? null : this.lib.sessionPump(this.context, this.session, now, 1)
+      if ((expired || capped) && result?.status !== NativeSessionPumpStatus.Closed) {
+        if (this.closeLate) {
+          throw new Error("NativeSession graceful close timed out; output cancelled without restoration")
+        }
+        // The first deadline, or the cap on the whole close, drops the queue but the copy in flight, and the close
+        // ends late after the restoration; only another deadline without written bytes cancels it (#1875).
+        this.closeLate = new Error("NativeSession graceful close ran late; queued output was dropped")
+        this.closeRequested = true
+        this.lib.sessionDropOutput(this.context, this.session)
+        this.presentationWait?.reject(this.closeLate)
+        this.presentationWait = null
+        this.closeDeadlineNs = now + this.closeTimeoutNs
+        this.schedule()
+        return
       }
-      if (!result) return
+      if (!result) {
+        if (deadlineNs === 0n) {
+          deadlineNs = null
+          this.schedule()
+        }
+        return
+      }
       switch (result.status) {
         case NativeSessionPumpStatus.Idle:
           if (this.transition) {
@@ -726,14 +828,14 @@ export class NativeSession {
           deadlineNs = result.deadlineNs
           break
         case NativeSessionPumpStatus.Closed:
-          this.finish(null)
+          this.finish(this.closeLate)
           break
       }
     } catch (error) {
       this.finish(asError(error))
     } finally {
-      if (this.closeDeadlineNs !== null && (deadlineNs === null || this.closeDeadlineNs < deadlineNs)) {
-        deadlineNs = this.closeDeadlineNs
+      for (const closeNs of [this.stdoutPost ? null : this.closeDeadlineNs, this.closeLate ? null : this.closeCapNs]) {
+        if (closeNs !== null && (deadlineNs === null || closeNs < deadlineNs)) deadlineNs = closeNs
       }
       if (deadlineNs !== null) this.schedule(deadlineNs)
     }
@@ -746,10 +848,24 @@ export class NativeSession {
         this.writeSink(emptyOutput, null)
         return
       }
+      if (this.stdoutWriter) {
+        const now = this.scheduler.now()
+        try {
+          // A copy just started is polled on the next turn.
+          this.postStdout(now, true)
+          this.schedule()
+          return
+        } catch (error) {
+          if (!(error instanceof NativeError) || error.status !== NativeStatus.UnsupportedResource) throw error
+          this.stdoutWriter = false
+        }
+      }
       try {
         const written = this.lib.sessionDrainStdout(this.context, this.session)
+        const now = this.scheduler.now()
+        if (written > 0 && this.closeDeadlineNs !== null) this.closeDeadlineNs = now + this.closeTimeoutNs
         this.completePresentation()
-        this.schedule(written === 0 ? this.scheduler.now() + 1_000_000n : null)
+        this.schedule(written === 0 ? now + 1_000_000n : null)
         return
       } catch (error) {
         if (!(error instanceof NativeError) || error.status !== NativeStatus.UnsupportedResource) throw error
@@ -760,6 +876,31 @@ export class NativeSession {
     if (!ticket) throw new Error("NativeSession output pending without bytes")
     if (ticket.byteCount > this.buffer.length) throw new Error("NativeSession output ticket exceeds its buffer")
     this.writeSink(this.buffer.subarray(0, ticket.byteCount), ticket)
+  }
+
+  /** Collects the writer's finished copy and, when `start`, hands over the next. */
+  private postStdout(now: bigint, start: boolean): void {
+    const posted = this.stdoutPost
+    const { written, inFlight } = this.lib.sessionPostStdout(
+      this.context,
+      this.session,
+      start ? stdoutBudget : 0,
+      false,
+    )
+    if (written > 0) this.completePresentation()
+    if (this.closeDeadlineNs !== null) this.closeDeadlineNs = now + this.closeTimeoutNs
+    if (!inFlight) this.stdoutPost = null
+    else if (!posted || written > 0) this.stdoutPost = { since: now, polls: 0 }
+    else posted.polls++
+  }
+
+  /** The next poll of a copy in flight: the next turn (0n) for its first 64 polls within 0.5 ms, then an eighth of
+   * its age, from 1 to 50 ms. */
+  private pollDeadline(now: bigint): bigint {
+    const post = this.stdoutPost!
+    if (post.polls < immediatePolls && now - post.since < immediateAgeNs) return 0n
+    const age = (now - post.since) / 8n
+    return now + (age < 1_000_000n ? 1_000_000n : age > 50_000_000n ? 50_000_000n : age)
   }
 
   private writeSink(bytes: Uint8Array, ticket: NativeOutputTicket | null): void {
@@ -785,7 +926,10 @@ export class NativeSession {
   }
 
   private completePresentation(): void {
-    if (this.presentationWait && !this.lib.sessionGetRendererState(this.context, this.session).framePending) {
+    if (!this.presentationWait) return
+    const state = this.lib.sessionGetRendererState(this.context, this.session)
+    if (!state.framePending) {
+      this.imageUploadsPending = state.imageUploadsPending
       this.presentationWait.resolve()
       this.presentationWait = null
     }

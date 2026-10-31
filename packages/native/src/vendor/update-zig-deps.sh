@@ -8,12 +8,12 @@ MANIFEST="$VENDOR_DIR/zig-deps.sha256"
 LC_ALL=C
 export LC_ALL
 
-GHOSTTY_COMMIT=727b8a02f8734840de664c060678dd66f01931f6
-GHOSTTY_SHA256=1cdde6bd3c1071de0f4ba489ee526361045e967170e8b50ca6f1d3fe0c624adf
-UUCODE_GHOSTTY_COMMIT=2826a37a4562284fdacd8fa029d49509cc9bffcd
-UUCODE_GHOSTTY_SHA256=7e76fc7fab1e7ac728c52b35bbb3e5b8c639841abfc7fe1a4bcb13050594bc9e
-UUCODE_OPENTUI_COMMIT=8ad04b756f85a5ba1ac8d2b8cb48d0946f06b630
-UUCODE_OPENTUI_SHA256=f1ce9f0038c46cc75fdd4e8469baac0dce60e20517d8d32ed813bfa9906fefc2
+GHOSTTY_COMMIT=aeda37b305ee3d897ff1bfeddfe39d7fa9366a74
+GHOSTTY_SHA256=5ee98bf64d6cd93deded555b83d335ca20aca799536d1c7cae1a5d6b7799038e
+UUCODE_GHOSTTY_COMMIT=ea62149739404a73c202b48a33bf6dd2af4bd9b0
+UUCODE_GHOSTTY_SHA256=f37c4071a217853450d084cb9c12b6d4b68f887eb9cb42fe77a84f86056eacbf
+UUCODE_OPENTUI_COMMIT=d500967026220f5e283088dc69e95aa79cdaa5a0
+UUCODE_OPENTUI_SHA256=94e85a3754410df19d08344e3ed562a6a4cd7b6e0c5fbce7de55b54b6e9eca66
 YOGA_VERSION=3.2.1
 YOGA_SHA256=86b399ac31fd820d8ffa823c3fae31bb690b6fc45301b2a8a966c09b5a088b55
 
@@ -98,12 +98,19 @@ cp -R "$SOURCE_DIR/ghostty/pkg/android-ndk" "$SOURCE_DIR/ghostty/pkg/apple-sdk" 
 cp "$VENDOR_DIR/zig-deps/ghostty-build.zig" "$DEPS_DIR/ghostty/build.zig"
 cp "$VENDOR_DIR/zig-deps/ghostty-build.zig.zon" "$DEPS_DIR/ghostty/build.zig.zon"
 git -C "$DEPS_DIR/ghostty" apply "$VENDOR_DIR/zig-deps/ghostty-shared-deps.patch"
+git -C "$DEPS_DIR/ghostty" apply "$VENDOR_DIR/zig-deps/ghostty-zig-0.17.patch"
 
 for name in uucode-ghostty uucode-opentui; do
   extract "$TMP_DIR/$name.tar.gz" "$SOURCE_DIR/$name"
   mkdir -p "$DEPS_DIR/$name"
   cp -R "$SOURCE_DIR/$name/LICENSE.md" "$SOURCE_DIR/$name/build.zig" "$SOURCE_DIR/$name/build.zig.zon" \
     "$SOURCE_DIR/$name/src" "$SOURCE_DIR/$name/ucd" "$DEPS_DIR/$name/"
+done
+# Ghostty needs the newer uucode code, but its Unicode 18 data would give the embedded terminal other
+# widths than OpenTUI text (Unicode 17) and most hosts. Keep OpenTUI's Unicode 17 data files in both
+# copies; revisit this on the next Ghostty update.
+(cd "$DEPS_DIR/uucode-opentui/ucd" && find . -name '*.txt') | while read -r path; do
+  cp "$DEPS_DIR/uucode-opentui/ucd/$path" "$DEPS_DIR/uucode-ghostty/ucd/$path"
 done
 
 extract "$TMP_DIR/yoga.tar.gz" "$SOURCE_DIR/yoga"
@@ -113,6 +120,10 @@ cp -R "$SOURCE_DIR/yoga/yoga" "$DEPS_DIR/yoga/yoga"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-error-boundary.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-rounding.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-node-reuse.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-absolute-edge-rounding.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-finite-percent.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-height-cap.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-margin.patch"
 
 find "$DEPS_DIR" -type d -exec chmod 0755 {} +
 find "$DEPS_DIR" -type f -exec chmod 0644 {} +

@@ -1935,7 +1935,7 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   )
   const md = createMarkdownRenderable({
     id: "markdown-blockquote-style-update",
-    content: "> Quote text",
+    content: "> Quote text\n\n---",
     syntaxStyle: theme1,
   })
 
@@ -1943,6 +1943,7 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   await renderMarkdownRenderable(md)
   expect(findSpanContaining(captureSpans(), "│")?.fg?.toInts()).toEqual(concealColor1.toInts())
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor1.toInts())
+  expect(findSpanContaining(captureSpans(), "─")?.fg?.toInts()).toEqual(concealColor1.toInts())
 
   md.syntaxStyle = theme2
   renderer.requestRender()
@@ -1950,7 +1951,60 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
 
   expect(findSpanContaining(captureSpans(), "│")?.fg?.toInts()).toEqual(concealColor2.toInts())
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor2.toInts())
+  expect(findSpanContaining(captureSpans(), "─")?.fg?.toInts()).toEqual(concealColor2.toInts())
 })
+
+for (const [name, options] of [
+  ["coalesced", { internalBlockMode: "coalesced" }],
+  ["top-level", { internalBlockMode: "top-level" }],
+  ["coalesced with renderNode", { internalBlockMode: "coalesced", renderNode: () => undefined }],
+] as const) {
+  test(`list items follow fg and syntax style changes with ${name}`, async () => {
+    const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+    const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
+    const theme = (fg: RGBA) =>
+      SyntaxStyle.fromStyles({ "markup.raw": { fg }, "markup.list": { fg } }, renderer.nativeScene)
+    const md = createMarkdownRenderable({
+      id: `markdown-list-style-update-${name}`,
+      content:
+        "# Intro\n\n---\n\n- item with `code`\n- second item\n  - nested item\n- third\n  > quoted\n- fenced\n  ```ts\n  const a = 1\n  ```\n\n| H |\n| --- |\n| `cell` |\n\n| Only |\n| --- |",
+      syntaxStyle: theme(fg2),
+      fg: fg1,
+      streaming: true,
+      ...options,
+    })
+    const spans = [
+      ["Intro", fg1, fg2],
+      ["─", fg1, fg2],
+      ["second item", fg1, fg2],
+      ["nested item", fg1, fg2],
+      ["code", fg2, fg1],
+      ["- ", fg2, fg1],
+      ["cell", fg2, fg1],
+    ] as const
+    const colors = () => spans.map(([text]) => findSpanContaining(captureSpans(), text)?.fg?.toInts())
+    const codeBlocks = (node: Renderable): CodeRenderable[] =>
+      node instanceof CodeRenderable && node.filetype === "typescript" ? [node] : node.getChildren().flatMap(codeBlocks)
+
+    renderer.root.add(md)
+    await renderMarkdownRenderable(md)
+    expect(colors()).toEqual(spans.map(([, before]) => before.toInts()))
+    const frame = captureFrame()
+
+    md.streaming = false
+    await renderOnce()
+    expect(captureFrame()).toBe(frame)
+    expect(codeBlocks(md).map((code) => code.streaming)).not.toContain(true)
+
+    md.fg = fg2
+    md.syntaxStyle = theme(fg1)
+    await renderOnce()
+    expect(captureFrame()).toBe(frame)
+    await renderMarkdownRenderable(md)
+    expect(colors()).toEqual(spans.map(([, , after]) => after.toInts()))
+    expect(captureFrame()).toBe(frame)
+  })
+}
 
 test("table cells use the markdown fg and follow fg changes", async () => {
   const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
@@ -3201,6 +3255,9 @@ test("custom top-level renderNode can increase default block margins", async () 
   await renderMarkdownRenderable(md)
 
   expect(md._blockStates.map((state) => state.renderable.marginTop ?? 0)).toEqual([0, 2])
+  md.fg = "#123456"
+  await renderMarkdownRenderable(md)
+  expect(md._blockStates.map((state) => state.renderable.marginTop ?? 0)).toEqual([0, 2])
 })
 
 test("custom renderNode returning null uses default", async () => {
@@ -3432,7 +3489,7 @@ test("internalBlockMode=top-level preserves top-level block boundaries", async (
 test("internalBlockMode=top-level reuses table renderable when rows stream in", async () => {
   const md = createMarkdownRenderable({
     id: "markdown-top-level-table-reuse",
-    content: "| A | B |\n|---|---|\n| 1 | 2 |",
+    content: "Intro\n\n| A | B |\n|---|---|",
     syntaxStyle,
     streaming: true,
     internalBlockMode: "top-level",
@@ -3441,14 +3498,17 @@ test("internalBlockMode=top-level reuses table renderable when rows stream in", 
 
   renderer.root.add(md)
   await renderMarkdownRenderable(md)
+  md.content += "\n| 1 | 2 |"
+  await renderMarkdownRenderable(md)
 
-  const table = md._blockStates[0]?.renderable
+  const table = md._blockStates[1]?.renderable
   expect(table).toBeInstanceOf(TextTableRenderable)
+  expect(findRenderedText("A").y).toBe(2)
 
   md.content += "\n| 3 | 4 |"
   await renderMarkdownRenderable(md)
 
-  expect(md._blockStates[0]?.renderable).toBe(table)
+  expect(md._blockStates[1]?.renderable).toBe(table)
 })
 
 test("internalBlockMode=top-level updates code renderable filetype when fence changes to diff", async () => {

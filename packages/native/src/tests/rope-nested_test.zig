@@ -66,13 +66,11 @@ const Line = struct {
 
     pub fn empty() Line {
         // Use static empty chunk rope - safe because it's immutable
-        const ChunkRope = rope_mod.Rope(Chunk);
         return .{
             .chunks = .{
                 .root = &empty_chunk_leaf_node,
                 .allocator = undefined, // Never used for empty
                 .empty_leaf = &empty_chunk_leaf_node,
-                .marker_cache = ChunkRope.MarkerCache.init(undefined),
             },
             .line_id = 0,
         };

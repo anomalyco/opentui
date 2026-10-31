@@ -7,6 +7,7 @@ const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
 const utf8 = @import("../utf8.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
+const NoResizeAllocator = @import("no-resize-allocator.zig");
 
 const Clock = struct {
     time_us: i64,
@@ -369,12 +370,13 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(handles.Kind));
 }
 
-test "Context scene measure maps unrepresentable host sizes to Yoga's invalid size" {
+test "Context scene measure maps invalid host sizes to zero without a Yoga warning" {
     const Host = struct {
         var width: f32 = 0;
+        var half = false;
 
-        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, _: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
-            result.* = .{ .width = width, .height = 1 };
+        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, height: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
+            result.* = .{ .width = width, .height = if (half) height / 2 else 1 };
         }
     };
     const owner = try context.Context.init(std.testing.allocator, std.testing.io, .{});
@@ -386,15 +388,22 @@ test "Context scene measure maps unrepresentable host sizes to Yoga's invalid si
     const node = try owner.sceneCreateNode(session, 1, 2);
     try owner.sceneMoveNode(node, root, 0);
     try owner.sceneSetMeasure(node, &Host.measure);
-    // Like NaN, a size outside the i32 cell range warns and measures as zero instead of failing the frame.
-    for ([_]f32{ std.math.inf(f32), 4e9, std.math.nan(f32), 3 }) |width| {
+    // Like NaN, a size outside the i32 cell range measures zero instead of failing the frame.
+    for ([_]f32{ std.math.inf(f32), 4e9, std.math.nan(f32), -1, 3 }) |width| {
         Host.width = width;
         try owner.sceneMarkDirty(node);
         const measured = try layout(owner, node);
         try std.testing.expectEqual(@as(f32, if (width == 3) 3 else 0), measured.width);
         try std.testing.expectEqual(@as(f32, 1), measured.height);
-        try std.testing.expectEqual(width != 3, owner.diagnostics.pop() != null);
         try std.testing.expect(owner.diagnostics.pop() == null);
+    }
+    // Half the offered height: a host measure may use the cap beyond clamping, so a larger
+    // cap measures again.
+    Host.half = true;
+    try owner.sceneMarkDirty(node);
+    for ([_]f32{ 10, 20 }) |height| {
+        try owner.sceneSetStyle(root, 4, 1, 0, 1, height, 1);
+        try std.testing.expectEqual(height / 2, (try layout(owner, node)).height);
     }
 }
 
@@ -473,7 +482,6 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     value.terminal.caps.hyperlinks = true;
     const current = value.getCurrentBuffer();
     const next = value.getNextBuffer();
-    value.addToHitGrid(0, 0, 1, 1, 11);
     try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
     try std.testing.expect((try drain(owner, id, &output)).len > 0);
     try std.testing.expectEqual(@as(u32, 0), current.grapheme_tracker.used_ids.capacity());
@@ -483,7 +491,6 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     try drawTrackedCells(next, 1, 'k');
     const glyph_id = gp.graphemeIdFromChar(next.buffer.char[0]);
     const link_id = ansi.TextAttributes.getLinkId(next.buffer.attributes[0]);
-    value.addToHitGrid(0, 0, 1, 1, 22);
 
     failing.fail_index = failing.alloc_index;
     failing.resize_fail_index = failing.resize_index;
@@ -492,16 +499,14 @@ test "Context render admission rejects tracker OOM before pooled cell sync" {
     try std.testing.expectEqual(previous_written, (try owner.raw().getSession(id)).getStats().bytes_written);
     try std.testing.expectEqual(previous_stats, value.getRenderStats());
     try std.testing.expectEqualSlices(u32, &previous_chars, current.buffer.char);
-    try std.testing.expectEqual(@as(u32, 11), value.checkHit(0, 0));
     try std.testing.expectEqual(@as(u32, 1), try owner.graphemes.getRefcount(glyph_id));
     try std.testing.expectEqual(@as(u32, 1), try owner.links.getRefcount(link_id));
 
     failing.fail_index = std.math.maxInt(usize);
     failing.resize_fail_index = std.math.maxInt(usize);
-    value.addToHitGrid(0, 0, 1, 1, 22);
     try std.testing.expectEqual(.pending, try owner.renderSession(id, false));
     const bytes = try drain(owner, id, &output);
-    try std.testing.expectEqual(@as(u32, 22), value.checkHit(0, 0));
+    try std.testing.expectEqual(previous_stats.frameCount + 1, value.getRenderStats().frameCount);
     try std.testing.expect(std.mem.find(u8, bytes, "k\xcc\x81") != null);
     try std.testing.expect(std.mem.find(u8, bytes, try owner.links.get(link_id)) != null);
 }
@@ -626,7 +631,7 @@ test "Context concurrently renders with independent pools, Yoga callbacks, clock
     try std.testing.expectEqualStrings("https://second.invalid", try second.links.get(second_link));
     try std.testing.expectError(error.WrongContext, second.raw().getRenderable(first_identity));
     const custom = try second.raw().getRenderable(tasks[1].custom_id);
-    yoga.yogaNodeStyleSetValue(custom.yoga_node, @intFromEnum(yoga.YogaValueKind.min_width), 0, @intFromEnum(yoga.YogaUnit.point), 1);
+    yoga.yogaNodeStyleSetValue(custom.yoga_node, @backingInt(yoga.YogaValueKind.min_width), 0, @backingInt(yoga.YogaUnit.point), 1);
     second_clock.time_us += 1000;
     try tasks[1].render();
     try std.testing.expect(second_callbacks.dirtied > 0);
@@ -655,8 +660,9 @@ fn createTextWithFailures(allocator: std.mem.Allocator) !void {
 }
 
 test "Context initialization and owned resource allocation failures release all storage" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, createWithFailures, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, createTextWithFailures, .{});
+    var no_resize: NoResizeAllocator = .{ .child = std.testing.allocator };
+    try std.testing.checkAllAllocationFailures(no_resize.allocator(), createWithFailures, .{});
+    try std.testing.checkAllAllocationFailures(no_resize.allocator(), createTextWithFailures, .{});
     try std.testing.expectError(error.InvalidOptions, context.Context.init(std.testing.allocator, std.testing.io, .{ .object_capacity = 0 }));
     try std.testing.expectError(error.InvalidOptions, context.Context.init(std.testing.allocator, std.testing.io, .{ .render_cells_max = 0 }));
 }

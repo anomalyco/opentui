@@ -14,7 +14,7 @@ function syntheticABI(): { abi: HeaderABI; policies: PointerPolicies; addresses:
       layouts: {
         ot_r: { size: 8, alignment: 8, fields: { address: { offset: 0, size: 8, alignment: 8, type: "u64" } } },
       },
-      constants: { OT_STYLE_ENUM_A: 0, OT_STYLE_ENUM_A_MAX: 2 },
+      constants: {},
     },
     policies: { ot_f: { 0: buffer, 1: callback } },
     addresses: {
@@ -54,8 +54,6 @@ describe("checked native ABI generation", () => {
     ["explicit ownership policy: ot_r.address", ({ abi }) => (abi.layouts.ot_r!.fields.address!.type = "*u8")],
     ["Address field drift: ot_r.address", ({ abi }) => (abi.layouts.ot_r!.fields.address!.type = "u32")],
     ["needs bigint support: OT_BIG", ({ abi }) => (abi.constants.OT_BIG = 2 ** 53)],
-    ["Missing style enum constraint: OT_STYLE_ENUM_A", ({ abi }) => delete abi.constants.OT_STYLE_ENUM_A_MAX],
-    ["Missing style enum constraint: OT_STYLE_ENUM_B", ({ abi }) => (abi.constants.OT_STYLE_ENUM_B = 2)],
   ])("generation rejects %s", async (message, mutate) => {
     const input = syntheticABI()
     mutate(input)
@@ -63,10 +61,10 @@ describe("checked native ABI generation", () => {
   })
 
   test.each([
-    // Translate-C ignores #pragma pack, so only the C compiler sees this 12-byte layout.
+    // Translate-C aligns this packed field to 4 bytes. The C compiler aligns it to 1 byte.
     [
       "C layout differs from Translate-C: ot_z",
-      "#include <stdint.h>\n#pragma pack(push, 2)\ntypedef struct ot_z { uint32_t a; uint64_t b; } ot_z;\n#pragma pack(pop)",
+      "#include <stdint.h>\ntypedef struct ot_z { uint32_t a; uint64_t b __attribute__((packed)); } ot_z;",
     ],
     ["-Werror,-Wcomment", "/* match a/*.txt */"],
   ])(

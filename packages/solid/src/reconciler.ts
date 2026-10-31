@@ -9,7 +9,6 @@ import {
   isEditBufferRenderable,
   Renderable,
   RootTextNodeRenderable,
-  ScrollBoxRenderable,
   SelectRenderable,
   SelectRenderableEvents,
   TabSelectRenderable,
@@ -17,6 +16,7 @@ import {
   TextNodeRenderable,
   TextRenderable,
   TextTableRenderable,
+  VideoRenderable,
   type RenderContext,
   type TextNodeOptions,
 } from "@opentui/core"
@@ -171,14 +171,6 @@ function _getParentNode(childNode: DomNode): DomNode | undefined {
   let parent = childNode.parent ?? undefined
   if (parent instanceof RootTextNodeRenderable) {
     parent = parent.textParent ?? undefined
-  }
-  // ScrollBox delegates add/remove to its internal `content` wrapper
-  // (scrollbox → wrapper → viewport → content), so children report
-  // `content` as their parent. Return the ScrollBox so the identity
-  // check in cleanChildren (getParentNode(el) === parent) succeeds.
-  const scrollBoxCandidate = parent?.parent?.parent?.parent
-  if (scrollBoxCandidate instanceof ScrollBoxRenderable && scrollBoxCandidate.content === parent) {
-    parent = scrollBoxCandidate
   }
   return parent
 }
@@ -345,11 +337,13 @@ const {
         if (isEditBufferRenderable(node) && previousStyle.selectionOccupancy && !nextStyle.selectionOccupancy) {
           node.selectionOccupancy = undefined
         }
-        if (node instanceof ImageRenderable) {
+        if (node instanceof ImageRenderable || node instanceof VideoRenderable) {
           for (const prop in previousStyle) {
             if (Object.prototype.hasOwnProperty.call(nextStyle, prop)) continue
-            if (prop !== "fit" && prop !== "protocol") continue
-            node[prop] = undefined
+            if (prop !== "fit" && prop !== "protocol" && prop !== "crop") continue
+            // A video has no protocol, and a removed fit is not reset yet.
+            if (node instanceof ImageRenderable) node[prop] = undefined
+            else if (prop === "crop") node.crop = undefined
           }
         }
         for (const prop in nextStyle) {

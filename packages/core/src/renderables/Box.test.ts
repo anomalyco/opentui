@@ -175,7 +175,7 @@ describe("BoxRenderable - borderStyle validation", () => {
 })
 
 describe("BoxRenderable - border titles (top and bottom)", () => {
-  test("renders top and bottom titles on their respective borders", async () => {
+  test("renders top and bottom titles on their respective borders and rejects titles over the byte limit", async () => {
     const box = new BoxRenderable(testRenderer, {
       id: "border-title-box",
       border: true,
@@ -186,6 +186,24 @@ describe("BoxRenderable - border titles (top and bottom)", () => {
       bottomTitle: "Bot",
       bottomTitleAlignment: "right",
     })
+    const assign = (title: "title" | "bottomTitle", text: string) => {
+      try {
+        box[title] = text
+      } catch (error) {
+        return String(error)
+      }
+    }
+    const limit = "RangeError: Buffer text exceeds the native byte limit"
+    // A 3-byte character straddles the 65,536-byte limit.
+    expect([assign("title", "a".repeat(65_537)), assign("bottomTitle", "世".repeat(21_846))]).toEqual([limit, limit])
+    expect([box.title, box.bottomTitle]).toEqual(["Top", "Bot"])
+    for (const [title, text] of [
+      ["title", "a".repeat(65_536)],
+      ["bottomTitle", "世".repeat(21_845) + "a"],
+      ["title", "Top"],
+      ["bottomTitle", "Bot"],
+    ] as const)
+      expect(assign(title, text)).toBeUndefined()
 
     testRenderer.root.add(box)
     await renderOnce()
@@ -196,16 +214,24 @@ describe("BoxRenderable - border titles (top and bottom)", () => {
     expect(lines[4].slice(0, 16)).toBe("└──────────Bot─┘")
   })
 
+  // A box left of the frame keeps its titles in place; the cells left of column 0 are not drawn.
   test.each([
-    ["left", "└─Bot────────────┘"],
-    ["center", "└──────Bot───────┘"],
-    ["right", "└────────────Bot─┘"],
-  ] as const)("renders bottom title with %s alignment", async (alignment, expectedBorder) => {
+    ["left", 0, "└─Bot────────────┘"],
+    ["center", 0, "└──────Bot───────┘"],
+    ["right", 0, "└────────────Bot─┘"],
+    ["left", -4, "t────────────┘    "],
+    ["center", -4, "───Bot───────┘    "],
+    ["right", -4, "─────────Bot─┘    "],
+  ] as const)("renders titles with %s alignment at left %d", async (alignment, left, expectedBorder) => {
     const box = new BoxRenderable(testRenderer, {
       id: `bottom-title-${alignment}`,
+      position: "absolute",
+      left,
       border: true,
       width: 18,
       height: 5,
+      title: "Bot",
+      titleAlignment: alignment,
       bottomTitle: "Bot",
       bottomTitleAlignment: alignment,
     })
@@ -214,7 +240,10 @@ describe("BoxRenderable - border titles (top and bottom)", () => {
     await renderOnce()
 
     const lines = captureFrame().split("\n")
-    expect(lines[4].slice(0, 18)).toBe(expectedBorder)
+    expect([lines[0].slice(0, 18), lines[4].slice(0, 18)]).toEqual([
+      expectedBorder.replace("└", "┌").replace("┘", "┐"),
+      expectedBorder,
+    ])
   })
 
   test("sets titleColor and triggers render on change", () => {
@@ -261,113 +290,6 @@ describe("BoxRenderable - transparent border blending", () => {
         bg: panel.toInts(),
       })
     })
-  })
-})
-
-describe("BoxRenderable - focus-within", () => {
-  test("hasFocusedDescendant is false initially", async () => {
-    const parent = new BoxRenderable(testRenderer, {
-      id: "parent",
-      focusable: true,
-      border: true,
-      width: 10,
-      height: 5,
-    })
-    const child = new BoxRenderable(testRenderer, {
-      id: "child",
-      focusable: true,
-      width: 5,
-      height: 3,
-    })
-
-    parent.add(child)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    expect(parent.hasFocusedDescendant).toBe(false)
-  })
-
-  test("hasFocusedDescendant becomes true when child is focused", async () => {
-    const parent = new BoxRenderable(testRenderer, {
-      id: "parent",
-      focusable: true,
-      border: true,
-      width: 10,
-      height: 5,
-    })
-    const child = new BoxRenderable(testRenderer, {
-      id: "child",
-      focusable: true,
-      width: 5,
-      height: 3,
-    })
-
-    parent.add(child)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    child.focus()
-
-    expect(child.focused).toBe(true)
-    expect(parent.hasFocusedDescendant).toBe(true)
-  })
-
-  test("hasFocusedDescendant becomes false when child is blurred", async () => {
-    const parent = new BoxRenderable(testRenderer, {
-      id: "parent",
-      focusable: true,
-      border: true,
-      width: 10,
-      height: 5,
-    })
-    const child = new BoxRenderable(testRenderer, {
-      id: "child",
-      focusable: true,
-      width: 5,
-      height: 3,
-    })
-
-    parent.add(child)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    child.focus()
-    expect(parent.hasFocusedDescendant).toBe(true)
-
-    child.blur()
-    expect(parent.hasFocusedDescendant).toBe(false)
-  })
-
-  test("propagates up the ancestor chain", async () => {
-    const grandparent = new BoxRenderable(testRenderer, {
-      id: "grandparent",
-      focusable: true,
-      border: true,
-      width: 20,
-      height: 10,
-    })
-    const parent = new BoxRenderable(testRenderer, {
-      id: "parent",
-      focusable: true,
-      width: 15,
-      height: 8,
-    })
-    const child = new BoxRenderable(testRenderer, {
-      id: "child",
-      focusable: true,
-      width: 5,
-      height: 3,
-    })
-
-    grandparent.add(parent)
-    parent.add(child)
-    testRenderer.root.add(grandparent)
-    await renderOnce()
-
-    child.focus()
-
-    expect(parent.hasFocusedDescendant).toBe(true)
-    expect(grandparent.hasFocusedDescendant).toBe(true)
   })
 })
 

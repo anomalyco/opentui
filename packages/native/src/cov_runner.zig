@@ -48,8 +48,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var skipped: usize = 0;
     var failed: usize = 0;
     for (builtin.test_functions) |t| {
-        std.testing.allocator_instance = .{};
-        defer if (std.testing.allocator_instance.deinit() == .leak) {
+        std.testing.allocator_instance = .init(std.heap.page_allocator, .{});
+        defer if (std.testing.allocator_instance.deinit() != 0) {
             std.debug.print("LEAK {s}\n", .{t.name});
             failed += 1;
         };

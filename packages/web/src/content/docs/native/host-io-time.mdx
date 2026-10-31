@@ -80,6 +80,9 @@ The default scheduler uses `process.hrtime.bigint()` on Bun and Node.js.
 The renderer's `Clock` sets the one-second poll interval. The Session scheduler supplies the time sample.
 For deterministic scheduling, inject both clocks.
 
+The experimental `ot_session_input_feed` uses a separate monotonic input clock. Its samples are checked only against
+earlier feeds. Core's native input parser takes them from the renderer's `Clock`, which also arms the input timeout.
+
 ## Native files and cleanup
 
 The renderer gets the Context I/O when you attach it to a Session, and passes it to Kitty transport.
@@ -116,6 +119,8 @@ It never uses root I/O and never samples a clock itself.
 The C Context constructor gives each Context its own single-threaded `std.Io.Threaded` implementation. C callers cannot supply I/O.
 Direct Zig `Context.init(allocator, io, options)` takes the I/O implementation as an argument.
 Audio engines and host clipboard services are Context objects, but they use their own threads and clocks, not Context I/O.
+A `VIDEO` scene node's player uses a decode worker thread and, for a source with audio, a private audio engine with an audio thread that makes every engine call and refills audio while playing.
+Its media clock is the audio output or the awake monotonic clock, not Context I/O.
 
 Read [Frames and output](/docs/native/frames#pump-terminal-work-and-close) for the pump loop and output tickets.
 [Resources and ownership](/docs/native/resources#finish-work-before-destroying-owners) defines Context and lease cleanup.

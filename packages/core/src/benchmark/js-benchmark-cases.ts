@@ -205,7 +205,9 @@ const BOX_BORDER_FG = RGBA.fromInts(96, 165, 250)
 const BOX_TITLE_FGS = [RGBA.fromInts(250, 204, 21), RGBA.fromInts(52, 211, 153)] as const
 const BOX_TOP_TITLES = [" Alpha ", " Omega "] as const
 const BOX_BOTTOM_TITLES = [" Ready ", " Busy! "] as const
-const BOX_SIGNAL_INDEX = 2 * BOX_BUFFER_WIDTH + 37
+const BOX_SIGNAL_X = 37
+const BOX_SIGNAL_Y = 2
+const BOX_SIGNAL_INDEX = BOX_SIGNAL_Y * BOX_BUFFER_WIDTH + BOX_SIGNAL_X
 const BOX_SIGNAL_CHARS = [65, 79] as const
 const BOX_VARIANTS: readonly Parameters<OptimizedBuffer["drawBox"]>[0][] = BOX_TOP_TITLES.map((title, index) => ({
   x: 2,
@@ -228,8 +230,8 @@ function directBoxDrawingCase(): BenchmarkCase {
   return {
     category: "JS Buffer",
     name: "draw-box-titled-scissored",
-    // Version 2 includes a checked lease for each cell observation.
-    workload_version: 2,
+    // Version 3 times only drawBox. Each batch checks the last draw outside the timed loop.
+    workload_version: 3,
     parameters: {
       buffer_width: BOX_BUFFER_WIDTH,
       buffer_height: BOX_BUFFER_HEIGHT,
@@ -258,17 +260,14 @@ function directBoxDrawingCase(): BenchmarkCase {
 
         buffer.clear(BOX_CLEAR_BG)
         buffer.pushScissorRect(0, 0, 72, BOX_BUFFER_HEIGHT)
-        let observedSignal = 0
-        let expectedSignal = 0
+        let variant = 0
         let completed = 0
         let validated = 0
 
         return {
           run(iteration) {
-            const variant = iteration & 1
+            variant = iteration & 1
             buffer.drawBox(BOX_VARIANTS[variant]!)
-            observedSignal = (observedSignal + buffer.withBuffers((cells) => cells.char[BOX_SIGNAL_INDEX]!)) | 0
-            expectedSignal = (expectedSignal + BOX_SIGNAL_CHARS[variant]!) | 0
             completed++
           },
           validateBatch(iterations) {
@@ -276,9 +275,13 @@ function directBoxDrawingCase(): BenchmarkCase {
             if (actual !== iterations) {
               throw new Error(`draw-box-titled-scissored: completed ${actual} operations, expected ${iterations}`)
             }
-            if (observedSignal !== expectedSignal) {
-              throw new Error(`draw-box-titled-scissored: observation ${observedSignal}, expected ${expectedSignal}`)
+            const observed = buffer.withBuffers((cells) => cells.char[BOX_SIGNAL_INDEX]!)
+            const expected = BOX_SIGNAL_CHARS[variant]!
+            if (observed !== expected) {
+              throw new Error(`draw-box-titled-scissored: observation ${observed}, expected ${expected}`)
             }
+            // Clear the signal so a batch without draws cannot pass on the previous batch's cell.
+            buffer.setCell(BOX_SIGNAL_X, BOX_SIGNAL_Y, " ", BOX_BORDER_FG, BOX_CLEAR_BG)
             validated = completed
           },
           teardown() {

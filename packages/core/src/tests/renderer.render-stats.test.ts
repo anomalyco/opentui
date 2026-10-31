@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { rgbToHex } from "../lib/RGBA.js"
+import { BoxRenderable } from "../renderables/Box.js"
+import { CodeRenderable } from "../renderables/Code.js"
+import { MarkdownRenderable } from "../renderables/Markdown.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
+import { TextareaRenderable } from "../renderables/Textarea.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { TextNodeRenderable } from "../renderables/TextNode.js"
+import { SyntaxStyle } from "../syntax-style.js"
+import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
-import type { NativeRenderStats } from "../zig.js"
+import type { NativeFrameWork, NativeRenderStats } from "../zig.js"
 
 function expectInitialStats(stats: NativeRenderStats): void {
   expect(stats.nativeLastFrameTime).toBe(0)
@@ -11,6 +20,7 @@ function expectInitialStats(stats: NativeRenderStats): void {
   expect(stats.averageCellsUpdated).toBe(0)
   expect(stats.nativeRenderTime).toBeUndefined()
   expect(stats.nativeStdoutWriteTime).toBeUndefined()
+  expect(Object.values(stats.frameWork).every((value) => value === 0)).toBe(true)
 }
 
 function expectRenderedStats(stats: NativeRenderStats, expectedFrameCount: number, expectedCellsUpdated: number): void {
@@ -67,6 +77,203 @@ describe("native renderer stats", () => {
     await result.renderOnce()
 
     expectRenderedStats(renderer.getNativeStats(), 3, 10)
+  })
+
+  test("frameWork counts the work of each presented scene frame, with and without nativeSceneFullFrame", async () => {
+    for (const nativeSceneFullFrame of [false, true]) {
+      const result = await createTestRenderer({ width: 4, height: 2, nativeSceneFullFrame })
+      renderer = result.renderer
+      renderer.root.add(new TextRenderable(renderer, { content: "abc", width: 3, height: 1 }))
+      const zero = Object.fromEntries(
+        Object.keys(renderer.getNativeStats().frameWork).map((key) => [key, 0]),
+      ) as NativeFrameWork
+      const forced = nativeSceneFullFrame ? 1 : 0
+      const steady = {
+        ...zero,
+        viewPreparations: 2,
+        membersPainted: 1,
+        memberCells: 3,
+        cellsCleared: 8,
+        damageRows: 2,
+        hitCellsWritten: 0,
+        hitCellsCleared: 0,
+        hitCellsCompared: 0,
+        layoutRounds: 1,
+      }
+      await result.renderOnce()
+      expect(renderer.getNativeStats().frameWork).toEqual({
+        ...steady,
+        workFrameId: 1,
+        candidateVisits: 2,
+        geometryReads: 2,
+        yogaSolves: 1,
+        rowsDiffed: 2,
+        fullPathReasons: 2 | 16 | forced,
+      })
+      // An unchanged frame keeps the presented frame: it paints and diffs nothing and reuses
+      // preparation, views included. Forced, it repaints, compares every row, and prepares again.
+      await result.renderOnce()
+      const unchanged = nativeSceneFullFrame
+        ? { workFrameId: 2, rowsCompared: 2, candidateVisits: 2, fullPathReasons: forced }
+        : { workFrameId: 2, viewPreparations: 0, membersPainted: 0, memberCells: 0, cellsCleared: 0, damageRows: 0 }
+      expect(renderer.getNativeStats().frameWork).toEqual({ ...steady, ...unchanged })
+      expect(renderer.getStats().frameWork).toEqual(renderer.getNativeStats().frameWork)
+      renderer.destroy()
+      await renderer.closed
+      renderer = null
+    }
+  })
+
+  test("a capture keeps the presented frame, so the next frame repaints only what changed", async () => {
+    const result = await createTestRenderer({ width: 6, height: 3 })
+    renderer = result.renderer
+    const text = new TextRenderable(renderer, { content: "x", width: 1, height: 1 })
+    renderer.root.add(text)
+    await result.renderOnce()
+    await result.renderOnce()
+    expect(result.captureCharFrame()).toContain("x")
+    result.captureSpans()
+    text.content = "y"
+    await result.renderOnce()
+    expect(renderer.getNativeStats().frameWork).toMatchObject({ damageRows: 1, fullPathReasons: 0 })
+    expect(result.captureCharFrame()).toContain("y")
+  })
+
+  test("a culled ScrollBox refreshes its rows only on frames that change layout", async () => {
+    const result = await createTestRenderer({ width: 40, height: 10 })
+    renderer = result.renderer
+    const scrollbox = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%" })
+    renderer.root.add(scrollbox)
+    for (let i = 0; i < 1_000; i++) scrollbox.add(new TextRenderable(renderer, { content: `row ${i}` }))
+    const refreshes = async () => {
+      await result.renderOnce()
+      return renderer!.getNativeStats().frameWork.viewportChildRefreshes
+    }
+    // New rows refresh as placed children; then only rows whose layout, text, or view changed
+    // refresh before selection, culled ones too.
+    expect(await refreshes()).toBe(0)
+    expect(await refreshes()).toBe(0)
+    scrollbox.scrollTo(500)
+    expect(await refreshes()).toBe(0)
+    scrollbox.add(new TextRenderable(renderer, { content: "appended" }))
+    expect(await refreshes()).toBe(0)
+    scrollbox.width = 30
+    expect(await refreshes()).toBe(1_001)
+  })
+
+  test("frameWork solves Yoga only for text writes and viewports that can change the measured size", async () => {
+    const result = await createTestRenderer({ width: 40, height: 20 })
+    renderer = result.renderer
+    // Solid builds `<text fg={...}>` content from child nodes.
+    const label = new TextRenderable(renderer, { fg: "#808080" })
+    const span = new TextNodeRenderable({})
+    span.add("Model")
+    label.add("Simulated ")
+    label.add(span)
+    const plain = new TextRenderable(renderer, { content: "plain" })
+    const highlights = new MockTreeSitterClient()
+    highlights.setMockResult({ highlights: [[0, 6, "keyword", { conceal: "" }]] })
+    const syntaxStyle = SyntaxStyle.fromStyles({}, renderer.nativeScene)
+    const code = new CodeRenderable(renderer, {
+      content: "const pending = true",
+      filetype: "typescript",
+      syntaxStyle,
+      treeSitterClient: highlights,
+      conceal: false,
+    })
+    const treeSitterClient = new MockTreeSitterClient()
+    // A solve that resizes these runs their resize hooks, which set the text view or editor viewport.
+    const column = new BoxRenderable(renderer, { width: 20, flexDirection: "column" })
+    // A hook runs mid-frame, after `scrolled` and `editor` prepared their views for this round.
+    let hook: (() => void) | undefined
+    column["onUpdate"] = () => (hook?.(), (hook = undefined))
+    column.refreshHooks()
+    const block = new CodeRenderable(renderer, { content: "const pending = true", syntaxStyle, treeSitterClient })
+    column.add(block)
+    column.add(new MarkdownRenderable(renderer, { content: "Some *words* here", syntaxStyle, treeSitterClient }))
+    const scrolled = new CodeRenderable(renderer, { content: "s1\ns2", syntaxStyle, treeSitterClient, height: 1 })
+    const editor = new TextareaRenderable(renderer, { initialValue: "e1\ne2", height: 1 })
+    const tabs = new CodeRenderable(renderer, {
+      content: "a\tb\nlong line",
+      syntaxStyle,
+      treeSitterClient,
+      width: 8,
+      wrapMode: "none",
+    })
+    const margins = new TextareaRenderable(renderer, { initialValue: "m0\tx\nm1\nm2\nm3\nm4\nm5\nm6", height: 5 })
+    for (const child of [label, plain, code, scrolled, editor, column, tabs, margins]) renderer.root.add(child)
+    const highlight = async () => {
+      await result.renderOnce()
+      highlights.resolveHighlightOnce()
+      await code.highlightingDone
+    }
+    await highlight()
+    await result.renderOnce()
+    const fgOf = (text: string) =>
+      rgbToHex(
+        result
+          .captureSpans()
+          .lines.flatMap((line) => line.spans)
+          .find((span) => span.text.startsWith(text))!.fg,
+      )
+    const drawn = (text: string) => result.captureCharFrame().includes(text)
+    const rowsOf = (node: CodeRenderable | TextareaRenderable) =>
+      result
+        .captureCharFrame()
+        .split("\n")
+        .slice(node.y, node.y + 2)
+        .map((line) => line.slice(node.x, node.x + node.width).trimEnd())
+    const rows: [string, () => unknown, number, [() => unknown, unknown]?][] = [
+      ["nothing", () => {}, 0],
+      ["same fg on node text", () => (label.fg = "#808080"), 0, [() => fgOf("Simulated"), "#808080"]],
+      ["new fg on node text", () => (label.fg = "#ff0000"), 0, [() => fgOf("Simulated"), "#ff0000"]],
+      ["new fg on a child span", () => (span.fg = "#0000ff"), 0, [() => fgOf("Model"), "#0000ff"]],
+      ["same string content", () => (plain.content = "plain"), 0],
+      ["new fg on code", () => (code.fg = "#00ff00"), 0, [() => fgOf("const"), "#00ff00"]],
+      ["code and markdown parent resize", () => (column.width = 30), 1, [() => block.height, 1]],
+      ["parent resize that wraps code", () => (column.width = 10), 1, [() => block.height, 3]],
+      ["code scroll", () => (scrolled.scrollY = 1), 0, [() => [drawn("s1"), drawn("s2")], [false, true]]],
+      ["textarea scroll", () => editor.editorView.setViewport(0, 1, 40, 1, true), 0, [() => drawn("e2"), true]],
+      ["textarea scroll that keeps the cursor", () => editor.editorView.setViewport(0, 0, 40, 1, false), 0],
+      // Preparation puts the hook's viewport width of 1 back to the layout width before paint.
+      [
+        "code scroll in a hook",
+        () => (hook = () => scrolled["textBufferView"].setViewport(0, 0, 1, 1)),
+        0,
+        [() => [drawn("s1"), drawn("s2")], [true, false]],
+      ],
+      [
+        "textarea scroll in a hook",
+        () => (hook = () => editor.editorView.setViewport(0, 0, 1, 1, true)),
+        0,
+        [() => drawn("e1"), true],
+      ],
+      ["code text align", () => (tabs.textAlign = "right"), 0, [() => rowsOf(tabs), ["    a  b", "long lin"]]],
+      ["code tab indicator", () => (tabs.tabIndicator = ">"), 0, [() => rowsOf(tabs), ["    a> b", "long lin"]]],
+      ["code tab indicator color", () => (tabs.tabIndicatorColor = "#ff0000"), 0, [() => fgOf(">"), "#ff0000"]],
+      ["code truncate", () => (tabs.truncate = true), 0, [() => rowsOf(tabs), ["    a> b", "lo...ine"]]],
+      ["textarea tab indicator", () => (margins.tabIndicator = ">"), 0, [() => rowsOf(margins), ["m0> x", "m1"]]],
+      // With the cursor on m4, a margin of two rows scrolls to m2; the old margin of one row scrolls to m1.
+      [
+        "textarea scroll margin",
+        () => (margins.editorView.setScrollMargin(0.5), margins.gotoLine(4)),
+        0,
+        [() => rowsOf(margins), ["m2", "m3"]],
+      ],
+      ["new string content", () => (plain.content = "plain!"), 1],
+      ["code wrap mode", () => (code.wrapMode = "none"), 1],
+      ["code first line offset", () => code["textBufferView"].setFirstLineOffset(2), 1],
+      ["textarea wrap mode", () => (margins.wrapMode = "char"), 1],
+      ["code tab width", () => code["textBuffer"].setTabWidth(8), 1],
+      ["concealing highlight", () => ((code.conceal = true), highlight()), 1, [() => fgOf("pending"), "#00ff00"]],
+    ]
+    const actual = []
+    for (const [name, change, , probe] of rows) {
+      await change()
+      await result.renderOnce()
+      actual.push([name, renderer.getNativeStats().frameWork.yogaSolves, probe?.[0]()])
+    }
+    expect(actual).toEqual(rows.map(([name, , solves, probe]) => [name, solves, probe?.[1]]))
   })
 })
 

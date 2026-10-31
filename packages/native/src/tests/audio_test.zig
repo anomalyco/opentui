@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const audio = @import("../audio.zig");
+const utils = @import("../utils.zig");
 
 const TEST_SAMPLE_RATE: u32 = 48_000;
 const TEST_MP3_PATH = "../core/src/tests/fixtures/audio/tone-750hz-48k-mono-1s.mp3";
@@ -85,7 +86,7 @@ test "PCM stream accepts unaligned bytes fragmented inside samples and frames" {
         try expectStatusOk(audio.createStream(engine, &options, &id));
         var storage: [193]u8 align(4) = undefined;
         const bytes = storage[1..];
-        encodePcm(bytes, &([_]f32{ 0.25, -0.5 } ** 24));
+        encodePcm(bytes, utils.repeat(f32, &.{ 0.25, -0.5 }, 24));
         var offset: usize = 0;
         while (offset < bytes.len) {
             const chunk = bytes[offset..@min(offset + chunk_size, bytes.len)];
@@ -121,7 +122,7 @@ test "PCM stream backpressures the shared input queue without scanning rejected 
     options.capacity_ms = 100;
     var id: u32 = 0;
     try expectStatusOk(audio.createStream(engine, &options, &id));
-    const bytes = [_]u8{0} ** (64 * 1024);
+    const bytes: [64 * 1024]u8 = @splat(0);
     var total: u64 = 0;
     // Once output is full the worker cannot free further input space.
     for (0..2) |pass| {
@@ -154,7 +155,7 @@ test "PCM stream rejects incomplete final frames after accepting partial bytes" 
             const options = pcmStreamOptions(TEST_SAMPLE_RATE, channels);
             var id: u32 = 0;
             try expectStatusOk(audio.createStream(engine, &options, &id));
-            const bytes = [_]u8{0} ** 7;
+            const bytes: [7]u8 = @splat(0);
             try testing.expectEqual(@as(i32, @intCast(partial)), audio.writeStream(engine, id, &bytes, @intCast(partial)));
             try expectStatusOk(audio.endStream(engine, id));
             var stats = try waitForStreamState(engine, id, audio.StreamState.failed);
@@ -174,7 +175,7 @@ test "PCM stream EOF preserves sub-frame downsampling tails" {
             const options = pcmStreamOptions(192_000, channels);
             var id: u32 = 0;
             try expectStatusOk(audio.createStream(engine, &options, &id));
-            const input = [_]f32{0.5} ** 48;
+            const input: [48]f32 = @splat(0.5);
             var bytes: [input.len * 4]u8 = undefined;
             encodePcm(&bytes, &input);
             const byte_count = input_frames * channels * 4;
@@ -200,7 +201,7 @@ test "PCM stream accepts EOF once while full and flushes its tail without duplic
     var id: u32 = 0;
     try expectStatusOk(audio.createStream(engine, &options, &id));
     // The initial output frame plus seven 24:1 steps fills the eight-frame ring.
-    const input = [_]f32{0.5} ** 169;
+    const input: [169]f32 = @splat(0.5);
     var bytes: [input.len * 4]u8 = undefined;
     encodePcm(&bytes, &input);
     try testing.expectEqual(@as(i32, bytes.len), audio.writeStream(engine, id, &bytes, bytes.len));
@@ -293,7 +294,7 @@ test "PCM stream worker preserves fragmented conversion and resampling tails" {
                 const options = pcmStreamOptions(rates[0], channels);
                 var id: u32 = 0;
                 try expectStatusOk(audio.createStream(engine, &options, &id));
-                const samples = [_]f32{0.5} ** 6000;
+                const samples: [6000]f32 = @splat(0.5);
                 var bytes: [samples.len * 4]u8 = undefined;
                 encodePcm(&bytes, &samples);
                 var offset: usize = 0;
@@ -323,7 +324,7 @@ test "PCM stream close wakes the worker from input and output waits" {
         try expectStatusOk(audio.createStream(engine, &options, &id));
         _ = try waitForStreamState(engine, id, audio.StreamState.buffering);
         if (full) {
-            const bytes = [_]u8{0} ** (64 * 1024);
+            const bytes: [64 * 1024]u8 = @splat(0);
             var accepted: i32 = 1;
             for (0..16) |_| {
                 accepted = audio.writeStream(engine, id, &bytes, bytes.len);
@@ -509,7 +510,7 @@ test "audio capture buffer reads exact interleaved order with partial and empty 
     const input = [_]f32{ 1, 10, 2, 20, 3, 30 };
     capture.write(&input, 3);
 
-    var output = [_]f32{99} ** 8;
+    var output: [8]f32 = @splat(99);
     try testing.expectEqual(@as(u32, 2), capture.read(&output, 2));
     try testing.expectEqualSlices(f32, &.{ 1, 10, 2, 20 }, output[0..4]);
     try testing.expectEqual(@as(f32, 99), output[4]);
@@ -885,7 +886,7 @@ test "audio - mixToBuffer returns mixed samples" {
     try expectStatusOk(audio.startMixer(engine));
     _ = try playLoop(engine, sound_id, 0, 0.2);
 
-    var out: [128]f32 = [_]f32{0} ** 128;
+    var out: [128]f32 = @splat(0);
     try expectStatusOk(audio.mixToBuffer(engine, out[0..].ptr, 64, 2));
     try testing.expect(hasSignal(&out));
 }
@@ -905,13 +906,13 @@ test "audio - mixToBuffer mono downmix averages stereo" {
     _ = try playLoop(stereo_engine, stereo_sound_id, 0, 0.7);
     _ = try playLoop(mono_engine, mono_sound_id, 0, 0.7);
 
-    var stereo_warmup: [64]f32 = [_]f32{0} ** 64;
-    var mono_warmup: [32]f32 = [_]f32{0} ** 32;
+    var stereo_warmup: [64]f32 = @splat(0);
+    var mono_warmup: [32]f32 = @splat(0);
     try expectStatusOk(audio.mixToBuffer(stereo_engine, stereo_warmup[0..].ptr, 32, 2));
     try expectStatusOk(audio.mixToBuffer(mono_engine, mono_warmup[0..].ptr, 32, 1));
 
-    var stereo: [128]f32 = [_]f32{0} ** 128;
-    var mono: [64]f32 = [_]f32{0} ** 64;
+    var stereo: [128]f32 = @splat(0);
+    var mono: [64]f32 = @splat(0);
     try expectStatusOk(audio.mixToBuffer(stereo_engine, stereo[0..].ptr, 64, 2));
     try expectStatusOk(audio.mixToBuffer(mono_engine, mono[0..].ptr, 64, 1));
 
@@ -930,7 +931,7 @@ test "audio - mixToBuffer multichannel keeps extra channels zero" {
     try expectStatusOk(audio.startMixer(engine));
     _ = try playLoop(engine, sound_id, 0, 0);
 
-    var quad: [256]f32 = [_]f32{0} ** 256;
+    var quad: [256]f32 = @splat(0);
     try expectStatusOk(audio.mixToBuffer(engine, quad[0..].ptr, 64, 4));
 
     for (0..64) |frame| {
@@ -951,10 +952,10 @@ test "audio - enableTap and readTap return captured frames" {
 
     try expectStatusOk(audio.enableTap(engine, true, 256));
 
-    var mixed: [256]f32 = [_]f32{0} ** 256;
+    var mixed: [256]f32 = @splat(0);
     try expectStatusOk(audio.mixToBuffer(engine, mixed[0..].ptr, 128, 2));
 
-    var tapped: [128]f32 = [_]f32{0} ** 128;
+    var tapped: [128]f32 = @splat(0);
     var frames_read: u32 = 0;
     try expectStatusOk(audio.readTap(engine, tapped[0..].ptr, 64, 2, &frames_read));
     try testing.expect(frames_read > 0);
@@ -974,7 +975,7 @@ test "audio - refresh and playback device selection APIs" {
     try testing.expectEqual(@as(u32, @intCast(engine.playback_devices.items.len)), count);
     if (count == 0) return error.SkipZigTest;
 
-    var name_buf: [256]u8 = [_]u8{0} ** 256;
+    var name_buf: [256]u8 = @splat(0);
     const copied = audio.getPlaybackDeviceName(engine, 0, name_buf[0..].ptr, name_buf.len);
     try testing.expect(copied <= name_buf.len);
 
@@ -998,7 +999,7 @@ test "audio - refresh and capture device selection APIs" {
     try testing.expectEqual(@as(u32, @intCast(engine.capture_devices.items.len)), count);
     if (count == 0) return error.SkipZigTest;
 
-    var name_buf: [256]u8 = [_]u8{0} ** 256;
+    var name_buf: [256]u8 = @splat(0);
     const copied = audio.getCaptureDeviceName(engine, 0, name_buf[0..].ptr, name_buf.len);
     try testing.expect(copied <= name_buf.len);
 
@@ -1081,7 +1082,7 @@ test "audio - getStats returns current counters" {
     try expectStatusOk(audio.startMixer(engine));
     const voice_id = try playLoop(engine, sound_id, 0, 0);
 
-    var out: [128]f32 = [_]f32{0} ** 128;
+    var out: [128]f32 = @splat(0);
     try expectStatusOk(audio.mixToBuffer(engine, out[0..].ptr, 64, 2));
 
     var after: audio.Stats = undefined;

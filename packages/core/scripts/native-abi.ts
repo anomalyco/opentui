@@ -52,10 +52,11 @@ function zig(args: string[], stdout: number | "pipe" = "pipe"): string {
 
 // On macOS, Zig 0.16 translate-c copies its output to stdout with fcopyfile(). With a pipe or socket
 // stdout, the final ftruncate() fails and Zig retries forever, so give it a regular file.
+// Without -lc, Zig 0.17 translate-c reads the host's libc headers for a cross Linux target.
 function translateC(header: string, target: string, output: string): void {
   const fd = openSync(output, "w")
   try {
-    zig(["translate-c", header, "-target", target], fd)
+    zig(["translate-c", header, "-target", target, "-lc"], fd)
   } finally {
     closeSync(fd)
   }
@@ -120,7 +121,7 @@ export function compileHeader(options: { header?: string; allTargets?: boolean }
         `_Static_assert(__builtin_types_compatible_p(__typeof__(&${name}), ${prototype(signature)}), "Unsupported ABI calling convention or function translation: ${name}");`,
       )
     }
-    // Translate-C can disagree with the C compiler, for example by ignoring #pragma pack.
+    // Translate-C can disagree with the C compiler, for example on the alignment of a packed field.
     for (const [name, record] of Object.entries(abi.layouts)) {
       declarations.push(
         `_Static_assert(sizeof(${name}) == ${record.size} && _Alignof(${name}) == ${record.alignment}, "C layout differs from Translate-C: ${name}");`,
@@ -277,7 +278,6 @@ export async function generateNativeABI(
     nativeCallbacks: signatures.callbacks,
     nativeLayouts: abi.layouts,
     nativeConstants: abi.constants,
-    nativeStyleEnumMaxima: sceneStyleEnumMaxima(abi),
   }
   const source =
     "// Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.\n" +
@@ -290,17 +290,6 @@ export async function generateNativeABI(
   const formatted = await format(outputPath, source, { semi: false, printWidth: 120 })
   if (formatted.errors.length) throw new Error(`Cannot format generated ABI: ${JSON.stringify(formatted.errors)}`)
   return formatted.code
-}
-
-export function sceneStyleEnumMaxima(abi: HeaderABI): number[] {
-  const entries = Object.entries(abi.constants)
-    .filter(([name]) => name.startsWith("OT_STYLE_ENUM_") && !name.endsWith("_MAX"))
-    .sort((a, b) => a[1] - b[1])
-  return entries.map(([name, kind], index) => {
-    const maximum = abi.constants[`${name}_MAX`]
-    if (kind !== index || maximum === undefined) throw new Error(`Missing style enum constraint: ${name}`)
-    return maximum
-  })
 }
 
 export function verifyNativeABI(generated: string): void {

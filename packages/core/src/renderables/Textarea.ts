@@ -14,9 +14,8 @@ import {
 import { StyledText, fg } from "../lib/styled-text.js"
 import type { ExtmarksController } from "../lib/extmarks.js"
 
-// Native editing rejects these, so typed and pasted text drops them. Paste keeps tab, CR, and LF.
+// A key sequence with a control character is a key that has no binding, not text. Paste keeps controls.
 const unsupportedKeyCharacters = /[\x00-\x1f\x7f-\x9f]/
-const unsupportedPasteCharacters = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g
 
 function clonePlaceholder(value: StyledText | string | null): StyledText | string | null {
   if (value === null || typeof value === "string") return value
@@ -283,7 +282,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   }
 
   public handlePaste(event: PasteEvent): void {
-    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)).replace(unsupportedPasteCharacters, ""))
+    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)))
   }
 
   public handleKeyPress(key: KeyEvent): boolean {

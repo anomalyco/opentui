@@ -12,6 +12,7 @@ import {
   TabSelectRenderable,
   TextareaRenderable,
   TextRenderable,
+  VideoRenderable,
 } from "@opentui/core"
 import type { RenderableConstructor } from "../types/components.js"
 import {
@@ -37,6 +38,7 @@ export const baseComponents = {
   "tab-select": TabSelectRenderable,
   "line-number": LineNumberRenderable,
   image: ImageRenderable,
+  video: VideoRenderable,
 
   // Text modifiers
   span: SpanRenderable,

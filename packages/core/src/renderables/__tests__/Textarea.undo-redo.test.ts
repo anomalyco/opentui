@@ -168,6 +168,7 @@ describe("Textarea - Undo/Redo Tests", () => {
           const text = Array.from({ length: next(3) }, pick)
           log.push(`[${start},${end})=${JSON.stringify(text.join(""))}`)
           editor.setSelection(offset(start), offset(end))
+          expect(editor.cursorOffset).toBe(editor.visualCursor.offset)
           if (text.length === 0) currentMockInput.pressBackspace({ shift: next(2) === 1 })
           else await currentMockInput.pasteBracketedText(text.join(""))
           edit(start, end - start)
@@ -180,6 +181,7 @@ describe("Textarea - Undo/Redo Tests", () => {
             where,
             text: editor.plainText,
             cursor: editor.cursorOffset,
+            visual: editor.visualCursor.offset,
             canUndo: editor.editBuffer.canUndo(),
             canRedo: editor.editBuffer.canRedo(),
           }),
@@ -188,6 +190,7 @@ describe("Textarea - Undo/Redo Tests", () => {
             where,
             text: state.text.join(""),
             cursor: offset(state.cursor),
+            visual: offset(state.cursor),
             canUndo: undo.length > 0,
             canRedo: redo.length > 0 && restored?.text === state.text,
           }),

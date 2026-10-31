@@ -77,10 +77,13 @@ export function getKeyBindingKey(binding: KeyBindingLike): string {
 // `baseCode` is Kitty's "base layout codepoint": the character for the same
 // physical key on the keyboard's base layout. Example: an event may arrive as
 // `name: "ㅊ", baseCode: 99`, where `99` is Unicode `c`, so Ctrl+ㅊ matches Ctrl+C.
-// Only a typed key that is one non-ASCII character falls back: on a Latin layout,
-// Dvorak Ctrl+J (base `c`) must stay Ctrl+J.
+// A typed key falls back when it is one non-ASCII character, or when its base key is
+// a digit (AZERTY types `&` on the 1 key). Dvorak Ctrl+J (base `c`) stays Ctrl+J.
 function getBaseCodeKeyName({ name: typedName, baseCode }: KeyBindingLookup): string | undefined {
-  if (!/^[^\x00-\x7f]$/u.test(typedName) || baseCode === undefined || baseCode < 32 || baseCode === 127) {
+  if (baseCode === undefined || baseCode <= 32 || baseCode === 127) {
+    return undefined
+  }
+  if (!/^[^\x00-\x7f]$/u.test(typedName) && (baseCode < 48 || baseCode > 57)) {
     return undefined
   }
 
@@ -98,7 +101,7 @@ function getBaseCodeKeyName({ name: typedName, baseCode }: KeyBindingLookup): st
 }
 
 // Return every lookup key that can represent this event. We try the parsed
-// name first, then the base-layout key of a non-ASCII character. That keeps
+// name first, then the base-layout key (see getBaseCodeKeyName). That keeps
 // direct character bindings precise, and still lets shortcuts resolve on
 // non-Latin layouts.
 export function getKeyBindingKeys(binding: KeyBindingLookup): string[] {

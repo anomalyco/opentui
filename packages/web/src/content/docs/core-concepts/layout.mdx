@@ -90,6 +90,10 @@ Yoga align values are `"auto"`, `"flex-start"`, `"center"`, `"flex-end"`, `"stre
 
 The public TypeScript interface includes `"auto"` for min and max dimensions. The current runtime ignores that value for those four options.
 
+A numeric value, `translateX`, and `translateY` must be finite and at most about `3.4e38` in magnitude, the 32-bit float range. Other values throw `RangeError`. Drawing clamps geometry to the signed 32-bit cell range, so a very large value moves a renderable off the screen instead of failing the frame. `x`, `y`, `width`, and `height` still report the unclamped layout.
+
+Margin, padding, edge (`top`, `right`, `bottom`, `left`), and gap values beyond `±1e30` are stored as `±1e30`, and a resolved percentage is limited the same way, so layout sums stay finite. `getMargin()`, `getPadding()`, and `getGap()` read back the stored value.
+
 ## Alignment
 
 In a row, `justifyContent` distributes horizontal space and `alignItems` positions children vertically. A child can override the vertical alignment with `alignSelf`.
@@ -186,11 +190,62 @@ A 32-column bordered row leaves 30 inner columns. Adding one column gives the mi
 └──────────────────────────────┘
 33 columns: 31 inside
 ┌───────────────────────────────┐
-│    10        11         10    │
+│    10         11        10    │
 └───────────────────────────────┘
 ```
 
 Renderable getters expose computed integer geometry after a layout pass. OpenTUI clamps exposed `width` and `height` to at least one cell.
+
+Paint does not clamp. A node that Yoga sizes to zero width or height draws no cells and receives no mouse events, although its getters report one cell. Its children still paint unless the node clips them. For example, when a column is too short for its children, `flexShrink` can reduce a text to zero rows, and that text disappears. Give the text `flexShrink: 0` to keep it visible.
+
+## Read style and geometry
+
+`x`, `y`, `width`, `height`, and `getLayout()` report computed geometry from the last layout pass.
+
+To read the style that was set, call the method with the name of the matching [Yoga](/docs/reference/yoga) Node getter. It returns
+the same `Value` or enum type. A change is visible at once, before the next layout pass:
+
+```typescript
+box.maxWidth = 40
+box.getMaxWidth() // { unit: Unit.Point, value: 40 }
+box.width // the computed width from the last layout pass
+```
+
+| Options                                          | Getters                                                              |
+| ------------------------------------------------ | -------------------------------------------------------------------- |
+| `width`, `height`                                | `getWidth()`, `getHeight()`                                          |
+| `minWidth`, `minHeight`, `maxWidth`, `maxHeight` | `getMinWidth()`, `getMinHeight()`, `getMaxWidth()`, `getMaxHeight()` |
+| Margin and padding options                       | `getMargin(edge)`, `getPadding(edge)`                                |
+| `gap`, `rowGap`, `columnGap`                     | `getGap(gutter)`                                                     |
+| `flexGrow`, `flexShrink`, `flexBasis`            | `getFlexGrow()`, `getFlexShrink()`, `getFlexBasis()`                 |
+| `flexDirection`, `flexWrap`                      | `getFlexDirection()`, `getFlexWrap()`                                |
+| `alignItems`, `alignSelf`, `justifyContent`      | `getAlignItems()`, `getAlignSelf()`, `getJustifyContent()`           |
+| `position`                                       | `getPositionType()`                                                  |
+
+An edge or gutter getter reads only the value set for that edge or gutter. `padding` sets `Edge.All`, `paddingX` sets
+`Edge.Horizontal`, `paddingY` sets `Edge.Vertical`, and `paddingLeft` sets `Edge.Left`. The margin and gap options work
+the same way. After `padding: 2`, `getPadding(Edge.Left)` returns a `Unit.Undefined` value, but layout still pads the
+left side by 2, because Yoga falls back from `Edge.Left` to `Edge.Horizontal` and then to `Edge.All`. Renderables have no
+getter for computed padding, margin, or border.
+
+`top`, `right`, `bottom`, `left`, and `overflow` have property getters. Assign an option to change its style.
+
+Assigning `null` or `undefined` to a layout option restores the default in [Supported options](#supported-options). A
+class that sizes itself, such as `InputRenderable` or `TabSelectRenderable`, restores its own `width` or `height`. Other
+class defaults, such as the row direction of `ScrollBoxRenderable`, are not restored, and `flexShrink` becomes `1`. A
+margin, padding, or gap edge becomes unset, so layout falls back to its shorthand again. Assigning `0` sets the edge
+instead:
+
+```typescript
+const box = new BoxRenderable(renderer, { paddingX: 2 })
+box.getPadding(Edge.Left) // { unit: Unit.Undefined, value: NaN }
+box.paddingLeft = 5 // pads the left side by 5
+box.paddingLeft = undefined // pads it by 2 again, from paddingX
+```
+
+To write back a `Value` that a getter returned, assign `undefined` for `Unit.Undefined`, `"auto"` for `Unit.Auto`,
+`` `${value}%` `` for `Unit.Percent`, and `value` for `Unit.Point`. Assigning a number to `width` or `height` also
+changes a `flexShrink` of `1` to `0`, so restore `getFlexShrink()` with them.
 
 ## Resize behavior
 
@@ -260,6 +315,7 @@ Custom streams must call `renderer.resize(columns, rows)`. Local `process.stdout
 - `overflow: "scroll"` clips like a Yoga overflow mode, but it does not add scroll state. Use [ScrollBox](/docs/components/scrollbox).
 - Gap options belong to [Box](/docs/components/box), not every renderable class.
 - `visible = false` removes a renderable from layout.
+- A scene holds at most 256 levels, counting the root. An `add()` or `insertBefore()` that nests deeper throws `NativeError` with status `ObjectLimit`.
 - Text can contain fewer graphemes than cells or more UTF-16 units than cells. See [Text and terminal cells](/docs/core-concepts/text-and-cells).
 
 ## Next

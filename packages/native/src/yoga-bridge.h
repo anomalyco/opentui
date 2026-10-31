@@ -28,6 +28,7 @@ typedef struct {
 } OTYogaLayout;
 
 uint32_t otYogaConfigCreate(YGConfigRef* out) OT_YOGA_NOEXCEPT;
+void otYogaConfigSetRoundsPositionsFromAbsoluteEdges(YGConfigRef config, uint32_t enabled) OT_YOGA_NOEXCEPT;
 int otYogaFormatLog(uint8_t* out, uint32_t capacity, const char* format,
                     va_list args) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeCreate(YGConfigConstRef config, YGNodeRef* out) OT_YOGA_NOEXCEPT;
@@ -43,8 +44,10 @@ uint32_t otYogaNodeRemoveAllChildren(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeCalculateLayout(YGNodeRef node, float width, float height,
                                    uint32_t direction) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeMarkDirty(YGNodeRef node) OT_YOGA_NOEXCEPT;
-uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback) OT_YOGA_NOEXCEPT;
+uint32_t otYogaNodeSetMeasureFunc(YGNodeRef node, YGMeasureFunc callback,
+                                  uint32_t height_cap_only_clamps) OT_YOGA_NOEXCEPT;
 void otYogaNodeInvalidateMeasure(YGNodeRef node) OT_YOGA_NOEXCEPT;
+void otYogaNodeForgetMeasurements(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeGetComputedLayout(YGNodeConstRef node, OTYogaLayout* out) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeLayoutGetEdge(YGNodeConstRef node, uint32_t kind, uint32_t edge,
                                  float* out) OT_YOGA_NOEXCEPT;
@@ -74,10 +77,13 @@ typedef struct {
   float available, last_available, computed, margin;
 } OTYogaCacheAxis;
 // Returns the patched cache decision. Bits 0 and 1 of axis_references are the
-// eager upstream width and height predicates.
+// eager reference width and height predicates.
 uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCacheAxis* height,
                                     float point_scale, uint32_t* axis_references,
                                     uint32_t* rounding_count) OT_YOGA_NOEXCEPT;
+// Returns the larger-height-cap decision for the same axes.
+uint32_t otYogaTestLargerHeightCap(const OTYogaCacheAxis* width,
+                                   const OTYogaCacheAxis* height) OT_YOGA_NOEXCEPT;
 
 #ifdef __cplusplus
 }

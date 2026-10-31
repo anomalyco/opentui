@@ -1,6 +1,6 @@
 import { ResourceContext } from "./buffer.js"
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
-import { EditBuffer } from "./edit-buffer.js"
+import { EditBuffer, measureEditText } from "./edit-buffer.js"
 import { TextBuffer } from "./text-buffer.js"
 import { ManualClock } from "./testing/manual-clock.js"
 
@@ -116,21 +116,29 @@ describe("EditBuffer", () => {
       expect(cursor.row).toBe(2)
     })
 
-    it("preserves cursor text boundaries across tab width changes and history", () => {
-      buffer.setText("a\tb")
-      buffer.setCursor(0, 4)
-      buffer.insertText("x")
+    // Tabs and control notation before the cursor change width differently.
+    it.each([
+      ["a\tb", 4, 11, 10, "a\tby"],
+      ["\u0007\tb", 2, 3, 2, "\u0007y\tb"],
+      ["a\t\u0007", 5, 12, 11, "a\t\u0007y"],
+    ] as const)(
+      "preserves cursor text boundaries in %j at %d across tab width changes and history",
+      (text, col, after, undone, typed) => {
+        buffer.setText(text)
+        buffer.setCursor(0, col)
+        buffer.insertText("x")
 
-      buffer.setTabWidth(8)
-      expect(buffer.getTabWidth()).toBe(8)
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 11, offset: 11 })
+        buffer.setTabWidth(8)
+        expect(buffer.getTabWidth()).toBe(8)
+        expect(buffer.getCursorPosition()).toEqual({ row: 0, col: after, offset: after })
 
-      expect(buffer.undo()).toBe("cursor:0:4:4")
-      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 10, offset: 10 })
+        expect(buffer.undo()).toBe(`cursor:0:${col}:${col}`)
+        expect(buffer.getCursorPosition()).toEqual({ row: 0, col: undone, offset: undone })
 
-      buffer.insertText("y")
-      expect(buffer.getText()).toBe("a\tby")
-    })
+        buffer.insertText("y")
+        expect(buffer.getText()).toBe(typed)
+      },
+    )
 
     it("remaps the cursor when tab width changes after an insert", () => {
       buffer.setText("a\tb")
@@ -201,13 +209,15 @@ describe("EditBuffer", () => {
 
     it("should handle moving left in a long line (potential BoundedArray overflow)", () => {
       const longText = "a".repeat(500)
-      buffer.setText(longText)
+      buffer.setText(longText + "\n" + longText)
 
       buffer.setCursorToLineCol(0, 500)
       buffer.moveCursorLeft()
 
       const cursor = buffer.getCursorPosition()
       expect(cursor.col).toBe(499)
+      buffer.moveCursorDown()
+      expect(buffer.getCursorPosition()).toMatchObject({ row: 1, col: 499 })
     })
   })
 
@@ -446,6 +456,62 @@ describe("EditBuffer", () => {
       expect(buffer.positionToOffset(0, 0)).toBe(0)
       expect(buffer.getLineStartOffset(0)).toBe(0)
     })
+
+    // JavaScript string widths give controls, tabs, and line breaks no cells. measureText() must give the offset at
+    // which the same text ends after setText(), and must not store it.
+    it.each([
+      ["", 2, 0, 0],
+      ["a\fb\u0000c\u007f", 2, 9, 9],
+      ["\u0085\u009f", 2, 8, 8],
+      ["a\tb", 8, 10, 10],
+      ["日本\u0301", 2, 4, 4],
+      ["👩‍👧 🇩🇪", 2, 5, 7],
+      ["a\r\nb\rc\n", 2, 6, 6],
+    ] as const)("measures %j with tab width %d as unicode %d and wcwidth %d", (text, tabWidth, unicode, wcwidth) => {
+      for (const [widthMethod, expected] of [
+        ["unicode", unicode],
+        ["wcwidth", wcwidth],
+      ] as const) {
+        const editor = EditBuffer.create(widthMethod, resourceContext)
+        editor.setTabWidth(tabWidth)
+        editor.setText("kept")
+        expect(editor.measureText(text)).toBe(expected)
+        expect(editor.getText()).toBe("kept")
+        editor.setText(text)
+        expect(editor.offsetToPosition(expected)).not.toBeNull()
+        expect(editor.offsetToPosition(expected + 1)).toBeNull()
+        editor.destroy()
+      }
+    })
+
+    // measureEditText() has no buffer, so it must give the offset that measureText() and setText() give on an edit
+    // buffer with the same settings. The tab widths cover the default and widths that setTabWidth() rounds. The long
+    // text puts a CRLF across the 16-byte blocks in which setText() finds line breaks, then one long line.
+    it.each(["wcwidth", "unicode", "unicode-wide"] as const)("measureEditText() matches a %s buffer", (widthMethod) => {
+      const units = ["", "a\u0000\u001b\f\u007f", "\u0085\u009f", "\ta\t", "日本\u0301", "👩‍👧", "👍🏽", "🇩🇪🇺🇸"]
+      const long = "x".repeat(15) + "\r\n" + units.join("\t").repeat(500)
+      const lines = ["\r", "\n", "\r\n", "\r\r\n\n", "a\r\nb\rc\n\nd", long]
+      for (const tabWidth of [undefined, 0, 1, 3, 8, 255]) {
+        const editor = EditBuffer.create(widthMethod, resourceContext)
+        if (tabWidth !== undefined) editor.setTabWidth(tabWidth)
+        for (const text of [...units, ...lines]) {
+          const measured = [measureEditText(text, { widthMethod, tabWidth }), editor.measureText(text)]
+          editor.setText(text)
+          editor.gotoLine(editor.getLineCount())
+          const end = editor.getCursorPosition().offset
+          expect([tabWidth, text, ...measured]).toEqual([tabWidth, text, end, end])
+        }
+        editor.destroy()
+      }
+    })
+
+    it("maps a string index to an offset and back", () => {
+      buffer.setText("\f@file")
+      const index = buffer.getText().indexOf("@")
+      const offset = buffer.measureText(buffer.getText().slice(0, index))
+      expect(offset).toBe(2)
+      expect(buffer.getTextRange(0, offset).length).toBe(index)
+    })
   })
 
   describe("getEOL navigation", () => {
@@ -483,6 +549,8 @@ describe("EditBuffer", () => {
       const eol = buffer.getEOL()
       expect(eol.row).toBe(1)
       expect(eol.col).toBe(5)
+      expect(buffer._getEOF()).toMatchObject({ row: 2, col: 4, offset: 16 })
+      expect(buffer._getPrevCharBoundary()).toMatchObject({ row: 0, col: 5, offset: 5 })
     })
 
     it("should handle empty lines", () => {
@@ -620,8 +688,7 @@ describe("EditBuffer", () => {
 describe("EditBuffer Events", () => {
   const edit = { "cursor-changed": 1, "content-changed": 1 }
   const move = { "cursor-changed": 1 }
-  // Undo and redo emit no content-changed (U21 D7, also on `main`).
-  const history = { "cursor-changed": 1, cursorChanged: 1 }
+  const history = { ...edit, cursorChanged: 1 }
   it.each([
     ["setText", (buffer: EditBuffer) => buffer.setText("xy"), edit],
     ["setTextOwned", (buffer: EditBuffer) => buffer.setTextOwned("xy"), edit],
@@ -641,6 +708,8 @@ describe("EditBuffer Events", () => {
     ["setCursorByOffset", (buffer: EditBuffer) => buffer.setCursorByOffset(1), move],
     ["gotoLine", (buffer: EditBuffer) => buffer.gotoLine(0), move],
     ["undo", (buffer: EditBuffer) => buffer.undo(), history],
+    ["redo", (buffer: EditBuffer) => buffer.redo(), history],
+    ["undo without history", (buffer: EditBuffer) => (buffer.clearHistory(), buffer.undo()), {}],
   ] as const)("%s emits each event once, only to its own buffer", async (_name, operation, expected) => {
     const buffer = EditBuffer.create("wcwidth", resourceContext)
     const other = EditBuffer.create("wcwidth", resourceContext)
@@ -648,6 +717,8 @@ describe("EditBuffer Events", () => {
       buffer.setText("ab\ncd")
       buffer.setCursorToLineCol(0, 1)
       buffer.insertText("Z")
+      buffer.insertText("Y")
+      buffer.undo()
       await flushNativeEvents()
       const counts: Record<string, number> = {}
       for (const name of ["cursor-changed", "content-changed", "cursorChanged"]) {

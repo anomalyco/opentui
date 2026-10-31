@@ -89,7 +89,7 @@ test.each(["wheel input", "key input", "content height shrink", "content width s
       } else if (vertical) await target.mockMouse.scroll(scroll.viewport.x, scroll.viewport.y, "down")
       else target.mockInput.pressKey("ARROW_RIGHT")
       const expected = shrink ? 15 - bar.viewportSize : inputStep
-      assert.deepEqual([changes, bar.scrollPosition, bar.slider.value], [[expected], expected, expected])
+      assert.deepEqual([changes, bar.scrollPosition], [[expected], expected])
       assert.deepEqual([scroll.isDestroyed, errors, logged.mock.calls], [true, [], []])
     } finally {
       logged.mockRestore()

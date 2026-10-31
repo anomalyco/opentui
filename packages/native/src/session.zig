@@ -7,6 +7,8 @@ const renderer = @import("renderer.zig");
 const terminal = @import("terminal.zig");
 const scene = @import("scene.zig");
 const buffer = @import("buffer.zig");
+const input_parser = @import("input-parser.zig");
+const stdout_writer = @import("stdout-writer.zig");
 const Context = @import("context.zig").Context;
 const api = @import("context_abi_c");
 
@@ -147,6 +149,10 @@ pub const TerminalOptions = struct {
     /// Applies to both suspension and close, as in renderer restoration, once
     /// setup or resume has claimed the main-screen surface.
     clear_on_close: bool = true,
+    /// End the startup query batch with DA1 instead of sending DA1 mid-batch.
+    reply_sentinel: bool = false,
+    synchronized_output: terminal.SynchronizedOutput = .auto,
+    host_multiplexer: bool = false,
 };
 
 pub const TerminalPhase = enum(u8) {
@@ -177,6 +183,21 @@ pub const CursorOptions = struct {
     cursor: ?terminal.MousePointerStyle = null,
 };
 
+pub const ProgramState = enum(u8) { idle = 1, working, done, blocked, @"error", clear };
+pub const ProgramKind = enum(u8) { permission = 1, question, auth };
+
+/// One OSC 7501 Program Status Protocol report. Empty strings omit their key;
+/// an empty id addresses the root record. Title and message are UTF-8 text.
+pub const ProgramStatus = struct {
+    state: ProgramState,
+    id: []const u8 = "",
+    kind: ?ProgramKind = null,
+    progress: ?u8 = null,
+    app: []const u8 = "",
+    title: []const u8 = "",
+    message: []const u8 = "",
+};
+
 /// Byte slices are borrowed for this call only. Replies must contain complete
 /// 7-bit ASCII CSI, DCS, OSC, or APC capability responses, not input-stream chunks.
 pub const Control = union(enum) {
@@ -187,13 +208,22 @@ pub const Control = union(enum) {
     /// Zero disables Kitty keyboard; other flags apply when support is detected.
     kitty_keyboard_flags: u8,
     restore_modes,
-    query_pixel_resolution,
+    /// True appends DA1, the sentinel that ends this query batch.
+    query_pixel_resolution: bool,
     query_theme_colors,
     /// Complete read-only OSC palette queries, optionally wrapped for tmux.
     palette_query: []const u8,
     reset_background,
     /// Desired cursor state only; the frame encoder owns output admission.
     cursor: CursorOptions,
+    /// Validated against the protocol limits below; never multiplexer-wrapped.
+    program_status: ProgramStatus,
+};
+
+pub const InputFeed = struct {
+    consumed: u32,
+    discarded: u32,
+    deadline_ns: ?u64,
 };
 
 pub const PumpStatus = enum(u8) { idle, again, output_pending, wait_until, closed };
@@ -205,6 +235,16 @@ pub const PumpResult = struct {
 pub const control_packet_bytes_max: u32 = 4096;
 pub const capability_response_bytes_max: u32 = control_packet_bytes_max;
 pub const title_bytes_max: u32 = control_packet_bytes_max - "\x1b]0;\x07".len;
+pub const program_status_id_bytes_max: u32 = 128;
+pub const program_status_id_segment_bytes_max: u32 = 32;
+pub const program_status_id_segments_max: u32 = 8;
+pub const program_status_app_bytes_max: u32 = 32;
+pub const program_status_title_bytes_max: u32 = 192;
+pub const program_status_message_bytes_max: u32 = 2048;
+/// A valid report with every key at its longest value.
+pub const program_status_bytes_max: u32 = "\x1b]7501;state=blocked:id=:kind=permission:progress=100:app=:title=:msg=\x1b\\".len +
+    program_status_id_bytes_max + program_status_app_bytes_max + std.base64.standard.Encoder.calcSize(program_status_title_bytes_max) +
+    std.base64.standard.Encoder.calcSize(program_status_message_bytes_max);
 pub const cursor_settle_ns: u64 = 10 * std.time.ns_per_ms;
 pub const split_snapshots_max: u32 = 64;
 
@@ -246,16 +286,18 @@ const Lifecycle = struct {
     /// Enable has published, so restoration may clear the rendered main-screen
     /// area. Before that, the visible screen still holds shell output.
     screen_claimed: bool = false,
+    /// A late close dropped output, which may have cut a frame inside its synchronized update.
+    dropped: bool = false,
     image_index: usize = 0,
     deadline_ns: ?u64 = null,
 
     fn assertValid(self: Lifecycle, state: State) void {
-        const step = @intFromEnum(self.step);
+        const step = @backingInt(self.step);
         std.debug.assert(switch (self.phase) {
             .uninitialized, .active, .suspended, .restored, .failed, .cancelled => self.step == .idle,
-            .setting_up => step >= @intFromEnum(Step.query) and step <= @intFromEnum(Step.activate),
-            .resuming => step >= @intFromEnum(Step.setup_screen) and step <= @intFromEnum(Step.activate),
-            .suspending, .closing => step >= @intFromEnum(Step.delete_images),
+            .setting_up => step >= @backingInt(Step.query) and step <= @backingInt(Step.activate),
+            .resuming => step >= @backingInt(Step.setup_screen) and step <= @backingInt(Step.activate),
+            .suspending, .closing => step >= @backingInt(Step.delete_images),
         });
         std.debug.assert((state == .failed) == (self.phase == .failed));
         std.debug.assert((state == .cancelled) == (self.phase == .cancelled));
@@ -286,6 +328,10 @@ pub const OutputTicket = struct {
 /// Written acknowledges the entire copy. The host handles partial I/O itself.
 pub const OutputResult = enum { written, failed };
 
+/// A stdout writer collect or post: bytes completed by this call, and whether a copy is still
+/// being written when it returns.
+pub const PostResult = struct { written: u32 = 0, in_flight: bool = false };
+
 /// Context-owned, address-stable transport and optional renderer. Use Context's
 /// checked methods. Session owns output, presentation, terminal lifecycle, and
 /// destruction. Legacy renderer setup must remain disabled.
@@ -298,19 +344,32 @@ pub const Session = struct {
     span: ?feed.SpanInfo = null,
     span_offset: u32 = 0,
     pending: ?OutputTicket = null,
+    /// `pending` belongs to the stdout writer: no host ticket can complete it.
+    pending_post: bool = false,
+    /// The stdout writer, created by the first post.
+    stdout_post: ?stdout_writer.Abandon = null,
     last_request_id: u64 = 0,
     /// Successful ticket bytes, not retained span charges or discarded output.
     completed_bytes: u64 = 0,
+    /// The screen and Kitty keyboard as the terminal has them while a packet that may switch them is queued, up
+    /// to `end`. The model counts a switch once it is queued, so a late close that drops it restores these.
+    wire: struct { alt_screen: bool = false, use_alternate: bool = false, kitty_keyboard: bool = false, end: u64 = 0 } = .{},
     frame_end_offset: ?u64 = null,
     lifecycle: Lifecycle = .{},
     // Pump and Kitty polling share one accepted host clock.
     last_pump_ns: ?u64 = null,
     // Cancel revokes authority, but outstanding scopes still pin renderer storage.
     frame_lease_count: u32 = 0,
+    input: input_parser.InputParser = .{},
+    /// Host expectations; feeds add the terminal's Kitty keyboard state.
+    input_expect: input_parser.Expectations = .{},
+    // Input feeds keep their own monotonic host clock, separate from pump time.
+    last_input_ns: ?u64 = null,
 
     pub fn deinit(self: *Session) error{Busy}!void {
         if (!self.canDestroy()) return error.Busy;
         std.debug.assert(self.span == null and self.pending == null);
+        self.abandonStdout();
         if (self.renderer) |value| value.destroyStorage();
         if (self.scene) |value| value.deinit();
         self.output.destroy();
@@ -347,7 +406,8 @@ pub const Session = struct {
         if (self.scene) |owned| {
             if (owned.cancelled_paint) return error.StaleFrame;
         }
-        return self.renderReady(force, null);
+        if (self.renderer) |attached| attached.leaveRetained();
+        return self.renderReady(force, null, null, null);
     }
 
     /// Every returned status consumes the draft, including skipped and failed.
@@ -360,7 +420,7 @@ pub const Session = struct {
         const attached = self.renderer orelse return error.RendererNotAttached;
         if (!painted.destination.matches(attached.getNextBuffer())) return error.StaleFrame;
         if (self.frame_end_offset != null) return error.PresentationPending;
-        const status = try self.renderReady(force, null);
+        const status = try self.renderReady(force, null, painted.work, painted.damage);
         owned.painted = null;
         // A failed encoder may leave scratch cells intact, but cannot authorize their replay.
         owned.cancelled_paint = status == .failed;
@@ -391,9 +451,13 @@ pub const Session = struct {
         const attached = self.renderer orelse return error.RendererNotAttached;
         if (frame == null and self.frame_end_offset != null) return .pending;
         if (snapshots.len > split_snapshots_max or pinned_render_offset > std.math.maxInt(u16)) return error.InvalidOptions;
+        var work: ?renderer.FrameWork = null;
+        var damage: ?*const std.DynamicBitSetUnmanaged = null;
         if (frame) |request| {
             const owned = self.scene orelse return error.SceneNotAttached;
             const painted = try owned.checkPainted(request);
+            work = painted.work;
+            damage = painted.damage;
             if (self.frame_lease_count != 0) return error.FrameBusy;
             if (!painted.destination.matches(attached.getNextBuffer())) return error.StaleFrame;
             if (self.frame_end_offset != null) return error.PresentationPending;
@@ -425,7 +489,7 @@ pub const Session = struct {
             .pinned_render_offset = pinned_render_offset,
             .paint_footer = frame != null,
             .suspended = suspended_snapshots,
-        });
+        }, work, damage);
         if (frame != null) {
             self.scene.?.painted = null;
             self.scene.?.cancelled_paint = status == .failed;
@@ -433,8 +497,13 @@ pub const Session = struct {
         return status;
     }
 
-    fn renderReady(self: *Session, force: bool, split: ?renderer.SplitRender) Error!RenderStatus {
+    /// work is the committed scene draft's counts; it is published only if this frame presents.
+    fn renderReady(self: *Session, force: bool, split: ?renderer.SplitRender, work: ?renderer.FrameWork, damage: ?*const std.DynamicBitSetUnmanaged) Error!RenderStatus {
         const value = self.renderer orelse return error.RendererNotAttached;
+        value.scene_work = work;
+        value.scene_damage = damage;
+        defer value.scene_work = null;
+        defer value.scene_damage = null;
         if (self.frame_end_offset != null) return .pending;
         const lifecycle_active = self.lifecycle.phase == .active;
         const previous_reservation = self.output.control_sequence;
@@ -537,6 +606,7 @@ pub const Session = struct {
         if (trailing_output.len > bytes.len - writer.buffered().len) return error.InvalidOptions;
         try writer.writeAll(trailing_output);
         try value.resizeWithOutput(width, height, writer.buffered());
+        self.queueSwitch(value);
         candidate.state.cursor = value.terminal.state.cursor;
         value.terminal.state = candidate.state;
         value.useAlternateScreen = alternate;
@@ -575,10 +645,10 @@ pub const Session = struct {
         if (self.scene) |owned| {
             if (owned.painted != null) {
                 if (self.renderer) |attached| {
-                    @memset(attached.nextHitGrid, 0);
                     attached.getNextBuffer().clearScissorRects();
                     attached.getNextBuffer().clearOpacity();
-                    attached.hitGridClearScissorRects();
+                    // A cancelled draft is never presented, painted or skipped.
+                    attached.taint(renderer.FrameWork.full_path_unretained);
                 }
             }
             owned.cancelFrame();
@@ -600,6 +670,9 @@ pub const Session = struct {
         try self.reserveControlSequence(packets);
         value.useAlternateScreen = options.use_alternate_screen;
         value.clearOnShutdown = options.clear_on_close;
+        value.terminal.reply_sentinel = options.reply_sentinel;
+        value.terminal.synchronized_output = options.synchronized_output;
+        value.terminal.multiplexer_on_host = options.host_multiplexer;
         value.terminal.opts.kitty_keyboard_flags = options.kitty_keyboard_flags;
         self.lifecycle = .{
             .phase = .setting_up,
@@ -613,14 +686,12 @@ pub const Session = struct {
 
     pub fn suspendTerminal(self: *Session) Error!void {
         try self.checkOpen();
-        const preparation_yielded = if (self.scene) |owned| owned.isYielded() else false;
-        if (!preparation_yielded) try self.checkLayoutIdle();
+        try self.checkLayoutIdle();
         switch (self.lifecycle.phase) {
             .suspending, .suspended => return,
             .active => {},
             else => return error.InvalidTerminalState,
         }
-        if (preparation_yielded) self.cancelSceneFrame();
         const value = self.renderer.?;
         value.terminalSuspended = true;
         value.cancelKittyImageTransport(false);
@@ -672,6 +743,16 @@ pub const Session = struct {
             if (options.cursor) |cursor| value.terminal.setMousePointerStyle(cursor);
             return;
         }
+        // Malformed input is rejected in every phase, before lifecycle admission.
+        switch (command) {
+            .title => |title| try validateText(title, title_bytes_max),
+            .kitty_keyboard_flags => |flags| {
+                if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
+            },
+            .palette_query => |bytes| try validatePaletteQuery(bytes),
+            .program_status => |status| try validateProgramStatus(status),
+            else => {},
+        }
         switch (self.lifecycle.phase) {
             .active => {},
             .setting_up, .resuming => {
@@ -682,24 +763,50 @@ pub const Session = struct {
             else => return error.TerminalInactive,
         }
         self.assertTerminalOutput();
-        switch (command) {
-            .title => |title| {
-                if (title.len > title_bytes_max) return error.InvalidOptions;
-                const view = std.unicode.Utf8View.init(title) catch return error.InvalidOptions;
-                var codepoints = view.iterator();
-                while (codepoints.nextCodepoint()) |codepoint| {
-                    if (codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f)) {
-                        return error.InvalidOptions;
-                    }
-                }
-            },
-            .kitty_keyboard_flags => |flags| {
-                if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
-            },
-            .palette_query => |bytes| try validatePaletteQuery(bytes),
-            else => {},
-        }
         try self.publishTerminalPacket(command);
+    }
+
+    /// UTF-8 without C0, DEL, or C1 controls.
+    fn validateText(text: []const u8, bytes_max: u32) Error!void {
+        if (text.len > bytes_max) return error.InvalidOptions;
+        const view = std.unicode.Utf8View.init(text) catch return error.InvalidOptions;
+        var codepoints = view.iterator();
+        while (codepoints.nextCodepoint()) |codepoint| {
+            if (codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f)) {
+                return error.InvalidOptions;
+            }
+        }
+    }
+
+    /// Rejects every report a terminal would discard or partly ignore, so each
+    /// accepted report means exactly what its fields say.
+    fn validateProgramStatus(status: ProgramStatus) Error!void {
+        if (status.kind != null and status.state != .blocked) return error.InvalidOptions;
+        if (status.progress) |progress| {
+            if (progress > 100) return error.InvalidOptions;
+            if (status.state != .working and status.state != .blocked) return error.InvalidOptions;
+        }
+        if (status.state == .clear and (status.app.len != 0 or status.title.len != 0 or status.message.len != 0)) {
+            return error.InvalidOptions;
+        }
+        if (status.id.len > program_status_id_bytes_max) return error.InvalidOptions;
+        if (std.mem.countScalar(u8, status.id, '/') >= program_status_id_segments_max) return error.InvalidOptions;
+        if (status.id.len != 0) {
+            var segments = std.mem.splitScalar(u8, status.id, '/');
+            while (segments.next()) |segment| try validateProgramStatusName(segment, program_status_id_segment_bytes_max);
+        }
+        if (status.app.len != 0) try validateProgramStatusName(status.app, program_status_app_bytes_max);
+        try validateText(status.title, program_status_title_bytes_max);
+        try validateText(status.message, program_status_message_bytes_max);
+    }
+
+    fn validateProgramStatusName(name: []const u8, bytes_max: u32) Error!void {
+        if (name.len == 0 or name.len > bytes_max) return error.InvalidOptions;
+        for (name) |byte| {
+            if (!std.ascii.isAlphanumeric(byte) and std.mem.findScalar(u8, "_.+-", byte) == null) {
+                return error.InvalidOptions;
+            }
+        }
     }
 
     pub fn setPaletteState(self: *Session, palette: []const ansi.RGBA, default_fg: ansi.RGBA, default_bg: ansi.RGBA, epoch: u32) Error!void {
@@ -853,6 +960,34 @@ pub const Session = struct {
         return result;
     }
 
+    /// Parses terminal input into caller-owned records in every open lifecycle
+    /// phase. Feeds share one monotonic clock; rejection leaves the parser unchanged.
+    pub fn feedInput(self: *Session, bytes: []const u8, now_ns: u64, sink: *input_parser.Sink) Error!InputFeed {
+        try self.checkOpen();
+        if (self.last_input_ns) |previous| {
+            if (now_ns < previous) return error.InvalidClock;
+        }
+        self.last_input_ns = now_ns;
+        var expect = self.input_expect;
+        // The host only requests Kitty keyboard; setup pushes its flags once the terminal reports support.
+        if (self.renderer) |value| expect.kitty_keyboard = value.terminal.state.kitty_keyboard;
+        self.input.setExpectations(expect);
+        const consumed = self.input.feed(bytes, now_ns, sink);
+        return .{ .consumed = consumed, .discarded = self.input.discarded_count, .deadline_ns = self.input.deadlineNs() };
+    }
+
+    /// Emits nothing; the next feed resolves a unit that may no longer wait.
+    pub fn setInputExpectations(self: *Session, expect: input_parser.Expectations) Error!void {
+        try self.checkOpen();
+        self.input_expect = expect;
+    }
+
+    /// With `keep_reply`, a pending reply prefix survives while the host expects replies.
+    pub fn resetInput(self: *Session, keep_reply: bool) Error!void {
+        try self.checkOpen();
+        self.input.reset(keep_reply and self.input_expect.replies);
+    }
+
     fn checkClock(self: *const Session, now_ns: u64) Error!void {
         if (self.last_pump_ns) |previous| {
             if (now_ns < previous) return error.InvalidClock;
@@ -930,12 +1065,11 @@ pub const Session = struct {
         return .{ .status = if (self.isDrained()) .again else .output_pending };
     }
 
-    /// Session renderers own their feed and never run legacy setup or batch split frames.
+    /// Session renderers own their feed.
     fn assertTerminalOutput(self: *const Session) void {
         const value = self.renderer.?;
-        std.debug.assert(!value.terminalSetup and !value.splitBatchActive);
-        std.debug.assert(value.backend == .feed and value.backend.feed.feed == self.output);
-        std.debug.assert(!value.backend.feed.frameActive);
+        std.debug.assert(value.backend.feed == self.output);
+        std.debug.assert(!value.backend.frameActive);
         std.debug.assert(self.output.callback == null and !self.output.in_callback);
     }
 
@@ -994,12 +1128,22 @@ pub const Session = struct {
             try self.output.writeReservedControlAtomic(writer.buffered());
         }
         if (owned_environment) candidate.opts.env_map = &value.terminal.host_env_map.?;
+        self.queueSwitch(value);
         value.terminal = candidate;
         self.lifecycle = progress;
         value.syncWidthMethod();
         if (command != null and command.? == .capability_response) {
             value.invalidateTerminalState();
         }
+    }
+
+    /// A packet that may switch the screen or Kitty keyboard was queued; the model has not taken it yet.
+    fn queueSwitch(self: *Session, value: *const renderer.CliRenderer) void {
+        if (self.completed_bytes >= self.wire.end) {
+            const state = value.terminal.state;
+            self.wire = .{ .alt_screen = state.alt_screen, .use_alternate = value.useAlternateScreen, .kitty_keyboard = state.kitty_keyboard };
+        }
+        self.wire.end = self.output.getStats().bytes_written;
     }
 
     fn writeControlPacket(command: Control, candidate: *terminal.Terminal, progress: *Lifecycle, writer: *std.Io.Writer) !void {
@@ -1030,12 +1174,31 @@ pub const Session = struct {
                 try candidate.enableDetectedFeatures(writer, flags != 0);
             },
             .restore_modes => try candidate.restoreTerminalModes(writer),
-            .query_pixel_resolution => try writer.writeAll(ansi.ANSI.queryPixelSize),
+            .query_pixel_resolution => |sentinel| {
+                try writer.writeAll(ansi.ANSI.queryPixelSize);
+                if (sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
+            },
             .query_theme_colors => try candidate.queryThemeColors(writer),
             .palette_query => |bytes| try writer.writeAll(bytes),
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),
             .cursor => unreachable,
+            .program_status => |status| writeProgramStatus(writer, status),
         }
+    }
+
+    /// Validation bounds the report, and the bound fits the empty packet, so writing cannot fail.
+    fn writeProgramStatus(writer: *std.Io.Writer, status: ProgramStatus) void {
+        comptime std.debug.assert(program_status_bytes_max <= control_packet_bytes_max);
+        var report: std.ArrayList(u8) = .initBuffer(writer.unusedCapacitySlice()[0..program_status_bytes_max]);
+        report.printAssumeCapacity("\x1b]7501;state={t}", .{status.state});
+        if (status.id.len != 0) report.printAssumeCapacity(":id={s}", .{status.id});
+        if (status.kind) |kind| report.printAssumeCapacity(":kind={t}", .{kind});
+        if (status.progress) |progress| report.printAssumeCapacity(":progress={d}", .{progress});
+        if (status.app.len != 0) report.printAssumeCapacity(":app={s}", .{status.app});
+        if (status.title.len != 0) report.printAssumeCapacity(":title={b64}", .{status.title});
+        if (status.message.len != 0) report.printAssumeCapacity(":msg={b64}", .{status.message});
+        report.appendSliceAssumeCapacity("\x1b\\");
+        writer.advance(report.items.len);
     }
 
     fn writeTerminalPacket(self: *Session, candidate: *terminal.Terminal, progress: *Lifecycle, writer: *std.Io.Writer) !void {
@@ -1074,6 +1237,7 @@ pub const Session = struct {
                 if (progress.image_index == value.currentImages.items.len) progress.step = .reset_input;
             },
             .reset_input => {
+                if (progress.dropped) try writer.writeAll(ansi.ANSI.syncReset);
                 try candidate.resetInputModes(writer);
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
@@ -1248,6 +1412,7 @@ pub const Session = struct {
         if (ticket.session.context_id != self.handle.context_id) return error.WrongContext;
         if (ticket.session.slot != self.handle.slot) return error.WrongSession;
         if (ticket.session.generation != self.handle.generation) return error.StaleHandle;
+        if (self.pending_post) return error.StaleRequest;
         const pending = self.pending orelse return error.StaleRequest;
         if (ticket.request_id != pending.request_id) return error.StaleRequest;
         if (ticket.len != pending.len) return error.InvalidTicket;
@@ -1317,21 +1482,119 @@ pub const Session = struct {
         }
     }
 
-    /// Explicitly discards disconnected output. Copies belong to the host, so
-    /// cancellation leaves no native borrow and never retries accepted bytes.
-    pub fn cancel(self: *Session) void {
-        self.cancelSceneFrame();
+    /// Writes stdout from a native thread (`W` is `stdout_writer.Writer(Sink, Runner)`).
+    /// Collects a finished copy, then, unless `wait` or `max_bytes == 0`, hands over the next
+    /// one. `wait` (process exit) never starts a copy: it waits for the running one, and a copy
+    /// the thread never picked up is taken back unwritten for the synchronous drain.
+    /// `create` makes the writer on the first hand-over, or fails with UnsupportedResource
+    /// before any output is consumed.
+    pub fn postStdout(self: *Session, comptime W: type, create: anytype, max_bytes: u32, wait: bool) Error!PostResult {
+        if (!try self.checkOutput()) return .{};
+        var result: PostResult = .{};
+        if (self.pending_post) {
+            const writer: *W = @ptrCast(@alignCast(self.stdout_post.?.ptr));
+            switch (if (wait) writer.waitCollect(reclaim_grace_ns) else writer.collect()) {
+                .busy => return .{ .in_flight = true },
+                .written => {
+                    const ticket = self.pending.?;
+                    self.pending_post = false;
+                    try self.completeOutput(ticket, .written);
+                    result.written = ticket.len;
+                },
+                .failed => {
+                    self.pending_post = false;
+                    try self.completeOutput(self.pending.?, .failed);
+                    return error.SessionFailed;
+                },
+                .reclaimed => {
+                    self.pending = null;
+                    self.pending_post = false;
+                    self.stdout_post = null;
+                    writer.release();
+                    return .{};
+                },
+            }
+        } else if (self.pending != null) return error.Busy;
+        if (wait or max_bytes == 0) return result;
+        if (self.span == null and !self.output.hasPendingSpans()) return result;
+        const writer: *W = if (self.stdout_post) |held| @ptrCast(@alignCast(held.ptr)) else blk: {
+            const created: *W = try create.create();
+            self.stdout_post = created.handle();
+            break :blk created;
+        };
+        const ticket = (try self.readOutput(writer.buffer[0..@min(max_bytes, writer.buffer.len)])).?;
+        self.pending_post = true;
+        writer.start(ticket.len);
+        result.in_flight = true;
+        return result;
+    }
+
+    /// How long process exit waits for the thread to pick up a posted copy before taking it back.
+    const reclaim_grace_ns = 100 * std.time.ns_per_ms;
+
+    fn abandonStdout(self: *Session) void {
+        const held = self.stdout_post orelse return;
+        self.stdout_post = null;
+        self.pending_post = false;
+        held.abandon(held.ptr);
+    }
+
+    /// A close past its deadline: begins close, then discards the output queued before it, except the copy that
+    /// the host holds, so only that copy and the restoration remain.
+    pub fn dropOutput(self: *Session) Error!void {
+        try self.beginClose();
+        // Restoration packets enter only a drained queue. Once the first is queued, the queue holds nothing else.
+        const step = self.lifecycle.step;
+        if (step != .idle and (step != .delete_images or self.lifecycle.image_index != 0)) return;
         self.finishPresentation(.failed);
-        if (self.span) |span| {
-            self.output.releaseSpan(span.slot_index, span.release_id) catch unreachable;
-            self.span = null;
+        const kept: u32 = if (self.pending) |ticket| ticket.len else 0;
+        if (self.releaseQueued(kept)) {
+            // Dropped packets may have changed the terminal model without reaching the terminal: take the screen
+            // and Kitty keyboard back to what the terminal has, and reset the other input modes.
+            self.lifecycle.dropped = true;
+            if (self.renderer) |value| {
+                const state = &value.terminal.state;
+                if (self.completed_bytes + kept < self.wire.end) {
+                    state.alt_screen = self.wire.alt_screen;
+                    state.kitty_keyboard = self.wire.kitty_keyboard;
+                    value.useAlternateScreen = self.wire.use_alternate;
+                }
+                state.modify_other_keys = true;
+                state.bracketed_paste = true;
+                state.focus_tracking = true;
+            }
+        }
+        if (self.output.closed and self.isDrained()) self.state = .closed;
+    }
+
+    /// Releases every queued span. The held span keeps `kept` bytes from its offset for a copy in flight.
+    /// Returns whether any bytes were released.
+    fn releaseQueued(self: *Session, kept: u32) bool {
+        var released = false;
+        if (self.span) |*span| {
+            released = span.len > self.span_offset + kept;
+            if (kept == 0) {
+                self.output.releaseSpan(span.slot_index, span.release_id) catch unreachable;
+                self.span = null;
+                self.span_offset = 0;
+            } else span.len = self.span_offset + kept;
         }
         var spans: [1]feed.SpanInfo = undefined;
         while (self.output.drainSpans(&spans) != 0) {
             self.output.releaseSpan(spans[0].slot_index, spans[0].release_id) catch unreachable;
+            released = true;
         }
+        return released;
+    }
+
+    /// Explicitly discards disconnected output. Copies belong to the host, so
+    /// cancellation leaves no native borrow and never retries accepted bytes.
+    pub fn cancel(self: *Session) void {
+        self.abandonStdout();
+        self.cancelSceneFrame();
+        self.finishPresentation(.failed);
+        _ = self.releaseQueued(0);
         self.output.close() catch unreachable;
-        self.span_offset = 0;
         self.pending = null;
         self.state = .cancelled;
         self.lifecycle.phase = .cancelled;
@@ -1424,7 +1687,8 @@ fn validateCapabilityString(kind: u8, payload: []const u8) Error!void {
         },
         ']' => {
             if (!std.mem.startsWith(u8, payload, "99;") and
-                !std.mem.startsWith(u8, payload, "1337;Capabilities=")) return error.InvalidOptions;
+                !std.mem.startsWith(u8, payload, "1337;Capabilities=") and
+                !std.mem.startsWith(u8, payload, "7501;")) return error.InvalidOptions;
         },
         '_' => {
             if (!std.mem.startsWith(u8, payload, "G")) return error.InvalidOptions;

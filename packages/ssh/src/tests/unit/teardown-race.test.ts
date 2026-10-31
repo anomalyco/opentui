@@ -172,11 +172,12 @@ test("session teardown force-closes a client that never drains", async () => {
   channel.hold()
   const closed = await Promise.race([
     bridge.destroy().then(() => true),
-    new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_500)),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 2_500)),
   ])
 
   expect(closed).toBe(true)
-  // The close deadline cancelled restoration, so the client learns that it failed.
+  // The write in flight outlived the deadline and the one after it (#1875), so restoration was cancelled and the
+  // client learns that it failed.
   expect([channel.exits, channel.closeCalls]).toEqual([[1], 1])
   await entered
 })

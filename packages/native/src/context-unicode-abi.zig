@@ -49,7 +49,7 @@ test "Context Unicode ABI rejects invalid spans and preserves copied outputs" {
     var count: u32 = 99;
     try std.testing.expectEqual(c.OT_OK, ot_unicode_get(context, &id, null, 0, &count));
     try std.testing.expectEqual(2, count);
-    var records = [_]c.ot_unicode_char{.{ .width = 99, .character = 99 }} ** 2;
+    var records: [2]c.ot_unicode_char = @splat(.{ .width = 99, .character = 99 });
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_unicode_get(context, &id, &records, 1, &count));
     try std.testing.expectEqual(2, count);
     try std.testing.expectEqual(99, records[0].width);

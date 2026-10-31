@@ -181,8 +181,7 @@ describe("native Yoga API coverage", () => {
       [() => node.setPositionAuto(Edge.Right), () => node.getPosition(Edge.Right), auto],
       [() => node.setGap(Gutter.Column, 25), () => node.getGap(Gutter.Column), point(25)],
       [() => node.setGap(Gutter.Column, undefined), () => node.getGap(Gutter.Column), unset],
-      // YGNodeStyleGetGap returns a float, so a percent gap reads back as points (as on main).
-      [() => node.setGapPercent(Gutter.Column, 26), () => node.getGap(Gutter.Column), point(26)],
+      [() => node.setGapPercent(Gutter.Column, 26), () => node.getGap(Gutter.Column), percent(26)],
       [() => node.setBorder(Edge.Bottom, 27), () => node.getBorder(Edge.Bottom), 27],
       [() => node.setBorder(Edge.Bottom, undefined), () => node.getBorder(Edge.Bottom), NaN],
       [() => node.setIsReferenceBaseline(true), () => node.isReferenceBaseline(), true],

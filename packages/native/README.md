@@ -16,14 +16,15 @@ file operations, Session deadlines, and native diagnostic clocks.
 ## API surfaces
 
 - [`src/opentui.zig`](src/opentui.zig) is the public Zig module. It exports the
-  checked `Context` API and raw Zig primitives, including `CliRenderer`,
-  `NativeRenderable`, `OptimizedBuffer`, text buffers, and pools. Callers manage
-  the lifetimes of raw primitives. Importing a raw primitive does not add Context
-  checks to it.
+  checked `Context` API and raw Zig primitives, including `NativeRenderable`,
+  `OptimizedBuffer`, text buffers, and pools. Callers manage the lifetimes of raw
+  primitives. Importing a raw primitive does not add Context checks to it. The
+  `CliRenderer` type is exported, but a renderer exists only as a Session's:
+  borrow it with `Context.raw().getSessionRenderer`.
 - [`include/opentui.h`](include/opentui.h) defines the checked `ot_*` C ABI for
   Contexts, Sessions, scenes, drawing, text, editors, styles, leases, clipboard,
   and diagnostics.
-  The ABI is experimental and at version 1. Core renders through it.
+  The ABI is experimental and at version 2. Core renders through it.
 - [`../core/src/zig.ts`](../core/src/zig.ts) supplies TypeScript wrappers over that
   checked ABI. Its checked signatures, callbacks, constants, and record layouts come
   from [`native-abi.generated.ts`](../core/src/native-abi.generated.ts).
@@ -62,6 +63,14 @@ From `packages/native`, `bun run build` installs the header and libraries under
 the shared library. Windows produces `opentui-static.lib`, `opentui.lib` for DLL
 imports, and `opentui.dll`. Static linkage also needs the platform and C++ runtime
 libraries. `zig build -Dall` builds all supported targets.
+
+Native video statically links a decode-only LGPL FFmpeg build into the libraries.
+`bun run build` builds it first with [`scripts/build-ffmpeg.ts`](scripts/build-ffmpeg.ts)
+and caches it under `.cache/ffmpeg`. On macOS, static linkage of video also needs the
+VideoToolbox, CoreMedia, CoreVideo, CoreServices, and QuartzCore frameworks, and
+Windows needs `bcrypt`. Targets outside the FFmpeg build configuration compile video
+as unavailable. [`src/vendor/ffmpeg/README.md`](src/vendor/ffmpeg/README.md) lists the
+pinned sources, licenses, and how to relink with a modified FFmpeg.
 `zig build -Dlibrary-target=<target>` builds one target.
 
 ```sh

@@ -91,7 +91,7 @@ export class InputRenderable extends TextareaRenderable {
 
       // Set cursor to end of initial value
       if (initialValue) {
-        this.cursorOffset = initialValue.length
+        this.cursorOffset = this.editBuffer.getEOL().offset
       }
     } catch (error) {
       this.rollbackConstruction(error)
@@ -123,6 +123,10 @@ export class InputRenderable extends TextareaRenderable {
     })
   }
 
+  protected override defaultDimension(kind: "width" | "height"): number | "auto" | `${number}%` {
+    return kind === "height" ? 1 : super.defaultDimension(kind)
+  }
+
   public get value(): string {
     return this.plainText
   }
@@ -133,7 +137,7 @@ export class InputRenderable extends TextareaRenderable {
     if (currentValue !== newValue) {
       this.runMutation(() => {
         this.setText(newValue)
-        this.cursorOffset = newValue.length
+        this.cursorOffset = this.editBuffer.getEOL().offset
         this.emit(InputRenderableEvents.INPUT, newValue)
       })
     }

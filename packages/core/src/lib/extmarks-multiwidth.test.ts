@@ -87,6 +87,24 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       expect(highlights[0].end).toBe(25)
     })
 
+    // A tab or control takes cells that a string width does not count. A highlight that ends at the end of the first
+    // line must stay on that line. An end past the text covers the rest of it.
+    it.each<[string, number, number, number[][][]]>([
+      ["a\tb\ncd", 0, 4, [[[0, 4]], []]],
+      ["a\fb\ncd", 0, 4, [[[0, 4]], []]],
+      ["a\u0085b\ncd", 0, 6, [[[0, 6]], []]],
+      ["a\fb\ncd", 3, 100, [[[3, 4]], [[0, 2]]]],
+    ])("highlights %j from %d to %d", async (text, start, end, expected) => {
+      await setup(text)
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
+      textarea.syntaxStyle = style
+      extmarks.create({ start, end, styleId: style.registerStyle("test", { fg: RGBA.fromValues(1, 0, 0, 1) }) })
+      const lines = [0, 1].map((line) =>
+        textarea.getLineHighlights(line).map((highlight) => [highlight.start, highlight.end]),
+      )
+      expect(lines).toEqual(expected)
+    })
+
     it("should correctly highlight text BEFORE multi-width characters", async () => {
       await setup("hello 前后端分离")
 
@@ -269,6 +287,19 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       // Cursor should be at display-width offset 5 (after "前后 ")
       expect(cursorPos).toBe(5)
     })
+
+    // Wide text takes more cells than string units, so the end of the buffer is past the string length.
+    it.each(["\u0085\u0085\u0085", "日日日日"])("skips a virtual extmark at the end after %j", async (prefix) => {
+      await setup(`${prefix}@ab`)
+      textarea.focus()
+      const end = textarea.editBuffer.getEOL().offset
+      extmarks.create({ start: end - 3, end, virtual: true })
+      textarea.cursorOffset = end - 3
+      currentMockInput.pressArrow("right")
+      expect(textarea.cursorOffset).toBe(end)
+      currentMockInput.pressArrow("right")
+      expect(textarea.cursorOffset).toBe(end)
+    })
   })
 
   describe("Visual vs Byte Offset Issues", () => {
@@ -319,6 +350,59 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       }
 
       expect(highlights.length).toBe(1)
+    })
+  })
+
+  describe("Edits that rejoin a grapheme", () => {
+    // Deleting `x` joins U+1F44B and U+1F3FB into one 2-cell grapheme, so `Z` moves 3 cells, not 1. Typing ZWJ
+    // joins U+1F468 and U+1F469 into one 2-cell grapheme, so `Z` moves 2 cells left. The cursor ends after the
+    // joined grapheme, and each edit publishes one cursor change.
+    const wave = ["\u{1f44b}x\u{1f3fb}Z", "\u{1f44b}\u{1f3fb}Z", 5] as const
+    const family = ["\u{1f468}\u{1f469}Z", "\u{1f468}\u200d\u{1f469}Z", 4] as const
+    const view = () => textarea.editorView
+    for (const [name, [before, after, markStart], cursor, edit] of [
+      ["Delete", wave, 2, () => textarea.editBuffer.deleteChar()],
+      ["Backspace", wave, 3, () => textarea.editBuffer.deleteCharBackward()],
+      ["deleteRange", wave, 2, () => textarea.editBuffer.deleteRange(0, 2, 0, 3)],
+      ["deleteSelectedText", wave, 2, () => (view().setSelection(2, 3), view().deleteSelectedText())],
+      ["replaceSelectedText", wave, 2, () => (view().setSelection(2, 3), view()._replaceSelectedText(""))],
+      ["insertChar", family, 2, () => textarea.editBuffer.insertChar("\u200d")],
+      ["insertText", family, 2, () => textarea.editBuffer.insertText("\u200d")],
+    ] as const) {
+      it(`${name} shifts the marks after it by the change in width`, async () => {
+        await setup(before)
+        const id = extmarks.create({ start: markStart, end: markStart + 1 })
+        textarea.editBuffer.setCursor(0, cursor)
+        await Promise.resolve()
+        let cursorEvents = 0
+        textarea.editBuffer.on("cursor-changed", () => cursorEvents++)
+        edit()
+        await Promise.resolve()
+        expect(textarea.plainText).toBe(after)
+        expect(extmarks.get(id)).toMatchObject({ start: 2, end: 3 })
+        expect(textarea.editBuffer.getCursorPosition().offset).toBe(2)
+        expect(cursorEvents).toBe(1)
+      })
+    }
+
+    // Backspace over `x` joins the flag and leaves the cursor after it, past where the deletion started.
+    it("Backspace that joins a flag removes the mark on the character it deletes", async () => {
+      await setup("\n\u{1f1fa}x\u{1f1f8}z")
+      const id = extmarks.create({ start: 2, end: 3 })
+      textarea.editBuffer.setCursor(1, 2)
+      textarea.editBuffer.deleteCharBackward()
+      expect(textarea.plainText).toBe("\n\u{1f1fa}\u{1f1f8}z")
+      expect(extmarks.get(id)).toBeNull()
+    })
+
+    // Deleting the line break joins U+263A and U+FE0F into one 2-cell grapheme, so `Z` keeps its offset.
+    it("Delete before a widening join keeps the marks after it", async () => {
+      await setup("\u263a\n\ufe0fZ")
+      const id = extmarks.create({ start: 2, end: 3 })
+      textarea.editBuffer.setCursor(0, 1)
+      textarea.editBuffer.deleteChar()
+      expect(textarea.plainText).toBe("\u263a\ufe0fZ")
+      expect(extmarks.get(id)).toMatchObject({ start: 2, end: 3 })
     })
   })
 })

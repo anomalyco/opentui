@@ -254,14 +254,7 @@ export const DOC_MANIFEST = {
     canonicalSection: "Extend / Custom UI",
     primaryNav: false,
     status: "Advanced",
-    searchSymbols: [
-      "BaseRenderable",
-      "Renderable",
-      "render",
-      "measure",
-      "nativeIntegration",
-      "defineNativeIntegration",
-    ],
+    searchSymbols: ["BaseRenderable", "Renderable", "render", "measure", "nativeIntegration", "refreshHooks"],
     related: ["core-concepts/renderables", "core-concepts/lifecycle", "bindings/react", "bindings/solid"],
   }),
 
@@ -506,7 +499,20 @@ export const DOC_MANIFEST = {
     searchSymbols: ["ImageRenderable", "Image", "image"],
     related: ["reference/native-image", "components/frame-buffer"],
   }),
-  "components/qr-code": page("components", 19, "QR code", "component-reference", {
+  "components/video": page("components", 19, "Video", "component-reference", {
+    group: "Graphics and media",
+    availability: BUILT_IN_ALL,
+    status: "Built in",
+    component: {
+      purpose: "Plays an MP4 file natively with Kitty, Sixel, or Unicode blocks and audio.",
+      coreRenderable: "VideoRenderable",
+      react: "<video> (built in)",
+      solid: "<video> (built in)",
+    },
+    searchSymbols: ["VideoRenderable", "Video", "video"],
+    related: ["components/image", "core-concepts/audio"],
+  }),
+  "components/qr-code": page("components", 20, "QR code", "component-reference", {
     group: "Graphics and media",
     packages: ["@opentui/qrcode"],
     availability: {
@@ -524,7 +530,7 @@ export const DOC_MANIFEST = {
     searchSymbols: ["QRCodeRenderable", "QRCode", "qrCode"],
     related: ["reference/qr-encoder", "components/image"],
   }),
-  "components/embedded-terminal": page("components", 20, "Embedded terminal", "component-reference", {
+  "components/embedded-terminal": page("components", 21, "Embedded terminal", "component-reference", {
     group: "Graphics and media",
     availability: CORE_ONLY,
     status: "Built-in Core renderable",
@@ -556,19 +562,23 @@ export const DOC_MANIFEST = {
     searchSymbols: ["sendNotification"],
     related: ["core-concepts/renderer", "reference/env-vars"],
   }),
-  "core-concepts/audio": page("application-apis", 3, "Audio", "task-guide", {
+  "application-apis/program-status": page("application-apis", 3, "Program status", "task-guide", {
+    searchSymbols: ["setProgramStatus", "ProgramStatus"],
+    related: ["core-concepts/notifications", "reference/terminal-capabilities"],
+  }),
+  "core-concepts/audio": page("application-apis", 4, "Audio", "task-guide", {
     searchSymbols: ["Audio", "setupAudio", "AudioSound", "AudioVoice", "AudioGroup"],
     related: ["core-concepts/lifecycle", "reference/standalone-executables"],
   }),
-  "application-apis/audio-streaming": page("application-apis", 4, "Streaming audio", "task-guide", {
+  "application-apis/audio-streaming": page("application-apis", 5, "Streaming audio", "task-guide", {
     searchSymbols: ["AudioStream", "AudioStreamError", "createIcyStreamDemuxer"],
     related: ["core-concepts/audio", "application-apis/audio-capture", "core-concepts/lifecycle"],
   }),
-  "application-apis/audio-capture": page("application-apis", 5, "Audio capture", "task-guide", {
+  "application-apis/audio-capture": page("application-apis", 6, "Audio capture", "task-guide", {
     searchSymbols: ["AudioCaptureStream", "AudioCaptureStreamError", "AudioRecorder", "AudioRecorderError"],
     related: ["core-concepts/audio", "application-apis/audio-streaming", "core-concepts/lifecycle"],
   }),
-  "application-apis/animation": page("application-apis", 6, "Animation and Timeline", "task-guide", {
+  "application-apis/animation": page("application-apis", 7, "Animation and Timeline", "task-guide", {
     searchSymbols: ["Timeline", "createTimeline", "engine", "useTimeline"],
     related: ["bindings/react", "bindings/solid", "core-concepts/lifecycle"],
   }),
@@ -766,14 +776,7 @@ export const DOC_MANIFEST = {
   }),
   "native/core": page("native", 5, "How Core uses native", "internals", {
     status: "Maintained Core integration",
-    searchSymbols: [
-      "NativeScene",
-      "NativeSession",
-      "ResourceContext",
-      "NativeResourceOwner",
-      "BufferAccess",
-      "nativeSceneWorkBudget",
-    ],
+    searchSymbols: ["NativeScene", "NativeSession", "ResourceContext", "NativeResourceOwner", "BufferAccess"],
     related: [
       "native/overview",
       "core-concepts/rendering-pipeline",

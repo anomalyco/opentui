@@ -17,7 +17,6 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ZIG_VERSION: 0.16.0
 
 jobs:
   test:
@@ -32,7 +31,19 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -47,12 +58,6 @@ jobs:
         uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
-
-      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
 
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib

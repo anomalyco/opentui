@@ -1,0 +1,120 @@
+---
+title: Program status
+description: Tell the terminal whether the program is idle, working, blocked, done, or failed
+skill:
+  intents: [program-status, osc7501, terminal, progress, renderer]
+---
+
+# Program status
+
+OpenTUI sends [OSC 7501 Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) reports.
+A report tells the terminal what the program is doing. The terminal decides how to show it, for example as a tab
+indicator, an inbox entry, or a desktop notification.
+
+```typescript
+renderer.setProgramStatus({ state: "working", app: "deploy", message: "Deploying v2.4.1" })
+renderer.setProgramStatus({
+  state: "blocked",
+  kind: "permission",
+  app: "deploy",
+  message: "Approve production deploy?",
+})
+renderer.setProgramStatus({ state: "done", app: "deploy", message: "Deployed to 3 regions" })
+```
+
+## States
+
+| `state`   | Meaning                                                  | Extra fields       |
+| --------- | -------------------------------------------------------- | ------------------ |
+| `idle`    | At rest and waiting for the next instruction             |                    |
+| `working` | Running                                                  | `progress`         |
+| `blocked` | Waiting for the user                                     | `kind`, `progress` |
+| `done`    | Finished, and the user has not seen the result yet       |                    |
+| `error`   | Failed and stopped                                       |                    |
+| `clear`   | Removes the addressed record and every record beneath it | Accepts only `id`  |
+
+`kind` is `"permission"`, `"question"`, or `"auth"`. `progress` is an integer from 0 to 100. Omit `progress` when the
+work has no percentage.
+
+Report `idle` when the user cancels work. Report `done` or `error` before the program exits, so the terminal keeps a
+record for the user to find.
+
+## Records
+
+Each report replaces its record completely. A field missing from a report is missing from the record afterwards, so
+send `app` and `title` with every report that needs them.
+
+| Field     | Value                                                                        |
+| --------- | ---------------------------------------------------------------------------- |
+| `id`      | Record path such as `build/test`. Omit it for the root record                |
+| `app`     | Stable program identifier such as `cargo`. Up to 32 `[A-Za-z0-9_.+-]` bytes  |
+| `title`   | Short label for the record. Up to 192 UTF-8 bytes                            |
+| `message` | One line that says what the record is doing or waiting for. Up to 2048 bytes |
+
+An `id` has up to 8 segments separated by `/`. Each segment has 1 to 32 `[A-Za-z0-9_.+-]` bytes, and the whole `id` has
+at most 128 bytes. A program that runs several tasks can report one record for each task:
+
+```typescript
+renderer.setProgramStatus({ state: "working", app: "deploy" })
+renderer.setProgramStatus({ state: "working", id: "us-east", title: "US East", progress: 40 })
+renderer.setProgramStatus({ state: "blocked", kind: "permission", id: "eu-west", title: "EU West" })
+renderer.setProgramStatus({ state: "clear", id: "us-east" })
+```
+
+`title` and `message` cannot contain control characters, including newline and tab. OpenTUI encodes them as base64.
+
+## Results
+
+`setProgramStatus()` returns `true` when OpenTUI queues the report. It returns `false` in these cases:
+
+- The session failed, or the terminal is closing: from the microtask after `destroy()`, or when the process exits.
+  Reports made in `destroy` listeners, in `onDestroy`, or right after `destroy()` are still queued.
+- The terminal is not active, for example before `setupTerminal()` finishes or while the renderer is suspended.
+- The output queue is full.
+
+A report that breaks a rule above throws. OpenTUI checks the whole report before it writes anything.
+
+## Detection
+
+Terminals ignore OSC sequences they do not implement, so `setProgramStatus()` does not wait for detection. OpenTUI
+sends the `OSC 7501 ; ?` query at startup, except when `TERM` names foot, whose reduced probe omits OSC capability queries.
+`renderer.capabilities?.program_status` becomes `true` when the terminal replies. A `false` value can also mean that
+the reply has not arrived yet.
+
+```typescript
+renderer.on("capabilities", (capabilities) => {
+  console.log("program status", capabilities.program_status)
+})
+```
+
+## Lifetime
+
+Records belong to the terminal, not to the renderer. When the process exits or the shell shows a new prompt, the
+terminal drops `working` and `blocked` records. `done` and `error` records stay until the terminal decides to remove
+them. `idle` records stay until they are replaced or cleared: a terminal may drop them when the process exits, but
+does not have to. OpenTUI does not clear records when the renderer is destroyed or suspended.
+
+To clear your records when the program exits, report from a `destroy` listener or from framework cleanup such as
+Solid's `onCleanup`. Both run before the terminal is restored, after `destroy()`, Ctrl+C, or an exit signal. A program
+that calls `process.exit()` without calling `destroy()` first gets no chance to report.
+
+```typescript
+renderer.on("destroy", () => {
+  renderer.setProgramStatus({ state: "clear", id: "build" })
+})
+```
+
+A `clear` without an `id` removes every record in the terminal, including `done` and `error` records and records that
+other programs left. Use it only when the program left no `done` or `error` record that the user should find.
+
+## Multiplexers
+
+OpenTUI does not wrap reports in tmux or GNU Screen passthrough. A passthrough report would reach the outer terminal,
+which cannot tell panes apart or see the program exit. A multiplexer that implements OSC 7501 receives reports
+directly.
+
+## Next
+
+- [Notifications](/docs/core-concepts/notifications) covers one-time desktop notifications.
+- [Terminal capabilities](/docs/reference/terminal-capabilities) explains query and detection timing.
+- [Renderer](/docs/core-concepts/renderer) documents the renderer and its capability event.

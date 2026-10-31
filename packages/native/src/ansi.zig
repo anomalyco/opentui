@@ -100,7 +100,7 @@ pub inline fn u8ToComponent(component: u8) f32 {
 /// Pack a ColorIntent and palette slot into a 32-bit metadata word.
 /// Layout: bits 0-7 = slot, bits 8-9 = intent.
 pub fn packMeta(intent_value: ColorIntent, slot_value: u8) u32 {
-    return @as(u32, slot_value) | (@as(u32, @intFromEnum(intent_value)) << 8);
+    return @as(u32, slot_value) | (@as(u32, @backingInt(intent_value)) << 8);
 }
 
 /// Build an RGBA value from 8-bit channels and a metadata word.
@@ -241,7 +241,6 @@ pub const ANSI = struct {
     pub const reset = "\x1b[0m";
     pub const clear = "\x1b[2J";
     pub const home = "\x1b[H";
-    pub const clearAndHome = "\x1b[H\x1b[2J";
     pub const eraseToEndOfLine = "\x1b[K";
     pub const hideCursor = "\x1b[?25l";
     pub const showCursor = "\x1b[?25h";
@@ -300,8 +299,10 @@ pub const ANSI = struct {
         writer.print("\x1b]12;#{x:0>2}{x:0>2}{x:0>2}\x07", .{ r, g, b }) catch return AnsiError.WriteFailed;
     }
 
+    /// OSC 66 takes w up to 7 (kitty clamps larger values, foot ignores them); spaces fill the rest of the glyph.
     pub fn explicitWidthOutput(writer: anytype, width: u32, text: []const u8) AnsiError!void {
-        writer.print("\x1b]66;w={d};{s}\x1b\\", .{ width, text }) catch return AnsiError.WriteFailed;
+        writer.print("\x1b]66;w={d};{s}\x1b\\", .{ @min(width, 7), text }) catch return AnsiError.WriteFailed;
+        for (7..@max(width, 7)) |_| writer.writeByte(' ') catch return AnsiError.WriteFailed;
     }
 
     pub const resetCursorColor = "\x1b]112\x07";
@@ -350,6 +351,7 @@ pub const ANSI = struct {
     pub const xtgettcapMs = "\x1bP+q4d73\x1b\\";
     pub const kittyGraphicsQuery = "\x1b_Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
     pub const notificationQueries = "\x1b]99;i=opentui-notifications:p=?;\x1b\\\x1b]1337;Capabilities\x1b\\";
+    pub const programStatusQuery = "\x1b]7501;?\x1b\\";
 
     pub const capabilityQueriesBase = xtgettcapMs ++
         decrqmSgrPixels ++
@@ -359,7 +361,7 @@ pub const ANSI = struct {
         decrqmBracketedPaste ++
         decrqmSync;
 
-    pub const capabilityQueries = capabilityQueriesBase ++ csiUQuery ++ notificationQueries;
+    pub const capabilityQueries = capabilityQueriesBase ++ csiUQuery ++ notificationQueries ++ programStatusQuery;
     pub const capabilityQueriesFootIsBroken = capabilityQueriesBase ++ csiUQuery;
 
     // tmux DCS passthrough wrapper (ESC chars doubled)
@@ -413,15 +415,6 @@ pub const ANSI = struct {
 
     pub fn setTerminalTitleOutput(writer: anytype, title: []const u8) AnsiError!void {
         writer.print(setTerminalTitle, .{title}) catch return AnsiError.WriteFailed;
-    }
-
-    pub fn makeRoomForRendererOutput(writer: anytype, height: u32) AnsiError!void {
-        if (height > 1) {
-            var i: u32 = 0;
-            while (i < height - 1) : (i += 1) {
-                writer.writeByte('\n') catch return AnsiError.WriteFailed;
-            }
-        }
     }
 };
 

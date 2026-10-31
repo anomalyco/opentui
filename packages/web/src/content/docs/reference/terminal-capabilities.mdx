@@ -32,11 +32,13 @@ renderer.on(CliRenderEvents.CAPABILITIES, applyCapabilities)
 
 Read the current snapshot first, then handle events. A response can arrive before your listener is attached.
 
-The startup capability handler remains active for five seconds. Each recognized later response updates
-`renderer.capabilities` and emits `"capabilities"`. Expect multiple events during that window. Do not wait for one
-specific count or treat the first event as final.
+The capability handler stays active for the whole session. A recognized response updates `renderer.capabilities`
+whenever it arrives, including after startup: GNU screen, tmux passthrough, and OpenSSH ConPTY can forward some
+replies late. `"capabilities"` is emitted only when the capabilities change. Expect several events during startup and
+occasionally later. Do not wait for one specific count or treat the first event as final.
 
-After the startup window, OpenTUI removes the general capability handler and stops treating private replies as startup
+The renderer consumes these responses before handlers added with `addInputHandler` run. Use `prependInputHandler` to
+observe them. After a five-second startup window, the input parser stops treating private replies as expected
 responses. Pixel-resolution and theme queries have separate lifecycles.
 
 ## Public types
@@ -96,12 +98,13 @@ Read [Image](/docs/components/image) for protocol selection. Do not choose a pro
 
 ### Links, clipboard, and notifications
 
-| Field           | Type                      | Meaning                                                                       |
-| --------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `hyperlinks`    | `boolean`                 | OSC 8 hyperlink output is enabled                                             |
-| `osc52`         | `boolean`                 | OSC 52 clipboard support was detected or inferred                             |
-| `osc52_support` | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
-| `notifications` | `boolean`                 | A notification protocol was selected                                          |
+| Field            | Type                      | Meaning                                                                       |
+| ---------------- | ------------------------- | ----------------------------------------------------------------------------- |
+| `hyperlinks`     | `boolean`                 | OSC 8 hyperlink output is enabled                                             |
+| `osc52`          | `boolean`                 | OSC 52 clipboard support was detected or inferred                             |
+| `osc52_support`  | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
+| `notifications`  | `boolean`                 | A notification protocol was selected                                          |
+| `program_status` | `boolean`                 | The terminal answered the OSC 7501 program status query                       |
 
 The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false. Without OSC 8,
 the terminal detects URLs one row at a time, so a wrapped URL opens only the part on the clicked row.
@@ -119,6 +122,9 @@ remote policy.
 
 `notifications` does not expose the selected OSC variant. Use `renderer.triggerNotification()` and its boolean result.
 Read [Notifications](/docs/core-concepts/notifications) for protocol and multiplexer behavior.
+
+`renderer.setProgramStatus()` does not depend on `program_status`. Terminals ignore OSC 7501 reports they do not
+implement. Read [Program status](/docs/application-apis/program-status).
 
 ### Session and terminal identity
 

@@ -27,6 +27,12 @@ pub const MemStat = struct {
     bytes: usize,
 };
 
+/// A deterministic work count reported next to a timing.
+pub const Counter = struct {
+    name: []const u8,
+    value: u64,
+};
+
 pub const BenchResult = struct {
     name: []const u8,
     min_ns: u64,
@@ -37,6 +43,7 @@ pub const BenchResult = struct {
     stddev_ns: ?f64 = null,
     rme_95: ?f64 = null,
     mem_stats: ?[]const MemStat,
+    counters: ?[]const Counter = null,
 };
 
 /// Timing statistics collected during benchmark iterations
@@ -480,6 +487,13 @@ pub fn printResults(writer: anytype, results: []const BenchResult) !void {
             try writer.writeAll("\x1b[0m");
         }
         try writer.writeByte('\n');
+        if (result.counters) |counters| {
+            try writer.writeAll("\x1b[2m  ");
+            for (counters) |counter| {
+                if (counter.value != 0) try writer.print(" {s}={d}", .{ counter.name, counter.value });
+            }
+            try writer.writeAll("\x1b[0m\n");
+        }
     }
 
     try writer.writeAll("\x1b[2m");
@@ -501,3 +515,43 @@ pub fn printResultsJson(writer: anytype, results: []const BenchResult, bench_nam
     try std.json.Stringify.value(output, .{ .emit_null_optional_fields = false }, writer);
     try writer.writeByte('\n');
 }
+
+pub const RunFn = *const fn (std.Io, std.mem.Allocator, bool, ?[]const u8) anyerror![]BenchResult;
+
+/// Runs one bench category and prints its results. Returns false when no row matched `bench_filter`.
+pub fn runCategory(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    stdout: *std.Io.Writer,
+    name: []const u8,
+    run: RunFn,
+    json_output: bool,
+    show_mem: bool,
+    bench_filter: ?[]const u8,
+) !bool {
+    // Use arena for results only - benchmark modules manage their own temp memory
+    var results_arena = std.heap.ArenaAllocator.init(allocator);
+    defer results_arena.deinit();
+
+    const timer = BenchTimer.start(io);
+    const results = try run(io, results_arena.allocator(), show_mem, bench_filter);
+    const elapsed_ns = timer.read();
+
+    if (results.len == 0) return false;
+
+    if (json_output) {
+        try printResultsJson(stdout, results, name);
+    } else {
+        try stdout.print("\n=== {s} Benchmarks ===\n\n", .{name});
+        try stdout.flush();
+        try printResults(stdout, results);
+        const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+        try stdout.print("\n  Overall time: {d:.2}ms\n", .{elapsed_ms});
+    }
+    return true;
+}
+
+/// The C ABI of a category in `bench-isolated.zig`, which compiles as its own unit. An empty
+/// `bench_filter` matches every row.
+pub const UnitStatus = enum(u8) { empty, ran, failed };
+pub const UnitFn = *const fn (json_output: bool, show_mem: bool, bench_filter: [*]const u8, bench_filter_len: usize) callconv(.c) UnitStatus;

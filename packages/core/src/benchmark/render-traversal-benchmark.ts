@@ -20,6 +20,7 @@ import {
   TextRenderable,
 } from "../index.js"
 import { CliRenderEvents, type CliRendererErrorEvent } from "../renderer.js"
+import type { NativeFrameWork } from "../zig.js"
 import { createTestRenderer, ManualClock, type TestRenderer } from "../testing.js"
 import { sceneGoldens } from "./render-traversal-goldens.js"
 
@@ -66,10 +67,12 @@ export type ScenarioResult = {
   approxUsPerRenderable: number
   scene?: TimingStats
   nativeRender?: TimingStats
+  /** Work counts of the last timed frame; deterministic, unlike the timings. */
+  frameWork?: NativeFrameWork
   sceneNodes?: SceneNodeCounts
 }
 
-// Counts include the renderer root and internal ScrollBox/scrollbar nodes.
+// Counts include the renderer root.
 export type SceneNodeCounts = { initial: number; timedMin: number; timedMax: number; limit: number }
 
 export type ParityEvidence = {
@@ -723,12 +726,7 @@ function createLogSceneScenario(mode: "unchanged" | "append" | "scroll"): Scenar
       ctx.renderer.root.add(scrollBox)
 
       const nodes: Renderable[] = [ctx.renderer.root]
-      for (const node of nodes) {
-        // ScrollBox.getChildren() delegates to content, hiding the internal tree.
-        nodes.push(
-          ...(node instanceof ScrollBoxRenderable ? [node.wrapper, node.verticalScrollBar] : node.getChildren()),
-        )
-      }
+      for (const node of nodes) nodes.push(...node.getChildren())
       const internalNodeCount = nodes.length
       const append = () => {
         const index = nodes.length - internalNodeCount
@@ -815,8 +813,8 @@ async function verifyScene(scenario: ScenarioDefinition): Promise<ParityEvidence
     if (runtime.log) {
       assert.equal(
         runtime.layoutOnlyBoxesPerIteration,
-        4,
-        "log layout-only box count must include every internal box, but not the renderer root",
+        1,
+        "log layout-only box count must be the ScrollBox, not the renderer root",
       )
     }
     const iterationSteps = ["iteration-0", "iteration-1", "iteration-2", "iteration-3"]
@@ -896,7 +894,7 @@ async function verifyScene(scenario: ScenarioDefinition): Promise<ParityEvidence
         }
         if (step === "scroll") assert.equal(scrollBox.scrollTop, scrollTop - 1)
         if (step === "scroll-restore") assert.equal(scrollBox.scrollTop, scrollTop + 1)
-        if (step !== "cleanup") assert.equal(scrollBox.content.translateY + scrollBox.scrollTop, 0)
+        if (step !== "cleanup") assert.equal(scrollBox.content.y + scrollBox.scrollTop, scrollBox.viewport.y)
         if (step === "resize") {
           assert.equal(ctx.renderer.width, width - 13)
           assert.equal(ctx.renderer.height, height - 3)
@@ -1042,7 +1040,7 @@ function snapshotScene(ctx: BenchmarkContext, runtime: ScenarioRuntime) {
   const numbers = new Map(nodes.map((node, index) => [node.num, index]))
   const hits = Array.from({ length: cells.width * cells.height }, (_, index) => {
     const hit = ctx.renderer.hitTest(index % cells.width, Math.floor(index / cells.width))
-    assert.ok(hit === 0 || numbers.has(hit), "hit grid references an unknown node")
+    assert.ok(hit === 0 || numbers.has(hit), "a hit test returned an unknown node")
     return numbers.get(hit) ?? -1
   })
   if (!runtime.log) assert.equal(hits[0], 1, "the first visible node must be hittable")
@@ -1445,6 +1443,7 @@ async function runScenario(
     const nativeRenderSamples = scenario.scene ? new Array<number>(iterations) : undefined
     let renderableCountTotal = 0
     let nativeFrameCount = sceneSamples ? ctx.renderer.getNativeStats().nativeFrameCount : 0
+    let frameWork: NativeFrameWork | undefined
     if (sceneSamples) {
       assert.ok(Number.isFinite(ctx.renderer.lastSceneTimeMs), "renderer.lastSceneTimeMs is required for scene timing")
     }
@@ -1476,6 +1475,7 @@ async function runScenario(
         // Native diff/encode timing is reported in microseconds, unlike scene timing.
         nativeRenderSamples![i] = stats.nativeRenderTime / 1000
         nativeFrameCount = stats.nativeFrameCount
+        frameWork = stats.frameWork
       }
     }
 
@@ -1502,6 +1502,7 @@ async function runScenario(
       approxUsPerRenderable: renderablesPerIteration > 0 ? round((stats.avgMs * 1000) / renderablesPerIteration, 3) : 0,
       ...(sceneSamples ? { scene: calculateStats(sceneSamples) } : {}),
       ...(nativeRenderSamples ? { nativeRender: calculateStats(nativeRenderSamples) } : {}),
+      ...(frameWork ? { frameWork } : {}),
       ...(sceneNodes ? { sceneNodes } : {}),
     }
   } finally {

@@ -40,11 +40,12 @@ pub fn imageFallbackFromChar(char: u32) u4 {
     return @truncate(char);
 }
 
-// For grapheme start and continuation cells:
-// Bits 29..28: right extent (u2), Bits 27..26: left extent (u2)
-pub const CHAR_EXT_RIGHT_SHIFT: u5 = 28;
-pub const CHAR_EXT_LEFT_SHIFT: u5 = 26;
-pub const CHAR_EXT_MASK: u32 = 0x3;
+// For grapheme start and continuation cells, bits 29..26 hold one extent (u4): a start
+// holds its right extent (width - 1), a continuation its left extent (cells back to the start).
+pub const CHAR_EXT_SHIFT: u5 = 26;
+pub const CHAR_EXT_MASK: u32 = 0xF;
+/// The most cells one glyph can span.
+pub const glyph_width_max: u32 = CHAR_EXT_MASK + 1;
 
 // Grapheme ID payload layout (26 bits total):
 // [ class (3 bits) | generation (7 bits) | slot_index (16 bits) ]
@@ -521,58 +522,40 @@ pub fn graphemeIdFromChar(c: u32) u32 {
 }
 
 pub fn charRightExtent(c: u32) u32 {
-    assert(isClusterChar(c));
-    return (c >> CHAR_EXT_RIGHT_SHIFT) & CHAR_EXT_MASK;
+    assert(isGraphemeChar(c));
+    return (c >> CHAR_EXT_SHIFT) & CHAR_EXT_MASK;
 }
 
+/// Cells from a grapheme cell back to its start cell.
 pub fn charLeftExtent(c: u32) u32 {
     assert(isClusterChar(c));
-    return (c >> CHAR_EXT_LEFT_SHIFT) & CHAR_EXT_MASK;
+    return if (isContinuationChar(c)) (c >> CHAR_EXT_SHIFT) & CHAR_EXT_MASK else 0;
 }
 
 pub fn packGraphemeStart(gid: u32, total_width: u32) u32 {
     assert(gid <= GRAPHEME_ID_MASK);
-    assert(total_width > 0);
-    // The packed extent is capped; wcwidth clusters such as ZWJ families can
-    // have a wider logical display width than the four-cell encoded span.
-    const width_minus_one: u32 = @min(total_width - 1, CHAR_EXT_MASK);
-    const right: u32 = width_minus_one;
-    const left: u32 = 0;
-    const char = CHAR_FLAG_GRAPHEME |
-        ((right & CHAR_EXT_MASK) << CHAR_EXT_RIGHT_SHIFT) |
-        ((left & CHAR_EXT_MASK) << CHAR_EXT_LEFT_SHIFT) |
-        (gid & GRAPHEME_ID_MASK);
+    assert(total_width > 0 and total_width <= glyph_width_max);
+    const char = CHAR_FLAG_GRAPHEME | ((total_width - 1) << CHAR_EXT_SHIFT) | gid;
     assert(isGraphemeChar(char));
     assert(graphemeIdFromChar(char) == gid);
-    assert(charLeftExtent(char) == 0);
+    assert(charRightExtent(char) == total_width - 1);
     return char;
 }
 
-pub fn packContinuation(left: u32, right: u32, gid: u32) u32 {
+pub fn packContinuation(left: u32, gid: u32) u32 {
     assert(gid <= GRAPHEME_ID_MASK);
-    assert(left <= CHAR_EXT_MASK);
-    assert(right <= CHAR_EXT_MASK);
-    const char = CHAR_FLAG_CONTINUATION |
-        ((left & CHAR_EXT_MASK) << CHAR_EXT_LEFT_SHIFT) |
-        ((right & CHAR_EXT_MASK) << CHAR_EXT_RIGHT_SHIFT) |
-        (gid & GRAPHEME_ID_MASK);
+    assert(left > 0 and left <= CHAR_EXT_MASK);
+    const char = CHAR_FLAG_CONTINUATION | (left << CHAR_EXT_SHIFT) | gid;
     assert(isContinuationChar(char));
     assert(graphemeIdFromChar(char) == gid);
     assert(charLeftExtent(char) == left);
-    assert(charRightExtent(char) == right);
     return char;
 }
 
+/// Cells of the glyph that starts in this cell: zero for a continuation cell.
 pub fn encodedCharWidth(c: u32) u32 {
-    if (isContinuationChar(c)) {
-        const left = charLeftExtent(c);
-        const right = charRightExtent(c);
-        return left + 1 + right;
-    } else if (isGraphemeChar(c)) {
-        return charRightExtent(c) + 1;
-    } else {
-        return 1;
-    }
+    if (isContinuationChar(c)) return 0;
+    return if (isGraphemeChar(c)) charRightExtent(c) + 1 else 1;
 }
 
 pub const GraphemeTracker = struct {

@@ -47,6 +47,17 @@ fn drawTextBackdrop(target: *buffer.OptimizedBuffer) void {
     }
 }
 
+// The renderer salts Kitty image ids with the clock, and the id's digit count changes the bytes per
+// frame in the row names. A fixed salt keeps the names the same on every run.
+const IMAGE_ID_SALT: u32 = 1_000_000_000;
+
+fn createRenderer(allocator: std.mem.Allocator, width: u32, height: u32, pool: *gp.GraphemePool, link_pool: *link.LinkPool) !test_renderer_mod.TestRenderer {
+    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, width, height, pool, link_pool);
+    test_renderer.renderer.imageIdSalt = IMAGE_ID_SALT;
+    test_renderer.renderer.kittyHistoryNextImageId = IMAGE_ID_SALT + gp.IMAGE_ID_MASK + 1;
+    return test_renderer;
+}
+
 const FrameCost = struct {
     stats: bench_utils.BenchStats = .{},
     total_bytes: u64 = 0,
@@ -69,7 +80,7 @@ fn runPlacementScenario(
     animate: bool,
     text_change: bool,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     switch (protocol) {
         .kitty => test_renderer.renderer.terminal.caps.kitty_graphics = true,
@@ -92,7 +103,7 @@ fn runPlacementScenario(
             const next = test_renderer.renderer.getNextBuffer();
             drawTextBackdrop(next);
             _ = try next.drawImage(value, image_handle, 5, 5, 40, 20, 320, 200, 0, 0, image_width, image_height, .auto);
-            _ = test_renderer.renderer.render(true);
+            _ = test_renderer.render(true);
         }
     }
     var frame: usize = 0;
@@ -113,9 +124,8 @@ fn runPlacementScenario(
 
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        _ = test_renderer.renderer.render(false);
+        _ = test_renderer.render(false);
         cost.stats.record(timer.read());
         // Skip the first frame: it pays the initial full paint for every scenario.
         if (frame == 0) {
@@ -129,7 +139,7 @@ fn runPlacementScenario(
 }
 
 fn runLargeStillTransmit(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool, link_pool: *link.LinkPool) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
@@ -149,9 +159,8 @@ fn runLargeStillTransmit(io: std.Io, allocator: std.mem.Allocator, pool: *gp.Gra
         _ = try next.drawImage(stills[index], image_handle, 5, 5, 40, 20, 320, 200, 0, 0, 1600, 1200, .auto);
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        _ = test_renderer.renderer.render(false);
+        _ = test_renderer.render(false);
         cost.stats.record(timer.read());
         // Match the other renderer scenarios by excluding initial full paint.
         if (frame == 0) {
@@ -206,7 +215,7 @@ fn runStaticKittyPlacementCount(
     link_pool: *link.LinkPool,
     count: usize,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
@@ -215,7 +224,7 @@ fn runStaticKittyPlacementCount(
     const image_handle: u32 = 1;
 
     try drawStaticKittyPlacements(test_renderer.renderer.getNextBuffer(), value, image_handle, count);
-    if (test_renderer.renderer.render(true) != .rendered) return error.RenderFailed;
+    if (test_renderer.render(true) != .rendered) return error.RenderFailed;
 
     const iterations: usize = if (count <= 128) 100 else if (count <= 512) 50 else if (count <= 2048) 20 else 30;
     var cost = FrameCost{};
@@ -223,9 +232,8 @@ fn runStaticKittyPlacementCount(
         try drawStaticKittyPlacements(test_renderer.renderer.getNextBuffer(), value, image_handle, count);
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        if (test_renderer.renderer.render(false) == .failed) return error.RenderFailed;
+        if (test_renderer.render(false) == .failed) return error.RenderFailed;
         cost.stats.record(timer.read());
         cost.total_bytes += test_renderer.memory.bytes.items.len;
         cost.frames += 1;
@@ -256,7 +264,7 @@ fn runDirtySixelOverlapCount(
     link_pool: *link.LinkPool,
     count: usize,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, 1, 1, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, 1, 1, pool, link_pool);
     defer test_renderer.deinit();
     test_renderer.renderer.terminal.caps.sixel = true;
 
@@ -277,7 +285,7 @@ fn runDirtySixelOverlapCount(
         false,
         count,
     );
-    if (test_renderer.renderer.render(true) != .rendered) return error.RenderFailed;
+    if (test_renderer.render(true) != .rendered) return error.RenderFailed;
     try drawOverlappingSixelPlacements(
         test_renderer.renderer.getNextBuffer(),
         base,
@@ -287,7 +295,7 @@ fn runDirtySixelOverlapCount(
         true,
         count,
     );
-    if (test_renderer.renderer.render(false) == .failed) return error.RenderFailed;
+    if (test_renderer.render(false) == .failed) return error.RenderFailed;
 
     const iterations: usize = if (count <= 128) 100 else if (count <= 512) 50 else if (count <= 2048) 20 else 30;
     var cost = FrameCost{};
@@ -303,9 +311,8 @@ fn runDirtySixelOverlapCount(
         );
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        if (test_renderer.renderer.render(false) == .failed) return error.RenderFailed;
+        if (test_renderer.render(false) == .failed) return error.RenderFailed;
         cost.stats.record(timer.read());
         cost.total_bytes += test_renderer.memory.bytes.items.len;
         cost.frames += 1;
@@ -321,7 +328,7 @@ fn runSplitImageCommit(
     protocol: Protocol,
     placement_count: usize,
 ) !FrameCost {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
+    var test_renderer = try createRenderer(allocator, TERM_WIDTH, TERM_HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     switch (protocol) {
         .kitty => test_renderer.renderer.terminal.caps.kitty_graphics = true,
@@ -378,20 +385,10 @@ fn runSplitImageCommit(
         _ = test_renderer.renderer.resetSplitScrollback(TERM_HEIGHT, TERM_HEIGHT);
         test_renderer.memory.bytes.clearRetainingCapacity();
         test_renderer.memory.last_write_start = 0;
-        test_renderer.memory.last_write_len = 0;
         const timer = bench_utils.BenchTimer.start(io);
-        const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(
-            snapshot,
-            snapshot.width,
-            false,
-            true,
-            TERM_HEIGHT,
-            false,
-            true,
-            true,
-        );
+        const status = test_renderer.commitSplit(snapshot, snapshot.width, false, true, TERM_HEIGHT, false);
         const elapsed = timer.read();
-        if (result.status == .failed) return error.RenderFailed;
+        if (status == .failed) return error.RenderFailed;
         const output = test_renderer.memory.bytes.items;
         switch (protocol) {
             .kitty => if (std.mem.find(u8, output, "\x1b_Ga=t") == null) return error.MissingKittyImageOutput,
@@ -404,6 +401,37 @@ fn runSplitImageCommit(
         cost.frames += 1;
     }
     return cost;
+}
+
+// Rows named "<scenario> (N bytes/frame)" learn N only from the run. A filter that names the whole
+// row selects the scenario before the run and must match the whole name after it.
+fn matchesFrameRow(scenario: []const u8, bench_filter: ?[]const u8) bool {
+    const filter = bench_filter orelse return true;
+    const suffix_start = std.mem.lastIndexOf(u8, filter, " (") orelse filter.len;
+    const scenario_filter = if (std.mem.endsWith(u8, filter, " bytes/frame)")) filter[0..suffix_start] else filter;
+    return bench_utils.matchesBenchFilter(scenario, scenario_filter);
+}
+
+fn appendFrameRow(
+    allocator: std.mem.Allocator,
+    results: *std.ArrayListUnmanaged(bench_utils.BenchResult),
+    scenario: []const u8,
+    cost: FrameCost,
+    bench_filter: ?[]const u8,
+) !void {
+    const name = try std.fmt.allocPrint(allocator, "{s} ({d} bytes/frame)", .{ scenario, cost.bytesPerFrame() });
+    if (!bench_utils.matchesBenchFilter(name, bench_filter)) return;
+    try results.append(allocator, .{
+        .name = name,
+        .min_ns = cost.stats.min_ns,
+        .avg_ns = cost.stats.avg(),
+        .max_ns = cost.stats.max_ns,
+        .total_ns = cost.stats.total_ns,
+        .iterations = cost.stats.count,
+        .stddev_ns = cost.stats.standardDeviation(),
+        .rme_95 = cost.stats.relativeMarginOfError95(),
+        .mem_stats = null,
+    });
 }
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filter: ?[]const u8) ![]bench_utils.BenchResult {
@@ -428,34 +456,14 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filte
         .{ .name = "blocks image replacements", .protocol = .blocks, .animate = true, .text_change = false },
     };
     for (scenarios) |scenario| {
-        if (!bench_utils.matchesBenchFilter(scenario.name, bench_filter)) continue;
+        if (!matchesFrameRow(scenario.name, bench_filter)) continue;
         const cost = try runPlacementScenario(io, allocator, &pools.graphemes, &pools.links, scenario.protocol, 320, 200, scenario.animate, scenario.text_change);
-        try results.append(allocator, .{
-            .name = try std.fmt.allocPrint(allocator, "{s} ({d} bytes/frame)", .{ scenario.name, cost.bytesPerFrame() }),
-            .min_ns = cost.stats.min_ns,
-            .avg_ns = cost.stats.avg(),
-            .max_ns = cost.stats.max_ns,
-            .total_ns = cost.stats.total_ns,
-            .iterations = cost.stats.count,
-            .stddev_ns = cost.stats.standardDeviation(),
-            .rme_95 = cost.stats.relativeMarginOfError95(),
-            .mem_stats = null,
-        });
+        try appendFrameRow(allocator, &results, scenario.name, cost, bench_filter);
     }
 
-    if (bench_utils.matchesBenchFilter("kitty large still transmit", bench_filter)) {
+    if (matchesFrameRow("kitty large still transmit", bench_filter)) {
         const cost = try runLargeStillTransmit(io, allocator, &pools.graphemes, &pools.links);
-        try results.append(allocator, .{
-            .name = try std.fmt.allocPrint(allocator, "kitty large still transmit ({d} bytes/frame)", .{cost.bytesPerFrame()}),
-            .min_ns = cost.stats.min_ns,
-            .avg_ns = cost.stats.avg(),
-            .max_ns = cost.stats.max_ns,
-            .total_ns = cost.stats.total_ns,
-            .iterations = cost.stats.count,
-            .stddev_ns = cost.stats.standardDeviation(),
-            .rme_95 = cost.stats.relativeMarginOfError95(),
-            .mem_stats = null,
-        });
+        try appendFrameRow(allocator, &results, "kitty large still transmit", cost, bench_filter);
     }
 
     const framebuffer_scenarios = [_]struct { name: []const u8, with_image: bool }{
@@ -480,36 +488,16 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filte
 
     for ([_]usize{ 8, 32, 128, 512, 2048, 4096 }) |count| {
         const name = try std.fmt.allocPrint(allocator, "kitty static {d} placements", .{count});
-        if (!bench_utils.matchesBenchFilter(name, bench_filter)) continue;
+        if (!matchesFrameRow(name, bench_filter)) continue;
         const cost = try runStaticKittyPlacementCount(io, allocator, &pools.graphemes, &pools.links, count);
-        try results.append(allocator, .{
-            .name = try std.fmt.allocPrint(allocator, "{s} ({d} bytes/frame)", .{ name, cost.bytesPerFrame() }),
-            .min_ns = cost.stats.min_ns,
-            .avg_ns = cost.stats.avg(),
-            .max_ns = cost.stats.max_ns,
-            .total_ns = cost.stats.total_ns,
-            .iterations = cost.stats.count,
-            .stddev_ns = cost.stats.standardDeviation(),
-            .rme_95 = cost.stats.relativeMarginOfError95(),
-            .mem_stats = null,
-        });
+        try appendFrameRow(allocator, &results, name, cost, bench_filter);
     }
 
     for ([_]usize{ 8, 32, 128, 512, 2048, 4096 }) |count| {
         const name = try std.fmt.allocPrint(allocator, "sixel dirty overlap {d} transparent placements", .{count});
-        if (!bench_utils.matchesBenchFilter(name, bench_filter)) continue;
+        if (!matchesFrameRow(name, bench_filter)) continue;
         const cost = try runDirtySixelOverlapCount(io, allocator, &pools.graphemes, &pools.links, count);
-        try results.append(allocator, .{
-            .name = try std.fmt.allocPrint(allocator, "{s} ({d} bytes/frame)", .{ name, cost.bytesPerFrame() }),
-            .min_ns = cost.stats.min_ns,
-            .avg_ns = cost.stats.avg(),
-            .max_ns = cost.stats.max_ns,
-            .total_ns = cost.stats.total_ns,
-            .iterations = cost.stats.count,
-            .stddev_ns = cost.stats.standardDeviation(),
-            .rme_95 = cost.stats.relativeMarginOfError95(),
-            .mem_stats = null,
-        });
+        try appendFrameRow(allocator, &results, name, cost, bench_filter);
     }
 
     const split_scenarios = [_]struct {
@@ -523,19 +511,9 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filte
         .{ .name = "split Kitty 128 image placements", .protocol = .kitty, .placements = 128 },
     };
     for (split_scenarios) |scenario| {
-        if (!bench_utils.matchesBenchFilter(scenario.name, bench_filter)) continue;
+        if (!matchesFrameRow(scenario.name, bench_filter)) continue;
         const cost = try runSplitImageCommit(io, allocator, &pools.graphemes, &pools.links, scenario.protocol, scenario.placements);
-        try results.append(allocator, .{
-            .name = try std.fmt.allocPrint(allocator, "{s} ({d} bytes/frame)", .{ scenario.name, cost.bytesPerFrame() }),
-            .min_ns = cost.stats.min_ns,
-            .avg_ns = cost.stats.avg(),
-            .max_ns = cost.stats.max_ns,
-            .total_ns = cost.stats.total_ns,
-            .iterations = cost.stats.count,
-            .stddev_ns = cost.stats.standardDeviation(),
-            .rme_95 = cost.stats.relativeMarginOfError95(),
-            .mem_stats = null,
-        });
+        try appendFrameRow(allocator, &results, scenario.name, cost, bench_filter);
     }
 
     return results.toOwnedSlice(allocator);

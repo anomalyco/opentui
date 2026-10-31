@@ -38,6 +38,8 @@ const StreamHandler = struct {
         if (action == .set_mode or action == .reset_mode or action == .restore_mode) {
             if (value.mode == .@"132_column") return;
         }
+        // Ghostty answers and stores Kitty drag and drop commands without a drop effect; OpenTUI has none.
+        if (action == .kitty_dnd) return;
         self.base.vt(action, value);
     }
 
@@ -140,7 +142,7 @@ pub const EmbeddedTerminal = struct {
 
     pub fn selectedText(self: *EmbeddedTerminal) Error![:0]const u8 {
         const screen = self.terminal.screens.active;
-        const selection = screen.selection orelse return try self.allocator.dupeZ(u8, "");
+        const selection = screen.selection orelse return try self.allocator.dupeSentinel(u8, "", 0);
         return try screen.selectionString(self.allocator, .{ .sel = selection });
     }
 
@@ -183,14 +185,15 @@ pub const EmbeddedTerminal = struct {
                 return error.InvalidDimensions;
             }
         }
+        const fg, const bg = .{ self.render_state.colors.foreground, self.render_state.colors.background };
         self.render_state.update(self.allocator, &self.terminal) catch |err| {
             self.render_state.deinit(self.allocator);
             self.render_state = .empty;
             return err;
         };
-        if (self.force_redraw) {
-            self.render_state.dirty = .full;
-        }
+        // Ghostty does not dirty rows when OSC 10/11/110/111 or reverse video change the default colors.
+        const colors = &self.render_state.colors;
+        if (self.force_redraw or !std.meta.eql(fg, colors.foreground) or !std.meta.eql(bg, colors.background)) self.render_state.dirty = .full;
         try compositor.compose(self.allocator, &self.render_state, target, x, y, self.transparent_background, checked);
         self.force_redraw = false;
     }
@@ -295,7 +298,7 @@ pub const EmbeddedTerminal = struct {
         return count;
     }
 
-    fn writePty(handler: *ghostty.TerminalStream.Handler, data: [:0]const u8) void {
+    fn writePty(handler: *ghostty.TerminalStream.Handler, data: []const u8) void {
         const self: *EmbeddedTerminal = @fieldParentPtr("terminal", handler.terminal);
         if (self.response_error != null) return;
         if (data.len > response_limit - @min(self.responses.items.len, response_limit)) {

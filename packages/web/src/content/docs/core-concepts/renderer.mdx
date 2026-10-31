@@ -51,7 +51,13 @@ In split-footer mode, `renderer.width` and `renderer.height` describe the footer
 
 The renderer also supplies structured scrollback writers and surfaces. Use the canonical [custom renderables guide](/docs/extend/custom-renderables) for off-screen rendering and the [Buffer API](/docs/reference/buffer-api) for buffer ownership.
 
-Captured writes, writer snapshots, and surface commits wait in one queue until frames present them, in order. Captured stdout is never refused. One writer snapshot or surface commit larger than the Session output capacity divided by 24 bytes (about 349,000 cells by default) throws.
+Captured writes, writer snapshots, and surface commits wait in one queue until frames present them, in order. A writer snapshot or surface commit can hold at most the Session output capacity divided by 24 bytes, about 349,000 cells by default. A larger one throws.
+
+Captured stdout has a limit of 64 MiB, about 9,700 rows at 80 columns. Writer snapshots and surface commits don't count toward it. The renderer drops one only when its output is larger than one frame can write (about 8 MiB by default, for example a full-width snapshot of about 1,500 rows with its own colors in every cell), and emits `frame:dropped` for it.
+
+When captured stdout reaches half the limit, `stdout.write()` returns `false`. After frames write it below half again, `stdout` emits `'drain'`. A writer that respects backpressure, such as `pipe()`, then waits for the terminal instead of losing rows. The terminal stream also emits `'drain'` for its own writes, and that can wake the writer early. Backpressure therefore can't guarantee that no rows are lost.
+
+If a write takes captured stdout past the limit, the renderer drops the oldest captured rows that it hasn't started to write, until captured stdout is back at half the limit. One `[N lines dropped]` row takes their place. `external_output` listeners receive that row like any other captured row.
 
 ## Custom streams
 
@@ -65,6 +71,18 @@ Custom `stdout` uses Session-owned ordered output and defaults to `remote: true`
 
 Set `forwardEnvKeys` only for values that the remote terminal should inherit. Read [Terminal capabilities](/docs/reference/terminal-capabilities) and [Environment variables](/docs/reference/env-vars) for forwarding rules.
 Read [How Core uses native](/docs/native/core#complete-output-and-release-resources) for Session output ownership and completion.
+
+## Synchronized output
+
+OpenTUI wraps each frame in synchronized output (`CSI ? 2026 h` … `CSI ? 2026 l`), so the terminal shows the frame whole. `synchronizedOutput` controls this:
+
+| Value      | Behavior                                                                                                                                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `"auto"`   | Default. Wraps every frame, except in a remote session (`remote`, or SSH or mosh detected) whose app runs inside tmux, screen or Zellij on its own host, or whose terminal answered the startup queries without reporting mode 2026. |
+| `"always"` | Wraps every frame.                                                                                                                                                                                                                   |
+| `"never"`  | Never wraps a frame.                                                                                                                                                                                                                 |
+
+tmux answers the mode query from its own state, not the client terminal's, and it redraws every line an update touched when the update ends. When the multiplexer sits between the app and a slow link, those redraws cost bytes on every frame, so `"auto"` leaves the wrapper out, and the multiplexer may then show partial frames. Set `"always"` to keep it. OpenTUI detects that multiplexer from `TMUX`, `STY` or `ZELLIJ` in the app's own process environment, and only when it renders to `process.stdout`. A multiplexer on the client's side of the link, a custom `stdout`, and the `environment` option never count. Frames sent before the terminal's replies arrive keep the wrapper.
 
 ## Choose a render schedule
 
@@ -95,16 +113,6 @@ A registered `Timeline` owns its live request when the timeline engine is attach
 `suspend()` releases active terminal input modes and stops rendering. `resume()` restores the control state that existed before suspension.
 
 Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedulerState()` reports running, rendering, and scheduled-work state for diagnostics.
-
-### Cooperative frames
-
-Set `nativeSceneWorkBudget` to a positive unsigned 32-bit integer to let a frame yield to the event loop during preparation. The budget counts preparation visits, view-preparation entries, and feedback records between yields. Without this option, preparation does not yield.
-
-If a change made while the frame waits at a yield affects layout, preparation restarts once. The rest of that frame runs without yields.
-
-The budget does not limit elapsed time or cells. Yoga, sibling sorting, publication of the prepared tree, painting, and output encoding still run synchronously. Painting runs in one native call and never yields, so no event-loop work can change the scene while native code paints. The scheduler also cannot interrupt an application callback.
-
-A resize can change the renderer size while a frame waits at a yield. Core then cancels that frame attempt and starts a new one at the new size. The new attempt keeps all accepted changes and the side effects of callbacks that already ran. Cancellation does not roll anything back. Output that the Session already queued keeps its order and its completion tracking.
 
 Use the renderer-owned [animation APIs](/docs/application-apis/animation#animation-callbacks) rather than process-global animation callbacks when you host multiple sessions.
 
@@ -137,6 +145,7 @@ Use `renderer.on(event, listener)` and remove long-lived listeners with `off()`.
 | `resize`              | `(width, height)`                | The render region changed.                                |
 | `frame`               | `{ frameId }`                    | A frame's output completed.                               |
 | `render:error`        | `{ error, renderable }`          | An error stopped a frame. See below.                      |
+| `frame:dropped`       | `{ bytes, limit }`               | A frame was too large for the output. See below.          |
 | `handler:error`       | `{ error, event }`               | A mouse handler threw.                                    |
 | `external_output`     | `CliRendererExternalOutputEvent` | Core queued a split-footer output snapshot.               |
 | `focus`, `blur`       | none                             | The terminal reported window focus or blur.               |
@@ -157,12 +166,15 @@ The `focus` and `blur` events describe terminal-window focus. They do not focus 
 Without a `render:error` listener, the renderer reports the error through its normal error path.
 An error from a `setFrameCallback()` callback does not stop the frame. Core logs it and does not emit `render:error`.
 
+`frame:dropped` reports a frame that one write to the terminal cannot hold: `bytes` is its size and `limit` the most one frame can write. Image uploads don't count: a frame sends the images that fit and later frames send the rest. The screen keeps the previous frame. The renderer does not try the same content again; it reports it once and tries again after the content changes. In split-footer mode, it drops a scrollback commit that is too large, and the frames after it draw.
+
 ## Use renderer-owned services
 
 The renderer exposes several terminal and application services. Their canonical guides define behavior and cleanup:
 
 - [Clipboard](/docs/core-concepts/clipboard) covers host clipboard access and OSC 52.
 - [Notifications](/docs/core-concepts/notifications) covers terminal notification protocols.
+- [Program status](/docs/application-apis/program-status) covers OSC 7501 status reports.
 - [Console overlay](/docs/core-concepts/console) covers captured logs and overlay behavior.
 - [Environment variables](/docs/reference/env-vars) lists runtime configuration.
 - [Custom renderables](/docs/extend/custom-renderables) covers frame hooks and custom output.

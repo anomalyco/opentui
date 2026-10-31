@@ -13,9 +13,12 @@ const editor_transport = @import("context-editor-abi.zig");
 const text_transport = @import("context-text-abi.zig");
 const unicode_transport = @import("context-unicode-abi.zig");
 const terminal_transport = @import("context-terminal-abi.zig");
+const input_transport = @import("context-input-abi.zig");
 const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
+const video_transport = @import("context-video-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
+const utils = @import("utils.zig");
 
 /// Each C Context owns a private allocator. Test builds back it with
 /// std.testing.allocator and enable safety, so a test that leaks Context memory fails.
@@ -70,7 +73,7 @@ fn createContext(
         .owner_thread = std.Thread.getCurrentId(),
     };
     handle.gpa.backing_allocator = backing_allocator;
-    handle.core = Context.init(handle.gpa.allocator(), handle.io_threaded.io(), .{
+    handle.core = Context.init(contextAllocator(handle.gpa.allocator(), builtin.mode, builtin.is_test, build_options.gpa_safe_stats), handle.io_threaded.io(), .{
         .object_capacity = options.object_capacity,
         .render_cells_max = options.render_cells_max,
     }) catch |err| {
@@ -84,6 +87,11 @@ fn createContext(
     };
     out_context.* = handle;
     return c.OT_OK;
+}
+
+/// DebugAllocator never reuses a freed slot, so release builds use libc; tests keep its leak checks.
+fn contextAllocator(gpa: std.mem.Allocator, mode: std.lang.Optimize, is_test: bool, safe_stats: bool) std.mem.Allocator {
+    return if (is_test or safe_stats or mode == .debug) gpa else std.heap.c_allocator;
 }
 
 pub fn ot_context_destroy(context: ?*ContextHandle) callconv(.c) c.ot_status {
@@ -154,7 +162,7 @@ pub fn ot_context_drain_diagnostics(
     for (0..count) |index| {
         const record = queue.pop().?;
         records.?[index] = .{
-            .level = @intFromEnum(record.level),
+            .level = @backingInt(record.level),
             .message_len = record.message_len,
             .flags = if (record.truncated) c.OT_DIAGNOSTIC_TRUNCATED else 0,
             .reserved = 0,
@@ -326,7 +334,7 @@ pub fn ot_edit_buffer_get_info(context: ?*ContextHandle, edit_ptr: ?*const c.ot_
 
 fn editEventCallback(userdata: ?*anyopaque, handle: ObjectHandle, event: @import("context.zig").EditEvent) void {
     const owner: *ContextHandle = @ptrCast(@alignCast(userdata.?));
-    if (owner.edit_event_callback) |callback| callback(handle.context_id, handle.slot, handle.generation, @intFromEnum(event));
+    if (owner.edit_event_callback) |callback| callback(handle.context_id, handle.slot, handle.generation, @backingInt(event));
 }
 
 pub fn ot_context_set_edit_event_callback(context: ?*ContextHandle, callback: c.ot_edit_event_callback) callconv(.c) c.ot_status {
@@ -378,10 +386,22 @@ pub fn ot_scene_set_image(context: ?*ContextHandle, node_ptr: ?*const c.ot_handl
     owner.core.sceneSetImage(
         handleFromC(node.*),
         if (image_ptr) |id| handleFromC(id.*) else null,
-        @enumFromInt(fit),
-        @enumFromInt(protocol),
+        @fromBackingInt(@intCast(fit)),
+        @fromBackingInt(@intCast(protocol)),
         if (buffer_ptr) |id| handleFromC(id.*) else null,
     ) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_scene_set_crop(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, left: u32, top: u32, width: u32, height: u32) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const whole = left == 0 and top == 0 and width == 0 and height == 0;
+    if (!whole and (width == 0 or height == 0)) return sessionError(owner, error.InvalidOptions);
+    const crop: ?@import("image.zig").Region = if (whole) null else .{ .left = left, .top = top, .width = width, .height = height };
+    owner.core.sceneSetCrop(handleFromC(node.*), crop) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -518,10 +538,10 @@ pub fn widthMethodFromC(value: u32) error{InvalidOptions}!WidthMethod {
 }
 
 comptime {
-    std.debug.assert(@intFromEnum(WidthMethod.wcwidth) == c.OT_WIDTH_METHOD_WCWIDTH);
-    std.debug.assert(@intFromEnum(WidthMethod.unicode) == c.OT_WIDTH_METHOD_UNICODE);
-    std.debug.assert(@intFromEnum(WidthMethod.no_zwj) == c.OT_WIDTH_METHOD_NO_ZWJ);
-    std.debug.assert(@intFromEnum(WidthMethod.unicode_wide) == c.OT_WIDTH_METHOD_UNICODE_WIDE);
+    std.debug.assert(@backingInt(WidthMethod.wcwidth) == c.OT_WIDTH_METHOD_WCWIDTH);
+    std.debug.assert(@backingInt(WidthMethod.unicode) == c.OT_WIDTH_METHOD_UNICODE);
+    std.debug.assert(@backingInt(WidthMethod.no_zwj) == c.OT_WIDTH_METHOD_NO_ZWJ);
+    std.debug.assert(@backingInt(WidthMethod.unicode_wide) == c.OT_WIDTH_METHOD_UNICODE_WIDE);
     std.debug.assert(std.enums.values(WidthMethod).len == 4);
 }
 
@@ -596,7 +616,7 @@ pub fn ot_buffer_stack(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle
     if (operation > c.OT_BUFFER_STACK_CLEAR_OPACITY) return sessionError(owner, error.InvalidOptions);
     const frame = if (frame_ptr) |record| frameRequestFromC(record.*) catch |err| return sessionError(owner, err) else null;
     out.* = owner.core.bufferStack(handleFromC(target.*), frame, .{
-        .operation = @enumFromInt(operation),
+        .operation = @fromBackingInt(@intCast(operation)),
         .x = x,
         .y = y,
         .width = width,
@@ -674,13 +694,13 @@ pub fn ot_buffer_draw_editor_view(context: ?*ContextHandle, target: ?*const c.ot
     return c.OT_OK;
 }
 
-pub fn ot_buffer_draw_scene_text(context: ?*ContextHandle, target: ?*const c.ot_handle, frame: ?*const c.ot_scene_frame_request, source: ?*const c.ot_handle, x: i32, y: i32) callconv(.c) c.ot_status {
+pub fn ot_buffer_draw_scene_body(context: ?*ContextHandle, target: ?*const c.ot_handle, frame: ?*const c.ot_scene_frame_request, source: ?*const c.ot_handle, x: i32, y: i32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
     if (target == null or source == null) return sessionError(owner, error.InvalidOptions);
     const request = if (frame) |p| frameRequestFromC(p.*) catch |err| return sessionError(owner, err) else null;
-    owner.core.drawSceneText(handleFromC(target.?.*), request, handleFromC(source.?.*), x, y) catch |err| return sessionError(owner, err);
+    owner.core.drawSceneBody(handleFromC(target.?.*), request, handleFromC(source.?.*), x, y) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -939,7 +959,9 @@ pub fn ot_session_get_renderer_state(
         .height = attached.height,
         .frame_count = attached.getRenderStats().frameCount,
         .frame_pending = @intFromBool(value.frame_end_offset != null),
-        .reserved = 0,
+        .image_uploads_pending = attached.imageUploadsPending(),
+        .dropped_frames = attached.dropped_frames,
+        .dropped_frame_bytes = attached.dropped_frame_bytes,
     };
     return c.OT_OK;
 }
@@ -1123,6 +1145,27 @@ pub fn ot_session_drain_stdout(
     return c.OT_OK;
 }
 
+pub fn ot_session_post_stdout(
+    context: ?*ContextHandle,
+    session_ptr: ?*const c.ot_handle,
+    max_bytes: u32,
+    wait: u32,
+    out_state_ptr: ?*u32,
+    out_written_ptr: ?*u32,
+) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out_state = out_state_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out_written = out_written_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (wait > 1) return sessionError(owner, error.InvalidOptions);
+    const result = owner.core.postStdout(handleFromC(id.*), max_bytes, wait == 1) catch |err| return sessionError(owner, err);
+    out_state.* = if (result.in_flight) c.OT_STDOUT_IN_FLIGHT else c.OT_STDOUT_IDLE;
+    out_written.* = result.written;
+    return c.OT_OK;
+}
+
 pub fn ot_session_setup_terminal(
     context: ?*ContextHandle,
     session_ptr: ?*const c.ot_handle,
@@ -1135,8 +1178,10 @@ pub fn ot_session_setup_terminal(
     const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
     if (options.struct_size != @sizeOf(c.ot_session_terminal_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    const sync_flags: u32 = c.OT_TERMINAL_SYNC_ALWAYS | c.OT_TERMINAL_SYNC_NEVER;
     const known_flags: u32 = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE |
-        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE;
+        c.OT_TERMINAL_MOUSE_MOVEMENT | c.OT_TERMINAL_CLEAR_ON_CLOSE | c.OT_TERMINAL_REPLY_SENTINEL | sync_flags |
+        c.OT_TERMINAL_HOST_MULTIPLEXER;
     if (options.flags & ~known_flags != 0 or options.kitty_keyboard_flags > 31) {
         return sessionError(owner, error.InvalidOptions);
     }
@@ -1145,6 +1190,14 @@ pub fn ot_session_setup_terminal(
         .mouse = options.flags & c.OT_TERMINAL_MOUSE != 0,
         .mouse_movement = options.flags & c.OT_TERMINAL_MOUSE_MOVEMENT != 0,
         .clear_on_close = options.flags & c.OT_TERMINAL_CLEAR_ON_CLOSE != 0,
+        .reply_sentinel = options.flags & c.OT_TERMINAL_REPLY_SENTINEL != 0,
+        .host_multiplexer = options.flags & c.OT_TERMINAL_HOST_MULTIPLEXER != 0,
+        .synchronized_output = switch (options.flags & sync_flags) {
+            0 => .auto,
+            c.OT_TERMINAL_SYNC_ALWAYS => .always,
+            c.OT_TERMINAL_SYNC_NEVER => .never,
+            else => return sessionError(owner, error.InvalidOptions),
+        },
         .kitty_keyboard_flags = @intCast(options.kitty_keyboard_flags),
     }) catch |err| return sessionError(owner, err);
     return c.OT_OK;
@@ -1263,10 +1316,12 @@ pub fn ot_session_control(
     if (options.struct_size != @sizeOf(c.ot_session_control_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     if (options.reserved != 0 or (byte_count != 0 and bytes_ptr == null)) return sessionError(owner, error.InvalidOptions);
-    const payload = options.kind == c.OT_CONTROL_CAPABILITY_RESPONSE or options.kind == c.OT_CONTROL_TITLE or options.kind == c.OT_CONTROL_CURSOR or options.kind == c.OT_CONTROL_PALETTE_QUERY;
+    const payload = options.kind == c.OT_CONTROL_CAPABILITY_RESPONSE or options.kind == c.OT_CONTROL_TITLE or options.kind == c.OT_CONTROL_CURSOR or options.kind == c.OT_CONTROL_PALETTE_QUERY or
+        options.kind == c.OT_CONTROL_PROGRAM_STATUS;
     const argument_max: u32 = switch (options.kind) {
-        c.OT_CONTROL_MOUSE => @intFromEnum(@import("session.zig").MouseMode.motion),
+        c.OT_CONTROL_MOUSE => @backingInt(@import("session.zig").MouseMode.motion),
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => 1,
         else => 0,
     };
     if ((!payload and byte_count != 0) or options.argument > argument_max) return sessionError(owner, error.InvalidOptions);
@@ -1274,10 +1329,10 @@ pub fn ot_session_control(
     const command: @import("session.zig").Control = switch (options.kind) {
         c.OT_CONTROL_CAPABILITY_RESPONSE => .{ .capability_response = bytes },
         c.OT_CONTROL_TITLE => .{ .title = bytes },
-        c.OT_CONTROL_MOUSE => .{ .mouse = @enumFromInt(options.argument) },
+        c.OT_CONTROL_MOUSE => .{ .mouse = @fromBackingInt(@intCast(options.argument)) },
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => .{ .kitty_keyboard_flags = @intCast(options.argument) },
         c.OT_CONTROL_RESTORE_MODES => .restore_modes,
-        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .query_pixel_resolution,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .{ .query_pixel_resolution = options.argument != 0 },
         c.OT_CONTROL_QUERY_THEME_COLORS => .query_theme_colors,
         c.OT_CONTROL_RESET_BACKGROUND => .reset_background,
         c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = bytes },
@@ -1302,10 +1357,34 @@ pub fn ot_session_control(
                     .y = update.y,
                     .visible = update.visible != 0,
                 } else null,
-                .style = if (update.fields & c.OT_CURSOR_STYLE != 0) @enumFromInt(update.style) else null,
+                .style = if (update.fields & c.OT_CURSOR_STYLE != 0) @fromBackingInt(@intCast(update.style)) else null,
                 .blinking = if (update.fields & c.OT_CURSOR_BLINKING != 0) update.blinking != 0 else null,
                 .color = if (update.fields & c.OT_CURSOR_COLOR != 0) update.color else null,
-                .cursor = if (update.fields & c.OT_CURSOR_MOUSE_POINTER != 0) @enumFromInt(update.mouse_pointer) else null,
+                .cursor = if (update.fields & c.OT_CURSOR_MOUSE_POINTER != 0) @fromBackingInt(@intCast(update.mouse_pointer)) else null,
+            } };
+        },
+        c.OT_CONTROL_PROGRAM_STATUS => blk: {
+            const header_len = @sizeOf(c.ot_session_program_status);
+            if (bytes.len < header_len) return sessionError(owner, error.InvalidOptions);
+            var report: c.ot_session_program_status = undefined;
+            @memcpy(std.mem.asBytes(&report), bytes[0..header_len]);
+            if (report.state < c.OT_PROGRAM_STATE_IDLE or report.state > c.OT_PROGRAM_STATE_CLEAR or report.kind > c.OT_PROGRAM_KIND_AUTH or
+                report.fields & ~@as(u32, c.OT_PROGRAM_STATUS_PROGRESS) != 0 or report.progress > std.math.maxInt(u8) or
+                (report.fields & c.OT_PROGRAM_STATUS_PROGRESS == 0 and report.progress != 0)) return sessionError(owner, error.InvalidOptions);
+            const text = bytes[header_len..];
+            const text_len = @as(u64, report.id_len) + report.app_len + report.title_len + report.message_len;
+            if (text_len != text.len) return sessionError(owner, error.InvalidOptions);
+            const app_start = report.id_len;
+            const title_start = app_start + report.app_len;
+            const message_start = title_start + report.title_len;
+            break :blk .{ .program_status = .{
+                .state = @fromBackingInt(@intCast(report.state)),
+                .kind = if (report.kind == 0) null else @fromBackingInt(@intCast(report.kind)),
+                .progress = if (report.fields & c.OT_PROGRAM_STATUS_PROGRESS != 0) @intCast(report.progress) else null,
+                .id = text[0..app_start],
+                .app = text[app_start..title_start],
+                .title = text[title_start..message_start],
+                .message = text[message_start..],
             } };
         },
         else => return sessionError(owner, error.InvalidOptions),
@@ -1330,7 +1409,7 @@ pub fn ot_session_clipboard(
     out.* = 0;
     if (target > 3 or (byte_count != 0 and bytes_ptr == null)) return sessionError(owner, error.InvalidOptions);
     const bytes = if (bytes_ptr) |ptr| ptr[0..byte_count] else &.{};
-    out.* = @intFromBool(owner.core.writeSessionClipboard(handleFromC(id.*), @enumFromInt(target), bytes) catch |err| return sessionError(owner, err));
+    out.* = @intFromBool(owner.core.writeSessionClipboard(handleFromC(id.*), @fromBackingInt(@intCast(target)), bytes) catch |err| return sessionError(owner, err));
     return c.OT_OK;
 }
 
@@ -1406,13 +1485,14 @@ pub fn ot_session_get_capabilities(
         .{ "notifications", c.OT_CAP_NOTIFICATIONS },
         .{ "explicit_cursor_positioning", c.OT_CAP_EXPLICIT_CURSOR_POSITIONING },
         .{ "remote", c.OT_CAP_REMOTE },
+        .{ "program_status", c.OT_CAP_PROGRAM_STATUS },
     }) |field| {
         if (@field(caps, field[0])) result.flags |= field[1];
     }
-    result.width_method = @intFromEnum(caps.unicode);
-    result.multiplexer = @intFromEnum(term.multiplexer);
-    result.image_protocol = @intFromEnum(term.image_protocol);
-    result.osc52_support = @intFromEnum(term.osc52_support);
+    result.width_method = @backingInt(caps.unicode);
+    result.multiplexer = @backingInt(term.multiplexer);
+    result.image_protocol = @backingInt(term.image_protocol);
+    result.osc52_support = @backingInt(term.osc52_support);
     result.kitty_keyboard_flags = term.opts.kitty_keyboard_flags;
     result.term_name_len = @intCast(term.term_info.name_len);
     result.term_version_len = @intCast(term.term_info.version_len);
@@ -1449,6 +1529,15 @@ pub fn ot_session_close(context: ?*ContextHandle, session_ptr: ?*const c.ot_hand
     const owner = context.?;
     const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
     owner.core.beginSessionClose(handleFromC(id.*)) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_session_drop_output(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    owner.core.dropSessionOutput(handleFromC(id.*)) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -1777,6 +1866,103 @@ pub fn ot_scene_set_viewport(context: ?*ContextHandle, node_ptr: ?*const c.ot_ha
     const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
     const viewport = if (viewport_ptr) |ptr| handleFromC(ptr.*) else null;
     owner.core.sceneSetViewport(handleFromC(node.*), viewport) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_scene_set_scroll(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, options_ptr: ?*const c.ot_scene_scroll_options) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (options.struct_size != @sizeOf(c.ot_scene_scroll_options) or options.culling > 1 or
+        options.fills > c.OT_SCENE_SCROLL_FILL_WRAPPER | c.OT_SCENE_SCROLL_FILL_VIEWPORT | c.OT_SCENE_SCROLL_FILL_CONTENT) return sessionError(owner, error.InvalidOptions);
+    if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    var bars: [2]scene.ScrollBarOptions = undefined;
+    for (&bars, options.bars) |*bar, record| {
+        if (record.reserved != 0 or record.placement > c.OT_SCENE_SCROLL_BAR_OVERLAY or record.arrows > 1) return sessionError(owner, error.InvalidOptions);
+        bar.* = .{
+            .policy = record.policy,
+            .overlay = record.placement == c.OT_SCENE_SCROLL_BAR_OVERLAY,
+            .thickness = record.thickness,
+            .gap = record.gap,
+            .arrows = record.arrows == 1,
+            .foreground = record.track_foreground,
+            .background = record.track_background,
+        };
+    }
+    var fills: [3]?@import("ansi.zig").RGBA = undefined;
+    for (&fills, [_][4]u16{ options.wrapper_background, options.viewport_background, options.content_background }, 0..) |*fill, rgba, index| {
+        fill.* = if (options.fills & (@as(u32, 1) << @intCast(index)) != 0) rgba else null;
+    }
+    owner.core.sceneSetScroll(handleFromC(node.*), .{
+        .axes = options.axes,
+        .follow = options.follow,
+        .culling = options.culling == 1,
+        .padding = options.padding,
+        .fills = fills,
+        .bars = bars,
+    }) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_scene_set_scroll_arrow(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, axis: u32, end: u32, options_ptr: ?*const c.ot_scene_arrow_options, text_ptr: ?[*]const u8, byte_count: u32) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (options.struct_size != @sizeOf(c.ot_scene_arrow_options)) return sessionError(owner, error.InvalidOptions);
+    if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    if (text_ptr == null and byte_count != 0) return sessionError(owner, error.InvalidOptions);
+    owner.core.sceneSetScrollArrow(handleFromC(node.*), axis, end, .{
+        .direction = options.direction,
+        .attributes = options.attributes,
+        .foreground = options.foreground,
+        .background = options.background,
+        .text = if (text_ptr) |bytes| bytes[0..byte_count] else null,
+    }) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+fn checkScrollOutput(owner: *ContextHandle, out: *const c.ot_scene_scroll_state) ?c.ot_status {
+    if (out.struct_size != @sizeOf(c.ot_scene_scroll_state)) return sessionError(owner, error.InvalidOptions);
+    if (out.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    return null;
+}
+
+pub fn ot_scene_scroll_to(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, x: f64, y: f64, flags: u32, out_ptr: ?*c.ot_scene_scroll_state) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (flags > c.OT_SCENE_SCROLL_RELATIVE_X | c.OT_SCENE_SCROLL_RELATIVE_Y | c.OT_SCENE_SCROLL_REAPPLY) return sessionError(owner, error.InvalidOptions);
+    if (out_ptr) |out| if (checkScrollOutput(owner, out)) |rejected| return rejected;
+    const report = owner.core.sceneScrollTo(handleFromC(node.*), .{ x, y }, .{ flags & c.OT_SCENE_SCROLL_RELATIVE_X != 0, flags & c.OT_SCENE_SCROLL_RELATIVE_Y != 0 }, flags & c.OT_SCENE_SCROLL_REAPPLY != 0) catch |err| return sessionError(owner, err);
+    if (out_ptr) |out| out.* = report;
+    return c.OT_OK;
+}
+
+pub fn ot_scene_scroll_request(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, kind: u32, target_ptr: ?*const c.ot_handle, alignment: u32, inset: u32, out_ptr: ?*c.ot_scene_scroll_state) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (out_ptr) |out| if (checkScrollOutput(owner, out)) |rejected| return rejected;
+    const target = if (target_ptr) |ptr| handleFromC(ptr.*) else null;
+    const report = owner.core.sceneScrollRequest(handleFromC(node.*), kind, target, alignment, inset) catch |err| return sessionError(owner, err);
+    if (out_ptr) |out| out.* = report;
+    return c.OT_OK;
+}
+
+pub fn ot_scene_get_scroll(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, out_ptr: ?*c.ot_scene_scroll_state) callconv(.c) c.ot_status {
+    const status = sceneReadStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (checkScrollOutput(owner, out)) |rejected| return rejected;
+    out.* = owner.core.sceneGetScroll(handleFromC(node.*)) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -2138,7 +2324,7 @@ fn frameRequestToC(result: scene.FrameRequest) c.ot_scene_frame_request {
     };
 }
 
-pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, previous_ptr: ?*const c.ot_scene_frame_request, options_ptr: ?*const c.ot_scene_frame_options, max_work_items: u32, recording_ptr: ?[*]const u8, recording_len: u32, out_ptr: ?*c.ot_scene_frame_request, geometry_ptr: ?*c.ot_scene_frame_geometry) callconv(.c) c.ot_status {
+pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, previous_ptr: ?*const c.ot_scene_frame_request, options_ptr: ?*const c.ot_scene_frame_options, recording_ptr: ?[*]const u8, recording_len: u32, out_ptr: ?*c.ot_scene_frame_request, geometry_ptr: ?*c.ot_scene_frame_geometry) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
@@ -2164,12 +2350,12 @@ pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: 
         .max_layout_rounds = options.max_layout_rounds,
         .max_host_requests = options.max_host_requests,
         .preserve_unwritten = options.preserve_unwritten == 1,
-    }, max_work_items, recording) catch |err| return sessionError(owner, err);
+    }, recording) catch |err| return sessionError(owner, err);
     out.* = frameRequestToC(result);
     geometry.* = std.mem.zeroes(c.ot_scene_frame_geometry);
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    if (result.kind == c.OT_SCENE_FRAME_DONE or result.kind == c.OT_SCENE_FRAME_YIELD or result.kind == c.OT_SCENE_FRAME_RECORD) return c.OT_OK;
+    if (result.kind == c.OT_SCENE_FRAME_DONE or result.kind == c.OT_SCENE_FRAME_RECORD) return c.OT_OK;
     const node = result.node;
     // Public observations advance during refresh, after the ticket is created.
     if (owner.core.sceneGetPaintLayout(node)) |layout| {
@@ -2329,6 +2515,17 @@ pub fn ot_scene_get_stats(context: ?*ContextHandle, session_ptr: ?*const c.ot_ha
         .render_time_valid = @intFromBool(result.renderTime != null),
         .stdout_write_time_valid = @intFromBool(result.outputWriteTime != null),
     };
+    // The header names each work field after its FrameWork field.
+    inline for (@typeInfo(@TypeOf(result.frameWork)).@"struct".field_names) |name| @field(out, name) = @field(result.frameWork, name);
+    return c.OT_OK;
+}
+
+pub fn ot_scene_set_debug_flags(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, flags: u32) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    owner.core.sceneSetDebugFlags(handleFromC(id.*), flags) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -2500,7 +2697,7 @@ test "Context synchronous text drawing ABI validates sources and frame records b
     const target = handleToC(try core.createBuffer(4, 1, .{}));
     const buffer = try core.raw().getBuffer(handleFromC(target));
     inline for ([_]bool{ false, true }) |is_editor| {
-        const draw = if (is_editor) ot_buffer_draw_editor_view else ot_buffer_draw_scene_text;
+        const draw = if (is_editor) ot_buffer_draw_editor_view else ot_buffer_draw_scene_body;
         const source = handleToC(if (is_editor) view else node);
         buffer.clear(@splat(0), null);
         try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, draw(null, &target, null, &source, 0, 0));
@@ -2715,7 +2912,7 @@ test "Context focused draw records validate exact size before payload access" {
             .operation = entry[1],
             .flags = 0,
         };
-        for ([_]u32{ 0, @sizeOf(entry[0]) - 4, @sizeOf(entry[0]) + 4, 136 }) |size| {
+        for ([_]u32{ 0, @sizeOf(entry[0]) - 1, @sizeOf(entry[0]) + 4, 136 }) |size| {
             header.struct_size = size;
             try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_buffer_draw(context, &buffer, null, &header, null, null, 0, null, 0));
         }
@@ -2766,7 +2963,7 @@ test "Context buffer ABI rejects invalid arguments without writing outputs" {
     try std.testing.expectEqual(kept, unicode);
     for (std.enums.values(WidthMethod)) |method| {
         var width_options = valid;
-        width_options.width_method = @intFromEnum(method);
+        width_options.width_method = @backingInt(method);
         try std.testing.expectEqual(c.OT_OK, ot_buffer_create(context, &width_options, &out));
         const value = try core.raw().getBuffer(handleFromC(out));
         try std.testing.expectEqual(method, value.width_method);
@@ -2775,7 +2972,7 @@ test "Context buffer ABI rejects invalid arguments without writing outputs" {
     }
 
     const target = handleToC(try core.createBuffer(2, 1, .{}));
-    const bytes = [_]u8{0} ** 48;
+    const bytes: [48]u8 = @splat(0);
     const samples = [_]f32{0};
     const color = [_]u16{ 255, 255, 255, 255 };
     var opacity: f32 = 1;
@@ -2873,8 +3070,7 @@ test "Context console ABI validates rectangle frame and diagnostic arguments" {
     var geometry = std.mem.zeroes(c.ot_scene_frame_geometry);
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &session, null, &config, unlimited, null, 0, &frame, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &session, null, &config, null, 0, &frame, &geometry));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_draw_buffer(handle, &session, null, &buffer, 0, 0));
     frame.reserved[0] = 1;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_draw_buffer(handle, &session, &frame, &buffer, 0, 0));
@@ -3040,9 +3236,23 @@ test "Context editor transport copies styles selections positions history and li
     try std.testing.expectEqualStrings("\xe7\x95\x8c", bytes[0..count]);
     try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_get_position(handle, &edit, c.OT_EDIT_POSITION_OFFSET, 3, 0, &position));
     try std.testing.expectEqual(3, position.col);
+    // a, the wide character, the tab, the line break, and z take 1 + 2 + 2 + 1 + 1 cells.
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_measure_text(handle, &edit, "a\xe7\x95\x8c\t\nz", 7, &count));
+    try std.testing.expectEqual(7, count);
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_get_position(handle, &edit, c.OT_EDIT_POSITION_COORDS, 1, 1, &position));
+    try std.testing.expectEqual(count, position.offset);
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_buffer_measure_text(handle, &edit, null, 0, &count));
+    try std.testing.expectEqual(0, count);
+    // Without a buffer, the same settings give the same offset. Tab width 0 rounds to the default.
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_measure_text(handle, "a\xe7\x95\x8c\t\nz", 7, c.OT_WIDTH_METHOD_UNICODE, 0, &count));
+    try std.testing.expectEqual(7, count);
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_measure_text(handle, null, 0, c.OT_WIDTH_METHOD_UNICODE, 0, &count));
+    try std.testing.expectEqual(0, count);
+    try std.testing.expectEqual(c.OT_WRONG_KIND, api.ot_edit_buffer_measure_text(handle, &view, "a", 1, &count));
     core.mutating = true;
     core.scene_measuring = true;
     try std.testing.expectEqual(c.OT_OK, api.ot_editor_view_get_info(handle, &view, 0, &info));
+    try std.testing.expectEqual(c.OT_OK, api.ot_edit_measure_text(handle, "a", 1, c.OT_WIDTH_METHOD_UNICODE, 0, &count));
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, api.ot_editor_view_select(handle, &view, &selection, &count));
     core.scene_measuring = false;
     core.mutating = false;
@@ -3126,8 +3336,19 @@ test "Context editor ABI validates bindings records and readonly admission" {
 fn cursorUpdate(fields: u32, values: anytype) c.ot_session_cursor_update {
     var update = std.mem.zeroes(c.ot_session_cursor_update);
     update.fields = fields;
-    inline for (std.meta.fields(@TypeOf(values))) |field| @field(update, field.name) = @field(values, field.name);
+    inline for (@typeInfo(@TypeOf(values)).@"struct".field_names) |name| @field(update, name) = @field(values, name);
     return update;
+}
+
+/// A well-formed idle root report unless values override its fields.
+inline fn programStatus(comptime values: anytype, comptime text: []const u8) []const u8 {
+    comptime {
+        var report = std.mem.zeroes(c.ot_session_program_status);
+        report.state = c.OT_PROGRAM_STATE_IDLE;
+        for (@typeInfo(@TypeOf(values)).@"struct".field_names) |name| @field(report, name) = @field(values, name);
+        const bytes = std.mem.toBytes(report) ++ text[0..text.len].*;
+        return &bytes;
+    }
 }
 
 test "Context ABI Session control decodes kinds arguments and cursor records before admission" {
@@ -3157,8 +3378,19 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .reserved = 1 },
         .{ .kind = c.OT_CONTROL_TITLE, .null_bytes = true },
         .{ .kind = 0 },
-        .{ .kind = c.OT_CONTROL_PALETTE_QUERY + 1 },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS + 1 },
         .{ .kind = c.OT_CONTROL_RESTORE_MODES, .bytes = "x" },
+        // Program status records have known enums and fields, zero unselected progress, and exact text lengths.
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{}, "")[1..] },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .state = 0 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .state = c.OT_PROGRAM_STATE_CLEAR + 1 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .kind = c.OT_PROGRAM_KIND_AUTH + 1 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .fields = 2 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .progress = 1 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .fields = c.OT_PROGRAM_STATUS_PROGRESS, .progress = 256 }, "") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .message_len = 2 }, "m") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .id_len = 1 }, "id") },
+        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{ .id_len = std.math.maxInt(u32), .app_len = 2 }, "a") },
         // Cursor records have an exact size, known fields, bounded values, and zero unselected values.
         .{ .cursor = cursorUpdate(0, .{}), .argument = 1 },
         .{ .cursor = cursorUpdate(0, .{}), .cursor_size = @sizeOf(Cursor) - 1 },
@@ -3188,9 +3420,19 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         const kinds = .{
             .{ c.OT_CONTROL_CAPABILITY_RESPONSE, 0, "\x1b[?0u" }, .{ c.OT_CONTROL_TITLE, 0, "t" },
             .{ c.OT_CONTROL_MOUSE, 2, "" },                       .{ c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, 31, "" },
-            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 0, "" },
+            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 1, "" },
             .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
             .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
+            .{ c.OT_CONTROL_PROGRAM_STATUS, 0, programStatus(.{
+                .state = c.OT_PROGRAM_STATE_BLOCKED,
+                .kind = c.OT_PROGRAM_KIND_AUTH,
+                .fields = c.OT_PROGRAM_STATUS_PROGRESS,
+                .progress = 100,
+                .id_len = 1,
+                .app_len = 2,
+                .title_len = 3,
+                .message_len = 4,
+            }, "iaatttmmmm") },
         };
         var rows: [2 * kinds.len]Case = undefined;
         for (kinds, 0..) |kind, index| rows[2 * index ..][0..2].* = .{
@@ -3213,8 +3455,8 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         try std.testing.expectEqual(case.status, status);
         if (status != c.OT_OK) try std.testing.expectEqualDeep(before, terminal.*);
     }
-    try std.testing.expectEqual(@as(u32, c.OT_MOUSE_POINTER_MAX), @intFromEnum(terminal.getMousePointer()));
-    try std.testing.expectEqual(@as(u8, 3), @intFromEnum(terminal.getCursorStyle().style));
+    try std.testing.expectEqual(@as(u32, c.OT_MOUSE_POINTER_MAX), @backingInt(terminal.getMousePointer()));
+    try std.testing.expectEqual(@as(u8, 3), @backingInt(terminal.getCursorStyle().style));
     try std.testing.expect(terminal.getCursorStyle().blinking);
 }
 
@@ -3309,18 +3551,19 @@ test "Context ABI Session setup and capability records validate before changing 
     try std.testing.expectEqualDeep(rejected, capabilities);
     // Every capability owns one distinct flag.
     var seen: u32 = 0;
-    inline for (std.meta.fields(@TypeOf(cli.terminal.caps))) |field| {
-        if (field.type != bool) continue;
+    const caps_info = @typeInfo(@TypeOf(cli.terminal.caps)).@"struct";
+    inline for (caps_info.field_names, caps_info.field_types) |name, Field| {
+        if (Field != bool) continue;
         const saved = cli.terminal.caps;
         defer cli.terminal.caps = saved;
         cli.terminal.caps = .{};
-        @field(cli.terminal.caps, field.name) = true;
+        @field(cli.terminal.caps, name) = true;
         try std.testing.expectEqual(c.OT_OK, ot_session_get_capabilities(context, &id, &capabilities));
         try std.testing.expectEqual(@as(u32, 1), @popCount(capabilities.flags));
         try std.testing.expect(seen & capabilities.flags == 0);
         seen |= capabilities.flags;
     }
-    try std.testing.expectEqual(@as(u32, 17), @popCount(seen));
+    try std.testing.expectEqual(@as(u32, 18), @popCount(seen));
     cli.terminal.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
     try std.testing.expectEqual(c.OT_OK, ot_session_get_capabilities(context, &id, &capabilities));
     try std.testing.expectEqualStrings("kitty", capabilities.term_name[0..capabilities.term_name_len]);
@@ -3336,14 +3579,16 @@ test "Context ABI Session setup and capability records validate before changing 
     const valid: c.ot_session_terminal_options = .{
         .struct_size = @sizeOf(c.ot_session_terminal_options),
         .abi_version = c.OT_CONTEXT_ABI_VERSION,
-        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE,
+        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE |
+            c.OT_TERMINAL_REPLY_SENTINEL | c.OT_TERMINAL_SYNC_NEVER | c.OT_TERMINAL_HOST_MULTIPLEXER,
         .kitty_keyboard_flags = 31,
     };
-    var invalid: [4]c.ot_session_terminal_options = @splat(valid);
+    var invalid: [5]c.ot_session_terminal_options = @splat(valid);
     invalid[0].struct_size += 1;
     invalid[1].abi_version += 1;
-    invalid[2].flags |= c.OT_TERMINAL_CLEAR_ON_CLOSE << 1;
+    invalid[2].flags |= c.OT_TERMINAL_HOST_MULTIPLEXER << 1;
     invalid[3].kitty_keyboard_flags = 32;
+    invalid[4].flags |= c.OT_TERMINAL_SYNC_ALWAYS | c.OT_TERMINAL_SYNC_NEVER;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_setup_terminal(context, &id, null));
     for (invalid, 0..) |options, index| {
         const expected = if (index == 1) c.OT_UNSUPPORTED_VERSION else c.OT_INVALID_ARGUMENT;
@@ -3351,9 +3596,10 @@ test "Context ABI Session setup and capability records validate before changing 
         try std.testing.expectEqual(.uninitialized, value.getTerminalState().phase);
     }
     try std.testing.expectEqual(c.OT_OK, ot_session_setup_terminal(context, &id, &valid));
-    try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown);
+    try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown and cli.terminal.reply_sentinel);
     try std.testing.expect(value.lifecycle.mouse and !value.lifecycle.mouse_movement);
     try std.testing.expectEqual(@as(u8, 31), cli.terminal.opts.kitty_keyboard_flags);
+    try std.testing.expect(cli.terminal.synchronized_output == .never and cli.terminal.multiplexer_on_host);
     value.cancel();
 }
 
@@ -3364,7 +3610,7 @@ fn ScenePointee(comptime P: type) ?type {
     if (info != .optional or @typeInfo(info.optional.child) != .pointer) return null;
     const pointer = @typeInfo(info.optional.child).pointer;
     if (pointer.size != .one or @typeInfo(pointer.child) == .@"fn") return null;
-    return if (!pointer.is_const or isSceneRecord(pointer.child)) pointer.child else null;
+    return if (!pointer.attrs.@"const" or isSceneRecord(pointer.child)) pointer.child else null;
 }
 
 fn isSceneRecord(comptime T: type) bool {
@@ -3376,10 +3622,10 @@ fn isSceneRecord(comptime T: type) bool {
 /// handle; the rest break one pointer argument each (NULL, size, version, reserved). Reads stay
 /// admitted while a measure callback runs. A rejection leaves every record and output unchanged.
 fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, context: *ContextHandle, handles: *const [4]c.ot_handle, fill: u32) !void {
-    const params = @typeInfo(@TypeOf(wrapper)).@"fn".params;
+    const params = @typeInfo(@TypeOf(wrapper)).@"fn".param_types;
     for (0..8 + 4 * params.len) |row| {
         var args: std.meta.ArgsTuple(@TypeOf(wrapper)) = undefined;
-        var storage: [params.len][128]u8 align(8) = @splat(@splat(0));
+        var storage: [params.len][256]u8 align(8) = @splat(@splat(0));
         args[0] = if (row == 0) null else context;
         args[1] = if (row == 4) null else &handles[if (row > 4 and row < 8) row - 4 else 0];
         var expected: ?c.ot_status = switch (row) {
@@ -3393,10 +3639,10 @@ fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, conte
             else => null,
         };
         inline for (params[2..], 2..) |param, index| {
-            if (comptime ScenePointee(param.type.?)) |T| {
-                comptime std.debug.assert(@sizeOf(T) <= 128);
+            if (comptime ScenePointee(param.?)) |T| {
+                comptime std.debug.assert(@sizeOf(T) <= 256);
                 const record: *T = @ptrCast(@alignCast(&storage[index]));
-                if (!@typeInfo(@typeInfo(param.type.?).optional.child).pointer.is_const) @memset(&storage[index], 0xa5);
+                if (!@typeInfo(@typeInfo(param.?).optional.child).pointer.attrs.@"const") @memset(&storage[index], 0xa5);
                 const is_record = comptime isSceneRecord(T);
                 if (is_record) record.struct_size = @sizeOf(T);
                 if (is_record) record.abi_version = c.OT_CONTEXT_ABI_VERSION;
@@ -3414,12 +3660,12 @@ fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, conte
                         record.abi_version += 1;
                         expected = c.OT_UNSUPPORTED_VERSION;
                     },
-                    else => if (comptime is_record and @typeInfo(param.type.?).optional.child == *const T and @hasField(T, "reserved")) {
+                    else => if (comptime is_record and @typeInfo(param.?).optional.child == *const T and @hasField(T, "reserved")) {
                         record.reserved = 1;
                         expected = c.OT_INVALID_ARGUMENT;
                     },
                 };
-            } else args[index] = switch (@typeInfo(param.type.?)) {
+            } else args[index] = switch (@typeInfo(param.?)) {
                 .optional => null,
                 .float => @floatFromInt(fill),
                 else => fill,
@@ -3457,12 +3703,12 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     nodes[3].context_id += 1;
     sessions[3].context_id += 1;
     inline for (.{
-        ot_scene_destroy_node,       ot_scene_move_node, ot_scene_set_measure,     ot_scene_mark_dirty,
-        ot_scene_set_style,          ot_scene_set_paint, ot_scene_set_surface,     ot_scene_set_box_details,
-        ot_scene_set_viewport,       ot_scene_set_focus, ot_scene_set_slider,      ot_scene_get_slider_thumb,
-        ot_scene_set_arrow,          ot_scene_set_text,  ot_scene_set_styled_text, ot_scene_set_text_options,
-        ot_scene_set_text_selection, ot_scene_set_hooks, ot_scene_set_editor_view, ot_scene_set_editor_options,
-        ot_scene_set_image,
+        ot_scene_destroy_node,       ot_scene_move_node,  ot_scene_set_measure,      ot_scene_mark_dirty,
+        ot_scene_set_style,          ot_scene_set_paint,  ot_scene_set_surface,      ot_scene_set_box_details,
+        ot_scene_set_viewport,       ot_scene_set_focus,  ot_scene_set_slider,       ot_scene_get_slider_thumb,
+        ot_scene_set_arrow,          ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
+        ot_scene_set_text_selection, ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
+        ot_scene_set_image,          ot_scene_set_scroll, ot_scene_set_scroll_arrow, ot_scene_set_crop,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }
@@ -3474,6 +3720,95 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     }
     // Creation takes the Session handle; kind and number 1 are valid.
     try expectSceneWrapperRules(ot_scene_create_node, false, handle, &sessions, 1);
+}
+
+test "Scene scroll ABI validates options, targets, and the scroll node's style and binding rules" {
+    const handle: ?*ContextHandle = try createTestContext(.{ .object_capacity = 8, .render_cells_max = 8 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    const owner = handle.?.core;
+    const session = try owner.createSession(.{});
+    try owner.attachSessionRenderer(session, 4, 2, .{ .remote_mode = .remote });
+    const root = handleToC(try owner.sceneCreateNode(session, 0, 1));
+    const box = handleToC(try owner.sceneCreateNode(session, 1, 2));
+    const parent = handleToC(try owner.sceneCreateNode(session, 1, 3));
+    try owner.sceneMoveNode(handleFromC(box), handleFromC(parent), 0);
+    var options = std.mem.zeroes(c.ot_scene_scroll_options);
+    options.struct_size = @sizeOf(c.ot_scene_scroll_options);
+    options.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    options.axes = c.OT_SCENE_SCROLL_Y;
+    for (&options.bars) |*bar| bar.thickness = 1;
+    var state = std.mem.zeroes(c.ot_scene_scroll_state);
+    state.struct_size = @sizeOf(c.ot_scene_scroll_state);
+    state.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    // Only a box without children takes the first options, and every field is checked.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_scroll(handle, &parent, &options));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_scroll(handle, &root, &options));
+    for (0..6) |field| {
+        var invalid = options;
+        switch (field) {
+            0 => invalid.culling = 2,
+            1 => invalid.fills = 8,
+            2 => invalid.follow = 5,
+            3 => invalid.padding[1] = 0.5,
+            4 => invalid.bars[0].thickness = 0,
+            else => invalid.bars[1].reserved = 1,
+        }
+        try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_scroll(handle, &box, &invalid));
+    }
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_get_scroll(handle, &box, &state));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_scroll_to(handle, &box, 0, 0, 0, &state));
+    var stale = box;
+    stale.generation += 1;
+    var foreign = box;
+    foreign.context_id += 1;
+    try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_scene_scroll_to(handle, &stale, 0, 0, 0, null));
+    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_scene_scroll_to(handle, &foreign, 0, 0, 0, null));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll(handle, &box, &options));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll(handle, &box, &options));
+    // NaN and unknown flags reject; NULL output is allowed; a short output record rejects.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_scroll_to(handle, &box, std.math.nan(f64), 0, 0, &state));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_scroll_to(handle, &box, 0, 0, 8, &state));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_scroll_to(handle, &box, std.math.inf(f64), 0, c.OT_SCENE_SCROLL_RELATIVE_X, null));
+    state.struct_size -= 8;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_scroll(handle, &box, &state));
+    state.struct_size += 8;
+    try std.testing.expectEqual(c.OT_OK, ot_scene_scroll_to(handle, &box, 3, -1, c.OT_SCENE_SCROLL_REAPPLY, &state));
+    try std.testing.expectEqual(@as(u32, 1), state.stuck);
+    try std.testing.expectEqual([2]f64{ 0, 0 }, state.offset);
+    // Requests: the target must be in the subtree (not the node itself), INTO_VIEW needs one,
+    // LAYOUT takes none, and only INTO_VIEW takes an alignment or inset.
+    const child = handleToC(try owner.sceneCreateNode(session, 1, 4));
+    try owner.sceneMoveNode(handleFromC(child), handleFromC(box), 0);
+    for ([_]struct { c.ot_status, u32, ?*const c.ot_handle, u32, u32 }{
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, null, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &box, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &parent, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &child, 3, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, &child, 1, 0 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 1 },
+        .{ c.OT_INVALID_ARGUMENT, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, &child, 0, 0 },
+        .{ c.OT_INVALID_ARGUMENT, 3, null, 0, 0 },
+        .{ c.OT_STALE_HANDLE, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, &stale, 0, 0 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_INTO_VIEW, &child, c.OT_SCENE_SCROLL_ALIGN_END, 2 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, &child, 0, 0 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_ANCHOR, null, 0, 0 },
+        .{ c.OT_OK, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0 },
+    }) |row| try std.testing.expectEqual(row[0], ot_scene_scroll_request(handle, &box, row[1], row[2], row[3], row[4], &state));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_scroll_request(handle, &parent, c.OT_SCENE_SCROLL_REQUEST_LAYOUT, null, 0, 0, null));
+    try owner.sceneDestroyNode(handleFromC(child));
+    // The box's padding holds the gutters; content styles need a scroll node.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_style(handle, &box, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, 0, 1, 1, 0));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &box, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, 0, 1, 1, c.OT_STYLE_CONTENT));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_style(handle, &box, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, 1, c.OT_STYLE_CONTENT));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_style(handle, &parent, c.OT_STYLE_DIMENSION, 0, 0, 1, 1, c.OT_STYLE_CONTENT | c.OT_STYLE_DISABLE_FLEX_SHRINK));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_viewport(handle, &box, &root));
+    try std.testing.expectError(error.InvalidOptions, owner.sceneSetHooks(handleFromC(parent), c.OT_SCENE_HOOK_SCROLL, 1, 0, 0));
+    var arrow = std.mem.zeroes(c.ot_scene_arrow_options);
+    arrow.struct_size = @sizeOf(c.ot_scene_arrow_options);
+    arrow.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_scroll_arrow(handle, &box, 2, 0, &arrow, null, 0));
+    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_scroll_arrow(handle, &parent, 0, 0, &arrow, null, 0));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_scroll_arrow(handle, &box, 0, 1, &arrow, "+", 1));
 }
 
 test "Scene viewport and focus ABI validate copied bindings and expanded paint records" {
@@ -3620,28 +3955,27 @@ test "Scene frame geometry reports delivered observations without expanding tick
     var geometry = std.mem.zeroes(c.ot_scene_frame_geometry);
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, null));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, null, 0, &output, null));
     geometry.reserved = 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, null, 0, &output, &geometry));
     geometry.reserved = 0;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_UPDATE, output.kind);
     try std.testing.expectEqual(@as(f32, 6), geometry.paint.width);
     try std.testing.expectEqual(@as(f32, 0), geometry.public_layout.width);
     const update = output;
     const snapshot = geometry;
     geometry.abi_version += 1;
-    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(&owner, &id, &update, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(&owner, &id, &update, &config, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(update, output);
     geometry = snapshot;
     const empty: [1]u64 = .{0};
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, @ptrCast(&empty), 0, &output, &geometry));
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, @ptrCast(&empty), 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RESIZE, output.kind);
     try std.testing.expectEqual(@as(f32, 6), geometry.public_layout.width);
     try std.testing.expectEqual(@as(u32, 3), geometry.flags);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RECORD, output.kind);
     try std.testing.expectEqual(@as(u32, 0), geometry.flags);
     try std.testing.expectEqualDeep(std.mem.zeroes(c.ot_scene_layout), geometry.paint);
@@ -3664,66 +3998,9 @@ test "Scene frame geometry reports delivered observations without expanding tick
     stale.request_id += 1;
     try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_get_paint_slots(&owner, &id, &stale, &slots, slots.len, &count));
     try owner.core.sceneDestroyNode(box);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, output.kind);
     try std.testing.expectEqual(@as(u32, 0), geometry.flags);
-    try owner.core.sceneFrameCancel(session, output.frame_id);
-}
-
-test "Scene work budget ABI preserves unlimited dispatch and exact preparation tickets" {
-    var owner: ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
-    defer owner.io_threaded.deinit();
-    owner.core = try Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
-    defer owner.core.deinit() catch unreachable;
-    const session = try owner.core.createSession(.{});
-    try owner.core.attachSessionRenderer(session, 6, 3, .{ .remote_mode = .remote });
-    const id = handleToC(session);
-    const root = try owner.core.sceneCreateNode(session, 0, 1);
-    const box = try owner.core.sceneCreateNode(session, 1, 2);
-    try owner.core.sceneMoveNode(box, root, 0);
-    const config: c.ot_scene_frame_options = .{
-        .struct_size = @sizeOf(c.ot_scene_frame_options),
-        .abi_version = c.OT_CONTEXT_ABI_VERSION,
-        .background = .{ 0, 0, 0, 255 },
-        .use_mouse = 0,
-        .excluded_hit_num = 0,
-        .max_layout_rounds = 8,
-        .max_host_requests = 8,
-        .preserve_unwritten = 0,
-    };
-    var output = std.mem.zeroes(c.ot_scene_frame_request);
-    output.struct_size = @sizeOf(c.ot_scene_frame_request);
-    output.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    var geometry = std.mem.zeroes(c.ot_scene_frame_geometry);
-    geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
-    geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, &geometry));
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, output.kind);
-    try owner.core.sceneFrameCancel(session, output.frame_id);
-    const before = output;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 0, null, 0, &output, &geometry));
-    try std.testing.expectEqualDeep(before, output);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 1, null, 0, &output, &geometry));
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_YIELD, output.kind);
-    try std.testing.expectEqualDeep(handleToC(root), output.node);
-    try std.testing.expectEqual(@as(u32, 0), output.num | output.width | output.height);
-    try std.testing.expectEqual(@as(u64, 0), output.hook_generation);
-    const first = output;
-    var stale = first;
-    stale.request_id += 1;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(&owner, &id, &stale, &config, 1, null, 0, &output, &geometry));
-    try std.testing.expectEqualDeep(first, output);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &first, &config, 0, null, 0, &output, &geometry));
-    try std.testing.expectEqualDeep(first, output);
-    try std.testing.expectError(error.StaleFrame, owner.core.sceneFrameAcquireBufferLease(session, try frameRequestFromC(output), .next));
-    for (0..16) |_| {
-        try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, 1, null, 0, &output, &geometry));
-        if (output.kind == c.OT_SCENE_FRAME_DONE) break;
-        try std.testing.expectEqual(c.OT_SCENE_FRAME_YIELD, output.kind);
-        try std.testing.expectEqual(first.frame_id, output.frame_id);
-        try std.testing.expect(output.request_id > first.request_id);
-    } else return error.TestUnexpectedResult;
     try owner.core.sceneFrameCancel(session, output.frame_id);
 }
 
@@ -3765,52 +4042,55 @@ test "Scene feedback ABI validates records and preserves the pending ticket on r
     var geometry = std.mem.zeroes(c.ot_scene_frame_geometry);
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    const unlimited = std.math.maxInt(u32);
     const sentinel = output;
     config.preserve_unwritten = 2;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, null, &config, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(sentinel, output);
     config.preserve_unwritten = 0;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_UPDATE, output.kind);
     try std.testing.expectEqual(@as(u32, 6), output.width);
     const first = output;
     var invalid = first;
     invalid.reserved[1] = 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(first, output);
     invalid = first;
     invalid.struct_size -= 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, null, 0, &output, &geometry));
     invalid = first;
     invalid.abi_version += 1;
-    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, null, 0, &output, &geometry));
+    // Version 1 bindings passed max_work_items before the recording; their records are rejected, not misread.
+    var stale = config;
+    stale.abi_version = 1;
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(handle, &id, &first, &stale, null, 0, &output, &geometry));
     invalid = first;
     invalid.hook_generation += 1;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, null, 0, &output, &geometry));
     config.max_layout_rounds = 2;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, null, 0, &output, &geometry));
     config.max_layout_rounds = 1;
     try std.testing.expectEqualDeep(first, output);
     var render_status: u32 = 999;
     try std.testing.expectEqual(c.OT_FRAME_BUSY, ot_session_render(handle, &id, 1, &render_status));
     try std.testing.expectEqual(@as(u32, 999), render_status);
     // An in-place acknowledgement is valid: input is copied before output publication.
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RESIZE, output.kind);
     const second = output;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(second, output);
     try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_cancel(handle, &id, output.frame_id + 1));
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &id, output.frame_id));
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &second, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &second, &config, null, 0, &output, &geometry));
     hooks.flags = 1;
     hooks.generation = 2;
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_hooks(handle, &root, &hooks));
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &root, 4, 0, 0, 1, 3, 1));
     const before_limit = output;
-    try std.testing.expectEqual(c.OT_LAYOUT_LIMIT, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_LAYOUT_LIMIT, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(before_limit, output);
     try std.testing.expectEqual(@as(u64, 0), (try owner.core.sceneGetStats(session)).frameCount);
 }
@@ -3910,6 +4190,8 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(c.OT_OK, ot_scene_create_node(handle, &session_c, 1, 2, &box));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &box, 4, 0, 0, 1, 3, 1));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &box, 4, 1, 0, 1, 1, 1));
+    // Only finite summed styles saturate at ±1e30; infinity still rejects.
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_style(handle, &box, 2, 7, 8, 1, -std.math.inf(f32), 0));
     try std.testing.expectEqual(c.OT_OK, ot_scene_move_node(handle, &box, &root, 0));
     var layout: c.ot_scene_layout = std.mem.zeroes(c.ot_scene_layout);
     layout.struct_size = @sizeOf(c.ot_scene_layout);
@@ -3969,16 +4251,38 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(@as(u32, 2), cursor.style);
     try std.testing.expectEqual(@as(u32, 0), cursor.blinking);
     try std.testing.expectEqual(@as(u32, 0), cursor.reserved);
-    const layout_before_overflow = layout;
-    try owner.core.sceneSetPaint(handleFromC(root), .{ .translateX = std.math.floatMax(f64) });
-    try owner.core.sceneSetPaint(handleFromC(box), .{ .translateX = std.math.floatMax(f64) });
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_layout(handle, &box, 0, &layout));
-    try std.testing.expectEqualDeep(layout_before_overflow, layout);
+    var stats: c.ot_scene_stats = std.mem.zeroes(c.ot_scene_stats);
+    stats.damage_rows = 7;
+    for ([_][2]u32{ .{ @sizeOf(c.ot_scene_stats) - 8, c.OT_CONTEXT_ABI_VERSION }, .{ @sizeOf(c.ot_scene_stats), c.OT_CONTEXT_ABI_VERSION - 1 } }, [_]c.ot_status{ c.OT_INVALID_ARGUMENT, c.OT_UNSUPPORTED_VERSION }) |header, status| {
+        stats.struct_size = header[0];
+        stats.abi_version = header[1];
+        try std.testing.expectEqual(status, ot_scene_get_stats(handle, &session_c, &stats));
+        try std.testing.expectEqual(@as(u32, 7), stats.damage_rows);
+    }
+    stats.struct_size = @sizeOf(c.ot_scene_stats);
+    stats.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    try std.testing.expectEqual(c.OT_OK, ot_scene_get_stats(handle, &session_c, &stats));
+    // Painted drafts publish no work; only presented scene frames do.
+    try std.testing.expectEqual(@as(u64, 0), stats.work_frame_id);
+    try std.testing.expectEqual(@as(u32, 0), stats.damage_rows);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_debug_flags(handle, &session_c, 4));
+    try std.testing.expectEqual(c.OT_FRAME_BUSY, ot_scene_set_debug_flags(handle, &session_c, c.OT_SCENE_DEBUG_FULL_FRAME));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_set_debug_flags(handle, &session_c, c.OT_SCENE_DEBUG_FULL_FRAME));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_paint(handle, &session_c, &.{ 0, 0, 0, 255 }, 0, 0, &frame));
+    const unattached = try owner.core.createSession(.{});
+    var unattached_c = handleToC(unattached);
+    try std.testing.expectEqual(c.OT_INVALID_PHASE, ot_scene_set_debug_flags(handle, &unattached_c, 0));
+    try owner.core.cancelSession(unattached);
+    try std.testing.expectError(error.InvalidOptions, owner.core.sceneSetPaint(handleFromC(box), .{ .translateY = -std.math.floatMax(f64) }));
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_layout(handle, &box, 1, &layout));
     try std.testing.expectEqual(@as(f64, 0), layout.screen_x);
     try owner.core.cancelSession(session);
     try std.testing.expectEqual(c.OT_OK, ot_scene_destroy_node(handle, &root));
     try std.testing.expectEqual(c.OT_OK, ot_scene_destroy_node(handle, &box));
+    const layout_before_stale = layout;
+    try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_scene_get_layout(handle, &box, 0, &layout));
+    try std.testing.expectEqualDeep(layout_before_stale, layout);
 }
 
 test "Scene ABI paint layout preserves prepared coordinates through reparenting and translation" {
@@ -4050,7 +4354,7 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
     linked.link_byte_count = 3;
     var urls = [_]u8{ '_', 0xff, 0, 0x1b };
     const text = (try owner.raw().getRenderable(node)).scene_node.?.text.?;
-    const style = text.owned_style;
+    const kept = text.buffer.run_styles.keys()[0];
     const epoch = text.buffer.getContentEpoch();
     for (0..13) |field| {
         var invalid = linked;
@@ -4078,7 +4382,7 @@ test "Scene styled text ABI validates optional links and preserves rejected repl
             else => unreachable,
         }
         try std.testing.expectEqual(expected, ot_scene_set_styled_text(handle, &id, "next", 4, &.{invalid}, 1, &urls, urls.len));
-        try std.testing.expectEqual(style, text.owned_style);
+        try std.testing.expectEqualDeep(&[_]@TypeOf(kept){kept}, text.buffer.run_styles.keys());
         try std.testing.expectEqual(epoch, text.buffer.getContentEpoch());
         try std.testing.expectEqual(@as(u64, 0), owner.links.getTotalSlots());
     }
@@ -4459,6 +4763,13 @@ test "Context ABI creation clears failed Yoga output and retries without retaini
     try std.testing.expectEqual(backing.allocated_bytes, backing.freed_bytes);
 }
 
+test "Context ABI uses libc in release builds and DebugAllocator in tests and Debug builds" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectEqual(std.heap.c_allocator.vtable, contextAllocator(gpa, .fast, false, false).vtable);
+    try std.testing.expectEqual(gpa.vtable, contextAllocator(gpa, .fast, true, false).vtable);
+    try std.testing.expectEqual(gpa.vtable, contextAllocator(gpa, .debug, false, false).vtable);
+}
+
 test "Context ABI creation releases backing storage at every allocation failure" {
     const options: c.ot_context_options = .{
         .struct_size = @sizeOf(c.ot_context_options),
@@ -4546,7 +4857,7 @@ test "Context ABI diagnostics copy bounded records and preserve failed drains" {
     defer if (second != null) std.testing.expectEqual(c.OT_OK, ot_context_destroy(second)) catch unreachable;
     const owner = first.?;
     second.?.core.logger.info("peer", .{});
-    owner.core.logger.warn("{s}", .{"x" ** (c.OT_DIAGNOSTIC_MESSAGE_BYTES + 1)});
+    owner.core.logger.warn("{s}", .{utils.repeat(u8, "x", c.OT_DIAGNOSTIC_MESSAGE_BYTES + 1)});
     for (0..64) |index| owner.core.logger.info("{}", .{index});
 
     var out: c.ot_diagnostic_drain = .{
@@ -4576,7 +4887,7 @@ test "Context ABI diagnostics copy bounded records and preserve failed drains" {
     try std.testing.expectEqual(c.OT_DIAGNOSTIC_MESSAGE_BYTES, record.message_len);
     try std.testing.expectEqual(c.OT_DIAGNOSTIC_TRUNCATED, record.flags);
     try std.testing.expectEqual(0, record.reserved);
-    try std.testing.expectEqualSlices(u8, "x" ** c.OT_DIAGNOSTIC_MESSAGE_BYTES, &record.message);
+    try std.testing.expectEqualSlices(u8, utils.repeat(u8, "x", c.OT_DIAGNOSTIC_MESSAGE_BYTES), &record.message);
 
     try std.testing.expectEqual(c.OT_OK, ot_context_drain_diagnostics(second, @ptrCast(&record), 1, &out));
     try std.testing.expectEqual(c.OT_OK, ot_context_destroy(second));
@@ -4612,8 +4923,8 @@ test "Context error mapping gives every Context error a specific status" {
     defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
     // These report a broken native invariant rather than a caller error.
     const internal = [_]anyerror{ error.ContextLimit, error.YogaException, error.YogaPoisoned };
-    inline for (@typeInfo(@import("context.zig").Error).error_set.?) |info| {
-        const err = @field(anyerror, info.name);
+    inline for (@typeInfo(@import("context.zig").Error).error_set.error_names.?) |name| {
+        const err = @field(anyerror, name);
         const status = sessionError(handle, err);
         try std.testing.expectEqual(status, handle.last_error);
         try std.testing.expectEqual(std.mem.findScalar(anyerror, &internal, err) != null, status == c.OT_INTERNAL_ERROR);
@@ -4689,6 +5000,24 @@ test "Session native output ABI validates admission before writing and rejects c
     handle.owner_thread -= 1;
     try std.testing.expectEqual(c.OT_WRONG_THREAD, wrong_thread);
     try std.testing.expectEqual(@as(u32, 99), written);
+    // post_stdout (R29): wait above 1 and null outputs are invalid, and outputs stay unchanged; wait=1 without a
+    // writer is idle on every platform; a non-terminal fd 1 refuses before consuming output.
+    var state: u32 = 99;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_post_stdout(handle, &id, 4, 2, &state, &written));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_post_stdout(handle, &id, 4, 0, null, &written));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_post_stdout(handle, &id, 4, 0, &state, null));
+    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_session_post_stdout(handle, &foreign, 4, 0, &state, &written));
+    try std.testing.expectEqual(@as(u32, 99), state);
+    try std.testing.expectEqual(c.OT_OK, ot_session_post_stdout(handle, &id, 0, 1, &state, &written));
+    try std.testing.expectEqual(@as(u32, c.OT_STDOUT_IDLE), state);
+    try std.testing.expectEqual(@as(u32, 0), written);
+    const terminal = if (comptime builtin.os.tag == .windows) false else std.c.isatty(1) == 1;
+    if (!terminal) {
+        written = 99;
+        try std.testing.expectEqual(c.OT_UNSUPPORTED_RESOURCE, ot_session_post_stdout(handle, &id, 4, 0, &state, &written));
+        try std.testing.expectEqual(@as(u32, 99), written);
+        try std.testing.expectEqual(@as(u64, 0), (try handle.core.raw().getSession(native_id)).completed_bytes);
+    }
     try std.testing.expectEqual(@as(u32, 0), writer.calls);
     try std.testing.expectEqual(c.OT_OK, ot_session_drain_output(handle, &id, 4, &written, &writer, Writer.write));
     try std.testing.expectEqual(@as(u32, 2), written);
@@ -4748,7 +5077,7 @@ test "Session pump ABIs validate the result record and map every pump status" {
     try std.testing.expectEqual(@as(u32, 99), record.status);
 
     var bytes: [8192]u8 = undefined;
-    var seen = [_]bool{false} ** 5;
+    var seen: [5]bool = @splat(false);
     var now: u64 = 10;
     // Setup, then suspension with its cursor-settle waits, each pumped until idle.
     for (0..2) |phase| {
@@ -4774,7 +5103,7 @@ test "Session pump ABIs validate the result record and map every pump status" {
     try handle.core.resumeSession(native_id);
 
     // Exit pumping visits one restoration unit per call until the output closes.
-    var exit_seen = [_]bool{false} ** 5;
+    var exit_seen: [5]bool = @splat(false);
     var status: u32 = 99;
     for (0..64) |_| {
         try std.testing.expectEqual(c.OT_OK, ot_session_pump_exit(handle, &id, &status));
@@ -4794,8 +5123,10 @@ const abi_modules = .{
     text_transport,
     unicode_transport,
     terminal_transport,
+    input_transport,
     output_transport,
     image_transport,
+    video_transport,
     clipboard_transport,
 };
 
@@ -4803,23 +5134,23 @@ const abi_modules = .{
 // The C header is the source of ABI record types.
 pub fn export_symbols() void {
     @setEvalBranchQuota(200_000);
-    for (@typeInfo(c).@"struct".decls) |declaration| {
-        if (!std.mem.startsWith(u8, declaration.name, "ot_")) continue;
-        const Prototype = @TypeOf(@field(c, declaration.name));
+    for (@typeInfo(c).@"struct".decl_names) |name| {
+        if (!std.mem.startsWith(u8, name, "ot_")) continue;
+        const Prototype = @TypeOf(@field(c, name));
         if (@typeInfo(Prototype) != .@"fn") continue;
         const implementation = find: {
             for (abi_modules) |module| {
-                if (@hasDecl(module, declaration.name)) break :find &@field(module, declaration.name);
+                if (@hasDecl(module, name)) break :find &@field(module, name);
             }
-            @compileError("Missing checked ABI implementation: " ++ declaration.name);
+            @compileError("Missing checked ABI implementation: " ++ name);
         };
-        checkPrototype(declaration.name, Prototype, @TypeOf(implementation.*));
-        @export(implementation, .{ .name = declaration.name });
+        checkPrototype(name, Prototype, @TypeOf(implementation.*));
+        @export(implementation, .{ .name = name });
     }
     for (abi_modules) |module| {
-        for (@typeInfo(module).@"struct".decls) |declaration| {
-            if (std.mem.startsWith(u8, declaration.name, "ot_") and !@hasDecl(c, declaration.name))
-                @compileError("ABI implementation is not declared in opentui.h: " ++ declaration.name);
+        for (@typeInfo(module).@"struct".decl_names) |name| {
+            if (std.mem.startsWith(u8, name, "ot_") and !@hasDecl(c, name))
+                @compileError("ABI implementation is not declared in opentui.h: " ++ name);
         }
     }
 }
@@ -4829,24 +5160,24 @@ pub fn export_symbols() void {
 fn checkPrototype(comptime name: []const u8, comptime Prototype: type, comptime Implementation: type) void {
     const prototype = @typeInfo(Prototype).@"fn";
     const implementation = @typeInfo(Implementation).@"fn";
-    if (!std.meta.eql(implementation.calling_convention, std.builtin.CallingConvention.c) or
-        implementation.params.len != prototype.params.len or
+    if (!std.meta.eql(implementation.attrs.@"callconv", std.lang.CallingConvention.c) or
+        implementation.param_types.len != prototype.param_types.len or
         implementation.return_type.? != prototype.return_type.?)
     {
         @compileError("ABI implementation differs from opentui.h: " ++ name);
     }
-    for (prototype.params, implementation.params, 0..) |expected, actual, index| {
-        const expected_pointer = nullablePointer(expected.type.?) orelse {
-            if (actual.type.? != expected.type.?) prototypeError("scalar differs from opentui.h", name, index);
+    for (prototype.param_types, implementation.param_types, 0..) |expected, actual, index| {
+        const expected_pointer = nullablePointer(expected.?) orelse {
+            if (actual.? != expected.?) prototypeError("scalar differs from opentui.h", name, index);
             continue;
         };
-        const actual_pointer = nullablePointer(actual.type.?) orelse
+        const actual_pointer = nullablePointer(actual.?) orelse
             prototypeError("pointer must accept NULL", name, index);
-        if (expected_pointer.is_const and !actual_pointer.is_const)
+        if (expected_pointer.attrs.@"const" and !actual_pointer.attrs.@"const")
             prototypeError("pointer drops const", name, index);
         if (@typeInfo(expected_pointer.child) == .@"struct" and actual_pointer.child != expected_pointer.child)
             prototypeError("record pointer differs from opentui.h", name, index);
-        if (@typeInfo(expected_pointer.child) == .@"fn" and actual.type.? != expected.type.?)
+        if (@typeInfo(expected_pointer.child) == .@"fn" and actual.? != expected.?)
             prototypeError("callback differs from opentui.h", name, index);
     }
 }
@@ -4855,7 +5186,7 @@ fn prototypeError(comptime reason: []const u8, comptime name: []const u8, compti
     @compileError(std.fmt.comptimePrint("ABI {s}: {s} argument {d}", .{ reason, name, index }));
 }
 
-fn nullablePointer(comptime T: type) ?std.builtin.Type.Pointer {
+fn nullablePointer(comptime T: type) ?std.lang.Type.Pointer {
     return switch (@typeInfo(T)) {
         .pointer => |info| if (info.size == .c) info else null,
         .optional => |info| switch (@typeInfo(info.child)) {
@@ -4875,7 +5206,7 @@ comptime {
     for (std.meta.tags(MousePointerStyle)) |style| {
         var name: [@tagName(style).len]u8 = undefined;
         _ = std.ascii.upperString(&name, @tagName(style));
-        if (@field(c, "OT_MOUSE_POINTER_" ++ name) != @intFromEnum(style))
+        if (@field(c, "OT_MOUSE_POINTER_" ++ name) != @backingInt(style))
             @compileError("OT_MOUSE_POINTER_" ++ name ++ " differs from terminal.MousePointerStyle");
     }
     if (c.OT_MOUSE_POINTER_MAX != std.meta.tags(MousePointerStyle).len - 1)
@@ -4883,9 +5214,9 @@ comptime {
     const TextLine = @import("scene.zig").TextLine;
     if (@sizeOf(c.ot_scene_text_line) != @sizeOf(TextLine) or @alignOf(c.ot_scene_text_line) != @alignOf(TextLine))
         @compileError("ot_scene_text_line differs from scene.TextLine");
-    for (std.meta.fields(TextLine)) |field| {
-        if (@offsetOf(c.ot_scene_text_line, field.name) != @offsetOf(TextLine, field.name))
-            @compileError("ot_scene_text_line differs from scene.TextLine: " ++ field.name);
+    for (@typeInfo(TextLine).@"struct".field_names) |name| {
+        if (@offsetOf(c.ot_scene_text_line, name) != @offsetOf(TextLine, name))
+            @compileError("ot_scene_text_line differs from scene.TextLine: " ++ name);
     }
     if (@import("link.zig").MAX_URL_LENGTH != 512) @compileError("opentui.h documents 512-byte URLs");
 }

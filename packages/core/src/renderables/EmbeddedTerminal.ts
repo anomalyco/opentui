@@ -1,4 +1,4 @@
-import { type RenderableOptions, Renderable } from "../Renderable.js"
+import { type RenderableOptions, Renderable, type NativeRenderableIntegration } from "../Renderable.js"
 import type { KeyEvent, PasteEvent } from "../lib/KeyHandler.js"
 import { RGBA } from "../lib/RGBA.js"
 import type { RenderContext } from "../types.js"
@@ -40,11 +40,10 @@ const MOD_CAPS_LOCK = 1 << 4
 const MOD_NUM_LOCK = 1 << 5
 
 export class EmbeddedTerminalRenderable extends Renderable {
-  static override readonly nativeIntegration = this.defineNativeIntegration({
+  static override readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "custom",
     body: "host",
-    construction: "prototype",
-  })
+  }
 
   declare public selectable: boolean
   private readonly lib: RenderLib
@@ -56,6 +55,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
   private selection = false
   private composedHookGeneration = 0n
   private _transparentBackground = false
+  private readonly sizeDefaults: { width: number; height: number }
 
   constructor(ctx: RenderContext, options: EmbeddedTerminalOptions) {
     const cols = options.cols ?? (typeof options.width === "number" ? options.width : 80)
@@ -68,6 +68,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
     })
     this._focusable = true
     this.lib = ctx.nativeScene.driver.renderLib
+    this.sizeDefaults = { width: options.cols ?? 80, height: options.rows ?? 24 }
 
     try {
       this._onData = options.onData
@@ -81,6 +82,10 @@ export class EmbeddedTerminalRenderable extends Renderable {
     } catch (error) {
       this.rollbackConstruction(error)
     }
+  }
+
+  protected override defaultDimension(kind: "width" | "height"): number {
+    return this.sizeDefaults[kind]
   }
 
   public get onData(): ((data: Uint8Array, source: EmbeddedTerminalDataSource) => void) | undefined {
@@ -432,10 +437,42 @@ function physicalKey(key: KeyEvent) {
   if (/^[a-z]$/i.test(name)) return `Key${name.toUpperCase()}`
   if (/^[0-9]$/.test(name)) return `Digit${name}`
   if (/^f([1-9]|1[0-9]|2[0-5])$/i.test(key.name)) return key.name.toUpperCase()
+  if (/^kp[0-9]$/i.test(key.name)) return `Numpad${key.name.slice(2)}`
   return (
     {
       backspace: "Backspace",
       clear: "NumpadBegin",
+      kpdecimal: "NumpadDecimal",
+      kpdivide: "NumpadDivide",
+      kpmultiply: "NumpadMultiply",
+      kpminus: "NumpadSubtract",
+      kpplus: "NumpadAdd",
+      kpenter: "NumpadEnter",
+      kpequal: "NumpadEqual",
+      kpseparator: "NumpadSeparator",
+      kpleft: "NumpadLeft",
+      kpright: "NumpadRight",
+      kpup: "NumpadUp",
+      kpdown: "NumpadDown",
+      kppageup: "NumpadPageUp",
+      kppagedown: "NumpadPageDown",
+      kphome: "NumpadHome",
+      kpend: "NumpadEnd",
+      kpinsert: "NumpadInsert",
+      kpdelete: "NumpadDelete",
+      capslock: "CapsLock",
+      scrolllock: "ScrollLock",
+      numlock: "NumLock",
+      printscreen: "PrintScreen",
+      pause: "Pause",
+      leftshift: "ShiftLeft",
+      leftctrl: "ControlLeft",
+      leftalt: "AltLeft",
+      leftsuper: "MetaLeft",
+      rightshift: "ShiftRight",
+      rightctrl: "ControlRight",
+      rightalt: "AltRight",
+      rightsuper: "MetaRight",
       enter: "Enter",
       return: "Enter",
       space: "Space",

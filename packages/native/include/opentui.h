@@ -7,11 +7,11 @@
 extern "C" {
 #endif
 
-/* Experimental context and session ABI, version 1. This header does not stabilize the
+/* Experimental context and session ABI, version 2. This header does not stabilize the
  * library's legacy renderer, Yoga, or other FFI exports. Use matching headers
  * and artifacts. The restricted scene surface supports roots, boxes, plain text,
  * sliders, standard arrows, editor views, and images. */
-#define OT_CONTEXT_ABI_VERSION UINT32_C(1)
+#define OT_CONTEXT_ABI_VERSION UINT32_C(2)
 
 typedef int32_t ot_status;
 #define OT_OK INT32_C(0)
@@ -51,6 +51,7 @@ typedef int32_t ot_status;
 #define OT_IMAGE_OUTPUT_TOO_SMALL (-INT32_C(45))
 #define OT_IMAGE_UNSUPPORTED_FEATURE (-INT32_C(46))
 #define OT_IMAGE_BUSY (-INT32_C(47))
+#define OT_VIDEO_FAILED (-INT32_C(60))
 
 /* A context owns its native resources and I/O storage. Only its creating OS
  * thread may call its functions, including error queries and destruction.
@@ -82,6 +83,7 @@ typedef struct ot_handle {
 #define OT_SCENE_CUSTOM UINT32_C(6)
 #define OT_SCENE_TEXT_VIEW UINT32_C(7)
 #define OT_SCENE_IMAGE UINT32_C(8)
+#define OT_SCENE_VIDEO UINT32_C(9)
 #define OT_SCENE_WRAP_NONE UINT32_C(0)
 #define OT_SCENE_WRAP_CHAR UINT32_C(1)
 #define OT_SCENE_WRAP_WORD UINT32_C(2)
@@ -107,6 +109,7 @@ typedef struct ot_handle {
 #define OT_STYLE_BORDER_WIDTH UINT32_C(0)
 #define OT_STYLE_FLAGS_NONE UINT32_C(0)
 #define OT_STYLE_DISABLE_FLEX_SHRINK UINT32_C(1)
+#define OT_STYLE_CONTENT UINT32_C(2)
 #define OT_STYLE_ENUM_DIRECTION UINT32_C(0)
 #define OT_STYLE_ENUM_FLEX_DIRECTION UINT32_C(1)
 #define OT_STYLE_ENUM_JUSTIFY_CONTENT UINT32_C(2)
@@ -236,7 +239,8 @@ typedef struct ot_handle {
 
 /* Complete slider options. orientation is horizontal=0 or vertical=1. Colors
  * retain terminal color intent. All numbers and derived thumb arithmetic must be finite.
- * Values are not clamped: zero and inverted ranges retain the legacy full thumb.
+ * Values are not clamped: zero and inverted ranges retain the legacy full thumb. A track
+ * longer than the i32 cell range uses that range.
  * reserved must be zero. New sliders default to horizontal, min=0, max=100,
  * value=0, viewport_size=10, foreground=#9a9ea3, background=#252527 (both opaque). */
 typedef struct ot_scene_slider_options {
@@ -413,6 +417,35 @@ typedef struct ot_scene_layout {
     double screen_y;
 } ot_scene_layout;
 
+#define OT_SCENE_FULL_PATH_FORCED UINT32_C(1)
+#define OT_SCENE_FULL_PATH_SCREEN UINT32_C(2)
+#define OT_SCENE_FULL_PATH_IMAGES UINT32_C(4)
+#define OT_SCENE_FULL_PATH_TAINTED UINT32_C(8)
+#define OT_SCENE_FULL_PATH_UNRETAINED UINT32_C(16)
+#define OT_SCENE_FULL_PATH_OPTIONS UINT32_C(32)
+#define OT_SCENE_FULL_PATH_NON_LOCAL UINT32_C(64)
+
+/* Fields from work_frame_id on count the work of the last presented scene
+ * frame: preparation, paint, and encoding. They are deterministic work
+ * counts, not times, and their values may change between versions as the
+ * renderer does less work. The three hit_cells fields are zero: paint records
+ * one hit rectangle per member, and a hit test walks them. Cancelled, failed, and skipped frames,
+ * non-scene renders, and snapshot-only split renders leave them unchanged.
+ * work_frame_id is the frame_id of the counted frame, or zero before the first.
+ * full_path_reasons holds OT_SCENE_FULL_PATH_* bits: FORCED (debug flag),
+ * SCREEN (forced, invalidated, or palette-changed encode), IMAGES (image
+ * placements present), TAINTED (the next buffer was written outside scene
+ * paint), UNRETAINED (no presented scene frame to compare with: the first
+ * frame, a resize, or the frame after a failed, cancelled, or unpresented
+ * frame), OPTIONS (background, use_mouse, excluded_hit_num, or
+ * preserve_unwritten changed), NON_LOCAL (a recording clears or color-matrixes
+ * the frame). IMAGES also counts recorded image draws. Otherwise, without a
+ * reason, a frame repaints only when a painted member's inputs changed, its
+ * recording included: it clears and repaints only bands around the damage_rows
+ * rows they cover (runs one row apart merge, and a sixteenth band takes every
+ * later run, so a band can include undamaged rows), and the encoder diffs only
+ * the damage_rows rows; an unchanged frame has damage_rows 0 and paints nothing. After a current-buffer session lease the
+ * encoder diffs every row, without repainting. */
 typedef struct ot_scene_stats {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -425,6 +458,28 @@ typedef struct ot_scene_stats {
     uint32_t average_cells_updated;
     uint32_t render_time_valid;
     uint32_t stdout_write_time_valid;
+    uint64_t work_frame_id;
+    uint64_t candidate_visits;
+    uint64_t paint_visits;
+    uint64_t view_preparations;
+    uint64_t geometry_reads;
+    uint64_t yoga_solves;
+    uint64_t feedback_operations;
+    uint64_t visibility_steps;
+    uint64_t viewport_child_refreshes;
+    uint64_t overlap_tests;
+    uint64_t members_painted;
+    uint64_t member_cells;
+    uint64_t cells_cleared;
+    uint64_t hit_cells_written;
+    uint64_t hit_cells_cleared;
+    uint64_t hit_cells_compared;
+    uint64_t rows_compared;
+    uint64_t rows_diffed;
+    uint32_t full_path_reasons;
+    uint32_t host_requests;
+    uint32_t layout_rounds;
+    uint32_t damage_rows;
 } ot_scene_stats;
 
 typedef struct ot_scene_cursor_state {
@@ -449,12 +504,13 @@ typedef struct ot_scene_cursor_state {
 #define OT_SCENE_HOOK_RENDER_AFTER UINT32_C(16)
 #define OT_SCENE_HOOK_RENDER_SELF UINT32_C(32)
 #define OT_SCENE_HOOK_IDLE_UPDATE UINT32_C(64)
+#define OT_SCENE_HOOK_SCROLL UINT32_C(128)
 #define OT_SCENE_FRAME_DONE UINT32_C(0)
 #define OT_SCENE_FRAME_UPDATE UINT32_C(1)
 #define OT_SCENE_FRAME_RESIZE UINT32_C(2)
 #define OT_SCENE_FRAME_LAYOUT_CHANGED UINT32_C(3)
 #define OT_SCENE_FRAME_RECORD UINT32_C(4)
-#define OT_SCENE_FRAME_YIELD UINT32_C(5)
+#define OT_SCENE_FRAME_SCROLL UINT32_C(5)
 
 typedef struct ot_scene_hooks {
     uint32_t struct_size;
@@ -507,7 +563,8 @@ typedef struct ot_scene_frame_geometry {
 
 /* One node whose paint hooks a RECORD request asks the host to record, in paint
  * order. hooks holds the RENDER_BEFORE, RENDER_SELF, and RENDER_AFTER bits to
- * record. paint is the prepared geometry native code paints at; clip and opacity
+ * record. paint is the prepared geometry native code paints at, clamped like
+ * OT_LAYOUT_PAINT; clip and opacity
  * are the inherited paint state. flags has OT_SCENE_GEOMETRY_PAINT and, when the
  * public observation succeeded, OT_SCENE_GEOMETRY_PUBLIC. */
 typedef struct ot_scene_paint_slot {
@@ -529,7 +586,7 @@ typedef struct ot_scene_paint_slot {
  * generations are nonzero and must increase on every change. Initial dimensions
  * seed the resize baseline only before the first layout. Later subscriptions use
  * completed dimensions. Only the root accepts LAYOUT_CHANGED.
- * IDLE_UPDATE consumes the normal update position without a host request or callback.
+ * IDLE_UPDATE uses up the node's update for a frame without a host request or callback.
  * It does not count as a host hook and cannot be combined with UPDATE.
  * Non-root nodes accept RENDER_BEFORE, RENDER_SELF, and RENDER_AFTER.
  * Root paint flags are rejected.
@@ -557,7 +614,7 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * it plays RENDER_BEFORE, then RENDER_SELF in place of the node's native body,
  * then native editor cursor maintenance, then RENDER_AFTER, before the node's
  * children. A slot without a recorded phase draws nothing for that phase. An
- * IMAGE node with a backing buffer from ot_scene_set_image plays its phases into
+ * IMAGE or VIDEO node with a backing buffer from ot_scene_set_image or ot_scene_set_video plays its phases into
  * that buffer, in buffer coordinates, after native code clears it and before
  * composing it.
  * recording must be NULL with zero length for every other acknowledgement.
@@ -573,43 +630,27 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * Native code retains its membership, destination, and storage identity. DONE
  * does not acquire a buffer lease automatically. Acquire qualified access below
  * only when needed, and explicitly commit or cancel the draft before another frame.
- * During preparation without an explicit YIELD, render, resize, buffer draw,
- * buffer borrowing, setup, and suspend reject with OT_FRAME_BUSY. Close,
- * cancellation, root destruction, and owner teardown invalidate preparation
- * attempts. At an explicit YIELD, an accepted dimension change cancels the
- * attempt; rejection preserves it. Suspension validates terminal phase first
- * and cancels only a preparation/feedback YIELD, without discarding admitted output.
+ * During preparation, render, resize, buffer draw, buffer borrowing, setup, and
+ * suspend reject with OT_FRAME_BUSY. Close, cancellation, root destruction, and
+ * owner teardown invalidate preparation attempts.
  * After DONE, destroying nodes or the root leaves painted cells and capture intact
  * without repainting. Commit, frame or Session cancellation, and owner teardown
  * still end draft access.
  *
- * Painting never yields. max_work_items is a positive quota for preparation node
- * visits, candidate-view preparation, and feedback records. Hook replies clamp
- * remaining work without replenishing it; an exact YIELD reply starts another work
- * quota. Zero rejects without consuming a request. A mutation accepted at a YIELD
- * that dirties preparation restarts it once; the rest of the attempt, including
- * later hook replies, runs without yields, so steady mutations cannot exhaust
- * max_layout_rounds.
- * YIELD names the root and requires the exact returned ticket; num, width,
- * height, and hook_generation are zero. It grants no buffer access or commit
- * authority and does not count against max_host_requests. Request IDs increase
- * across both hooks and YIELD. UINT32_MAX selects synchronous preparation only on
- * begin or an exact YIELD reply. A hook reply cannot switch an already-bounded run
- * to uncharged preparation. The quota bounds counted work items, not cells or
- * elapsed time. Yoga, allocation/reservation, final paint-list preparation and
- * publication, painting, and output encoding remain synchronous.
+ * Preparation and painting never yield: each step runs until it returns a host
+ * request, DONE, or an error.
  *
  * Geometry observations are produced after phase publication.
  * Geometry is not ticket authority and must not be echoed in acknowledgements.
  * Each flag marks a valid snapshot; absent snapshots are zeroed, including for
- * RECORD, DONE, and YIELD. Observation failures do not fail the step: a caller
+ * RECORD and DONE. Observation failures do not fail the step: a caller
  * needing that observation must use the checked layout query.
  * Accepted mutations may invalidate these snapshots before the next step.
  * out_geometry requires exact size/version and zero reserved before advancement.
  * All buffers are borrowed only for this call. previous may alias out_request;
  * the two output records must be distinct. */
 ot_status ot_scene_frame_step_with_geometry(ot_context *, const ot_handle *session,
-    const ot_scene_frame_request *previous, const ot_scene_frame_options *, uint32_t max_work_items,
+    const ot_scene_frame_request *previous, const ot_scene_frame_options *,
     const uint8_t *recording, uint32_t recording_length,
     ot_scene_frame_request *out_request, ot_scene_frame_geometry *out_geometry);
 /* Copy the slots of the exact pending RECORD request. out_count receives the total
@@ -653,7 +694,11 @@ ot_status ot_scene_has_measure(ot_context *, const ot_handle *node, uint32_t *ou
 ot_status ot_scene_mark_dirty(ot_context *, const ot_handle *node);
 /* Use OT_STYLE_* groups/kinds, OT_EDGE_* (or OT_GUTTER_* for GAP), and OT_UNIT_*.
  * Only OT_STYLE_DIMENSION accepts OT_STYLE_DISABLE_FLEX_SHRINK, which disables
- * flex shrink atomically with the dimension update. Other flags must be zero. */
+ * flex shrink atomically with the dimension update. OT_STYLE_CONTENT writes the
+ * content layout node of a scroll node (see ot_scene_set_scroll) instead of the
+ * node, and rejects DISPLAY; PADDING on a scroll node requires it. Other flags must be zero.
+ * Finite MARGIN, PADDING, POSITION, and GAP values beyond ±1e30 are stored as ±1e30, so
+ * get_style reads the stored value; Yoga clamps resolved percentages the same way. */
 ot_status ot_scene_set_style(ot_context *, const ot_handle *node, uint32_t group,
     uint32_t kind, uint32_t edge, uint32_t unit, float value, uint32_t flags);
 ot_status ot_scene_get_style(ot_context *, const ot_handle *node, uint32_t group,
@@ -661,6 +706,7 @@ ot_status ot_scene_get_style(ot_context *, const ot_handle *node, uint32_t group
 /* Exact size/version and zero reserved. Borders use L=1 B=2 R=4 T=8;
  * styles are single=0 double=1 rounded=2 heavy=3. Colors retain terminal color intent.
  * focusable is 0 or 1. New nodes default to 0 and focused color {0,170,255,255}.
+ * Translations must be finite with a magnitude of at most FLT_MAX.
  * Border layout widths and paint properties publish together on acceptance. */
 ot_status ot_scene_set_paint(ot_context *, const ot_handle *node, const ot_scene_paint_options *);
 /* --- Staged scene properties ---
@@ -728,13 +774,180 @@ ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot
     const uint8_t *title, uint32_t title_bytes, const uint8_t *bottom_title, uint32_t bottom_title_bytes);
 /* A box may filter its direct children against a root/box in the same Session.
  * The viewport handle is copied, not pinned. NULL disables filtering. A destroyed
- * viewport fails frame preparation until rebound or disabled. All direct children
- * refresh before selection, including hidden/culled children; hidden nodes do not
- * update or resize. Fewer than 16 total children bypass overlap filtering.
+ * viewport fails frame preparation until rebound or disabled. Every direct child
+ * whose layout, text, view, or hooks changed refreshes before selection,
+ * including hidden/culled children; hidden nodes do not update or resize. Fewer than 16 total children bypass overlap filtering.
  * Bounds use the full viewport, not its border-inset paint clip. Row/reverse-row
  * use horizontal overlap; column/reverse-column use vertical overlap. Primary
- * overlap is strict, cross-axis touching is included, and padding is zero. */
+ * overlap is strict, cross-axis touching is included, and padding is zero.
+ * A scroll node rejects a viewport with OT_INVALID_ARGUMENT; as another node's
+ * viewport it bounds by its full box. */
 ot_status ot_scene_set_viewport(ot_context *, const ot_handle *node, const ot_handle *viewport);
+
+/* --- Scroll nodes ---
+ * ot_scene_set_scroll makes a box with no children a scroll node. It owns two
+ * hidden layout nodes: a viewport node, the box's only layout child (column,
+ * grow 1, overflow hidden, the viewport padding), and a content node inside it
+ * (align-self flex-start, shrink 0, min width and height 100%, and max 100% on
+ * an axis that does not scroll). The box's scene children lay out in the
+ * content node, and the box's own padding holds the gutters of visible inset
+ * bars. After each layout solve, max = max(0, content - viewport inner) on a
+ * scrolling axis (0 otherwise); if max, the content size, or the viewport
+ * changed, a stuck view moves to its follow edge; the offset clamps to
+ * [0, max] in whole cells. Children compose at the box origin
+ * plus the viewport and content origins minus the offset, clip to the viewport
+ * rect, and with culling filter against it like ot_scene_set_viewport. Auto
+ * bars show while max > 0; a box toggles its bars at most twice per frame,
+ * after which a bar may still appear but not hide. Bars paint after the box's
+ * children and hit the box. Options are complete and copied. A later call
+ * updates options; a changed follow recomputes stuck. stuck starts true and
+ * changes only on explicit scrolls (ot_scene_scroll_to, ot_scene_scroll_request),
+ * follow changes, and the solves that apply a request or an anchor: it is true
+ * when the offset reached the follow edge or max on that axis is at most 1.
+ * Rejection preserves accepted state. */
+#define OT_SCENE_SCROLL_X UINT32_C(1)
+#define OT_SCENE_SCROLL_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_FOLLOW_NONE UINT32_C(0)
+#define OT_SCENE_SCROLL_FOLLOW_TOP UINT32_C(1)
+#define OT_SCENE_SCROLL_FOLLOW_BOTTOM UINT32_C(2)
+#define OT_SCENE_SCROLL_FOLLOW_LEFT UINT32_C(3)
+#define OT_SCENE_SCROLL_FOLLOW_RIGHT UINT32_C(4)
+#define OT_SCENE_SCROLL_FILL_WRAPPER UINT32_C(1)
+#define OT_SCENE_SCROLL_FILL_VIEWPORT UINT32_C(2)
+#define OT_SCENE_SCROLL_FILL_CONTENT UINT32_C(4)
+#define OT_SCENE_SCROLL_BAR_AUTO UINT32_C(0)
+#define OT_SCENE_SCROLL_BAR_ALWAYS UINT32_C(1)
+#define OT_SCENE_SCROLL_BAR_NEVER UINT32_C(2)
+#define OT_SCENE_SCROLL_BAR_INSET UINT32_C(0)
+#define OT_SCENE_SCROLL_BAR_OVERLAY UINT32_C(1)
+#define OT_SCENE_SCROLL_RELATIVE_X UINT32_C(1)
+#define OT_SCENE_SCROLL_RELATIVE_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_REAPPLY UINT32_C(4)
+#define OT_SCENE_SCROLL_REQUEST_INTO_VIEW UINT32_C(0)
+#define OT_SCENE_SCROLL_REQUEST_ANCHOR UINT32_C(1)
+#define OT_SCENE_SCROLL_REQUEST_LAYOUT UINT32_C(2)
+#define OT_SCENE_SCROLL_ALIGN_NEAREST UINT32_C(0)
+#define OT_SCENE_SCROLL_ALIGN_START UINT32_C(1)
+#define OT_SCENE_SCROLL_ALIGN_END UINT32_C(2)
+
+/* thickness is 1..255 cells and gap 0..255 cells (between content and track);
+ * an inset bar's gutter is gap + thickness, an overlay bar takes none. arrows
+ * is 0 or 1. Track colors retain terminal color intent. reserved must be zero. */
+typedef struct ot_scene_scroll_bar_options {
+    uint32_t policy;
+    uint32_t placement;
+    uint32_t thickness;
+    uint32_t gap;
+    uint32_t arrows;
+    uint32_t reserved;
+    uint16_t track_foreground[4];
+    uint16_t track_background[4];
+} ot_scene_scroll_bar_options;
+
+/* axes holds OT_SCENE_SCROLL_X/Y. culling is 0 or 1. padding is the viewport
+ * padding in whole cells, left, top, right, bottom, each 0..65535. fills selects
+ * which of the wrapper (box inner rect minus the vertical gutter), viewport, and
+ * content (moving with the offset) backgrounds paint, in that order, before the
+ * children. bars[0] is the horizontal bar, bars[1] the vertical bar. */
+typedef struct ot_scene_scroll_options {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t axes;
+    uint32_t follow;
+    uint32_t culling;
+    uint32_t fills;
+    float padding[4];
+    uint16_t wrapper_background[4];
+    uint16_t viewport_background[4];
+    uint16_t content_background[4];
+    ot_scene_scroll_bar_options bars[2];
+} ot_scene_scroll_options;
+
+/* Rects are x, y, width, height in cells. track, arrows, and viewport are screen
+ * cells of the last prepared frame; content is local to the node. thumb_start
+ * and thumb_size are half cells along the track, as ot_scene_slider_thumb. */
+typedef struct ot_scene_scroll_bar_state {
+    uint32_t visible;
+    uint32_t reserved;
+    double track[4];
+    double start_arrow[4];
+    double end_arrow[4];
+    double thumb_start;
+    double thumb_size;
+} ot_scene_scroll_bar_state;
+
+/* generation changes with every change of the other fields. changes holds the
+ * OT_SCENE_SCROLL_CHANGED_* bits that differed from the last report when the last
+ * SCROLL request was issued. Setting OT_SCENE_HOOK_SCROLL on a node that did not
+ * have it makes the current state the last report. */
+#define OT_SCENE_SCROLL_CHANGED_OFFSET_X UINT32_C(1)
+#define OT_SCENE_SCROLL_CHANGED_OFFSET_Y UINT32_C(2)
+#define OT_SCENE_SCROLL_CHANGED_CONTENT UINT32_C(4)
+#define OT_SCENE_SCROLL_CHANGED_VIEWPORT UINT32_C(8)
+/* Set on the request that delivers an OT_SCENE_SCROLL_REQUEST_LAYOUT callback. */
+#define OT_SCENE_SCROLL_CHANGED_LAYOUT UINT32_C(16)
+typedef struct ot_scene_scroll_state {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t stuck;
+    uint32_t changes;
+    uint64_t generation;
+    double offset[2];
+    double max[2];
+    double content[4];
+    double viewport[4];
+    ot_scene_scroll_bar_state bars[2];
+} ot_scene_scroll_state;
+
+ot_status ot_scene_set_scroll(ot_context *, const ot_handle *node, const ot_scene_scroll_options *);
+/* axis is 0 (horizontal bar) or 1 (vertical bar); end is 0 (start) or 1 (end).
+ * Options and text follow ot_scene_set_arrow; direction must be zero and the
+ * axis and end choose the glyph unless text is given. */
+ot_status ot_scene_set_scroll_arrow(ot_context *, const ot_handle *node, uint32_t axis, uint32_t end,
+    const ot_scene_arrow_options *, const uint8_t *text, uint32_t byte_count);
+/* An explicit scroll. Without RELATIVE_X/Y the values are absolute offsets; a
+ * relative delta of 0 keeps an axis. Values round to whole cells and clamp to
+ * the limits of the last solve; ±Infinity clamp, NaN returns
+ * OT_INVALID_ARGUMENT. It recomputes stuck, moves a held anchor's row with the
+ * offset, marks the offset (not the sizes) as reported to the host, and copies
+ * the new state to out_state unless it is NULL. During a frame attempt the next
+ * round prepares at the new offset.
+ * With REAPPLY each axis it sets also keeps its target, and every solve of the
+ * next frame (the current one during an attempt, or a later one if that frame
+ * is cancelled) moves the offset to the target again, clamped to the new limits,
+ * and recomputes stuck. A relative delta adds to a pending target. A target of
+ * +Infinity, or one at or past a positive max of a laid-out node, is the end:
+ * it lands at the new max and releases a held anchor. A following view that the
+ * scroll left stuck where it asked keeps no target on the follow axis. A later
+ * scroll without REAPPLY drops pending targets. */
+ot_status ot_scene_scroll_to(ot_context *, const ot_handle *node, double x, double y, uint32_t flags,
+    ot_scene_scroll_state *out_state);
+/* Requests about a node in the scroll node's subtree, read from the last solve
+ * (OT_INVALID_ARGUMENT for a node outside it):
+ * - INTO_VIEW scrolls now so the target's rect is inside the viewport inset by
+ *   inset cells (align NEAREST moves the least, as a browser does; START puts its
+ *   start at the inset edge; END its end), and again after each solve of the next
+ *   frame, as a REAPPLY scroll does; it replaces pending targets. A target that
+ *   was never laid out scrolls only after its first solve.
+ * - ANCHOR holds the target's position in the viewport: after each solve the
+ *   offset moves with the target, clamped, and stuck is recomputed; while held,
+ *   the anchor decides the offset over sticky follow and pending requests. A
+ *   target that was never laid out holds the place its first solve gives it. An
+ *   explicit scroll moves the held row. A NULL target releases it; so does
+ *   destroying the target or moving it out of the subtree. align and inset are 0.
+ * - LAYOUT asks for one SCROLL request (OT_SCENE_SCROLL_CHANGED_LAYOUT in
+ *   changes) in the next frame, after its layout settles and before it paints,
+ *   while OT_SCENE_HOOK_SCROLL is set and the node is visible. target is NULL,
+ *   align and inset are 0.
+ * out_state follows ot_scene_scroll_to. */
+ot_status ot_scene_scroll_request(ot_context *, const ot_handle *node, uint32_t kind, const ot_handle *target,
+    uint32_t align, uint32_t inset, ot_scene_scroll_state *out_state);
+/* Pure: it never changes what an OT_SCENE_FRAME_SCROLL request reports. With
+ * OT_SCENE_HOOK_SCROLL (scroll nodes only) a frame returns one SCROLL request,
+ * after the node's refresh and before paint, when the offset differs from the last
+ * reported or written offset, or the content or viewport size from the last
+ * reported size. */
+ot_status ot_scene_get_scroll(ot_context *, const ot_handle *node, ot_scene_scroll_state *out_state);
 /* focused is 0 or 1. Stores one accepted target without host focus/input policy.
  * Focusable boxes on its current ancestor path use focused_border_color. Zero
  * clears only a matching target and remains valid after Session cancellation. */
@@ -813,15 +1026,26 @@ ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t 
  * combine that geometry with current accepted ancestor relationships
  * and translations immediately, without running layout. OT_LAYOUT_YOGA instead
  * copies the six actual Yoga computed values, including zero dimensions, and
- * sets screen_x/y to zero. OT_LAYOUT_PAINT copies prepared paint geometry, including
- * screen_x/y. During a RECORD request, mutations do not change those coordinates.
- * These reads do not run layout. Other selectors reject without changing output. */
+ * sets screen_x/y to zero. OT_LAYOUT_PAINT copies where the latest paint list painted the
+ * node, or where a frame being prepared places it, including screen_x/y, with each axis
+ * that leaves the signed 32-bit cell range clamped to the whole cells it paints within 2^22
+ * of the origin, at least one unless zero; PUBLIC and YOGA keep the unclamped values.
+ * PUBLIC raises a zero width or height to one cell; PAINT keeps it, and a node with a zero
+ * dimension paints and hits no cell. During a RECORD request, mutations do not change those
+ * coordinates. A node that list did not paint (hidden, culled, or detached), and every node
+ * after a solve or after a change between frames that drops the list, until the next list
+ * paints it, reads its latest solved geometry composed with current translations and
+ * offsets; zeros if Yoga has not laid it out since it was created or moved. While a host
+ * request is pending, such a node's first read holds.
+ * These reads do not run layout. Other selectors reject without changing output.
+ * A scroll node's children report YOGA values local to its content node, and their
+ * screen_x/y compose through the viewport and content origins and the offset. */
 ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t observation, ot_scene_layout *out_layout);
 /* Paint a hook-free scene and retain its DONE draft in out_frame. Commit it with
  * ot_scene_frame_commit, or cancel it before painting again. Frame-qualified
  * effects and capture may run before commit. Initialize out_frame's exact
  * size/version and zero reserved fields; rejection leaves it unchanged.
- * No output or hit-grid publication occurs until commit and output completion.
+ * No output or hit publication occurs until commit and output completion.
  * Pending presentation rejects painting; accepted scene mutations remain valid.
  * excluded_hit_num is the captured node's public number, or zero. It excludes
  * only that node from this frame's hits, not its painting or descendants.
@@ -830,6 +1054,24 @@ ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t obse
 ot_status ot_scene_paint(ot_context *, const ot_handle *session, const uint16_t background[4], uint32_t use_mouse, uint32_t excluded_hit_num, ot_scene_frame_request *out_frame);
 ot_status ot_scene_hit_test(ot_context *, const ot_handle *session, int32_t x, int32_t y, uint32_t *out_num);
 ot_status ot_scene_get_stats(ot_context *, const ot_handle *session, ot_scene_stats *out_stats);
+#define OT_SCENE_DEBUG_FULL_FRAME UINT32_C(1)
+#define OT_SCENE_DEBUG_VERIFY UINT32_C(2)
+/* Diagnostic switches for tests. FULL_FRAME rebuilds each frame's preparation
+ * and paint lists instead of reusing the last frame's, and every later shortcut
+ * that skips frame work also tests it; Yoga still solves only a dirty tree, and
+ * geometry is read only for nodes laid out since the last solve. Output is
+ * unchanged; only the work counts in ot_scene_stats differ, and frames report
+ * OT_SCENE_FULL_PATH_FORCED. A closed or cancelled Session returns
+ * OT_SESSION_CLOSED, a failed one OT_OUTPUT_FAILED, other bits
+ * OT_INVALID_ARGUMENT, a Session without a scene OT_INVALID_PHASE, and an active
+ * frame attempt, draft, or frame lease OT_FRAME_BUSY. Rejection keeps the flags.
+ * Flags persist for the Session. VERIFY checks frames that retained paint skips
+ * or repaints partly: next must still hold the presented frame, a partly
+ * repainted frame's other rows must match it, and a full repaint into a
+ * scratch buffer must match the cells and hits of a skipped or partly
+ * repainted frame. A mismatch fails the frame step
+ * with OT_INTERNAL_ERROR; VERIFY changes no other state or count. */
+ot_status ot_scene_set_debug_flags(ot_context *, const ot_handle *session, uint32_t flags);
 /* Copied renderer cursor state. Style: block=0 line=1 underline=2 default=3.
  * Colors use normalized float channels. Output requires exact size/version. */
 ot_status ot_scene_get_cursor_state(ot_context *, const ot_handle *session, ot_scene_cursor_state *out_state);
@@ -958,7 +1200,16 @@ ot_status ot_session_sync_detached(ot_context *, const ot_handle *session, const
 
 /* Initialize struct_size and abi_version. The remaining fields are output-only.
  * frame_count counts complete presentations, not queued frames. frame_pending
- * is 0 or 1. This copied record borrows no renderer or framebuffer storage. */
+ * is 0 or 1. image_uploads_pending counts presented Kitty and Sixel placements
+ * whose image a later frame still sends: uploads that did not fit one frame
+ * wait, and one larger than a frame draws as blocks next. Submit another frame
+ * while it is nonzero. A frame whose output without image uploads is larger than
+ * the write limit returns FAILED: dropped_frame_bytes is then its size (saturated),
+ * and dropped_frames counts each dropped content once. A frame that wrote only some
+ * cells is counted once its full repaint fails too. The same content returns
+ * FAILED again, with its size, without encoding until it changes; any other result
+ * sets dropped_frame_bytes to 0. This copied record borrows no renderer or framebuffer
+ * storage. */
 typedef struct ot_session_renderer_state {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -966,7 +1217,9 @@ typedef struct ot_session_renderer_state {
     uint32_t height;
     uint64_t frame_count;
     uint32_t frame_pending;
-    uint32_t reserved;
+    uint32_t image_uploads_pending;
+    uint32_t dropped_frames;
+    uint32_t dropped_frame_bytes;
 } ot_session_renderer_state;
 
 #define OT_SESSION_BUFFER_CURRENT UINT32_C(0)
@@ -998,8 +1251,9 @@ typedef struct ot_unicode_char {
     uint32_t character;
 } ot_unicode_char;
 
-/* Encodes one record per drawn glyph. Controls produce no record. A tab or a
- * grapheme over the native 128-byte limit produces one width-1 space per cell. */
+/* Encodes one record per drawn glyph. Controls produce no record. A tab, or a
+ * grapheme over the native 128-byte limit or 16 cells, produces one width-1
+ * space per cell. */
 ot_status ot_unicode_create(ot_context *, const uint8_t *bytes, uint32_t byte_count,
     uint32_t width_method, ot_handle *out_unicode);
 ot_status ot_unicode_destroy(ot_context *, const ot_handle *unicode);
@@ -1200,8 +1454,9 @@ ot_status ot_syntax_style_destroy(ot_context *, const ot_handle *style);
 /* NULL clears the binding. A non-NULL style must belong to this Context. */
 ot_status ot_edit_buffer_set_syntax_style(ot_context *, const ot_handle *edit_buffer, const ot_handle *style);
 /* Copy UTF-8 bytes into owned storage; bytes may be NULL only for zero length.
- * C0/C1/DEL controls reject except tab, CR, and LF. Queries normalize line endings
- * to LF. preserve_history is 0 (clear history) or 1 (create an undo point).
+ * Editors keep C0, DEL, and C1 controls and show them as notation: ^@..^_ and ^?
+ * in two cells, <80>..<9f> in four. Tab, CR, and LF keep their meaning. Queries
+ * normalize line endings to LF. preserve_history is 0 (clear history) or 1 (create an undo point).
  * Replacement resets the cursor to the origin; insertion uses the primary cursor.
  * No input memory remains borrowed after return. */
 ot_status ot_edit_buffer_set_text(ot_context *, const ot_handle *edit_buffer,
@@ -1255,6 +1510,8 @@ ot_status ot_edit_buffer_history(ot_context *, const ot_handle *, uint32_t redo,
 #define OT_EDIT_POSITION_OFFSET UINT32_C(4)
 #define OT_EDIT_POSITION_COORDS UINT32_C(5)
 #define OT_EDIT_POSITION_LINE_START UINT32_C(6)
+#define OT_EDIT_POSITION_END UINT32_C(7)
+#define OT_EDIT_POSITION_PREV_CHAR UINT32_C(8)
 typedef struct ot_edit_position {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1264,7 +1521,8 @@ typedef struct ot_edit_position {
     uint32_t offset;
 } ot_edit_position;
 /* a is offset, row, or line for OFFSET, COORDS, LINE_START; b is col for COORDS.
- * Other inputs are zero. Invalid positions return valid=0 and zero coordinates. */
+ * Other inputs are zero. Invalid positions return valid=0 and zero coordinates.
+ * END is the text's end, PREV_CHAR where MOVE_LEFT would go; no query moves the cursor. */
 ot_status ot_edit_buffer_get_position(ot_context *, const ot_handle *, uint32_t query,
     uint32_t a, uint32_t b, ot_edit_position *out_position);
 /* by_coords=0 uses start_col/end_col as offsets and requires zero rows;
@@ -1275,6 +1533,17 @@ ot_status ot_edit_buffer_get_position(ot_context *, const ot_handle *, uint32_t 
 ot_status ot_edit_buffer_get_range(ot_context *, const ot_handle *, uint32_t by_coords,
     uint32_t start_row, uint32_t start_col, uint32_t end_row, uint32_t end_col,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
+/* Lays UTF-8 bytes out as set_text would, without storing them, and reports the offset at
+ * their end: display cells under the buffer's width method, tab width, and control notation,
+ * plus one per line break (LF, CR, or CRLF). bytes may be NULL only for zero length; the
+ * byte limit and UTF-8 validation of set_text apply. Failures preserve out_width. */
+ot_status ot_edit_buffer_measure_text(ot_context *, const ot_handle *edit_buffer,
+    const uint8_t *bytes, uint32_t byte_count, uint32_t *out_width);
+/* Measures as ot_edit_buffer_measure_text does on an edit buffer with this width method and
+ * tab width, without a buffer. tab_width rounds as in ot_edit_buffer_set_tab_width, so 0
+ * gives the tab width of a new edit buffer; a tab_width over 255 fails. */
+ot_status ot_edit_measure_text(ot_context *, const uint8_t *bytes, uint32_t byte_count,
+    uint32_t width_method, uint32_t tab_width, uint32_t *out_width);
 
 #define OT_EDITOR_STYLE_FOREGROUND UINT32_C(1)
 #define OT_EDITOR_STYLE_BACKGROUND UINT32_C(2)
@@ -1292,7 +1561,8 @@ typedef struct ot_editor_style {
  * Reset uses mask=7 and flags=0. */
 ot_status ot_edit_buffer_set_defaults(ot_context *, const ot_handle *, uint32_t mask, const ot_editor_style *);
 /* Names are copied UTF-8; registering an existing name replaces its definition.
- * Empty names are valid; name may be NULL only when byte_count is zero. */
+ * Empty names are valid; name may be NULL only when byte_count is zero. Ids are
+ * below OT_STYLE_RUN_FLAG. */
 ot_status ot_syntax_style_register(ot_context *, const ot_handle *, const uint8_t *name,
     uint32_t byte_count, const ot_editor_style *, uint32_t *out_id);
 /* Unknown names return id=0. Names are borrowed only for the query. */
@@ -1305,6 +1575,10 @@ ot_status ot_syntax_style_get_count(ot_context *, const ot_handle *, uint32_t *o
 #define OT_EDIT_HIGHLIGHT_REMOVE_REF UINT32_C(2)
 #define OT_EDIT_HIGHLIGHT_CLEAR_LINE UINT32_C(3)
 #define OT_EDIT_HIGHLIGHT_CLEAR_ALL UINT32_C(4)
+/* Highlight style ids with this bit name a text buffer's styled-text styles; styled
+ * text interns them by value in the buffer and never writes the attached SyntaxStyle.
+ * get_highlights reports them; equal styles share one id, unstyled text has id 0. */
+#define OT_STYLE_RUN_FLAG UINT32_C(0x80000000)
 typedef struct ot_edit_highlight {
     uint32_t start;
     uint32_t end;
@@ -1313,7 +1587,8 @@ typedef struct ot_edit_highlight {
     uint32_t ref;
 } ot_edit_highlight;
 /* highlight is required only for ADD operations. argument is line for ADD_LINE/
- * CLEAR_LINE, ref for REMOVE_REF, zero otherwise. priority<=255, ref<=65535.
+ * CLEAR_LINE, ref for REMOVE_REF, zero otherwise. priority<=255, ref<=65535, and
+ * style_id has no OT_STYLE_RUN_FLAG.
  * start/end are display columns: within line argument for ADD_LINE; for ADD_RANGE,
  * document offsets that skip line breaks, unlike cursor, selection, and get_range
  * offsets, which count one cell per line break. In "ab\ncd", range 3..4 is "d". */
@@ -1337,6 +1612,9 @@ typedef struct ot_editor_viewport {
  * Viewports and their coordinate sums must fit INT32_MAX. */
 ot_status ot_editor_view_set_viewport(ot_context *, const ot_handle *, const ot_editor_viewport *,
     uint32_t size_only, uint32_t move_cursor);
+/* Cursor changes (edits and moves) do not lay out text; they make a scroll to the cursor
+ * due. The viewport read and the other editor view calls apply a due scroll first, so the
+ * viewport read can lay out text and return OT_OUT_OF_MEMORY, but only while a scroll is due. */
 ot_status ot_editor_view_get_viewport(ot_context *, const ot_handle *, ot_editor_viewport *out_viewport);
 ot_status ot_editor_view_set_scroll_margin(ot_context *, const ot_handle *, float margin);
 #define OT_EDITOR_MOVE_UP UINT32_C(0)
@@ -1414,8 +1692,9 @@ typedef struct ot_editor_view_info {
     uint32_t selection_end;
     uint32_t selection_occupancy;
 } ot_editor_view_info;
-/* follow_cursor is 0/1. Zero preserves the viewport during observational queries;
- * one retains editor render-preparation behavior for visible line-count queries. */
+/* follow_cursor is 0/1. Zero preserves the viewport during observational queries, apart
+ * from a scroll that an earlier cursor change made due; one retains editor render-preparation
+ * behavior for visible line-count queries. */
 ot_status ot_editor_view_get_info(ot_context *, const ot_handle *, uint32_t follow_cursor, ot_editor_view_info *out_info);
 /* Reads selection without preparing lines or following the cursor. Reuses the
  * info record with both line counts zero; absent or zero-width selections report
@@ -1568,6 +1847,71 @@ ot_status ot_image_pixels_release(ot_context *, const ot_handle *lease);
  * fit and protocol use OT_IMAGE_*; mutations reject measurement-callback reentry. */
 ot_status ot_scene_set_image(ot_context *, const ot_handle *node, const ot_handle *image,
     uint32_t fit, uint32_t protocol, const ot_handle *buffer);
+/* Sets the region of the source, in source pixels, that an IMAGE or VIDEO node shows; fit
+ * applies to the region. All four zero show the whole source; otherwise width and height
+ * are positive. A region that does not lie inside the source shows the whole source. A VIDEO
+ * node scales and copies only the region of each frame. Setting the image or video keeps it. */
+ot_status ot_scene_set_crop(ot_context *, const ot_handle *node, uint32_t left, uint32_t top,
+    uint32_t width, uint32_t height);
+
+/* A VIDEO node owns one decoder and player. Decoded frames stay native: each paint
+ * of the node draws the current frame as the IMAGE node does, from a small set of
+ * images that the decoder refreshes in place while no buffer retains them. Audio
+ * plays from a native thread; paints and ot_video_get_state advance the clock and
+ * end or loop playback, so an unpainted node keeps time. Hosts keep frames painting
+ * while playback runs, for example with a live renderable. ot_scene_set_video sets fit and buffer as ot_scene_set_image does;
+ * frames draw with OT_IMAGE_PROTOCOL_AUTO.
+ * ot_video_open replaces the player; a zero path_length closes it, and path may then
+ * be NULL. Audio plays through a private audio engine and is the media clock while it
+ * plays. A decode worker thread starts when the node first needs a frame; an audio
+ * thread starts on the first play of a source with audio and makes every audio engine
+ * call. Failed opens, seeks, and decodes return OT_VIDEO_FAILED; ot_video_get_error
+ * copies the detail. After a failure, ot_video_play and ot_video_seek retry; other
+ * controls still apply and succeed. A paused seek decodes its frame once the node has
+ * painted, so decode failures return from the seek. Audio failures leave playback running silently on the wall clock. Control and
+ * state calls on a node without an open player return OT_INVALID_PHASE.
+ * With OT_VIDEO_OPEN_NO_AUDIO, the only accepted flag, ot_video_open creates no audio engine: playback opens no
+ * audio device and follows the wall clock, and has_audio still reports the file's audio track.
+ * In ot_video_info, zero duration_us or fps_num means unknown. */
+#define OT_VIDEO_OPEN_NO_AUDIO UINT32_C(1)
+typedef struct ot_video_info {
+    int64_t duration_us;
+    uint32_t width, height, fps_num, fps_den, has_audio, reserved;
+} ot_video_info;
+/* BUFFERING: playing, and the audio clock waits for queued audio. AUDIO: playing, and
+ * audio output drives the media clock. Without either, playback follows the wall clock. */
+#define OT_VIDEO_PLAYING UINT32_C(1)
+#define OT_VIDEO_ENDED UINT32_C(2)
+#define OT_VIDEO_BUFFERING UINT32_C(4)
+#define OT_VIDEO_AUDIO UINT32_C(8)
+#define OT_VIDEO_HAS_FRAME UINT32_C(16)
+#define OT_VIDEO_ERROR UINT32_C(32)
+typedef struct ot_video_state {
+    int64_t current_time_us;
+    int64_t frame_pts_us;
+    /* quality_tier: 0 is full decode size; each higher tier decodes Kitty output smaller to keep up. */
+    uint32_t flags, quality_tier;
+} ot_video_state;
+ot_status ot_scene_set_video(ot_context *, const ot_handle *node, uint32_t fit, const ot_handle *buffer);
+ot_status ot_video_open(ot_context *, const ot_handle *node, const uint8_t *path, uint32_t path_length,
+    uint32_t flags, ot_video_info *out_info);
+ot_status ot_video_play(ot_context *, const ot_handle *node);
+ot_status ot_video_pause(ot_context *, const ot_handle *node);
+ot_status ot_video_seek(ot_context *, const ot_handle *node, int64_t time_us);
+ot_status ot_video_set_loop(ot_context *, const ot_handle *node, uint32_t loop);
+ot_status ot_video_set_muted(ot_context *, const ot_handle *node, uint32_t muted);
+ot_status ot_video_set_volume(ot_context *, const ot_handle *node, float volume);
+/* Positive offsets show frames earlier relative to the media clock. Offsets beyond
+ * +-60 s return OT_INVALID_ARGUMENT. */
+ot_status ot_video_set_av_sync_offset(ot_context *, const ot_handle *node, int64_t offset_us);
+/* Frames present at the lower of fps and the source frame rate. fps is 1 to 120; default 30. */
+ot_status ot_video_set_max_fps(ot_context *, const ot_handle *node, uint32_t fps);
+ot_status ot_video_get_state(ot_context *, const ot_handle *node, ot_video_state *out_state);
+/* Copies the detail of the last failure, empty without one. Zero capacity reports the
+ * exact byte count; otherwise insufficient capacity rejects without writing bytes or
+ * out_count. bytes may be NULL only for zero capacity. No terminating NUL is added. */
+ot_status ot_video_get_error(ot_context *, const ot_handle *node, uint8_t *bytes, uint32_t capacity,
+    uint32_t *out_count);
 
 /* x/y and width/height count terminal cells. pixel_* and source_* count image
  * pixels. Absent source extents and reserved fields must be zero. Exact size and
@@ -1675,12 +2019,12 @@ ot_status ot_text_buffer_view_destroy(ot_context *, const ot_handle *);
 ot_status ot_text_buffer_set_text(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count);
 ot_status ot_text_buffer_append(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count);
 ot_status ot_text_buffer_clear(ot_context *, const ot_handle *, uint32_t reset);
-/* Empty chunks retain their ordinal for generated chunkN names, but register no
- * style or link. Unlike direct scene text, chunk_count can exceed byte_count. */
+/* Empty chunks register no style or link. Unlike direct scene text, chunk_count can
+ * exceed byte_count. clear without reset keeps styled highlights but drops their links. */
 ot_status ot_text_buffer_set_styled_text(ot_context *, const ot_handle *, const uint8_t *, uint32_t byte_count,
     const ot_styled_text_chunk *, uint32_t chunk_count, const uint8_t *urls, uint32_t url_byte_count);
 /* Atomic replacement of buffer-owned styled text. Every buffer appears once and
- * view must be its dependent view. Borrowed SyntaxStyles are not supported.
+ * view must be its dependent view.
  * Success resets selection on each named view, retaining defaults and geometry.
  * Failure leaves every buffer, view and output unchanged. Inputs are borrowed
  * only for the call. Output has count entries; NULL spans require zero count.
@@ -1751,10 +2095,12 @@ ot_status ot_buffer_draw_text_view(ot_context *, const ot_handle *target, const 
     const ot_handle *view, int32_t x, int32_t y);
 /* Same destination rules as ot_buffer_draw_text_view. Paints synchronously with
  * the destination's current clipping and opacity, without publishing cursor state.
- * The scene-text source is a native Text node, not an independent text-view handle. */
+ * The scene-body source is a Text, Box, Slider or Arrow scene node, drawn as its
+ * built-in painting would draw it at x, y with the node's paint size and the
+ * current focus. */
 ot_status ot_buffer_draw_editor_view(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
     const ot_handle *view, int32_t x, int32_t y);
-ot_status ot_buffer_draw_scene_text(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
+ot_status ot_buffer_draw_scene_body(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
     const ot_handle *node, int32_t x, int32_t y);
 
 #define OT_BUFFER_TEXT_BYTES_MAX UINT32_C(65536)
@@ -1771,6 +2117,7 @@ ot_status ot_buffer_draw_scene_text(ot_context *, const ot_handle *target, const
 #define OT_BUFFER_DRAW_HAS_BACKGROUND UINT32_C(1)
 #define OT_BUFFER_DRAW_HAS_SOURCE_WIDTH UINT32_C(2)
 #define OT_BUFFER_DRAW_HAS_SOURCE_HEIGHT UINT32_C(4)
+#define OT_BUFFER_DRAW_FIT_ELLIPSIS UINT32_C(16)
 
 #define OT_BUFFER_STACK_DEPTH_MAX UINT32_C(256)
 #define OT_BUFFER_STACK_GET_OPACITY UINT32_C(0)
@@ -1785,10 +2132,16 @@ ot_status ot_buffer_draw_scene_text(ot_context *, const ot_handle *target, const
  * struct_size is sizeof(the complete record), not sizeof(this header).
  * CLEAR/FILL/TEXT/BOX/COMPOSE use their named records below; CELL, CELL_BLEND,
  * and CHAR share ot_buffer_draw_cell; RESPECT_ALPHA uses ot_buffer_draw_alpha.
- * flags is zero except for TEXT (HAS_BACKGROUND) and COMPOSE
+ * flags is zero except for TEXT (HAS_BACKGROUND, FIT_ELLIPSIS) and COMPOSE
  * (HAS_SOURCE_WIDTH and HAS_SOURCE_HEIGHT). Without HAS_BACKGROUND, text
- * uses the background at each glyph or tab start. Omitted source extents use
- * the remaining source dimensions; an explicit zero extent draws nothing.
+ * uses the background at each glyph or tab start. A nonzero TEXT max_width
+ * stops the text before the first glyph that would end more than max_width
+ * cells right of x; a tab clips cell by cell. FIT_ELLIPSIS needs max_width
+ * and applies only to text wider than max_width: it keeps the glyphs that
+ * leave room for U+2026 and draws U+2026 right after them. A TEXT record of
+ * offsetof(ot_buffer_draw_text_record, max_width) bytes has no limit.
+ * Omitted source extents use the remaining source dimensions; an explicit
+ * zero extent draws nothing.
  * Positions are signed cells. FILL and TEXT draw only their cells inside the
  * target; TEXT skips a wide glyph that starts left of column 0. CELL, CELL_BLEND,
  * and CHAR at a position outside the target draw nothing.
@@ -1821,6 +2174,7 @@ typedef struct ot_buffer_draw_text_record {
     uint32_t attributes;
     uint16_t foreground[4];
     uint16_t background[4];
+    uint32_t max_width;
 } ot_buffer_draw_text_record;
 
 typedef struct ot_buffer_draw_cell {
@@ -1942,9 +2296,20 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
 #define OT_TERMINAL_MOUSE UINT32_C(2)
 #define OT_TERMINAL_MOUSE_MOVEMENT UINT32_C(4)
 #define OT_TERMINAL_CLEAR_ON_CLOSE UINT32_C(8)
+#define OT_TERMINAL_REPLY_SENTINEL UINT32_C(16)
+#define OT_TERMINAL_SYNC_ALWAYS UINT32_C(32)
+#define OT_TERMINAL_SYNC_NEVER UINT32_C(64)
+#define OT_TERMINAL_HOST_MULTIPLEXER UINT32_C(128)
 
-/* flags is a combination of the four OT_TERMINAL_* option bits above. Other bits
- * must be zero. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
+/* flags is a combination of the eight OT_TERMINAL_* option bits above. Other bits
+ * must be zero. REPLY_SENTINEL ends the startup query packet with DA1 (CSI c),
+ * also inside tmux, and sends no other DA1; the host waits for its reply instead
+ * of a timer. A DA1 reply then also ends the startup cursor-report probes.
+ * Frames are wrapped in synchronized output (DEC mode 2026) unless the terminal
+ * is remote and, once its replies passed the 2026 query (a width-probe report
+ * or DA1), either did not report the mode or HOST_MULTIPLEXER is set: the host
+ * runs inside tmux, screen or Zellij between the app and the link.
+ * SYNC_ALWAYS or SYNC_NEVER (not both) forces the wrapper on or off. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
  * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
  * clears only a surface that setup or resume claimed: a close before their mode
  * packet leaves visible shell output in place. */
@@ -1965,10 +2330,11 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_CURSOR UINT32_C(8)
 #define OT_CONTROL_RESET_BACKGROUND UINT32_C(9)
 #define OT_CONTROL_PALETTE_QUERY UINT32_C(10)
+#define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
- * and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, and PALETTE_QUERY accept payload bytes.
- * reserved must be zero. */
+ * 0/1 for QUERY_PIXEL_RESOLUTION (1 appends the DA1 sentinel), and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
+ * PROGRAM_STATUS accept payload bytes. reserved must be zero. */
 typedef struct ot_session_control_options {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -2000,6 +2366,41 @@ typedef struct ot_session_cursor_update {
     uint16_t color[4];
 } ot_session_cursor_update;
 
+#define OT_PROGRAM_STATE_IDLE UINT32_C(1)
+#define OT_PROGRAM_STATE_WORKING UINT32_C(2)
+#define OT_PROGRAM_STATE_DONE UINT32_C(3)
+#define OT_PROGRAM_STATE_BLOCKED UINT32_C(4)
+#define OT_PROGRAM_STATE_ERROR UINT32_C(5)
+#define OT_PROGRAM_STATE_CLEAR UINT32_C(6)
+
+#define OT_PROGRAM_KIND_PERMISSION UINT32_C(1)
+#define OT_PROGRAM_KIND_QUESTION UINT32_C(2)
+#define OT_PROGRAM_KIND_AUTH UINT32_C(3)
+
+#define OT_PROGRAM_STATUS_PROGRESS UINT32_C(1)
+
+/* PROGRAM_STATUS payload is one copied ot_session_program_status, with native
+ * byte order and no alignment requirement, followed by exactly id_len, app_len,
+ * title_len, and message_len bytes in that order. It writes one OSC 7501
+ * Program Status Protocol report. A zero length omits that key; an empty id
+ * addresses the root record. kind is zero or an OT_PROGRAM_KIND_* value and
+ * requires BLOCKED. fields selects progress, 0..100, which requires WORKING or
+ * BLOCKED; unselected progress must be zero. CLEAR accepts only an id.
+ * id is at most 8 '/'-separated segments of 1..32 [A-Za-z0-9_.+-] bytes and 128
+ * bytes in total. app is at most 32 [A-Za-z0-9_.+-] bytes. title (at most 192
+ * bytes) and message (at most 2048 bytes) are UTF-8 without C0, DEL, or C1
+ * controls; output encodes them as base64. Output is never multiplexer-wrapped. */
+typedef struct ot_session_program_status {
+    uint32_t state;
+    uint32_t kind;
+    uint32_t fields;
+    uint32_t progress;
+    uint32_t id_len;
+    uint32_t app_len;
+    uint32_t title_len;
+    uint32_t message_len;
+} ot_session_program_status;
+
 #define OT_CAP_KITTY_KEYBOARD UINT32_C(1)
 #define OT_CAP_KITTY_GRAPHICS UINT32_C(2)
 #define OT_CAP_RGB UINT32_C(4)
@@ -2017,6 +2418,7 @@ typedef struct ot_session_cursor_update {
 #define OT_CAP_NOTIFICATIONS UINT32_C(16384)
 #define OT_CAP_EXPLICIT_CURSOR_POSITIONING UINT32_C(32768)
 #define OT_CAP_REMOTE UINT32_C(65536)
+#define OT_CAP_PROGRAM_STATUS UINT32_C(131072)
 
 /* Initialize struct_size and abi_version. All other fields are copied output.
  * width_method is 0=wcwidth, 1=unicode, 2=no_zwj, 3=unicode_wide.
@@ -2060,6 +2462,10 @@ typedef struct ot_session_capabilities {
 #define OT_PUMP_WAIT_UNTIL UINT32_C(3)
 #define OT_PUMP_CLOSED UINT32_C(4)
 
+/* ot_session_post_stdout states. */
+#define OT_STDOUT_IDLE UINT32_C(0)
+#define OT_STDOUT_IN_FLIGHT UINT32_C(1)
+
 /* Initialize struct_size and abi_version. status, reserved, and deadline_ns are
  * output-only. deadline_ns is nonzero only for OT_PUMP_WAIT_UNTIL. No memory is
  * borrowed. A rejected call leaves the entire output record unchanged. */
@@ -2071,8 +2477,174 @@ typedef struct ot_session_pump_result {
     uint64_t deadline_ns;
 } ot_session_pump_result;
 
+#define OT_INPUT_KEY UINT32_C(1)
+#define OT_INPUT_MOUSE UINT32_C(2)
+#define OT_INPUT_PASTE UINT32_C(3)
+#define OT_INPUT_FOCUS UINT32_C(4)
+#define OT_INPUT_REPLY UINT32_C(5)
+
+#define OT_INPUT_KEY_PRESS UINT32_C(1)
+#define OT_INPUT_KEY_REPEAT UINT32_C(2)
+#define OT_INPUT_KEY_RELEASE UINT32_C(3)
+#define OT_INPUT_MOUSE_DOWN UINT32_C(1)
+#define OT_INPUT_MOUSE_UP UINT32_C(2)
+#define OT_INPUT_MOUSE_MOVE UINT32_C(3)
+#define OT_INPUT_MOUSE_DRAG UINT32_C(4)
+#define OT_INPUT_MOUSE_SCROLL UINT32_C(5)
+#define OT_INPUT_MOUSE_BUTTON_NONE UINT32_C(255)
+#define OT_INPUT_FOCUS_OUT UINT32_C(0)
+#define OT_INPUT_FOCUS_IN UINT32_C(1)
+
+/* Modifier bits use Kitty's layout: the wire modifier parameter minus one. Mouse
+ * events report only Shift, Alt, and Ctrl. */
+#define OT_INPUT_MOD_SHIFT UINT32_C(1)
+#define OT_INPUT_MOD_ALT UINT32_C(2)
+#define OT_INPUT_MOD_CTRL UINT32_C(4)
+#define OT_INPUT_MOD_SUPER UINT32_C(8)
+#define OT_INPUT_MOD_HYPER UINT32_C(16)
+#define OT_INPUT_MOD_META UINT32_C(32)
+#define OT_INPUT_MOD_CAPS_LOCK UINT32_C(64)
+#define OT_INPUT_MOD_NUM_LOCK UINT32_C(128)
+
+#define OT_INPUT_KEY_KITTY UINT32_C(1)
+#define OT_INPUT_KEY_TEXT_TRUNCATED UINT32_C(2)
+#define OT_INPUT_PASTE_START UINT32_C(1)
+#define OT_INPUT_PASTE_END UINT32_C(2)
+#define OT_INPUT_REPLY_FRAGMENT UINT32_C(1)
+#define OT_INPUT_REPLY_CURSOR_POSITION UINT32_C(2)
+
+#define OT_INPUT_REPLY_CSI UINT32_C(1)
+#define OT_INPUT_REPLY_SS3 UINT32_C(2)
+#define OT_INPUT_REPLY_OSC UINT32_C(3)
+#define OT_INPUT_REPLY_DCS UINT32_C(4)
+#define OT_INPUT_REPLY_APC UINT32_C(5)
+
+/* Key codes are Unicode scalars; functional keys use the Kitty keyboard protocol
+ * assignments. Escape, Enter, Tab, and Backspace are 27, 13, 9, and 127. A key
+ * typed from the private-use area shares the Kitty range, as in every Kitty
+ * protocol terminal. Code 0 is a text-only key (input method output). */
+#define OT_INPUT_KEY_ESCAPE UINT32_C(27)
+#define OT_INPUT_KEY_ENTER UINT32_C(13)
+#define OT_INPUT_KEY_TAB UINT32_C(9)
+#define OT_INPUT_KEY_BACKSPACE UINT32_C(127)
+#define OT_INPUT_KEY_INSERT UINT32_C(57348)
+#define OT_INPUT_KEY_DELETE UINT32_C(57349)
+#define OT_INPUT_KEY_LEFT UINT32_C(57350)
+#define OT_INPUT_KEY_RIGHT UINT32_C(57351)
+#define OT_INPUT_KEY_UP UINT32_C(57352)
+#define OT_INPUT_KEY_DOWN UINT32_C(57353)
+#define OT_INPUT_KEY_PAGE_UP UINT32_C(57354)
+#define OT_INPUT_KEY_PAGE_DOWN UINT32_C(57355)
+#define OT_INPUT_KEY_HOME UINT32_C(57356)
+#define OT_INPUT_KEY_END UINT32_C(57357)
+#define OT_INPUT_KEY_CAPS_LOCK UINT32_C(57358)
+#define OT_INPUT_KEY_SCROLL_LOCK UINT32_C(57359)
+#define OT_INPUT_KEY_NUM_LOCK UINT32_C(57360)
+#define OT_INPUT_KEY_PRINT_SCREEN UINT32_C(57361)
+#define OT_INPUT_KEY_PAUSE UINT32_C(57362)
+#define OT_INPUT_KEY_MENU UINT32_C(57363)
+#define OT_INPUT_KEY_F1 UINT32_C(57364) /* F(n) is 57363 + n, n in 1..35 */
+#define OT_INPUT_KEY_F35 UINT32_C(57398)
+#define OT_INPUT_KEY_KP_0 UINT32_C(57399) /* KP(n) is 57399 + n, n in 0..9 */
+#define OT_INPUT_KEY_KP_9 UINT32_C(57408)
+#define OT_INPUT_KEY_KP_DECIMAL UINT32_C(57409)
+#define OT_INPUT_KEY_KP_DIVIDE UINT32_C(57410)
+#define OT_INPUT_KEY_KP_MULTIPLY UINT32_C(57411)
+#define OT_INPUT_KEY_KP_SUBTRACT UINT32_C(57412)
+#define OT_INPUT_KEY_KP_ADD UINT32_C(57413)
+#define OT_INPUT_KEY_KP_ENTER UINT32_C(57414)
+#define OT_INPUT_KEY_KP_EQUAL UINT32_C(57415)
+#define OT_INPUT_KEY_KP_SEPARATOR UINT32_C(57416)
+#define OT_INPUT_KEY_KP_LEFT UINT32_C(57417)
+#define OT_INPUT_KEY_KP_RIGHT UINT32_C(57418)
+#define OT_INPUT_KEY_KP_UP UINT32_C(57419)
+#define OT_INPUT_KEY_KP_DOWN UINT32_C(57420)
+#define OT_INPUT_KEY_KP_PAGE_UP UINT32_C(57421)
+#define OT_INPUT_KEY_KP_PAGE_DOWN UINT32_C(57422)
+#define OT_INPUT_KEY_KP_HOME UINT32_C(57423)
+#define OT_INPUT_KEY_KP_END UINT32_C(57424)
+#define OT_INPUT_KEY_KP_INSERT UINT32_C(57425)
+#define OT_INPUT_KEY_KP_DELETE UINT32_C(57426)
+#define OT_INPUT_KEY_KP_BEGIN UINT32_C(57427)
+#define OT_INPUT_KEY_MEDIA_PLAY UINT32_C(57428)
+#define OT_INPUT_KEY_MEDIA_PAUSE UINT32_C(57429)
+#define OT_INPUT_KEY_MEDIA_PLAY_PAUSE UINT32_C(57430)
+#define OT_INPUT_KEY_MEDIA_REVERSE UINT32_C(57431)
+#define OT_INPUT_KEY_MEDIA_STOP UINT32_C(57432)
+#define OT_INPUT_KEY_MEDIA_FAST_FORWARD UINT32_C(57433)
+#define OT_INPUT_KEY_MEDIA_REWIND UINT32_C(57434)
+#define OT_INPUT_KEY_MEDIA_TRACK_NEXT UINT32_C(57435)
+#define OT_INPUT_KEY_MEDIA_TRACK_PREVIOUS UINT32_C(57436)
+#define OT_INPUT_KEY_MEDIA_RECORD UINT32_C(57437)
+#define OT_INPUT_KEY_LOWER_VOLUME UINT32_C(57438)
+#define OT_INPUT_KEY_RAISE_VOLUME UINT32_C(57439)
+#define OT_INPUT_KEY_MUTE_VOLUME UINT32_C(57440)
+#define OT_INPUT_KEY_LEFT_SHIFT UINT32_C(57441)
+#define OT_INPUT_KEY_LEFT_CONTROL UINT32_C(57442)
+#define OT_INPUT_KEY_LEFT_ALT UINT32_C(57443)
+#define OT_INPUT_KEY_LEFT_SUPER UINT32_C(57444)
+#define OT_INPUT_KEY_LEFT_HYPER UINT32_C(57445)
+#define OT_INPUT_KEY_LEFT_META UINT32_C(57446)
+#define OT_INPUT_KEY_RIGHT_SHIFT UINT32_C(57447)
+#define OT_INPUT_KEY_RIGHT_CONTROL UINT32_C(57448)
+#define OT_INPUT_KEY_RIGHT_ALT UINT32_C(57449)
+#define OT_INPUT_KEY_RIGHT_SUPER UINT32_C(57450)
+#define OT_INPUT_KEY_RIGHT_HYPER UINT32_C(57451)
+#define OT_INPUT_KEY_RIGHT_META UINT32_C(57452)
+#define OT_INPUT_KEY_ISO_LEVEL3_SHIFT UINT32_C(57453)
+#define OT_INPUT_KEY_ISO_LEVEL5_SHIFT UINT32_C(57454)
+
+#define OT_INPUT_EXPECT_REPLIES UINT32_C(1)
+#define OT_INPUT_EXPECT_KITTY_KEYBOARD UINT32_C(2)
+#define OT_INPUT_EXPECT_CURSOR_POSITION UINT32_C(4)
+#define OT_INPUT_EXPECT_SENTINEL UINT32_C(8)
+
+#define OT_INPUT_EVENTS_MIN UINT32_C(4)
+#define OT_INPUT_PAYLOAD_BYTES_MIN UINT32_C(4384)
+#define OT_INPUT_TIMEOUT_NS UINT64_C(20000000)
+
+/* One parsed input event. raw and text are byte spans into the payload buffer of
+ * the same call. kind selects the meaning of action, code, x, and y:
+ * KEY: action is OT_INPUT_KEY_PRESS/REPEAT/RELEASE, code a key code, base_code a
+ * nonzero base-layout scalar when the terminal reports one, text what an editor
+ * inserts. MOUSE: action is OT_INPUT_MOUSE_*, code a button (0..2, 8+, or NONE)
+ * or a scroll direction (0 up, 1 down, 2 left, 3 right), x and y a zero-based
+ * cell. PASTE: text is one chunk of pasted bytes and raw is empty. FOCUS: action
+ * is OT_INPUT_FOCUS_IN/OUT. REPLY: code is an OT_INPUT_REPLY_* protocol and raw
+ * the wire bytes. flags hold the kind's OT_INPUT_* flags. */
+typedef struct ot_input_event {
+    uint8_t kind;
+    uint8_t action;
+    uint8_t modifiers;
+    uint8_t flags;
+    uint32_t code;
+    uint32_t base_code;
+    uint16_t x;
+    uint16_t y;
+    uint32_t raw_offset;
+    uint32_t raw_len;
+    uint32_t text_offset;
+    uint32_t text_len;
+} ot_input_event;
+
+/* Initialize struct_size and abi_version. The remaining fields are output-only.
+ * consumed is the number of input bytes parsed; call again with the rest when it
+ * is less than byte_count. A call can consume nothing after it reported events.
+ * deadline_ns is nonzero when a partial unit waits for the timeout: call feed
+ * with zero bytes at or after it. discarded is a saturating lifetime count of
+ * overlong units dropped. */
+typedef struct ot_input_drain {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t consumed;
+    uint32_t count;
+    uint32_t payload_len;
+    uint32_t discarded;
+    uint64_t deadline_ns;
+} ot_input_drain;
+
 /* Zero-initialize, then set struct_size to sizeof(ot_context_options) and
- * abi_version to OT_CONTEXT_ABI_VERSION. Version 1 requires the exact size,
+ * abi_version to OT_CONTEXT_ABI_VERSION. Version 2 requires the exact size,
  * zero flags, zero reserved fields, and positive resource limits.
  * object_capacity is the initial count of native object slots, not bytes. A full
  * table doubles, up to 4194304 slots or object_capacity, whichever is larger;
@@ -2150,7 +2722,7 @@ ot_status ot_context_destroy(ot_context *context);
 ot_status ot_context_get_last_error(ot_context *context, ot_context_error *out_error);
 
 /* Copy up to capacity records in arrival order without allocation or callbacks.
- * Version 1 C contexts hold at most 64 records and drop newest on overflow.
+ * Version 2 C contexts hold at most 64 records and drop newest on overflow.
  * records may be NULL only when capacity is zero. A zero-capacity drain reports
  * queue pressure without removing records. out_drain must have the exact size
  * and version. The caller owns both outputs for the call. Outputs and queued
@@ -2198,8 +2770,8 @@ ot_status ot_buffer_resize(
  * cells inside the target and skips a glyph that starts left of column 0.
  * Text/title byte counts are bounded by OT_BUFFER_TEXT_BYTES_MAX; invalid UTF-8
  * returns OT_INVALID_ARGUMENT. C0/C1/DEL controls occupy no cells. A tab (two
- * cells) and a grapheme over the native 128-byte limit draw as spaces of their
- * width. CELL, CELL_BLEND, and CHAR write a space for a control character.
+ * cells) and a grapheme over the native 128-byte limit or 16 cells draw as
+ * spaces of their width. CELL, CELL_BLEND, and CHAR write a space for a control character.
  * Image-bearing targets return OT_UNSUPPORTED_RESOURCE.
  * Raw resource IDs are rejected. Rejection preserves cells except that any Box
  * title drawing failure may partially modify the destination; callers must
@@ -2311,7 +2883,7 @@ ot_status ot_buffer_color_matrix(ot_context *, const ot_handle *, const ot_scene
 #define OT_SCENE_RECORD_COLOR_MATRIX UINT32_C(7)
 #define OT_SCENE_RECORD_TEXT_VIEW UINT32_C(8)
 #define OT_SCENE_RECORD_EDITOR_VIEW UINT32_C(9)
-#define OT_SCENE_RECORD_SCENE_TEXT UINT32_C(10)
+#define OT_SCENE_RECORD_SCENE_BODY UINT32_C(10)
 #define OT_SCENE_RECORD_IMAGE UINT32_C(11)
 #define OT_SCENE_RECORD_UNICODE UINT32_C(12)
 #define OT_SCENE_RECORD_GRAYSCALE_FOREGROUND UINT32_C(1)
@@ -2406,8 +2978,8 @@ typedef struct ot_scene_record_color_matrix {
     uint32_t mask_count;
 } ot_scene_record_color_matrix;
 
-/* TEXT_VIEW, EDITOR_VIEW, and SCENE_TEXT draw a text-buffer view, an editor
- * view, or a scene text node, as for their ot_buffer_draw_* operations. */
+/* TEXT_VIEW, EDITOR_VIEW, and SCENE_BODY draw a text-buffer view, an editor
+ * view, or a scene node's body, as for their ot_buffer_draw_* operations. */
 typedef struct ot_scene_record_view {
     ot_scene_record_header header;
     ot_handle source;
@@ -2465,7 +3037,8 @@ ot_status ot_session_attach_renderer_with_env(
 /* Submit at most one frame. force is 0 or 1. OT_RENDER_PENDING also means that
  * an earlier accepted frame is still pending; no second frame was accepted.
  * SKIPPED and FAILED accept no output and require an explicit new submission.
- * Only output completion publishes frame_count and the pending hit grid.
+ * Only output completion publishes frame_count. A frame submitted here has no
+ * scene hits: after it, ot_scene_hit_test returns 0 until a scene frame presents.
  * A live scene preparation or painted draft returns OT_FRAME_BUSY; submit a
  * painted draft with ot_scene_frame_commit instead.
  * On an error return, out_result remains unchanged. */
@@ -2508,8 +3081,9 @@ ot_status ot_scene_frame_draw_buffer(ot_context *context, const ot_handle *sessi
  * or an idle frame. They emit no terminal output. enabled is 0 or 1; corner is
  * 0 top-left, 1 top-right, 2 bottom-left, or 3 bottom-right. Times must be finite
  * and nonnegative. Memory byte counts use the renderer's existing u32 range.
- * Hit-grid dumping retains the renderer's best-effort file I/O semantics and
- * uses Context I/O, writing hitgrid_<timestamp>.txt in the working directory. */
+ * Hit-grid dumping writes, per cell, the last digit of the presented hit token
+ * (or '.') with best-effort file I/O through Context I/O, to
+ * hitgrid_<timestamp>.txt in the working directory. */
 ot_status ot_session_set_debug_overlay(ot_context *, const ot_handle *session, uint32_t enabled, uint32_t corner);
 ot_status ot_session_update_stats(ot_context *, const ot_handle *session, double overall_ms, uint32_t fps, double callback_ms);
 ot_status ot_session_update_memory_stats(ot_context *, const ot_handle *session, uint32_t heap_used, uint32_t heap_total, uint32_t array_buffers);
@@ -2600,6 +3174,8 @@ ot_status ot_session_get_terminal_state(ot_context *context, const ot_handle *se
  * contain complete supported 7-bit CSI/DCS/OSC/APC replies, not stream fragments,
  * at most 4096 bytes.
  * Titles are UTF-8 without C0, DEL, or C1 controls, at most 4091 bytes.
+ * Program status reports do not depend on detected support; terminals ignore
+ * OSC 7501 they do not implement. OT_CAP_PROGRAM_STATUS reports a query reply.
  * All output uses ordinary capacity and stays behind earlier raw/frame bytes,
  * including copied tickets. Setup enables detected features after screen selection.
  * Admission failure changes neither terminal state nor accepted output.
@@ -2664,6 +3240,58 @@ ot_status ot_session_pump(
     uint32_t work_budget,
     ot_session_pump_result *out_result);
 
+/* Parse terminal input into events written to caller-owned records and payload.
+ * bytes may be NULL only when byte_count is zero; zero bytes only resolves the
+ * timeout. now_ns is a host monotonic clock in nanoseconds that must not go
+ * backwards across feeds; it is independent of the pump clock. capacity must be
+ * at least OT_INPUT_EVENTS_MIN and payload_capacity at least
+ * OT_INPUT_PAYLOAD_BYTES_MIN; the call consumes input until either runs low and
+ * reports consumed. A bracketed paste arrives as one or more PASTE records from
+ * START to END. Records and payload are borrowed for the call and never retained.
+ * bytes, records, payload, and out_drain must not overlap.
+ * Accepted in any open session state; closing, closed, failed, and cancelled
+ * sessions reject. A rejected call leaves out_drain, the records, and parser
+ * state unchanged. No allocation, no I/O. */
+ot_status ot_session_input_feed(
+    ot_context *context,
+    const ot_handle *session,
+    const uint8_t *bytes,
+    uint32_t byte_count,
+    uint64_t now_ns,
+    ot_input_event *records,
+    uint32_t capacity,
+    uint8_t *payload,
+    uint32_t payload_capacity,
+    ot_input_drain *out_drain);
+
+/* flags is a combination of OT_INPUT_EXPECT_* bits; other bits must be zero.
+ * Set REPLIES while any query is outstanding, including the capability queries
+ * that setup publishes. It keeps a partial CSI reply waiting past the timeout.
+ * CURSOR_POSITION, which implies REPLIES, marks a cursor position request: it
+ * makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply instead of a
+ * modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting and makes
+ * CSI R and CSI 1 ; N R replies, since the Kitty protocol sends F3 as CSI 13 ~;
+ * a session with a renderer applies its terminal's negotiated state instead.
+ * SENTINEL, which implies REPLIES, means that a DA1 reply (CSI ? ... c) ends the
+ * outstanding queries; clear it when that reply arrives. While it is set, a
+ * partial reply waits without a deadline: an OSC, DCS, or APC string that begins
+ * like one (OSC and a digit, DCS and > or a digit, APC and G), a bare CSI, OSC,
+ * DCS, or APC introducer, and a CSI of digits. A held string continues only
+ * while it matches a reply prefix, and a CSI that timed out completes only as a
+ * reply; another byte ends either one and is typed. A lone Escape still times
+ * out, and a reply that follows it is not typed; if what follows that Escape is
+ * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
+ * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
+ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
+
+#define OT_INPUT_RESET_KEEP_REPLY UINT32_C(1)
+
+/* Drop any partial unit and mouse button state. Expectations are kept. flags is
+ * 0 or OT_INPUT_RESET_KEEP_REPLY. Call with KEEP_REPLY after feeding the input
+ * drained on resume: then a partial CSI unit that may begin a reply survives
+ * while REPLIES is set, and waits for its rest without a deadline. */
+ot_status ot_session_input_reset(ot_context *context, const ot_handle *session, uint32_t flags);
+
 /* Maximum ordinary atomic write in an empty queue, excluding control reservations
  * and bounded by both chunk storage and span slots, at most UINT32_MAX bytes.
  * This is not current free capacity; pending output can still reject a smaller
@@ -2726,6 +3354,36 @@ ot_status ot_session_drain_stdout(
     uint32_t max_bytes,
     uint32_t *out_written);
 
+/* Write process stdout from a native thread that the Session owns, so this call
+ * never waits in write(2) on a slow terminal.
+ * wait=0: if the running copy has ended, complete its bytes as complete_output
+ *   would; then, when max_bytes is positive and output is queued, copy the next
+ *   prefix (at most max_bytes and 64 KiB) to the thread and start it. max_bytes
+ *   zero only collects.
+ * wait=1 (process exit only): never starts a copy. Waits for the running copy
+ *   without a limit and completes it. A copy the thread has not picked up within
+ *   100 ms is taken back unwritten, stays queued for drain_stdout, and the thread
+ *   is stopped. With no copy running, or no thread: OT_OK and OT_STDOUT_IDLE.
+ * out_written is the bytes this call completed; out_state is OT_STDOUT_IN_FLIGHT
+ * when a copy is still running on return, else OT_STDOUT_IDLE. A failed write
+ * returns OT_OUTPUT_FAILED and stops the transport without replay; outputs are
+ * then unchanged. wait above 1 or a null output: OT_INVALID_ARGUMENT. A pending
+ * read_output ticket: OT_OUTPUT_BUSY. Before consuming output, wait=0 returns
+ * OT_UNSUPPORTED_RESOURCE when stdout is not a terminal, on platforms without the
+ * writer (it runs on Linux and macOS), or when the thread cannot start: use
+ * drain_stdout.
+ * While a copy is posted, read_output, drain_output and drain_stdout return
+ * OT_OUTPUT_BUSY and complete_output returns OT_STALE_OUTPUT for any ticket.
+ * Cancel and destroy never wait for a running copy. The thread calls nothing
+ * back and keeps the library loaded until process exit. */
+ot_status ot_session_post_stdout(
+    ot_context *context,
+    const ot_handle *session,
+    uint32_t max_bytes,
+    uint32_t wait,
+    uint32_t *out_state,
+    uint32_t *out_written);
+
 /* success must be 0 or 1. Failure stops the transport without replaying bytes.
  * Wrong-session, stale, altered, and repeated tickets do not consume output. */
 ot_status ot_session_complete_output(
@@ -2739,6 +3397,11 @@ ot_status ot_session_complete_output(
  * cancel explicitly discards pending output after transport disconnection.
  * Neither operation waits or sleeps. */
 ot_status ot_session_close(ot_context *context, const ot_handle *session);
+/* A close past its deadline: begin closing if needed, then discard the output
+ * queued before the close, except the copy an outstanding ticket or stdout
+ * copy holds. Only that copy and terminal restoration remain; once restoration
+ * output is queued, this discards nothing. Continue pumping as after close. */
+ot_status ot_session_drop_output(ot_context *context, const ot_handle *session);
 /* Process-exit fallback: stop admission and visit one restoration work unit
  * without cursor-settle waits. Returns OT_PUMP_AGAIN, OT_PUMP_OUTPUT_PENDING, or
  * OT_PUMP_CLOSED. The host must still deliver and complete output in order.

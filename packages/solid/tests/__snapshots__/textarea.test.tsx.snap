@@ -89,8 +89,8 @@ exports[`Textarea Layout Tests Prompt-like Layout should render textarea with lo
 "┌────────────────────────────────────────────────┐
 │                                                │
 │   This is a very long prompt that will wrap    │
-│ > across multiple lines in the textarea. It    │
-│   should maintain proper layout with the       │
+│   across multiple lines in the textarea. It    │
+│ > should maintain proper layout with the       │
 │   indicator on the left.                       │
 │                                                │
 │openai gpt-4                                    │
@@ -206,8 +206,8 @@ exports[`Textarea Layout Tests Text Component Comparison should render text with
 "┌────────────────────────────────────────────────┐
 │                                                │
 │   This is a very long prompt that will wrap    │
-│ > across multiple lines in the text component. │
-│   It should maintain proper layout with the    │
+│   across multiple lines in the text component. │
+│ > It should maintain proper layout with the    │
 │   indicator on the left.                       │
 │                                                │
 │openai gpt-4                                    │
@@ -277,8 +277,8 @@ exports[`Textarea Layout Tests Text Component Comparison should render text in s
 exports[`Textarea Layout Tests Text Component Comparison should render full prompt layout with text component 1`] = `
 "┌────────────────────────────────────────────────────────────────────┐
 │                                                                    │
-│ > Explain how async/await works in JavaScript and provide some     │
-│   examples                                                         │
+│   Explain how async/await works in JavaScript and provide some     │
+│ > examples                                                         │
 │                                                                    │
 │openai gpt-4-turbo                                   ctrl+p commands│
 └────────────────────────────────────────────────────────────────────┘
@@ -421,8 +421,8 @@ exports[`Textarea Layout Tests Edge Cases and Styling should render textarea wit
 exports[`Textarea Layout Tests Edge Cases and Styling should render full prompt-like layout with all components 1`] = `
 "┌────────────────────────────────────────────────────────────────────┐
 │                                                                    │
-│ > Explain how async/await works in JavaScript and provide some     │
-│   examples                                                         │
+│   Explain how async/await works in JavaScript and provide some     │
+│ > examples                                                         │
 │                                                                    │
 │openai gpt-4-turbo                                   ctrl+p commands│
 └────────────────────────────────────────────────────────────────────┘

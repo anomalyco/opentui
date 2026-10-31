@@ -119,13 +119,14 @@ These are native creation entry points. Each C call takes the destination Contex
 A _document_ is a text buffer or an edit buffer.
 Bindings between resources have different retention and destruction rules:
 
-| Binding                       | Retention and destruction                                                                                                                                              | Sharing and layout                                                                  |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Document → text/editor views  | Document destruction destroys every dependent view. View destruction leaves the document alive.                                                                        | One document can supply separate views in several Sessions within its Context.      |
-| Node → text/editor view       | The binding does not transfer ownership. Destroying either side removes the binding. View destruction invalidates the node's measurement and preparation state.        | One view binds to at most one node. The node supplies the view's layout dimensions. |
-| Node → image/offscreen buffer | The node keeps the storage alive after you destroy the public handle. Replacement retains the new resource before releasing the old one. Node destruction releases it. | Compatible nodes can share the resource across Sessions within its Context.         |
-| Document → syntax style       | The document does not own the public style handle. Style destruction clears the document's binding.                                                                    | Documents in one Context can share a style. Style IDs belong to that style.         |
-| Box → viewport node           | The Box copies the handle without retaining the node. Viewport destruction makes later preparation fail until you replace or disable the binding.                      | The viewport must be a root or Box node in the same scene.                          |
+| Binding                       | Retention and destruction                                                                                                                                              | Sharing and layout                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Document → text/editor views  | Document destruction destroys every dependent view. View destruction leaves the document alive.                                                                        | One document can supply separate views in several Sessions within its Context.            |
+| Node → text/editor view       | The binding does not transfer ownership. Destroying either side removes the binding. View destruction invalidates the node's measurement and preparation state.        | One view binds to at most one node. The node supplies the view's layout dimensions.       |
+| Node → image/offscreen buffer | The node keeps the storage alive after you destroy the public handle. Replacement retains the new resource before releasing the old one. Node destruction releases it. | Compatible nodes can share the resource across Sessions within its Context.               |
+| Node → video player           | `ot_video_open` creates the player inside the `VIDEO` node and replaces any previous one. A zero-length path closes it. Node destruction closes it.                    | The player belongs to one node. Its frames are Context images that it refreshes in place. |
+| Document → syntax style       | The document does not own the public style handle. Style destruction clears the document's binding.                                                                    | Documents in one Context can share a style. Style IDs belong to that style.               |
+| Box → viewport node           | The Box copies the handle without retaining the node. Viewport destruction makes later preparation fail until you replace or disable the binding.                      | The viewport must be a root or Box node in the same scene.                                |
 
 Use separate views for placements with independent dimensions.
 Tree membership, resource ownership, and resource retention are separate relationships.
@@ -158,6 +159,7 @@ Text metadata distinguishes UTF-8 bytes from summed line widths, which exclude s
 Selected-text reads do not prepare virtual lines, follow the cursor, or change the viewport.
 Coordinate-based edit ranges can prepare the document's marker cache.
 View line queries can prepare wrapping. Editor info queries follow the cursor only when you request that behavior.
+Cursor changes, from edits or moves, do not lay out an editor. They make a scroll to the cursor due, and the next viewport, cursor, or line query, view call, or frame applies it. The viewport query can therefore lay out text and fail with `OT_OUT_OF_MEMORY`, but only while a scroll is due.
 
 One `ot_styled_text_chunk` record supplies scene text, shared replacements, replacement batches, and editor placeholders.
 The record can identify URL bytes. `ot_scene_set_styled_text` accepts those bytes through the same operation.
@@ -284,7 +286,7 @@ Its counts do not include Context memory.
 Call a C Context only from its creating operating-system thread, including for error queries and destruction.
 Separate Contexts can run on separate threads.
 Direct Zig Contexts permit ownership transfer only while idle and require serialized access.
-Clipboard worker threads allocate from the Context allocator, so a direct Zig Context with a clipboard service needs a thread-safe allocator.
+Clipboard and video decode worker threads allocate from the Context allocator, so a direct Zig Context with a clipboard service or a video node needs a thread-safe allocator.
 
 Core uses the same ownership model through its own TypeScript wrappers.
 [How Core uses native](/docs/native/core#resources-through-core) covers `ResourceContext`, resource factories, and scoped array access for Core extensions.

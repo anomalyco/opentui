@@ -1,9 +1,9 @@
 {
   "name": "@opentui/native",
-  "version": "0.5.17",
+  "version": "0.8.0",
   "private": true,
   "scripts": {
-    "prepare:zig": "sh scripts/prepare-zig-deps.sh",
+    "prepare:zig": "sh scripts/prepare-zig-deps.sh && bun scripts/build-ffmpeg.ts",
     "build": "bun run prepare:zig && zig build -Doptimize=ReleaseFast",
     "build:dev": "bun run prepare:zig && zig build -Doptimize=Debug",
     "test": "bun run prepare:zig && sh scripts/test.sh",

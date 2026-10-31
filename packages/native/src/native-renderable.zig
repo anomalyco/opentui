@@ -73,8 +73,9 @@ pub const NativeRenderable = struct {
     pub fn setMeasureTargetPreservingProvider(self: *NativeRenderable, target: MeasureTarget, preserve_provider: bool) native_yoga.Error!void {
         std.debug.assert((self.measure_dependents == null) == (self.measure_target == .none));
         try native_yoga.check(if (preserve_provider) native_yoga.nodeTeardownStatus(self.yoga_node) else switch (target) {
-            .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null),
-            else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure),
+            .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null, false),
+            // `measure` clamps to the height cap and otherwise ignores it.
+            else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure, true),
         });
         const invalidate = self.context_owned and (target != .none or self.measure_target != .none);
         if (self.measure_dependents) |head| {
@@ -117,7 +118,7 @@ pub const NativeRenderable = struct {
         var measured_width: f32 = @floatFromInt(@max(@as(u32, 1), result.width_cols_max));
         var measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
 
-        if (width_mode == @intFromEnum(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
+        if (width_mode == @backingInt(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
             measured_width = @min(effective_width, measured_width);
             measured_height = @min(effective_height, measured_height);
         }
@@ -141,16 +142,17 @@ pub const NodeStorage = struct {
     scene_node: *scene.Node,
     children: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
     paint_children: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
+    attention: std.ArrayListUnmanaged(*NativeRenderable) = .empty,
     reuse_web_defaults: bool = false,
 
     pub fn retainedBytes(self: *const NodeStorage) usize {
         return @sizeOf(NativeRenderable) + @sizeOf(scene.Node) + native_yoga.nodeStorageBytes(self.node.yoga_node) +
-            (self.children.capacity + self.paint_children.capacity) * @sizeOf(*NativeRenderable);
+            (self.children.capacity + self.paint_children.capacity + self.attention.capacity) * @sizeOf(*NativeRenderable);
     }
 };
 
 pub fn normalizeYogaMeasureWidthInput(value: f32, width_mode: u32) f32 {
-    if (width_mode == @intFromEnum(native_yoga.YogaMeasureMode.undefined) or std.math.isNan(value)) return 0;
+    if (width_mode == @backingInt(native_yoga.YogaMeasureMode.undefined) or std.math.isNan(value)) return 0;
     return value;
 }
 
@@ -167,6 +169,6 @@ fn floorToU32(value: f32) u32 {
 }
 
 fn isYogaNodeAbsolute(node: native_yoga.YGNodeRef) bool {
-    return native_yoga.yogaNodeStyleGetEnum(node, @intFromEnum(native_yoga.YogaEnumKind.position_type)) ==
-        @intFromEnum(native_yoga.YogaPositionType.absolute);
+    return native_yoga.yogaNodeStyleGetEnum(node, @backingInt(native_yoga.YogaEnumKind.position_type)) ==
+        @backingInt(native_yoga.YogaPositionType.absolute);
 }

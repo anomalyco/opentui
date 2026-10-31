@@ -428,6 +428,36 @@ test "notifications - OSC99 query response enables OSC99 protocol" {
     try testing.expectEqual(Terminal.NotificationProtocol.osc99, term.notification_protocol);
 }
 
+test "program status - only an OSC 7501 query reply enables the capability" {
+    for ([_]struct { []const u8, bool }{
+        .{ "\x1b]7501;?\x1b\\", true },
+        .{ "\x1b]7501;?\x07", true },
+        .{ "\x1b]7501; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\", true },
+        .{ "\x1b]7501;state=idle\x1b\\", false },
+        .{ "\x1b]7501;??\x1b\\", false },
+        .{ "\x1b]7501;\x1b\\", false },
+        .{ "\x1b]75010;?\x1b\\", false },
+        .{ "\x1b]99;?\x1b\\", false },
+    }) |case| {
+        var term = Terminal.init(.{});
+        term.processCapabilityResponse(case[0]);
+        try testing.expectEqual(case[1], term.caps.program_status);
+    }
+}
+
+test "queryTerminalSend - foot skips OSC capability queries" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "foot");
+    var term = Terminal.init(.{ .env_map = &env });
+    var writer = TestWriter.init(testing.allocator);
+    defer writer.deinit();
+    try term.queryTerminalSend(&writer);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.notificationQueries) == null);
+    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.programStatusQuery) == null);
+}
+
 test "notifications - OSC99 query response ignores mismatched identifier" {
     var term = Terminal.init(.{ .remote_mode = .remote });
 
@@ -656,6 +686,31 @@ test "processCapabilityResponse captures startup cursor report before home probe
     try testing.expect(!term.startup_cursor_query_pending);
     try testing.expect(term.caps.explicit_width);
     try testing.expect(term.caps.scaled_text);
+}
+
+test "a DA1 reply ends startup cursor reports in sentinel mode and reports Sixel only for a graphics query" {
+    // Rows: sentinel, multiplexer variable, replies (one capability response each), explicit width, Sixel.
+    const rows = .{
+        .{ false, "", .{ "\x1b[?62;4c", "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R\x1b[1;2R\x1b[1;3R\x1b[?62;4c", "", "", "" }, true, true },
+        .{ true, "", .{ "\x1b[7;11R", "\x1b[?62;4c", "\x1b[1;2R", "\x1b[1;3R" }, false, true },
+        .{ true, "TMUX", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+        .{ true, "STY", .{ "\x1b[7;11R", "\x1b[1;2R", "\x1b[1;3R", "\x1b[?62;4c" }, true, false },
+    };
+    inline for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (row[1].len != 0) try env.put(row[1], "fixture");
+        var term = Terminal.init(.{ .env_map = &env });
+        term.reply_sentinel = row[0];
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        inline for (row[2]) |reply| term.processCapabilityResponse(reply);
+        try testing.expectEqual(row[3], term.caps.explicit_width);
+        try testing.expectEqual(row[4], term.caps.sixel);
+    }
 }
 
 test "processCapabilityResponse only accepts exact ordered explicit width probe reports" {
@@ -940,6 +995,27 @@ test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal"
     }
 }
 
+test "environment overrides - Rex hyperlinks match exact TERM and XTVersion names" {
+    const cases = [_]struct { term: []const u8, reply: ?[]const u8 = null, hyperlinks: bool }{
+        .{ .term = "xterm-256color", .reply = "\x1bP>|rex 0.0.1793047680-g2db882\x1b\\", .hyperlinks = true },
+        .{ .term = "xterm-rex", .hyperlinks = true },
+        .{ .term = "ReX", .hyperlinks = true },
+        .{ .term = "xterm-rex-extra", .hyperlinks = false },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", case.term);
+
+        var term = Terminal.init(.{ .env_map = &env });
+        if (case.reply) |reply| {
+            term.processCapabilityResponse(reply);
+            term.checkEnvironmentOverrides();
+        }
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+    }
+}
+
 test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
     const enabled_values = [_][]const u8{ "1", "" };
     for (enabled_values) |value| {
@@ -1060,6 +1136,7 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) != null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.programStatusQuery) != null);
 
     // Should NOT contain tmux DCS wrapper
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
@@ -1097,6 +1174,32 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
     // tmux's graphics replies describe tmux, not the passthrough endpoint.
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) == null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) == null);
+}
+
+test "queryTerminalSend - sentinel mode moves its one DA1 to the end of the packet" {
+    for ([_]bool{ false, true }) |tmux| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        if (tmux) try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+        var clock = TestWriter.init(testing.allocator);
+        defer clock.deinit();
+        var sentinel = TestWriter.init(testing.allocator);
+        defer sentinel.deinit();
+        var clock_term = Terminal.init(.{ .env_map = &env });
+        try clock_term.queryTerminalSend(&clock);
+        var sentinel_term = Terminal.init(.{ .env_map = &env });
+        sentinel_term.reply_sentinel = true;
+        try sentinel_term.queryTerminalSend(&sentinel);
+
+        const da1 = ansi.ANSI.primaryDeviceAttrs;
+        try testing.expectEqual(@as(usize, @intFromBool(!tmux)), std.mem.count(u8, clock.getWritten(), da1));
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, sentinel.getWritten(), da1));
+        const moved = try std.mem.replaceOwned(u8, testing.allocator, clock.getWritten(), da1, "");
+        defer testing.allocator.free(moved);
+        const expected = try std.mem.concat(testing.allocator, u8, &.{ moved, da1 });
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, sentinel.getWritten());
+    }
 }
 
 test "queryTerminalSend - sends plain theme queries when TMUX is set" {
@@ -1581,7 +1684,7 @@ test "writeClipboard - handles base64 padding and encoding chunk boundaries" {
         try testing.expect(std.mem.endsWith(u8, writer.getWritten(), "\x1b\\"));
     }
 
-    const payload = [_]u8{'A'} ** (3 * 1024 + 1);
+    const payload: [3 * 1024 + 1]u8 = @splat('A');
     const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
     const expected = try testing.allocator.alloc(u8, encoded_len);
     defer testing.allocator.free(expected);
@@ -1634,7 +1737,7 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
     try env.put("STY", "12345.pts-0.hostname");
     var term = Terminal.init(.{ .env_map = &env });
 
-    const payload_one_chunk = [_]u8{'A'} ** 183;
+    const payload_one_chunk: [183]u8 = @splat('A');
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
     try term.writeClipboard(&writer, .clipboard, &payload_one_chunk);
@@ -1642,7 +1745,7 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
     try testing.expectEqual(try term.clipboardSequenceSize(payload_one_chunk.len), writer.getWritten().len);
 
     writer.reset();
-    const payload_two_chunks = [_]u8{'A'} ** 184;
+    const payload_two_chunks: [184]u8 = @splat('A');
     try term.writeClipboard(&writer, .clipboard, &payload_two_chunks);
     try testing.expectEqual(@as(usize, 2), countSubstring(writer.getWritten(), ansi.ANSI.screenDcsStart));
     try testing.expectEqual(try term.clipboardSequenceSize(payload_two_chunks.len), writer.getWritten().len);
@@ -1986,7 +2089,7 @@ test "restoreTerminalModes - respects mouse movement setting" {
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.enableAnyEventTracking) == null);
 }
 
-test "resetState - force-disables mouse when cleanup is pending and state drifted false" {
+test "resetInputModes - force-disables mouse when cleanup is pending and state drifted false" {
     var term = Terminal.init(.{});
     term.state.mouse = false;
     term.state.mouse_movement = false;
@@ -1995,7 +2098,7 @@ test "resetState - force-disables mouse when cleanup is pending and state drifte
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
 
-    try term.resetState(&writer);
+    try term.resetInputModes(&writer);
 
     const output = writer.getWritten();
     const idx_disable_any = std.mem.find(u8, output, ansi.ANSI.disableAnyEventTracking).?;
@@ -2008,13 +2111,13 @@ test "resetState - force-disables mouse when cleanup is pending and state drifte
     try testing.expect(!term.state.mouse);
 }
 
-test "resetState - skips mouse disable when mouse was never enabled" {
+test "resetInputModes - skips mouse disable when mouse was never enabled" {
     var term = Terminal.init(.{});
 
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
 
-    try term.resetState(&writer);
+    try term.resetInputModes(&writer);
 
     const output = writer.getWritten();
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.disableAnyEventTracking) == null);

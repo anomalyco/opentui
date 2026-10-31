@@ -23,6 +23,7 @@ import {
   type LineInfo,
   type MousePointerStyle,
   type ImageRenderProtocol,
+  type ProgramStatus,
 } from "./types.js"
 export type {
   LineInfo,
@@ -31,9 +32,11 @@ export type {
   BuildOptions,
   NativeAudioCaptureStats,
   NativeAudioStreamStats,
+  NativeFrameWork,
   NativeRenderStats,
 }
 
+import type { ExtractOptions } from "./image.js"
 import { RGBA } from "./lib/RGBA.js"
 import { isStyledText, type StyledText } from "./lib/styled-text.js"
 import { YogaError, YogaStatus, type MeasureFunction } from "./yoga.js"
@@ -73,6 +76,7 @@ import type {
   AudioStats,
   BuildOptions,
   AllocatorStats,
+  NativeFrameWork,
   NativeRenderStats,
   NativeImageInfo,
 } from "./zig-structs.js"
@@ -85,13 +89,7 @@ export type NativeAudioStreamFormat = NativeAudioStreamFormatType
 import { isBunfsPath } from "./lib/bunfs.js"
 import { resolveNativeLibraryPath } from "#opentui/runtime-assets"
 import { allocStruct } from "bun-ffi-structs"
-import {
-  nativeSymbols,
-  nativeCallbacks,
-  nativeLayouts,
-  nativeConstants,
-  nativeStyleEnumMaxima,
-} from "./native-abi.generated.js"
+import { nativeSymbols, nativeCallbacks, nativeLayouts, nativeConstants } from "./native-abi.generated.js"
 
 registerEnvVar({
   name: "OPENTUI_LIBC",
@@ -214,6 +212,8 @@ export enum NativeEditPositionQuery {
   Offset = 4,
   Coords = 5,
   LineStart = 6,
+  End = 7,
+  PrevChar = 8,
 }
 
 export enum NativeEditorStyleMask {
@@ -357,6 +357,7 @@ export enum NativeStyleGroup {
 export enum NativeStyleFlags {
   None = nativeConstants.OT_STYLE_FLAGS_NONE,
   DisableFlexShrink = nativeConstants.OT_STYLE_DISABLE_FLEX_SHRINK,
+  Content = nativeConstants.OT_STYLE_CONTENT,
 }
 
 /** ENUM/FLOAT/DIMENSION writes occupy this unused-edge slot. */
@@ -399,6 +400,7 @@ export enum NativeSceneHook {
   RenderAfter = nativeConstants.OT_SCENE_HOOK_RENDER_AFTER,
   RenderSelf = nativeConstants.OT_SCENE_HOOK_RENDER_SELF,
   IdleUpdate = nativeConstants.OT_SCENE_HOOK_IDLE_UPDATE,
+  Scroll = nativeConstants.OT_SCENE_HOOK_SCROLL,
 }
 
 export enum NativeSceneFrame {
@@ -407,7 +409,7 @@ export enum NativeSceneFrame {
   Resize = nativeConstants.OT_SCENE_FRAME_RESIZE,
   LayoutChanged = nativeConstants.OT_SCENE_FRAME_LAYOUT_CHANGED,
   Record = nativeConstants.OT_SCENE_FRAME_RECORD,
-  Yield = nativeConstants.OT_SCENE_FRAME_YIELD,
+  Scroll = nativeConstants.OT_SCENE_FRAME_SCROLL,
 }
 
 export enum NativeScenePaintPhase {
@@ -442,8 +444,6 @@ export interface NativeSceneFrameRequest {
   readonly height: number
   paintLayout?: NativeSceneLayout
   publicLayout?: NativeSceneLayout
-  /** Host observation revision; never part of native ticket authority. */
-  geometryRevision?: number
 }
 
 export interface NativeSplitSnapshot {
@@ -519,7 +519,14 @@ type BufferDrawColors = { foreground?: RGBA; background?: RGBA }
 export type NativeBufferDraw =
   | { operation: "clear"; background?: RGBA }
   | (BufferDrawPosition & { operation: "fill"; width?: number; height?: number; background?: RGBA })
-  | (BufferDrawPosition & BufferDrawColors & { operation: "text"; text?: string; attributes?: number })
+  | (BufferDrawPosition &
+      BufferDrawColors & {
+        operation: "text"
+        text?: string
+        attributes?: number
+        maxWidth?: number
+        ellipsis?: boolean
+      })
   | (BufferDrawPosition &
       BufferDrawColors & { operation: "cell" | "cellBlend" | "char"; char?: number; attributes?: number })
   | (BufferDrawPosition &
@@ -594,6 +601,95 @@ export interface NativeSceneArrowOptions {
   text?: string
 }
 
+export interface NativeSceneScrollBarOptions {
+  policy: "auto" | "always" | "never"
+  overlay: boolean
+  thickness: number
+  gap: number
+  arrows: boolean
+  foregroundColor: RGBA
+  backgroundColor: RGBA
+}
+
+/** Viewport padding is left, top, right, bottom; bars are horizontal, vertical. */
+export interface NativeSceneScrollOptions {
+  scrollX: boolean
+  scrollY: boolean
+  follow: "none" | "top" | "bottom" | "left" | "right"
+  culling: boolean
+  padding: readonly number[]
+  fills: readonly (RGBA | undefined)[]
+  bars: readonly NativeSceneScrollBarOptions[]
+}
+
+export interface NativeSceneRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface NativeSceneScrollBarState {
+  visible: boolean
+  track: NativeSceneRect
+  startArrow: NativeSceneRect
+  endArrow: NativeSceneRect
+  thumbStart: number
+  thumbSize: number
+}
+
+/** Axis 0 is x, axis 1 is y. `content` is local to the box; the other rects are screen cells. `changes` holds the
+ * OT_SCENE_SCROLL_CHANGED_* bits of the last SCROLL request. */
+export interface NativeSceneScrollState {
+  changes: number
+  offset: [number, number]
+  max: [number, number]
+  content: NativeSceneRect
+  viewport: NativeSceneRect
+  bars: [NativeSceneScrollBarState, NativeSceneScrollBarState]
+}
+
+const SCENE_SCROLL_FOLLOW = ["none", "top", "bottom", "left", "right"] as const
+const SCENE_SCROLL_BAR_POLICY = ["auto", "always", "never"] as const
+const SCENE_SCROLL_REQUESTS = ["into-view", "anchor", "layout"] as const
+const SCENE_SCROLL_ALIGNS = ["nearest", "start", "end"] as const
+
+function readSceneRect(values: Float64Array, index: number): NativeSceneRect {
+  return { x: values[index], y: values[index + 1], width: values[index + 2], height: values[index + 3] }
+}
+
+/** The state of a scroll node before its first frame. */
+export function emptySceneScrollState(): NativeSceneScrollState {
+  return readSceneScrollState(new Uint32Array(nativeLayouts.ot_scene_scroll_state.size / 4))
+}
+
+function readSceneScrollState(record: Uint32Array): NativeSceneScrollState {
+  const { fields } = nativeLayouts.ot_scene_scroll_state
+  const bar = nativeLayouts.ot_scene_scroll_bar_state
+  const values = new Float64Array(record.buffer)
+  const readBar = (axis: number): NativeSceneScrollBarState => {
+    const base = fields.bars.offset + axis * bar.size
+    return {
+      visible: record[(base + bar.fields.visible.offset) / 4] !== 0,
+      track: readSceneRect(values, (base + bar.fields.track.offset) / 8),
+      startArrow: readSceneRect(values, (base + bar.fields.start_arrow.offset) / 8),
+      endArrow: readSceneRect(values, (base + bar.fields.end_arrow.offset) / 8),
+      thumbStart: values[(base + bar.fields.thumb_start.offset) / 8],
+      thumbSize: values[(base + bar.fields.thumb_size.offset) / 8],
+    }
+  }
+  const offset = fields.offset.offset / 8
+  const max = fields.max.offset / 8
+  return {
+    changes: record[fields.changes.offset / 4],
+    offset: [values[offset], values[offset + 1]],
+    max: [values[max], values[max + 1]],
+    content: readSceneRect(values, fields.content.offset / 8),
+    viewport: readSceneRect(values, fields.viewport.offset / 8),
+    bars: [readBar(0), readBar(1)],
+  }
+}
+
 export interface NativeSessionBufferLease {
   handle: ContextObjectHandle
   width: number
@@ -658,6 +754,12 @@ export interface NativeSessionRendererState {
   height: number
   frameCount: bigint
   framePending: boolean
+  /** Presented Kitty and Sixel placements whose image a later frame still sends. */
+  imageUploadsPending: number
+  /** Distinct frame contents dropped because their output is larger than the write limit. */
+  droppedFrames: number
+  /** The size of the last attempt's frame when it was dropped for size, else 0. */
+  droppedFrameBytes: number
 }
 
 export interface NativeSessionKittyImageTransportStatus {
@@ -677,7 +779,16 @@ export interface NativeSessionTerminalOptions {
   mouseMovement?: boolean
   kittyKeyboardFlags?: number
   clearOnClose?: boolean
+  /** End the startup query batch with DA1 (the reply sentinel). Defaults to false. */
+  replySentinel?: boolean
+  /** Wrap frames in synchronized output (DEC mode 2026). Defaults to "auto". */
+  synchronizedOutput?: SynchronizedOutput
+  /** The output passes through tmux, screen or Zellij on this host. Defaults to false. */
+  hostMultiplexer?: boolean
 }
+
+/** "auto" leaves synchronized output out for a remote terminal without mode 2026 or under a multiplexer on the app's host. */
+export type SynchronizedOutput = "auto" | "always" | "never"
 
 export enum NativeSessionTerminalPhase {
   Uninitialized = 0,
@@ -705,13 +816,22 @@ export interface NativeSessionPumpResult {
   deadlineNs: bigint | null
 }
 
+/** One `ot_session_input_feed` call: input consumed, records written, and when to call again. */
+export interface NativeInputDrain {
+  consumed: number
+  count: number
+  deadlineNs: bigint | null
+}
+
 export type NativeSessionControl =
   | { kind: "capability-response"; bytes: Uint8Array }
   | { kind: "palette-query"; bytes: Uint8Array }
   | { kind: "title"; title: string }
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
-  | { kind: "restore-modes" | "query-pixel-resolution" | "query-theme-colors" | "reset-background" }
+  | { kind: "program-status"; status: ProgramStatus }
+  | { kind: "query-pixel-resolution"; sentinel?: boolean }
+  | { kind: "restore-modes" | "query-theme-colors" | "reset-background" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
   position?: { x: number; y: number; visible: boolean }
@@ -751,14 +871,37 @@ export enum NativeStatus {
   LayoutLimit = -26,
   FrameBusy = -27,
   FrameRequestLimit = -28,
+  VideoFailed = -60,
+}
+
+export interface NativeVideoInfo {
+  durationUs: bigint
+  width: number
+  height: number
+  fpsNum: number
+  fpsDen: number
+  hasAudio: boolean
+}
+
+export interface NativeVideoState {
+  currentTimeUs: bigint
+  framePtsUs: bigint
+  playing: boolean
+  ended: boolean
+  buffering: boolean
+  audio: boolean
+  hasFrame: boolean
+  failed: boolean
+  qualityTier: number
 }
 
 export class NativeError extends Error {
   constructor(
     public readonly operation: string,
     public readonly status: NativeStatus,
+    reason = NativeStatus[status] ?? `status ${status}`,
   ) {
-    super(`${operation} failed: ${NativeStatus[status] ?? `status ${status}`}`)
+    super(`${operation} failed: ${reason}`)
     this.name = "NativeError"
   }
 }
@@ -921,10 +1064,31 @@ registerEnvVar({
   type: "string",
   required: false,
 })
+// Read by video-shim.c when a video opens
+registerEnvVar({
+  name: "OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL",
+  description:
+    "Experimental: decode video with VideoToolbox on macOS when set to exactly 1 or true; otherwise or on failure, decode in software",
+  type: "string",
+  required: false,
+})
 
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
 const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
 const CURSOR_ID_TO_STYLE = ["block", "line", "underline", "default"] as const
+const PROGRAM_STATE_TO_ID: Record<string, number | undefined> = {
+  idle: nativeConstants.OT_PROGRAM_STATE_IDLE,
+  working: nativeConstants.OT_PROGRAM_STATE_WORKING,
+  done: nativeConstants.OT_PROGRAM_STATE_DONE,
+  blocked: nativeConstants.OT_PROGRAM_STATE_BLOCKED,
+  error: nativeConstants.OT_PROGRAM_STATE_ERROR,
+  clear: nativeConstants.OT_PROGRAM_STATE_CLEAR,
+}
+const PROGRAM_KIND_TO_ID: Record<string, number | undefined> = {
+  permission: nativeConstants.OT_PROGRAM_KIND_PERMISSION,
+  question: nativeConstants.OT_PROGRAM_KIND_QUESTION,
+  auth: nativeConstants.OT_PROGRAM_KIND_AUTH,
+}
 const MOUSE_STYLE_TO_ID = {
   auto: nativeConstants.OT_MOUSE_POINTER_AUTO,
   default: nativeConstants.OT_MOUSE_POINTER_DEFAULT,
@@ -966,7 +1130,18 @@ const MOUSE_STYLE_TO_ID = {
 const SCENE_BORDER_STYLES = ["single", "double", "rounded", "heavy"] as const
 const SCENE_TEXT_WRAP_MODES = ["none", "char", "word"] as const
 const SCENE_TEXT_ALIGNS = ["left", "center", "right"] as const
-const SCENE_NODE_KINDS = ["root", "box", "text", "slider", "arrow", "editor", "custom", "text_view", "image"] as const
+const SCENE_NODE_KINDS = [
+  "root",
+  "box",
+  "text",
+  "slider",
+  "arrow",
+  "editor",
+  "custom",
+  "text_view",
+  "image",
+  "video",
+] as const
 const IMAGE_PROTOCOL_TO_ID = { auto: 0, kitty: 1, sixel: 2, blocks: 3 } as const
 const IMAGE_FITS = ["fit", "cover", "fill"] as const
 const BUFFER_DRAW_OPERATIONS = new Map<string, { id: number; size: number }>([
@@ -999,6 +1174,23 @@ let globalTraceSymbols: Record<string, number[]> | null = null
 let globalFFILogPath: string | null = null
 let exitHandlerRegistered = false
 
+/** Reads the `ot_scene_stats` fields from `work_frame_id` up to `reserved`, camel-casing their names. */
+function readFrameWork(
+  layout: (typeof nativeLayouts)["ot_scene_stats"],
+  output: BigUint64Array,
+  words: Uint32Array,
+): NativeFrameWork {
+  const result: Record<string, number> = {}
+  let counting = false
+  for (const [field, { offset, type }] of Object.entries(layout.fields)) {
+    counting ||= field === "work_frame_id"
+    if (!counting) continue
+    const name = field.replace(/_(.)/g, (_, letter: string) => letter.toUpperCase())
+    result[name] = type === "u64" ? toNumber(output[offset / 8]) : words[offset / 4]
+  }
+  return result as NativeFrameWork
+}
+
 function toNumber(value: number | bigint): number {
   return typeof value === "bigint" ? Number(value) : value
 }
@@ -1016,10 +1208,8 @@ function toSafeByteCount(value: number | bigint, label: string): number {
 }
 
 function toSafeFFIU32Length(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_FFI_U32) {
-    throw new RangeError(`${label} exceeds native u32 length limit`)
-  }
-
+  if (!Number.isInteger(value) || value < 0) throw new RangeError(`${label} must be a non-negative integer`)
+  if (value > MAX_FFI_U32) throw new RangeError(`${label} exceeds native u32 length limit`)
   return value
 }
 
@@ -1044,6 +1234,12 @@ function toFFIU64(value: bigint, label: string): bigint {
 function toFFIBool(value: boolean, label: string): 0 | 1 {
   if (typeof value !== "boolean") throw new TypeError(`${label} must be a boolean`)
   return ffiBool(value)
+}
+
+const SYNCHRONIZED_OUTPUT_FLAGS: Record<SynchronizedOutput, number> = {
+  auto: 0,
+  always: nativeConstants.OT_TERMINAL_SYNC_ALWAYS,
+  never: nativeConstants.OT_TERMINAL_SYNC_NEVER,
 }
 
 function toFFIF32(value: number, label: string, allowNaN = false): number {
@@ -1081,6 +1277,47 @@ function sessionBytes(bytes: Uint8Array, label: string): Uint8Array {
     typedArrayAccessors.byteOffset.get!.call(bytes),
     length,
   )
+}
+
+/** Packs one ot_session_program_status record and its text. Native code validates every value. */
+function programStatusPayload(status: ProgramStatus, encoder: TextEncoder): Uint8Array {
+  const layout = nativeLayouts.ot_session_program_status
+  const { state, kind, progress, id, app, title, message } = status as Partial<Record<string, unknown>>
+  const stateId = typeof state === "string" ? PROGRAM_STATE_TO_ID[state] : undefined
+  if (typeof stateId !== "number") throw new TypeError("Unknown program status state")
+  const header = new Uint32Array(layout.size / 4)
+  header[layout.fields.state.offset / 4] = stateId
+  if (kind != null) {
+    const kindId = typeof kind === "string" ? PROGRAM_KIND_TO_ID[kind] : undefined
+    if (typeof kindId !== "number") throw new TypeError("Unknown program status kind")
+    header[layout.fields.kind.offset / 4] = kindId
+  }
+  if (progress != null) {
+    if (typeof progress !== "number") throw new TypeError("Program status progress must be a number")
+    if (!isFFIU32(progress)) throw new RangeError("Program status progress must be an integer percentage")
+    header[layout.fields.fields.offset / 4] = nativeConstants.OT_PROGRAM_STATUS_PROGRESS
+    header[layout.fields.progress.offset / 4] = progress
+  }
+  // The record encodes an absent id as zero bytes. An empty id is not the root record.
+  if (id === "") throw new RangeError("Program status id must not be empty; omit it for the root record")
+  const text = { id, app, title, message }
+  const parts = (["id", "app", "title", "message"] as const).map((name) => {
+    const value = text[name]
+    if (value == null) return new Uint8Array(0)
+    if (typeof value !== "string") throw new TypeError(`Program status ${name} must be a string`)
+    // One extra UTF-16 unit preserves native over-limit rejection without an unbounded encoding allocation.
+    const bytes = encoder.encode(value.slice(0, NATIVE_SESSION_CONTROL_PACKET_BYTES + 1))
+    header[layout.fields[`${name}_len`].offset / 4] = bytes.byteLength
+    return bytes
+  })
+  const payload = new Uint8Array(layout.size + parts.reduce((total, part) => total + part.byteLength, 0))
+  payload.set(new Uint8Array(header.buffer))
+  let offset = layout.size
+  for (const part of parts) {
+    payload.set(part, offset)
+    offset += part.byteLength
+  }
+  return payload
 }
 
 function pixelInput(data: Uint8Array | PointerInput, length: number): Uint8Array | Pointer {
@@ -1252,7 +1489,7 @@ function encodeDrawColors(
   return background !== undefined
 }
 
-const DIAGNOSTIC_QUEUE_MAX = 64 // Version 1 C Contexts hold at most 64 diagnostic records.
+const DIAGNOSTIC_QUEUE_MAX = 64 // Version 2 C Contexts hold at most 64 diagnostic records.
 const DIAGNOSTIC_BATCH = 8 // Eight 4 KiB records keep the cached drain storage near 33 KB.
 
 function createDiagnosticDrainRecord() {
@@ -1407,8 +1644,10 @@ function encodeBufferDrawRecord(
       const fields = nativeLayouts.ot_buffer_draw_text_record.fields
       encodeDrawPosition(signed, fields, options, base)
       words[word + fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
-      if (encodeDrawColors(colors, fields, options, base))
-        words[word + header.flags.offset / 4] = nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND
+      words[word + fields.max_width.offset / 4] = toSafeFFIU32Length(options.maxWidth ?? 0, "Buffer text width")
+      words[word + header.flags.offset / 4] =
+        (encodeDrawColors(colors, fields, options, base) ? nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND : 0) |
+        (options.ellipsis ? nativeConstants.OT_BUFFER_DRAW_FIT_ELLIPSIS : 0)
       break
     }
     case "cell":
@@ -1552,33 +1791,24 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
     record[layout.fields.z_index.offset / 4] = toFFII32(zIndex, "Scene zIndex")
     fields |= nativeConstants.OT_SCENE_PROPERTY_Z_INDEX
   }
-  // Mirror scene.zig setPaint's range rules so staged paint cannot fail only at flush time.
-  const requestedOpacity = paint.opacity
-  if (requestedOpacity !== undefined) {
-    const opacity = toFFIF32(requestedOpacity, "Scene opacity")
-    if (opacity < 0 || opacity > 1) throw new RangeError("Scene opacity must be within 0..1")
-    floats[layout.fields.opacity.offset / 4] = opacity
+  const opacity = paint.opacity
+  if (opacity !== undefined) {
+    floats[layout.fields.opacity.offset / 4] = toFFIF32(opacity, "Scene opacity")
     fields |= nativeConstants.OT_SCENE_PROPERTY_OPACITY
   }
   const translateX = paint.translateX
   const translateY = paint.translateY
   if (translateX !== undefined) {
-    if (!Number.isFinite(translateX)) {
-      throw new RangeError("Scene translations must be finite numbers")
-    }
-    doubles[layout.fields.translate_x.offset / 8] = translateX
+    doubles[layout.fields.translate_x.offset / 8] = toFFIF32(translateX, "Scene translateX")
     fields |= nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_X
   }
   if (translateY !== undefined) {
-    if (!Number.isFinite(translateY)) throw new RangeError("Scene translations must be finite numbers")
-    doubles[layout.fields.translate_y.offset / 8] = translateY
+    doubles[layout.fields.translate_y.offset / 8] = toFFIF32(translateY, "Scene translateY")
     fields |= nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_Y
   }
-  const requestedBorder = paint.border
-  if (requestedBorder !== undefined) {
-    const borderSides = toSafeFFIU32Length(requestedBorder, "Scene border")
-    if (borderSides > 15) throw new RangeError("Scene border sides must use four edge bits")
-    record[layout.fields.border_sides.offset / 4] = borderSides
+  const border = paint.border
+  if (border !== undefined) {
+    record[layout.fields.border_sides.offset / 4] = toSafeFFIU32Length(border, "Scene border")
     fields |= nativeConstants.OT_SCENE_PROPERTY_BORDER
   }
   const shouldFill = paint.shouldFill
@@ -1620,51 +1850,6 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
     fields |= nativeConstants.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS
   }
   return fields
-}
-
-function validateSceneStyle(group: number, kind: number, edge: number, unit: number, value: number, flags: number) {
-  const c = nativeConstants
-  if (
-    group > c.OT_STYLE_DIMENSION ||
-    group === c.OT_STYLE_BORDER ||
-    (group !== c.OT_STYLE_DIMENSION && flags !== 0) ||
-    flags > c.OT_STYLE_DISABLE_FLEX_SHRINK
-  ) {
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  }
-  if (
-    (group === c.OT_STYLE_ENUM || group === c.OT_STYLE_FLOAT) &&
-    (edge !== c.OT_EDGE_NONE || unit !== c.OT_UNIT_UNDEFINED)
-  ) {
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  }
-  if (group === c.OT_STYLE_DIMENSION && edge !== c.OT_EDGE_NONE)
-    throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
-  let valid = false
-  switch (group) {
-    case c.OT_STYLE_ENUM:
-      valid = kind < nativeStyleEnumMaxima.length && value <= nativeStyleEnumMaxima[kind]
-      break
-    case c.OT_STYLE_FLOAT:
-      valid = kind <= c.OT_STYLE_FLOAT_ASPECT_RATIO
-      break
-    case c.OT_STYLE_VALUE:
-      valid =
-        kind <= c.OT_STYLE_VALUE_GAP &&
-        unit <= c.OT_UNIT_AUTO &&
-        (kind < c.OT_STYLE_VALUE_MARGIN || edge <= (kind === c.OT_STYLE_VALUE_GAP ? c.OT_GUTTER_ALL : c.OT_EDGE_ALL)) &&
-        !(
-          unit === c.OT_UNIT_AUTO &&
-          ((kind >= c.OT_STYLE_VALUE_MIN_WIDTH && kind <= c.OT_STYLE_VALUE_MAX_HEIGHT) ||
-            kind === c.OT_STYLE_VALUE_PADDING ||
-            kind === c.OT_STYLE_VALUE_GAP)
-        )
-      break
-    case c.OT_STYLE_DIMENSION:
-      valid = kind <= c.OT_DIMENSION_HEIGHT && unit <= c.OT_UNIT_AUTO
-      break
-  }
-  if (!valid) throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
 }
 
 // Packed paint records hold fields in header bit order, and SceneStaging indexes these entries by bit position.
@@ -1835,7 +2020,9 @@ export class SceneStaging {
     unit = toSafeFFIU32Length(unit, "Scene style unit")
     value = SceneStaging.checkStyleValue(group, value)
     flags = toSafeFFIU32Length(flags, "Scene style flags")
-    validateSceneStyle(group, kind, edge, unit, value, flags)
+    // Each field packs into one header byte; native cannot see wider bits, which would select another property.
+    if (Math.max(group, kind, edge, unit) > 0xff)
+      throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
     // Size kinds (width through flex basis) have no edge; keep unused bits out of the packed record.
     if (group === nativeConstants.OT_STYLE_VALUE && kind < nativeConstants.OT_STYLE_VALUE_MARGIN) edge = 0
     const handle = encodedContextHandle(context, node)
@@ -2436,7 +2623,7 @@ export class NativePaintRecorder {
     })
   }
 
-  /** Draw a text-buffer view, editor view, or scene text node. */
+  /** Draw a text-buffer view, editor view, or scene node body. */
   view(operation: "text" | "editor" | "scene", source: ContextObjectHandle, x: number, y: number): void {
     this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_view
@@ -2445,7 +2632,7 @@ export class NativePaintRecorder {
           ? nativeConstants.OT_SCENE_RECORD_TEXT_VIEW
           : operation === "editor"
             ? nativeConstants.OT_SCENE_RECORD_EDITOR_VIEW
-            : nativeConstants.OT_SCENE_RECORD_SCENE_TEXT,
+            : nativeConstants.OT_SCENE_RECORD_SCENE_BODY,
         layout.size,
       )
       this.encodeHandle(source, base + layout.fields.source.offset)
@@ -3347,6 +3534,8 @@ export class FFIRenderLib {
     createEditorSelectionRecord()
   // Info reads never call back into JavaScript, so one output record serves every read.
   private readonly editorViewInfoRecord = createContextRecord(nativeLayouts.ot_editor_view_info)
+  private readonly videoStateRecord = new Uint8Array(nativeLayouts.ot_video_state.size)
+  private readonly videoStateView = new DataView(this.videoStateRecord.buffer)
   private readonly selectionResetRecord = encodeEditorSelection({ operation: NativeEditorSelectionOperation.Reset })
   private readonly localSelectionResetRecord = encodeEditorSelection({
     operation: NativeEditorSelectionOperation.LocalReset,
@@ -3355,8 +3544,8 @@ export class FFIRenderLib {
   private readonly hitTestOutput = new Uint32Array(1)
   private readonly bufferStackInput = new Float32Array(1)
   private readonly bufferStackOutput = new Float32Array(1)
-  private drawTextBytes: Uint8Array | undefined
-  private drawBottomBytes: Uint8Array | undefined
+  private readonly drawTextBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
+  private readonly drawBottomBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
   private opentui: ReturnType<typeof getOpenTUILib>
   private iccCacheClient = false
   // Layout reads are synchronous and non-reentrant. Retain one backing buffer so
@@ -3409,6 +3598,8 @@ export class FFIRenderLib {
     { service: ClipboardServiceHandle; handle: BigUint64Array }
   >()
   private audioEngines = new Map<AudioEngineHandle, NativeContextHandle>()
+  // Measures without an edit buffer share this Context. The library owns it, so dispose releases it.
+  private editMeasureContext?: NativeContextHandle
   private readonly invalidStandaloneHandle = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
   public readonly encoder: TextEncoder = new TextEncoder()
   private readonly emptyBytes = new Uint8Array(0)
@@ -4687,9 +4878,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    // Node FFI rejects negative zero for integer arguments.
-    const column = toFFII32(x, "Text view x") || 0
-    const row = toFFII32(y, "Text view y") || 0
+    const column = toFFII32(x, "Text view x")
+    const row = toFFII32(y, "Text view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_text_view")
     nativeResult(
       "ot_buffer_draw_text_view",
@@ -4707,8 +4897,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    const column = toFFII32(x, "Editor view x") || 0
-    const row = toFFII32(y, "Editor view y") || 0
+    const column = toFFII32(x, "Editor view x")
+    const row = toFFII32(y, "Editor view y")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_editor_view")
     nativeResult(
       "ot_buffer_draw_editor_view",
@@ -4716,7 +4906,7 @@ export class FFIRenderLib {
     )
   }
 
-  public contextDrawSceneText(
+  public contextDrawSceneBody(
     { context, target, frame }: NativeDrawingTarget,
     node: SceneNodeHandle,
     x: number,
@@ -4726,12 +4916,12 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = toFFII32(x, "Scene text x") || 0
-    const row = toFFII32(y, "Scene text y") || 0
-    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
+    const column = toFFII32(x, "Scene body x")
+    const row = toFFII32(y, "Scene body y")
+    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_body")
     nativeResult(
-      "ot_buffer_draw_scene_text",
-      this.opentui.symbols.ot_buffer_draw_scene_text(pointer, destination, request, source, column, row),
+      "ot_buffer_draw_scene_body",
+      this.opentui.symbols.ot_buffer_draw_scene_body(pointer, destination, request, source, column, row),
     )
   }
 
@@ -5033,6 +5223,36 @@ export class FFIRenderLib {
         count,
       ),
     )
+  }
+
+  public contextEditBufferMeasureText(
+    context: NativeContextHandle,
+    editBuffer: ContextEditBufferHandle,
+    bytes: Uint8Array,
+  ): number {
+    const handle = encodeContextHandle(context, editBuffer)
+    const input = sessionBytes(bytes, "Edit buffer measure length")
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_edit_buffer_measure_text")
+    nativeResult(
+      "ot_edit_buffer_measure_text",
+      this.opentui.symbols.ot_edit_buffer_measure_text(pointer, handle, viewOrNull(input), input.length, output),
+    )
+    return output[0]
+  }
+
+  public editMeasureText(bytes: Uint8Array, widthMethod: WidthMethod, tabWidth: number): number {
+    const method = widthMethodId(widthMethod, "editor")
+    const width = toSafeFFIU32Length(tabWidth, "Edit buffer tab width")
+    const input = sessionBytes(bytes, "Edit buffer measure length")
+    const output = new Uint32Array(1)
+    this.editMeasureContext ??= this.createContext({ objectCapacity: 1, renderCellsMax: 1 })
+    const pointer = this.nativeContextPointer(this.editMeasureContext, "ot_edit_measure_text")
+    nativeResult(
+      "ot_edit_measure_text",
+      this.opentui.symbols.ot_edit_measure_text(pointer, viewOrNull(input), input.length, method, width, output),
+    )
+    return output[0]
   }
 
   public contextEditBufferSetDefaults(
@@ -5574,6 +5794,161 @@ export class FFIRenderLib {
     })
   }
 
+  public sceneSetVideo(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    fit: "fit" | "cover" | "fill",
+    buffer: ContextBufferHandle | null,
+  ): void {
+    const handle = encodeContextHandle(context, node)
+    const storage = buffer === null ? null : encodeContextHandle(context, buffer)
+    const fitId = IMAGE_FITS.indexOf(fit)
+    if (fitId < 0) throw new TypeError("Unknown video fit")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_video")
+      nativeResult("ot_scene_set_video", this.opentui.symbols.ot_scene_set_video(pointer, handle, fitId, storage))
+    })
+  }
+
+  /** Sets the source region an image or video node shows; undefined shows the whole source. */
+  public sceneSetCrop(context: NativeContextHandle, node: SceneNodeHandle, crop: ExtractOptions | undefined): void {
+    const handle = encodeContextHandle(context, node)
+    const { left = 0, top = 0, width = 0, height = 0 } = crop ?? {}
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_crop")
+      nativeResult(
+        "ot_scene_set_crop",
+        this.opentui.symbols.ot_scene_set_crop(pointer, handle, left, top, width, height),
+      )
+    })
+  }
+
+  /** Replaces the node's player; an empty path closes it. Without audio, playback opens no audio device. */
+  public videoOpen(context: NativeContextHandle, node: SceneNodeHandle, path: string, audio: boolean): NativeVideoInfo {
+    const handle = encodeContextHandle(context, node)
+    const bytes = path.length === 0 ? null : sessionBytes(this.encoder.encode(path), "Video path length")
+    const layout = nativeLayouts.ot_video_info
+    const output = new Uint8Array(layout.size)
+    const flags = audio ? 0 : nativeConstants.OT_VIDEO_OPEN_NO_AUDIO
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_open")
+      nativeResult(
+        "ot_video_open",
+        this.opentui.symbols.ot_video_open(pointer, handle, bytes, bytes?.byteLength ?? 0, flags, output),
+      )
+    })
+    const view = new DataView(output.buffer)
+    const fields = layout.fields
+    return {
+      durationUs: view.getBigInt64(fields.duration_us.offset, true),
+      width: view.getUint32(fields.width.offset, true),
+      height: view.getUint32(fields.height.offset, true),
+      fpsNum: view.getUint32(fields.fps_num.offset, true),
+      fpsDen: view.getUint32(fields.fps_den.offset, true),
+      hasAudio: view.getUint32(fields.has_audio.offset, true) !== 0,
+    }
+  }
+
+  public videoCall(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    operation: "ot_video_play" | "ot_video_pause",
+  ): void {
+    const handle = encodeContextHandle(context, node)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, operation)
+      nativeResult(operation, this.opentui.symbols[operation](pointer, handle))
+    })
+  }
+
+  public videoSeek(context: NativeContextHandle, node: SceneNodeHandle, timeUs: bigint): void {
+    const handle = encodeContextHandle(context, node)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_seek")
+      nativeResult("ot_video_seek", this.opentui.symbols.ot_video_seek(pointer, handle, timeUs))
+    })
+  }
+
+  public videoSetLoop(context: NativeContextHandle, node: SceneNodeHandle, loop: boolean): void {
+    const handle = encodeContextHandle(context, node)
+    const value = toFFIBool(loop, "Video loop")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_loop")
+      nativeResult("ot_video_set_loop", this.opentui.symbols.ot_video_set_loop(pointer, handle, value))
+    })
+  }
+
+  public videoSetMuted(context: NativeContextHandle, node: SceneNodeHandle, muted: boolean): void {
+    const handle = encodeContextHandle(context, node)
+    const value = toFFIBool(muted, "Video muted")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_muted")
+      nativeResult("ot_video_set_muted", this.opentui.symbols.ot_video_set_muted(pointer, handle, value))
+    })
+  }
+
+  public videoSetVolume(context: NativeContextHandle, node: SceneNodeHandle, volume: number): void {
+    const handle = encodeContextHandle(context, node)
+    const value = toFFIF32(volume, "Video volume")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_volume")
+      nativeResult("ot_video_set_volume", this.opentui.symbols.ot_video_set_volume(pointer, handle, value))
+    })
+  }
+
+  public videoSetAvSyncOffset(context: NativeContextHandle, node: SceneNodeHandle, offsetUs: bigint): void {
+    const handle = encodeContextHandle(context, node)
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_av_sync_offset")
+      nativeResult(
+        "ot_video_set_av_sync_offset",
+        this.opentui.symbols.ot_video_set_av_sync_offset(pointer, handle, offsetUs),
+      )
+    })
+  }
+
+  public videoSetMaxFps(context: NativeContextHandle, node: SceneNodeHandle, fps: number): void {
+    const handle = encodeContextHandle(context, node)
+    if (!isFFIU32(fps)) throw new RangeError("Video maxFps must be a u32")
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_set_max_fps")
+      nativeResult("ot_video_set_max_fps", this.opentui.symbols.ot_video_set_max_fps(pointer, handle, fps))
+    })
+  }
+
+  public videoGetState(context: NativeContextHandle, node: SceneNodeHandle): NativeVideoState {
+    const handle = encodeContextHandle(context, node)
+    const layout = nativeLayouts.ot_video_state
+    const output = this.videoStateRecord
+    this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_get_state")
+      nativeResult("ot_video_get_state", this.opentui.symbols.ot_video_get_state(pointer, handle, output))
+    })
+    const view = this.videoStateView
+    const flags = view.getUint32(layout.fields.flags.offset, true)
+    return {
+      currentTimeUs: view.getBigInt64(layout.fields.current_time_us.offset, true),
+      framePtsUs: view.getBigInt64(layout.fields.frame_pts_us.offset, true),
+      playing: (flags & nativeConstants.OT_VIDEO_PLAYING) !== 0,
+      ended: (flags & nativeConstants.OT_VIDEO_ENDED) !== 0,
+      buffering: (flags & nativeConstants.OT_VIDEO_BUFFERING) !== 0,
+      audio: (flags & nativeConstants.OT_VIDEO_AUDIO) !== 0,
+      hasFrame: (flags & nativeConstants.OT_VIDEO_HAS_FRAME) !== 0,
+      failed: (flags & nativeConstants.OT_VIDEO_ERROR) !== 0,
+      qualityTier: view.getUint32(layout.fields.quality_tier.offset, true),
+    }
+  }
+
+  public videoGetError(context: NativeContextHandle, node: SceneNodeHandle): string {
+    const handle = encodeContextHandle(context, node)
+    return this.getYogaHost().runMutation(() => {
+      const pointer = this.nativeContextPointer(context, "ot_video_get_error")
+      return this.readText("ot_video_get_error", (bytes, capacity, count) =>
+        this.opentui.symbols.ot_video_get_error(pointer, handle, bytes, capacity, count),
+      )
+    })
+  }
+
   public contextDrawImage(
     { context, target, frame }: NativeDrawingTarget,
     image: ContextImageHandle,
@@ -5752,8 +6127,8 @@ export class FFIRenderLib {
       const record = scratch.records[encoded.operation]
       const source = encoded.source
       // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
-      const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const textBytes = this.drawTextBytes
+      const bottomBytes = this.drawBottomBytes
       const textLength = encodeDrawText(text, textBytes)
       const bottomLength = encodeDrawText(bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
@@ -6180,6 +6555,9 @@ export class FFIRenderLib {
       height: words[layout.fields.height.offset / 4],
       frameCount: output[layout.fields.frame_count.offset / 8],
       framePending: words[layout.fields.frame_pending.offset / 4] !== 0,
+      imageUploadsPending: words[layout.fields.image_uploads_pending.offset / 4],
+      droppedFrames: words[layout.fields.dropped_frames.offset / 4],
+      droppedFrameBytes: words[layout.fields.dropped_frame_bytes.offset / 4],
     }
   }
 
@@ -6318,13 +6696,20 @@ export class FFIRenderLib {
   ): void {
     const layout = nativeLayouts.ot_session_terminal_options
     const handle = encodeContextHandle(context, session)
+    const synchronizedOutput = options.synchronizedOutput ?? "auto"
+    if (!Object.hasOwn(SYNCHRONIZED_OUTPUT_FLAGS, synchronizedOutput)) {
+      throw new TypeError("Session synchronizedOutput must be auto, always, or never")
+    }
     const flag = (value: boolean | undefined, label: string, bit: number) =>
       toFFIBool(value ?? true, `Session ${label}`) ? bit : 0
     const flags =
       flag(options.useAlternateScreen, "useAlternateScreen", nativeConstants.OT_TERMINAL_ALTERNATE_SCREEN) |
       flag(options.mouse, "mouse", nativeConstants.OT_TERMINAL_MOUSE) |
       flag(options.mouseMovement, "mouseMovement", nativeConstants.OT_TERMINAL_MOUSE_MOVEMENT) |
-      flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE)
+      flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE) |
+      (options.replySentinel ? nativeConstants.OT_TERMINAL_REPLY_SENTINEL : 0) |
+      SYNCHRONIZED_OUTPUT_FLAGS[synchronizedOutput] |
+      (options.hostMultiplexer ? nativeConstants.OT_TERMINAL_HOST_MULTIPLEXER : 0)
     const record = createContextRecord(layout)
     record[layout.fields.flags.offset / 4] = flags
     record[layout.fields.kitty_keyboard_flags.offset / 4] = toSafeFFIU32Length(
@@ -6389,6 +6774,70 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /**
+   * Parses terminal input into `ot_input_event` records (`records` must be 4-byte aligned) and
+   * their payload bytes. Stops when either buffer runs low; call again with the unconsumed rest.
+   */
+  public sessionInputFeed(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    bytes: Uint8Array,
+    nowNs: bigint,
+    records: Uint8Array,
+    payload: Uint8Array,
+  ): NativeInputDrain {
+    const layout = nativeLayouts.ot_input_drain
+    const handle = encodeContextHandle(context, session)
+    const input = sessionBytes(bytes, "Session input length")
+    const now = toFFIU64(nowNs, "Session input nowNs")
+    const recordView = sessionBytes(records, "Session input records length")
+    const payloadView = sessionBytes(payload, "Session input payload length")
+    if (recordView.byteOffset % nativeLayouts.ot_input_event.alignment !== 0) {
+      throw new RangeError("Session input records must be aligned to ot_input_event")
+    }
+    const capacity = Math.floor(recordView.byteLength / nativeLayouts.ot_input_event.size)
+    const output = new BigUint64Array(layout.size / 8)
+    const words = new Uint32Array(output.buffer)
+    words[layout.fields.struct_size.offset / 4] = layout.size
+    words[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+    const pointer = this.nativeContextPointer(context, "ot_session_input_feed")
+    nativeResult(
+      "ot_session_input_feed",
+      this.opentui.symbols.ot_session_input_feed(
+        pointer,
+        handle,
+        input.byteLength === 0 ? null : input,
+        input.byteLength,
+        now,
+        recordView,
+        capacity,
+        payloadView,
+        payloadView.byteLength,
+        output,
+      ),
+    )
+    const deadline = output[layout.fields.deadline_ns.offset / 8]!
+    return {
+      consumed: words[layout.fields.consumed.offset / 4]!,
+      count: words[layout.fields.count.offset / 4]!,
+      deadlineNs: deadline === 0n ? null : deadline,
+    }
+  }
+
+  /** `flags` combines `OT_INPUT_EXPECT_*` bits. Emits nothing; the next feed re-evaluates. */
+  public sessionInputExpect(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const value = toSafeFFIU32Length(flags, "Session input expectations")
+    const pointer = this.nativeContextPointer(context, "ot_session_input_expect")
+    nativeResult("ot_session_input_expect", this.opentui.symbols.ot_session_input_expect(pointer, handle, value))
+  }
+
+  public sessionInputReset(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const pointer = this.nativeContextPointer(context, "ot_session_input_reset")
+    nativeResult("ot_session_input_reset", this.opentui.symbols.ot_session_input_reset(pointer, handle, flags))
+  }
+
   /** Discards terminal input queued on process stdin. Best effort; see `ot_terminal_flush_input`. */
   public terminalFlushInput(): void {
     nativeResult("ot_terminal_flush_input", this.opentui.symbols.ot_terminal_flush_input())
@@ -6433,11 +6882,16 @@ export class FFIRenderLib {
         record[kind] = nativeConstants.OT_CONTROL_KITTY_KEYBOARD_FLAGS
         record[layout.fields.argument.offset / 4] = toSafeFFIU32Length(command.flags, "Session Kitty keyboard flags")
         break
+      case "program-status":
+        record[kind] = nativeConstants.OT_CONTROL_PROGRAM_STATUS
+        bytes = programStatusPayload(command.status, this.encoder)
+        break
       case "restore-modes":
         record[kind] = nativeConstants.OT_CONTROL_RESTORE_MODES
         break
       case "query-pixel-resolution":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_PIXEL_RESOLUTION
+        record[layout.fields.argument.offset / 4] = command.sentinel ? 1 : 0
         break
       case "query-theme-colors":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_THEME_COLORS
@@ -6616,6 +7070,7 @@ export class FFIRenderLib {
       notifications: flag(nativeConstants.OT_CAP_NOTIFICATIONS),
       explicit_cursor_positioning: flag(nativeConstants.OT_CAP_EXPLICIT_CURSOR_POSITIONING),
       remote: flag(nativeConstants.OT_CAP_REMOTE),
+      program_status: flag(nativeConstants.OT_CAP_PROGRAM_STATUS),
       unicode: widthMethodFromCode(output[layout.fields.width_method.offset / 4]),
       multiplexer: (["none", "tmux", "zellij", "screen", "unknown"] as const)[
         output[layout.fields.multiplexer.offset / 4]
@@ -6681,6 +7136,26 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /** Collects a finished stdout writer copy and, when `maxBytes` is positive, starts the next. `wait` waits for
+   * the running copy (process exit). */
+  public sessionPostStdout(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    maxBytes: number,
+    wait: boolean,
+  ): { written: number; inFlight: boolean } {
+    const handle = encodeContextHandle(context, session)
+    const limit = toSafeFFIU32Length(maxBytes, "Stdout byte limit")
+    const state = new Uint32Array(1)
+    const written = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_session_post_stdout")
+    nativeResult(
+      "ot_session_post_stdout",
+      this.opentui.symbols.ot_session_post_stdout(pointer, handle, limit, wait ? 1 : 0, state, written),
+    )
+    return { written: written[0]!, inFlight: state[0] === 1 }
+  }
+
   public sessionCompleteOutput(
     context: NativeContextHandle,
     session: SessionHandle,
@@ -6713,6 +7188,14 @@ export class FFIRenderLib {
     nativeResult(
       "ot_session_close",
       this.opentui.symbols.ot_session_close(this.nativeContextPointer(context, "ot_session_close"), handle),
+    )
+  }
+
+  public sessionDropOutput(context: NativeContextHandle, session: SessionHandle): void {
+    const handle = encodeContextHandle(context, session)
+    nativeResult(
+      "ot_session_drop_output",
+      this.opentui.symbols.ot_session_drop_output(this.nativeContextPointer(context, "ot_session_drop_output"), handle),
     )
   }
 
@@ -6888,10 +7371,11 @@ export class FFIRenderLib {
         parent === null ? null : encodeContextHandle(context, parent, scratch.target.record, scratch.target.words)
       const childIndex = toSafeFFIU32Length(index, "Scene child index")
       const pointer = this.nativeContextPointer(context, "ot_scene_move_node")
-      nativeResult(
-        "ot_scene_move_node",
-        this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex),
-      )
+      const status = this.opentui.symbols.ot_scene_move_node(pointer, handle, destination, childIndex)
+      // A move returns ObjectLimit for the Yoga depth limit; its other cause, 2^64 placements, cannot occur.
+      if (status === NativeStatus.ObjectLimit)
+        throw new NativeError("ot_scene_move_node", status, "Scene nesting depth exceeds the native limit")
+      nativeResult("ot_scene_move_node", status)
     } finally {
       this.sceneMoveRecord ??= scratch
     }
@@ -6961,8 +7445,9 @@ export class FFIRenderLib {
     const title = details.title ?? ""
     const bottomTitle = details.bottomTitle ?? ""
     if (typeof title !== "string" || typeof bottomTitle !== "string") throw new TypeError("Box titles must be strings")
-    const topBytes = sessionBytes(this.encoder.encode(title), "Box title length")
-    const bottomBytes = sessionBytes(this.encoder.encode(bottomTitle), "Box bottom title length")
+    // No JavaScript runs between these encodes and the call, so the drawText buffers can be shared.
+    const topLength = encodeDrawText(title, this.drawTextBytes)
+    const bottomLength = encodeDrawText(bottomTitle, this.drawBottomBytes)
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_scene_set_box_details")
       nativeResult(
@@ -6971,10 +7456,10 @@ export class FFIRenderLib {
           pointer,
           handle,
           record,
-          viewOrNull(topBytes),
-          topBytes.length,
-          viewOrNull(bottomBytes),
-          bottomBytes.length,
+          topLength === 0 ? null : this.drawTextBytes,
+          topLength,
+          bottomLength === 0 ? null : this.drawBottomBytes,
+          bottomLength,
         ),
       )
     })
@@ -7189,6 +7674,147 @@ export class FFIRenderLib {
         bytes?.length ?? 0,
       ),
     )
+  }
+
+  public sceneSetScroll(context: NativeContextHandle, node: SceneNodeHandle, options: NativeSceneScrollOptions): void {
+    const layout = nativeLayouts.ot_scene_scroll_options
+    const bar = nativeLayouts.ot_scene_scroll_bar_options
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const record = createContextRecord(layout)
+    const floats = new Float32Array(record.buffer)
+    const colors = new Uint16Array(record.buffer)
+    const follow = SCENE_SCROLL_FOLLOW.indexOf(options.follow)
+    if (follow < 0) throw new TypeError("Unknown scene scroll follow edge")
+    const fields = layout.fields
+    record[fields.axes.offset / 4] =
+      (options.scrollX ? nativeConstants.OT_SCENE_SCROLL_X : 0) |
+      (options.scrollY ? nativeConstants.OT_SCENE_SCROLL_Y : 0)
+    record[fields.follow.offset / 4] = follow
+    record[fields.culling.offset / 4] = toFFIBool(options.culling, "Scene scroll culling")
+    for (let edge = 0; edge < 4; edge++) floats[fields.padding.offset / 4 + edge] = options.padding[edge]
+    let fills = 0
+    for (const [index, field] of (
+      ["wrapper_background", "viewport_background", "content_background"] as const
+    ).entries()) {
+      const color = options.fills[index]
+      if (!color) continue
+      fills |= 1 << index
+      contextBufferColor(color, colors, fields[field].offset / 2)
+    }
+    record[fields.fills.offset / 4] = fills
+    for (let axis = 0; axis < 2; axis++) {
+      const base = fields.bars.offset + axis * bar.size
+      const value = options.bars[axis]
+      const policy = SCENE_SCROLL_BAR_POLICY.indexOf(value.policy)
+      if (policy < 0) throw new TypeError("Unknown scene scroll bar policy")
+      record[(base + bar.fields.policy.offset) / 4] = policy
+      record[(base + bar.fields.placement.offset) / 4] = toFFIBool(value.overlay, "Scene scroll bar overlay")
+      record[(base + bar.fields.thickness.offset) / 4] = toSafeFFIU32Length(
+        value.thickness,
+        "Scene scroll bar thickness",
+      )
+      record[(base + bar.fields.gap.offset) / 4] = toSafeFFIU32Length(value.gap, "Scene scroll bar gap")
+      record[(base + bar.fields.arrows.offset) / 4] = toFFIBool(value.arrows, "Scene scroll bar arrows")
+      contextBufferColor(value.foregroundColor, colors, (base + bar.fields.track_foreground.offset) / 2)
+      contextBufferColor(value.backgroundColor, colors, (base + bar.fields.track_background.offset) / 2)
+    }
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_scroll")
+    nativeResult("ot_scene_set_scroll", this.opentui.symbols.ot_scene_set_scroll(pointer, handle, record))
+  }
+
+  /** `axis` is 0 for the horizontal bar and 1 for the vertical bar; `end` is 0 for the start arrow. */
+  public sceneSetScrollArrow(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    axis: number,
+    end: number,
+    options: Omit<NativeSceneArrowOptions, "direction">,
+  ): void {
+    const layout = nativeLayouts.ot_scene_arrow_options
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const record = createContextRecord(layout)
+    record[layout.fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes, "Scene arrow attributes")
+    const colors = new Uint16Array(record.buffer)
+    contextBufferColor(options.foregroundColor, colors, layout.fields.foreground.offset / 2)
+    contextBufferColor(options.backgroundColor, colors, layout.fields.background.offset / 2)
+    const text = options.text
+    const bytes = text === undefined ? null : sessionBytes(this.encoder.encode(text), "Scene arrow text length")
+    if (bytes && bytes.length > NATIVE_BUFFER_TEXT_BYTES_MAX) throw new RangeError("Scene arrow text is too long")
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_scroll_arrow")
+    nativeResult(
+      "ot_scene_set_scroll_arrow",
+      this.opentui.symbols.ot_scene_set_scroll_arrow(
+        pointer,
+        handle,
+        toSafeFFIU32Length(axis, "Scene scroll axis"),
+        toSafeFFIU32Length(end, "Scene scroll arrow end"),
+        record,
+        bytes?.length === 0 ? new Uint8Array(1) : bytes,
+        bytes?.length ?? 0,
+      ),
+    )
+  }
+
+  /** An explicit scroll; a relative axis adds its value to the offset, and `reapply` applies the targets again after
+   * the next frame's layout. Returns the state after it. */
+  public sceneScrollTo(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    x: number,
+    y: number,
+    relativeX: boolean,
+    relativeY: boolean,
+    reapply = false,
+  ): NativeSceneScrollState {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
+    const flags =
+      (relativeX ? nativeConstants.OT_SCENE_SCROLL_RELATIVE_X : 0) |
+      (relativeY ? nativeConstants.OT_SCENE_SCROLL_RELATIVE_Y : 0) |
+      (reapply ? nativeConstants.OT_SCENE_SCROLL_REAPPLY : 0)
+    const pointer = this.nativeContextPointer(context, "ot_scene_scroll_to")
+    nativeResult("ot_scene_scroll_to", this.opentui.symbols.ot_scene_scroll_to(pointer, handle, x, y, flags, output))
+    return readSceneScrollState(output)
+  }
+
+  /** An into-view, anchor, or layout request (see `ot_scene_scroll_request`). Returns the state after it. */
+  public sceneScrollRequest(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    kind: "into-view" | "anchor" | "layout",
+    target: SceneNodeHandle | null,
+    align: "nearest" | "start" | "end" = "nearest",
+    inset = 0,
+  ): NativeSceneScrollState {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const encodedTarget = target === null ? null : encodeContextHandle(context, target)
+    const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
+    const pointer = this.nativeContextPointer(context, "ot_scene_scroll_request")
+    nativeResult(
+      "ot_scene_scroll_request",
+      this.opentui.symbols.ot_scene_scroll_request(
+        pointer,
+        handle,
+        SCENE_SCROLL_REQUESTS.indexOf(kind),
+        encodedTarget,
+        SCENE_SCROLL_ALIGNS.indexOf(align),
+        toSafeFFIU32Length(inset, "Scene scroll inset"),
+        output,
+      ),
+    )
+    return readSceneScrollState(output)
+  }
+
+  public sceneGetScroll(context: NativeContextHandle, node: SceneNodeHandle): NativeSceneScrollState {
+    const handle = encodeContextHandle(context, node)
+    const output = createContextRecord(nativeLayouts.ot_scene_scroll_state)
+    const pointer = this.nativeContextPointer(context, "ot_scene_get_scroll")
+    nativeResult("ot_scene_get_scroll", this.opentui.symbols.ot_scene_get_scroll(pointer, handle, output))
+    return readSceneScrollState(output)
   }
 
   public sceneSetTextOptions(
@@ -7443,7 +8069,6 @@ export class FFIRenderLib {
     session: SessionHandle,
     previous: NativeSceneFrameRequest | null,
     options: NativeSceneFrameOptions,
-    maxWorkItems?: number,
     recording: Uint8Array | null = null,
   ): NativeSceneFrameRequest {
     const layout = nativeLayouts.ot_scene_frame_options
@@ -7472,8 +8097,6 @@ export class FFIRenderLib {
         options.preserveUnwritten ?? false,
         "Scene preserve unwritten cells",
       )
-      const workBudget = maxWorkItems === undefined ? 0xffffffff : toSafeFFIU32Length(maxWorkItems, "Scene work budget")
-      if (workBudget === 0) throw new RangeError("Scene work budget must be positive")
       const recordingLength = recording === null ? 0 : toSafeFFIU32Length(recording.byteLength, "Scene recording")
       const recordingView = recordingLength === 0 ? null : recording
       const output = encodeSceneFrameRequest(context, previous, scratch)
@@ -7489,7 +8112,6 @@ export class FFIRenderLib {
           previous === null ? null : output,
           config,
           output,
-          workBudget,
           recordingView,
           recordingLength,
           geometry,
@@ -7502,7 +8124,6 @@ export class FFIRenderLib {
             handle,
             previous === null ? null : output,
             config,
-            workBudget,
             recordingView,
             recordingLength,
             output,
@@ -7533,7 +8154,6 @@ export class FFIRenderLib {
             flags & nativeConstants.OT_SCENE_GEOMETRY_PUBLIC
               ? decodeSceneLayout(scratch.geometryValues, scratch.geometryCoordinates, fields.public_layout.offset)
               : undefined,
-          geometryRevision: undefined,
         }
       } catch (error) {
         const livePointer = this.nativeContexts.get(context)
@@ -7558,7 +8178,6 @@ export class FFIRenderLib {
     previous: BigUint64Array | null,
     config: Uint32Array,
     output: BigUint64Array,
-    workBudget: number,
     recording: Uint8Array | null,
     recordingLength: number,
     geometry: Uint32Array,
@@ -7573,7 +8192,6 @@ export class FFIRenderLib {
             handle,
             previous,
             config,
-            workBudget,
             recording,
             recordingLength,
             output,
@@ -7704,6 +8322,14 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /** @internal Tests set this through `createTestRenderer({ nativeSceneFullFrame })`. */
+  public sceneSetDebugFlags(context: NativeContextHandle, session: SessionHandle, flags: number): void {
+    const handle = encodeContextHandle(context, session)
+    const value = toSafeFFIU32Length(flags, "Scene debug flags")
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_debug_flags")
+    nativeResult("ot_scene_set_debug_flags", this.opentui.symbols.ot_scene_set_debug_flags(pointer, handle, value))
+  }
+
   public sceneGetStats(context: NativeContextHandle, session: SessionHandle): NativeRenderStats {
     const layout = nativeLayouts.ot_scene_stats
     const handle = encodeContextHandle(context, session)
@@ -7728,6 +8354,7 @@ export class FFIRenderLib {
         words[layout.fields.stdout_write_time_valid.offset / 4] !== 0
           ? times[layout.fields.stdout_write_time.offset / 8]
           : undefined,
+      frameWork: readFrameWork(layout, output, words),
     }
   }
 
@@ -7857,10 +8484,12 @@ export class FFIRenderLib {
     if (this.clipboardServices.size > 0) {
       throw new Error("Cannot dispose OpenTUI native library while clipboard services are active")
     }
-    if (this.nativeContexts.size !== this.audioEngines.size) {
+    if (this.nativeContexts.size !== this.audioEngines.size + Number(this.editMeasureContext !== undefined)) {
       throw new NativeError("dispose", NativeStatus.ContextBusy)
     }
     this.yogaHost?.dispose()
+    if (this.editMeasureContext) this.releaseContext(this.editMeasureContext)
+    this.editMeasureContext = undefined
     for (const [engine, context] of this.audioEngines) {
       this.releaseContext(context)
       this.audioEngines.delete(engine)

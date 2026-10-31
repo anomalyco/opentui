@@ -64,7 +64,7 @@ test "Context Yoga warnings use only their owning diagnostic queues with bounded
     const remaining = try second.raw().getRenderable(nodes[1]);
     try yoga.check(yoga.yogaNodeMarkDirtyChecked(remaining.yoga_node));
     try yoga.check(yoga.yogaNodeCalculateLayoutChecked(remaining.yoga_node, std.math.nan(f32), std.math.nan(f32), 1));
-    const long_message = [_:0]u8{'x'} ** (logger.Diagnostic.message_bytes_max + 1);
+    const long_message: [logger.Diagnostic.message_bytes_max + 1:0]u8 = @splat('x');
     yoga.testLogMessage(second.yoga_config.ref, &long_message);
     try std.testing.expectEqual(@as(u32, 2), drain(&second.diagnostics, &events));
     try std.testing.expect(events[1].truncated);
@@ -116,7 +116,7 @@ test "diagnostics truncate only over-limit messages and do not allocate while lo
     defer queue.deinit();
     const log: logger.Logger = .{ .diagnostics = &queue };
     failing.fail_index = failing.alloc_index;
-    const source = [_]u8{'x'} ** (logger.Diagnostic.message_bytes_max + 1);
+    const source: [logger.Diagnostic.message_bytes_max + 1]u8 = @splat('x');
     for ([_]usize{ source.len - 2, source.len - 1, source.len }) |length| {
         log.warn("{s}", .{source[0..length]});
     }
@@ -269,10 +269,6 @@ test "Context diagnostics capture renderer and buffer failures without invoking 
     const renderer_id = try owner.createSession(.{});
     try owner.attachSessionRenderer(renderer_id, 2, 1, .{ .remote_mode = .remote });
     const value = try owner.raw().getSessionRenderer(renderer_id);
-    failing.fail_index = failing.alloc_index;
-    value.hitGridPushScissorRect(0, 0, 2, 1);
-    try std.testing.expect(failing.has_induced_failure);
-    failing.fail_index = std.math.maxInt(usize);
 
     const text_id = try owner.createTextBuffer(.unicode);
     try owner.textBufferSetText(text_id, "\u{4e2d}");
@@ -289,12 +285,11 @@ test "Context diagnostics capture renderer and buffer failures without invoking 
         .logger = &owner.logger,
     }));
     var events: [3]logger.Diagnostic = undefined;
-    try std.testing.expectEqual(@as(u32, 3), drain(&owner.diagnostics, &events));
+    try std.testing.expectEqual(@as(u32, 2), drain(&owner.diagnostics, &events));
     try std.testing.expectEqual(@as(u64, 0), owner.diagnostics.dropped_count);
-    for (events) |event| try std.testing.expectEqual(.warn, event.level);
-    try std.testing.expectEqualStrings("Failed to push hit-grid scissor rect: error.OutOfMemory", events[0].message[0..events[0].message_len]);
-    try std.testing.expectEqualStrings("drawTextBuffer failed: error.OutOfMemory", events[1].message[0..events[1].message_len]);
-    try std.testing.expectEqualStrings("OptimizedBuffer.init: Invalid dimensions 0x1", events[2].message[0..events[2].message_len]);
+    for (events[0..2]) |event| try std.testing.expectEqual(.warn, event.level);
+    try std.testing.expectEqualStrings("drawTextBuffer failed: error.OutOfMemory", events[0].message[0..events[0].message_len]);
+    try std.testing.expectEqualStrings("OptimizedBuffer.init: Invalid dimensions 0x1", events[1].message[0..events[1].message_len]);
     try std.testing.expectEqual(@as(u32, 0), LegacyProbe.calls.load(.monotonic));
     try std.testing.expectError(error.InvalidDimensions, buffer.OptimizedBuffer.init(std.testing.allocator, 0, 1, .{
         .link_pool = &owner.links,

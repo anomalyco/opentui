@@ -5,6 +5,8 @@ import { RGBA } from "../lib/RGBA.js"
 import { stringToStyledText, StyledText } from "../lib/styled-text.js"
 import { createTestRenderer, type MockMouse, type TestRenderer } from "../testing/test-renderer.js"
 import { BoxRenderable } from "./Box.js"
+import { Renderable } from "../Renderable.js"
+import type { OptimizedBuffer } from "../buffer.js"
 import { CodeRenderable } from "./Code.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
@@ -1053,6 +1055,13 @@ describe("TextRenderable Selection", () => {
       expect(frame).toMatchSnapshot()
     })
 
+    it("draws the visible cell of a wide glyph cut at x = -1 as a blank on the glyph's background", async () => {
+      await createTextRenderable(currentRenderer, { content: "0123", bg: "#c04010", position: "absolute" })
+      await createTextRenderable(currentRenderer, { content: "界界", bg: "#2040c0", position: "absolute", left: -1 })
+      const bg = currentRenderer.currentRenderBuffer.withBuffers(({ bg }) => [...bg.slice(0, 3)].map((v) => v & 0xff))
+      expect([captureFrame().slice(0, 3), bg]).toEqual([" 界3", [32, 64, 192]])
+    })
+
     it("should render empty buffer correctly", async () => {
       await renderOnce()
       const frame = captureFrame()
@@ -1404,6 +1413,31 @@ describe("TextRenderable Selection", () => {
       await renderOnce()
 
       expect(text.height).toBe(1)
+    })
+
+    // GitHub #435: Yoga shrinks the middle text of a too-short column to zero rows. It paints
+    // nothing instead of overlapping the next text, and its height getter still reports one row.
+    // An empty renderable with its own renderSelf is zero rows tall too, so its hooks draw nothing.
+    it("hides a text that a short column shrinks to zero rows", async () => {
+      const column = new BoxRenderable(currentRenderer, { flexDirection: "column", height: 2 })
+      currentRenderer.root.add(column)
+      const texts = ["Line 1: short", "Line 2: Another line", "Line 3: end"].map(
+        (content) => new TextRenderable(currentRenderer, { content }),
+      )
+      for (const text of texts) column.add(text)
+      class Mark extends Renderable {
+        protected override renderSelf(buffer: OptimizedBuffer): void {
+          buffer.drawText("X".repeat(this.width), this.x, this.y, RGBA.fromInts(255, 255, 255))
+        }
+      }
+      column.add(new Mark(currentRenderer, { width: 6 }))
+      await renderOnce()
+
+      const rows = captureFrame()
+        .split("\n", 3)
+        .map((line) => line.trimEnd())
+      expect(rows).toEqual(["Line 1: short", "Line 3: end", ""])
+      expect(texts.map((text) => `${text.y} ${text.height}`)).toEqual(["0 1", "1 1", "1 1"])
     })
 
     it("should shrink width when replacing long line with shorter (wrapMode: none, position: absolute)", async () => {
@@ -2180,37 +2214,34 @@ describe("TextRenderable Selection", () => {
       expect(text.scrollY).toBe(2)
     })
 
-    it("should handle mouse scroll events for horizontal scrolling with unwrapped text", async () => {
-      resize(80, 5)
-
-      const wideText =
-        "This is a very long line that extends way beyond the visible area and should definitely need scrolling"
-      const { text } = await createTextRenderable(currentRenderer, {
-        content: wideText,
-        wrapMode: "none",
-        width: 20,
-        maxWidth: 20,
-      })
-
+    // Text paints through the native scene and Code through its own view. Truncated or wrapped text has nothing to
+    // the side: wheel steps leave it, and turning truncate on or leaving wrapMode "none" scrolls back to column 0.
+    it.each([
+      ["Text", false],
+      ["Text", true],
+      ["Code", false],
+      ["Code", true],
+    ] as const)("sideways wheel steps over unwrapped %s with truncate %j", async (kind, truncate) => {
+      const content = "abcdefghijklmnopqrstuvwxyz\nABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
+      const options = { content, wrapMode: "none" as const, width: 10, height: 1, syntaxStyle }
+      const code = () =>
+        new CodeRenderable(currentRenderer, { ...options, treeSitterClient: new MockTreeSitterClient() })
+      const text = kind === "Text" ? new TextRenderable(currentRenderer, options) : code()
+      const state = async () => (await renderOnce(), [text.scrollY, text.scrollX, captureFrame().slice(0, 10)])
+      currentRenderer.root.add(text)
       await renderOnce()
-
-      expect(text.scrollX).toBe(0)
-      expect(text.scrollY).toBe(0)
-
-      // Scroll right
-      for (let i = 0; i < 5; i++) {
-        await currentMouse.scroll(text.x + 1, text.y, "right")
-      }
-      await renderOnce()
-
-      expect(text.scrollX).toBe(5)
-
-      // Scroll left
-      await currentMouse.scroll(text.x + 1, text.y, "left")
-      await currentMouse.scroll(text.x + 1, text.y, "left")
-      await renderOnce()
-
-      expect(text.scrollX).toBe(3)
+      await currentMouse.scroll(1, 0, "right")
+      text.truncate = truncate
+      expect(await state()).toEqual(truncate ? [0, 0, "abc...wxyz"] : [0, 1, "bcdefghijk"])
+      for (const step of ["down", "right", "right", "right", "right", "left"] as const)
+        await currentMouse.scroll(1, 0, step)
+      expect(await state()).toEqual(truncate ? [1, 0, "ABC...WXYZ"] : [1, 4, "EFGHIJKLMN"])
+      text.scrollX = 2
+      await currentMouse.scroll(1, 0, "left")
+      expect(text.scrollX).toBe(truncate ? 2 : 1)
+      text.wrapMode = "word"
+      expect(await state()).toEqual([1, 0, "klmnopqrst"])
     })
 
     it("should not allow horizontal scrolling when text is wrapped", async () => {
