@@ -3285,6 +3285,33 @@ Paragraph text.`,
   `)
 })
 
+for (const [name, options] of [
+  ["coalesced", {}],
+  ["top-level", { internalBlockMode: "top-level" }],
+  ["coalesced with renderNode", { renderNode: (_token, context) => context.defaultRender() }],
+] satisfies [string, Partial<MarkdownOptions>][]) {
+  test(`non-streaming edit that extends the last block draws like fresh content with ${name}`, async () => {
+    for (const [before, after] of [
+      ["> one", "> one\n> two"],
+      ["Paragraph\n\n# Heading", "Paragraph\n\n# Heading 2"],
+    ]) {
+      const fresh = createMarkdownRenderable({ content: after, syntaxStyle, ...options })
+      renderer.root.add(fresh)
+      await renderMarkdownRenderable(fresh)
+      const expected = captureFrame()
+      fresh.destroy()
+
+      const md = createMarkdownRenderable({ content: before, syntaxStyle, ...options })
+      renderer.root.add(md)
+      await renderMarkdownRenderable(md)
+      md.content = after
+      await renderMarkdownRenderable(md)
+      expect(captureFrame()).toBe(expected)
+      md.destroy()
+    }
+  })
+}
+
 // Incomplete/invalid markdown tests
 
 test("incomplete code block (no closing fence)", async () => {

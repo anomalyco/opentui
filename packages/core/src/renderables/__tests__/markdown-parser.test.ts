@@ -11,28 +11,26 @@ test("first parse returns all tokens", () => {
   expect(state.stableTokenCount).toBe(Math.max(0, state.tokens.length - 2))
 })
 
-test("reuses unchanged tokens when appending content", () => {
-  const state1 = parseMarkdownIncremental("# Hello\n\nPara 1\n\n", null)
-  const state2 = parseMarkdownIncremental("# Hello\n\nPara 1\n\nPara 2", state1, 0) // No trailing unstable
-
-  // First tokens should be same object reference (reused)
-  expect(state2.tokens[0]).toBe(state1.tokens[0]) // heading
-  expect(state2.tokens[1]).toBe(state1.tokens[1]) // paragraph
-  expect(state2.stableTokenCount).toBe(state2.tokens.length)
-})
-
-test("trailing unstable tokens are re-parsed", () => {
-  const state1 = parseMarkdownIncremental("# Hello\n\nPara 1\n\n", null)
-  const state2 = parseMarkdownIncremental("# Hello\n\nPara 1\n\nPara 2", state1, 2)
-
-  // With trailingUnstable=2, last 2 tokens from state1 should be re-parsed
-  // state1 has: heading, paragraph, space (3 tokens)
-  // With trailing=2, only first token (heading) is stable
-  // So heading token should NOT be reused (since we only have 3 tokens and skip last 2)
-  // Actually with 3 tokens and trailingUnstable=2, we keep 1 token stable
-  expect(state2.tokens.length).toBeGreaterThan(0)
-  // The new tokens are re-parsed versions
-  expect(state2.tokens[0].type).toBe("heading")
+test("an edit with trailingUnstable 0 parses like fresh content", () => {
+  for (const [before, after] of [
+    ["# Heading", "# Heading 2"],
+    ["> one", "> one\n> two"],
+    ["- a\n\n", "- a\n\n- b"],
+    ["```js\nx", "```js\nx\ny\n```"],
+    ["| A |\n|---|", "| A |\n|---|\n| 1 |"],
+    ["Para", "Para\nlazy"],
+    ["[r]\n\n", "[r]\n\n[r]: http://x"],
+    ["[r]: http://x\n\nA\n\nB\n\nC\n\nSee [r", "[r]: http://x\n\nA\n\nB\n\nC\n\nSee [r] here"],
+  ]) {
+    const fresh = parseMarkdownIncremental(after, null, 0).tokens
+    const edited = parseMarkdownIncremental(after, parseMarkdownIncremental(before, null, 0), 0)
+    const streamed = parseMarkdownIncremental(after, parseMarkdownIncremental(before, null, 2), 2)
+    expect(edited.tokens).toEqual(fresh)
+    expect(edited.stableTokenCount).toBe(edited.tokens.length)
+    expect(parseMarkdownIncremental(after, edited, 0)).toBe(edited)
+    expect(parseMarkdownIncremental(after, edited, 2).stableTokenCount).toBeLessThan(edited.tokens.length)
+    expect(parseMarkdownIncremental(after, streamed, 0).tokens).toEqual(fresh)
+  }
 })
 
 test("handles content that diverges from start", () => {
@@ -67,12 +65,6 @@ test("parseMarkdownIncremental reports stableTokenCount for the reused prefix", 
   expect(second.tokens[0]).toBe(first.tokens[0])
 })
 
-test("stableTokenCount equals tokens.length when trailingUnstable is zero", () => {
-  const state = parseMarkdownIncremental("# Hello\n\nPara 1", null, 0)
-
-  expect(state.stableTokenCount).toBe(state.tokens.length)
-})
-
 test("initial parse keeps a conservative unstable tail", () => {
   const state = parseMarkdownIncremental("# Hello\n\nPara 1\n\nPara 2", null, 2)
 
@@ -93,22 +85,6 @@ test("handles partial token match", () => {
 
   // Token at start doesn't match exactly, so it's re-parsed
   expect(state2.tokens[0]).not.toBe(state1.tokens[0])
-})
-
-test("handles multiple stable tokens with explicit boundaries", () => {
-  // Use content with clear token boundaries that won't change
-  const content1 = "Para 1\n\nPara 2\n\nPara 3\n\n"
-  const state1 = parseMarkdownIncremental(content1, null)
-
-  const content2 = content1 + "Para 4"
-  const state2 = parseMarkdownIncremental(content2, state1, 0)
-
-  // All original tokens should be reused (same object reference)
-  for (let i = 0; i < state1.tokens.length; i++) {
-    expect(state2.tokens[i]).toBe(state1.tokens[i])
-  }
-  // And there should be a new token at the end
-  expect(state2.tokens.length).toBe(state1.tokens.length + 1)
 })
 
 test("code blocks are parsed correctly", () => {
@@ -141,13 +117,11 @@ test("token identity is preserved for stable tokens", () => {
   // Create initial state with multiple paragraphs
   const state1 = parseMarkdownIncremental("A\n\nB\n\nC\n\n", null)
 
-  // Append content - with trailingUnstable=0, all tokens should be reused
-  const state2 = parseMarkdownIncremental("A\n\nB\n\nC\n\nD", state1, 0)
+  // Append content - with trailingUnstable=2, all but the last two tokens are reused
+  const state2 = parseMarkdownIncremental("A\n\nB\n\nC\n\nD", state1, 2)
 
-  // Verify token identity (same object reference)
-  expect(state2.tokens[0]).toBe(state1.tokens[0])
-  expect(state2.tokens[1]).toBe(state1.tokens[1])
-  expect(state2.tokens[2]).toBe(state1.tokens[2])
+  state2.tokens.slice(0, 4).forEach((token, i) => expect(token).toBe(state1.tokens[i]))
+  expect(state2.tokens[4]).not.toBe(state1.tokens[4])
 })
 
 test("trailingUnstable re-parses trailing table when new rows are appended", () => {
