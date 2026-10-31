@@ -116,11 +116,10 @@ pub const NativeRenderable = struct {
         }) orelse return .{ .width = 1, .height = 1 };
 
         var measured_width: f32 = @floatFromInt(@max(@as(u32, 1), result.width_cols_max));
-        var measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
+        const measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
 
         if (width_mode == @backingInt(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
             measured_width = @min(effective_width, measured_width);
-            measured_height = @min(effective_height, measured_height);
         }
 
         return .{ .width = measured_width, .height = measured_height };
