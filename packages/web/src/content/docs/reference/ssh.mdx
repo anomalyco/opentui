@@ -341,7 +341,8 @@ Solid's `render(node, renderer)` adopts the existing renderer. Solid disposes it
   output finishes. It rejects if output fails.
 - The server closes the SSH channel after the session output finishes. If output does not finish within one second
   of the close, Core drops the output still queued and gives the write in progress and the restoration one more
-  second. Either way the close fails: the server reports the error to `onError` and closes the channel. If the connection drops, the server cancels the output at once.
+  second. Either way the close fails: the server reports the error to `onError` and closes the channel, with exit
+  status 0 if the restoration was written and 1 if not. If the connection drops, the server cancels the output at once.
 - `server.close()` rejects new shell requests and closes every live session as above. Then it ends every client
   connection and closes the SSH listener.
 - The server invokes `onClose` callbacks but does not await promises returned by them. It also does not track

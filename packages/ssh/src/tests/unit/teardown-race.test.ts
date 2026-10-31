@@ -125,11 +125,29 @@ test("stdin applies backpressure before renderer creation and resumes when read"
   await entered
 })
 
-test("renderer shutdown output waits for acknowledgement before the SSH channel closes", async () => {
+// A write in flight that outlives the close deadline but completes before the next one still restores (#1875);
+// one that outlives both cancels restoration. The exit status tells the client which happened. A cleanup failure
+// fails the close even when it ran late.
+const late = "NativeSession graceful close ran late; queued output was dropped"
+const timedOut = "NativeSession graceful close timed out; output cancelled without restoration"
+test.each([
+  { name: "reads at once", releaseMs: 0, cleanup: false, exit: 0, reported: [] },
+  { name: "reads after the deadline", releaseMs: 1_300, cleanup: false, exit: 0, reported: [late] },
+  { name: "reads after the deadline, cleanup throws", releaseMs: 1_300, cleanup: true, exit: 1, reported: ["cleanup"] },
+  { name: "never reads", releaseMs: null, cleanup: false, exit: 1, reported: [timedOut] },
+])("session teardown waits for the client and exits by the restore: $name", async (row) => {
+  const { releaseMs, exit, reported } = row
   const channel = new TestChannel()
+  const errors: unknown[] = []
   const { bridge } = testBridge({
     channel,
+    safe: createSafeInvoke((error) => errors.push(error)),
     createRenderer: (async (options: Parameters<RendererFactory>[0]) => {
+      if (row.cleanup) {
+        options!.nativeSession!.attachRenderer({ width: 4, height: 2 }, () => {
+          throw new Error("cleanup")
+        })
+      }
       return rendererStub({
         destroy() {
           options!.nativeSession!.write(Buffer.from("SHUTDOWN"))
@@ -148,38 +166,14 @@ test("renderer shutdown output waits for acknowledgement before the SSH channel 
   channel.emit("drain")
   await flush()
   expect(channel.closeCalls).toBe(0)
-  channel.release()
-  await closing
+  if (releaseMs !== null) {
+    await sleep(releaseMs)
+    channel.release()
+  }
+  expect(await Promise.race([closing.then(() => true), sleep(2_500).then(() => false)])).toBe(true)
   await entered
-  expect([channel.exits, channel.closeCalls]).toEqual([[0], 1])
-})
-
-test("session teardown force-closes a client that never drains", async () => {
-  const channel = new TestChannel()
-  const { bridge } = testBridge({
-    channel,
-    createRenderer: (async (options: Parameters<RendererFactory>[0]) => {
-      return rendererStub({
-        destroy() {
-          options!.nativeSession!.write(Buffer.from("SHUTDOWN"))
-        },
-      })
-    }) as unknown as RendererFactory,
-  })
-
-  const entered = bridge.enterApp(() => {})
-  await flush()
-  channel.hold()
-  const closed = await Promise.race([
-    bridge.destroy().then(() => true),
-    new Promise<false>((resolve) => setTimeout(() => resolve(false), 2_500)),
-  ])
-
-  expect(closed).toBe(true)
-  // The write in flight outlived the deadline and the one after it (#1875), so restoration was cancelled and the
-  // client learns that it failed.
-  expect([channel.exits, channel.closeCalls]).toEqual([[1], 1])
-  await entered
+  expect([channel.exits, channel.closeCalls]).toEqual([[exit], 1])
+  expect(errors.map((error) => (error as Error).message)).toEqual([...reported])
 })
 
 test("a channel error tears down without waiting for close", async () => {

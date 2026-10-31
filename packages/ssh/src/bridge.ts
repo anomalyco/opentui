@@ -255,12 +255,11 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
     // A late renderer still owns its wrapper cleanup and must finish before the channel.
     const closing = renderer?.closed ?? (channelClosed ? nativeSession.closed : nativeSession.close())
     void (async () => {
-      let restored = true
-      try {
-        await closing
-      } catch {
-        restored = false
-      }
+      // A late close drops queued output but writes the restore; `closed` still reports it as a Session failure.
+      let restored = await closing.then(
+        () => true,
+        (error) => nativeSession.isCloseInterruption(error),
+      )
       if (creatingRenderer) {
         try {
           const created = await creatingRenderer

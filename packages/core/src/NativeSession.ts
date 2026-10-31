@@ -592,7 +592,7 @@ export class NativeSession {
     this.schedule()
   }
 
-  /** Identifies this driver's close interruption or late close, not transport or restoration success. */
+  /** Identifies this driver's close interruption or late close; a late close on `closed` wrote the restore. */
   isCloseInterruption(error: unknown): boolean {
     return error != null && (error === this.closeInterruption || error === this.closeLate)
   }
@@ -966,7 +966,7 @@ export class NativeSession {
     this.finishing = true
     try {
       this.stopped = true
-      this._error ??= error
+      this._error ??= error === this.closeLate ? null : error
       const scheduled = this.scheduled
       this.scheduled = null
       try {
@@ -1019,6 +1019,7 @@ export class NativeSession {
       // event by many turns. Keep the listener until that event or stream close.
       if (!this.output && !this.sink.destroyed && !this.sink.writableFinished && !this.sink.errored) this.detach()
       else this.schedule()
+      this._error ??= error // A cleanup failure above takes precedence over a late close.
       if (!this._disposed && !this._error) return
       for (const wait of [this.closeWait, this.idleWait, this.presentationWait, this.transition?.wait]) {
         if (this._error) wait?.reject(this._error)
