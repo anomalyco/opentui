@@ -1933,6 +1933,16 @@ test.each<[string, StdoutStep[], string]>([
   ["exit after a lead byte", [lead, processExit], ""],
   ["destroy after the session closes", ["a", lead, sessionClose], ""],
   ["output failure after a lead byte", ["a", lead, outputFailure], ""],
+  ["SGR", ["\x1b[31mred\x1b[0m [1m]\x1b[m\x1b[38;2;1;2;3mx\x1b[2@\x1b[?25h\x1b[ q\x1b[3~~\n"], "red [1m]x~"],
+  ["SGR across a newline", ["\x1b[1mbold\nnext\x1b[22m\n"], "bold\r\nnext"],
+  ["strings", ["\x1b]8;;u\x1b\\l\x1b]0;a b\x07\x1bPq#0\x1b\\\x1b_Ga=q\x1b\\\x1b^p\x07\x1bXs\x07!\n"], "l!"],
+  ["a BEL title after a full row", ["x".repeat(80), "\x1b]0;t\x07", "y\n"], `${"x".repeat(80)}\r\ny`],
+  ["a BEL string between ZWJ parts", ["\u{1f468}\x1b]8;;u\x07\u200d\u{1f4bb}\n"], "\u{1f468}\u200d\u{1f4bb}"],
+  ["ESC sequences", ["a\x1b7b\x1b(Bc\x1b8\x1b=\x1b(0\x1b F\x1b~\n"], "abc"],
+  ["split sequences", ["a\x1b", "[3", "1m", "b\x1b]8;", ";u", "rl\x1b", "\\c\x1b(", "Bd\x1b(B", "e\n"], "abcde"],
+  ["malformed sequences", ["a\x1b[31\nb\x1b[1\u00e9\x1b]0;t\nc\x1b\n", "[d\n"], "a\r\nb\u00e9\r\nc\r\n[d"],
+  ["a lone ESC before a replay reset", ["a\x1b", (renderer) => renderer.resetSplitFooterForReplay(), "[1mb"], "a|[1mb"],
+  ["an unterminated CSI at the end of the stream", ["a\x1b[3", destroy], "a|"],
 ])("split-footer capture-stdout decodes %s like the terminal", async (_name, steps, expected) => {
   const stdout = createCollectingStdout(80, 24)
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {

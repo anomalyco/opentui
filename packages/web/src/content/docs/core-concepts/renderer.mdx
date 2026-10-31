@@ -45,7 +45,7 @@ In split-footer mode, `renderer.width` and `renderer.height` describe the footer
 
 - `"passthrough"` is the default outside split-footer mode.
 - `"capture-stdout"` is the split-footer default and is valid only in that mode.
-- Captured writes become ordered scrollback commits above the footer.
+- Captured writes become ordered scrollback commits above the footer. They are plain text: the renderer removes escape sequences, so colors and links are lost. Use `writeToScrollback` to write styled rows.
 
 ## Writing to scrollback
 

@@ -447,6 +447,9 @@ type StdoutRow = { line: string; cells: number; trailingNewline: boolean; endsRo
 
 const STDOUT_TAB_WIDTH = 8
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+// A CSI, a string ended by BEL (its ESC \ is an ESC sequence), or an ESC sequence; a group is a final byte. Each ends
+// at a byte it cannot hold.
+const STDOUT_ESCAPE = /\x1b(?:\[[\x20-\x3f]*([\x40-\x7e])?|[\]PX^_][^\x00-\x1f]*(\x07)?|[\x20-\x2f]*([\x30-\x7e])?)/g
 
 type PendingSplitFooterTransition = {
   mode: "viewport-scroll" | "clear-stale-rows"
@@ -1262,6 +1265,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private externalOutputQueue: ExternalOutputQueue
   private pendingExternalOutputMode: ExternalOutputMode | null = null
   private readonly stdoutDecoder = new StringDecoder("utf8")
+  private stdoutEscape = ""
   private realStdoutWrite: (chunk: any, encoding?: any, callback?: any) => boolean
 
   private _useConsole: boolean = true
@@ -2987,6 +2991,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private flushStdoutDecoder(): void {
     const text = this.stdoutDecoder.end()
     if (text && this.nativeSession.open) this.interceptStdoutWrite(text)
+    this.stdoutEscape = ""
   }
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
@@ -2998,7 +3003,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const bytes = ArrayBuffer.isView(chunk)
         ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
         : Buffer.from(String(chunk ?? ""), Buffer.isEncoding(encoding) ? encoding : undefined)
-      const text = this.stdoutDecoder.write(bytes)
+      const decoded = this.stdoutEscape + this.stdoutDecoder.write(bytes)
+      this.stdoutEscape = ""
+      // Rows are plain text. A sequence cut off by the end of the write waits for the next; its kind is all it needs.
+      const text = decoded.replace(STDOUT_ESCAPE, (match, csi, bel, esc, offset) => {
+        if (offset + match.length === decoded.length && (csi ?? bel ?? esc) === undefined) {
+          this.stdoutEscape = match.slice(0, 2)
+        }
+        return ""
+      })
       // Capture mode intentionally diverts stdout into split commit snapshots
       // instead of writing directly to process stdout. Native flushing will append
       // and repaint in one controlled frame, which is what avoids footer flicker.
