@@ -206,7 +206,7 @@ If you do not pass `style`, it is `"columns"` when `internalBlockMode` is `"top-
 
 ## Custom node rendering
 
-Use `renderNode` to replace the renderable for a block. Return `undefined` or `null` to use the default renderable. Call `context.defaultRender()` to create the default renderable yourself:
+Use `renderNode` to replace the renderable for a block. Return `undefined` or `null` to use the default renderable. Call `context.defaultRender()` to create the default renderable yourself. When a style option (such as `syntaxStyle`, `fg`, or `conceal`) or `streaming` changes, `renderNode` runs again (in the default coalesced mode, only for blocks with a custom renderable). Its result replaces the old renderable, which is destroyed, so return a new renderable on each call. Default renderables are restyled in place:
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {

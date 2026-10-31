@@ -2011,14 +2011,15 @@ test("table cells use the markdown fg and follow fg changes", async () => {
   const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
   const md = createMarkdownRenderable({
     id: "markdown-table-fg",
-    content: "| Head |\n| --- |\n| Cell |",
+    content: "[ref]: https://example.com\n\nIntro\n\n| Head |\n| --- |\n| Cell [OpenTUI][ref] |",
     syntaxStyle: SyntaxStyle.fromStyles({}, renderer.nativeScene),
     fg: fg1,
+    streaming: true,
   })
 
   renderer.root.add(md)
   await renderMarkdownRenderable(md)
-  expect(md._blockStates[0]?.renderable).toBeInstanceOf(TextTableRenderable)
+  expect(md._blockStates.at(-1)?.renderable).toBeInstanceOf(TextTableRenderable)
   expect(findSpanContaining(captureSpans(), "Head")?.fg?.toInts()).toEqual(fg1.toInts())
   expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(fg1.toInts())
 
@@ -2028,6 +2029,8 @@ test("table cells use the markdown fg and follow fg changes", async () => {
 
   expect(findSpanContaining(captureSpans(), "Head")?.fg?.toInts()).toEqual(fg2.toInts())
   expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(fg2.toInts())
+  // A restyle must not re-lex the streaming tail without the earlier link definition.
+  expect(captureFrame()).toContain("OpenTUI (https://example.com)")
 })
 
 test("fenced diff blocks color added and removed lines", async () => {
@@ -3187,39 +3190,82 @@ test("renderNode setter rerenders same-type top-level blocks", async () => {
   `)
 })
 
-test("style refresh replaces children before layout so replacements paint in the same frame", async () => {
-  let content = "old"
-  const md = createMarkdownRenderable({
-    content: "# Heading",
-    syntaxStyle,
-    internalBlockMode: "top-level",
-    renderNode: () => new TextRenderable(renderer, { content, width: 3, height: 1 }),
+for (const [internalBlockMode, defaultCalls] of [
+  ["coalesced", []],
+  ["top-level", ["paragraph"]],
+] as const) {
+  test(`style changes call renderNode again for custom ${internalBlockMode} blocks before layout`, async () => {
+    let label = "old"
+    const rendered: string[] = []
+    const md = createMarkdownRenderable({
+      content: "# Heading\n\n> quote\n\n---\n\nbody",
+      syntaxStyle,
+      streaming: true,
+      internalBlockMode,
+      renderNode: (token, context) => {
+        rendered.push(token.type)
+        if (token.type === "heading") return new TextRenderable(renderer, { content: label, width: 3, height: 1 })
+        if (token.type === "blockquote" || token.type === "hr") {
+          return new BoxRenderable(renderer, { height: 3, border: true, borderColor: "#ff0000" })
+        }
+        return context.defaultRender()
+      },
+    })
+    const shape = () =>
+      md
+        .getChildren()
+        .map((child) => child.constructor.name + (child instanceof BoxRenderable ? child.borderColor : ""))
+    renderer.root.add(md)
+    await renderOnce()
+    const expected = shape()
+    expect(expected).toEqual([
+      "TextRenderable",
+      "BoxRenderable" + RGBA.fromHex("#ff0000"),
+      "BoxRenderable" + RGBA.fromHex("#ff0000"),
+      "CodeRenderable",
+    ])
+    rendered.length = 0
+    md.content += " more"
+    await renderOnce()
+    expect(rendered).toEqual(["paragraph"])
+    const body = md.getChildren()[3]
+    const order: string[] = []
+    const add = md.add.bind(md)
+    md.add = (child, index) => {
+      order.push("add")
+      return add(child, index)
+    }
+    md.renderBefore = () => order.push("before")
+
+    for (const [deferred, change] of [
+      [
+        true,
+        () => {
+          md.syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromHex("#00ff00") } }, renderer.nativeScene)
+          md.fg = "#0000ff"
+        },
+      ],
+      [true, () => (md.conceal = false)],
+      [false, () => md.refreshStyles()],
+      [false, () => (md.streaming = false)],
+    ] as const) {
+      const heading = md.getChildren()[0]
+      label = label === "old" ? "new" : "old"
+      rendered.length = 0
+      order.length = 0
+      change()
+      expect(heading.isDestroyed).toBe(!deferred)
+      await renderOnce()
+
+      expect(rendered).toEqual(["heading", "blockquote", "hr", ...defaultCalls])
+      expect(order.slice(0, 4)).toEqual(["add", "add", "add", "before"])
+      expect(shape()).toEqual(expected)
+      expect(heading.isDestroyed).toBe(true)
+      expect(md.getChildren()[3]).toBe(body)
+      expect(captureFrame().split("\n")[0].trimEnd()).toBe(label)
+    }
   })
-  renderer.root.add(md)
-  await renderOnce()
-  expect(captureFrame().trimEnd()).toBe("old")
-  const original = md.getChildren()[0]
-  const calls: string[] = []
-  const add = md.add.bind(md)
-  md.add = (child, index) => {
-    calls.push("add")
-    return add(child, index)
-  }
-  md.renderBefore = () => calls.push("before")
-  md.renderAfter = () => calls.push("after")
-
-  content = "new"
-  md.conceal = false
-  expect(md.getChildren()[0]).toBe(original)
-
-  await renderOnce()
-
-  expect(calls).toEqual(["add", "before", "after"])
-  expect(original.isDestroyed).toBe(true)
-  expect(md.getChildren()[0]).not.toBe(original)
-  expect(md.getChildren()[0].parent).toBe(md)
-  expect(captureFrame().trimEnd()).toBe("new")
-})
+}
 
 test("internalBlockMode setter updates existing markdown renderable", async () => {
   const md = createMarkdownRenderable({
@@ -4068,6 +4114,8 @@ test("internalBlockMode=top-level exposes a conservative stable block prefix", a
 
   expect(md._blockStates.map((state) => state.token.type)).toEqual(["heading", "paragraph", "paragraph"])
   expect(md._stableBlockCount).toBe(1)
+  md.streaming = false
+  expect(md._stableBlockCount).toBe(3)
 })
 
 test("default block mode still coalesces ordinary markdown blocks", async () => {

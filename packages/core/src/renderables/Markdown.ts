@@ -498,6 +498,7 @@ export class MarkdownRenderable extends Renderable {
     if (this._streaming !== value) {
       this.assertMutable()
       this._streaming = value
+      this._parseState = parseMarkdownIncremental(this._content, this._parseState, value ? 2 : 0)
       this.updateBlocks(true)
     }
   }
@@ -2111,8 +2112,10 @@ export class MarkdownRenderable extends Renderable {
       return
     }
 
-    const trailingUnstable = this._streaming ? 2 : 0
-    this._parseState = parseMarkdownIncremental(this._content, this._parseState, trailingUnstable)
+    // A style change keeps the parse: a re-lex of the tail alone loses earlier link definitions.
+    if (this._parseState?.content !== this._content) {
+      this._parseState = parseMarkdownIncremental(this._content, this._parseState, this._streaming ? 2 : 0)
+    }
 
     const tokens = this._parseState.tokens
 
@@ -2147,7 +2150,13 @@ export class MarkdownRenderable extends Renderable {
       const nextToken = blockTokens[i + 1]
       const existing = this._blockStates[blockIndex]
 
-      if (existing && existing.tokenRaw === token.raw && existing.token.type === token.type) {
+      // A forced refresh of a custom node falls through to the create arm, so renderNode runs again.
+      if (
+        existing &&
+        existing.tokenRaw === token.raw &&
+        existing.token.type === token.type &&
+        (existing.canUpdateInPlace || !forceTableRefresh)
+      ) {
         existing.token = token
         if (forceTableRefresh) {
           this.updateBlockRenderable(existing, token, blockIndex, nextToken, true)
@@ -2248,22 +2257,6 @@ export class MarkdownRenderable extends Renderable {
     this._stableBlockCount = 0
   }
 
-  /**
-   * Re-render existing blocks without rebuilding the parse state or block structure.
-   * Used when only style/conceal changes - much faster than full rebuild.
-   */
-  private rerenderBlocks(): void {
-    if (this._internalBlockMode === "top-level") {
-      this.updateBlocks(true)
-      return
-    }
-
-    for (let i = 0; i < this._blockStates.length; i++) {
-      const state = this._blockStates[i]
-      this.updateBlockRenderable(state, state.token, i, this._blockStates[i + 1]?.token, true)
-    }
-  }
-
   public clearCache(): void {
     this._parseState = null
     this.clearBlockStates()
@@ -2274,7 +2267,7 @@ export class MarkdownRenderable extends Renderable {
   public refreshStyles(): void {
     this._styleDirty = false
     this._ctx.nativeScene.lifecyclePasses.refresh(this)
-    this.rerenderBlocks()
+    this.updateBlocks(true)
     this.requestRender()
   }
 
@@ -2288,7 +2281,7 @@ export class MarkdownRenderable extends Renderable {
     if (!this._styleDirty) return
     this._styleDirty = false
     this._ctx.nativeScene.lifecyclePasses.refresh(this)
-    this.rerenderBlocks()
+    this.updateBlocks(true)
   }
 
   override _needsLifecyclePass(): boolean {
