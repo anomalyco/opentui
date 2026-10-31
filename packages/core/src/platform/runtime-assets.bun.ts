@@ -68,6 +68,16 @@ export async function resolveNativeLibraryPath(): Promise<string> {
     }
   }
 
+  if (process.platform === "freebsd") {
+    // Built at runtime rather than written as a literal: no @opentui/core-freebsd-*
+    // package is published yet, and a literal specifier would make the bundler try to
+    // resolve it at build time, failing `bun run build:lib` on every platform. The node
+    // resolver already imports asset.packageName the same way. Set OTUI_ASSET_ROOT to
+    // point at a locally built libopentui.so instead (handled above).
+    const specifier: string = `@opentui/core-freebsd-${process.arch}`
+    return ((await import(specifier)) as NativePackageModule).default
+  }
+
   if (process.platform === "win32") {
     if (process.arch === "x64") {
       return ((await import("@opentui/core-win32-x64" as string)) as NativePackageModule).default
