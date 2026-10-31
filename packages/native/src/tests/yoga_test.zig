@@ -1042,18 +1042,14 @@ const Leaf = struct {
     len: u32 = 0,
     absolute: bool = false,
     calls: u64 = 0,
-    // NativeRenderable.measure over a text of `len` cells that wraps at any cell; it
-    // clamps to an undefined height as to a height of 1.
-    fn measure(target: ?*anyopaque, width: f32, width_mode: u32, height: f32, _: u32) callconv(.c) yoga.ExternalYogaSize {
+    // NativeRenderable.measure over a text of `len` cells that wraps at any cell.
+    fn measure(target: ?*anyopaque, width: f32, width_mode: u32, _: f32, _: u32) callconv(.c) yoga.ExternalYogaSize {
         const self: *@This() = @ptrCast(@alignCast(target.?));
         self.calls += 1;
         const wrap: u32 = if (width_mode == @backingInt(yoga.YogaMeasureMode.undefined) or !(width >= 1)) 0 else @intFromFloat(@min(@floor(width), 1e6));
         const lines = if (wrap == 0) 1 else (self.len + wrap - 1) / wrap;
         var size: yoga.ExternalYogaSize = .{ .width = @floatFromInt(@max(1, if (wrap == 0) self.len else @min(self.len, wrap))), .height = @floatFromInt(@max(1, lines)) };
-        if (width_mode == @backingInt(yoga.YogaMeasureMode.at_most) and !self.absolute) {
-            size.width = @min(width, size.width);
-            size.height = @min(if (std.math.isNan(height)) 1 else height, size.height);
-        }
+        if (width_mode == @backingInt(yoga.YogaMeasureMode.at_most) and !self.absolute) size.width = @min(width, size.width);
         return size;
     }
 };

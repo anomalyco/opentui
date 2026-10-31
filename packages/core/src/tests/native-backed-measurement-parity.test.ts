@@ -35,7 +35,7 @@ for (const kind of ["text", "textarea"] as const) {
   describe(`native-backed ${kind} measurement parity`, () => {
     const create = (
       content: string,
-      options: Pick<TextOptions, "wrapMode" | "alignSelf" | "position" | "left" | "top" | "margin"> = {},
+      options: Pick<TextOptions, "wrapMode" | "alignSelf" | "position" | "left" | "top" | "margin" | "flexShrink"> = {},
     ) =>
       kind === "text"
         ? new TextRenderable(renderer, { content, ...options })
@@ -62,8 +62,9 @@ for (const kind of ["text", "textarea"] as const) {
     })
 
     test("clamps to a narrower parent and removes clamping for absolute positioning", async () => {
-      const parent = new BoxRenderable(renderer, { width: 10, alignItems: "flex-start" })
-      const node = create("ABCDEFGHIJKLMNOPQRST", { wrapMode: "none", alignSelf: "flex-start", left: 0, top: 0 })
+      // An auto-height absolute parent leaves the text's height undefined.
+      const parent = new BoxRenderable(renderer, { position: "absolute", width: 10, alignItems: "flex-start" })
+      const node = create("ABCDEFGHIJKLMNOPQRST\n2\n3", { wrapMode: "none", alignSelf: "flex-start", left: 0, top: 0 })
       parent.add(node)
       renderer.root.add(parent)
       for (const [position, width] of [
@@ -73,7 +74,7 @@ for (const kind of ["text", "textarea"] as const) {
       ] as const) {
         node.position = position
         await renderOnce()
-        expectLayout(node, width, 1)
+        expectLayout(node, width, 3)
       }
     })
 
@@ -88,6 +89,25 @@ for (const kind of ["text", "textarea"] as const) {
       parent.width = 21
       await renderOnce()
       expectLayout(node, 19, 4)
+    })
+
+    test("lays out as a fresh tree after a size measured at an at-most width is reused as exact", async () => {
+      const build = (alignItems: "flex-start" | "stretch") => {
+        const parent = new BoxRenderable(renderer, { width: 10, height: 2, alignItems })
+        const node = create("a".repeat(40), { wrapMode: "char", flexShrink: 0 })
+        parent.add(node)
+        renderer.root.add(parent)
+        return { parent, node }
+      }
+      const tree = build("flex-start")
+      await renderOnce()
+      tree.parent.alignItems = "stretch"
+      await renderOnce()
+      const layout = tree.node.getLayout()
+      tree.parent.destroyRecursively()
+      const fresh = build("stretch")
+      await renderOnce()
+      expect(layout).toEqual(fresh.node.getLayout())
     })
 
     test("measures initially absolute content without AtMost clamping", async () => {
@@ -191,14 +211,19 @@ describe("measured text stays inside its parent's rounded content box", () => {
     },
   )
 
-  test("wrapped text fits beside a visible ScrollBox scrollbar", async () => {
-    const scroll = new ScrollBoxRenderable(renderer, { height: 4 })
-    const node = text("0123456789".repeat(20), { width: "100%" })
+  // Every wrapped line counts toward the scroll height, also past the renderer's 30 rows.
+  test.each([
+    ["stretch", { width: "100%" }, 20, 11],
+    ["flex-start", {}, 70, 37],
+  ] as const)("wrapped text fits beside a visible ScrollBox scrollbar (%s)", async (align, options, repeat, lines) => {
+    const scroll = new ScrollBoxRenderable(renderer, { height: 4, contentOptions: { alignItems: align } })
+    const node = text("0123456789".repeat(repeat), options)
     scroll.add(node)
     renderer.root.add(box({ width: 20 }, [scroll]))
     await renderOnce()
     await renderOnce()
     expect([scroll.verticalScrollBar.visible, node.width, scroll.content.width]).toEqual([true, 19, 19])
+    expect([node.height, scroll.scrollHeight]).toEqual([lines, lines])
     expect(line(1).slice(0, 4)).toBe("9012")
   })
 
