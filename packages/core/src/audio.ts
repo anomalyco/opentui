@@ -2519,7 +2519,10 @@ export class AudioRecorder extends EventEmitter<AudioRecorderEvents> {
         "finalize",
       )
       if (this.terminationRequest != null) return
-      await this.fileHandle!.sync()
+      // Node 26.9+ denies FileHandle.sync() under the Permission Model (nodejs/node#65431); close without it.
+      await this.fileHandle!.sync().catch((cause: unknown) => {
+        if ((cause as NodeJS.ErrnoException).code !== "ERR_ACCESS_DENIED") throw cause
+      })
       if (this.terminationRequest != null) return
       await this.fileHandle!.close()
       this.fileHandle = null
