@@ -3604,6 +3604,7 @@ export class FFIRenderLib {
   public readonly encoder: TextEncoder = new TextEncoder()
   private readonly emptyBytes = new Uint8Array(0)
   public readonly decoder: TextDecoder = new TextDecoder()
+  private readonly textDecoder: TextDecoder = new TextDecoder("utf-8", { ignoreBOM: true })
   private logCallbackWrapper: FFICallbackInstance | null = null
   private diagnosticDrain?: ReturnType<typeof createDiagnosticDrainRecord>
   private nativeSpanFeedCallbackWrapper: FFICallbackInstance | null = null
@@ -4543,7 +4544,7 @@ export class FFIRenderLib {
     if (count[0] !== bytes.length) {
       throw new NativeError(operation, NativeStatus.InternalError)
     }
-    return this.decoder.decode(bytes)
+    return this.textDecoder.decode(bytes)
   }
 
   public contextTextBufferGetText(context: NativeContextHandle, text: ContextTextBufferHandle): string {
