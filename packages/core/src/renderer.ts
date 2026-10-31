@@ -28,6 +28,7 @@ import {
   LogLevel,
   NativeError,
   NativeSessionRenderStatus,
+  NativeSessionTerminalPhase,
   NativeStatus,
   type NativeBufferedOutput,
   type NativeRenderStats,
@@ -1493,9 +1494,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         .finally(() => this.nativeDestroyWait!.promise)
         .finally(() => {
           if (this.nativeSession.error && !this.nativeSession.disposed) this.nativeSession.dispose()
-          this.leaveRawMode()
+          this.leaveRawMode(this.flushTerminalInputOnClose)
           this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler)
-          if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
           this.releaseStreamLease()
         })
       void this.nativeClosed.catch(() => {})
@@ -4799,6 +4799,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("Native scene suspension requires completed terminal setup and no pending transition")
     }
     this.flushStdoutDecoder()
+    const { context, session } = this.nativeSession
+    const restored = this.lib.sessionGetTerminalState(context, session) === NativeSessionTerminalPhase.Suspended
     const flushNativeSplit = this.externalOutputQueue.size > 0 || this.pendingNativeReplay
     if (flushNativeSplit) this.lib.getYogaHost().assertMutable()
     let nativeTransition: Promise<void>
@@ -4818,7 +4820,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } else {
       nativeTransition = this.nativeSession.suspend()
     }
-    nativeTransition = this.trackNativeTerminalTransition(nativeTransition)
+    // Leave raw mode as the suspend settles, before resume(); after destroy() the close leaves it after restoration.
+    // Suspending a suspended Session writes nothing, and the input since then belongs to the next program.
+    const settled = nativeTransition.finally(() => this._isDestroyed || restored || this.leaveRawMode(true))
+    nativeTransition = this.trackNativeTerminalTransition(settled)
     if (this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
       // A failed native split drain leaves the host suspended until the caller retries.
       this._previousControlState = this._controlState
@@ -4848,10 +4853,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.stopTerminalKeepAlive()
 
     this.themeModeState?.cancelRefresh()
-
-    if (this.stdin.setRawMode) {
-      this.stdin.setRawMode(false)
-    }
 
     this.stdin.pause()
     return nativeTransition
@@ -5153,7 +5154,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.pendingExternalOutputMode = null
     this.stdout.write = this.realStdoutWrite
 
-    const discardInput = this._terminalIsSetup && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
+    // A suspend that has not settled has not flushed, so the close flushes after restoration.
+    const discardInput =
+      this._terminalIsSetup &&
+      (this._controlState !== RendererControlState.EXPLICIT_SUSPENDED || this.nativeTerminalTransition !== null)
     if (discardInput) {
       const bufferedInput = this.stdin.readableLength
       if (bufferedInput > 0) this.stdin.read(bufferedInput)
@@ -5180,13 +5184,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.resolveIdleIfNeeded()
   }
 
-  // Leave raw mode only after restoration stops mouse reports, so a cooked tty cannot echo them.
-  private leaveRawMode(): void {
+  // Leave raw mode only after restoration stops mouse reports, so a cooked tty cannot echo them. The flush drops the
+  // reports the terminal sent before, so the next program does not read them.
+  private leaveRawMode(flushInput = false): void {
     try {
       this.stdin.setRawMode?.(false)
     } catch (e) {
       console.error("Error disabling raw mode:", e)
     }
+    if (flushInput && this.stdin === process.stdin) this.lib.terminalFlushInput()
   }
 
   private releaseStreamLease(): void {

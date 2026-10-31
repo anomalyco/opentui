@@ -110,7 +110,7 @@ Use `start()` to resume after `pause()`. `requestLive()` cannot resume `EXPLICIT
 
 A registered `Timeline` owns its live request when the timeline engine is attached. Do not call `requestLive()` for that timeline. See [Animation and Timeline](/docs/application-apis/animation).
 
-`suspend()` releases active terminal input modes and stops rendering. `resume()` restores the control state that existed before suspension.
+`suspend()` releases active terminal input modes and stops rendering. Await it before you hand the terminal to another program. `resume()` restores the control state that existed before suspension. See [Suspend and resume](/docs/core-concepts/lifecycle#suspend-and-resume).
 
 Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedulerState()` reports running, rendering, and scheduled-work state for diagnostics.
 
