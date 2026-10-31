@@ -150,6 +150,34 @@ test("token identity is preserved for stable tokens", () => {
   expect(state2.tokens[2]).toBe(state1.tokens[2])
 })
 
+const tokenShape = (tokens: { type: string; raw: string }[]) => tokens.map(({ type, raw }) => ({ type, raw }))
+
+test.each([
+  ["a blockquote line", "> one", "> one\n> two"],
+  ["a list item", "- a", "- a\n- b"],
+  ["a loose list item", "- a\n\n", "- a\n\n- b"],
+  ["a lazy paragraph line", "para", "para\nlazy"],
+  ["a setext underline", "Title\n", "Title\n==="],
+  ["a table row", "| A |\n|---|\n| 1 |", "| A |\n|---|\n| 1 |\n| 2 |"],
+  ["indented code after a blank line", "    code\n\n", "    code\n\n    more"],
+])("trailingUnstable=0 lexes %s into the block it extends", (_name, before, after) => {
+  const state1 = parseMarkdownIncremental(before, null, 0)
+  const state2 = parseMarkdownIncremental(after, state1, 0)
+
+  expect(tokenShape(state2.tokens)).toEqual(tokenShape(Lexer.lex(after, { gfm: true })))
+  expect(state2.stableTokenCount).toBe(state2.tokens.length)
+})
+
+test("trailingUnstable=0 keeps re-lexed tokens that come out unchanged", () => {
+  const state1 = parseMarkdownIncremental("# Title\n\n> one", null, 0)
+  const state2 = parseMarkdownIncremental("# Title\n\n> one\n> two", state1, 0)
+
+  expect(state2.tokens.length).toBe(2)
+  expect(state2.tokens[0]).toBe(state1.tokens[0])
+  expect(state2.tokens[1]).not.toBe(state1.tokens[1])
+  expect(state2.tokens[1].raw).toBe("> one\n> two")
+})
+
 test("trailingUnstable re-parses trailing table when new rows are appended", () => {
   const content1 = "| A |\n|---|\n| 1 |"
   const state1 = parseMarkdownIncremental(content1, null, 2)

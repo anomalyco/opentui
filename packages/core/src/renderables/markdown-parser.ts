@@ -42,8 +42,11 @@ export function parseMarkdownIncremental(
     }
   }
 
-  // Keep last N tokens unstable (e.g. "# Hello" might become "# Hello World")
-  reuseCount = Math.max(0, reuseCount - trailingUnstable)
+  // Appended text can extend the last block, even when the caller treats every token as stable:
+  // "> one" + "\n> two" is one blockquote, and a list followed by a space token ("- a", "\n\n")
+  // plus "- b" is one loose list. Always re-lex the last two tokens; trailingUnstable can widen
+  // the window (e.g. "# Hello" might become "# Hello World" while streaming).
+  reuseCount = Math.max(0, reuseCount - Math.max(trailingUnstable, 2))
 
   offset = 0
   for (let i = 0; i < reuseCount; i++) {
@@ -63,6 +66,12 @@ export function parseMarkdownIncremental(
 
   try {
     const newTokens = Lexer.lex(remainingContent, { gfm: true }) as MarkedToken[]
+    // Re-lexed tokens that come out unchanged keep their previous object
+    for (let i = 0; i < newTokens.length; i++) {
+      const prevToken = prevState.tokens[reuseCount + i]
+      if (!prevToken || prevToken.type !== newTokens[i].type || prevToken.raw !== newTokens[i].raw) break
+      newTokens[i] = prevToken
+    }
     return {
       content: newContent,
       tokens: [...stableTokens, ...newTokens],
