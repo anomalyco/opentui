@@ -2104,7 +2104,7 @@ test("AudioRecorder stop drains every buffered frame while a file write is delay
 })
 
 test("AudioRecorder final header and sync failures remove the temp and preserve the destination", async () => {
-  for (const mode of ["header", "sync"] as const) {
+  for (const mode of ["header", "sync", "sync-denied"] as const) {
     const ring = replaceCaptureRing([0.25, -0.25])
     const directory = await createRecorderTempDirectory()
     const filePath = join(directory, `${mode}.wav`)
@@ -2113,18 +2113,21 @@ test("AudioRecorder final header and sync failures remove the temp and preserve 
     const probe = await openFile(probePath, "w")
     const fileHandlePrototype = Object.getPrototypeOf(probe) as object
     const originalWrite = (fileHandlePrototype as { write: (...args: unknown[]) => Promise<unknown> }).write
-    const originalSync = (fileHandlePrototype as { sync(): Promise<void> }).sync
     await probe.close()
     await unlinkFile(probePath)
     let headerWrites = 0
+    let handle: { fd: number } | undefined
     const restore =
       mode === "header"
-        ? replaceMethod(fileHandlePrototype, "write", function (this: unknown, ...args: unknown[]) {
+        ? replaceMethod(fileHandlePrototype, "write", function (this: { fd: number }, ...args: unknown[]) {
+            handle = this
             if (args[3] === 0 && ++headerWrites === 2) return Promise.reject(new Error("injected header failure"))
             return originalWrite.apply(this, args)
           })
-        : replaceMethod(fileHandlePrototype, "sync", function (this: unknown) {
-            return Promise.reject(new Error("injected sync failure"))
+        : replaceMethod(fileHandlePrototype, "sync", function (this: { fd: number }) {
+            handle = this
+            const code = mode === "sync" ? "EIO" : "ERR_ACCESS_DENIED"
+            return Promise.reject(Object.assign(new Error("injected sync failure"), { code }))
           })
     try {
       const audio = Audio.create({ autoStart: false })
@@ -2134,13 +2137,16 @@ test("AudioRecorder final header and sync failures remove the temp and preserve 
       recorder.on("error", (error) => errors.push(error))
       recorder.stop()
       await recorder.closed
-      expect(recorder.state).toBe("errored")
-      expect(errors[0]?.context.action).toBe("finalize")
-      expect(await readFile(filePath, "utf8")).toBe("existing")
+      const denied = mode === "sync-denied"
+      expect(recorder.state).toBe(denied ? "stopped" : "errored")
+      expect(errors.map((error) => error.context.action)).toEqual(denied ? [] : ["finalize"])
+      expect(
+        (await readFile(filePath)).equals(denied ? buildPcm16Wav([0.25, -0.25], 1) : Buffer.from("existing")),
+      ).toBe(true)
       expect(await readdir(directory)).toEqual([`${mode}.wav`])
+      expect(handle?.fd).toBe(-1)
     } finally {
       restore()
-      void originalSync
       ring.restore()
     }
   }

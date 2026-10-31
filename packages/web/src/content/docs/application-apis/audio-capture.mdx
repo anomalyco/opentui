@@ -287,6 +287,8 @@ Recording first writes a placeholder header to that temporary file. It does not 
 
 `stop()` stops input, drains all buffered frames, and writes the final WAV header. It then syncs and closes the temporary file.
 
+On Node.js 26.9.0 or later with `--permission`, Node.js blocks `FileHandle.sync()`. The recorder then closes the file without a sync, so the data is not forced to disk before the rename.
+
 After those steps, OpenTUI calls a same-directory filesystem `rename()` from the temporary path to the destination. The host filesystem defines replacement and rename guarantees.
 
 OpenTUI adds no guarantee beyond that rename behavior. Code that needs a specific durability or replacement contract must account for the target filesystem.
