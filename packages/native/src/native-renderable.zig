@@ -74,7 +74,7 @@ pub const NativeRenderable = struct {
         std.debug.assert((self.measure_dependents == null) == (self.measure_target == .none));
         try native_yoga.check(if (preserve_provider) native_yoga.nodeTeardownStatus(self.yoga_node) else switch (target) {
             .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null, false),
-            // `measure` clamps to the height cap and otherwise ignores it.
+            // `measure` ignores the height cap.
             else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure, true),
         });
         const invalidate = self.context_owned and (target != .none or self.measure_target != .none);
@@ -116,11 +116,11 @@ pub const NativeRenderable = struct {
         }) orelse return .{ .width = 1, .height = 1 };
 
         var measured_width: f32 = @floatFromInt(@max(@as(u32, 1), result.width_cols_max));
-        var measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
+        const measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
 
+        // Only the width clamps: Yoga reuses a size across width modes, and scroll content needs every row.
         if (width_mode == @backingInt(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
             measured_width = @min(effective_width, measured_width);
-            measured_height = @min(effective_height, measured_height);
         }
 
         return .{ .width = measured_width, .height = measured_height };
