@@ -114,6 +114,28 @@ During actual process exit, native rendering attempts synchronous restoration on
 termination-capable cleanup callbacks. It cannot replay an uncompleted write or finish an arbitrary asynchronous
 transport after the event loop stops. This last-chance path does not replace awaiting `closed` during normal shutdown.
 
+## Suspend and resume
+
+`suspend()` stops rendering and starts terminal restoration, which finishes asynchronously. Await it before you give
+the terminal to another program, such as an editor or the shell after `SIGTSTP`:
+
+```typescript
+import { spawnSync } from "node:child_process"
+
+await renderer.suspend()
+spawnSync(process.env.EDITOR ?? "vi", [file], { stdio: "inherit" })
+await renderer.resume()
+```
+
+The restoration disables the mouse and the other input modes that OpenTUI enabled and exits the alternate screen.
+Stdin stays in raw mode until the promise settles, so the terminal does not echo mouse reports that it sent before it
+handled the reset. When the promise settles, OpenTUI leaves raw mode and discards the input that the terminal queued on
+process stdin, so the next program does not read those reports as typed text. Keys typed during the transition, about
+20 ms on a fast terminal, are discarded too. Input that arrives after the promise settles is kept for the next program.
+
+If you do not await `suspend()`, the next program starts while stdin is still in raw mode and mouse reporting is still
+on. `resume()` enters raw mode before the Session turns mouse reporting back on.
+
 ## Signal handling
 
 By default, each renderer installs handlers that call `renderer.destroy()` for these signals:

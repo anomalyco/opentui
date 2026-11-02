@@ -2085,14 +2085,25 @@ test("Session teardown after successful setup releases listeners without closing
 
 // ---- Destroy resilience ----
 
-// A cooked tty echoes mouse reports, so raw mode covers the bytes that turn mouse tracking off on destroy and on on
-// resume. suspend() leaves raw mode at once: callers hand the terminal to the next program without awaiting it.
-// Each entry is a raw-mode switch, noting whether the sink already holds the mouse off (or on) bytes and whether the
-// Session has finished its close; a switch on a timer that fires before the close finishes fails the destroy rows.
+// A cooked tty echoes mouse reports, so raw mode covers the bytes that turn mouse tracking off on destroy and suspend,
+// and on on resume. Each entry is a raw-mode switch, noting whether the sink already holds the mouse off (or on) bytes
+// and whether the Session has finished its close; a switch on a timer that fires before the bytes fails the held rows.
 const rawModeActions: Record<string, (renderer: CliRenderer) => Promise<unknown>> = {
   destroy: (renderer) => (renderer.destroy(), renderer.closed),
   "destroy behind held output": (renderer) => (renderer.destroy(), renderer.closed),
   suspend: (renderer) => renderer.suspend(),
+  "suspend behind held output": (renderer) => renderer.suspend(),
+  "failing suspend": (renderer) => (
+    spyOn(renderer.nativeScene.driver, "suspend").mockRejectedValue(0), renderer.suspend()
+  ),
+  "destroy during suspend": (renderer) => (renderer.suspend().catch(() => {}), renderer.destroy(), renderer.closed),
+  // The footer change applies as the transition clears, and its resize listener resumes in that turn.
+  "footer resize during a suspension": async (renderer) => {
+    renderer.screenMode = "split-footer"
+    void renderer.suspend()
+    renderer.footerHeight = 5
+    await new Promise((resolve) => renderer.once(CliRenderEvents.RESIZE, () => resolve(renderer.resume())))
+  },
   resume: (renderer) => renderer.resume(),
   "failing resume": (renderer) => renderer.resume().catch(() => {}),
   "resume after destroy": (renderer) => (renderer.destroy(), renderer.closed.then(() => renderer.resume())),
@@ -2102,7 +2113,11 @@ const rawModeActions: Record<string, (renderer: CliRenderer) => Promise<unknown>
 test.each<{ action: string; sync: string[]; settled: string[] }>([
   { action: "destroy", sync: [], settled: ["off after mouse bytes after close"] },
   { action: "destroy behind held output", sync: [], settled: ["off after mouse bytes after close"] },
-  { action: "suspend", sync: ["off"], settled: ["off"] },
+  { action: "suspend", sync: [], settled: ["off after mouse bytes"] },
+  { action: "suspend behind held output", sync: [], settled: ["off after mouse bytes"] },
+  { action: "failing suspend", sync: [], settled: ["off"] },
+  { action: "destroy during suspend", sync: [], settled: ["off after mouse bytes after close"] },
+  { action: "footer resize during a suspension", sync: [], settled: ["off after mouse bytes", "on"] },
   { action: "resume", sync: ["on"], settled: ["on"] },
   { action: "failing resume", sync: [], settled: [] },
   { action: "resume after destroy", sync: [], settled: ["off after close"] },
@@ -2141,7 +2156,7 @@ test.each<{ action: string; sync: string[]; settled: string[] }>([
     expect({ sync: log, settled: rawMode, suspended: renderer.controlState === "explicit_suspended" }).toEqual({
       sync,
       settled,
-      suspended: ["suspend", "failing resume", "resume after destroy"].includes(action),
+      suspended: action.includes("suspend") || ["failing resume", "resume after destroy"].includes(action),
     })
   } finally {
     renderer.destroy()

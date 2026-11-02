@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { NativeSession } from "../NativeSession.js"
 import { CliRenderer, createCliRenderer, type CliRendererConfig } from "../renderer.js"
 import { processListenerCounts } from "../testing/harness.js"
-import { createTestStdin, createTestStdout } from "../testing/test-streams.js"
+import { RecordingWriteStream, createTestStdin, createTestStdout } from "../testing/test-streams.js"
 
 let originalStdinPaused: boolean
 let pauseCalled = false
@@ -240,27 +240,40 @@ test("destroying final custom renderer does not pause process stdin again", asyn
   expect(pauseCalled).toBe(false)
 })
 
-// The terminal can queue mouse reports until restoration disables them. They must not reach the next program.
+// The terminal can queue mouse reports until restoration disables them. They must not reach the next program, and
+// neither may input that arrives after the first suspend settles be dropped.
 const inputFlushCases = [
-  { stdin: "process", suspended: false, flushes: 1 },
-  { stdin: "process", suspended: true, flushes: 0 },
-  { stdin: "custom", suspended: false, flushes: 0 },
+  { stdin: "process", action: "closing", flushes: 1 },
+  { stdin: "process", action: "suspending", flushes: 1 },
+  { stdin: "process", action: "suspending twice", flushes: 1 },
+  { stdin: "process", action: "destroying during suspend", flushes: 1 },
+  { stdin: "custom", action: "closing", flushes: 0 },
+  { stdin: "custom", action: "suspending", flushes: 0 },
 ] as const
 
-for (const { stdin, suspended, flushes } of inputFlushCases) {
-  test(`closing a ${suspended ? "suspended " : ""}renderer on ${stdin} stdin flushes terminal input ${flushes} times`, async () => {
+for (const { stdin, action, flushes } of inputFlushCases) {
+  test(`${action} a renderer on ${stdin} stdin flushes terminal input ${flushes} times`, async () => {
+    const stdout = new RecordingWriteStream()
     const renderer = await createCliRenderer({
       stdin: stdin === "process" ? process.stdin : createTestStdin(),
-      stdout: createTestStdout(),
-      bufferedOutput: "memory",
+      stdout: stdout as unknown as NodeJS.WriteStream,
     })
-    const flush = spyOn(renderer.nativeScene.driver.renderLib, "terminalFlushInput").mockImplementation(() => {})
+    // Each flush records whether the mouse reset had reached the terminal.
+    const flushed: boolean[] = []
+    const lib = renderer.nativeScene.driver.renderLib
+    const flush = spyOn(lib, "terminalFlushInput").mockImplementation(() => {
+      flushed.push(stdout.text().includes("\x1b[?1000l"))
+    })
     try {
-      if (suspended) await renderer.suspend()
+      const suspending = action !== "closing" && renderer.suspend()
+      expect(flushed).toEqual([])
+      if (action === "destroying during suspend") void (suspending as Promise<void>).catch(() => {})
+      else await suspending
+      if (action === "suspending twice") await renderer.suspend()
       renderer.destroy()
-      expect(flush).toHaveBeenCalledTimes(0)
+      expect(flushed.length).toBe(action.startsWith("suspending") ? flushes : 0)
       await renderer.closed
-      expect(flush).toHaveBeenCalledTimes(flushes)
+      expect(flushed).toEqual(Array(flushes).fill(true))
     } finally {
       flush.mockRestore()
     }
