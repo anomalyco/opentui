@@ -209,9 +209,9 @@ describe("native stdin parser: differential replay", () => {
   // Representative input streams: typing, editing keys, startup capability replies,
   // mouse selection, scrolling, focus, and pastes, in the forms both parsers share.
   const streams: Array<[label: string, bytes: string]> = [
-    ["typing", "Hello, wörld! 日本語 👍\r\x7f\x7f\t"],
+    ["typing", "Hello, wörld! 日本語 👍\ue000\ue001\ue003\ue06e\r\x7f\x7f\t"],
     ["editing keys", "\x1b[A\x1b[B\x1b[1;5C\x1b[1;2D\x1b[H\x1b[F\x1b[3~\x1b[5~\x1b[6;5~\x1bOP\x1b[15~\x1b[Z"],
-    ["control and Alt keys", "\x01\x03\x1a\x1ba\x1bA\x1b\x01\x1b\r\x1b \x1bB\x1bF"],
+    ["control and Alt keys", "\x01\x03\x1a\x1ba\x1bA\x1b\x01\x1b\r\x1b \x1bB\x1bF\x1b[27;5;57344~"],
     [
       "startup replies",
       "\x1b[?62;22;52c\x1b[?2026;2$y\x1b[?1u\x1bP>|kitty(0.40.1)\x1b\\\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[4;800;1200t",
@@ -352,6 +352,7 @@ describe("native stdin parser: adapter", () => {
     expect(linefeed).toMatchObject({ name: "linefeed", sequence: "\n" })
     expect(altA).toMatchObject({ name: "A", meta: true, shift: true, option: false, sequence: "\x1bA" })
     expect(kittyA).toMatchObject({ name: "a", shift: true, sequence: "A", source: "kitty" })
+    expect(parse(native, ["\x1b"])[0]).toMatchObject({ key: { name: "", meta: true, sequence: "\x1b" } })
     expect(keypad).toMatchObject({ name: "0", sequence: "0", number: true, code: "Op" })
     expect(repeat).toMatchObject({ name: "a", eventType: "press", repeated: true })
     expect(base).toMatchObject({ name: "с", ctrl: true, baseCode: 99 })

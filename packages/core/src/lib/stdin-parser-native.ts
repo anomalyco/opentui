@@ -446,7 +446,7 @@ function parsedKey(
   let name: string
   if (code === 0) {
     name = text
-  } else if (kittyKeyMap[code] !== undefined) {
+  } else if (kittyKeyMap[code] !== undefined && !(flags & C.OT_INPUT_KEY_TYPED)) {
     // Core distinguishes a raw line feed from Enter.
     name = code === C.OT_INPUT_KEY_ENTER && !kitty && raw.endsWith("\n") ? "linefeed" : kittyKeyMap[code]!
   } else if (code === 0x20) {
