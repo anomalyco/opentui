@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Duplex } from "node:stream"
 import { afterEach } from "bun:test"
 import { Client, utils } from "ssh2"
 import type { ClientChannel } from "ssh2"
@@ -48,6 +49,70 @@ export type Shell = { conn: Client; stream: ClientChannel }
 export type ShellPty = ShellPtyInfo | false
 
 export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * In-process stand-in for an ssh2 shell `ServerChannel`. Writes complete at once unless `hold()` parks their
+ * callbacks, as ssh2 does while the client window is closed. Highwater mark 1 makes every write report pressure.
+ */
+export class TestChannel extends Duplex {
+  readonly writes: Buffer[] = []
+  readonly exits: number[] = []
+  closeCalls = 0
+  pauseCalls = 0
+  resumeCalls = 0
+  private held = false
+  private readonly parked: ((error?: Error | null) => void)[] = []
+
+  constructor() {
+    super({ highWaterMark: 1 })
+  }
+
+  override _read(): void {}
+
+  override _write(bytes: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.writes.push(Buffer.from(bytes))
+    if (this.held) this.parked.push(callback)
+    else callback()
+  }
+
+  get pendingWrite(): boolean {
+    return this.parked.length > 0
+  }
+
+  text(): string {
+    return Buffer.concat(this.writes).toString()
+  }
+
+  hold(): void {
+    this.held = true
+  }
+
+  /** Stops holding and completes every parked write. */
+  release(error?: Error): void {
+    this.held = false
+    for (const callback of this.parked.splice(0)) callback(error)
+  }
+
+  override pause(): this {
+    this.pauseCalls++
+    return super.pause()
+  }
+
+  override resume(): this {
+    this.resumeCalls++
+    return super.resume()
+  }
+
+  exit(code: number): boolean {
+    this.exits.push(code)
+    return true
+  }
+
+  close(): void {
+    this.closeCalls++
+    this.destroy()
+  }
+}
 
 export async function waitFor(pred: () => boolean, timeoutMs = 8000, step = 25): Promise<void> {
   const start = Date.now()

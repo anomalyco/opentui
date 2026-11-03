@@ -26,6 +26,7 @@ export function createTerminalCapabilities(overrides: TerminalCapabilitiesOverri
     notifications: false,
     explicit_cursor_positioning: false,
     remote: false,
+    program_status: false,
     multiplexer: "none",
     image_protocol: "auto",
     ...overrides,

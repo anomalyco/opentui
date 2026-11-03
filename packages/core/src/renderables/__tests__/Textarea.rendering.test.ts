@@ -460,7 +460,7 @@ describe("Textarea - Rendering Tests", () => {
     })
 
     it("should clear highlights with clear() method", async () => {
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("highlight", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -490,7 +490,7 @@ describe("Textarea - Rendering Tests", () => {
     })
 
     it("should clear both text and highlights together", async () => {
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("highlight", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -557,7 +557,9 @@ describe("Textarea - Rendering Tests", () => {
       editor.focus()
       editor.insertText("x")
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
       buffer.drawEditorView(editor.editorView, 0, 0)
 
       expect(editor.plainText).toBe("xTest")
@@ -575,7 +577,9 @@ describe("Textarea - Rendering Tests", () => {
 
       editor.focus()
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       for (let i = 0; i < 5; i++) {
         editor.insertText("a")
@@ -598,7 +602,9 @@ describe("Textarea - Rendering Tests", () => {
       editor.focus()
       editor.gotoLine(9999)
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       editor.newLine()
       buffer.drawEditorView(editor.editorView, 0, 0)
@@ -620,7 +626,9 @@ describe("Textarea - Rendering Tests", () => {
       editor.focus()
       editor.gotoLine(9999)
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       editor.deleteCharBackward()
       buffer.drawEditorView(editor.editorView, 0, 0)
@@ -640,7 +648,9 @@ describe("Textarea - Rendering Tests", () => {
 
       editor.focus()
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       buffer.drawEditorView(editor.editorView, 0, 0)
       editor.insertText("x")
@@ -661,7 +671,9 @@ describe("Textarea - Rendering Tests", () => {
 
       editor.focus()
 
-      const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+      const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+        owner: currentRenderer.nativeScene,
+      })
 
       buffer.drawEditorView(editor.editorView, 0, 0)
 

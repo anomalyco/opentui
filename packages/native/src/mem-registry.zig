@@ -64,6 +64,27 @@ pub const MemRegistry = struct {
         return id;
     }
 
+    /// Cancel the latest unpublished registration, freeing its data if owned.
+    /// Save buffers.items.len before register; no registry mutation may intervene.
+    pub fn cancelLastRegistration(self: *MemRegistry, id: u8, previous_buffer_count: usize) void {
+        std.debug.assert(id < self.buffers.items.len);
+        std.debug.assert(self.buffers.items[id].active);
+        std.debug.assert(self.buffers.items.len == previous_buffer_count or
+            self.buffers.items.len == previous_buffer_count + 1);
+        const buffer = self.buffers.items[id];
+        if (buffer.owned) self.allocator.free(buffer.data);
+
+        if (self.buffers.items.len > previous_buffer_count) {
+            std.debug.assert(id == previous_buffer_count);
+            std.debug.assert(self.free_slots.items.len == 0);
+            _ = self.buffers.pop();
+        } else {
+            // register popped this slot, so its return cannot require allocation.
+            self.buffers.items[id] = .{ .data = &.{}, .owned = false, .active = false };
+            self.free_slots.appendAssumeCapacity(id);
+        }
+    }
+
     pub fn get(self: *const MemRegistry, id: u8) ?[]const u8 {
         if (id >= self.buffers.items.len) return null;
         const buf = self.buffers.items[id];
@@ -75,10 +96,10 @@ pub const MemRegistry = struct {
         if (id >= self.buffers.items.len) return MemRegistryError.InvalidMemId;
         const prev = self.buffers.items[id];
         if (!prev.active) return MemRegistryError.InvalidMemId;
+        self.buffers.items[id] = .{ .data = data, .owned = owned, .active = true };
         if (prev.owned) {
             self.allocator.free(prev.data);
         }
-        self.buffers.items[id] = .{ .data = data, .owned = owned, .active = true };
     }
 
     pub fn unregister(self: *MemRegistry, id: u8) MemRegistryError!void {

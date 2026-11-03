@@ -1,12 +1,13 @@
 import { afterEach, describe, test, expect } from "bun:test"
 import { createTestRenderer as baseCreateTestRenderer, type TestRenderer } from "../../testing/test-renderer.js"
-import { TextBufferRenderable } from "../TextBufferRenderable.js"
+import { TextRenderable } from "../Text.js"
 import { LineNumberRenderable } from "../LineNumberRenderable.js"
 import { BoxRenderable } from "../Box.js"
 import { TextareaRenderable } from "../Textarea.js"
 import { t, fg, bold, cyan } from "../../lib/styled-text.js"
 import { parseColor } from "../../lib/RGBA.js"
 import type { CodeRenderable } from "../Code.js"
+import { resolveRenderLib } from "../../zig.js"
 
 const HIGHLIGHT_TIMEOUT_MS = 5000
 
@@ -87,10 +88,9 @@ FEATURES:
 
 Press ESC to return to main menu`
 
-class MockTextBuffer extends TextBufferRenderable {
+class MockTextBuffer extends TextRenderable {
   constructor(ctx: any, options: any) {
-    super(ctx, options)
-    this.textBuffer.setText(options.text || "")
+    super(ctx, { ...options, content: options.text || "" })
   }
 }
 
@@ -124,9 +124,52 @@ describe("LineNumberRenderable", () => {
       expect(target.parent).toBeNull()
       expect(target.isDestroyed).toBe(false)
       expect(target.listenerCount("line-info-change")).toBe(0)
-      expect(gutter.getLayoutNode().isFreed()).toBe(true)
+      expect(gutter.isFreed()).toBe(true)
     } finally {
       gutter.destroy()
+      target.destroy()
+    }
+  })
+
+  test.each(["destroy", "destroyRecursively"] as const)("rejected %s preserves removal policy", async (method) => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 10 })
+    const target = new MockTextBuffer(renderer, { text: "retained" })
+    const lines = new LineNumberRenderable(renderer, { target })
+    renderer.root.add(lines)
+    const children = lines.getChildren()
+    const host = resolveRenderLib().getYogaHost()
+    try {
+      host.invokeCallback(() => lines[method]())
+      expect(() => host.throwCallbackError()).toThrow("Cannot mutate Yoga during a callback")
+      expect(lines.isDestroyed).toBe(false)
+      expect(lines.getChildren()).toEqual(children)
+      expect(() => lines.remove(target)).toThrow("Cannot remove target directly")
+      lines.destroyRecursively()
+      expect(children.every((child) => child.isDestroyed)).toBe(true)
+    } finally {
+      lines.destroyRecursively()
+      target.destroy()
+    }
+  })
+
+  test("rejected clearTarget preserves ownership and permits retry", async () => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 8 })
+    const target = new TextRenderable(renderer, { content: "retained" })
+    const lines = new LineNumberRenderable(renderer, { target })
+    renderer.root.add(lines)
+    const host = resolveRenderLib().getYogaHost()
+    try {
+      host.invokeCallback(() => lines.clearTarget())
+      expect(() => host.throwCallbackError()).toThrow("Cannot mutate Yoga during a callback")
+      expect(() => lines.remove(target)).toThrow("Cannot remove target directly")
+      expect(target.listenerCount("line-info-change")).toBe(1)
+
+      lines.clearTarget()
+      expect(lines.getChildrenCount()).toBe(0)
+      expect(target.parent).toBeNull()
+      expect(target.listenerCount("line-info-change")).toBe(0)
+    } finally {
+      lines.destroyRecursively()
       target.destroy()
     }
   })
@@ -231,7 +274,7 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
+    const bgBuffer = buffer.withBuffers(({ bg }) => bg.slice())
 
     // Helper to get RGBA values from buffer at position
     const getBgColor = (x: number, y: number) => {
@@ -304,17 +347,16 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
 
     // Helper to get RGBA values from buffer at position
     const getBgColor = (x: number, y: number) => {
       const offset = (y * buffer.width + x) * 4
-      return {
+      return buffer.withBuffers(({ bg: bgBuffer }) => ({
         r: (bgBuffer[offset] & 0xff) / 255,
         g: (bgBuffer[offset + 1] & 0xff) / 255,
         b: (bgBuffer[offset + 2] & 0xff) / 255,
         a: (bgBuffer[offset + 3] & 0xff) / 255,
-      }
+      }))
     }
 
     // Initially no colors
@@ -420,7 +462,7 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
+    const bgBuffer = buffer.withBuffers(({ bg }) => bg.slice())
 
     // Helper to get RGBA values from buffer at position
     const getBgColor = (x: number, y: number) => {
@@ -458,7 +500,8 @@ describe("LineNumberRenderable", () => {
     expect(line0Visual2Bg.b).toBeCloseTo((0x2e / 255) * 0.8, 2)
   })
 
-  test("renders line colors correctly within a box with borders", async () => {
+  // A buffered node paints its line colors at its own buffer's origin.
+  const lineColorsInBox = async (buffered: boolean) => {
     const { renderer, renderOnce } = await createTestRenderer({
       width: 30,
       height: 10,
@@ -484,6 +527,7 @@ describe("LineNumberRenderable", () => {
       lineColors: lineColors,
       width: "100%",
       height: "100%",
+      buffered,
     })
 
     const box = new BoxRenderable(renderer, {
@@ -502,8 +546,10 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
-    const charBuffer = buffer.buffers.char
+    const { bgBuffer, charBuffer } = buffer.withBuffers(({ bg, char }) => ({
+      bgBuffer: bg.slice(),
+      charBuffer: char.slice(),
+    }))
 
     // Helper to get RGBA values from buffer at position
     const getBgColor = (x: number, y: number) => {
@@ -560,7 +606,8 @@ describe("LineNumberRenderable", () => {
     expect(line1ContentBg.r).toBeCloseTo(0, 2)
     expect(line1ContentBg.g).toBeCloseTo(0, 2)
     expect(line1ContentBg.b).toBeCloseTo(0, 2)
-  })
+  }
+  test.each([false, true])("renders line colors correctly within a box with borders (buffered %p)", lineColorsInBox)
 
   test("renders full-width line colors when line numbers are hidden", async () => {
     const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({
@@ -602,7 +649,7 @@ describe("LineNumberRenderable", () => {
     const frameWithoutLineNumbers = captureCharFrame()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
+    const bgBuffer = buffer.withBuffers(({ bg }) => bg.slice())
 
     // Helper to get RGBA values from buffer at position
     const getBgColor = (x: number, y: number) => {
@@ -718,7 +765,7 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const fgBuffer = buffer.buffers.fg
+    const fgBuffer = buffer.withBuffers(({ fg }) => fg.slice())
 
     // Helper to get RGBA values from buffer at position
     const getFgColor = (x: number, y: number) => {
@@ -903,7 +950,7 @@ describe("LineNumberRenderable", () => {
 
     const findCharX = (char: string, y: number) => {
       const buffer = renderer.currentRenderBuffer
-      const charBuffer = buffer.buffers.char
+      const charBuffer = buffer.withBuffers(({ char }) => char.slice())
       const codePoint = char.codePointAt(0)
       if (codePoint === undefined) return -1
 
@@ -917,14 +964,13 @@ describe("LineNumberRenderable", () => {
 
     const getColorAt = (channel: "fg" | "bg", x: number, y: number) => {
       const buffer = renderer.currentRenderBuffer
-      const colorBuffer = channel === "fg" ? buffer.buffers.fg : buffer.buffers.bg
       const offset = (y * buffer.width + x) * 4
-      return {
-        r: (colorBuffer[offset] & 0xff) / 255,
-        g: (colorBuffer[offset + 1] & 0xff) / 255,
-        b: (colorBuffer[offset + 2] & 0xff) / 255,
-        a: (colorBuffer[offset + 3] & 0xff) / 255,
-      }
+      return buffer.withBuffers((cells) => ({
+        r: (cells[channel][offset] & 0xff) / 255,
+        g: (cells[channel][offset + 1] & 0xff) / 255,
+        b: (cells[channel][offset + 2] & 0xff) / 255,
+        a: (cells[channel][offset + 3] & 0xff) / 255,
+      }))
     }
 
     const expectColorClose = (
@@ -1200,72 +1246,6 @@ describe("LineNumberRenderable", () => {
     expect(widthAfterThirdRender).toBe(widthAfterFirstRender)
   })
 
-  // TODO: flaky - works locally but fails in CI every time
-  test.skip("handles async content loading in Code renderable with drawUnstyledText=false", async () => {
-    const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({
-      width: 30,
-      height: 10,
-    })
-
-    // Import Code renderable
-    const { CodeRenderable } = await import("../Code.js")
-    const { SyntaxStyle } = await import("../../syntax-style.js")
-
-    const syntaxStyle = SyntaxStyle.create()
-
-    // Create Code renderable with no initial content and drawUnstyledText=false
-    const codeRenderable = new CodeRenderable(renderer, {
-      content: "",
-      filetype: "typescript",
-      syntaxStyle,
-      drawUnstyledText: false,
-      width: "100%",
-      height: "100%",
-    })
-
-    const lineNumberRenderable = new LineNumberRenderable(renderer, {
-      target: codeRenderable,
-      minWidth: 3,
-      paddingRight: 1,
-      fg: "white",
-      width: "100%",
-      height: "100%",
-    })
-
-    renderer.root.add(lineNumberRenderable)
-
-    // First render - no content yet
-    await renderOnce()
-
-    let frame = captureCharFrame()
-
-    // Should have minimal lines (empty buffer may show 1 line)
-    const initialLineCount = codeRenderable.virtualLineCount
-    expect(initialLineCount).toBeLessThanOrEqual(1)
-
-    // Now set content on the Code renderable
-    const code = `function hello() {\n  console.log("Hello");\n}`
-    codeRenderable.content = code
-
-    // Wait for render and highlighting
-    await renderOnce()
-    await waitForHighlight(codeRenderable)
-    await renderOnce()
-
-    frame = captureCharFrame()
-
-    // Should now show line numbers for the content
-    expect(codeRenderable.virtualLineCount).toBe(3)
-    expect(frame).toContain("function")
-    expect(frame).toContain("console")
-
-    // Check that line numbers are present
-    const lines = frame.split("\n")
-    expect(lines[0]).toMatch(/1/)
-    expect(lines[1]).toMatch(/2/)
-    expect(lines[2]).toMatch(/3/)
-  })
-
   test("updates line numbers when Code renderable content changes", async () => {
     const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({
       width: 30,
@@ -1275,7 +1255,7 @@ describe("LineNumberRenderable", () => {
     const { CodeRenderable } = await import("../Code.js")
     const { SyntaxStyle } = await import("../../syntax-style.js")
 
-    const syntaxStyle = SyntaxStyle.create()
+    const syntaxStyle = SyntaxStyle.create(renderer.nativeScene)
 
     // Create Code renderable with initial content
     const codeRenderable = new CodeRenderable(renderer, {
@@ -1339,7 +1319,7 @@ describe("LineNumberRenderable", () => {
     const { CodeRenderable } = await import("../Code.js")
     const { SyntaxStyle } = await import("../../syntax-style.js")
 
-    const syntaxStyle = SyntaxStyle.create()
+    const syntaxStyle = SyntaxStyle.create(renderer.nativeScene)
 
     // Create Code renderable with content but no filetype (plain text fallback)
     const codeRenderable = new CodeRenderable(renderer, {
@@ -1489,7 +1469,7 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
+    const bgBuffer = buffer.withBuffers(({ bg }) => bg.slice())
 
     const getBgColor = (x: number, y: number) => {
       const offset = (y * buffer.width + x) * 4
@@ -1546,7 +1526,7 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
+    const bgBuffer = buffer.withBuffers(({ bg }) => bg.slice())
 
     const getBgColor = (x: number, y: number) => {
       const offset = (y * buffer.width + x) * 4
@@ -1606,7 +1586,7 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
+    const bgBuffer = buffer.withBuffers(({ bg }) => bg.slice())
 
     const getBgColor = (x: number, y: number) => {
       const offset = (y * buffer.width + x) * 4
@@ -1662,16 +1642,15 @@ describe("LineNumberRenderable", () => {
     await renderOnce()
 
     const buffer = renderer.currentRenderBuffer
-    const bgBuffer = buffer.buffers.bg
 
     const getBgColor = (x: number, y: number) => {
       const offset = (y * buffer.width + x) * 4
-      return {
+      return buffer.withBuffers(({ bg: bgBuffer }) => ({
         r: (bgBuffer[offset] & 0xff) / 255,
         g: (bgBuffer[offset + 1] & 0xff) / 255,
         b: (bgBuffer[offset + 2] & 0xff) / 255,
         a: (bgBuffer[offset + 3] & 0xff) / 255,
-      }
+      }))
     }
 
     // Set line color using LineColorConfig with setLineColor

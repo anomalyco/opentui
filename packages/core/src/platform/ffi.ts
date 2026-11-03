@@ -469,66 +469,74 @@ function wrapNodeSymbols<Fns extends Record<string, FFIFunction>>(
   ) as { [K in keyof Fns]: (...args: any[]) => any }
 }
 
-function wrapNodeSymbol(fn: (...args: any[]) => any, definition: FFIFunction): (...args: any[]) => any {
-  const pointerArgIndexes = (definition.args ?? []).flatMap((type, index) =>
-    isNodePointerArgumentType(type) ? [index] : [],
-  )
+const NODE_ARGUMENT_AS_IS = 0
+const NODE_ARGUMENT_POINTER = 1
+const NODE_ARGUMENT_INT32 = 2
 
-  if (pointerArgIndexes.length === 0) {
+function toNodeArgumentKind(type: FFITypeOrString): number {
+  if (isNodePointerArgumentType(type)) return NODE_ARGUMENT_POINTER
+  const nodeType = toNodeFFIType(type, "parameter")
+  return nodeType === "i32" || nodeType === "u32" ? NODE_ARGUMENT_INT32 : NODE_ARGUMENT_AS_IS
+}
+
+function toNodeArgument(value: unknown, kind: number): unknown {
+  if (kind === NODE_ARGUMENT_POINTER) return toNodePointerArgumentFast(value)
+  // node:ffi rejects -0 for i32 and u32 arguments; Bun passes it as 0.
+  return kind === NODE_ARGUMENT_INT32 && value === 0 ? 0 : value
+}
+
+function wrapNodeSymbol(fn: (...args: any[]) => any, definition: FFIFunction): (...args: any[]) => any {
+  const kinds = (definition.args ?? []).map(toNodeArgumentKind)
+  const pointerCount = kinds.filter((kind) => kind === NODE_ARGUMENT_POINTER).length
+
+  if (kinds.every((kind) => kind === NODE_ARGUMENT_AS_IS)) {
     return fn
   }
 
   // Fixed wrappers avoid rest/slice/spread overhead on pointer-heavy signatures. One-pointer arity 7 is faster generic.
-  if (definition.args?.length === 7 && pointerArgIndexes.length >= 2) {
-    return wrapNodeSymbol7(fn, pointerArgIndexes)
+  if (kinds.length === 7 && pointerCount >= 2) {
+    return wrapNodeSymbol7(fn, kinds)
   }
 
-  if (definition.args?.length === 8) {
-    return wrapNodeSymbol8(fn, pointerArgIndexes)
+  if (kinds.length === 8) {
+    return wrapNodeSymbol8(fn, kinds)
   }
 
-  const pointerArgs = new Set(pointerArgIndexes)
-  const normalize = (value: unknown, index: number) =>
-    pointerArgs.has(index) ? toNodePointerArgumentFast(value) : value
+  const [kind0, kind1, kind2] = kinds
 
-  switch (definition.args?.length) {
+  switch (kinds.length) {
     case 1:
       return function (arg0: unknown) {
         if (arguments.length !== 1) return Reflect.apply(fn, undefined, arguments)
-        return fn(normalize(arg0, 0))
+        return fn(toNodeArgument(arg0, kind0!))
       }
     case 2:
       return function (arg0: unknown, arg1: unknown) {
         if (arguments.length !== 2) return Reflect.apply(fn, undefined, arguments)
-        return fn(normalize(arg0, 0), normalize(arg1, 1))
+        return fn(toNodeArgument(arg0, kind0!), toNodeArgument(arg1, kind1!))
       }
     case 3:
       return function (arg0: unknown, arg1: unknown, arg2: unknown) {
         if (arguments.length !== 3) return Reflect.apply(fn, undefined, arguments)
-        return fn(normalize(arg0, 0), normalize(arg1, 1), normalize(arg2, 2))
+        return fn(toNodeArgument(arg0, kind0!), toNodeArgument(arg1, kind1!), toNodeArgument(arg2, kind2!))
       }
   }
+
+  const adaptedIndexes = kinds.flatMap((kind, index) => (kind === NODE_ARGUMENT_AS_IS ? [] : [index]))
 
   return (...args: any[]) => {
     const normalizedArgs = args.slice()
 
-    for (const index of pointerArgIndexes) {
-      normalizedArgs[index] = toNodePointerArgument(normalizedArgs[index])
+    for (const index of adaptedIndexes) {
+      normalizedArgs[index] = toNodeArgument(normalizedArgs[index], kinds[index]!)
     }
 
     return fn(...normalizedArgs)
   }
 }
 
-function wrapNodeSymbol7(fn: (...args: any[]) => any, pointerArgIndexes: number[]): (...args: any[]) => any {
-  const pointer0 = pointerArgIndexes.includes(0)
-  const pointer1 = pointerArgIndexes.includes(1)
-  const pointer2 = pointerArgIndexes.includes(2)
-  const pointer3 = pointerArgIndexes.includes(3)
-  const pointer4 = pointerArgIndexes.includes(4)
-  const pointer5 = pointerArgIndexes.includes(5)
-  const pointer6 = pointerArgIndexes.includes(6)
-  const normalize = (value: unknown, pointer: boolean) => (pointer ? toNodePointerArgumentFast(value) : value)
+function wrapNodeSymbol7(fn: (...args: any[]) => any, kinds: number[]): (...args: any[]) => any {
+  const [kind0, kind1, kind2, kind3, kind4, kind5, kind6] = kinds
 
   return function (
     arg0: unknown,
@@ -541,27 +549,19 @@ function wrapNodeSymbol7(fn: (...args: any[]) => any, pointerArgIndexes: number[
   ) {
     if (arguments.length !== 7) return Reflect.apply(fn, undefined, arguments)
     return fn(
-      normalize(arg0, pointer0),
-      normalize(arg1, pointer1),
-      normalize(arg2, pointer2),
-      normalize(arg3, pointer3),
-      normalize(arg4, pointer4),
-      normalize(arg5, pointer5),
-      normalize(arg6, pointer6),
+      toNodeArgument(arg0, kind0!),
+      toNodeArgument(arg1, kind1!),
+      toNodeArgument(arg2, kind2!),
+      toNodeArgument(arg3, kind3!),
+      toNodeArgument(arg4, kind4!),
+      toNodeArgument(arg5, kind5!),
+      toNodeArgument(arg6, kind6!),
     )
   }
 }
 
-function wrapNodeSymbol8(fn: (...args: any[]) => any, pointerArgIndexes: number[]): (...args: any[]) => any {
-  const pointer0 = pointerArgIndexes.includes(0)
-  const pointer1 = pointerArgIndexes.includes(1)
-  const pointer2 = pointerArgIndexes.includes(2)
-  const pointer3 = pointerArgIndexes.includes(3)
-  const pointer4 = pointerArgIndexes.includes(4)
-  const pointer5 = pointerArgIndexes.includes(5)
-  const pointer6 = pointerArgIndexes.includes(6)
-  const pointer7 = pointerArgIndexes.includes(7)
-  const normalize = (value: unknown, pointer: boolean) => (pointer ? toNodePointerArgumentFast(value) : value)
+function wrapNodeSymbol8(fn: (...args: any[]) => any, kinds: number[]): (...args: any[]) => any {
+  const [kind0, kind1, kind2, kind3, kind4, kind5, kind6, kind7] = kinds
 
   return function (
     arg0: unknown,
@@ -575,14 +575,14 @@ function wrapNodeSymbol8(fn: (...args: any[]) => any, pointerArgIndexes: number[
   ) {
     if (arguments.length !== 8) return Reflect.apply(fn, undefined, arguments)
     return fn(
-      normalize(arg0, pointer0),
-      normalize(arg1, pointer1),
-      normalize(arg2, pointer2),
-      normalize(arg3, pointer3),
-      normalize(arg4, pointer4),
-      normalize(arg5, pointer5),
-      normalize(arg6, pointer6),
-      normalize(arg7, pointer7),
+      toNodeArgument(arg0, kind0!),
+      toNodeArgument(arg1, kind1!),
+      toNodeArgument(arg2, kind2!),
+      toNodeArgument(arg3, kind3!),
+      toNodeArgument(arg4, kind4!),
+      toNodeArgument(arg5, kind5!),
+      toNodeArgument(arg6, kind6!),
+      toNodeArgument(arg7, kind7!),
     )
   }
 }

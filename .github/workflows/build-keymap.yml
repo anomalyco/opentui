@@ -2,21 +2,22 @@ name: Build Keymap
 
 on:
   push:
-    branches: [main]
+    branches: [main, "[0-9]+.[0-9]+.x"]
   pull_request:
-    branches: [main]
+    branches: [main, "[0-9]+.[0-9]+.x"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Each commit gets its own group. In a shared group, the next push cancels a waiting run, and that
+  # commit gets no CI.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  NODE_VERSION: 26.7.0
-  ZIG_VERSION: 0.16.0
+  NODE_VERSION: 26.13.0
 
 jobs:
   test:
@@ -31,7 +32,19 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -46,13 +59,6 @@ jobs:
         uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
-
-      - name: Setup Zig
-        if: steps.bottle.outputs.cache-hit != 'true'
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
 
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
@@ -86,7 +92,19 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+
+      - name: Restore Zig cache
+        uses: ./.github/actions/restore-zig-cache
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+          kind: lib
+
+      - name: Restore Bun install cache
+        uses: ./.github/actions/restore-bun-cache
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -107,15 +125,13 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
-      - name: Setup Zig
-        if: steps.bottle.outputs.cache-hit != 'true'
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-          use-cache: false
-
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
+
+      - name: Build solid
+        run: |
+          cd packages/solid
+          bun run build --ci
 
       - name: Build keymap
         run: |

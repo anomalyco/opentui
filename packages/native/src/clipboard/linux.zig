@@ -225,7 +225,8 @@ pub const WaylandSymbols = struct {
     wl_display_prepare_read: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_read_events: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_cancel_read: *const fn (*WlDisplay) callconv(.c) void,
-    wl_proxy_marshal_array_flags: *const fn (*WlProxy, u32, ?*const WlInterface, u32, u32, [*]WlArgument) callconv(.c) ?*WlProxy,
+    // Exported since libwayland 1.10; 1.20 added the flags variant, which Ubuntu 20.04 lacks.
+    wl_proxy_marshal_array_constructor_versioned: *const fn (*WlProxy, u32, [*]WlArgument, ?*const WlInterface, u32) callconv(.c) ?*WlProxy,
     wl_proxy_add_listener: *const fn (*WlProxy, [*]const *const anyopaque, ?*anyopaque) callconv(.c) c_int,
     wl_proxy_destroy: *const fn (*WlProxy) callconv(.c) void,
     wl_proxy_get_version: *const fn (*WlProxy) callconv(.c) u32,
@@ -339,11 +340,12 @@ fn loadCachedLibrary(
 
 fn loadSymbols(comptime Symbols: type, library: *std.DynLib) ?Symbols {
     var symbols: Symbols = undefined;
-    inline for (@typeInfo(Symbols).@"struct".fields) |field| {
-        switch (@typeInfo(field.type)) {
+    const info = @typeInfo(Symbols).@"struct";
+    inline for (info.field_names, info.field_types) |name, Field| {
+        switch (@typeInfo(Field)) {
             // Optional fields name symbols missing from older library versions.
-            .optional => |optional| @field(symbols, field.name) = library.lookup(optional.child, field.name),
-            else => @field(symbols, field.name) = library.lookup(field.type, field.name) orelse return null,
+            .optional => |optional| @field(symbols, name) = library.lookup(optional.child, name),
+            else => @field(symbols, name) = library.lookup(Field, name) orelse return null,
         }
     }
     return symbols;
@@ -360,8 +362,8 @@ fn hasNonEmptyProcessValue(name: [*:0]const u8) bool {
 }
 
 fn isWslKernelRelease(release: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(release, "microsoft") != null or
-        std.ascii.indexOfIgnoreCase(release, "wsl") != null;
+    return std.ascii.findIgnoreCase(release, "microsoft") != null or
+        std.ascii.findIgnoreCase(release, "wsl") != null;
 }
 
 const FakeLoader = struct {
@@ -450,4 +452,13 @@ test "clipboard XCB ABI types match the core protocol layouts" {
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(XcbScreen));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(XcbSelectionRequestEvent));
     try std.testing.expectEqual(@as(usize, 24), @sizeOf(XcbSelectionNotifyEvent));
+}
+
+// Replaces the loaded libwayland symbols so host tests can create a connection; returns the previous ones.
+pub fn testSwapWaylandSymbols(symbols: ?WaylandSymbols) ?WaylandSymbols {
+    cache_mutex.lock();
+    defer cache_mutex.unlock();
+    const previous = wayland_cache.symbols;
+    wayland_cache.symbols = symbols;
+    return previous;
 }

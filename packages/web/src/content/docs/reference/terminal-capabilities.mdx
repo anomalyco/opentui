@@ -32,11 +32,13 @@ renderer.on(CliRenderEvents.CAPABILITIES, applyCapabilities)
 
 Read the current snapshot first, then handle events. A response can arrive before your listener is attached.
 
-The startup capability handler remains active for five seconds. Each recognized later response updates
-`renderer.capabilities` and emits `"capabilities"`. Expect multiple events during that window. Do not wait for one
-specific count or treat the first event as final.
+The capability handler stays active for the whole session. A recognized response updates `renderer.capabilities`
+whenever it arrives, including after startup: GNU screen, tmux passthrough, and OpenSSH ConPTY can forward some
+replies late. `"capabilities"` is emitted only when the capabilities change. Expect several events during startup and
+occasionally later. Do not wait for one specific count or treat the first event as final.
 
-After the startup window, OpenTUI removes the general capability handler and stops treating private replies as startup
+The renderer consumes these responses before handlers added with `addInputHandler` run. Use `prependInputHandler` to
+observe them. After a five-second startup window, the input parser stops treating private replies as expected
 responses. Pixel-resolution and theme queries have separate lifecycles.
 
 ## Public types
@@ -96,14 +98,20 @@ Read [Image](/docs/components/image) for protocol selection. Do not choose a pro
 
 ### Links, clipboard, and notifications
 
-| Field           | Type                      | Meaning                                                                       |
-| --------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `hyperlinks`    | `boolean`                 | OSC 8 hyperlink output is enabled                                             |
-| `osc52`         | `boolean`                 | OSC 52 clipboard support was detected or inferred                             |
-| `osc52_support` | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
-| `notifications` | `boolean`                 | A notification protocol was selected                                          |
+| Field            | Type                      | Meaning                                                                       |
+| ---------------- | ------------------------- | ----------------------------------------------------------------------------- |
+| `hyperlinks`     | `boolean`                 | OSC 8 hyperlink output is enabled                                             |
+| `osc52`          | `boolean`                 | OSC 52 clipboard support was detected or inferred                             |
+| `osc52_support`  | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
+| `notifications`  | `boolean`                 | A notification protocol was selected                                          |
+| `program_status` | `boolean`                 | The terminal answered the OSC 7501 program status query                       |
 
-The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false.
+The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false. Without OSC 8,
+the terminal detects URLs one row at a time, so a wrapped URL opens only the part on the clicked row.
+
+OpenTUI enables `hyperlinks` for Ghostty, Kitty, WezTerm, Alacritty, foot, iTerm2, Terminology, xterm.js, VS Code,
+Zed, mintty, VTE 0.52.2 or newer, and Windows Terminal. `TERM_PROGRAM` and `VTE_VERSION` count only outside tmux,
+Zellij, and GNU Screen. Set `FORCE_HYPERLINK` to override detection.
 
 Hyperlink URLs use a native slot with a maximum of 512 UTF-8 bytes. A longer URL fails link allocation and the text
 loses its hyperlink metadata.
@@ -114,6 +122,9 @@ remote policy.
 
 `notifications` does not expose the selected OSC variant. Use `renderer.triggerNotification()` and its boolean result.
 Read [Notifications](/docs/core-concepts/notifications) for protocol and multiplexer behavior.
+
+`renderer.setProgramStatus()` does not depend on `program_status`. Terminals ignore OSC 7501 reports they do not
+implement. Read [Program status](/docs/application-apis/program-status).
 
 ### Session and terminal identity
 
@@ -138,12 +149,20 @@ A custom `stdout` that uses the native span feed defaults to `remote: true`. Ope
 host terminal is the stream's real peer.
 
 Auto-detection recognizes `SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`, and `MOSH_CONNECTION`. In an auto-detected remote
-session, OpenTUI does not apply the process host's forwarded terminal heuristics by default. This prevents a host
-`TERM_PROGRAM` value from describing the wrong terminal endpoint.
+session, OpenTUI applies only the color depth keys from the forwarded environment: a `TERM` that contains `256color`
+enables `ansi256`, and a `COLORTERM` of `truecolor` or `24bit` enables `rgb` and `ansi256`. These keys describe the
+remote endpoint: `sshd` takes `TERM` from the client's PTY request, and `COLORTERM` comes from the client when ssh is
+configured to send it, or from the server session itself, such as a shell rc file. OpenTUI ignores the other keys, such
+as `TERM_PROGRAM`, the multiplexer variables, and the `OPENTUI_*` overrides. On the process host, they can describe the
+wrong terminal endpoint.
+
+Without `COLORTERM`, a `256color` `TERM` gives 256-color output, even in a terminal that supports truecolor. To keep
+truecolor in an SSH session, export `COLORTERM=truecolor` on the server, forward it with `SendEnv COLORTERM` on the
+client and `AcceptEnv COLORTERM` on the server, or pass it in `environment`.
 
 `forwardEnvKeys` selects process environment names that OpenTUI sends to native detection. Explicit remote mode
 defaults to an empty list. Other modes default to the documented terminal, SSH, tmux, Zellij, width, graphics,
-notification, WSL, and Windows Terminal keys.
+notification, hyperlink, WSL, and Windows Terminal keys.
 
 For a remote terminal, forward only values that describe the remote endpoint:
 
@@ -157,6 +176,12 @@ const renderer = await createCliRenderer({
   height: 24,
 })
 ```
+
+`forwardEnvKeys` reads the process environment, so it describes the remote endpoint only when the process runs
+inside that endpoint's session. A server with many clients passes each client's values in `environment` instead,
+for example `environment: { TERM: pty.term, COLORTERM: "truecolor" }`. These values replace forwarded values with
+the same name. When auto-detection finds an SSH login, OpenTUI applies only their color depth keys, as it does for
+forwarded values. Set `remote: true` for the other values to take effect, as `@opentui/ssh` does.
 
 Custom streams do not receive `SIGWINCH`. Call `renderer.resize(width, height)` when the remote transport reports a
 window change. Read [SSH](/docs/reference/ssh) for the full session setup.
@@ -192,6 +217,7 @@ Terminal detection reads these protocol controls:
 | `OPENTUI_FORCE_NOZWJ`           | Presence selects a native no-ZWJ width mode                                                                             |
 | `OPENTUI_NOTIFICATION_PROTOCOL` | Selects `osc9`, `osc777`, `osc99`, or a disabled value                                                                  |
 | `OPENTUI_NOTIFICATIONS`         | `0`, `false`, or `off` disables notifications                                                                           |
+| `FORCE_HYPERLINK`               | `0`, `false`, or `off` disables OSC 8 hyperlinks. Any other value, including an empty value, enables them.              |
 
 Read [Environment variables](/docs/reference/env-vars) for the complete value and timing rules.
 

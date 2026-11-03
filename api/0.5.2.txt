@@ -1,0 +1,148 @@
+base 0.5.1
++ @opentui/core: const createClipboard: ({ host, terminal }: ClipboardOptions) => ClipboardService
++ @opentui/core: const createHostClipboard: (options?: HostClipboardOptions) => HostClipboardService
++ @opentui/core: const createRendererClipboardAdapter: (renderer: RendererClipboardBoundary) => TerminalClipboardAdapter
++ @opentui/core: enum NativeClipboardCancelStatus
++ @opentui/core: enum NativeClipboardCopyStatus
++ @opentui/core: enum NativeClipboardDestroyStatus
++ @opentui/core: enum NativeClipboardOperationStatus
++ @opentui/core: enum NativeClipboardShutdownStatus
++ @opentui/core: enum NativeClipboardStartStatus
++ @opentui/core: enum-member NativeClipboardCancelStatus.AlreadyTerminal = 1
++ @opentui/core: enum-member NativeClipboardCancelStatus.InvalidHandle = 2
++ @opentui/core: enum-member NativeClipboardCancelStatus.Requested = 0
++ @opentui/core: enum-member NativeClipboardCopyStatus.BufferTooSmall = 1
++ @opentui/core: enum-member NativeClipboardCopyStatus.InvalidArgument = 4
++ @opentui/core: enum-member NativeClipboardCopyStatus.InvalidHandle = 2
++ @opentui/core: enum-member NativeClipboardCopyStatus.InvalidState = 3
++ @opentui/core: enum-member NativeClipboardCopyStatus.Ok = 0
++ @opentui/core: enum-member NativeClipboardDestroyStatus.Destroyed = 0
++ @opentui/core: enum-member NativeClipboardDestroyStatus.InvalidHandle = 2
++ @opentui/core: enum-member NativeClipboardDestroyStatus.NotReady = 1
++ @opentui/core: enum-member NativeClipboardOperationStatus.Cancelled = 6
++ @opentui/core: enum-member NativeClipboardOperationStatus.Cleared = 4
++ @opentui/core: enum-member NativeClipboardOperationStatus.Empty = 2
++ @opentui/core: enum-member NativeClipboardOperationStatus.Failed = 9
++ @opentui/core: enum-member NativeClipboardOperationStatus.InvalidHandle = 10
++ @opentui/core: enum-member NativeClipboardOperationStatus.LimitExceeded = 8
++ @opentui/core: enum-member NativeClipboardOperationStatus.Pending = 0
++ @opentui/core: enum-member NativeClipboardOperationStatus.Read = 1
++ @opentui/core: enum-member NativeClipboardOperationStatus.TimedOut = 7
++ @opentui/core: enum-member NativeClipboardOperationStatus.Unsupported = 5
++ @opentui/core: enum-member NativeClipboardOperationStatus.Written = 3
++ @opentui/core: enum-member NativeClipboardShutdownStatus.InvalidHandle = 2
++ @opentui/core: enum-member NativeClipboardShutdownStatus.Pending = 0
++ @opentui/core: enum-member NativeClipboardShutdownStatus.Ready = 1
++ @opentui/core: enum-member NativeClipboardStartStatus.InvalidArgument = 4
++ @opentui/core: enum-member NativeClipboardStartStatus.InvalidService = 1
++ @opentui/core: enum-member NativeClipboardStartStatus.LimitExceeded = 3
++ @opentui/core: enum-member NativeClipboardStartStatus.Ok = 0
++ @opentui/core: enum-member NativeClipboardStartStatus.OutOfMemory = 5
++ @opentui/core: enum-member NativeClipboardStartStatus.ShuttingDown = 2
++ @opentui/core: interface ClipboardClearResult
++ @opentui/core: interface ClipboardOptions
++ @opentui/core: interface ClipboardReadOptions
++ @opentui/core: interface ClipboardRepresentation
++ @opentui/core: interface ClipboardService
++ @opentui/core: interface ClipboardWriteOptions
++ @opentui/core: interface ClipboardWriteResult
++ @opentui/core: interface HostClipboardBackend
++ @opentui/core: interface HostClipboardOperationOptions
++ @opentui/core: interface HostClipboardOptions
++ @opentui/core: interface HostClipboardReadOptions
++ @opentui/core: interface HostClipboardService
++ @opentui/core: interface HostClipboardWriteOptions
++ @opentui/core: interface RendererClipboardBoundary
++ @opentui/core: interface TerminalClipboardAdapter
++ @opentui/core: interface TerminalClipboardOperationResult
++ @opentui/core: method ClipboardService.clear(options: ClipboardWriteOptions): Promise<ClipboardClearResult>
++ @opentui/core: method ClipboardService.dispose(): Promise<void>
++ @opentui/core: method ClipboardService.read(options: ClipboardReadOptions): Promise<ClipboardReadResult>
++ @opentui/core: method ClipboardService.writeText(text: string, options: ClipboardWriteOptions): Promise<ClipboardWriteResult>
++ @opentui/core: method CodeRenderable.destroy(): void
++ @opentui/core: method HostClipboardBackend.clear(options: HostClipboardWriteOptions): Promise<HostClipboardClearResult>
++ @opentui/core: method HostClipboardBackend.dispose(): Promise<void>
++ @opentui/core: method HostClipboardBackend.read(options: HostClipboardReadOptions): Promise<ClipboardReadResult>
++ @opentui/core: method HostClipboardBackend.writeText(text: string, options: HostClipboardWriteOptions): Promise<HostClipboardWriteResult>
++ @opentui/core: method HostClipboardService.clear(options?: HostClipboardOperationOptions): Promise<HostClipboardClearResult>
++ @opentui/core: method HostClipboardService.dispose(): Promise<void>
++ @opentui/core: method HostClipboardService.read(options: ClipboardReadOptions): Promise<ClipboardReadResult>
++ @opentui/core: method HostClipboardService.writeText(text: string, options?: HostClipboardOperationOptions): Promise<HostClipboardWriteResult>
++ @opentui/core: method NativeImage.ensureEncodedPng(): void
++ @opentui/core: method NativeImage.retain(): NativeImage
++ @opentui/core: method RendererClipboardBoundary.clearClipboardOSC52(target?: ClipboardTarget): boolean
++ @opentui/core: method RendererClipboardBoundary.copyToClipboardOSC52(text: string, target?: ClipboardTarget): boolean
++ @opentui/core: method TerminalClipboardAdapter.clear(selection: ClipboardSelection): TerminalClipboardOperationResult
++ @opentui/core: method TerminalClipboardAdapter.writeText(text: string, selection: ClipboardSelection): TerminalClipboardOperationResult
++ @opentui/core: readonly property ClipboardClearResult.host: HostClipboardClearResult | { readonly status: "not-attempted"; }
++ @opentui/core: readonly property ClipboardClearResult.terminal: TerminalClipboardOperationResult
++ @opentui/core: readonly property ClipboardOptions.host: HostClipboardService
++ @opentui/core: readonly property ClipboardOptions.terminal: TerminalClipboardAdapter
++ @opentui/core: readonly property ClipboardReadOptions.preferredTypes: readonly [ string, ...string[] ]
++ @opentui/core: readonly property ClipboardReadOptions.selection?: ClipboardSelection
++ @opentui/core: readonly property ClipboardReadOptions.signal?: AbortSignal
++ @opentui/core: readonly property ClipboardRepresentation.bytes: Uint8Array
++ @opentui/core: readonly property ClipboardRepresentation.mimeType: string
++ @opentui/core: readonly property ClipboardWriteOptions.allowRemoteHost?: boolean
++ @opentui/core: readonly property ClipboardWriteOptions.destination: ClipboardWriteDestination
++ @opentui/core: readonly property ClipboardWriteOptions.selection?: ClipboardSelection
++ @opentui/core: readonly property ClipboardWriteOptions.signal?: AbortSignal
++ @opentui/core: readonly property ClipboardWriteResult.host: HostClipboardWriteResult | { readonly status: "not-attempted"; }
++ @opentui/core: readonly property ClipboardWriteResult.terminal: TerminalClipboardOperationResult
++ @opentui/core: readonly property HostClipboardOperationOptions.selection?: ClipboardSelection
++ @opentui/core: readonly property HostClipboardOperationOptions.signal?: AbortSignal
++ @opentui/core: readonly property HostClipboardOptions.maxConcurrentOperations?: number
++ @opentui/core: readonly property HostClipboardOptions.maxConversionBytes?: number
++ @opentui/core: readonly property HostClipboardOptions.maxImagePixels?: number
++ @opentui/core: readonly property HostClipboardOptions.maxProviderTransfers?: number
++ @opentui/core: readonly property HostClipboardOptions.maxReadBytes?: number
++ @opentui/core: readonly property HostClipboardOptions.maxWriteBytes?: number
++ @opentui/core: readonly property HostClipboardOptions.timeoutMs?: number
++ @opentui/core: readonly property HostClipboardOptions.waylandSeat?: string
++ @opentui/core: readonly property HostClipboardReadOptions.maxBytes: number
++ @opentui/core: readonly property HostClipboardReadOptions.preferredTypes: readonly [ string, ...string[] ]
++ @opentui/core: readonly property HostClipboardReadOptions.selection: ClipboardSelection
++ @opentui/core: readonly property HostClipboardReadOptions.signal: AbortSignal
++ @opentui/core: readonly property HostClipboardReadOptions.timeoutMs: number
++ @opentui/core: readonly property HostClipboardService.maxWriteBytes: number
++ @opentui/core: readonly property HostClipboardWriteOptions.selection: ClipboardSelection
++ @opentui/core: readonly property HostClipboardWriteOptions.signal: AbortSignal
++ @opentui/core: readonly property HostClipboardWriteOptions.timeoutMs: number
+- @opentui/core: property ImageRenderable.source: ImageSource | undefined
++ @opentui/core: property ImageRenderable.source: ImageRenderableSource | undefined
+- @opentui/core: property ImageRenderableOptions.source?: ImageSource
++ @opentui/core: property ImageRenderableOptions.source?: ImageRenderableSource
++ @opentui/core: property RenderLib.clipboardClearOperationStart: (service: ClipboardServiceHandle, selection: number, timeoutMs: number) => { status: NativeClipboardStartStatus; operation: ClipboardOperationHandle | null; }
++ @opentui/core: property RenderLib.clipboardOperationCancel: (operation: ClipboardOperationHandle) => NativeClipboardCancelStatus
++ @opentui/core: property RenderLib.clipboardOperationDestroy: (operation: ClipboardOperationHandle) => NativeClipboardDestroyStatus
++ @opentui/core: property RenderLib.clipboardOperationPoll: (operation: ClipboardOperationHandle) => NativeClipboardOperationStatus
++ @opentui/core: property RenderLib.clipboardOperationResultDataCopy: (operation: ClipboardOperationHandle, output: Uint8Array) => NativeClipboardCopyStatus
++ @opentui/core: property RenderLib.clipboardOperationResultDataLength: (operation: ClipboardOperationHandle) => { status: NativeClipboardCopyStatus; length: number; }
++ @opentui/core: property RenderLib.clipboardOperationResultDiagnosticCopy: (operation: ClipboardOperationHandle, output: Uint8Array) => NativeClipboardCopyStatus
++ @opentui/core: property RenderLib.clipboardOperationResultDiagnosticLength: (operation: ClipboardOperationHandle) => { status: NativeClipboardCopyStatus; length: number; }
++ @opentui/core: property RenderLib.clipboardOperationResultErrorCode: (operation: ClipboardOperationHandle) => { status: NativeClipboardCopyStatus; errorCode: number; }
++ @opentui/core: property RenderLib.clipboardOperationResultMimeCopy: (operation: ClipboardOperationHandle, output: Uint8Array) => NativeClipboardCopyStatus
++ @opentui/core: property RenderLib.clipboardOperationResultMimeLength: (operation: ClipboardOperationHandle) => { status: NativeClipboardCopyStatus; length: number; }
++ @opentui/core: property RenderLib.clipboardReadOperationStart: (service: ClipboardServiceHandle, request: Uint8Array, selection: number, maxBytes: number, maxImagePixels: number, maxConversionBytes: number, timeoutMs: number) => { status: NativeClipboardStartStatus; operation: ClipboardOperationHandle | null; }
++ @opentui/core: property RenderLib.clipboardServiceBeginShutdown: (service: ClipboardServiceHandle) => NativeClipboardShutdownStatus
++ @opentui/core: property RenderLib.clipboardServiceCreate: (maxConcurrentOperations: number, maxProviderTransfers: number, waylandSeat?: string) => ClipboardServiceHandle | null
++ @opentui/core: property RenderLib.clipboardServiceDestroy: (service: ClipboardServiceHandle) => NativeClipboardDestroyStatus
++ @opentui/core: property RenderLib.clipboardServiceDrain: (service: ClipboardServiceHandle) => number
++ @opentui/core: property RenderLib.clipboardServicePollShutdown: (service: ClipboardServiceHandle) => NativeClipboardShutdownStatus
++ @opentui/core: property RenderLib.clipboardWriteOperationStart: (service: ClipboardServiceHandle, textUtf8: Uint8Array, selection: number, timeoutMs: number) => { status: NativeClipboardStartStatus; operation: ClipboardOperationHandle | null; }
++ @opentui/core: property RenderLib.imageEnsureEncodedPng: (image: ImageHandle) => number
++ @opentui/core: property RenderLib.imageRetain: (image: ImageHandle) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: readonly property RendererClipboardBoundary.capabilities: { readonly remote: boolean; readonly osc52_support: "supported" | "unsupported" | "unknown"; } | null
++ @opentui/core: readonly property TerminalClipboardAdapter.remote: boolean
++ @opentui/core: readonly property TerminalClipboardOperationResult.capability: "supported" | "unsupported" | "unknown"
++ @opentui/core: readonly property TerminalClipboardOperationResult.status: "attempted" | "local-failure" | "not-attempted"
++ @opentui/core: type ClipboardOperationHandle = number & { readonly __nativeHandle: "clipboard_operation"; }
++ @opentui/core: type ClipboardReadResult = { readonly status: "read"; readonly representation: ClipboardRepresentation; } | { readonly status: "empty" | "unsupported" | "cancelled" | "timed-out" | "limit-exceeded"; } | { readonly status: "failed"; readonly error: Error; }
++ @opentui/core: type ClipboardSelection = "clipboard" | "primary"
++ @opentui/core: type ClipboardServiceHandle = number & { readonly __nativeHandle: "clipboard_service"; }
++ @opentui/core: type ClipboardWriteDestination = "terminal-only" | "host-only" | "best-available" | "all-available"
++ @opentui/core: type HostClipboardClearResult = { readonly status: "cleared" | "unsupported" | "cancelled" | "timed-out"; } | { readonly status: "failed"; readonly error: Error; }
++ @opentui/core: type HostClipboardWriteResult = { readonly status: "written" | "unsupported" | "cancelled" | "timed-out"; } | { readonly status: "failed"; readonly error: Error; }
++ @opentui/core: type ImageRenderableSource = ImageSource | NativeImage
+- @opentui/core: type TreeSitterWorkerResponse = { type: "INIT_RESPONSE"; error?: string; } | { type: "PARSER_INIT_RESPONSE"; bufferId: number; messageId: string; hasParser: boolean; warning?: string; error?: string; } | { type: "HIGHLIGHT_RESPONSE"; bufferId: number; version: number; highlights: HighlightResponse[]; } | { type: "PRELOAD_PARSER_RESPONSE"; messageId: string; hasParser: boolean; } | { type: "BUFFER_DISPOSED"; bufferId: number; } | { type: "PERFORMANCE_RESPONSE"; performance: PerformanceStats; messageId: string; } | { type: "ONESHOT_HIGHLIGHT_RESPONSE"; messageId: string; hasParser: boolean; highlights?: SimpleHighlight[]; warning?: string; error?: string; } | { type: "UPDATE_DATA_PATH_RESPONSE"; messageId: string; error?: string; } | { type: "CLEAR_CACHE_RESPONSE"; messageId: string; error?: string; } | { type: "WARNING"; bufferId?: number; warning: string; } | { type: "ERROR"; bufferId?: number; error: string; } | { type: "WORKER_LOG"; logType: TreeSitterWorkerLogType; data: unknown[]; }
++ @opentui/core: type TreeSitterWorkerResponse = { type: "INIT_RESPONSE"; error?: string; } | { type: "PARSER_INIT_RESPONSE"; bufferId: number; messageId: string; hasParser: boolean; warning?: string; error?: string; } | { type: "HIGHLIGHT_RESPONSE"; bufferId: number; version: number; highlights: HighlightResponse[]; } | { type: "PRELOAD_PARSER_RESPONSE"; messageId: string; hasParser: boolean; } | { type: "BUFFER_DISPOSED"; bufferId: number; } | { type: "PERFORMANCE_RESPONSE"; performance: PerformanceStats; messageId: string; } | { type: "ONESHOT_HIGHLIGHT_RESPONSE"; messageId: string; hasParser: boolean; highlights?: SimpleHighlight[]; warning?: string; error?: string; } | { type: "UPDATE_DATA_PATH_RESPONSE"; messageId: string; error?: string; } | { type: "CLEAR_CACHE_RESPONSE"; messageId: string; error?: string; } | { type: "WARNING"; bufferId?: number; warning: string; } | { type: "ERROR"; bufferId?: number; messageId?: string; error: string; } | { type: "WORKER_LOG"; logType: TreeSitterWorkerLogType; data: unknown[]; }

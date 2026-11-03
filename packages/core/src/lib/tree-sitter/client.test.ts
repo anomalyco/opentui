@@ -470,27 +470,42 @@ describeClient("TreeSitterClient", () => {
     expect(client.getAllBuffers()).toHaveLength(0)
   })
 
-  test("should perform one-shot highlighting for react parser aliases", async () => {
+  test("should parse JSX only for react filetypes and evaluate #lua-match? predicates", async () => {
     await client.initialize()
 
-    const jsxCode = 'const view = <div className="card">hello</div>'
-    const tsxCode = 'const view: JSX.Element = <div className="card">hello</div>'
+    const jsx = 'const view = <Box title="x">hi</Box>'
+    const rows: { filetype: string; source: string; expected: string[]; absent?: string[] }[] = [
+      { filetype: "javascriptreact", source: jsx, expected: ["18:title=property", "32:Box=constructor"] },
+      {
+        filetype: "typescriptreact",
+        source: jsx,
+        expected: ["18:title=tag.attribute", "32:Box=tag"],
+        absent: ["6:view=type", "6:view=constant"],
+      },
+      { filetype: "typescript", source: "const n = <number>value", expected: ["11:number=type.builtin"] },
+      {
+        filetype: "typescript",
+        source: "const n = /* c */ 1",
+        expected: ["6:n=variable", "10:/* c */=comment"],
+        absent: ["6:n=type", "6:n=constant", "10:/* c */=comment.documentation"],
+      },
+      {
+        filetype: "typescript",
+        source: "const N_1 = /** d\n */ 1",
+        expected: ["6:N_1=variable", "6:N_1=type", "6:N_1=constant", "12:/** d\n */=comment.documentation"],
+      },
+      { filetype: "zig", source: "const n = 1", expected: ["6:n=variable"], absent: ["6:n=type", "6:n=constant"] },
+    ]
 
-    const [jsxResult, tsxResult] = await Promise.all([
-      client.highlightOnce(jsxCode, "javascriptreact"),
-      client.highlightOnce(tsxCode, "typescriptreact"),
-    ])
+    for (const { filetype, source, expected, absent = [] } of rows) {
+      const { highlights = [] } = await client.highlightOnce(source, filetype)
+      const tokens = highlights.map(([start, end, group]) => `${start}:${source.slice(start, end)}=${group}`)
 
-    expect(jsxResult.highlights).toBeDefined()
-    expect(tsxResult.highlights).toBeDefined()
-    expect(jsxResult.highlights!.length).toBeGreaterThan(0)
-    expect(tsxResult.highlights!.length).toBeGreaterThan(0)
-
-    const jsxGroups = jsxResult.highlights!.map((hl) => hl[2])
-    const tsxGroups = tsxResult.highlights!.map((hl) => hl[2])
-
-    expect(jsxGroups).toContain("keyword")
-    expect(tsxGroups).toContain("keyword")
+      expect(tokens).toContain("0:const=keyword")
+      expect(expected.filter((token) => !tokens.includes(token))).toEqual([])
+      expect(absent.filter((token) => tokens.includes(token))).toEqual([])
+      expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
+    }
   })
 
   test("should handle Devanagari characters and highlight ranges after them correctly", async () => {
@@ -545,7 +560,27 @@ describeClient("TreeSitterClient", () => {
 
   test("should support local file paths for parser configuration", async () => {
     const testQueryPath = join(dataPath, `test-highlights-${Date.now()}.scm`)
-    const simpleQuery = "(identifier) @variable"
+    // Lua pattern predicate → identifiers of testCode that it captures. A pattern the worker does not translate
+    // (the last rows; the first two are from nvim-treesitter's kitty and clojure queries) stays #lua-match?, which
+    // web-tree-sitter ignores, so it captures everything; the query must still load.
+    const all = "a9 ab A_2 _x $y aXz"
+    const luaPredicates: [string, string][] = [
+      ['lua-match? "^[a-z][%d]$"', "a9"],
+      ['lua-match? "^[A-Z_][A-Z%d_]+$"', "A_2"],
+      ['lua-match? "^a.z$"', "aXz"],
+      ['not-lua-match? "^a"', "A_2 _x $y"],
+      ['not-any-lua-match? "^a"', "A_2 _x $y"],
+      ['any-lua-match? "b$"', "ab"],
+      ['lua-match? "^-"', all],
+      ['lua-match? "^-%>[^>].*"', all],
+      ['lua-match? "^%u"', all],
+      ['lua-match? "^(a)?$"', all],
+      ['lua-match? "^[a"', all],
+      ['lua-match? "[z-a]"', all],
+    ]
+    const simpleQuery = luaPredicates
+      .map(([predicate], i) => `((identifier) @p${i} (#${predicate.replace(" ", ` @p${i} `)}))`)
+      .join("\n")
     const javascriptParser = (await getParsers()).find((parser) => parser.filetype === "javascript")
     if (!javascriptParser) {
       throw new Error("Expected the default JavaScript parser")
@@ -570,12 +605,16 @@ describeClient("TreeSitterClient", () => {
       const hasAliasParser = await client.preloadParser("test-lang-react")
       expect(hasAliasParser).toBe(true)
 
-      const testCode = "const myVariable = 42;"
+      const testCode = "a9; ab; A_2; _x; $y; aXz;"
       const result = await client.highlightOnce(testCode, "test-lang")
       const aliasResult = await client.highlightOnce(testCode, "test-lang-react")
+      const captured = luaPredicates.map(([predicate], i) => {
+        const names = result.highlights!.filter(([, , group]) => group === `p${i}`)
+        return [predicate, names.map(([start, end]) => testCode.slice(start, end)).join(" ")]
+      })
 
-      expect(result.highlights).toBeDefined()
-      expect(aliasResult.highlights).toBeDefined()
+      expect(captured).toEqual(luaPredicates)
+      expect(aliasResult.highlights).toEqual(result.highlights)
       expect(result.error).toBeUndefined()
       expect(aliasResult.error).toBeUndefined()
       expect(result.warning).toBeUndefined()
@@ -737,22 +776,18 @@ Some text here.`
       const markdownCode = `# Code Example
 
 \`\`\`tsx
-const view: JSX.Element = <div>Hello</div>;
+const view: JSX.Element = <Box title="x">hi</Box>;
 \`\`\`
 
 Some text here.`
 
-      const result = await client.highlightOnce(markdownCode, "markdown")
+      const { highlights = [] } = await client.highlightOnce(markdownCode, "markdown")
+      const tokens = highlights.map(([start, end, group]) => `${markdownCode.slice(start, end)}=${group}`)
 
-      expect(result.highlights).toBeDefined()
-      expect(result.highlights!.length).toBeGreaterThan(0)
-
-      const constHighlight = result.highlights!.find((hl) => {
-        const text = markdownCode.substring(hl[0], hl[1])
-        return text === "const" && hl[2] === "keyword"
-      })
-
-      expect(constHighlight).toBeDefined()
+      expect(tokens).toContain("const=keyword")
+      expect(tokens).toContain("title=tag.attribute")
+      expect(tokens).toContain("Element=type")
+      expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
     } finally {
       await client.destroy()
     }

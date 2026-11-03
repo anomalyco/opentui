@@ -1,0 +1,15 @@
+base 0.5.11
++ @opentui/core: method TextBufferView.setTextAlign(alignment: "left" | "center" | "right"): void
++ @opentui/core: readonly property EditorView.isDestroyed: boolean
++ @opentui/core: property EmbeddedTerminalOptions.transparentBackground?: boolean
++ @opentui/core: property EmbeddedTerminalRenderable.transparentBackground: boolean
++ @opentui/core: property RenderLib.embeddedTerminalSetTransparentBackground: (handle: EmbeddedTerminalHandle, transparent: boolean) => void
++ @opentui/core: property RenderLib.textBufferViewSetTextAlign: (view: TextBufferViewHandle, alignment: "left" | "center" | "right") => void
++ @opentui/core: property TextBufferOptions.textAlign?: "left" | "center" | "right"
+- @opentui/core: protected property TextBufferRenderable._defaultOptions: { fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrapMode: "none" | "char" | "word"; tabIndicator: undefined; tabIndicatorColor: undefined; truncate: false; }
++ @opentui/core: protected property TextBufferRenderable._defaultOptions: { fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrapMode: "none" | "char" | "word"; textAlign: "left" | "center" | "right"; tabIndicator: undefined; tabIndicatorColor: undefined; truncate: false; }
++ @opentui/core: protected property TextBufferRenderable._textAlign: "left" | "center" | "right"
++ @opentui/core: property TextBufferRenderable.textAlign: "left" | "center" | "right"
++ @opentui/core: property TextTableRenderable.fg: RGBA
+- @opentui/core: type MousePointerStyle = "default" | "pointer" | "text" | "crosshair" | "move" | "not-allowed"
++ @opentui/core: type MousePointerStyle = "auto" | "default" | "none" | "context-menu" | "help" | "pointer" | "progress" | "wait" | "cell" | "crosshair" | "text" | "vertical-text" | "alias" | "copy" | "move" | "no-drop" | "not-allowed" | "grab" | "grabbing" | "all-scroll" | "col-resize" | "row-resize" | "n-resize" | "e-resize" | "s-resize" | "w-resize" | "ne-resize" | "nw-resize" | "se-resize" | "sw-resize" | "ew-resize" | "ns-resize" | "nesw-resize" | "nwse-resize" | "zoom-in" | "zoom-out"

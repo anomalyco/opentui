@@ -6,6 +6,7 @@ import {
   runtimeModuleIdForSpecifier,
   type RuntimeModuleEntry,
   type RuntimePluginRewriteOptions,
+  type RuntimeSpecifierPreserve,
 } from "@opentui/core/runtime-plugin"
 import * as solidJsRuntime from "solid-js"
 import * as solidJsStoreRuntime from "solid-js/store"
@@ -20,14 +21,18 @@ const runtimePluginSupportInstalledKey = Symbol.for("opentui.solid.runtime-plugi
 export interface SolidRuntimePluginSupportOptions {
   additional?: Record<string, RuntimeModuleEntry>
   core?: RuntimeModuleEntry
+  preserve?: RuntimeSpecifierPreserve
   rewrite?: RuntimePluginRewriteOptions
 }
 
 interface RuntimePluginSupportInstall {
   specifiers: ReadonlySet<string>
   core: RuntimeModuleEntry
+  preserveKey: PreserveKey
   rewriteKey: string
 }
+
+type PreserveKey = string | ((specifier: string) => boolean) | undefined
 
 type RuntimePluginSupportState = typeof globalThis & {
   [runtimePluginSupportInstalledKey]?: RuntimePluginSupportInstall
@@ -44,6 +49,15 @@ const defaultRuntimeModules: Record<string, RuntimeModuleEntry> = {
 
 function normalizeRewriteKey(rewrite: RuntimePluginRewriteOptions | undefined): string {
   return `${rewrite?.nodeModulesRuntimeSpecifiers ?? true}:${rewrite?.nodeModulesBareSpecifiers ?? false}`
+}
+
+function normalizePreserveKey(preserve: RuntimeSpecifierPreserve | undefined): PreserveKey {
+  if (preserve === undefined || typeof preserve === "function") {
+    return preserve
+  }
+
+  const specifiers = [...new Set(preserve)].sort()
+  return specifiers.length > 0 ? JSON.stringify(specifiers) : undefined
 }
 
 function createRuntimeModules(options?: SolidRuntimePluginSupportOptions): Record<string, RuntimeModuleEntry> {
@@ -68,6 +82,10 @@ function assertCompatibleInstall(
 
   if (options?.core && options.core !== install.core) {
     throw new Error("OpenTUI Solid runtime plugin support is already installed with a different core runtime module.")
+  }
+
+  if (options?.preserve && normalizePreserveKey(options.preserve) !== install.preserveKey) {
+    throw new Error("OpenTUI Solid runtime plugin support is already installed with different preserve options.")
   }
 
   if (options?.rewrite && normalizeRewriteKey(options.rewrite) !== install.rewriteKey) {
@@ -102,6 +120,7 @@ export function ensureRuntimePluginSupport(options: SolidRuntimePluginSupportOpt
     createRuntimePlugin({
       core,
       additional: modules,
+      preserve: options.preserve,
       rewrite: options.rewrite,
     }),
   )
@@ -109,6 +128,7 @@ export function ensureRuntimePluginSupport(options: SolidRuntimePluginSupportOpt
   state[runtimePluginSupportInstalledKey] = {
     specifiers: new Set(Object.keys(modules)),
     core,
+    preserveKey: normalizePreserveKey(options.preserve),
     rewriteKey,
   }
   return true

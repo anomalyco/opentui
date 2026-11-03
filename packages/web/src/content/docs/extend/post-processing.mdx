@@ -12,8 +12,9 @@ behavior, and raw-cell handling are not consistent enough for a stable arbitrary
 
 ## Register a callback
 
-`CliRenderer` calls post-process functions after renderable drawing and before the console overlay. It passes the next
-render buffer and elapsed milliseconds.
+After native code paints a frame, `CliRenderer` calls each post-process function with `nextRenderBuffer` and the
+milliseconds since the previous frame. Post-process functions run before Core draws the console overlay and commits the
+frame.
 
 ```typescript
 import { CRTRollingBarEffect, createCliRenderer, type OptimizedBuffer } from "@opentui/core"
@@ -33,11 +34,16 @@ function stopEffect() {
 }
 ```
 
-Keep the callback reference so `removePostProcessFn()` can remove it. `clearPostProcessFns()` removes every callback.
-Neither registration method starts continuous rendering.
+Keep the function reference so `removePostProcessFn()` can remove it. `clearPostProcessFns()` removes every
+post-process function. Neither registration method starts continuous rendering.
+
+During the synchronous part of a post-process function, the buffer accepts drawing calls, `withBuffers()`, and the
+`buffers` getter. Core does not wait for a returned promise. Finish all buffer work synchronously. After the first
+`await`, drawing calls and the `buffers` getter throw, and the renderer logs the rejected promise through its
+unhandled-rejection handler.
 
 Pair each `requestLive()` with `dropLive()`. An application that already owns continuous rendering can omit that pair.
-Remove callbacks before you release any state that they capture.
+Remove post-process functions before you release any state that they capture.
 
 ## Filter inventory
 
@@ -96,13 +102,13 @@ An `OptimizedBuffer` stores more than visible characters and RGBA bytes. Charact
 grapheme, continuation, and image values. Attributes can contain link IDs. Color channels also carry palette or default
 color intent in metadata bits.
 
-Several effects write `buffer.buffers` directly:
+Several effects write the raw arrays from `withBuffers()` directly:
 
 - `applyAsciiArt()` replaces raw character entries without updating grapheme, continuation, image, or link trackers.
 - `DistortionEffect` reorders raw character and attribute entries. Its temporary attribute array is `Uint8Array`, so it
   truncates attribute bits above the low byte.
-- `applyChromaticAberration()`, `BloomEffect`, `FlamesEffect`, `CRTRollingBarEffect`, and `RainbowTextEffect` replace raw
-  color channels and discard color-intent metadata on changed channels.
+- `applyChromaticAberration()`, `BloomEffect`, `FlamesEffect`, `CRTRollingBarEffect`, `RainbowTextEffect`, and the color
+  glitches of `DistortionEffect` replace raw color channels and discard color-intent metadata on changed channels.
 
 These helpers are unsafe for arbitrary text buffers that contain wide graphemes, links, images, indexed colors, or
 default-color intent. A corrupted tracker can outlive the visible frame mutation.
@@ -110,20 +116,26 @@ default-color intent. A corrupted tracker can outlive the visible frame mutation
 Matrix-based helpers do not rewrite character entries. They still convert transformed colors to stored explicit RGBA8
 values. Read [`FrameBuffer` color matrices](/docs/reference/color-matrix) for that conversion.
 
-Use effects on a controlled frame buffer that contains one-cell scalar text and explicit RGB colors. Do not apply raw
-character effects to the renderer's general next buffer unless the content meets that restriction.
+Use effects on a controlled frame buffer that contains printable ASCII text and explicit RGB colors. Text drawing stores
+every other character as a tagged grapheme entry, even a one-cell scalar. Do not apply raw character effects to the
+renderer's general next buffer unless the content meets that restriction.
 
 ## Mutation and failure behavior
 
 Every helper changes the supplied buffer in place. Reusing the same independent buffer without redrawing it compounds
-the effect. The renderer clears its next buffer after native rendering, so renderables normally redraw before the next
-post-process pass.
+the effect. Native code clears and repaints the next buffer for every frame, so effects on it do not compound across
+frames.
 
-Callbacks run in registration order. An exception aborts the rest of the frame, including later post-process callbacks
-and the console overlay. The renderer emits `render:error` through its normal render-failure path.
+`applyInvert()`, `applyBrightness()`, `applyGain()`, and `applySaturation()` call only matrix methods. Every other
+helper reads cells through `withBuffers()`, which throws on the recording buffer that a paint hook receives.
 
-Effect caches and random state belong to the effect instance. Release the instance after removing its callback. For
-property animation, let [Animation and Timeline](/docs/application-apis/animation) own values such as vignette strength.
+Post-process functions run in registration order. An exception stops the rest of the frame: later post-process
+functions, the console overlay, and the commit. The terminal keeps the previous frame. The renderer emits
+`render:error` through its normal render-failure path.
+
+Effect caches and random state belong to the effect instance. Release the instance after you remove its post-process
+function. For property animation, let [Animation and Timeline](/docs/application-apis/animation) own values such as
+vignette strength.
 
 ## Next
 

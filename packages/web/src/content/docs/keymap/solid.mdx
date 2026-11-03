@@ -95,8 +95,23 @@ See [Lifecycle and cleanup](/docs/core-concepts/lifecycle).
 `useBindings(createLayer)` runs the layer factory in `createEffect()`.
 Signals and memos read by the factory become dependencies.
 
-When a dependency changes, Solid disposes the old layer and registers the new result.
+When a dependency changes, the effect runs again and the hook replaces the layer with the new result.
 If the factory reads no reactive value, the layer remains registered until its owner is disposed.
+
+The hook replaces its layer in one update, so `state` listeners see one change. The layer keeps the position of its
+hook: among layers of the same priority, precedence follows mount order, also while the layer is empty or waits for
+a target. Earlier versions moved a re-registered layer to the top.
+
+If the new layer is plain data (plain objects, arrays, primitives, and functions without own properties; no class
+instances, `Map`s, getters, symbol keys, or frozen or sealed objects) and differs only in its functions, the hook
+keeps the registered layer: nothing the keymap handed out changes, and commands, binding commands and `enabled`
+checks call the new functions. A Solid store object reports getters; spread it to pass plain data. Object values of
+command fields, and any `attr` or `require` value from a field compiler (a function too), are handed back or matched
+by identity, so they must be the same as before; a new one, even an equal one, registers the layer anew. Function
+command fields are forwarded like other functions. `state` is emitted only if an `enabled` result differs from the
+old functions' result or from one read since the last `state` event, and a pending key sequence through a layer that
+turned off is cleared. Commands of a kept layer are keymap-owned objects. Any other layer, and any layer with a
+reactive matcher, is replaced as a new registration in the same position.
 
 The layer can include Core fields such as `priority`, `bindings`, and `commands`.
 It can also include fields from installed addons, such as `enabled`.
@@ -118,7 +133,7 @@ Passing `targetMode` without a target accessor throws:
 useBindings local bindings need a target accessor
 ```
 
-The effect cleanup disposes the current layer. Layer disposal also unsubscribes reactive matchers.
+Owner cleanup disposes the current layer. Layer disposal also unsubscribes reactive matchers.
 
 ## `useKeymapSelector()`
 

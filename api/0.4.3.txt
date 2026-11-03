@@ -1,0 +1,37 @@
+base 0.4.2
++ @opentui/core: const NativeMeasureTargetKind: { readonly None: 0; readonly TextBufferView: 1; readonly EditorView: 2; }
+- @opentui/core: enum-member LayoutEvents.ADDED = "added"
+- @opentui/core: enum-member LayoutEvents.REMOVED = "removed"
+- @opentui/core: abstract method BaseRenderable.remove(id: string): void
++ @opentui/core: abstract method BaseRenderable.remove(child: BaseRenderable): void
+- @opentui/core: method LineNumberRenderable.remove(id: string): void
++ @opentui/core: method LineNumberRenderable.remove(child: BaseRenderable): void
+- @opentui/core: method Renderable.remove(id: string): void
++ @opentui/core: method Renderable.remove(child: BaseRenderable): void
++ @opentui/core: method ScrollBoxRenderable.getRenderable(id: string): Renderable | undefined
+- @opentui/core: method ScrollBoxRenderable.remove(id: string): void
++ @opentui/core: method ScrollBoxRenderable.remove(child: BaseRenderable): void
+- @opentui/core: method TextNodeRenderable.remove(id: string): this
++ @opentui/core: method TextNodeRenderable.remove(child: BaseRenderable): void
+- @opentui/core: method TextRenderable.remove(id: string): void
++ @opentui/core: method TextRenderable.remove(child: BaseRenderable): void
++ @opentui/core: property RenderLib.createNativeRenderable: () => NativeRenderableHandle
++ @opentui/core: property RenderLib.destroyNativeRenderable: (handle: NativeRenderableHandle) => void
++ @opentui/core: property RenderLib.nativeRenderableAttachYogaNode: (handle: NativeRenderableHandle, node: Pointer) => boolean
++ @opentui/core: property RenderLib.nativeRenderableSetMeasureTarget: (handle: NativeRenderableHandle, kind: NativeMeasureTargetKind, target: NativeMeasureTargetHandle | 0) => boolean
+- @opentui/core: property RenderLib.yogaNodeSetDirtiedFunc: (node: Pointer, callback: Pointer | null) => void
++ @opentui/core: property RenderLib.yogaNodeSetDirtiedFunc: (node: Pointer, enabled: boolean) => void
+- @opentui/core: property RenderLib.yogaNodeSetMeasureFunc: (node: Pointer, callback: Pointer | null) => void
++ @opentui/core: property RenderLib.yogaNodeSetMeasureFunc: (node: Pointer, enabled: boolean) => void
++ @opentui/core: property RenderLib.yogaSetDirtiedCallback: (callback: Pointer | null) => void
++ @opentui/core: property RenderLib.yogaSetMeasureCallback: (callback: Pointer | null) => void
+- @opentui/core: property Renderable.id: string
+- @opentui/core: protected property SelectRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; selectedBackgroundColor: string; selectedTextColor: string; selectedIndex: number; descriptionColor: string; selectedDescriptionColor: string; showScrollIndicator: false; wrapSelection: false; showDescription: true; itemSpacing: number; fastScrollStep: number; }
++ @opentui/core: protected property SelectRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; selectedBackgroundColor: string; selectedTextColor: string; selectedIndex: number; descriptionColor: string; selectedDescriptionColor: string; showScrollIndicator: false; wrapSelection: false; showDescription: true; showSelectionIndicator: true; itemSpacing: number; fastScrollStep: number; }
++ @opentui/core: property SelectRenderable.showSelectionIndicator: boolean
++ @opentui/core: property SelectRenderableOptions.showSelectionIndicator?: boolean
++ @opentui/core: type NativeMeasureTargetHandle = TextBufferViewHandle | EditorViewHandle
++ @opentui/core: type NativeMeasureTargetKind = (typeof NativeMeasureTargetKind)[keyof typeof NativeMeasureTargetKind]
++ @opentui/core: type NativeRenderableHandle = NativeHandle<"native_renderable">
+- @opentui/core: type NativeYogaDirtiedCallback = () => void
++ @opentui/core: type NativeYogaDirtiedCallback = (node: Pointer | null) => void

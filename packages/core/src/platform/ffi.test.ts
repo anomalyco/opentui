@@ -467,31 +467,43 @@ describe("platform/ffi", () => {
     expect(functionCalls.map((call) => call.args)).toEqual([[10n], [10n, 20, 30]])
   })
 
-  test("normalizes pointers in long fixed-arity Node wrappers", () => {
+  test("normalizes pointers and -0 i32 and u32 arguments in Node wrappers", () => {
     const { backend, functionCalls } = createMockNodeBackend()
     const buffer = new ArrayBuffer(16)
     const view = new Uint8Array(buffer, 4, 8)
     const library = backend.dlopen("mock", {
       seven: {
-        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        args: [FFIType.ptr, FFIType.u32, FFIType.i32, FFIType.f32, FFIType.u32, FFIType.ptr, FFIType.ptr],
         returns: FFIType.void,
       },
       eight: {
-        args: [FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32],
+        args: [FFIType.u32, FFIType.ptr, FFIType.f64, FFIType.i32, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.i32],
         returns: FFIType.void,
       },
+      one: { args: [FFIType.u32], returns: FFIType.void },
+      two: { args: [FFIType.f64, FFIType.u32], returns: FFIType.void },
+      three: { args: [FFIType.int, FFIType.ptr, FFIType.uint32_t], returns: FFIType.void },
+      plain: { args: [FFIType.int32_t, FFIType.u32, FFIType.f32, FFIType.u8], returns: FFIType.void },
     })
 
-    library.symbols.seven(buffer, 1, 2, 3, 4, null, 77 as Pointer)
-    library.symbols.eight(1, view, 2, 3, 4, null, 88 as Pointer, 5)
+    library.symbols.seven(buffer, -0, -0, -0, -0, null, 77 as Pointer)
+    library.symbols.eight(-0, view, -0, -0, -0, null, 88 as Pointer, -0)
     library.symbols.seven(10n as Pointer)
     library.symbols.eight(1, 20n as Pointer, 2, 3, 4, 30n as Pointer, 40n as Pointer, 5, 6)
+    library.symbols.one(-0)
+    library.symbols.two(-0, -0)
+    library.symbols.three(-0, null, -0)
+    library.symbols.plain(-0, -0, -0, -0)
 
     expect(functionCalls.map((call) => call.args)).toEqual([
-      [buffer, 1, 2, 3, 4, 0n, 77n],
-      [1, view, 2, 3, 4, 0n, 88n, 5],
+      [buffer, 0, 0, -0, 0, 0n, 77n],
+      [0, view, -0, 0, 0, 0n, 88n, 0],
       [10n],
       [1, 20n, 2, 3, 4, 30n, 40n, 5, 6],
+      [0],
+      [-0, 0],
+      [0, 0n, 0],
+      [0, 0, -0, -0],
     ])
   })
 

@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const atomic = std.atomic;
 const assert = std.debug.assert;
 const ansi = @import("ansi.zig");
+const base64Encode = @import("utils.zig").base64Encode;
 const utf8 = @import("utf8.zig");
 
 const WidthMethod = utf8.WidthMethod;
@@ -29,6 +30,7 @@ pub const Capabilities = struct {
     notifications: bool = false,
     explicit_cursor_positioning: bool = false,
     remote: bool = false,
+    program_status: bool = false,
 };
 
 pub const NotificationProtocol = enum {
@@ -50,6 +52,15 @@ pub const RemoteMode = enum(u8) {
     auto,
     local,
     remote,
+};
+
+/// Wraps frames in DEC mode 2026 (synchronized output). Once the startup replies have passed the
+/// 2026 query, `auto` leaves it out for a remote endpoint that did not report the mode or whose app
+/// runs inside tmux, screen or Zellij on its own host.
+pub const SynchronizedOutput = enum(u8) {
+    auto,
+    always,
+    never,
 };
 
 pub const ImageProtocol = enum(u8) {
@@ -193,9 +204,9 @@ pub const Options = struct {
 };
 
 pub const TerminalInfo = struct {
-    name: [64]u8 = [_]u8{0} ** 64,
+    name: [64]u8 = @splat(0),
     name_len: usize = 0,
-    version: [32]u8 = [_]u8{0} ** 32,
+    version: [32]u8 = @splat(0),
     version_len: usize = 0,
     from_xtversion: bool = false,
 };
@@ -216,7 +227,17 @@ skip_explicit_width_query: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
+/// The host ends each query batch with DA1 and waits for its reply (sentinel mode).
+reply_sentinel: bool = false,
+synchronized_output: SynchronizedOutput = .auto,
+/// A reply ordered after the DECRQM 2026 query arrived, so `caps.sync` is final.
+sync_reply_settled: bool = false,
+/// The host says a multiplexer runs between the app and the link. Never derived from forwarded or
+/// client environment, which can describe the other side of the link.
+multiplexer_on_host: bool = false,
 unicode_wide_locked: ?bool = null,
+host_env_hyperlinks: bool = false,
+hyperlinks_override: ?bool = null,
 
 state: struct {
     alt_screen: bool = false,
@@ -279,7 +300,14 @@ pub fn setHostEnvVar(self: *Terminal, allocator: std.mem.Allocator, key: []const
     self.checkEnvironmentOverrides();
 }
 
-pub fn resetState(self: *Terminal, tty: anytype) !void {
+pub fn adoptHostEnvironment(self: *Terminal, environment: std.process.Environ.Map) void {
+    std.debug.assert(self.host_env_map == null and self.opts.env_map == null);
+    self.host_env_map = environment;
+    self.opts.env_map = &self.host_env_map.?;
+    self.checkEnvironmentOverrides();
+}
+
+pub fn resetInputModes(self: *Terminal, tty: anytype) !void {
     try tty.writeAll(ansi.ANSI.showCursor);
     try tty.writeAll(ansi.ANSI.reset);
     try tty.writeAll(ansi.ANSI.resetMousePointer);
@@ -304,28 +332,14 @@ pub fn resetState(self: *Terminal, tty: anytype) !void {
     if (self.state.focus_tracking) {
         try self.setFocusTracking(tty, false);
     }
+}
 
-    if (self.state.alt_screen) {
-        try self.exitAltScreen(tty);
-    } else {
-        switch (builtin.os.tag) {
-            .windows => {
-                try tty.writeByte('\r');
-                var i: u16 = 0;
-                while (i < self.state.cursor.row) : (i += 1) {
-                    try tty.writeAll(ansi.ANSI.reverseIndex);
-                }
-                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
-            },
-            else => {},
-        }
-    }
-
+pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
     if (self.state.color_scheme_updates) {
         try self.setColorSchemeUpdates(tty, false);
     }
 
-    self.setTerminalTitle(tty, "");
+    try ansi.ANSI.setTerminalTitleOutput(tty, "");
 
     // OSC 111 is intentionally disabled for now. In Ghostty, sending the
     // reset alone is enough to poison later OSC 11 background reporting for
@@ -378,7 +392,7 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
     if (!self.skip_graphics_query and !self.isInTmux()) {
         try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
-        try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
+        if (!self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
     }
 
     if (!self.skip_explicit_width_query) {
@@ -394,6 +408,8 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     }
 
     try tty.writeAll(ansi.ANSI.restoreCursorState);
+    // Terminals answer in order: the DA1 reply follows every other reply of the batch.
+    if (self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
 }
 
 pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
@@ -563,7 +579,8 @@ fn detectNotificationProtocol(value: []const u8) ?NotificationProtocol {
         std.ascii.findIgnoreCase(value, "urxvt") != null or
         std.ascii.findIgnoreCase(value, "rxvt") != null or
         std.ascii.findIgnoreCase(value, "windows terminal") != null or
-        std.ascii.findIgnoreCase(value, "windows_terminal") != null)
+        std.ascii.findIgnoreCase(value, "windows_terminal") != null or
+        std.ascii.findIgnoreCase(value, "terminology") != null)
     {
         return .osc777;
     }
@@ -653,7 +670,17 @@ fn parseOsc99NotificationQuery(self: *Terminal, response: []const u8) void {
     }
 }
 
-fn checkEnvironmentOverrides(self: *Terminal) void {
+// A supporting terminal replies `OSC 7501 ; ? ST`, optionally followed by
+// `:states=...:kinds=...`. Whitespace around the `?` is allowed.
+fn parseProgramStatusReply(self: *Terminal, response: []const u8) void {
+    const prefix = "\x1b]7501;";
+    const start = (std.mem.find(u8, response, prefix) orelse return) + prefix.len;
+    const payload = response[start .. start + findOscTerminator(response[start..])];
+    const first = payload[0 .. std.mem.findScalar(u8, payload, ':') orelse payload.len];
+    if (std.mem.eql(u8, std.mem.trim(u8, first, " "), "?")) self.caps.program_status = true;
+}
+
+pub fn checkEnvironmentOverrides(self: *Terminal) void {
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
     } else if (self.isXtversionZellij()) {
@@ -668,6 +695,7 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
     self.graphics_enabled = true;
     self.image_protocol = .auto;
     self.skip_explicit_width_query = false;
+    self.hyperlinks_override = null;
 
     // Always just try to enable bracketed paste, even if it was reported as not supported
     self.caps.bracketed_paste = true;
@@ -693,6 +721,21 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
 
     const env_is_forwarded = if (self.host_env_map) |*host_env_map| env_map == host_env_map else false;
     self.applyKnownUnicodeWidthIdentity();
+    // Unlike the identity keys below, color depth describes the endpoint in every mode:
+    // sshd takes TERM from the client's PTY request, and COLORTERM comes from the client or the session itself.
+    if (env_map.get("TERM")) |term| {
+        if (std.ascii.findIgnoreCase(term, "256color") != null) {
+            self.caps.ansi256 = true;
+        }
+    }
+    if (env_map.get("COLORTERM")) |colorterm| {
+        if (std.mem.eql(u8, colorterm, "truecolor") or
+            std.mem.eql(u8, colorterm, "24bit"))
+        {
+            self.caps.rgb = true;
+            self.caps.ansi256 = true;
+        }
+    }
     if (self.opts.remote_mode == .auto and self.remote and env_is_forwarded) {
         return;
     }
@@ -732,9 +775,6 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
     }
 
     if (env_map.get("TERM")) |term| {
-        if (std.ascii.findIgnoreCase(term, "256color") != null) {
-            self.caps.ansi256 = true;
-        }
         self.applyNotificationHeuristic(term);
         self.is_foot = self.is_foot or std.ascii.findIgnoreCase(term, "foot") != null;
     }
@@ -817,15 +857,6 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
         }
     }
 
-    if (env_map.get("COLORTERM")) |colorterm| {
-        if (std.mem.eql(u8, colorterm, "truecolor") or
-            std.mem.eql(u8, colorterm, "24bit"))
-        {
-            self.caps.rgb = true;
-            self.caps.ansi256 = true;
-        }
-    }
-
     if (env_map.get("WT_SESSION") != null) {
         self.caps.rgb = true;
         self.caps.ansi256 = true;
@@ -879,8 +910,10 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
         }
     }
 
-    if (self.is_foot and self.multiplexer != .none) {
+    // Multiplexed panes inherit TERM, TERM_PROGRAM, and VTE_VERSION from the outer terminal.
+    if ((self.is_foot or self.host_env_hyperlinks) and self.multiplexer != .none) {
         self.caps.hyperlinks = false;
+        self.host_env_hyperlinks = false;
     }
 
     if (!self.caps.hyperlinks and self.term_info.from_xtversion) {
@@ -907,6 +940,20 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
                 }
             }
         }
+    }
+
+    if (!self.caps.hyperlinks and !self.term_info.from_xtversion and self.multiplexer == .none) {
+        if (isHyperlinkHostEnv(env_map)) {
+            self.caps.hyperlinks = true;
+            self.host_env_hyperlinks = true;
+        }
+    }
+
+    if (env_map.get("FORCE_HYPERLINK")) |value| {
+        self.hyperlinks_override = !(std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false") or std.ascii.eqlIgnoreCase(value, "off"));
+    }
+    if (self.hyperlinks_override) |enabled| {
+        self.caps.hyperlinks = enabled;
     }
 
     if (!self.caps.osc52 and !self.term_info.from_xtversion) {
@@ -962,7 +1009,7 @@ pub fn setMouseMode(self: *Terminal, tty: anytype, enable: bool, enable_movement
     if (enable) {
         self.state.mouse = true;
         self.state.mouse_movement = enable_movement;
-        // Arms the shutdown cleanup path so resetState() will still emit mouse
+        // Arms the shutdown cleanup path so resetInputModes() will still emit mouse
         // disable sequences even if a later best-effort disable silently fails.
         self.state.mouse_was_enabled = true;
         if (!enable_movement) {
@@ -1119,27 +1166,29 @@ fn parseKittyGraphicsResponse(self: *Terminal, response: []const u8) void {
     }
 }
 
-fn parseSixelDeviceAttributes(self: *Terminal, response: []const u8) void {
-    if (!self.graphics_enabled) return;
+/// Returns whether the response holds a DA1 reply.
+fn parseSixelDeviceAttributes(self: *Terminal, response: []const u8) bool {
+    // With the graphics query skipped, DA1 answers only the sentinel. Inside tmux the caller clears Sixel.
+    const graphics = self.graphics_enabled and !self.skip_graphics_query;
+    var found = false;
     var offset: usize = 0;
     while (std.mem.findPos(u8, response, offset, "\x1b[?")) |start| {
         var end = start + 3;
         while (end < response.len and (std.ascii.isDigit(response[end]) or response[end] == ';')) : (end += 1) {}
-        if (end >= response.len) return;
-        if (response[end] != 'c') {
-            offset = end + 1;
-            continue;
-        }
+        if (end >= response.len) return found;
+        offset = end + 1;
+        if (response[end] != 'c') continue;
+        found = true;
+        if (!graphics) continue;
         var params = std.mem.splitScalar(u8, response[start + 3 .. end], ';');
         while (params.next()) |param| {
             if (std.mem.eql(u8, param, "4")) {
                 self.sixel_queried = true;
                 self.caps.sixel = true;
-                return;
             }
         }
-        offset = end + 1;
     }
+    return found;
 }
 
 fn semanticVersionAtLeast(version: []const u8, required_major: u32, required_minor: u32) bool {
@@ -1247,9 +1296,10 @@ fn applyKnownUnicodeWidthIdentity(self: *Terminal) void {
 pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     self.parseOsc99NotificationQuery(response);
     self.parseItermCapabilities(response);
+    self.parseProgramStatusReply(response);
     self.parseXtgettcapMs(response);
     self.parseKittyGraphicsResponse(response);
-    self.parseSixelDeviceAttributes(response);
+    const device_attributes = self.parseSixelDeviceAttributes(response);
 
     // DECRPM responses
     if (std.mem.find(u8, response, "1016;2$y")) |_| {
@@ -1311,6 +1361,8 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         } else if (self.explicit_width_probe_reports_pending > 0) {
             const probe_index = 2 - self.explicit_width_probe_reports_pending;
             self.explicit_width_probe_reports_pending -= 1;
+            // Terminals answer in order, and the probes follow the capability queries.
+            self.sync_reply_settled = true;
 
             if (row == 1 and probe_index == 0 and col == 2) {
                 self.caps.explicit_width = true;
@@ -1321,6 +1373,13 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         }
 
         scan_pos = pos + 1;
+    }
+    // Every DA1 query follows the 2026 query, so its reply settles the synchronized-output decision.
+    if (device_attributes) self.sync_reply_settled = true;
+    // The sentinel's reply follows every startup cursor report, so none is still coming.
+    if (device_attributes and self.reply_sentinel) {
+        self.startup_cursor_query_pending = false;
+        self.explicit_width_probe_reports_pending = 0;
     }
 
     // Parse xtversion response: ESC P > | name version ESC \
@@ -1377,6 +1436,9 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
 
     if (!self.caps.hyperlinks and isHyperlinkTerm(response)) {
         self.caps.hyperlinks = true;
+    }
+    if (self.hyperlinks_override) |enabled| {
+        self.caps.hyperlinks = enabled;
     }
 
     if (self.isInTmux()) {
@@ -1440,7 +1502,35 @@ fn isHyperlinkTerm(value: []const u8) bool {
         std.ascii.findIgnoreCase(value, "wezterm") != null or
         std.ascii.findIgnoreCase(value, "alacritty") != null or
         std.ascii.findIgnoreCase(value, "foot") != null or
-        std.ascii.findIgnoreCase(value, "iterm") != null;
+        std.ascii.findIgnoreCase(value, "iterm") != null or
+        std.ascii.findIgnoreCase(value, "xterm.js") != null or
+        std.ascii.findIgnoreCase(value, "terminology") != null or
+        std.ascii.eqlIgnoreCase(value, "rex") or
+        std.ascii.eqlIgnoreCase(value, "xterm-rex");
+}
+
+fn isHyperlinkHostEnv(env_map: *const std.process.Environ.Map) bool {
+    if (env_map.get("TERM_PROGRAM")) |program| {
+        if (std.mem.eql(u8, program, "vscode") or
+            std.mem.eql(u8, program, "zed") or
+            std.mem.eql(u8, program, "mintty")) return true;
+    }
+    // VTE releases before 0.52.2 include OSC 8 versions that can crash.
+    if (env_map.get("VTE_VERSION")) |version| {
+        const parsed = std.fmt.parseInt(u32, version, 10) catch return false;
+        return parsed >= 5202;
+    }
+    return false;
+}
+
+pub fn synchronizedOutput(self: *const Terminal) bool {
+    return switch (self.synchronized_output) {
+        .always => true,
+        .never => false,
+        // A multiplexer on the app's host answers DECRQM 2026 from its own state and redraws every touched
+        // line when an update ends; between the app and a slow link that redraw costs more than partial frames.
+        .auto => !self.remote or !self.sync_reply_settled or (self.caps.sync and !self.multiplexer_on_host),
+    };
 }
 
 pub fn getCapabilities(self: *Terminal) Capabilities {
@@ -1497,12 +1587,6 @@ pub fn setKittyKeyboardFlags(self: *Terminal, flags: u8) void {
     self.opts.kitty_keyboard_flags = flags;
 }
 
-pub fn setTerminalTitle(_: *Terminal, tty: anytype, title: []const u8) void {
-    // For Windows, we might need to use different approach, but ANSI sequences work in Windows Terminal, ConPTY, etc.
-    // For other platforms, ANSI OSC sequences work reliably
-    ansi.ANSI.setTerminalTitleOutput(tty, title) catch {};
-}
-
 fn writePassthroughSequence(self: *Terminal, tty: anytype, sequence: []const u8) !void {
     const is_tmux = self.isInTmux();
     if (is_tmux) {
@@ -1546,7 +1630,7 @@ fn writeOsc99Payload(allocator: std.mem.Allocator, writer: anytype, id: []const 
     const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
     const encoded_buf = try allocator.alloc(u8, encoded_len);
     defer allocator.free(encoded_buf);
-    const encoded = std.base64.standard.Encoder.encode(encoded_buf, payload);
+    const encoded = base64Encode(encoded_buf, payload);
 
     try writer.print("\x1b]99;i={s}:p={s}:e=1:d={d};", .{ id, payload_type, @intFromBool(done) });
     try writer.writeAll(encoded);
@@ -1709,7 +1793,7 @@ fn writeClipboardBase64(writer: anytype, source: []const u8) !void {
     while (offset < source.len) {
         const chunk_len = @min(source.len - offset, source_chunk_size);
         const chunk = source[offset .. offset + chunk_len];
-        const encoded = std.base64.standard.Encoder.encode(&encoded_buffer, chunk);
+        const encoded = base64Encode(&encoded_buffer, chunk);
         try writer.writeAll(encoded);
         offset += chunk_len;
     }
@@ -1838,4 +1922,27 @@ pub fn refusesForcedSixel(self: *Terminal) bool {
 
 pub fn getTerminalVersion(self: *Terminal) []const u8 {
     return self.term_info.version[0..self.term_info.version_len];
+}
+
+/// Discard input that the terminal queued on process stdin and the host has not read, such as mouse reports sent
+/// before mouse tracking was disabled. Best effort: a no-op when stdin is not a terminal.
+pub fn flushInput() void {
+    if (builtin.os.tag == .windows) {
+        const WindowsConsole = struct {
+            extern "kernel32" fn GetStdHandle(handle: std.os.windows.DWORD) callconv(.winapi) std.os.windows.HANDLE;
+            extern "kernel32" fn FlushConsoleInputBuffer(handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+        };
+        const stdin_handle = WindowsConsole.GetStdHandle(@bitCast(@as(i32, -10)));
+        _ = WindowsConsole.FlushConsoleInputBuffer(stdin_handle);
+        return;
+    }
+    const tciflush: c_int = switch (builtin.os.tag) {
+        .linux => 0,
+        .macos => 1,
+        else => return,
+    };
+    const PosixTerminal = struct {
+        extern "c" fn tcflush(fd: c_int, queue_selector: c_int) c_int;
+    };
+    _ = PosixTerminal.tcflush(0, tciflush);
 }

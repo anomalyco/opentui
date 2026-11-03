@@ -1,0 +1,728 @@
+base 0.4.0
++ @opentui/core/yoga: class Config
++ @opentui/core/yoga: class Node
++ @opentui/core/yoga: const ALIGN_AUTO = Align.Auto
++ @opentui/core/yoga: const ALIGN_BASELINE = Align.Baseline
++ @opentui/core/yoga: const ALIGN_CENTER = Align.Center
++ @opentui/core/yoga: const ALIGN_FLEX_END = Align.FlexEnd
++ @opentui/core/yoga: const ALIGN_FLEX_START = Align.FlexStart
++ @opentui/core/yoga: const ALIGN_SPACE_AROUND = Align.SpaceAround
++ @opentui/core/yoga: const ALIGN_SPACE_BETWEEN = Align.SpaceBetween
++ @opentui/core/yoga: const ALIGN_SPACE_EVENLY = Align.SpaceEvenly
++ @opentui/core/yoga: const ALIGN_STRETCH = Align.Stretch
++ @opentui/core/yoga: const BOX_SIZING_BORDER_BOX = BoxSizing.BorderBox
++ @opentui/core/yoga: const BOX_SIZING_CONTENT_BOX = BoxSizing.ContentBox
++ @opentui/core/yoga: const DIMENSION_HEIGHT = Dimension.Height
++ @opentui/core/yoga: const DIMENSION_WIDTH = Dimension.Width
++ @opentui/core/yoga: const DIRECTION_INHERIT = Direction.Inherit
++ @opentui/core/yoga: const DIRECTION_LTR = Direction.LTR
++ @opentui/core/yoga: const DIRECTION_RTL = Direction.RTL
++ @opentui/core/yoga: const DISPLAY_CONTENTS = Display.Contents
++ @opentui/core/yoga: const DISPLAY_FLEX = Display.Flex
++ @opentui/core/yoga: const DISPLAY_NONE = Display.None
++ @opentui/core/yoga: const EDGE_ALL = Edge.All
++ @opentui/core/yoga: const EDGE_BOTTOM = Edge.Bottom
++ @opentui/core/yoga: const EDGE_END = Edge.End
++ @opentui/core/yoga: const EDGE_HORIZONTAL = Edge.Horizontal
++ @opentui/core/yoga: const EDGE_LEFT = Edge.Left
++ @opentui/core/yoga: const EDGE_RIGHT = Edge.Right
++ @opentui/core/yoga: const EDGE_START = Edge.Start
++ @opentui/core/yoga: const EDGE_TOP = Edge.Top
++ @opentui/core/yoga: const EDGE_VERTICAL = Edge.Vertical
++ @opentui/core/yoga: const ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE = Errata.AbsolutePercentAgainstInnerSize
++ @opentui/core/yoga: const ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING = Errata.AbsolutePositionWithoutInsetsExcludesPadding
++ @opentui/core/yoga: const ERRATA_ALL = Errata.All
++ @opentui/core/yoga: const ERRATA_CLASSIC = Errata.Classic
++ @opentui/core/yoga: const ERRATA_NONE = Errata.None
++ @opentui/core/yoga: const ERRATA_STRETCH_FLEX_BASIS = Errata.StretchFlexBasis
++ @opentui/core/yoga: const EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS = ExperimentalFeature.WebFlexBasis
++ @opentui/core/yoga: const FLEX_DIRECTION_COLUMN = FlexDirection.Column
++ @opentui/core/yoga: const FLEX_DIRECTION_COLUMN_REVERSE = FlexDirection.ColumnReverse
++ @opentui/core/yoga: const FLEX_DIRECTION_ROW = FlexDirection.Row
++ @opentui/core/yoga: const FLEX_DIRECTION_ROW_REVERSE = FlexDirection.RowReverse
++ @opentui/core/yoga: const GUTTER_ALL = Gutter.All
++ @opentui/core/yoga: const GUTTER_COLUMN = Gutter.Column
++ @opentui/core/yoga: const GUTTER_ROW = Gutter.Row
++ @opentui/core/yoga: const JUSTIFY_CENTER = Justify.Center
++ @opentui/core/yoga: const JUSTIFY_FLEX_END = Justify.FlexEnd
++ @opentui/core/yoga: const JUSTIFY_FLEX_START = Justify.FlexStart
++ @opentui/core/yoga: const JUSTIFY_SPACE_AROUND = Justify.SpaceAround
++ @opentui/core/yoga: const JUSTIFY_SPACE_BETWEEN = Justify.SpaceBetween
++ @opentui/core/yoga: const JUSTIFY_SPACE_EVENLY = Justify.SpaceEvenly
++ @opentui/core/yoga: const LOG_LEVEL_DEBUG = LogLevel.Debug
++ @opentui/core/yoga: const LOG_LEVEL_ERROR = LogLevel.Error
++ @opentui/core/yoga: const LOG_LEVEL_FATAL = LogLevel.Fatal
++ @opentui/core/yoga: const LOG_LEVEL_INFO = LogLevel.Info
++ @opentui/core/yoga: const LOG_LEVEL_VERBOSE = LogLevel.Verbose
++ @opentui/core/yoga: const LOG_LEVEL_WARN = LogLevel.Warn
++ @opentui/core/yoga: const MEASURE_MODE_AT_MOST = MeasureMode.AtMost
++ @opentui/core/yoga: const MEASURE_MODE_EXACTLY = MeasureMode.Exactly
++ @opentui/core/yoga: const MEASURE_MODE_UNDEFINED = MeasureMode.Undefined
++ @opentui/core/yoga: const NODE_TYPE_DEFAULT = NodeType.Default
++ @opentui/core/yoga: const NODE_TYPE_TEXT = NodeType.Text
++ @opentui/core/yoga: const OVERFLOW_HIDDEN = Overflow.Hidden
++ @opentui/core/yoga: const OVERFLOW_SCROLL = Overflow.Scroll
++ @opentui/core/yoga: const OVERFLOW_VISIBLE = Overflow.Visible
++ @opentui/core/yoga: const POSITION_TYPE_ABSOLUTE = PositionType.Absolute
++ @opentui/core/yoga: const POSITION_TYPE_RELATIVE = PositionType.Relative
++ @opentui/core/yoga: const POSITION_TYPE_STATIC = PositionType.Static
++ @opentui/core/yoga: const UNIT_AUTO = Unit.Auto
++ @opentui/core/yoga: const UNIT_PERCENT = Unit.Percent
++ @opentui/core/yoga: const UNIT_POINT = Unit.Point
++ @opentui/core/yoga: const UNIT_UNDEFINED = Unit.Undefined
++ @opentui/core/yoga: const WRAP_NO_WRAP = Wrap.NoWrap
++ @opentui/core/yoga: const WRAP_WRAP = Wrap.Wrap
++ @opentui/core/yoga: const WRAP_WRAP_REVERSE = Wrap.WrapReverse
++ @opentui/core/yoga: const default: { Config: typeof Config; Node: typeof Node; Align: typeof Align; BoxSizing: typeof BoxSizing; Dimension: typeof Dimension; Direction: typeof Direction; Display: typeof Display; Edge: typeof Edge; Errata: typeof Errata; ExperimentalFeature: typeof ExperimentalFeature; FlexDirection: typeof FlexDirection; Gutter: typeof Gutter; Justify: typeof Justify; LogLevel: typeof LogLevel; MeasureMode: typeof MeasureMode; NodeType: typeof NodeType; Overflow: typeof Overflow; PositionType: typeof PositionType; Unit: typeof Unit; Wrap: typeof Wrap; ALIGN_AUTO: Align; ALIGN_FLEX_START: Align; ALIGN_CENTER: Align; ALIGN_FLEX_END: Align; ALIGN_STRETCH: Align; ALIGN_BASELINE: Align; ALIGN_SPACE_BETWEEN: Align; ALIGN_SPACE_AROUND: Align; ALIGN_SPACE_EVENLY: Align; BOX_SIZING_BORDER_BOX: BoxSizing; BOX_SIZING_CONTENT_BOX: BoxSizing; DIMENSION_WIDTH: Dimension; DIMENSION_HEIGHT: Dimension; DIRECTION_INHERIT: Direction; DIRECTION_LTR: Direction; DIRECTION_RTL: Direction; DISPLAY_FLEX: Display; DISPLAY_NONE: Display; DISPLAY_CONTENTS: Display; EDGE_LEFT: Edge; EDGE_TOP: Edge; EDGE_RIGHT: Edge; EDGE_BOTTOM: Edge; EDGE_START: Edge; EDGE_END: Edge; EDGE_HORIZONTAL: Edge; EDGE_VERTICAL: Edge; EDGE_ALL: Edge; ERRATA_NONE: Errata; ERRATA_STRETCH_FLEX_BASIS: Errata; ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING: Errata; ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE: Errata; ERRATA_ALL: Errata; ERRATA_CLASSIC: Errata; EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS: ExperimentalFeature; FLEX_DIRECTION_COLUMN: FlexDirection; FLEX_DIRECTION_COLUMN_REVERSE: FlexDirection; FLEX_DIRECTION_ROW: FlexDirection; FLEX_DIRECTION_ROW_REVERSE: FlexDirection; GUTTER_COLUMN: Gutter; GUTTER_ROW: Gutter; GUTTER_ALL: Gutter; JUSTIFY_FLEX_START: Justify; JUSTIFY_CENTER: Justify; JUSTIFY_FLEX_END: Justify; JUSTIFY_SPACE_BETWEEN: Justify; JUSTIFY_SPACE_AROUND: Justify; JUSTIFY_SPACE_EVENLY: Justify; LOG_LEVEL_ERROR: LogLevel; LOG_LEVEL_WARN: LogLevel; LOG_LEVEL_INFO: LogLevel; LOG_LEVEL_DEBUG: LogLevel; LOG_LEVEL_VERBOSE: LogLevel; LOG_LEVEL_FATAL: LogLevel; MEASURE_MODE_UNDEFINED: MeasureMode; MEASURE_MODE_EXACTLY: MeasureMode; MEASURE_MODE_AT_MOST: MeasureMode; NODE_TYPE_DEFAULT: NodeType; NODE_TYPE_TEXT: NodeType; OVERFLOW_VISIBLE: Overflow; OVERFLOW_HIDDEN: Overflow; OVERFLOW_SCROLL: Overflow; POSITION_TYPE_STATIC: PositionType; POSITION_TYPE_RELATIVE: PositionType; POSITION_TYPE_ABSOLUTE: PositionType; UNIT_UNDEFINED: Unit; UNIT_POINT: Unit; UNIT_PERCENT: Unit; UNIT_AUTO: Unit; WRAP_NO_WRAP: Wrap; WRAP_WRAP: Wrap; WRAP_WRAP_REVERSE: Wrap; }
++ @opentui/core/yoga: enum Align
++ @opentui/core/yoga: enum BoxSizing
++ @opentui/core/yoga: enum Dimension
++ @opentui/core/yoga: enum Direction
++ @opentui/core/yoga: enum Display
++ @opentui/core/yoga: enum Edge
++ @opentui/core/yoga: enum Errata
++ @opentui/core/yoga: enum ExperimentalFeature
++ @opentui/core/yoga: enum FlexDirection
++ @opentui/core/yoga: enum Gutter
++ @opentui/core/yoga: enum Justify
++ @opentui/core/yoga: enum LogLevel
++ @opentui/core/yoga: enum MeasureMode
++ @opentui/core/yoga: enum NodeType
++ @opentui/core/yoga: enum Overflow
++ @opentui/core/yoga: enum PositionType
++ @opentui/core/yoga: enum Unit
++ @opentui/core/yoga: enum Wrap
++ @opentui/core/yoga: enum-member Align.Auto = 0
++ @opentui/core/yoga: enum-member Align.Baseline = 5
++ @opentui/core/yoga: enum-member Align.Center = 2
++ @opentui/core/yoga: enum-member Align.FlexEnd = 3
++ @opentui/core/yoga: enum-member Align.FlexStart = 1
++ @opentui/core/yoga: enum-member Align.SpaceAround = 7
++ @opentui/core/yoga: enum-member Align.SpaceBetween = 6
++ @opentui/core/yoga: enum-member Align.SpaceEvenly = 8
++ @opentui/core/yoga: enum-member Align.Stretch = 4
++ @opentui/core/yoga: enum-member BoxSizing.BorderBox = 0
++ @opentui/core/yoga: enum-member BoxSizing.ContentBox = 1
++ @opentui/core/yoga: enum-member Dimension.Height = 1
++ @opentui/core/yoga: enum-member Dimension.Width = 0
++ @opentui/core/yoga: enum-member Direction.Inherit = 0
++ @opentui/core/yoga: enum-member Direction.LTR = 1
++ @opentui/core/yoga: enum-member Direction.RTL = 2
++ @opentui/core/yoga: enum-member Display.Contents = 2
++ @opentui/core/yoga: enum-member Display.Flex = 0
++ @opentui/core/yoga: enum-member Display.None = 1
++ @opentui/core/yoga: enum-member Edge.All = 8
++ @opentui/core/yoga: enum-member Edge.Bottom = 3
++ @opentui/core/yoga: enum-member Edge.End = 5
++ @opentui/core/yoga: enum-member Edge.Horizontal = 6
++ @opentui/core/yoga: enum-member Edge.Left = 0
++ @opentui/core/yoga: enum-member Edge.Right = 2
++ @opentui/core/yoga: enum-member Edge.Start = 4
++ @opentui/core/yoga: enum-member Edge.Top = 1
++ @opentui/core/yoga: enum-member Edge.Vertical = 7
++ @opentui/core/yoga: enum-member Errata.AbsolutePercentAgainstInnerSize = 4
++ @opentui/core/yoga: enum-member Errata.AbsolutePositionWithoutInsetsExcludesPadding = 2
++ @opentui/core/yoga: enum-member Errata.All = 2147483647
++ @opentui/core/yoga: enum-member Errata.Classic = 2147483646
++ @opentui/core/yoga: enum-member Errata.None = 0
++ @opentui/core/yoga: enum-member Errata.StretchFlexBasis = 1
++ @opentui/core/yoga: enum-member ExperimentalFeature.WebFlexBasis = 0
++ @opentui/core/yoga: enum-member FlexDirection.Column = 0
++ @opentui/core/yoga: enum-member FlexDirection.ColumnReverse = 1
++ @opentui/core/yoga: enum-member FlexDirection.Row = 2
++ @opentui/core/yoga: enum-member FlexDirection.RowReverse = 3
++ @opentui/core/yoga: enum-member Gutter.All = 2
++ @opentui/core/yoga: enum-member Gutter.Column = 0
++ @opentui/core/yoga: enum-member Gutter.Row = 1
++ @opentui/core/yoga: enum-member Justify.Center = 1
++ @opentui/core/yoga: enum-member Justify.FlexEnd = 2
++ @opentui/core/yoga: enum-member Justify.FlexStart = 0
++ @opentui/core/yoga: enum-member Justify.SpaceAround = 4
++ @opentui/core/yoga: enum-member Justify.SpaceBetween = 3
++ @opentui/core/yoga: enum-member Justify.SpaceEvenly = 5
++ @opentui/core/yoga: enum-member LogLevel.Debug = 3
++ @opentui/core/yoga: enum-member LogLevel.Error = 0
++ @opentui/core/yoga: enum-member LogLevel.Fatal = 5
++ @opentui/core/yoga: enum-member LogLevel.Info = 2
++ @opentui/core/yoga: enum-member LogLevel.Verbose = 4
++ @opentui/core/yoga: enum-member LogLevel.Warn = 1
++ @opentui/core/yoga: enum-member MeasureMode.AtMost = 2
++ @opentui/core/yoga: enum-member MeasureMode.Exactly = 1
++ @opentui/core/yoga: enum-member MeasureMode.Undefined = 0
++ @opentui/core/yoga: enum-member NodeType.Default = 0
++ @opentui/core/yoga: enum-member NodeType.Text = 1
++ @opentui/core/yoga: enum-member Overflow.Hidden = 1
++ @opentui/core/yoga: enum-member Overflow.Scroll = 2
++ @opentui/core/yoga: enum-member Overflow.Visible = 0
++ @opentui/core/yoga: enum-member PositionType.Absolute = 2
++ @opentui/core/yoga: enum-member PositionType.Relative = 1
++ @opentui/core/yoga: enum-member PositionType.Static = 0
++ @opentui/core/yoga: enum-member Unit.Auto = 3
++ @opentui/core/yoga: enum-member Unit.Percent = 2
++ @opentui/core/yoga: enum-member Unit.Point = 1
++ @opentui/core/yoga: enum-member Unit.Undefined = 0
++ @opentui/core/yoga: enum-member Wrap.NoWrap = 0
++ @opentui/core/yoga: enum-member Wrap.Wrap = 1
++ @opentui/core/yoga: enum-member Wrap.WrapReverse = 2
++ @opentui/core/yoga: interface Layout
++ @opentui/core/yoga: interface Size
++ @opentui/core/yoga: interface Value
++ @opentui/core/yoga: static method Config.create(): Config
++ @opentui/core/yoga: static method Config.destroy(config: Config): void
++ @opentui/core/yoga: method Config.free(): void
++ @opentui/core/yoga: method Config.getErrata(): Errata
++ @opentui/core/yoga: method Config.getPointScaleFactor(): number
++ @opentui/core/yoga: method Config.isExperimentalFeatureEnabled(feature: ExperimentalFeature): boolean
++ @opentui/core/yoga: method Config.setErrata(errata: Errata): void
++ @opentui/core/yoga: method Config.setExperimentalFeatureEnabled(feature: ExperimentalFeature, enabled: boolean): void
++ @opentui/core/yoga: method Config.setPointScaleFactor(pointScaleFactor: number): void
++ @opentui/core/yoga: method Config.setUseWebDefaults(useWebDefaults: boolean): void
++ @opentui/core/yoga: method Config.useWebDefaults(): boolean
++ @opentui/core/yoga: method Node.calculateLayout(width?: number | "auto", height?: number | "auto", direction?: Direction): void
++ @opentui/core/yoga: method Node.copyStyle(node: Node): void
++ @opentui/core/yoga: static method Node.create(config?: Config): Node
++ @opentui/core/yoga: static method Node.createDefault(): Node
++ @opentui/core/yoga: static method Node.createForOpenTUI(): Node
++ @opentui/core/yoga: static method Node.createWithConfig(config: Config): Node
++ @opentui/core/yoga: static method Node.destroy(node: Node): void
++ @opentui/core/yoga: method Node.free(): void
++ @opentui/core/yoga: method Node.freeRecursive(): void
++ @opentui/core/yoga: method Node.getAlignContent(): Align
++ @opentui/core/yoga: method Node.getAlignItems(): Align
++ @opentui/core/yoga: method Node.getAlignSelf(): Align
++ @opentui/core/yoga: method Node.getAlwaysFormsContainingBlock(): boolean
++ @opentui/core/yoga: method Node.getAspectRatio(): number
++ @opentui/core/yoga: method Node.getBorder(edge: Edge): number
++ @opentui/core/yoga: method Node.getBoxSizing(): BoxSizing
++ @opentui/core/yoga: method Node.getChild(index: number): Node | null
++ @opentui/core/yoga: method Node.getChildCount(): number
++ @opentui/core/yoga: method Node.getComputedBorder(edge: Edge): number
++ @opentui/core/yoga: method Node.getComputedBottom(): number
++ @opentui/core/yoga: method Node.getComputedHeight(): number
++ @opentui/core/yoga: method Node.getComputedLayout(): Layout
++ @opentui/core/yoga: method Node.getComputedLeft(): number
++ @opentui/core/yoga: method Node.getComputedMargin(edge: Edge): number
++ @opentui/core/yoga: method Node.getComputedPadding(edge: Edge): number
++ @opentui/core/yoga: method Node.getComputedRight(): number
++ @opentui/core/yoga: method Node.getComputedTop(): number
++ @opentui/core/yoga: method Node.getComputedWidth(): number
++ @opentui/core/yoga: method Node.getDirection(): Direction
++ @opentui/core/yoga: method Node.getDisplay(): Display
++ @opentui/core/yoga: method Node.getFlex(): number
++ @opentui/core/yoga: method Node.getFlexBasis(): Value
++ @opentui/core/yoga: method Node.getFlexDirection(): FlexDirection
++ @opentui/core/yoga: method Node.getFlexGrow(): number
++ @opentui/core/yoga: method Node.getFlexShrink(): number
++ @opentui/core/yoga: method Node.getFlexWrap(): Wrap
++ @opentui/core/yoga: method Node.getGap(gutter: Gutter): Value
++ @opentui/core/yoga: method Node.getHeight(): Value
++ @opentui/core/yoga: method Node.getJustifyContent(): Justify
++ @opentui/core/yoga: method Node.getMargin(edge: Edge): Value
++ @opentui/core/yoga: method Node.getMaxHeight(): Value
++ @opentui/core/yoga: method Node.getMaxWidth(): Value
++ @opentui/core/yoga: method Node.getMinHeight(): Value
++ @opentui/core/yoga: method Node.getMinWidth(): Value
++ @opentui/core/yoga: method Node.getOverflow(): Overflow
++ @opentui/core/yoga: method Node.getPadding(edge: Edge): Value
++ @opentui/core/yoga: method Node.getParent(): Node | null
++ @opentui/core/yoga: method Node.getPosition(edge: Edge): Value
++ @opentui/core/yoga: method Node.getPositionType(): PositionType
++ @opentui/core/yoga: method Node.getWidth(): Value
++ @opentui/core/yoga: method Node.hasMeasureFunc(): boolean
++ @opentui/core/yoga: method Node.hasNewLayout(): boolean
++ @opentui/core/yoga: method Node.insertChild(child: Node, index: number): void
++ @opentui/core/yoga: method Node.isDirty(): boolean
++ @opentui/core/yoga: method Node.isFreed(): boolean
++ @opentui/core/yoga: method Node.isReferenceBaseline(): boolean
++ @opentui/core/yoga: method Node.markDirty(): void
++ @opentui/core/yoga: method Node.markLayoutSeen(): void
++ @opentui/core/yoga: method Node.removeAllChildren(): void
++ @opentui/core/yoga: method Node.removeChild(child: Node): void
++ @opentui/core/yoga: method Node.reset(): void
++ @opentui/core/yoga: method Node.setAlignContent(alignContent: Align): void
++ @opentui/core/yoga: method Node.setAlignItems(alignItems: Align): void
++ @opentui/core/yoga: method Node.setAlignSelf(alignSelf: Align): void
++ @opentui/core/yoga: method Node.setAlwaysFormsContainingBlock(alwaysFormsContainingBlock: boolean): void
++ @opentui/core/yoga: method Node.setAspectRatio(aspectRatio: number | undefined): void
++ @opentui/core/yoga: method Node.setBorder(edge: Edge, border: number | undefined): void
++ @opentui/core/yoga: method Node.setBoxSizing(boxSizing: BoxSizing): void
++ @opentui/core/yoga: method Node.setDirection(direction: Direction): void
++ @opentui/core/yoga: method Node.setDirtiedFunc(dirtiedFunc: DirtiedFunction | null): void
++ @opentui/core/yoga: method Node.setDisplay(display: Display): void
++ @opentui/core/yoga: method Node.setFlex(flex: number | undefined): void
++ @opentui/core/yoga: method Node.setFlexBasis(flexBasis: ValueInput): void
++ @opentui/core/yoga: method Node.setFlexBasisAuto(): void
++ @opentui/core/yoga: method Node.setFlexBasisPercent(flexBasis: number | undefined): void
++ @opentui/core/yoga: method Node.setFlexDirection(flexDirection: FlexDirection): void
++ @opentui/core/yoga: method Node.setFlexGrow(flexGrow: number | undefined): void
++ @opentui/core/yoga: method Node.setFlexShrink(flexShrink: number | undefined): void
++ @opentui/core/yoga: method Node.setFlexWrap(flexWrap: Wrap): void
++ @opentui/core/yoga: method Node.setGap(gutter: Gutter, gap: ValueInputNoAuto): void
++ @opentui/core/yoga: method Node.setGapPercent(gutter: Gutter, gap: number | undefined): void
++ @opentui/core/yoga: method Node.setHeight(height: ValueInput): void
++ @opentui/core/yoga: method Node.setHeightAuto(): void
++ @opentui/core/yoga: method Node.setHeightPercent(height: number | undefined): void
++ @opentui/core/yoga: method Node.setIsReferenceBaseline(isReferenceBaseline: boolean): void
++ @opentui/core/yoga: method Node.setJustifyContent(justifyContent: Justify): void
++ @opentui/core/yoga: method Node.setMargin(edge: Edge, margin: ValueInput): void
++ @opentui/core/yoga: method Node.setMarginAuto(edge: Edge): void
++ @opentui/core/yoga: method Node.setMarginPercent(edge: Edge, margin: number | undefined): void
++ @opentui/core/yoga: method Node.setMaxHeight(maxHeight: ValueInputNoAuto): void
++ @opentui/core/yoga: method Node.setMaxHeightPercent(maxHeight: number | undefined): void
++ @opentui/core/yoga: method Node.setMaxWidth(maxWidth: ValueInputNoAuto): void
++ @opentui/core/yoga: method Node.setMaxWidthPercent(maxWidth: number | undefined): void
++ @opentui/core/yoga: method Node.setMeasureFunc(measureFunc: MeasureFunction | null): void
++ @opentui/core/yoga: method Node.setMinHeight(minHeight: ValueInputNoAuto): void
++ @opentui/core/yoga: method Node.setMinHeightPercent(minHeight: number | undefined): void
++ @opentui/core/yoga: method Node.setMinWidth(minWidth: ValueInputNoAuto): void
++ @opentui/core/yoga: method Node.setMinWidthPercent(minWidth: number | undefined): void
++ @opentui/core/yoga: method Node.setOverflow(overflow: Overflow): void
++ @opentui/core/yoga: method Node.setPadding(edge: Edge, padding: ValueInputNoAuto): void
++ @opentui/core/yoga: method Node.setPaddingPercent(edge: Edge, padding: number | undefined): void
++ @opentui/core/yoga: method Node.setPosition(edge: Edge, position: ValueInput): void
++ @opentui/core/yoga: method Node.setPositionAuto(edge: Edge): void
++ @opentui/core/yoga: method Node.setPositionPercent(edge: Edge, position: number | undefined): void
++ @opentui/core/yoga: method Node.setPositionType(positionType: PositionType): void
++ @opentui/core/yoga: method Node.setWidth(width: ValueInput): void
++ @opentui/core/yoga: method Node.setWidthAuto(): void
++ @opentui/core/yoga: method Node.setWidthPercent(width: number | undefined): void
++ @opentui/core/yoga: method Node.unsetDirtiedFunc(): void
++ @opentui/core/yoga: method Node.unsetMeasureFunc(): void
++ @opentui/core/yoga: readonly property Config.ptr: Pointer
++ @opentui/core/yoga: property Layout.bottom: number
++ @opentui/core/yoga: property Layout.height: number
++ @opentui/core/yoga: property Layout.left: number
++ @opentui/core/yoga: property Layout.right: number
++ @opentui/core/yoga: property Layout.top: number
++ @opentui/core/yoga: property Layout.width: number
++ @opentui/core/yoga: readonly property Node.ptr: Pointer
++ @opentui/core/yoga: property Size.height: number
++ @opentui/core/yoga: property Size.width: number
++ @opentui/core/yoga: property Value.unit: Unit
++ @opentui/core/yoga: property Value.value: number
++ @opentui/core/yoga: type DirtiedFunction = (node: Node) => void
++ @opentui/core/yoga: type MeasureFunction = (width: number, widthMode: MeasureMode, height: number, heightMode: MeasureMode) => Size
++ @opentui/core: class Yoga.Config
++ @opentui/core: class Yoga.Node
++ @opentui/core: const Yoga.ALIGN_AUTO = Align.Auto
++ @opentui/core: const Yoga.ALIGN_BASELINE = Align.Baseline
++ @opentui/core: const Yoga.ALIGN_CENTER = Align.Center
++ @opentui/core: const Yoga.ALIGN_FLEX_END = Align.FlexEnd
++ @opentui/core: const Yoga.ALIGN_FLEX_START = Align.FlexStart
++ @opentui/core: const Yoga.ALIGN_SPACE_AROUND = Align.SpaceAround
++ @opentui/core: const Yoga.ALIGN_SPACE_BETWEEN = Align.SpaceBetween
++ @opentui/core: const Yoga.ALIGN_SPACE_EVENLY = Align.SpaceEvenly
++ @opentui/core: const Yoga.ALIGN_STRETCH = Align.Stretch
++ @opentui/core: const Yoga.BOX_SIZING_BORDER_BOX = BoxSizing.BorderBox
++ @opentui/core: const Yoga.BOX_SIZING_CONTENT_BOX = BoxSizing.ContentBox
++ @opentui/core: const Yoga.DIMENSION_HEIGHT = Dimension.Height
++ @opentui/core: const Yoga.DIMENSION_WIDTH = Dimension.Width
++ @opentui/core: const Yoga.DIRECTION_INHERIT = Direction.Inherit
++ @opentui/core: const Yoga.DIRECTION_LTR = Direction.LTR
++ @opentui/core: const Yoga.DIRECTION_RTL = Direction.RTL
++ @opentui/core: const Yoga.DISPLAY_CONTENTS = Display.Contents
++ @opentui/core: const Yoga.DISPLAY_FLEX = Display.Flex
++ @opentui/core: const Yoga.DISPLAY_NONE = Display.None
++ @opentui/core: const Yoga.EDGE_ALL = Edge.All
++ @opentui/core: const Yoga.EDGE_BOTTOM = Edge.Bottom
++ @opentui/core: const Yoga.EDGE_END = Edge.End
++ @opentui/core: const Yoga.EDGE_HORIZONTAL = Edge.Horizontal
++ @opentui/core: const Yoga.EDGE_LEFT = Edge.Left
++ @opentui/core: const Yoga.EDGE_RIGHT = Edge.Right
++ @opentui/core: const Yoga.EDGE_START = Edge.Start
++ @opentui/core: const Yoga.EDGE_TOP = Edge.Top
++ @opentui/core: const Yoga.EDGE_VERTICAL = Edge.Vertical
++ @opentui/core: const Yoga.ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE = Errata.AbsolutePercentAgainstInnerSize
++ @opentui/core: const Yoga.ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING = Errata.AbsolutePositionWithoutInsetsExcludesPadding
++ @opentui/core: const Yoga.ERRATA_ALL = Errata.All
++ @opentui/core: const Yoga.ERRATA_CLASSIC = Errata.Classic
++ @opentui/core: const Yoga.ERRATA_NONE = Errata.None
++ @opentui/core: const Yoga.ERRATA_STRETCH_FLEX_BASIS = Errata.StretchFlexBasis
++ @opentui/core: const Yoga.EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS = ExperimentalFeature.WebFlexBasis
++ @opentui/core: const Yoga.FLEX_DIRECTION_COLUMN = FlexDirection.Column
++ @opentui/core: const Yoga.FLEX_DIRECTION_COLUMN_REVERSE = FlexDirection.ColumnReverse
++ @opentui/core: const Yoga.FLEX_DIRECTION_ROW = FlexDirection.Row
++ @opentui/core: const Yoga.FLEX_DIRECTION_ROW_REVERSE = FlexDirection.RowReverse
++ @opentui/core: const Yoga.GUTTER_ALL = Gutter.All
++ @opentui/core: const Yoga.GUTTER_COLUMN = Gutter.Column
++ @opentui/core: const Yoga.GUTTER_ROW = Gutter.Row
++ @opentui/core: const Yoga.JUSTIFY_CENTER = Justify.Center
++ @opentui/core: const Yoga.JUSTIFY_FLEX_END = Justify.FlexEnd
++ @opentui/core: const Yoga.JUSTIFY_FLEX_START = Justify.FlexStart
++ @opentui/core: const Yoga.JUSTIFY_SPACE_AROUND = Justify.SpaceAround
++ @opentui/core: const Yoga.JUSTIFY_SPACE_BETWEEN = Justify.SpaceBetween
++ @opentui/core: const Yoga.JUSTIFY_SPACE_EVENLY = Justify.SpaceEvenly
++ @opentui/core: const Yoga.LOG_LEVEL_DEBUG = LogLevel.Debug
++ @opentui/core: const Yoga.LOG_LEVEL_ERROR = LogLevel.Error
++ @opentui/core: const Yoga.LOG_LEVEL_FATAL = LogLevel.Fatal
++ @opentui/core: const Yoga.LOG_LEVEL_INFO = LogLevel.Info
++ @opentui/core: const Yoga.LOG_LEVEL_VERBOSE = LogLevel.Verbose
++ @opentui/core: const Yoga.LOG_LEVEL_WARN = LogLevel.Warn
++ @opentui/core: const Yoga.MEASURE_MODE_AT_MOST = MeasureMode.AtMost
++ @opentui/core: const Yoga.MEASURE_MODE_EXACTLY = MeasureMode.Exactly
++ @opentui/core: const Yoga.MEASURE_MODE_UNDEFINED = MeasureMode.Undefined
++ @opentui/core: const Yoga.NODE_TYPE_DEFAULT = NodeType.Default
++ @opentui/core: const Yoga.NODE_TYPE_TEXT = NodeType.Text
++ @opentui/core: const Yoga.OVERFLOW_HIDDEN = Overflow.Hidden
++ @opentui/core: const Yoga.OVERFLOW_SCROLL = Overflow.Scroll
++ @opentui/core: const Yoga.OVERFLOW_VISIBLE = Overflow.Visible
++ @opentui/core: const Yoga.POSITION_TYPE_ABSOLUTE = PositionType.Absolute
++ @opentui/core: const Yoga.POSITION_TYPE_RELATIVE = PositionType.Relative
++ @opentui/core: const Yoga.POSITION_TYPE_STATIC = PositionType.Static
++ @opentui/core: const Yoga.UNIT_AUTO = Unit.Auto
++ @opentui/core: const Yoga.UNIT_PERCENT = Unit.Percent
++ @opentui/core: const Yoga.UNIT_POINT = Unit.Point
++ @opentui/core: const Yoga.UNIT_UNDEFINED = Unit.Undefined
++ @opentui/core: const Yoga.WRAP_NO_WRAP = Wrap.NoWrap
++ @opentui/core: const Yoga.WRAP_WRAP = Wrap.Wrap
++ @opentui/core: const Yoga.WRAP_WRAP_REVERSE = Wrap.WrapReverse
++ @opentui/core: const Yoga.default: { Config: typeof Config; Node: typeof Node; Align: typeof Align; BoxSizing: typeof BoxSizing; Dimension: typeof Dimension; Direction: typeof Direction; Display: typeof Display; Edge: typeof Edge; Errata: typeof Errata; ExperimentalFeature: typeof ExperimentalFeature; FlexDirection: typeof FlexDirection; Gutter: typeof Gutter; Justify: typeof Justify; LogLevel: typeof LogLevel; MeasureMode: typeof MeasureMode; NodeType: typeof NodeType; Overflow: typeof Overflow; PositionType: typeof PositionType; Unit: typeof Unit; Wrap: typeof Wrap; ALIGN_AUTO: Align; ALIGN_FLEX_START: Align; ALIGN_CENTER: Align; ALIGN_FLEX_END: Align; ALIGN_STRETCH: Align; ALIGN_BASELINE: Align; ALIGN_SPACE_BETWEEN: Align; ALIGN_SPACE_AROUND: Align; ALIGN_SPACE_EVENLY: Align; BOX_SIZING_BORDER_BOX: BoxSizing; BOX_SIZING_CONTENT_BOX: BoxSizing; DIMENSION_WIDTH: Dimension; DIMENSION_HEIGHT: Dimension; DIRECTION_INHERIT: Direction; DIRECTION_LTR: Direction; DIRECTION_RTL: Direction; DISPLAY_FLEX: Display; DISPLAY_NONE: Display; DISPLAY_CONTENTS: Display; EDGE_LEFT: Edge; EDGE_TOP: Edge; EDGE_RIGHT: Edge; EDGE_BOTTOM: Edge; EDGE_START: Edge; EDGE_END: Edge; EDGE_HORIZONTAL: Edge; EDGE_VERTICAL: Edge; EDGE_ALL: Edge; ERRATA_NONE: Errata; ERRATA_STRETCH_FLEX_BASIS: Errata; ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING: Errata; ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE: Errata; ERRATA_ALL: Errata; ERRATA_CLASSIC: Errata; EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS: ExperimentalFeature; FLEX_DIRECTION_COLUMN: FlexDirection; FLEX_DIRECTION_COLUMN_REVERSE: FlexDirection; FLEX_DIRECTION_ROW: FlexDirection; FLEX_DIRECTION_ROW_REVERSE: FlexDirection; GUTTER_COLUMN: Gutter; GUTTER_ROW: Gutter; GUTTER_ALL: Gutter; JUSTIFY_FLEX_START: Justify; JUSTIFY_CENTER: Justify; JUSTIFY_FLEX_END: Justify; JUSTIFY_SPACE_BETWEEN: Justify; JUSTIFY_SPACE_AROUND: Justify; JUSTIFY_SPACE_EVENLY: Justify; LOG_LEVEL_ERROR: LogLevel; LOG_LEVEL_WARN: LogLevel; LOG_LEVEL_INFO: LogLevel; LOG_LEVEL_DEBUG: LogLevel; LOG_LEVEL_VERBOSE: LogLevel; LOG_LEVEL_FATAL: LogLevel; MEASURE_MODE_UNDEFINED: MeasureMode; MEASURE_MODE_EXACTLY: MeasureMode; MEASURE_MODE_AT_MOST: MeasureMode; NODE_TYPE_DEFAULT: NodeType; NODE_TYPE_TEXT: NodeType; OVERFLOW_VISIBLE: Overflow; OVERFLOW_HIDDEN: Overflow; OVERFLOW_SCROLL: Overflow; POSITION_TYPE_STATIC: PositionType; POSITION_TYPE_RELATIVE: PositionType; POSITION_TYPE_ABSOLUTE: PositionType; UNIT_UNDEFINED: Unit; UNIT_POINT: Unit; UNIT_PERCENT: Unit; UNIT_AUTO: Unit; WRAP_NO_WRAP: Wrap; WRAP_WRAP: Wrap; WRAP_WRAP_REVERSE: Wrap; }
++ @opentui/core: enum Yoga.Align
++ @opentui/core: enum Yoga.BoxSizing
++ @opentui/core: enum Yoga.Dimension
++ @opentui/core: enum Yoga.Direction
++ @opentui/core: enum Yoga.Display
++ @opentui/core: enum Yoga.Edge
++ @opentui/core: enum Yoga.Errata
++ @opentui/core: enum Yoga.ExperimentalFeature
++ @opentui/core: enum Yoga.FlexDirection
++ @opentui/core: enum Yoga.Gutter
++ @opentui/core: enum Yoga.Justify
++ @opentui/core: enum Yoga.LogLevel
++ @opentui/core: enum Yoga.MeasureMode
++ @opentui/core: enum Yoga.NodeType
++ @opentui/core: enum Yoga.Overflow
++ @opentui/core: enum Yoga.PositionType
++ @opentui/core: enum Yoga.Unit
++ @opentui/core: enum Yoga.Wrap
++ @opentui/core: enum-member Yoga.Align.Auto = 0
++ @opentui/core: enum-member Yoga.Align.Baseline = 5
++ @opentui/core: enum-member Yoga.Align.Center = 2
++ @opentui/core: enum-member Yoga.Align.FlexEnd = 3
++ @opentui/core: enum-member Yoga.Align.FlexStart = 1
++ @opentui/core: enum-member Yoga.Align.SpaceAround = 7
++ @opentui/core: enum-member Yoga.Align.SpaceBetween = 6
++ @opentui/core: enum-member Yoga.Align.SpaceEvenly = 8
++ @opentui/core: enum-member Yoga.Align.Stretch = 4
++ @opentui/core: enum-member Yoga.BoxSizing.BorderBox = 0
++ @opentui/core: enum-member Yoga.BoxSizing.ContentBox = 1
++ @opentui/core: enum-member Yoga.Dimension.Height = 1
++ @opentui/core: enum-member Yoga.Dimension.Width = 0
++ @opentui/core: enum-member Yoga.Direction.Inherit = 0
++ @opentui/core: enum-member Yoga.Direction.LTR = 1
++ @opentui/core: enum-member Yoga.Direction.RTL = 2
++ @opentui/core: enum-member Yoga.Display.Contents = 2
++ @opentui/core: enum-member Yoga.Display.Flex = 0
++ @opentui/core: enum-member Yoga.Display.None = 1
++ @opentui/core: enum-member Yoga.Edge.All = 8
++ @opentui/core: enum-member Yoga.Edge.Bottom = 3
++ @opentui/core: enum-member Yoga.Edge.End = 5
++ @opentui/core: enum-member Yoga.Edge.Horizontal = 6
++ @opentui/core: enum-member Yoga.Edge.Left = 0
++ @opentui/core: enum-member Yoga.Edge.Right = 2
++ @opentui/core: enum-member Yoga.Edge.Start = 4
++ @opentui/core: enum-member Yoga.Edge.Top = 1
++ @opentui/core: enum-member Yoga.Edge.Vertical = 7
++ @opentui/core: enum-member Yoga.Errata.AbsolutePercentAgainstInnerSize = 4
++ @opentui/core: enum-member Yoga.Errata.AbsolutePositionWithoutInsetsExcludesPadding = 2
++ @opentui/core: enum-member Yoga.Errata.All = 2147483647
++ @opentui/core: enum-member Yoga.Errata.Classic = 2147483646
++ @opentui/core: enum-member Yoga.Errata.None = 0
++ @opentui/core: enum-member Yoga.Errata.StretchFlexBasis = 1
++ @opentui/core: enum-member Yoga.ExperimentalFeature.WebFlexBasis = 0
++ @opentui/core: enum-member Yoga.FlexDirection.Column = 0
++ @opentui/core: enum-member Yoga.FlexDirection.ColumnReverse = 1
++ @opentui/core: enum-member Yoga.FlexDirection.Row = 2
++ @opentui/core: enum-member Yoga.FlexDirection.RowReverse = 3
++ @opentui/core: enum-member Yoga.Gutter.All = 2
++ @opentui/core: enum-member Yoga.Gutter.Column = 0
++ @opentui/core: enum-member Yoga.Gutter.Row = 1
++ @opentui/core: enum-member Yoga.Justify.Center = 1
++ @opentui/core: enum-member Yoga.Justify.FlexEnd = 2
++ @opentui/core: enum-member Yoga.Justify.FlexStart = 0
++ @opentui/core: enum-member Yoga.Justify.SpaceAround = 4
++ @opentui/core: enum-member Yoga.Justify.SpaceBetween = 3
++ @opentui/core: enum-member Yoga.Justify.SpaceEvenly = 5
++ @opentui/core: enum-member Yoga.LogLevel.Debug = 3
++ @opentui/core: enum-member Yoga.LogLevel.Error = 0
++ @opentui/core: enum-member Yoga.LogLevel.Fatal = 5
++ @opentui/core: enum-member Yoga.LogLevel.Info = 2
++ @opentui/core: enum-member Yoga.LogLevel.Verbose = 4
++ @opentui/core: enum-member Yoga.LogLevel.Warn = 1
++ @opentui/core: enum-member Yoga.MeasureMode.AtMost = 2
++ @opentui/core: enum-member Yoga.MeasureMode.Exactly = 1
++ @opentui/core: enum-member Yoga.MeasureMode.Undefined = 0
++ @opentui/core: enum-member Yoga.NodeType.Default = 0
++ @opentui/core: enum-member Yoga.NodeType.Text = 1
++ @opentui/core: enum-member Yoga.Overflow.Hidden = 1
++ @opentui/core: enum-member Yoga.Overflow.Scroll = 2
++ @opentui/core: enum-member Yoga.Overflow.Visible = 0
++ @opentui/core: enum-member Yoga.PositionType.Absolute = 2
++ @opentui/core: enum-member Yoga.PositionType.Relative = 1
++ @opentui/core: enum-member Yoga.PositionType.Static = 0
++ @opentui/core: enum-member Yoga.Unit.Auto = 3
++ @opentui/core: enum-member Yoga.Unit.Percent = 2
++ @opentui/core: enum-member Yoga.Unit.Point = 1
++ @opentui/core: enum-member Yoga.Unit.Undefined = 0
++ @opentui/core: enum-member Yoga.Wrap.NoWrap = 0
++ @opentui/core: enum-member Yoga.Wrap.Wrap = 1
++ @opentui/core: enum-member Yoga.Wrap.WrapReverse = 2
++ @opentui/core: interface NativeYogaLayout
++ @opentui/core: interface Yoga.Layout
++ @opentui/core: interface Yoga.Size
++ @opentui/core: interface Yoga.Value
++ @opentui/core: method Renderable.canReuseRenderCommandList(): boolean
++ @opentui/core: static method Yoga.Config.create(): Config
++ @opentui/core: static method Yoga.Config.destroy(config: Config): void
++ @opentui/core: method Yoga.Config.free(): void
++ @opentui/core: method Yoga.Config.getErrata(): Errata
++ @opentui/core: method Yoga.Config.getPointScaleFactor(): number
++ @opentui/core: method Yoga.Config.isExperimentalFeatureEnabled(feature: ExperimentalFeature): boolean
++ @opentui/core: method Yoga.Config.setErrata(errata: Errata): void
++ @opentui/core: method Yoga.Config.setExperimentalFeatureEnabled(feature: ExperimentalFeature, enabled: boolean): void
++ @opentui/core: method Yoga.Config.setPointScaleFactor(pointScaleFactor: number): void
++ @opentui/core: method Yoga.Config.setUseWebDefaults(useWebDefaults: boolean): void
++ @opentui/core: method Yoga.Config.useWebDefaults(): boolean
++ @opentui/core: method Yoga.Node.calculateLayout(width?: number | "auto", height?: number | "auto", direction?: Direction): void
++ @opentui/core: method Yoga.Node.copyStyle(node: Node): void
++ @opentui/core: static method Yoga.Node.create(config?: Config): Node
++ @opentui/core: static method Yoga.Node.createDefault(): Node
++ @opentui/core: static method Yoga.Node.createForOpenTUI(): Node
++ @opentui/core: static method Yoga.Node.createWithConfig(config: Config): Node
++ @opentui/core: static method Yoga.Node.destroy(node: Node): void
++ @opentui/core: method Yoga.Node.free(): void
++ @opentui/core: method Yoga.Node.freeRecursive(): void
++ @opentui/core: method Yoga.Node.getAlignContent(): Align
++ @opentui/core: method Yoga.Node.getAlignItems(): Align
++ @opentui/core: method Yoga.Node.getAlignSelf(): Align
++ @opentui/core: method Yoga.Node.getAlwaysFormsContainingBlock(): boolean
++ @opentui/core: method Yoga.Node.getAspectRatio(): number
++ @opentui/core: method Yoga.Node.getBorder(edge: Edge): number
++ @opentui/core: method Yoga.Node.getBoxSizing(): BoxSizing
++ @opentui/core: method Yoga.Node.getChild(index: number): Node | null
++ @opentui/core: method Yoga.Node.getChildCount(): number
++ @opentui/core: method Yoga.Node.getComputedBorder(edge: Edge): number
++ @opentui/core: method Yoga.Node.getComputedBottom(): number
++ @opentui/core: method Yoga.Node.getComputedHeight(): number
++ @opentui/core: method Yoga.Node.getComputedLayout(): Layout
++ @opentui/core: method Yoga.Node.getComputedLeft(): number
++ @opentui/core: method Yoga.Node.getComputedMargin(edge: Edge): number
++ @opentui/core: method Yoga.Node.getComputedPadding(edge: Edge): number
++ @opentui/core: method Yoga.Node.getComputedRight(): number
++ @opentui/core: method Yoga.Node.getComputedTop(): number
++ @opentui/core: method Yoga.Node.getComputedWidth(): number
++ @opentui/core: method Yoga.Node.getDirection(): Direction
++ @opentui/core: method Yoga.Node.getDisplay(): Display
++ @opentui/core: method Yoga.Node.getFlex(): number
++ @opentui/core: method Yoga.Node.getFlexBasis(): Value
++ @opentui/core: method Yoga.Node.getFlexDirection(): FlexDirection
++ @opentui/core: method Yoga.Node.getFlexGrow(): number
++ @opentui/core: method Yoga.Node.getFlexShrink(): number
++ @opentui/core: method Yoga.Node.getFlexWrap(): Wrap
++ @opentui/core: method Yoga.Node.getGap(gutter: Gutter): Value
++ @opentui/core: method Yoga.Node.getHeight(): Value
++ @opentui/core: method Yoga.Node.getJustifyContent(): Justify
++ @opentui/core: method Yoga.Node.getMargin(edge: Edge): Value
++ @opentui/core: method Yoga.Node.getMaxHeight(): Value
++ @opentui/core: method Yoga.Node.getMaxWidth(): Value
++ @opentui/core: method Yoga.Node.getMinHeight(): Value
++ @opentui/core: method Yoga.Node.getMinWidth(): Value
++ @opentui/core: method Yoga.Node.getOverflow(): Overflow
++ @opentui/core: method Yoga.Node.getPadding(edge: Edge): Value
++ @opentui/core: method Yoga.Node.getParent(): Node | null
++ @opentui/core: method Yoga.Node.getPosition(edge: Edge): Value
++ @opentui/core: method Yoga.Node.getPositionType(): PositionType
++ @opentui/core: method Yoga.Node.getWidth(): Value
++ @opentui/core: method Yoga.Node.hasMeasureFunc(): boolean
++ @opentui/core: method Yoga.Node.hasNewLayout(): boolean
++ @opentui/core: method Yoga.Node.insertChild(child: Node, index: number): void
++ @opentui/core: method Yoga.Node.isDirty(): boolean
++ @opentui/core: method Yoga.Node.isFreed(): boolean
++ @opentui/core: method Yoga.Node.isReferenceBaseline(): boolean
++ @opentui/core: method Yoga.Node.markDirty(): void
++ @opentui/core: method Yoga.Node.markLayoutSeen(): void
++ @opentui/core: method Yoga.Node.removeAllChildren(): void
++ @opentui/core: method Yoga.Node.removeChild(child: Node): void
++ @opentui/core: method Yoga.Node.reset(): void
++ @opentui/core: method Yoga.Node.setAlignContent(alignContent: Align): void
++ @opentui/core: method Yoga.Node.setAlignItems(alignItems: Align): void
++ @opentui/core: method Yoga.Node.setAlignSelf(alignSelf: Align): void
++ @opentui/core: method Yoga.Node.setAlwaysFormsContainingBlock(alwaysFormsContainingBlock: boolean): void
++ @opentui/core: method Yoga.Node.setAspectRatio(aspectRatio: number | undefined): void
++ @opentui/core: method Yoga.Node.setBorder(edge: Edge, border: number | undefined): void
++ @opentui/core: method Yoga.Node.setBoxSizing(boxSizing: BoxSizing): void
++ @opentui/core: method Yoga.Node.setDirection(direction: Direction): void
++ @opentui/core: method Yoga.Node.setDirtiedFunc(dirtiedFunc: DirtiedFunction | null): void
++ @opentui/core: method Yoga.Node.setDisplay(display: Display): void
++ @opentui/core: method Yoga.Node.setFlex(flex: number | undefined): void
++ @opentui/core: method Yoga.Node.setFlexBasis(flexBasis: ValueInput): void
++ @opentui/core: method Yoga.Node.setFlexBasisAuto(): void
++ @opentui/core: method Yoga.Node.setFlexBasisPercent(flexBasis: number | undefined): void
++ @opentui/core: method Yoga.Node.setFlexDirection(flexDirection: FlexDirection): void
++ @opentui/core: method Yoga.Node.setFlexGrow(flexGrow: number | undefined): void
++ @opentui/core: method Yoga.Node.setFlexShrink(flexShrink: number | undefined): void
++ @opentui/core: method Yoga.Node.setFlexWrap(flexWrap: Wrap): void
++ @opentui/core: method Yoga.Node.setGap(gutter: Gutter, gap: ValueInputNoAuto): void
++ @opentui/core: method Yoga.Node.setGapPercent(gutter: Gutter, gap: number | undefined): void
++ @opentui/core: method Yoga.Node.setHeight(height: ValueInput): void
++ @opentui/core: method Yoga.Node.setHeightAuto(): void
++ @opentui/core: method Yoga.Node.setHeightPercent(height: number | undefined): void
++ @opentui/core: method Yoga.Node.setIsReferenceBaseline(isReferenceBaseline: boolean): void
++ @opentui/core: method Yoga.Node.setJustifyContent(justifyContent: Justify): void
++ @opentui/core: method Yoga.Node.setMargin(edge: Edge, margin: ValueInput): void
++ @opentui/core: method Yoga.Node.setMarginAuto(edge: Edge): void
++ @opentui/core: method Yoga.Node.setMarginPercent(edge: Edge, margin: number | undefined): void
++ @opentui/core: method Yoga.Node.setMaxHeight(maxHeight: ValueInputNoAuto): void
++ @opentui/core: method Yoga.Node.setMaxHeightPercent(maxHeight: number | undefined): void
++ @opentui/core: method Yoga.Node.setMaxWidth(maxWidth: ValueInputNoAuto): void
++ @opentui/core: method Yoga.Node.setMaxWidthPercent(maxWidth: number | undefined): void
++ @opentui/core: method Yoga.Node.setMeasureFunc(measureFunc: MeasureFunction | null): void
++ @opentui/core: method Yoga.Node.setMinHeight(minHeight: ValueInputNoAuto): void
++ @opentui/core: method Yoga.Node.setMinHeightPercent(minHeight: number | undefined): void
++ @opentui/core: method Yoga.Node.setMinWidth(minWidth: ValueInputNoAuto): void
++ @opentui/core: method Yoga.Node.setMinWidthPercent(minWidth: number | undefined): void
++ @opentui/core: method Yoga.Node.setOverflow(overflow: Overflow): void
++ @opentui/core: method Yoga.Node.setPadding(edge: Edge, padding: ValueInputNoAuto): void
++ @opentui/core: method Yoga.Node.setPaddingPercent(edge: Edge, padding: number | undefined): void
++ @opentui/core: method Yoga.Node.setPosition(edge: Edge, position: ValueInput): void
++ @opentui/core: method Yoga.Node.setPositionAuto(edge: Edge): void
++ @opentui/core: method Yoga.Node.setPositionPercent(edge: Edge, position: number | undefined): void
++ @opentui/core: method Yoga.Node.setPositionType(positionType: PositionType): void
++ @opentui/core: method Yoga.Node.setWidth(width: ValueInput): void
++ @opentui/core: method Yoga.Node.setWidthAuto(): void
++ @opentui/core: method Yoga.Node.setWidthPercent(width: number | undefined): void
++ @opentui/core: method Yoga.Node.unsetDirtiedFunc(): void
++ @opentui/core: method Yoga.Node.unsetMeasureFunc(): void
+- @opentui/core: namespace Yoga from "yoga-layout"
++ @opentui/core: namespace Yoga
++ @opentui/core: property NativeYogaLayout.bottom: number
++ @opentui/core: property NativeYogaLayout.height: number
++ @opentui/core: property NativeYogaLayout.left: number
++ @opentui/core: property NativeYogaLayout.right: number
++ @opentui/core: property NativeYogaLayout.top: number
++ @opentui/core: property NativeYogaLayout.width: number
++ @opentui/core: property RenderLib.createYogaDirtiedCallback: (callback: NativeYogaDirtiedCallback) => FFICallbackInstance
++ @opentui/core: property RenderLib.createYogaMeasureCallback: (callback: NativeYogaMeasureCallback) => FFICallbackInstance
++ @opentui/core: property RenderLib.yogaConfigCreate: () => Pointer
++ @opentui/core: property RenderLib.yogaConfigFree: (config: Pointer) => void
++ @opentui/core: property RenderLib.yogaConfigGetErrata: (config: Pointer) => number
++ @opentui/core: property RenderLib.yogaConfigGetPointScaleFactor: (config: Pointer) => number
++ @opentui/core: property RenderLib.yogaConfigGetUseWebDefaults: (config: Pointer) => boolean
++ @opentui/core: property RenderLib.yogaConfigIsExperimentalFeatureEnabled: (config: Pointer, feature: number) => boolean
++ @opentui/core: property RenderLib.yogaConfigSetErrata: (config: Pointer, errata: number) => void
++ @opentui/core: property RenderLib.yogaConfigSetExperimentalFeatureEnabled: (config: Pointer, feature: number, enabled: boolean) => void
++ @opentui/core: property RenderLib.yogaConfigSetPointScaleFactor: (config: Pointer, pointScaleFactor: number) => void
++ @opentui/core: property RenderLib.yogaConfigSetUseWebDefaults: (config: Pointer, enabled: boolean) => void
++ @opentui/core: property RenderLib.yogaNodeCalculateLayout: (node: Pointer, width: number, height: number, direction: number) => void
++ @opentui/core: property RenderLib.yogaNodeCopyStyle: (dstNode: Pointer, srcNode: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeCreate: () => Pointer
++ @opentui/core: property RenderLib.yogaNodeCreateForOpenTUI: () => Pointer
++ @opentui/core: property RenderLib.yogaNodeCreateWithConfig: (config: Pointer) => Pointer
++ @opentui/core: property RenderLib.yogaNodeFree: (node: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeFreeRecursive: (node: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeGetAlwaysFormsContainingBlock: (node: Pointer) => boolean
++ @opentui/core: property RenderLib.yogaNodeGetChild: (node: Pointer, index: number) => Pointer | null
++ @opentui/core: property RenderLib.yogaNodeGetChildCount: (node: Pointer) => number
++ @opentui/core: property RenderLib.yogaNodeGetComputedLayout: (node: Pointer) => NativeYogaLayout
++ @opentui/core: property RenderLib.yogaNodeGetHasNewLayout: (node: Pointer) => boolean
++ @opentui/core: property RenderLib.yogaNodeGetParent: (node: Pointer) => Pointer | null
++ @opentui/core: property RenderLib.yogaNodeHasMeasureFunc: (node: Pointer) => boolean
++ @opentui/core: property RenderLib.yogaNodeInsertChild: (node: Pointer, child: Pointer, index: number) => void
++ @opentui/core: property RenderLib.yogaNodeIsDirty: (node: Pointer) => boolean
++ @opentui/core: property RenderLib.yogaNodeIsReferenceBaseline: (node: Pointer) => boolean
++ @opentui/core: property RenderLib.yogaNodeLayoutGetEdge: (node: Pointer, kind: number, edge: number) => number
++ @opentui/core: property RenderLib.yogaNodeMarkDirty: (node: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeRemoveAllChildren: (node: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeRemoveChild: (node: Pointer, child: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeReset: (node: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeSetAlwaysFormsContainingBlock: (node: Pointer, alwaysFormsContainingBlock: boolean) => void
++ @opentui/core: property RenderLib.yogaNodeSetDirtiedFunc: (node: Pointer, callback: Pointer | null) => void
++ @opentui/core: property RenderLib.yogaNodeSetHasNewLayout: (node: Pointer, hasNewLayout: boolean) => void
++ @opentui/core: property RenderLib.yogaNodeSetIsReferenceBaseline: (node: Pointer, isReferenceBaseline: boolean) => void
++ @opentui/core: property RenderLib.yogaNodeSetMeasureFunc: (node: Pointer, callback: Pointer | null) => void
++ @opentui/core: property RenderLib.yogaNodeStyleGetBorder: (node: Pointer, edge: number) => number
++ @opentui/core: property RenderLib.yogaNodeStyleGetEnum: (node: Pointer, kind: number) => number
++ @opentui/core: property RenderLib.yogaNodeStyleGetFloat: (node: Pointer, kind: number) => number
++ @opentui/core: property RenderLib.yogaNodeStyleGetValue: (node: Pointer, kind: number, edgeOrGutter: number) => number | bigint
++ @opentui/core: property RenderLib.yogaNodeStyleSetBorder: (node: Pointer, edge: number, border: number) => void
++ @opentui/core: property RenderLib.yogaNodeStyleSetEnum: (node: Pointer, kind: number, value: number) => void
++ @opentui/core: property RenderLib.yogaNodeStyleSetFloat: (node: Pointer, kind: number, value: number) => void
++ @opentui/core: property RenderLib.yogaNodeStyleSetValue: (node: Pointer, kind: number, edgeOrGutter: number, unit: number, value: number) => void
++ @opentui/core: property RenderLib.yogaNodeUnsetDirtiedFunc: (node: Pointer) => void
++ @opentui/core: property RenderLib.yogaNodeUnsetMeasureFunc: (node: Pointer) => void
++ @opentui/core: property RenderLib.yogaStoreMeasureResult: (width: number, height: number) => void
++ @opentui/core: readonly property Yoga.Config.ptr: Pointer
++ @opentui/core: property Yoga.Layout.bottom: number
++ @opentui/core: property Yoga.Layout.height: number
++ @opentui/core: property Yoga.Layout.left: number
++ @opentui/core: property Yoga.Layout.right: number
++ @opentui/core: property Yoga.Layout.top: number
++ @opentui/core: property Yoga.Layout.width: number
++ @opentui/core: readonly property Yoga.Node.ptr: Pointer
++ @opentui/core: property Yoga.Size.height: number
++ @opentui/core: property Yoga.Size.width: number
++ @opentui/core: property Yoga.Value.unit: Unit
++ @opentui/core: property Yoga.Value.value: number
++ @opentui/core: type NativeYogaDirtiedCallback = () => void
++ @opentui/core: type NativeYogaMeasureCallback = (node: Pointer | null, width: number, widthMode: number, height: number, heightMode: number) => void
++ @opentui/core: type Yoga.DirtiedFunction = (node: Node) => void
++ @opentui/core: type Yoga.MeasureFunction = (width: number, widthMode: MeasureMode, height: number, heightMode: MeasureMode) => Size
++ @opentui/ssh: call Next(): Promise<Handoff>
++ @opentui/ssh: call Next<Add extends object>(add: Add): Promise<Handoff<Add>>
++ @opentui/ssh: class ConfigError extends SshError
++ @opentui/ssh: class DenyError extends Error
++ @opentui/ssh: class SshError extends Error
++ @opentui/ssh: constructor ConfigError(message: string)
++ @opentui/ssh: constructor DenyError(reason?: string)
++ @opentui/ssh: constructor SshError(code: string, message: string)
++ @opentui/ssh: function createServer(config?: Omit<ServerConfig, "auth"> & { auth?: "open"; }): ServerBuilder<IdentityFor<"open">>
++ @opentui/ssh: function createServer<A extends AuthConfig>(config: ServerConfig<A>): ServerBuilder<IdentityFor<A | "open">>
++ @opentui/ssh: function createServer<A extends AuthMethods>(config: Omit<ServerConfig, "auth"> & { auth: A; }): ServerBuilder<IdentityFor<A>>
++ @opentui/ssh: function logging<Id extends Identity = Identity>(options?: LoggingOptions<Id>): Middleware<Id>
++ @opentui/ssh: interface AuthMethods extends CredentialMethods
++ @opentui/ssh: interface Handoff<Add extends object = object>
++ @opentui/ssh: interface ListenInfo
++ @opentui/ssh: interface LoggingOptions<Id extends Identity = Identity>
++ @opentui/ssh: interface MiddlewareSession<Id extends Identity = Identity, Ctx extends object = object> extends SessionCommon<Id>
++ @opentui/ssh: interface Next
++ @opentui/ssh: interface PublicKeyPolicy
++ @opentui/ssh: interface RemoteAddress
++ @opentui/ssh: interface Server
++ @opentui/ssh: interface ServerBuilder<Id extends Identity = Identity, Ctx extends object = {}>
++ @opentui/ssh: interface ServerConfig<A extends AuthConfig = "open">
++ @opentui/ssh: interface Session<Id extends Identity = Identity, Ctx extends object = {}> extends SessionCommon<Id>
++ @opentui/ssh: method MiddlewareSession.deny(reason?: string): never
++ @opentui/ssh: method Server.close(): Promise<void>
++ @opentui/ssh: method Server.listen(port?: number, host?: string): Promise<ListenInfo>
++ @opentui/ssh: method ServerBuilder.serve(handler: SessionHandler<Id, Ctx>): Server
++ @opentui/ssh: method ServerBuilder.use<Add extends object>(mw: MiddlewareFunction<Id, Ctx, Add>): ServerBuilder<Id, Ctx & Add>
++ @opentui/ssh: property AuthMethods.none?: never
++ @opentui/ssh: readonly property DenyError.reason: string | undefined
++ @opentui/ssh: readonly property Handoff.[HANDOFF]: Add
++ @opentui/ssh: property ListenInfo.fingerprints: string[]
++ @opentui/ssh: property ListenInfo.host: string
++ @opentui/ssh: property ListenInfo.port: number
++ @opentui/ssh: property LoggingOptions.log?: (event: LogEvent<Id>) => void
++ @opentui/ssh: readonly property MiddlewareSession.context: Ctx
++ @opentui/ssh: property PublicKeyPolicy.allow?: (ctx: { username: string; fingerprint: string; publicKey: PublicKey; }) => boolean | Promise<boolean>
++ @opentui/ssh: property PublicKeyPolicy.authorizedKeys?: string | string[]
++ @opentui/ssh: readonly property RemoteAddress.address: string
++ @opentui/ssh: readonly property RemoteAddress.port?: number
++ @opentui/ssh: property ServerConfig.auth?: A
++ @opentui/ssh: property ServerConfig.hostKey?: { path: string; } | { pem: string | Buffer | (string | Buffer)[]; }
++ @opentui/ssh: property ServerConfig.idleTimeout?: string | number
++ @opentui/ssh: property ServerConfig.limits?: { session?: { perConnection?: number; global?: number; }; }
++ @opentui/ssh: property ServerConfig.maxTimeout?: string | number
++ @opentui/ssh: property ServerConfig.onError?: (err: unknown) => void
++ @opentui/ssh: property ServerConfig.startupBanner?: boolean
++ @opentui/ssh: readonly property Session.context: Ctx
++ @opentui/ssh: readonly property Session.renderer: CliRenderer
++ @opentui/ssh: readonly property SshError.code: string
++ @opentui/ssh: type AuthConfig = "open" | AuthMethods
++ @opentui/ssh: type Identity = { method: "none"; username: string; } | { method: "password"; username: string; } | { method: "keyboard-interactive"; username: string; } | { method: "publickey"; username: string; fingerprint: string; publicKey: PublicKey; }
++ @opentui/ssh: type IdentityFor<A extends AuthConfig = "open"> = A extends "open" ? Extract<Identity, { method: "none"; }> : A extends AuthMethods ? CredentialVariant[ConfiguredCredentialKeys<A> & keyof CredentialVariant] : never
++ @opentui/ssh: type LogEvent<Id extends Identity = Identity> = (LogEventCommon<Id> & { type: "connect"; durationMs?: never; }) | (LogEventCommon<Id> & { type: "disconnect"; durationMs: number; })
++ @opentui/ssh: type Middleware<Id extends Identity = Identity, Add extends object = object> = (session: MiddlewareSession<Id>, next: Next) => Handoff<Add> | Promise<Handoff<Add>>
++ @opentui/ssh: type MiddlewareFunction<Id extends Identity = Identity, Ctx extends object = object, Add extends object = object> = (session: MiddlewareSession<Id, Ctx>, next: Next) => Handoff<Add> | Promise<Handoff<Add>>
++ @opentui/ssh: type PublicKey = { algorithm: string; blob: Buffer; }
++ @opentui/ssh: type SessionHandler<Id extends Identity = Identity, Ctx extends object = {}> = (session: Session<Id, Ctx>) => void | Promise<void>

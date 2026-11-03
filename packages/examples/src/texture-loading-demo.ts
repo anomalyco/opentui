@@ -243,7 +243,7 @@ export function destroy(renderer: CliRenderer): void {
 
   if (parentContainer) {
     const textureLoadingContainer = renderer.root.getRenderable("texture-loading-container")
-    if (textureLoadingContainer) renderer.root.remove(textureLoadingContainer)
+    textureLoadingContainer?.destroyRecursively()
     parentContainer = null
   }
 }

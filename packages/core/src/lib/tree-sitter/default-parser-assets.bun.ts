@@ -16,6 +16,10 @@ const bundledAssetLoaders: Record<string, () => Promise<FileImportModule>> = {
     import("./assets/typescript/highlights.scm" as string, { with: { type: "file" } }),
   "assets/typescript/tree-sitter-typescript.wasm": () =>
     import("./assets/typescript/tree-sitter-typescript.wasm" as string, { with: { type: "file" } }),
+  "assets/typescriptreact/highlights.scm": () =>
+    import("./assets/typescriptreact/highlights.scm" as string, { with: { type: "file" } }),
+  "assets/typescriptreact/tree-sitter-tsx.wasm": () =>
+    import("./assets/typescriptreact/tree-sitter-tsx.wasm" as string, { with: { type: "file" } }),
   "assets/markdown/highlights.scm": () =>
     import("./assets/markdown/highlights.scm" as string, { with: { type: "file" } }),
   "assets/markdown/tree-sitter-markdown.wasm": () =>

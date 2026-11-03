@@ -1,5 +1,5 @@
 import { readdir, readFile } from "node:fs/promises"
-import { basename, dirname, join, relative, sep } from "node:path"
+import { join, relative, sep } from "node:path"
 import {
   DOC_LEARNING_SEQUENCES,
   DOC_MANIFEST,
@@ -10,6 +10,7 @@ import {
   type DocPageType,
   type DocSectionId,
 } from "./docs-manifest"
+import { REPO_ROOT } from "./repo-root"
 
 export type { DocPageType, DocSectionId } from "./docs-manifest"
 
@@ -78,11 +79,6 @@ interface RawDocMetadata {
   skill?: unknown
 }
 
-const WORKING_DIRECTORY = process.cwd()
-const REPO_ROOT =
-  basename(WORKING_DIRECTORY) === "web" && basename(dirname(WORKING_DIRECTORY)) === "packages"
-    ? join(WORKING_DIRECTORY, "../..")
-    : WORKING_DIRECTORY
 const DOCS_ROOT = join(REPO_ROOT, "packages/web/src/content/docs")
 
 export const DOC_SECTION_CONFIG = Object.fromEntries(

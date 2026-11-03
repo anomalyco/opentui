@@ -40,7 +40,7 @@ renderer.root.add(text)
 
 ## Text attributes
 
-Combine multiple text attributes using bitwise OR:
+Combine text attributes with bitwise OR:
 
 ```typescript
 import { TextRenderable, TextAttributes } from "@opentui/core"
@@ -53,7 +53,7 @@ const styledText = new TextRenderable(renderer, {
 })
 ```
 
-Bold, italic, and underline can also be applied independently:
+You can also apply bold, italic, and underline separately:
 
 ```text terminal=text-attributes
 bold       Important message
@@ -76,7 +76,7 @@ underline  Documentation
 
 ## Template literals for rich text
 
-Use the `t` template literal for inline styling within a single text element:
+Use the `t` template tag to style parts of one text element:
 
 ```typescript
 import { TextRenderable, t, bold, underline, fg, bg, italic } from "@opentui/core"
@@ -107,7 +107,7 @@ t`${bold(fg("#FFFF00")("bold yellow"))}`
 ```
 
 React and Solid can compose inline `<span>`, `<b>`, `<strong>`, `<i>`, `<em>`, `<u>`, `<br>`, and `<a href>` elements
-inside `<text>`. They are text-only children and cannot mount under a Box or another layout element directly. See
+inside `<text>`. They are text-only children. They cannot mount directly under a Box or another layout element. See
 [inline text elements](/docs/components#inline-text-elements) for availability.
 
 ## Positioning
@@ -154,7 +154,7 @@ Change `textAlign` after mount with `text.textAlign = "right"`. `CodeRenderable`
 
 ## Text selection
 
-Enable text selection for copying:
+Text selection lets users copy text. It is on by default:
 
 ```typescript
 const selectableText = new TextRenderable(renderer, {
@@ -178,7 +178,7 @@ const nonSelectable = new TextRenderable(renderer, {
 | `fg`                             | `string \| RGBA`                  | `#FFFFFF`    | Foreground (text) color                  |
 | `bg`                             | `string \| RGBA`                  | transparent  | Background color                         |
 | `attributes`                     | `TextAttributes`                  | `0`          | Text styling attributes                  |
-| `selectable`                     | `boolean`                         | `true`       | Whether text can be selected             |
+| `selectable`                     | `boolean`                         | `true`       | Whether users can select the text        |
 | `wrapMode`                       | `"none" \| "char" \| "word"`      | `"word"`     | Line wrapping mode                       |
 | `textAlign`                      | `"left" \| "center" \| "right"`   | `"left"`     | Per-line alignment within the text width |
 | `position`                       | `"relative" \| "absolute"`        | `"relative"` | Positioning mode                         |

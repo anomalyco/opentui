@@ -25,9 +25,13 @@ const defaultParserDescriptors: readonly DefaultParserDescriptor[] = [
   },
   {
     "filetype": "typescript",
-    "aliases": ["typescriptreact"],
     "queries": { "highlights": ["assets/typescript/highlights.scm"] },
     "wasm": "assets/typescript/tree-sitter-typescript.wasm"
+  },
+  {
+    "filetype": "typescriptreact",
+    "queries": { "highlights": ["assets/typescriptreact/highlights.scm"] },
+    "wasm": "assets/typescriptreact/tree-sitter-tsx.wasm"
   },
   {
     "filetype": "markdown",
