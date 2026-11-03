@@ -2656,14 +2656,14 @@ test "clipboard Wayland fallback goes to X11 and reports causes only when no bac
 
 test "clipboard Wayland connection takes WSL detection from the service" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
-    const Refuse = struct {
-        fn connect(_: ?[*:0]const u8) callconv(.c) ?*clipboard_linux.WlDisplay {
-            return null;
-        }
-    };
-    var symbols = clipboard_wayland.testSymbols();
-    symbols.wl_display_connect = Refuse.connect;
-    const previous = clipboard_linux.testSwapWaylandSymbols(symbols);
+    const env = clipboard_wayland.test_env;
+    const saved = try env.save();
+    defer env.restore(saved);
+    // No socket has this name in either directory, so no connect reaches the caller's compositor.
+    _ = env.unsetenv("WAYLAND_SOCKET");
+    try std.testing.expectEqual(@as(c_int, 0), env.setenv("XDG_RUNTIME_DIR", "", 1));
+    try std.testing.expectEqual(@as(c_int, 0), env.setenv("WAYLAND_DISPLAY", "opentui-absent-wayland", 1));
+    const previous = clipboard_linux.testSwapWaylandSymbols(clipboard_wayland.testSymbols());
     defer _ = clipboard_linux.testSwapWaylandSymbols(previous);
     for ([_]bool{ false, true }) |is_wsl| {
         var service: Service = .{
