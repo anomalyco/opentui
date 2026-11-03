@@ -1318,7 +1318,7 @@ pub const Scene = struct {
             if (!std.math.isFinite(dimension) or dimension < 0 or dimension > std.math.maxInt(i32)) return error.InvalidDimensions;
         }
         if (generation <= node.hook_generation) return error.StaleFrame;
-        if (node.observed_frame == 0) {
+        if (node.observed_frame == 0 and node.hook_generation == 0) {
             if (node.kind == api.OT_SCENE_SLIDER) _ = try sliderThumb(node.control.slider, initial_width, initial_height);
             node.resize_width = initial_width;
             node.resize_height = initial_height;

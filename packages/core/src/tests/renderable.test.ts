@@ -1655,7 +1655,7 @@ describe("Renderable - hook installation", () => {
     if (fail) expect(() => node.refreshHooks()).toThrow("native")
     fail = false
     node.width = 5
-    if (hook.endsWith("Resize")) node.onLifecyclePass = () => {} // It must not drop the first frame's resize.
+    if (hook.endsWith("Resize")) node.renderAfter = () => {} // A republish must not drop the first frame's resize.
 
     await renderOnce()
     if (skipped(base, install, hook)) return expect(calls).toBe(0)

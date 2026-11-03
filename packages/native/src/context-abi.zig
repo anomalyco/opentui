@@ -3864,7 +3864,7 @@ test "Scene Slider and Arrow ABI validate fixed records without changing accepte
     try std.testing.expectEqual(c.OT_OK, ot_scene_create_node(handle, &id, c.OT_SCENE_ROOT, 1, &root));
     try std.testing.expectEqual(c.OT_OK, ot_scene_create_node(handle, &id, c.OT_SCENE_SLIDER, 2, &slider));
     try std.testing.expectEqual(c.OT_OK, ot_scene_create_node(handle, &id, c.OT_SCENE_ARROW, 3, &arrow));
-    try owner.sceneSetHooks(handleFromC(slider), 0, 1, 4.25, 1);
+    try owner.sceneSetHooks(handleFromC(slider), 0, 2, 4.25, 1);
     const slider_options: c.ot_scene_slider_options = .{
         .struct_size = @sizeOf(c.ot_scene_slider_options),
         .abi_version = c.OT_CONTEXT_ABI_VERSION,
@@ -3886,6 +3886,7 @@ test "Scene Slider and Arrow ABI validate fixed records without changing accepte
         .background = .{ 130, 140, 150, 160 },
     };
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_slider(handle, &slider, &slider_options));
+    try owner.sceneSetHooks(handleFromC(slider), 0, 3, 10, 1);
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_arrow(handle, &arrow, &arrow_options, null, 0));
     const accepted_slider = (try owner.raw().getRenderable(handleFromC(slider))).scene_node.?.control.slider;
     const accepted_arrow = (try owner.raw().getRenderable(handleFromC(arrow))).scene_node.?.control.arrow;
