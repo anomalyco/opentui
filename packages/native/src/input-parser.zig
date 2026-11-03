@@ -227,6 +227,8 @@ pub const InputParser = struct {
     /// Arrival time of the last byte of the pending unit.
     since_ns: u64 = 0,
     x10_button: u8 = 0,
+    /// Buttons 0 to 2 pressed and not yet released, one bit each.
+    buttons_held: u3 = 0,
     discarded_count: u32 = 0,
     /// Bytes left in the feed batch after the current byte. A typed key arrives in a read of its own.
     batch_left: u32 = 0,
@@ -288,6 +290,7 @@ pub const InputParser = struct {
     /// instead, deferred: it waits for its rest without a deadline (docs §11.5).
     pub fn reset(self: *InputParser, keep_reply: bool) void {
         self.x10_button = 0;
+        self.buttons_held = 0;
         if (keep_reply and self.state == .csi and (self.replyShaped() or self.sentinelHeld())) {
             // An ESC before the unit was a key pressed before the interruption.
             const held = self.state.csi.held or self.sentinelHeld();
@@ -542,8 +545,8 @@ pub const InputParser = struct {
                 self.state = .ground;
                 self.append(b);
                 const unit = self.unit[0..self.unit_len];
-                if (sgrMouse(unit[3 .. unit.len - 1], b == 'M')) |mouse| {
-                    emitMouse(sink, unit, mouse);
+                if (sgrMouse(unit[3 .. unit.len - 1], b == 'M', self.buttons_held)) |mouse| {
+                    self.emitMouse(sink, unit, mouse);
                 } else emitReply(sink, unit[1..], .csi, flags.reply_fragment);
                 return null;
             },
@@ -713,9 +716,9 @@ pub const InputParser = struct {
             return;
         }
         if (params.len > 0 and params[0] == '<') {
-            const mouse = if (final == 'M' or final == 'm') sgrMouse(params[1..], final == 'M') else null;
+            const mouse = if (final == 'M' or final == 'm') sgrMouse(params[1..], final == 'M', self.buttons_held) else null;
             if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-            if (mouse) |value| return emitMouse(sink, unit, value);
+            if (mouse) |value| return self.emitMouse(sink, unit, value);
             return emitReply(sink, unit, .csi, 0);
         }
         var cursor_report = false;
@@ -776,14 +779,30 @@ pub const InputParser = struct {
             Mouse{ .action = .up, .button = self.x10_button }
         else
             // Only a press of button 3 without motion, wheel, or extra bits has no event.
-            mouseKind(code, false).?;
-        if (mouse.action == .down) self.x10_button = @intCast(mouse.button);
+            mouseKind(code, false, self.buttons_held).?;
         mouse.mods = mouseModifiers(code);
         // Coordinates are one-based after the offset; xterm's 0 wraps to cell 223.
         mouse.x = unit[4] -% 33;
         mouse.y = unit[5] -% 33;
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-        emitMouse(sink, unit, mouse);
+        self.emitMouse(sink, unit, mouse);
+    }
+
+    /// Emits a mouse event and tracks the buttons it leaves held.
+    fn emitMouse(self: *InputParser, sink: *Sink, raw: []const u8, mouse: Mouse) void {
+        if (mouse.button < 3) {
+            const bit = @as(u3, 1) << @intCast(mouse.button);
+            if (mouse.action == .down) self.buttons_held |= bit;
+            if (mouse.action == .up) self.buttons_held &= ~bit;
+        }
+        if (mouse.action == .down) self.x10_button = @intCast(mouse.button);
+        // The next X10 release, which names no button, releases the lowest one still held.
+        if (mouse.action == .up) self.x10_button = if (self.buttons_held == 0) 0 else @ctz(self.buttons_held);
+        const span = sink.copy(&.{raw});
+        var value = makeEvent(.mouse, @backingInt(mouse.action), mouse.mods, mouse.button, span, .{ .offset = sink.payload_len, .len = 0 });
+        value.x = mouse.x;
+        value.y = mouse.y;
+        sink.push(value);
     }
 
     /// Whether a timed-out CSI may still be a mouse report, a Kitty key, or an awaited
@@ -927,14 +946,6 @@ fn emitReply(sink: *Sink, raw: []const u8, protocol: Protocol, reply_flags: u8) 
     const span = sink.copy(&.{raw});
     var value = makeEvent(.reply, 0, .{}, @backingInt(protocol), span, .{ .offset = sink.payload_len, .len = 0 });
     value.flags = reply_flags;
-    sink.push(value);
-}
-
-fn emitMouse(sink: *Sink, raw: []const u8, mouse: Mouse) void {
-    const span = sink.copy(&.{raw});
-    var value = makeEvent(.mouse, @backingInt(mouse.action), mouse.mods, mouse.button, span, .{ .offset = sink.payload_len, .len = 0 });
-    value.x = mouse.x;
-    value.y = mouse.y;
     sink.push(value);
 }
 
@@ -1365,12 +1376,13 @@ fn mouseModifiers(code: u32) Modifiers {
 
 /// Decodes an xterm button code: buttons 0 to 2 (3 is none), +32 motion, +64 wheel,
 /// +128 extra buttons (reported from 8).
-fn mouseKind(code: u32, release: bool) ?Mouse {
+fn mouseKind(code: u32, release: bool, held: u3) ?Mouse {
     const low = code & 3;
     const button: u32 = if (code & 128 != 0) 8 + low else if (low == 3) mouse_button_none else low;
     if (code & 32 != 0) {
-        // URxvt sets the wheel bit on motion while it scrolls.
         if (button != mouse_button_none and code & 64 == 0) return .{ .action = .drag, .button = button };
+        // URxvt names the wheel in motion after a wheel tick until the next button event (issue 426).
+        if (code & 64 != 0 and held != 0) return .{ .action = .drag, .button = @ctz(held) };
         return .{ .action = .move, .button = mouse_button_none };
     }
     if (code & 64 != 0) {
@@ -1383,13 +1395,13 @@ fn mouseKind(code: u32, release: bool) ?Mouse {
 }
 
 /// `CSI < button ; column ; row M|m`, with one-based coordinates.
-fn sgrMouse(params: []const u8, pressed: bool) ?Mouse {
+fn sgrMouse(params: []const u8, pressed: bool, held: u3) ?Mouse {
     const fields = Fields.parse(params) orelse return null;
     if (fields.count != 3) return null;
     const code = fields.single(0) orelse return null;
     const column = fields.single(1) orelse return null;
     const row = fields.single(2) orelse return null;
-    var mouse = mouseKind(code, !pressed) orelse return null;
+    var mouse = mouseKind(code, !pressed, held) orelse return null;
     mouse.mods = mouseModifiers(code);
     mouse.x = std.math.cast(u16, column -| 1) orelse std.math.maxInt(u16);
     mouse.y = std.math.cast(u16, row -| 1) orelse std.math.maxInt(u16);

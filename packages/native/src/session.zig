@@ -1130,6 +1130,8 @@ pub const Session = struct {
         if (owned_environment) candidate.opts.env_map = &value.terminal.host_env_map.?;
         self.queueSwitch(value);
         value.terminal = candidate;
+        // Releases are not reported while mouse reporting is off (issue 426).
+        if (progress.mouse != self.lifecycle.mouse) self.input.buttons_held = 0;
         self.lifecycle = progress;
         value.syncWidthMethod();
         if (command != null and command.? == .capability_response) {
