@@ -1249,19 +1249,6 @@ test "isXtversionTmux - detects tmux from xtversion" {
 // GRAPHEME CURSOR POSITIONING CAPABILITY TESTS
 // ============================================================================
 
-test "processCapabilityResponse - tmux sets explicit_cursor_positioning" {
-    var term: Terminal = .{};
-
-    term.caps.explicit_cursor_positioning = false;
-    term.caps.unicode = .unicode;
-
-    const response = "\x1bP>|tmux 3.5a\x1b\\";
-    term.processCapabilityResponse(response);
-
-    try testing.expect(term.caps.explicit_cursor_positioning);
-    try testing.expectEqual(utf8.WidthMethod.wcwidth, term.caps.unicode);
-}
-
 test "processCapabilityResponse - alacritty sets explicit_cursor_positioning" {
     var term: Terminal = .{};
 
@@ -1961,69 +1948,123 @@ test "enableDetectedFeatures - sends initial theme queries" {
     try testing.expect(term.state.theme_queries_sent);
 }
 
-const WidthEnv = struct { key: []const u8, value: []const u8 };
-
-fn expectWidthMethodForEnv(entries: []const WidthEnv, expected: utf8.WidthMethod) !void {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    for (entries) |entry| try env.put(entry.key, entry.value);
-    const term = Terminal.init(.{ .env_map = &env });
-    try testing.expectEqual(expected, term.caps.unicode);
+// Rows: environment, replies (one capability response each), width method. Terminal rows carry
+// the DECRPM 2027 and XTVERSION replies measured in that terminal. The environment is adopted as an app
+// forwards it, so SSH_CONNECTION makes it a remote client's environment.
+test "width method follows the environment, then the DECRPM 2027 reply and XTVERSION" {
+    const ghostty = .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "1.3.1" } };
+    const tmux = .{ "TMUX", "/tmp/tmux-1000/default,12345,0" };
+    const ssh = .{ "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22" };
+    const tmux38 = .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.8" } };
+    const rows = .{
+        .{ .{}, .{}, .unicode },
+        .{ .{.{ "TERM_PROGRAM", "WezTerm" }}, .{}, .unicode },
+        .{ .{ .{ "TERM_PROGRAM", "WezTerm" }, .{ "VTE_VERSION", "7800" } }, .{}, .unicode },
+        .{ ghostty, .{}, .unicode_wide },
+        .{ ghostty ++ .{.{ "TERM", "xterm-ghostty" }}, .{}, .unicode_wide },
+        .{ .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "1.2.3" } }, .{}, .unicode },
+        .{ .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "0.0.0-20260223.r14707.gc61f184" } }, .{}, .unicode },
+        .{ .{ .{ "TERM_PROGRAM", "ghostty" }, .{ "TERM_PROGRAM_VERSION", "0.0.0-20260224.r14762.gc51f0d7" } }, .{}, .unicode_wide },
+        .{ ghostty ++ .{.{ "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22" }}, .{}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "xterm-kitty" }}, .{}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "foot" }}, .{}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "alacritty" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM", "rxvt-unicode-256color" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "vscode" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "Apple_Terminal" }}, .{}, .wcwidth },
+        .{ .{ .{ "TERM", "xterm-256color" }, .{ "VTE_VERSION", "7800" } }, .{}, .wcwidth },
+        .{ .{.{ "XTERM_VERSION", "XTerm(411)" }}, .{}, .wcwidth },
+        .{ .{.{ "ALACRITTY_LOG", "/tmp/Alacritty-1.log" }}, .{}, .wcwidth },
+        .{ .{.{ "ALACRITTY_SOCKET", "/run/user/1000/Alacritty-wayland-1-1.sock" }}, .{}, .wcwidth },
+        .{ .{.{ "TERMUX_VERSION", "0.118" }}, .{}, .wcwidth },
+        .{ .{.{ "VHS_RECORD", "1" }}, .{}, .wcwidth },
+        .{ .{.{ "ZELLIJ", "0" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM", "screen" }}, .{}, .wcwidth },
+        .{ .{.{ "TERM", "tmux-256color" }}, .{}, .wcwidth },
+        .{ .{tmux} ++ ghostty, .{}, .wcwidth },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "iTerm.app" }, .{ "TERM_PROGRAM_VERSION", "3.7.6" } }, .{}, .wcwidth },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.6a" } }, .{}, .unicode },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.5a" } }, .{}, .wcwidth },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.5a" } }, .{"\x1bP>|tmux 3.7c\x1b\\"}, .unicode },
+        .{ .{ tmux, .{ "TERM_PROGRAM", "tmux" }, .{ "TERM_PROGRAM_VERSION", "3.7c" } }, .{"\x1bP>|tmux 3.5a\x1b\\"}, .wcwidth },
+        .{ .{}, .{"\x1b[?2027;0$y\x1bP>|tmux 3.7c\x1b\\"}, .unicode },
+        .{ .{}, .{"\x1b]0;tmux\x07\x1bP>|kitty(0.40.1)\x1b\\"}, .unicode },
+        // Alacritty, urxvt and conhost answer 2027;0$y and no XTVERSION.
+        .{ .{.{ "TERM", "alacritty" }}, .{"\x1b[?2027;0$y"}, .wcwidth },
+        .{ .{}, .{"\x1b[?2027;0$y"}, .wcwidth },
+        .{ .{.{ "TERM", "xterm-256color" }}, .{"\x1b[?2027;0$y\x1bP>|XTerm(411)\x1b\\"}, .wcwidth },
+        .{ .{}, .{"\x1bP>|XTerm(411)\x1b\\"}, .wcwidth },
+        .{ .{.{ "VTE_VERSION", "7800" }}, .{"\x1bP>|VTE(7800)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "vscode" }}, .{"\x1bP>|xterm.js(5.5.0)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM_PROGRAM", "vscode" }}, .{"\x1b[?2027;2$y\x1bP>|xterm.js(7.0.0)\x1b\\"}, .unicode },
+        .{ .{}, .{"\x1bP>|Zellij(4501)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM", "foot" }}, .{"\x1b[?2027;4$y\x1bP>|foot(1.28.0)\x1b\\"}, .wcwidth },
+        .{ .{.{ "TERM", "foot" }}, .{"\x1b[?2027;1$y\x1bP>|foot(1.28.0)\x1b\\"}, .unicode },
+        .{ ghostty ++ .{.{ "TERM", "xterm-kitty" }}, .{"\x1b[?2027;0$y"}, .unicode },
+        .{ ghostty, .{"\x1b[?2027;0$y"}, .wcwidth },
+        .{ ghostty, .{ "\x1b[?2027;0$y", "\x1bP>|kitty(0.48.2)\x1b\\" }, .unicode },
+        .{ ghostty, .{"\x1b[?2027;2$y\x1bP>|WezTerm 20240203-110809-5046fc22\x1b\\"}, .unicode },
+        .{ ghostty, .{"\x1b[?2027;2$y\x1bP>|ghostty 1.3.1\x1b\\"}, .unicode_wide },
+        .{ ghostty ++ .{.{ "OPENTUI_FORCE_WCWIDTH", "1" }}, .{"\x1b[?2027;2$y\x1bP>|ghostty 1.3.1\x1b\\"}, .wcwidth },
+        .{ .{.{ "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22" }}, .{"\x1b[?2027;1$y\x1bP>|ghostty 1.3.1\x1b\\"}, .unicode_wide },
+        .{ .{}, .{"\x1b[?2027;1$y\x1bP>|ghostty 1.1.3\x1b\\"}, .unicode },
+        .{ .{}, .{"\x1b[?2027;2$y\x1bP>|libghostty\x1b\\"}, .unicode_wide },
+        .{ .{.{ "TERM_PROGRAM", "iTerm.app" }}, .{"\x1b[?2027;4$y\x1bP>|iTerm2 3.7.6\x1b\\"}, .unicode },
+        .{ .{.{ "TERM_PROGRAM", "WezTerm" }}, .{"\x1b[?2027;3$y\x1bP>|WezTerm 20260716-195552-76b606ec\x1b\\"}, .unicode },
+        .{ .{.{ "WT_SESSION", "fixture" }}, .{"\x1b[?2027;3$y"}, .unicode },
+        .{ .{.{ "OPENTUI_FORCE_WCWIDTH", "1" }}, .{"\x1bP>|kitty(0.48.2)\x1b\\"}, .wcwidth },
+        .{ .{.{ "OPENTUI_FORCE_UNICODE", "1" }}, .{"\x1b[?2027;0$y"}, .unicode },
+        .{ .{ .{ "OPENTUI_FORCE_UNICODE", "1" }, .{ "OPENTUI_FORCE_WCWIDTH", "1" } }, .{}, .unicode },
+        .{ .{ tmux, .{ "OPENTUI_FORCE_NOZWJ", "1" } }, .{"\x1bP>|tmux 3.7c\x1b\\"}, .no_zwj },
+        .{ tmux38 ++ .{ ssh, .{ "OPENTUI_FORCE_WCWIDTH", "1" } }, .{ "\x1bP>|tmux 3.8\x1b\\", "\x1b[?2027;0$y" }, .wcwidth },
+        .{ ghostty ++ .{ ssh, .{ "OPENTUI_FORCE_WCWIDTH", "1" } }, .{"\x1b[?2027;1$y\x1bP>|ghostty 1.3.1\x1b\\"}, .wcwidth },
+        .{ .{ ssh, .{ "TERM", "alacritty" }, .{ "OPENTUI_FORCE_UNICODE", "1" } }, .{"\x1b[?2027;0$y"}, .unicode },
+        .{ .{ ssh, .{ "OPENTUI_FORCE_NOZWJ", "1" } }, .{"\x1b[?2027;0$y"}, .no_zwj },
+        // Inside tmux 3.8 (inherited TMUX and TERM_PROGRAM=tmux): tmux itself, screen (answers only DA1),
+        // Zellij, Alacritty and urxvt (2027;0$y, no XTVERSION); and tmux inside screen or Zellij.
+        .{ tmux38, .{ "\x1bP>|tmux 3.8\x1b\\", "\x1b[?2027;0$y" }, .unicode },
+        .{ tmux38 ++ .{ .{ "STY", "1.pts-0.box" }, .{ "TERM", "screen" } }, .{"\x1b[?1;2c"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{}, .wcwidth },
+        .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|Zellij(4501)\x1b\\"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "TERM", "alacritty" }}, .{"\x1b[?2027;0$y\x1b[?6c"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "TERM", "rxvt-unicode-256color" }}, .{"\x1b[?2027;0$y\x1b[?1;2c"}, .wcwidth },
+        .{ tmux38 ++ .{.{ "STY", "1.pts-0.box" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
+        .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
+        .{ .{ .{ "TERM", "xterm-256color" }, .{ "XTERM_VERSION", "XTerm(411)" }, .{ "KONSOLE_VERSION", "250400" } }, .{}, .unicode },
+    };
+    inline for (rows, 0..) |row, index| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        inline for (row[0]) |entry| try env.put(entry[0], entry[1]);
+        var term = Terminal.init(.{ .remote_mode = .auto });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        inline for (row[1]) |reply| term.processCapabilityResponse(reply);
+        errdefer std.debug.print("width row {d}\n", .{index});
+        try testing.expectEqual(@as(utf8.WidthMethod, row[2]), term.caps.unicode);
+        try term.enableDetectedFeatures(&writer, false);
+        try testing.expectEqual(@as(utf8.WidthMethod, row[2]), term.caps.unicode);
+        const graphemes = row[2] == .unicode or row[2] == .unicode_wide;
+        try testing.expectEqual(graphemes, std.mem.find(u8, writer.getWritten(), ansi.ANSI.unicodeSet) != null);
+    }
 }
 
-test "Ghostty width profile requires a direct terminal" {
-    try expectWidthMethodForEnv(&.{.{ .key = "TERM_PROGRAM", .value = "WezTerm" }}, .unicode);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,12345,0" },
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "1.3.1" },
-    }, .wcwidth);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "1.2.3" },
-    }, .unicode);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "0.0.0-20260223.r14707.gc61f184" },
-    }, .unicode);
-    try expectWidthMethodForEnv(&.{
-        .{ .key = "TERM_PROGRAM", .value = "ghostty" },
-        .{ .key = "TERM_PROGRAM_VERSION", .value = "0.0.0-20260224.r14762.gc51f0d7" },
-    }, .unicode_wide);
-}
-
-test "Ghostty width profile preserves explicit wcwidth override" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TERM_PROGRAM", "ghostty");
-    try env.put("TERM_PROGRAM_VERSION", "1.3.1");
-    try env.put("OPENTUI_FORCE_WCWIDTH", "1");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    try testing.expectEqual(utf8.WidthMethod.wcwidth, term.caps.unicode);
-    term.processCapabilityResponse("\x1b[?2027;2$y\x1bP>|ghostty 1.3.1\x1b\\");
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-    try term.enableDetectedFeatures(&writer, false);
-    try testing.expectEqual(utf8.WidthMethod.wcwidth, term.caps.unicode);
-}
-
-test "Ghostty width profile enables mode 2027 and remains stable after setup starts" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TERM_PROGRAM", "ghostty");
-    try env.put("TERM_PROGRAM_VERSION", "1.3.1");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    try testing.expectEqual(utf8.WidthMethod.unicode_wide, term.caps.unicode);
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-    try term.queryTerminalSend(&writer);
-
-    term.processCapabilityResponse("\x1b[?2027;2$y\x1bP>|WezTerm 20240203-110809-5046fc22\x1b\\");
-    try term.enableDetectedFeatures(&writer, false);
-    try testing.expectEqual(utf8.WidthMethod.unicode_wide, term.caps.unicode);
-    try testing.expect(std.mem.find(u8, writer.getWritten(), ansi.ANSI.unicodeSet) != null);
+test "tmux XTVERSION selects the width method by version" {
+    const versions = .{
+        .{ "3.5a", .wcwidth }, .{ "3.6", .unicode }, .{ "3.6a", .unicode },          .{ "3.6-rc", .unicode },
+        .{ "3.10", .unicode }, .{ "4.0", .unicode }, .{ "next-3.8", .unicode },      .{ "next-3.5", .wcwidth },
+        .{ "2.9", .wcwidth },  .{ "", .wcwidth },    .{ "openbsd-7.8", .wcwidth },   .{ "3", .wcwidth },
+        .{ "3.x", .wcwidth },  .{ "x.6", .wcwidth }, .{ "99999999999.1", .wcwidth },
+    };
+    inline for (versions) |case| {
+        var term = Terminal.init(.{});
+        term.processCapabilityResponse("\x1bP>|tmux " ++ case[0] ++ "\x1b\\");
+        errdefer std.debug.print("tmux version '{s}'\n", .{case[0]});
+        try testing.expect(term.caps.explicit_cursor_positioning);
+        try testing.expectEqual(@as(utf8.WidthMethod, case[1]), term.caps.unicode);
+    }
 }
 
 test "setMouseMode - enable without movement keeps click/drag only" {
