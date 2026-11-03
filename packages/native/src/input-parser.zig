@@ -26,7 +26,11 @@ pub const Expectations = packed struct(u8) {
     cursor_position: bool = false,
     /// The host waits for the DA1 reply that ends its query batch, so replies need no deadline.
     sentinel: bool = false,
-    _reserved: u4 = 0,
+    /// The terminal confirmed Kitty disambiguate, so it sends no Alt+key or Escape as raw ESC.
+    escape_prefix: bool = false,
+    /// Set by a renderer Session, not the ABI: the current Kitty keyboard push's `CSI ? u` is unanswered.
+    kitty_query: bool = false,
+    _reserved: u2 = 0,
 };
 
 /// Kitty's modifier layout: the wire parameter minus one.
@@ -266,6 +270,8 @@ pub const InputParser = struct {
 
     /// When the host should call feed with zero bytes, or null.
     pub fn deadlineNs(self: *const InputParser) ?u64 {
+        // Every state that waits begins with ESC, and the terminal sends ESC only to begin a sequence.
+        if (self.expect.escape_prefix) return null;
         const waits = switch (self.state) {
             // A UTF-8 lead byte's continuation bytes must follow, so no pause cuts a scalar short.
             // Opt-in 8-bit Meta (urxvt meta8, rxvt --meta8, Eterm -8, iTerm2 Option as Meta) is read
@@ -283,6 +289,7 @@ pub const InputParser = struct {
     pub fn setExpectations(self: *InputParser, expect: Expectations) void {
         std.debug.assert(expect._reserved == 0);
         std.debug.assert(!expect.sentinel or expect.replies);
+        std.debug.assert(!expect.escape_prefix or expect.kitty_keyboard);
         self.expect = expect;
     }
 
@@ -352,7 +359,7 @@ pub const InputParser = struct {
             },
             .csi => |csi| {
                 if (!csi.deferred and self.deferrable()) {
-                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true, .held = self.sentinelHeld() } };
+                    self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true, .held = self.sentinelHeld() or self.kittyHeld() } };
                 } else self.cutShort(csi.alt, .csi, 0, sink);
             },
             .ss3 => |ss3| self.cutShort(ss3.alt, .ss3, 0, sink),
@@ -404,6 +411,10 @@ pub const InputParser = struct {
                 } else if (!self.continuesDeferred(b, csi.held)) {
                     self.cutShort(csi.alt, .csi, 0, sink);
                     pending = b;
+                } else if (!csi.held and b == '?') {
+                    // Only a Kitty keyboard reply continues a bare unit with `?`; it stays a reply.
+                    self.append(b);
+                    self.state.csi.held = true;
                 } else if (!csi.held or b == '<' or b == 'M') {
                     // A mouse report continues only a bare unit, which then is no longer held.
                     self.state.csi = .{ .alt = csi.alt, .deferred = false };
@@ -514,6 +525,12 @@ pub const InputParser = struct {
                 },
             }
             return null;
+        }
+        // A terminal that confirmed Kitty but still sends a raw ESC gives Escape and the key, never Alt.
+        if (self.expect.escape_prefix and std.mem.indexOfScalar(u8, "[O]P_", b) == null) {
+            self.state = .ground;
+            emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
+            return b;
         }
         switch (b) {
             '[' => self.begin(.{ .csi = .{ .alt = false, .deferred = false } }, b),
@@ -812,6 +829,7 @@ pub const InputParser = struct {
         const params = self.unit[2..self.unit_len];
         if (self.sentinelHeld()) return true;
         if (params.len == 0) return !self.state.csi.alt;
+        if (self.kittyHeld()) return true;
         if (params[0] == '<') return allOf(params[1..], "0123456789;");
         return (self.expect.replies and self.replyShaped()) or
             (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
@@ -837,6 +855,12 @@ pub const InputParser = struct {
         return self.unit_len >= 3 and beginsReply(self.unit[1], self.unit[2]);
     }
 
+    /// Whether a CSI of `?` and digits may be the reply to the current Kitty keyboard push's query. No key
+    /// starts with `CSI ?`, so it waits for its tail, and every byte must continue it.
+    fn kittyHeld(self: *const InputParser) bool {
+        return self.expect.kitty_query and self.unit_len > 2 and self.unit[2] == '?' and allDigits(self.unit[3..self.unit_len]);
+    }
+
     /// Whether a bare `ESC [` or a number may still begin a reply while the host awaits its sentinel.
     fn sentinelHeld(self: *const InputParser) bool {
         return self.expect.sentinel and allDigits(self.unit[2..self.unit_len]);
@@ -846,6 +870,7 @@ pub const InputParser = struct {
     fn recovered(self: *const InputParser, introducer: u8, b: u8) ?State {
         if (introducer == '[' and b == '<') return .recover_sgr;
         if (introducer == '[' and b == 'M') return .{ .x10 = .{ .alt = false, .recovered = true } };
+        if (introducer == '[' and b == '?' and self.expect.kitty_query and self.batch_left >= 2) return heldUnit('[');
         if (!self.expect.sentinel or !beginsReply(introducer, b)) return null;
         return heldUnit(introducer);
     }
@@ -857,7 +882,7 @@ pub const InputParser = struct {
         const digit = isDigit(b);
         // A reply prefix continues a bare unit only while the host awaits the sentinel.
         if (params.len == 0) return (b == '<' and self.batch_left >= 1) or (b == 'M' and self.batch_left >= 3) or
-            (self.expect.sentinel and beginsReply('[', b));
+            (self.expect.kitty_query and b == '?' and self.batch_left >= 2) or (self.expect.sentinel and beginsReply('[', b));
         // Only `sentinel` defers these; a number continues toward a cursor or pixel size reply.
         if (allDigits(params)) return digit or b == ';';
         // Whether the field being read has a digit; a mode report's `$` follows its digits.

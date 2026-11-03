@@ -879,6 +879,7 @@ const REPLY_BACKSTOP_MS = 5000
 // Bounds the queries that a terminal ignoring CSI 14 t leaves unanswered.
 const PIXEL_QUERIES_MAX = 4
 const DA1_REPLY = /^\x1b\[\?[\d;]*c$/
+const KITTY_KEYBOARD_REPLY = /^\x1b\[\?\d+u$/
 
 /**
  * Queries written by one renderer call. Terminals answer in order, so in sentinel mode the packet ends with DA1 and
@@ -3556,7 +3557,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       batch.backstop = null
       // A paste still open may hold the DA1 reply as payload.
       const pasting = this.stdinParser instanceof NativeStdinParser && this.stdinParser.pasting
-      this.replySentinel &&= batch.excused || pasting
+      if (this.replySentinel && !batch.excused && !pasting) {
+        this.replySentinel = false
+        // Clock mode: later Kitty keyboard pushes send no query either.
+        if (this.nativeSession.open) this.nativeSession.control({ kind: "end-reply-sentinel" })
+      }
       this.endReplyBatch(batch)
     }, REPLY_BACKSTOP_MS)
   }
@@ -3811,7 +3816,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
     if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
-      if (event.type === "response" && isPixelResolutionResponse(event.sequence)) {
+      // Resume's Kitty keyboard push asks `CSI ? u`; its reply answers that push's query.
+      if (
+        event.type === "response" &&
+        (isPixelResolutionResponse(event.sequence) || KITTY_KEYBOARD_REPLY.test(event.sequence))
+      ) {
         this.dispatchSequenceHandlers(event.sequence)
       }
       return

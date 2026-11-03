@@ -1202,6 +1202,82 @@ test "queryTerminalSend - sentinel mode moves its one DA1 to the end of the pack
     }
 }
 
+/// Counts `CSI > flags u`; modifyOtherKeys (`CSI > 4 ; 1 m`) shares the introducer.
+fn kittyPushes(bytes: []const u8) usize {
+    var count: usize = 0;
+    var rest = bytes;
+    while (std.mem.find(u8, rest, "\x1b[>")) |start| {
+        rest = rest[start + 3 ..];
+        const digits = std.mem.indexOfNone(u8, rest, "0123456789") orelse rest.len;
+        if (digits != 0 and digits < rest.len and rest[digits] == 'u') count += 1;
+    }
+    return count;
+}
+
+test "Kitty keyboard is confirmed only by the reply to the current push's query" {
+    // Ops: a capability reply (then features are enabled, as Session does), a push with flags, a pop, a mode restore.
+    const Op = union(enum) { reply: []const u8, push: u8, pop, restore };
+    const xtversion: Op = .{ .reply = "\x1bP>|kitty(0.40.1)\x1b\\" };
+    const da1: Op = .{ .reply = "\x1b[?62;22c" };
+    const rows = .{
+        // XTVERSION pushes before the startup `?0u` arrives; that stale reply must not confirm.
+        .{ true, .{ xtversion, Op{ .reply = "\x1b[?0u" } }, false },
+        .{ true, .{ xtversion, Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" } }, true },
+        .{ true, .{Op{ .reply = "\x1b[?0u" }}, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?1u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?4u" } }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 8 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?8u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 2 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?3u" } }, false },
+        // Two-digit flags: 21 has disambiguate, 16 (report text) has neither bit.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 21 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?21u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 17 }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?16u" } }, false },
+        // Two pushes: the reply to the first answers the first query only.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.pop, Op{ .push = 7 }, Op{ .reply = "\x1b[?5u" } }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.pop }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.pop, Op{ .reply = "\x1b[?5u" } }, false },
+        // Focus restore and resume push again, and only their own reply confirms.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.restore }, false },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.restore, Op{ .reply = "\x1b[?5u" } }, true },
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" }, Op.pop, Op{ .push = 5 }, Op{ .reply = "\x1b[?5u" } }, true },
+        // The confirmation does not wait for DA1: OpenSSH ConPTY forwards `?5u` after its own DA1 (argon-1).
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, da1, Op{ .reply = "\x1b[?5u" } }, true },
+        // Four unanswered queries fill the queue; a fifth push sends none, so no reply can confirm it.
+        .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.restore, Op.restore, Op.restore, Op.restore, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" } }, false },
+        // Clock mode sends no new query, so the legacy parser sees no new reply and nothing confirms.
+        .{ false, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" } }, false },
+    };
+    inline for (rows) |row| {
+        var term = Terminal.init(.{});
+        term.reply_sentinel = row[0];
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, writer.getWritten(), ansi.ANSI.csiUQuery));
+        // Unanswered queries: a `?Nu` reply answers one, and a query follows a push only while fewer than four wait.
+        var unanswered: usize = 1;
+        inline for (row[1]) |op| {
+            const before = writer.getWritten().len;
+            switch (op) {
+                .reply => |reply| {
+                    if (reply[reply.len - 1] == 'u') unanswered -|= 1;
+                    term.processCapabilityResponse(reply);
+                    try term.enableDetectedFeatures(&writer, true);
+                },
+                .push => |flags| try term.setKittyKeyboard(&writer, true, flags),
+                .pop => try term.setKittyKeyboard(&writer, false, 0),
+                .restore => try term.restoreTerminalModes(&writer),
+            }
+            // In sentinel mode the query follows the push in the same packet.
+            const written = writer.getWritten()[before..];
+            const queried = row[0] and kittyPushes(written) != 0 and unanswered < 4;
+            unanswered += @intFromBool(queried);
+            try testing.expectEqual(@as(usize, @intFromBool(queried)), std.mem.count(u8, written, ansi.ANSI.csiUQuery));
+            if (queried) try testing.expectEqual(@as(usize, 1), std.mem.count(u8, written, "u" ++ ansi.ANSI.csiUQuery));
+        }
+        try testing.expectEqual(row[2], term.state.kitty_confirmed);
+    }
+}
+
 test "queryTerminalSend - sends plain theme queries when TMUX is set" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 

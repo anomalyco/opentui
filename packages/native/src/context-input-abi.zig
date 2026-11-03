@@ -21,7 +21,8 @@ comptime {
     for (std.meta.tags(input_parser.Protocol)) |tag| checkTwin("REPLY_", @tagName(tag), @backingInt(tag));
     for (@typeInfo(input_parser.Modifiers).@"struct".field_names, 0..) |name, bit| checkTwin("MOD_", name, 1 << bit);
     const expectations = @typeInfo(input_parser.Expectations).@"struct".field_names;
-    for (expectations[0 .. expectations.len - 1], 0..) |name, bit| checkTwin("EXPECT_", name, 1 << bit);
+    // `kitty_query` is set by a renderer Session only.
+    for (expectations[0 .. expectations.len - 2], 0..) |name, bit| checkTwin("EXPECT_", name, 1 << bit);
     for (@typeInfo(input_parser.flags).@"struct".decl_names) |name| checkTwin("", name, @field(input_parser.flags, name));
     for (@typeInfo(input_parser.key).@"struct".decl_names) |name| {
         // Range bounds and the F(n) helper have no twin of their own.
@@ -44,7 +45,7 @@ fn checkTwin(comptime prefix: []const u8, comptime name: []const u8, comptime va
 }
 
 const expect_flags: u32 = c.OT_INPUT_EXPECT_REPLIES | c.OT_INPUT_EXPECT_KITTY_KEYBOARD | c.OT_INPUT_EXPECT_CURSOR_POSITION |
-    c.OT_INPUT_EXPECT_SENTINEL;
+    c.OT_INPUT_EXPECT_SENTINEL | c.OT_INPUT_EXPECT_ESCAPE_PREFIX;
 
 pub fn ot_session_input_feed(
     context: ?*abi.ContextHandle,
@@ -85,9 +86,10 @@ pub fn ot_session_input_expect(context: ?*abi.ContextHandle, session: ?*const c.
     if (session == null or flags & ~expect_flags != 0) return fail(context, error.InvalidOptions);
     const expect: input_parser.Expectations = .{
         .replies = flags & (c.OT_INPUT_EXPECT_REPLIES | c.OT_INPUT_EXPECT_CURSOR_POSITION | c.OT_INPUT_EXPECT_SENTINEL) != 0,
-        .kitty_keyboard = flags & c.OT_INPUT_EXPECT_KITTY_KEYBOARD != 0,
+        .kitty_keyboard = flags & (c.OT_INPUT_EXPECT_KITTY_KEYBOARD | c.OT_INPUT_EXPECT_ESCAPE_PREFIX) != 0,
         .cursor_position = flags & c.OT_INPUT_EXPECT_CURSOR_POSITION != 0,
         .sentinel = flags & c.OT_INPUT_EXPECT_SENTINEL != 0,
+        .escape_prefix = flags & c.OT_INPUT_EXPECT_ESCAPE_PREFIX != 0,
     };
     context.?.core.sessionInputExpect(abi.handleFromC(session.?.*), expect) catch |err| return fail(context, err);
     return c.OT_OK;
@@ -236,7 +238,7 @@ test "Context input ABI rejects malformed calls, foreign handles, and closed ses
     drain = f.drain;
     drain.abi_version += 1;
     try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_session_input_feed(context, &f.session, "a", 1, 0, &f.records, f.records.len, &f.payload, f.payload.len, &drain));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, &f.session, c.OT_INPUT_EXPECT_SENTINEL << 1));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, &f.session, c.OT_INPUT_EXPECT_ESCAPE_PREFIX << 1));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, null, 0));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_reset(context, null, 0));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_reset(context, &f.session, 2));
