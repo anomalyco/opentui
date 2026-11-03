@@ -1930,7 +1930,9 @@ fn testOfferConnection(proxy: *WlProxy) Connection {
 test "Wayland core data-device fallback is WSL-gated and read-only" {
     const symbols = testSymbols();
     const expected_line = "Clipboard: " ++ "the Wayland compositor has no data-control protocol and no usable core data device" ++ "\n";
-    for ([_]struct { wsl: bool, ext: bool, progress: Progress }{
+    // Driving a connection dispatches events, which only the Linux backend does; elsewhere the
+    // host never creates a Wayland connection.
+    if (comptime builtin.os.tag == .linux) for ([_]struct { wsl: bool, ext: bool, progress: Progress }{
         .{ .wsl = false, .ext = false, .progress = .unsupported },
         .{ .wsl = true, .ext = false, .progress = .pending },
         .{ .wsl = false, .ext = true, .progress = .pending },
@@ -1955,13 +1957,15 @@ test "Wayland core data-device fallback is WSL-gated and read-only" {
         try std.testing.expectEqual(if (case.progress == .unsupported) linux.Report.wayland_protocol else null, linux.testCauseReport(.wayland));
         linux.reportUnavailable();
         try std.testing.expectEqualStrings(if (case.progress == .unsupported) expected_line else "", linux.test_log.end());
-    }
+    };
     var connection: Connection = undefined;
-    connection.is_wsl = true;
+    connection.is_wsl = false;
     connection.core_manager_global = 1;
     connection.compositor_global = 2;
     connection.shm_global = 3;
     connection.shell_global = 4;
+    try std.testing.expect(!connection.coreDataDeviceAvailable());
+    connection.is_wsl = true;
     try std.testing.expect(connection.coreDataDeviceAvailable());
 
     connection.core_data_device = true;
