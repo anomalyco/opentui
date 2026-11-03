@@ -73,6 +73,7 @@
     ["F1 as bare CSI P", ["\u001b[P"], ["key(\"f1\")"]],
     ["F2 as bare CSI Q", ["\u001b[Q"], ["key(\"f2\")"]],
     ["F4 as bare CSI S", ["\u001b[S"], ["key(\"f4\")"]],
-    ["F3 as SS3", ["\u001bOR"], ["key(\"f3\")"]]
+    ["F3 as SS3", ["\u001bOR"], ["key(\"f3\")"]],
+    ["typed private-use characters are not functional keys", ["\ue000\ue004\u001b[27;5;57348~"], ["key(\"\ue000\")", "key(\"\ue004\")", "key(\"\ue004\" ctrl)"]]
   ]
 }

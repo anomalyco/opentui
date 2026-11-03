@@ -53,6 +53,7 @@ pub const Protocol = enum(u8) { csi = 1, ss3 = 2, osc = 3, dcs = 4, apc = 5 };
 pub const flags = struct {
     pub const key_kitty: u8 = 1;
     pub const key_text_truncated: u8 = 2;
+    pub const key_typed: u8 = 4;
     pub const paste_start: u8 = 1;
     pub const paste_end: u8 = 2;
     pub const reply_fragment: u8 = 1;
@@ -343,7 +344,7 @@ pub const InputParser = struct {
                 self.begin(heldUnit(introducer), introducer);
             } else {
                 self.state = .ground;
-                emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .text = &.{introducer} });
+                emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .flags = flags.key_typed, .text = &.{introducer} });
             },
             .recover_sgr => {
                 self.state = .ground;
@@ -394,7 +395,7 @@ pub const InputParser = struct {
                     self.append(b);
                 } else {
                     self.state = .ground;
-                    emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .text = &.{introducer} });
+                    emitKey(sink, &.{&.{introducer}}, introducer, .{}, .{ .flags = flags.key_typed, .text = &.{introducer} });
                     pending = b;
                 },
                 .recover_sgr => pending = self.recoverSgrByte(b, sink),
@@ -460,7 +461,7 @@ pub const InputParser = struct {
             0x00 => emitKey(sink, raw, ' ', ctrl, .{}),
             0x01...0x07, 0x0b, 0x0c, 0x0e...0x1a => emitKey(sink, raw, 'a' + @as(u32, b) - 1, ctrl, .{}),
             0x1c...0x1f => emitKey(sink, raw, '\\' + @as(u32, b) - 0x1c, ctrl, .{}),
-            0x20...0x7e => emitKey(sink, raw, b, mods, .{ .text = if (alt) "" else wire.slice() }),
+            0x20...0x7e => emitKey(sink, raw, b, mods, .{ .flags = flags.key_typed, .text = if (alt) "" else wire.slice() }),
             0xc2...0xdf => self.beginUtf8(b, 2, alt),
             0xe0...0xef => self.beginUtf8(b, 3, alt),
             0xf0...0xf4 => self.beginUtf8(b, 4, alt),
@@ -487,7 +488,7 @@ pub const InputParser = struct {
         const scalar: u21 = std.unicode.utf8Decode(bytes) catch unreachable;
         var buffer: [4]u8 = undefined;
         const text = if (alt) "" else utf8Encode(scalar, &buffer);
-        emitKey(sink, if (alt) &.{ "\x1b", bytes } else &.{bytes}, scalar, .{ .alt = alt }, .{ .text = text });
+        emitKey(sink, if (alt) &.{ "\x1b", bytes } else &.{bytes}, scalar, .{ .alt = alt }, .{ .flags = flags.key_typed, .text = text });
     }
 
     /// Not UTF-8 after all: every buffered byte is an eight-bit Alt key.
@@ -694,7 +695,7 @@ pub const InputParser = struct {
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
         if (!typed) return emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
         const introducer = self.unit[1];
-        emitKey(sink, &.{self.unit[1..2]}, introducer, .{}, .{ .text = self.unit[1..2] });
+        emitKey(sink, &.{self.unit[1..2]}, introducer, .{}, .{ .flags = flags.key_typed, .text = self.unit[1..2] });
         if (self.unit_len > 2) emitReply(sink, self.unit[2..self.unit_len], protocol, flags.reply_fragment);
     }
 
@@ -1220,15 +1221,11 @@ fn keypadText(code: u32) ?u8 {
     };
 }
 
-/// A key code without alternates or text, as in xterm's `CSI 27 ; mods ; code ~`.
+/// xterm's `CSI 27 ; mods ; code ~`: a character code, so only the C0/DEL keys are functional.
 fn codeKey(code: u32, mods: Modifiers) ?Key {
-    var value: Key = .{ .code = code, .mods = mods };
-    if (functionalKey(code)) |functional| {
-        value.code = functional;
-        if (keypadText(functional)) |text| value.text.append(text);
-        return value;
-    }
+    if (code < key.functional_first) if (functionalKey(code)) |functional| return .{ .code = functional, .mods = mods };
     if (code == 0 or !isScalar(code) or isControl(code)) return null;
+    var value: Key = .{ .code = code, .mods = mods, .flags = flags.key_typed };
     value.text.append(@intCast(code));
     return value;
 }

@@ -2508,6 +2508,7 @@ typedef struct ot_session_pump_result {
 
 #define OT_INPUT_KEY_KITTY UINT32_C(1)
 #define OT_INPUT_KEY_TEXT_TRUNCATED UINT32_C(2)
+#define OT_INPUT_KEY_TYPED UINT32_C(4)
 #define OT_INPUT_PASTE_START UINT32_C(1)
 #define OT_INPUT_PASTE_END UINT32_C(2)
 #define OT_INPUT_REPLY_FRAGMENT UINT32_C(1)
@@ -2521,8 +2522,10 @@ typedef struct ot_session_pump_result {
 
 /* Key codes are Unicode scalars; functional keys use the Kitty keyboard protocol
  * assignments. Escape, Enter, Tab, and Backspace are 27, 13, 9, and 127. A key
- * typed from the private-use area shares the Kitty range, as in every Kitty
- * protocol terminal. Code 0 is a text-only key (input method output). */
+ * typed from the private-use area shares the Kitty range: OT_INPUT_KEY_TYPED
+ * marks a code that is a printable character the terminal sent as text or as
+ * xterm's CSI 27 ; mods ; code ~, never a functional key. Code 0 is a text-only
+ * key (input method output). */
 #define OT_INPUT_KEY_ESCAPE UINT32_C(27)
 #define OT_INPUT_KEY_ENTER UINT32_C(13)
 #define OT_INPUT_KEY_TAB UINT32_C(9)

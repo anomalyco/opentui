@@ -296,12 +296,12 @@ fn x10(code: u8, x: u8, y: u8) [6]u8 {
 
 test "input parser text, controls, and Alt prefixes" {
     try checkOne(&.{
-        .{ "a", kt('a', NONE, "a") },
+        .{ "a", Expect{ .kind = .key, .action = 1, .code = 'a', .flags = ip.flags.key_typed, .text = "a" } },
         .{ "A", kt('A', NONE, "A") },
         .{ "1", ch('1') },
         .{ "!", ch('!') },
         .{ " ", kt(' ', NONE, " ") },
-        .{ "é", kt(0xe9, NONE, "é") },
+        .{ "é", Expect{ .kind = .key, .action = 1, .code = 0xe9, .flags = ip.flags.key_typed, .text = "é" } },
         .{ "中", ch(0x4e2d) },
         .{ "👍", kt(0x1f44d, NONE, "👍") },
         .{ "\r", kt(K.enter, NONE, "") },
@@ -320,7 +320,7 @@ test "input parser text, controls, and Alt prefixes" {
         .{ "\x1b\r", kr(K.enter, ALT, "\x1b\r") },
         .{ "\x1b\n", k(K.enter, ALT) },
         .{ "\x1b ", k(' ', ALT) },
-        .{ "\x1ba", Expect{ .kind = .key, .action = 1, .code = 'a', .mods = ALT, .raw = "\x1ba", .text = "" } },
+        .{ "\x1ba", Expect{ .kind = .key, .action = 1, .code = 'a', .mods = ALT, .flags = ip.flags.key_typed, .raw = "\x1ba", .text = "" } },
         .{ "\x1bA", k('A', ALT) },
         .{ "\x1bU", k('U', ALT) },
         .{ "\x1b5", k('5', ALT) },
@@ -345,7 +345,7 @@ test "input parser text, controls, and Alt prefixes" {
         .{ "\x1b!", k('!', ALT) },
         .{ "\x1bN", k('N', ALT) },
         // Issue 047: Alt with any UTF-8 scalar.
-        .{ "\x1bé", Expect{ .kind = .key, .action = 1, .code = 0xe9, .mods = ALT, .raw = "\x1bé", .text = "" } },
+        .{ "\x1bé", Expect{ .kind = .key, .action = 1, .code = 0xe9, .mods = ALT, .flags = ip.flags.key_typed, .raw = "\x1bé", .text = "" } },
         .{ "\x1bж", k(0x436, ALT) },
         .{ "\x1b👍", k(0x1f44d, ALT) },
     });
@@ -579,7 +579,7 @@ test "input parser modifyOtherKeys" {
         .{ "\x1b[27;2;127~", k(K.backspace, SHIFT) },
         .{ "\x1b[27;5;8~", k(K.backspace, CTRL) },
         .{ "\x1b[27;2;53~", k('5', SHIFT) },
-        .{ "\x1b[27;5;57399~", kt(K.kp_0, CTRL, "0") },
+        .{ "\x1b[27;5;57399~", Expect{ .kind = .key, .action = 1, .code = 0xe037, .mods = CTRL, .flags = ip.flags.key_typed, .text = "\u{e037}" } },
         .{ "\x1b[27;5;3~", reply("\x1b[27;5;3~") },
         .{ "\x1b[27;5~", reply("\x1b[27;5~") },
     });
@@ -1241,7 +1241,7 @@ test "input parser keeps typed text typed after a held or recovered prefix while
         .{ "E4", &.{ .{ .feed = "\x1b" }, .{ .wait = 1000 }, .{ .feed = "[2024\r" } }, &.{ esc, kt('[', NONE, "["), frag("2024"), k(K.enter, NONE) } },
         .{ "P2", &.{ .{ .feed = "\x1b[" }, .{ .wait = 100 }, .{ .feed = "2" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 100 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" }, .{ .feed = da1 }, .clear, .{ .wait = 60_000 }, .{ .feed = "later\r" } }, &([_]Expect{ frag("\x1b[200"), ch('~') } ++ typed("abc") ++ [_]Expect{reply(da1)} ++ typed("later\r")) },
         .{ "C11", &.{ .{ .feed = "\x1b" }, .{ .wait = 30 }, .{ .feed = "[" }, .{ .wait = 5 }, .{ .feed = "2" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "0" }, .{ .wait = 5 }, .{ .feed = "~" }, .{ .feed = "abc" } }, &([_]Expect{ esc, kt('[', NONE, "["), frag("200"), ch('~') } ++ typed("abc")) },
-        .{ "R7", &.{ .{ .feed = "\x1b" }, .{ .wait = 20 }, .{ .feed = "[1x" } }, &.{ esc, kt('[', NONE, "["), frag("1"), ch('x') } },
+        .{ "R7", &.{ .{ .feed = "\x1b" }, .{ .wait = 20 }, .{ .feed = "[1x" } }, &.{ esc, Expect{ .kind = .key, .action = 1, .code = '[', .flags = ip.flags.key_typed, .text = "[" }, frag("1"), ch('x') } },
         // Esc, then an introducer in a read of its own (vim's P, [, ], _): the introducer is typed when
         // the next key or the batch end cuts it.
         .{ "O1P", &.{ .{ .feed = "\x1b" }, .{ .wait = 120 }, .{ .feed = "P" }, .{ .wait = 120 }, .{ .feed = "x" } }, &.{ esc, kt('P', NONE, "P"), ch('x') } },
@@ -1293,7 +1293,7 @@ test "input parser recovers mouse reports after a timed-out Escape" {
         .{ &.{"[<x"}, &.{ frag("[<"), ch('x') } },
         .{ &.{"[<0M"}, &.{frag("[<0M")} },
         .{ &.{"[<64;11;6m"}, &.{frag("[<64;11;6m")} },
-        .{ &.{"[A"}, &.{ kt('[', NONE, "["), ch('A') } },
+        .{ &.{"[A"}, &.{ Expect{ .kind = .key, .action = 1, .code = '[', .flags = ip.flags.key_typed, .text = "[" }, ch('A') } },
         .{ &.{"[M \x01"}, &.{ frag("[M "), k('a', CTRL) } },
         .{ &.{"q[<0;1;1M"}, &.{ ch('q'), ch('['), ch('<'), ch('0'), ch(';'), ch('1'), ch(';'), ch('1'), ch('M') } },
         .{ &.{"[<" ++ utils.repeat(u8, "1", 260)}, &([_]Expect{frag("[<" ++ utils.repeat(u8, "1", 253))} ++ @as([7]Expect, @splat(ch('1')))) },
@@ -1323,7 +1323,7 @@ test "input parser recovers mouse reports after a timed-out Escape" {
     _ = try harness.wait(20);
     try expectGot("", &.{}, try harness.feed("["));
     try expectGot("", &.{}, try harness.wait(19));
-    try expectGot("", &.{kr('[', NONE, "[")}, try harness.wait(1));
+    try expectGot("", &.{Expect{ .kind = .key, .action = 1, .code = '[', .flags = ip.flags.key_typed, .text = "[", .raw = "[" }}, try harness.wait(1));
     // Without a timed-out Escape, `[<` is text.
     try check("[<35;20;5m", &.{ ch('['), ch('<'), ch('3'), ch('5'), ch(';'), ch('2'), ch('0'), ch(';'), ch('5'), ch('m') });
     // With SENTINEL an introducer and a byte that begin a reply resume it; other bytes are typed,
@@ -1671,8 +1671,8 @@ fn notation(allocator: std.mem.Allocator, got: Got) ![]const u8 {
         .key => {
             var shift = modifiers.shift;
             var scalar: [4]u8 = undefined;
-            const name = if (got.code == 0) got.text else if (coreKeyName(got.code)) |core| core else name: {
-                if (got.code >= K.functional_first and got.code <= K.functional_last) {
+            const name = if (got.code == 0) got.text else if (if (got.flags & ip.flags.key_typed != 0) null else coreKeyName(got.code)) |core| core else name: {
+                if (got.flags & ip.flags.key_typed == 0 and got.code >= K.functional_first and got.code <= K.functional_last) {
                     std.debug.print("no notation name for key code {d}; add Core's name to coreKeyName\n", .{got.code});
                     return error.UnnamedKey;
                 }
