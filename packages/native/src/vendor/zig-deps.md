@@ -26,7 +26,7 @@ Both ports change only Zig code, and the update script gives both copies the sam
 generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga 3.2.1 with seven changes, applied in this order:
+The Yoga source is upstream Yoga 3.2.1 with eight changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation through `yoga/OTAllocator.h`, so a test build can
   inject allocation failures. It also makes style updates, child insertion, and child moves leave the node
@@ -55,6 +55,10 @@ The Yoga source is upstream Yoga 3.2.1 with seven changes, applied in this order
   positive margin comes off the old size: a percent margin follows an owner size that no cache entry
   records, so a negative one would accept a stale size. Upstream's rule is already valid for a negative
   margin. Upstream fixes the owner size separately in facebook/yoga#2042.
+- `yoga-flex-shrink-residue.patch` backports facebook/yoga#1974 and facebook/yoga#2044. The second flex
+  pass uses its zero-total fallback when the shrink total is within 1e-6 of 0 or positive, not only when
+  it is 0. After the first pass freezes every item at its minimum, float cancellation can leave such a
+  total, and dividing by it gave the items millions of cells. Remove the patch when the pin includes both.
 
 `src/tests/yoga_test.zig` tests each change.
 

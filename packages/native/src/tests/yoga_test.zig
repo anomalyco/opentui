@@ -936,6 +936,50 @@ test "Yoga finite-percent patch keeps a deep percent chain and its margins finit
     try std.testing.expect(std.math.isFinite(layout.top));
 }
 
+// When every item of an overflowing row freezes at its minimum, float cancellation left the shrink
+// total near zero or positive, and dividing by it gave the items millions of cells. An item's width
+// is its minimum unless the row names another.
+test "Yoga flex-shrink residue patch takes the zero-total fallback only for float residues" {
+    const point = @backingInt(yoga.YogaUnit.point);
+    const Item = struct { basis: f32, min: f32, padding: f32 = 0, shrink: f32 = 1, width: ?f32 = null };
+    for ([_]struct { f32, []const Item }{
+        // The total cancels to exactly 0, as upstream already handles.
+        .{ 2, &.{ .{ .basis = 4, .min = 3 }, .{ .basis = 4, .min = 3 } } },
+        // facebook/yoga#2038: the shrink total cancels to +6.1e-5.
+        .{ 350, &.{ .{ .basis = 100.1, .min = 90 }, .{ .basis = 200.3, .min = 190 }, .{ .basis = 300.7, .min = 290 } } },
+        // facebook/yoga#1665: the padding gives each item a basis near 1.19.
+        .{ 393, &.{ .{ .basis = 0, .min = 160, .padding = 0.594443 }, .{ .basis = 0, .min = 160, .padding = 0.594442 }, .{ .basis = 0, .min = 160, .padding = 0.594442 }, .{ .basis = 0, .min = 160, .padding = 0.594442 } } },
+        // Issue 404: a text measured at an "at most" width of 0.2 beside a box with a minimum width.
+        .{ 0.2, &.{ .{ .basis = 4, .min = 4 }, .{ .basis = 0.2, .min = 0 } } },
+        // Residues of -9.5e-7 and near -1e-6 take the fallback, basis * (1 - shrink), as 0 does.
+        .{ 0, &.{ .{ .basis = 10.3, .min = 1, .shrink = 0.5, .width = 5 }, .{ .basis = 20.9, .min = 1, .shrink = 0.5, .width = 11 } } },
+        .{ 0, &.{ .{ .basis = 2.03, .min = 1, .shrink = 0.5 }, .{ .basis = 3.07, .min = 1, .shrink = 0.5, .width = 2 }, .{ .basis = 4.11, .min = 1, .shrink = 0.5, .width = 2 } } },
+        // A small total of an item that is not frozen still divides: 4 + 1 fills the row.
+        .{ 5, &.{ .{ .basis = 4, .min = 4 }, .{ .basis = 2, .min = 0, .shrink = 1e-4, .width = 1 } } },
+    }) |row| {
+        const config = yoga.yogaConfigCreate();
+        defer std.debug.assert(yoga.yogaConfigFree(config));
+        const root = yoga.yogaNodeCreateWithConfig(config);
+        defer yoga.yogaNodeFreeRecursive(root);
+        yoga.yogaNodeStyleSetEnum(root, @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+        var children: [4]yoga.YGNodeRef = undefined;
+        for (row[1], children[0..row[1].len], 0..) |item, *child, index| {
+            child.* = yoga.yogaNodeCreateWithConfig(config);
+            yoga.yogaNodeInsertChild(root, child.*, @intCast(index));
+            yoga.yogaNodeStyleSetFloat(child.*, @backingInt(yoga.YogaFloatKind.flex_shrink), item.shrink);
+            yoga.yogaNodeStyleSetValue(child.*, @backingInt(yoga.YogaValueKind.flex_basis), 0, point, item.basis);
+            yoga.yogaNodeStyleSetValue(child.*, @backingInt(yoga.YogaValueKind.min_width), 0, point, item.min);
+            yoga.yogaNodeStyleSetValue(child.*, @backingInt(yoga.YogaValueKind.padding), @import("context_abi_c").OT_EDGE_ALL, point, item.padding);
+        }
+        yoga.yogaNodeCalculateLayout(root, row[0], 1, @backingInt(yoga.YogaDirection.ltr));
+        for (row[1], children[0..row[1].len]) |item, child| {
+            var layout: yoga.ExternalYogaLayout = undefined;
+            yoga.yogaNodeGetComputedLayout(child, &layout);
+            try std.testing.expectEqual(item.width orelse item.min, layout.width);
+        }
+    }
+}
+
 test "Yoga absolute-edge rounding patch is opt-in per config and keeps children inside their parents" {
     const api = @import("context_abi_c");
     for ([_]u32{ 0, 1 }) |enabled| {
