@@ -57,7 +57,7 @@ const FIELD = {
 }
 const C = nativeConstants
 const EMPTY = new Uint8Array(0)
-const UTF8 = new TextDecoder()
+const UTF8 = new TextDecoder("utf-8", { ignoreBOM: true })
 const MOUSE_TYPES: Record<number, MouseEventType> = {
   [C.OT_INPUT_MOUSE_DOWN]: "down",
   [C.OT_INPUT_MOUSE_UP]: "up",

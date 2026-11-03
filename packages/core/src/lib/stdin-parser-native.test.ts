@@ -193,6 +193,7 @@ const INTENTIONAL: Array<
     [mouse("down", 9, 4), mouse("down", -1, -1)],
     [reply("\x1b[<3;10;5M"), mouse("down", 0, 0)],
   ],
+  ["a typed byte order mark is a character (issue 368)", [bytes("\xef\xbb\xbf")], [key("", "")], [key("\ufeff")]],
 ]
 
 describe("native stdin parser: intentional changes", () => {
@@ -220,7 +221,7 @@ describe("native stdin parser: differential replay", () => {
     ["X10 mouse", "\x1b[M !!\x1b[M#!!\x1b[M`$%"],
     ["focus", "\x1b[O\x1b[I"],
     ["pastes", "\x1b[200~line 1\nline 2\x1b[A\x1b[201~x\x1b[200~\x1b[201~"],
-    ["Kitty keys", "\x1b[97u\x1b[97;5u\x1b[97;1:3u\x1b[13;2u\x1b[57364u\x1b[1;1:1A\x1b[5;1:3~\x1b[57399u"],
+    ["Kitty keys", "\x1b[97u\x1b[97;5u\x1b[97;1:3u\x1b[13;2u\x1b[57364u\x1b[1;1:1A\x1b[5;1:3~\x1b[57399u\x1b[65279u"],
     ["modifyOtherKeys", "\x1b[27;2;13~\x1b[27;5;27~\x1b[27;5;32~\x1b[27;2;53~\x1b[27;2;65~\x1b[27;5;65~\x1b[27;3;65~"],
   ]
 
@@ -359,6 +360,10 @@ describe("native stdin parser: adapter", () => {
     expect(altMok).toMatchObject({ name: "A", ctrl: true, meta: true, shift: false, option: true })
     expect(altO).toMatchObject({ name: "O", meta: true, shift: true, option: false, raw: "\x1bO" })
     expect(altBracket).toMatchObject({ name: "[", meta: true, shift: false, option: false, raw: "\x1b[" })
+    const [bom, ...kittyBom] = parse(native, [bytes("\xef\xbb\xbf\x1b[65279u\x1b[65279;1;65279u")])
+    expect(bom).toMatchObject({ raw: "\ufeff", key: { name: "\ufeff", sequence: "\ufeff", raw: "\ufeff" } })
+    expect(kittyBom[0]).toMatchObject({ key: { name: "\ufeff", sequence: "\ufeff", raw: "\x1b[65279u" } })
+    expect(parse(legacy, ["\x1b[65279u\x1b[65279;1;65279u"])).toEqual(kittyBom)
   })
 
   test("suspension stops input time so a reply split across it still completes", () => {
