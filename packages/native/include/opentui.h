@@ -584,7 +584,7 @@ typedef struct ot_scene_paint_slot {
 
 /* All phase records require exact size/version and zero reserved fields. Hook
  * generations are nonzero and must increase on every change. Initial dimensions
- * seed the resize baseline only before the first layout. Later subscriptions use
+ * seed the resize baseline on the node's first publication. Later subscriptions use
  * completed dimensions. Only the root accepts LAYOUT_CHANGED.
  * IDLE_UPDATE uses up the node's update for a frame without a host request or callback.
  * It does not count as a host hook and cannot be combined with UPDATE.
