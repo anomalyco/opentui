@@ -326,7 +326,10 @@ pub const Connection = struct {
             self.phase = .unsupported;
             return .unsupported;
         };
-        if (self.symbols.xcb_connection_has_error(connection) != 0) {
+        const connection_error = self.symbols.xcb_connection_has_error(connection);
+        if (connection_error != 0) {
+            const display = linux.bounded(posix_io.getEnv("DISPLAY") orelse "");
+            linux.recordCause(.x11, .x11_connect, "X11 connection to display {s} failed (xcb error {d})", .{ display, connection_error });
             self.phase = .unsupported;
             return .unsupported;
         }
@@ -335,7 +338,11 @@ pub const Connection = struct {
     }
 
     fn connectWorker(self: *Connection) void {
-        self.connectWorkerRun() catch {};
+        linux.clearCause(.x11);
+        self.connectWorkerRun() catch |err| if (!self.cancelRequested()) {
+            const display = linux.bounded(posix_io.getEnv("DISPLAY") orelse "");
+            linux.recordCause(.x11, .x11_connect, "cannot connect to X11 display {s}: {s}", .{ display, @errorName(err) });
+        };
         self.connect_mutex.lock();
         std.debug.assert(self.connect_cancel_fd == null);
         self.connect_mutex.unlock();
@@ -450,16 +457,19 @@ pub const Connection = struct {
     fn connectSocket(self: *Connection, endpoint: *DisplayEndpoint) !std.posix.fd_t {
         const candidate_count: u8 = displayCandidateCount(endpoint.*);
         var candidate_index: u8 = 0;
+        // The last candidate's error says why: a missing socket file, a denied one, or a refusal.
+        var last_error: anyerror = error.ConnectionRefused;
         while (candidate_index < candidate_count) : (candidate_index += 1) {
             const candidate = try displayAddress(endpoint.*, candidate_index);
             const fd = self.connectCandidate(candidate) catch |err| {
                 if (err == error.Cancelled) return err;
+                last_error = err;
                 continue;
             };
             endpoint.kind = candidate.kind;
             return fd;
         }
-        return error.ConnectionRefused;
+        return last_error;
     }
 
     fn connectCandidate(self: *Connection, candidate: DisplayAddress) !std.posix.fd_t {
@@ -2728,6 +2738,67 @@ test "X11 connection establishment does not block a drive unit" {
     clipboard_clock.sleep(250 * std.time.ns_per_ms);
     try std.testing.expectEqual(Progress.pending, connection.drive());
     connection.deinit();
+}
+
+test "X11 connect failures report their cause once per process" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    try clipboard_clock.init();
+    const Fake = struct {
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+        var error_code: c_int = 0;
+        fn connectionError(_: *linux.XcbConnection) callconv(.c) c_int {
+            return error_code;
+        }
+    };
+    const saved = if (posix_io.getEnv("DISPLAY")) |old| try std.testing.allocator.dupeSentinel(u8, old, 0) else null;
+    defer if (saved) |old| {
+        _ = Fake.setenv("DISPLAY", old, 1);
+        std.testing.allocator.free(old);
+    } else {
+        _ = Fake.unsetenv("DISPLAY");
+    };
+    var symbols: linux.XcbSymbols = undefined;
+    symbols.xcb_connect_to_fd = fakeImmediateConnectToFd;
+    symbols.xcb_connection_has_error = Fake.connectionError;
+    symbols.xcb_disconnect = fakeDisconnect;
+    // A DISPLAY longer than any socket path still leaves room for the reason.
+    var long_display: [4101:0]u8 = @splat('9');
+    long_display[0] = ':';
+    var long_report: [512]u8 = undefined;
+    const cases = [_]struct { display: [*:0]const u8, connected: bool = false, error_code: c_int = 0, reports: []const u8 }{
+        // A remote display is refused before any socket opens.
+        .{ .display = "example.com:0", .reports = "Clipboard: cannot connect to X11 display example.com:0: UnsupportedDisplay\n" },
+        .{ .display = "/nonexistent-427/X0", .reports = "Clipboard: cannot connect to X11 display /nonexistent-427/X0: FileNotFound\n" },
+        .{ .display = &long_display, .reports = try std.fmt.bufPrint(&long_report, "Clipboard: cannot connect to X11 display {s}: UnsupportedDisplay\n", .{long_display[0..256]}) },
+        .{ .display = ":0", .connected = true, .error_code = 1, .reports = "Clipboard: X11 connection to display :0 failed (xcb error 1)\n" },
+        .{ .display = ":0", .connected = true, .reports = "" },
+    };
+    for (cases) |case| {
+        try std.testing.expectEqual(@as(c_int, 0), Fake.setenv("DISPLAY", case.display, 1));
+        Fake.error_code = case.error_code;
+        linux.test_log.begin();
+        defer _ = linux.test_log.end();
+        // Each connect replaces the cause an earlier one left.
+        linux.recordCause(.x11, .x11_connect, "stale", .{});
+        // Every operation after a failure makes a new connection.
+        for (0..2) |_| {
+            var connection = Connection.init(std.testing.allocator, &symbols, 1);
+            defer connection.deinit();
+            const sockets = try testSocketPair();
+            defer posix_io.close(sockets[1]);
+            if (case.connected) connection.test_connected_fd = sockets[0] else posix_io.close(sockets[0]);
+            for (0..2000) |_| {
+                if (connection.drive() != .pending or connection.phase != .idle) break;
+                clipboard_clock.sleep(std.time.ns_per_ms);
+            }
+            const healthy = case.connected and case.error_code == 0;
+            try std.testing.expectEqual(if (healthy) Phase.atoms else Phase.unsupported, connection.phase);
+            try std.testing.expectEqual(if (healthy) null else linux.Report.x11_connect, linux.testCauseReport(.x11));
+            linux.reportUnavailable();
+        }
+        try std.testing.expectEqualStrings(case.reports, linux.test_log.end());
+    }
 }
 
 test "X11 shutdown cancels a silent setup connection" {

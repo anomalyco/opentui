@@ -127,6 +127,11 @@ pub fn processLogger() *const Logger {
     return &process_logger;
 }
 
+/// Whether a process log line from this thread reaches a callback now.
+pub fn processLogReady() bool {
+    return process_callback.load(.acquire) != null and process_thread.load(.monotonic) == std.Thread.getCurrentId();
+}
+
 pub fn setLogCallback(callback: ?LogCallback) void {
     process_thread.store(std.Thread.getCurrentId(), .monotonic);
     process_callback.store(callback, .release);

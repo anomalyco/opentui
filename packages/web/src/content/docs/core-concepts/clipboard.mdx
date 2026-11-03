@@ -146,6 +146,9 @@ Linux selects Wayland when `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is nonempty and
 `libwayland-client.so.0` supplies the required symbols. It selects X11 when `DISPLAY` is nonempty and `libxcb.so.1`
 supplies the required symbols. Wayland has priority. It can fall back to X11 when Wayland reports unsupported and both
 are available. OpenTUI talks to these protocols directly. It does not invoke `wl-copy`, `wl-paste`, `xclip`, or `xsel`.
+Wayland needs a data-control protocol; only WSLg reads work without one. GNOME has none, so there the clipboard uses X11
+through Xwayland. When no backend can serve an operation, the process logs once why each backend it tried failed: a
+library that does not load, a display that does not connect, or a compositor without data-control.
 
 Windows uses the Win32 clipboard API and does not invoke PowerShell. macOS uses native pasteboard and image APIs and
 does not invoke `pbcopy` or `pbpaste`.

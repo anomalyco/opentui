@@ -819,7 +819,7 @@ pub const Service = struct {
         else if (libraries.x11)
             .x11
         else
-            return service.finishOperation(operation, .unsupported);
+            return service.finishUnavailable(operation);
         return switch (operation.mechanism.?) {
             .wayland => service.driveWayland(operation, libraries),
             .x11 => service.driveX11(operation),
@@ -861,7 +861,7 @@ pub const Service = struct {
         operation: *Operation,
         libraries: clipboard_linux.Libraries,
     ) OperationStatus {
-        if (!libraries.x11) return service.finishOperation(operation, .unsupported);
+        if (!libraries.x11) return service.finishUnavailable(operation);
         operation.cleanupTransfer();
         operation.mechanism = .x11;
         operation.preference_offset = 4;
@@ -885,7 +885,7 @@ pub const Service = struct {
             .pending => .pending,
             .ready => null,
             .unsupported => {
-                const status = service.finishOperation(operation, .unsupported);
+                const status = service.finishUnavailable(operation);
                 service.resetFailedX11();
                 return status;
             },
@@ -1390,6 +1390,12 @@ pub const Service = struct {
         defer operation.mutex.unlock();
         if (operation.status == .pending) operation.status = status;
         return operation.status;
+    }
+
+    // No backend serves the operation, so say why each tried backend failed. A working backend never reaches here.
+    fn finishUnavailable(service: *Service, operation: *Operation) OperationStatus {
+        clipboard_linux.reportUnavailable();
+        return service.finishOperation(operation, .unsupported);
     }
 
     fn finishWaylandFailure(service: *Service, operation: *Operation) OperationStatus {
@@ -2596,27 +2602,56 @@ test "clipboard drain closes the Wayland connection only when nothing needs it" 
     }
 }
 
-test "clipboard Wayland fallback transitions to X11 only when available" {
-    var service: Service = .{
-        .allocator = std.testing.allocator,
-        .objects = undefined,
-        .libraries = .{ .wayland = true, .x11 = true },
-        .requested_wayland_seat = &.{},
-        .environment_wayland_seat = &.{},
+test "clipboard Wayland fallback goes to X11 and reports causes only when no backend serves" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    const protocol = "the Wayland compositor has no data-control protocol and no usable core data device";
+    const missing = "cannot load libxcb.so.1: missing.so";
+    const cases = [_]struct {
+        wayland: ?struct { clipboard_linux.Report, []const u8 } = .{ .wayland_protocol, protocol },
+        x11: enum { works, missing, refused, xcb_error } = .missing,
+        status: OperationStatus = .unsupported,
+        reports: []const u8 = "",
+    }{
+        // GNOME with Xwayland, then GNOME under Nix, with no X server, and with Xwayland refusing.
+        .{ .x11 = .works, .status = .pending },
+        .{ .reports = "Clipboard: " ++ protocol ++ "\nClipboard: " ++ missing ++ "\n" },
+        .{ .x11 = .refused, .reports = "Clipboard: " ++ protocol ++ "\nClipboard: cannot connect to X11 display :427: FileNotFound\n" },
+        .{ .x11 = .xcb_error, .reports = "Clipboard: " ++ protocol ++ "\nClipboard: X11 connection to display :427 failed (xcb error 1)\n" },
+        .{ .wayland = .{ .wayland_connect, "cannot connect to Wayland display wl-427" }, .reports = "Clipboard: cannot connect to Wayland display wl-427\nClipboard: " ++ missing ++ "\n" },
+        // Data-control serves the clipboard, but this selection falls back to an X11 that cannot load.
+        .{ .wayland = null, .reports = "Clipboard: " ++ missing ++ "\n" },
+        // Neither library loads.
+        .{ .wayland = .{ .wayland_library, "cannot load libwayland-client.so.0: missing.so" }, .reports = "Clipboard: cannot load libwayland-client.so.0: missing.so\nClipboard: " ++ missing ++ "\n" },
     };
-    var operation: Operation = .{
-        .allocator = std.testing.allocator,
-        .service = &service,
-        .kind = .write,
-    };
-
-    try std.testing.expectEqual(OperationStatus.pending, service.fallbackWayland(&operation, service.libraries));
-    try std.testing.expectEqual(clipboard_linux.Mechanism.x11, operation.mechanism.?);
-
-    operation.mechanism = .wayland;
-    service.libraries.x11 = false;
-    try std.testing.expectEqual(OperationStatus.unsupported, service.fallbackWayland(&operation, service.libraries));
-    try std.testing.expectEqual(clipboard_linux.Mechanism.wayland, operation.mechanism.?);
+    var symbols: clipboard_linux.XcbSymbols = undefined;
+    for (cases) |case| {
+        clipboard_linux.test_log.begin();
+        defer _ = clipboard_linux.test_log.end();
+        if (case.wayland) |w| clipboard_linux.recordCause(.wayland, w[0], "{s}", .{w[1]});
+        if (case.x11 == .missing) clipboard_linux.recordCause(.x11, .x11_library, "{s}", .{missing});
+        var service: Service = .{
+            .allocator = std.testing.allocator,
+            .objects = undefined,
+            .libraries = .{ .wayland = if (case.wayland) |w| w[0] != .wayland_library else true, .x11 = case.x11 != .missing },
+            .requested_wayland_seat = &.{},
+            .environment_wayland_seat = &.{},
+        };
+        var operation: Operation = .{ .allocator = std.testing.allocator, .service = &service, .kind = .write };
+        var status = if (service.libraries.wayland) service.fallbackWayland(&operation, service.libraries) else service.driveOperation(&operation);
+        if (case.x11 == .refused or case.x11 == .xcb_error) {
+            const x11 = try std.testing.allocator.create(clipboard_x11.Connection);
+            x11.* = clipboard_x11.Connection.init(std.testing.allocator, &symbols, 1);
+            x11.phase = .unsupported;
+            const detail = if (case.x11 == .refused) "cannot connect to X11 display :427: FileNotFound" else "X11 connection to display :427 failed (xcb error 1)";
+            clipboard_linux.recordCause(.x11, .x11_connect, "{s}", .{detail});
+            service.x11 = x11;
+            status = service.driveX11(&operation);
+            try std.testing.expect(service.x11 == null);
+        }
+        try std.testing.expectEqual(case.status, status);
+        try std.testing.expectEqual(case.x11 != .missing, operation.mechanism == .x11);
+        try std.testing.expectEqualStrings(case.reports, clipboard_linux.test_log.end());
+    }
 }
 
 test "clipboard Wayland connection takes WSL detection from the service" {

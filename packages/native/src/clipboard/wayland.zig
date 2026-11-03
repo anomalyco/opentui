@@ -203,6 +203,8 @@ pub const Connection = struct {
         switch (self.phase) {
             .idle => self.start() catch |err| switch (err) {
                 error.ConnectFailed => {
+                    const display = linux.bounded(posix_io.getEnv("WAYLAND_DISPLAY") orelse "WAYLAND_SOCKET");
+                    linux.recordCause(.wayland, .wayland_connect, "cannot connect to Wayland display {s}", .{display});
                     self.phase = .unsupported;
                     return .unsupported;
                 },
@@ -226,6 +228,7 @@ pub const Connection = struct {
         switch (self.phase) {
             .registry => {
                 if (self.ext_global == null and self.wlr_global == null and !self.coreDataDeviceAvailable()) {
+                    linux.recordCause(.wayland, .wayland_protocol, "the Wayland compositor has no data-control protocol and no usable core data device", .{});
                     self.phase = .unsupported;
                     return .unsupported;
                 }
@@ -380,7 +383,11 @@ pub const Connection = struct {
 
     pub fn publishText(self: *Connection, primary: bool, data: []u8) SelectionResult {
         self.failure = .none;
-        if (self.core_data_device) return .unsupported;
+        if (self.core_data_device) {
+            // WSLg reads through the core data device, which cannot own a selection.
+            linux.recordCause(.wayland, .wayland_protocol, "the Wayland compositor has no data-control protocol, which writes need", .{});
+            return .unsupported;
+        }
         if (primary and !self.primary_supported) return .unsupported;
         const manager = self.manager orelse return self.selectionFailure(.protocol);
         const device = self.device orelse return self.selectionFailure(.protocol);
@@ -534,6 +541,7 @@ pub const Connection = struct {
     }
 
     fn start(self: *Connection) !void {
+        linux.clearCause(.wayland);
         // libwayland adopts and unsets an inherited WAYLAND_SOCKET, so record it before connecting.
         var inherited_socket = posix_io.getEnv("WAYLAND_SOCKET") != null;
         // libwayland refuses a relative name without an absolute XDG_RUNTIME_DIR and logs each
@@ -1478,7 +1486,7 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         wslg_path: []const u8 = "",
         connects: u8 = 1,
         runtime_dir: [*:0]const u8 = "/run/user/test",
-        display: [*:0]const u8 = "wayland-7",
+        display: ?[*:0]const u8 = "wayland-7",
     };
     const wslg_path = "/mnt/wslg/runtime-dir/wayland-7";
     const cases = [_]Case{
@@ -1492,6 +1500,8 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         .{ .runtime_dir = "", .wsl = true, .wslg_path = wslg_path },
         .{ .runtime_dir = "run/user/test", .wsl = true, .wslg_path = wslg_path },
         .{ .runtime_dir = "", .display = "/run/user/test/wayland-7" },
+        // Only an inherited socket, and it is refused: the line names the socket.
+        .{ .inherited = true, .display = null, .refused = .default, .progress = .unsupported },
     };
     const names = [_][*:0]const u8{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR" };
     var saved: [names.len]?[:0]u8 = undefined;
@@ -1515,12 +1525,24 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         Environment.refused = case.refused;
         Environment.path_length = 0;
         Environment.count = 0;
-        try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", case.display, 1));
+        if (case.display) |display| {
+            try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", display, 1));
+        } else _ = Environment.unsetenv("WAYLAND_DISPLAY");
         try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", case.runtime_dir, 1));
         if (case.inherited) try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
         defer _ = Environment.unsetenv("WAYLAND_SOCKET");
+        linux.test_log.begin();
+        defer _ = linux.test_log.end();
+        // A new connection attempt replaces the cause an earlier one left.
+        linux.recordCause(.wayland, .wayland_connect, "stale", .{});
 
         try std.testing.expectEqual(case.progress, connection.drive());
+        linux.reportUnavailable();
+        var refused_line: [128]u8 = undefined;
+        const display_name: []const u8 = if (case.display) |display| std.mem.span(display) else "WAYLAND_SOCKET";
+        const refused = try std.fmt.bufPrint(&refused_line, "Clipboard: cannot connect to Wayland display {s}\n", .{display_name});
+        try std.testing.expectEqualStrings(if (case.progress == .unsupported) refused else "", linux.test_log.end());
+        try std.testing.expectEqual(if (case.progress == .unsupported) linux.Report.wayland_connect else null, linux.testCauseReport(.wayland));
 
         const cap: usize = if (case.cap and case.progress != .unsupported) WAYLAND_CONNECTION_BUFFER_SIZE_MAX else 0;
         try std.testing.expectEqual(cap, test_max_buffer_size);
@@ -1906,6 +1928,36 @@ fn testOfferConnection(proxy: *WlProxy) Connection {
 }
 
 test "Wayland core data-device fallback is WSL-gated and read-only" {
+    const symbols = testSymbols();
+    const expected_line = "Clipboard: " ++ "the Wayland compositor has no data-control protocol and no usable core data device" ++ "\n";
+    // Driving a connection dispatches events, which only the Linux backend does; elsewhere the
+    // host never creates a Wayland connection.
+    if (comptime builtin.os.tag == .linux) for ([_]struct { wsl: bool, ext: bool, progress: Progress }{
+        .{ .wsl = false, .ext = false, .progress = .unsupported },
+        .{ .wsl = true, .ext = false, .progress = .pending },
+        .{ .wsl = false, .ext = true, .progress = .pending },
+    }) |case| {
+        linux.test_log.begin();
+        defer _ = linux.test_log.end();
+        var registry = testReadyConnection(&symbols, .{ .result = 0, .errno = .SUCCESS });
+        defer registry.deinit();
+        registry.manager = null;
+        registry.device = null;
+        registry.phase = .registry;
+        registry.sync_done = true;
+        registry.is_wsl = case.wsl;
+        registry.ext_global = if (case.ext) 5 else null;
+        registry.core_manager_global = 1;
+        registry.compositor_global = 2;
+        registry.shm_global = 3;
+        registry.shell_global = 4;
+        try std.testing.expectEqual(case.progress, registry.drive());
+        // Driving never logs; the host reports only when no backend serves an operation.
+        try std.testing.expectEqualStrings("", linux.test_log.buffer[0..linux.test_log.length]);
+        try std.testing.expectEqual(if (case.progress == .unsupported) linux.Report.wayland_protocol else null, linux.testCauseReport(.wayland));
+        linux.reportUnavailable();
+        try std.testing.expectEqualStrings(if (case.progress == .unsupported) expected_line else "", linux.test_log.end());
+    };
     var connection: Connection = undefined;
     connection.is_wsl = false;
     connection.core_manager_global = 1;
@@ -1918,9 +1970,15 @@ test "Wayland core data-device fallback is WSL-gated and read-only" {
 
     connection.core_data_device = true;
     connection.failure = .provider;
+    linux.test_log.begin();
+    defer _ = linux.test_log.end();
     try std.testing.expectEqual(SelectionResult.unsupported, connection.publishText(false, &.{}));
     try std.testing.expectEqual(SelectionResult.unsupported, connection.clearSelection(false));
     try std.testing.expectEqual(Failure.none, connection.failure);
+    // A WSLg write with no X11 to fall back to says why.
+    try std.testing.expectEqual(linux.Report.wayland_protocol, linux.testCauseReport(.wayland).?);
+    linux.reportUnavailable();
+    try std.testing.expectEqualStrings("Clipboard: the Wayland compositor has no data-control protocol, which writes need\n", linux.test_log.end());
 }
 
 test "Wayland core helper acquisition fails closed outside Linux" {
