@@ -801,6 +801,12 @@ test "input parser X10 mouse reports" {
     // A release reports the button pressed last.
     try check("\x1b[M\"!!\x1b[M#!!", &.{ down(2, 0, 0), mouse(.up, 2, 0, 0, NONE) });
     try check("\x1b[M\"!!\x1b[M'!!", &.{ down(2, 0, 0), mouse(.up, 2, 0, 0, SHIFT) });
+    // URxvt's motion after a wheel tick drags the held button too (issue 426). A later release
+    // names the lowest button still held.
+    try check("\x1b[M !!\x1b[M!!!\x1b[M\"!!\x1b[M`!!\x1b[M\x80\"!\x1b[M#\"!\x1b[M#\"!\x1b[M#\"!\x1b[M\x80\"!", &.{
+        down(0, 0, 0),             down(1, 0, 0),             down(2, 0, 0),             mouse(.scroll, 0, 0, 0, NONE),  mouse(.drag, 0, 1, 0, NONE),
+        mouse(.up, 2, 1, 0, NONE), mouse(.up, 0, 1, 0, NONE), mouse(.up, 1, 1, 0, NONE), mouse(.move, none, 1, 0, NONE),
+    });
     // A control byte cuts the report short.
     try check("\x1b[M \x1b[A", &.{ frag("\x1b[M "), k(K.up, NONE) });
     var harness = try Harness.create();
@@ -844,12 +850,19 @@ test "input parser SGR mouse reports" {
         .{ "\x1b[<0;1;1;1M", reply("\x1b[<0;1;1;1M") },
         .{ "\x1b[<0:1;1;1M", reply("\x1b[<0:1;1;1M") },
         .{ "\x1b[<0;1;1R", reply("\x1b[<0;1;1R") },
+        // The urxvt 1015 encoding is not decoded.
+        .{ "\x1b[96;7;1M", reply("\x1b[96;7;1M") },
     });
-    // Mouse decoding is stateless.
+    // Motion names its button, but URxvt's motion after a wheel tick names the wheel until the
+    // next button event: it drags the lowest button held (issue 426).
     try check("\x1b[<0;6;6M\x1b[<32;9;6m\x1b[<0;9;6m\x1b[<35;11;6m", &.{
         down(0, 5, 5), mouse(.drag, 0, 8, 5, NONE), mouse(.up, 0, 8, 5, NONE), mouse(.move, none, 10, 5, NONE),
     });
-    try check("\x1b[<64;83;68M\x1b[<96;82;68M", &.{ mouse(.scroll, 0, 82, 67, NONE), mouse(.move, none, 81, 67, NONE) });
+    try check("\x1b[<0;1;1M\x1b[<2;1;1M\x1b[<65;1;1M\x1b[<113;2;1M\x1b[<35;2;1M\x1b[<0;2;1m\x1b[<99;3;1M\x1b[<2;3;1m\x1b[<96;4;1M", &.{
+        down(0, 0, 0),                  down(2, 0, 0),             mouse(.scroll, 1, 0, 0, NONE), mouse(.drag, 0, 1, 0, CTRL),
+        mouse(.move, none, 1, 0, NONE), mouse(.up, 0, 1, 0, NONE), mouse(.drag, 2, 2, 0, NONE),   mouse(.up, 2, 2, 0, NONE),
+        mouse(.move, none, 3, 0, NONE),
+    });
     try check("x\x1b[<64;10;5M", &.{ ch('x'), mouse(.scroll, 0, 9, 4, NONE) });
     var harness = try Harness.create();
     defer harness.deinit();
@@ -1273,6 +1286,7 @@ test "input parser recovers mouse reports after a timed-out Escape" {
     for ([_]Case{
         .{ &.{"[<64;38;15M"}, &.{Expect{ .kind = .mouse, .action = 5, .code = 0, .x = 37, .y = 14, .raw = "\x1b[<64;38;15M" }} },
         .{ &.{"[<35;20;5m"}, &.{mouse(.move, none, 19, 4, NONE)} },
+        .{ &.{"[<96;20;5M"}, &.{mouse(.drag, 0, 19, 4, NONE)} },
         .{ &.{"[<0;10;5M"}, &.{down(0, 9, 4)} },
         .{ &.{ "[", "<35;20;5m" }, &.{mouse(.move, none, 19, 4, NONE)} },
         .{ &.{ "[M", " !!" }, &.{Expect{ .kind = .mouse, .action = 1, .code = 0, .raw = "\x1b[M !!" }} },
@@ -1288,7 +1302,8 @@ test "input parser recovers mouse reports after a timed-out Escape" {
     }) |case| {
         var harness = try Harness.create();
         defer harness.deinit();
-        _ = try harness.feed("\x1b");
+        // The left button is held, so URxvt's motion after a wheel tick drags it (issue 426).
+        _ = try harness.feed("\x1b[<0;1;1M\x1b");
         try expectGot("", &.{k(K.escape, NONE)}, try harness.wait(20));
         try expectGot(case[0][0], case[1], try split(&harness, case[0]));
     }
@@ -1508,18 +1523,18 @@ test "input parser reaches every state" {
     try testing.expectEqual(std.EnumSet(Tag).full, seen);
 }
 
-test "input parser reset drops the pending unit and X10 button, or keeps a reply" {
+test "input parser reset drops the pending unit and mouse buttons, or keeps a reply" {
     var harness = try Harness.create();
     defer harness.deinit();
     harness.parser.setExpectations(.{ .kitty_keyboard = true });
-    _ = try harness.feed("\x1b[M\"!!\x1b[97;");
+    _ = try harness.feed("\x1b[<0;1;1M\x1b[M\"!!\x1b[97;");
     harness.parser.reset(false);
     try testing.expectEqual(null, harness.parser.deadlineNs());
-    try expectGot("", &.{ ch('u'), mouse(.up, 0, 0, 0, NONE) }, try harness.feed("u\x1b[M#!!"));
+    try expectGot("", &.{ ch('u'), mouse(.up, 0, 0, 0, NONE), mouse(.move, none, 0, 0, NONE) }, try harness.feed("u\x1b[M#!!\x1b[<96;1;1M"));
     try testing.expect(harness.parser.expect.kitty_keyboard);
     // Keeping a reply keeps only a CSI unit shaped like one, deferred without a deadline.
     for ([_]struct { []const u8, []const u8, []const Expect }{
-        .{ "\x1b[M\"!!\x1b\x1b[4;80", ";80t\x1b[M#!!", &.{ reply("\x1b[4;80;80t"), mouse(.up, 0, 0, 0, NONE) } },
+        .{ "\x1b[M\"!!\x1b\x1b[4;80", ";80t\x1b[M#!!\x1b[<96;1;1M", &.{ reply("\x1b[4;80;80t"), mouse(.up, 0, 0, 0, NONE), mouse(.move, none, 0, 0, NONE) } },
         .{ "\x1b[4;80", "a", &.{ frag("\x1b[4;80"), ch('a') } },
         .{ "\x1b[?62", "c", &.{reply("\x1b[?62c")} },
         .{ "\x1b[24", ";1R", &.{ ch(';'), ch('1'), ch('R') } },

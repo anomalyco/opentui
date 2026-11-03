@@ -194,6 +194,18 @@ const INTENTIONAL: Array<
     [reply("\x1b[<3;10;5M"), mouse("down", 0, 0)],
   ],
   ["a typed byte order mark is a character (issue 368)", [bytes("\xef\xbb\xbf")], [key("", "")], [key("\ufeff")]],
+  [
+    "URxvt motion after a wheel tick drags the held button, not the wheel's (issue 426)",
+    ["\x1b[<0;1;1M\x1b[<65;1;1M\x1b[<97;2;1M\x1b[<99;3;1M"],
+    [mouse("down", 0, 0), mouse("scroll", 0, 0, 1), mouse("drag", 1, 0, 1), mouse("move", 2, 0)],
+    [mouse("down", 0, 0), mouse("scroll", 0, 0, 1), mouse("drag", 1, 0), mouse("drag", 2, 0)],
+  ],
+  [
+    "X10 motion with a held button is a drag, after a wheel tick too (issue 426)",
+    [bytes('\x1b[M !!\x1b[M@"!\x1b[M`"!\x1b[M\x80#!')],
+    [mouse("down", 0, 0), mouse("move", 1, 0), mouse("scroll", 1, 0), mouse("move", 2, 0)],
+    [mouse("down", 0, 0), mouse("drag", 1, 0), mouse("scroll", 1, 0), mouse("drag", 2, 0)],
+  ],
 ]
 
 describe("native stdin parser: intentional changes", () => {
@@ -217,6 +229,7 @@ describe("native stdin parser: differential replay", () => {
       "\x1b[?62;22;52c\x1b[?2026;2$y\x1b[?1u\x1bP>|kitty(0.40.1)\x1b\\\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[4;800;1200t",
     ],
     ["selection drag", "\x1b[<0;10;5M\x1b[<32;11;5M\x1b[<32;14;6M\x1b[<0;14;6m\x1b[<35;20;7M"],
+    ["URxvt drag across a wheel tick", "\x1b[<0;1;1M\x1b[<32;3;1M\x1b[<64;3;1M\x1b[<96;6;1M\x1b[<0;6;1m\x1b[<96;8;1M"],
     ["scrolling", "\x1b[<64;10;5M\x1b[<64;10;5M\x1b[<65;10;5M\x1b[<66;10;5M\x1b[<67;10;5M"],
     ["X10 mouse", "\x1b[M !!\x1b[M#!!\x1b[M`$%"],
     ["focus", "\x1b[O\x1b[I"],

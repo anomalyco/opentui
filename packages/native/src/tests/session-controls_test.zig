@@ -120,9 +120,14 @@ test "Session controls preserve rejected drafts and leave restoration capacity u
     try f.owner.setupSessionTerminal(f.id, .{ .mouse = false });
     _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
     const reservation = f.value.output.control_sequence;
+    // A button held before reporting turns on has an unreported release (issue 426).
+    f.value.input.buttons_held = 1;
     try f.value.control(.{ .mouse = .drag });
-    try testing.expect(f.cli.terminal.state.mouse and f.value.lifecycle.mouse);
+    try testing.expect(f.cli.terminal.state.mouse and f.value.lifecycle.mouse and f.value.input.buttons_held == 0);
     try testing.expect(!f.value.lifecycle.mouse_movement);
+    f.value.input.buttons_held = 1;
+    try f.value.control(.{ .title = "t" });
+    try testing.expectEqual(1, f.value.input.buttons_held);
     try testing.expectEqualDeep(reservation, f.value.output.control_sequence);
     _ = try f.drain(&bytes);
     const blocker: [3 * 4096]u8 = @splat('x');
