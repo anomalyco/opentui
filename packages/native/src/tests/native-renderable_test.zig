@@ -7,14 +7,17 @@ const editor_view = @import("../editor-view.zig");
 const grapheme = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
-test "NativeRenderable measure width normalization matches previous TypeScript rules" {
-    try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(42, @backingInt(yoga.YogaMeasureMode.undefined)));
-    try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(std.math.nan(f32), @backingInt(yoga.YogaMeasureMode.exactly)));
-    try std.testing.expectEqual(@as(f32, 42), native_renderable.normalizeYogaMeasureWidthInput(42, @backingInt(yoga.YogaMeasureMode.exactly)));
-    try std.testing.expectEqual(@as(f32, 42), native_renderable.normalizeYogaMeasureWidthInput(42, @backingInt(yoga.YogaMeasureMode.at_most)));
-}
-
-test "NativeRenderable measure height normalization matches previous TypeScript rules" {
+// Width, mode, normalized width, cells; a width within Yoga's 1e-4 below a cell is that cell.
+test "NativeRenderable measure inputs match previous TypeScript rules and Yoga's tolerance" {
+    for ([_]struct { f32, yoga.YogaMeasureMode, f32, u32 }{
+        .{ 42, .undefined, 0, 0 },            .{ std.math.nan(f32), .exactly, 0, 0 },                 .{ 42, .exactly, 42, 42 },                       .{ 42, .at_most, 42, 42 },
+        .{ 2.999999, .at_most, 2.999999, 3 }, .{ 2.9999, .at_most, 2.9999, 3 },                       .{ 2.99989, .at_most, 2.99989, 2 },              .{ 0.00009, .at_most, 0.00009, 0 },
+        .{ -0.00005, .exactly, -0.00005, 0 }, .{ std.math.inf(f32), .exactly, std.math.inf(f32), 0 }, .{ 1e10, .exactly, 1e10, std.math.maxInt(u32) }, .{ 1.9999, .at_most, 1.9999, 1 },
+    }) |row| {
+        const width = native_renderable.normalizeYogaMeasureWidthInput(row[0], @backingInt(row[1]));
+        try std.testing.expectEqual(row[2], width);
+        try std.testing.expectEqual(row[3], native_renderable.measureCells(width));
+    }
     try std.testing.expectEqual(@as(f32, 1), native_renderable.normalizeYogaMeasureHeightInput(std.math.nan(f32)));
     try std.testing.expectEqual(@as(f32, 24), native_renderable.normalizeYogaMeasureHeightInput(24));
 }
