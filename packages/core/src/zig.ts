@@ -4167,6 +4167,25 @@ export class FFIRenderLib {
     }
   }
 
+  public contextEmbeddedTerminalScrollbar(
+    context: NativeContextHandle,
+    terminal: ContextEmbeddedTerminalHandle,
+  ): { offset: number; total: number; visible: number } {
+    const layout = nativeLayouts.ot_embedded_terminal_scrollbar
+    const handle = encodeContextHandle(context, terminal)
+    const record = createContextRecord(layout)
+    const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_scrollbar_get")
+    nativeResult(
+      "ot_embedded_terminal_scrollbar_get",
+      this.opentui.symbols.ot_embedded_terminal_scrollbar_get(pointer, handle, record),
+    )
+    return {
+      offset: record[layout.fields.offset.offset / 4],
+      total: record[layout.fields.total.offset / 4],
+      visible: record[layout.fields.visible.offset / 4],
+    }
+  }
+
   public contextEmbeddedTerminalEncodeKey(
     context: NativeContextHandle,
     terminal: ContextEmbeddedTerminalHandle,

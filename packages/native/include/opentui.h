@@ -1290,6 +1290,19 @@ typedef struct ot_embedded_terminal_cursor {
     uint32_t reserved;
 } ot_embedded_terminal_cursor;
 
+/* The active screen's viewport, in rows. offset is the distance from the live
+ * screen (0 there; total - visible at the top of history). total includes the
+ * visible rows; the alternate screen has no history. Output, resizes, scrollback
+ * clears, and screen switches move the viewport too; read it after each. */
+typedef struct ot_embedded_terminal_scrollbar {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t offset;
+    uint32_t total;
+    uint32_t visible;
+    uint32_t reserved;
+} ot_embedded_terminal_scrollbar;
+
 typedef struct ot_embedded_terminal_key {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1336,6 +1349,7 @@ ot_status ot_embedded_terminal_get_selected_text(ot_context *, const ot_handle *
 ot_status ot_embedded_terminal_compose(ot_context *, const ot_handle *terminal, const ot_handle *target,
     const ot_scene_frame_request *frame, int32_t x, int32_t y);
 ot_status ot_embedded_terminal_cursor_get(ot_context *, const ot_handle *terminal, ot_embedded_terminal_cursor *out_cursor);
+ot_status ot_embedded_terminal_scrollbar_get(ot_context *, const ot_handle *terminal, ot_embedded_terminal_scrollbar *out_scrollbar);
 ot_status ot_embedded_terminal_encode_key(ot_context *, const ot_handle *terminal, const ot_embedded_terminal_key *,
     const uint8_t *key, uint32_t key_count, const uint8_t *text, uint32_t text_count,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);

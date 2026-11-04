@@ -1468,6 +1468,11 @@ pub const Context = struct {
         return (try self.getEmbeddedTerminal(handle)).cursor();
     }
 
+    pub fn embeddedTerminalScrollbar(self: *Context, handle: Handle) !embedded_terminal.Scrollbar {
+        try self.checkSceneRead();
+        return (try self.getEmbeddedTerminal(handle)).scrollbar();
+    }
+
     pub fn embeddedTerminalEncodeKey(self: *Context, handle: Handle, options: EmbeddedTerminalKey, output: []u8) !u32 {
         try self.beginMutation();
         defer self.mutating = false;
