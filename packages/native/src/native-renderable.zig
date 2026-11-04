@@ -108,8 +108,8 @@ pub const NativeRenderable = struct {
         const self: *NativeRenderable = @ptrCast(@alignCast(target orelse return .{ .width = std.math.nan(f32), .height = std.math.nan(f32) }));
         const effective_width = normalizeYogaMeasureWidthInput(width, width_mode);
         const effective_height = normalizeYogaMeasureHeightInput(height);
-        const measure_width = floorToU32(effective_width);
-        const measure_height = floorToU32(effective_height);
+        const measure_width = measureCells(effective_width);
+        const measure_height = measureCells(effective_height);
         const result = (self.measureTarget(measure_width, measure_height) catch |err| {
             native_yoga.reportMeasureError(self.yoga_node, err);
             return .{ .width = std.math.nan(f32), .height = std.math.nan(f32) };
@@ -161,11 +161,11 @@ pub fn normalizeYogaMeasureHeightInput(value: f32) f32 {
     return value;
 }
 
-fn floorToU32(value: f32) u32 {
-    if (!std.math.isFinite(value) or value <= 0) return 0;
-    const floored = @floor(value);
-    if (floored >= @as(f32, @floatFromInt(std.math.maxInt(u32)))) return std.math.maxInt(u32);
-    return @intFromFloat(floored);
+// Yoga's cache counts sizes `inexactEquals` (|a - b| < 0.0001f) as equal, so they measure as one cell.
+const yoga_inexact_equals_epsilon: f32 = 0.0001;
+pub fn measureCells(value: f32) u32 {
+    if (!std.math.isFinite(value)) return 0;
+    return std.math.lossyCast(u32, if (@ceil(value) - value < yoga_inexact_equals_epsilon) @ceil(value) else @floor(value));
 }
 
 fn isYogaNodeAbsolute(node: native_yoga.YGNodeRef) bool {

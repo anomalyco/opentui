@@ -91,21 +91,24 @@ for (const kind of ["text", "textarea"] as const) {
       expectLayout(node, 19, 4)
     })
 
-    test("lays out as a fresh tree after a size measured at an at-most width is reused as exact", async () => {
-      const build = (alignItems: "flex-start" | "stretch") => {
-        const parent = new BoxRenderable(renderer, { width: 10, height: 2, alignItems })
+    test.each([
+      ["exact", 10, 10, "stretch"],
+      ["stricter", 3.9999998, 2.999999, "flex-start"],
+    ] as const)("lays out as a fresh tree after an at-most size is reused (%s)", async (_, first, width, align) => {
+      const build = (w: number, alignItems: "flex-start" | "stretch") => {
+        const parent = new BoxRenderable(renderer, { width: w, height: 2, alignItems })
         const node = create("a".repeat(40), { wrapMode: "char", flexShrink: 0 })
         parent.add(node)
         renderer.root.add(parent)
         return { parent, node }
       }
-      const tree = build("flex-start")
+      const tree = build(first, "flex-start")
       await renderOnce()
-      tree.parent.alignItems = "stretch"
+      Object.assign(tree.parent, { width, alignItems: align })
       await renderOnce()
       const layout = tree.node.getLayout()
       tree.parent.destroyRecursively()
-      const fresh = build("stretch")
+      const fresh = build(width, align)
       await renderOnce()
       expect(layout).toEqual(fresh.node.getLayout())
     })
