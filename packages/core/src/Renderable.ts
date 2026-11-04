@@ -371,7 +371,6 @@ export abstract class Renderable extends BaseRenderable {
   private _keyListeners: Partial<Record<"down", (key: KeyEvent) => void>> = {}
 
   protected _positionType: PositionTypeString = "relative"
-  protected _positionAnchor: Renderable | null = null
   protected _overflow: OverflowString = "visible"
   protected _position: Position = {}
   protected _opacity: number = 1.0
@@ -1353,12 +1352,13 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   get positionAnchor(): Renderable | null {
-    return this._positionAnchor
+    if (this.isDestroyed || this.isFreed()) return null
+    return this._ctx.nativeScene.getPositionAnchor(this)
   }
 
   set positionAnchor(positionAnchor: Renderable | null | undefined) {
     positionAnchor ??= null
-    if (this._positionAnchor === positionAnchor) return
+    if (this.isFreed() || this.positionAnchor === positionAnchor) return
 
     this.runMutation(() => {
       if (positionAnchor !== null) {
@@ -1372,7 +1372,7 @@ export abstract class Renderable extends BaseRenderable {
           throw new Error("invalid positionAnchor")
         }
       }
-      this._positionAnchor = positionAnchor
+      this._ctx.nativeScene.setPositionAnchor(this, positionAnchor)
       this.requestRender()
     })
   }
@@ -2214,7 +2214,6 @@ export abstract class Renderable extends BaseRenderable {
         })
       }
       if (cleanup) run(() => cleanup(run))
-      this._positionAnchor = null
       this._isDestroyed = true
       if (hasHandle) run(() => scene.destroyNode(this))
       this._cleanupInProgress = false

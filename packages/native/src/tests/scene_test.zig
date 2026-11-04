@@ -35,6 +35,60 @@ fn dimensions(owner: *context.Context, node: context.Handle, width: f32, height:
     try owner.sceneSetStyle(node, 4, 1, 0, 1, height, 1);
 }
 
+test "Scene position anchor rejects cycles without changing accepted state" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const first = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const second = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    const child = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4);
+    try f.owner.sceneMoveNode(first, f.root, 0);
+    try f.owner.sceneMoveNode(second, f.root, 1);
+    try f.owner.sceneMoveNode(child, first, 0);
+    const second_node = try f.owner.raw().getRenderable(second);
+    const parent = second_node.scene_node.?.parent;
+    try f.owner.sceneSetPositionAnchor(first, second);
+    try f.owner.sceneSetPositionAnchor(first, second);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, first));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, child));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(second, first));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneMoveNode(second, child, 0));
+    {
+        var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+        const allocator = f.state.allocator;
+        f.state.allocator = failing.allocator();
+        defer f.state.allocator = allocator;
+        try testing.expectError(error.OutOfMemory, f.owner.sceneSetPositionAnchor(first, f.root));
+        try testing.expectError(error.OutOfMemory, f.owner.sceneMoveNode(second, first, 0));
+    }
+    try testing.expectEqual(@as(u32, 3), try f.owner.sceneGetPositionAnchor(first));
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(second));
+    try testing.expectEqual(parent, second_node.scene_node.?.parent);
+    try f.owner.sceneSetPositionAnchor(first, null);
+    try f.owner.sceneMoveNode(second, child, 0);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(first));
+}
+
+test "Scene position anchor validates scene ownership and clears destroyed targets" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const first = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const second = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    const target = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4);
+    try f.owner.sceneSetPositionAnchor(first, target);
+    try f.owner.sceneSetPositionAnchor(second, target);
+    const other_id = try session(f.owner, 4, 2);
+    const foreign_scene = try f.owner.sceneCreateNode(other_id, c.OT_SCENE_ROOT, 5);
+    try testing.expectError(error.WrongSession, f.owner.sceneSetPositionAnchor(first, foreign_scene));
+    try testing.expectEqual(@as(u32, 4), try f.owner.sceneGetPositionAnchor(first));
+    try f.owner.sceneDestroyNode(first);
+    try testing.expectEqual(@as(u32, 4), try f.owner.sceneGetPositionAnchor(second));
+    try f.owner.sceneDestroyNode(target);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(second));
+    try testing.expectError(error.StaleHandle, f.owner.sceneSetPositionAnchor(second, target));
+    try f.owner.sceneSetPositionAnchor(second, f.root);
+    try testing.expectEqual(@as(u32, 1), try f.owner.sceneGetPositionAnchor(second));
+}
+
 test "Scene checked measurement rejects busy frames and preserves layout on wrong roots" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

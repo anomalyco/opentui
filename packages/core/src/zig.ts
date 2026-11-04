@@ -7380,6 +7380,32 @@ export class FFIRenderLib {
     }
   }
 
+  public sceneSetPositionAnchor(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    anchor: SceneNodeHandle | null,
+  ): void {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, node)
+    const target = anchor === null ? null : encodeContextHandle(context, anchor)
+    const pointer = this.nativeContextPointer(context, "ot_scene_set_position_anchor")
+    nativeResult(
+      "ot_scene_set_position_anchor",
+      this.opentui.symbols.ot_scene_set_position_anchor(pointer, handle, target),
+    )
+  }
+
+  public sceneGetPositionAnchor(context: NativeContextHandle, node: SceneNodeHandle): number {
+    const handle = encodeContextHandle(context, node)
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_scene_get_position_anchor")
+    nativeResult(
+      "ot_scene_get_position_anchor",
+      this.opentui.symbols.ot_scene_get_position_anchor(pointer, handle, output),
+    )
+    return output[0]
+  }
+
   public sceneSetViewport(context: NativeContextHandle, node: SceneNodeHandle, viewport: SceneNodeHandle | null): void {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, node)

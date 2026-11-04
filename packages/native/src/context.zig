@@ -2441,6 +2441,21 @@ pub const Context = struct {
         }
     }
 
+    pub fn sceneSetPositionAnchor(self: *Context, handle: Handle, anchor_handle: ?Handle) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const value = if (anchor_handle == null) try self.sceneNode(handle) else try self.sceneMutableNode(handle);
+        const anchor = if (anchor_handle) |id| try self.sceneNode(id) else null;
+        if (anchor != null) try scene.Scene.checkWritable(value);
+        try value.scene_node.?.owner.setPositionAnchor(value, anchor);
+    }
+
+    pub fn sceneGetPositionAnchor(self: *Context, handle: Handle) !u32 {
+        try self.checkSceneRead();
+        const node = (try self.sceneNode(handle)).scene_node.?;
+        return if (node.position_anchor) |anchor| anchor.scene_node.?.num else 0;
+    }
+
     pub fn sceneSetViewport(self: *Context, handle: Handle, viewport_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;

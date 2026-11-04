@@ -192,6 +192,42 @@ describe("Renderable", () => {
 })
 
 describe("Renderable - positionAnchor", () => {
+  test("rejects anchor and reparenting cycles without changing relationships", () => {
+    const first = new TestRenderable(testRenderer, {})
+    const second = new TestRenderable(testRenderer, {})
+    const child = new TestRenderable(testRenderer, {})
+    testRenderer.root.add(first)
+    testRenderer.root.add(second)
+    first.add(child)
+    first.positionAnchor = second
+    expect(() => (second.positionAnchor = first)).toThrow()
+    expect(() => (first.positionAnchor = child)).toThrow()
+    expect(() => child.add(second)).toThrow()
+    expect(first.positionAnchor).toBe(second)
+    expect(second.positionAnchor).toBeNull()
+    expect(second.parent).toBe(testRenderer.root)
+    expect(child.getChildrenCount()).toBe(0)
+    first.positionAnchor = null
+    child.add(second)
+    expect(second.parent).toBe(child)
+  })
+
+  test("clears surviving dependents when an anchor is destroyed", () => {
+    const anchor = new TestRenderable(testRenderer, {})
+    const first = new TestRenderable(testRenderer, { positionAnchor: anchor })
+    const second = new TestRenderable(testRenderer, { positionAnchor: anchor })
+    first.destroy()
+    anchor.destroy()
+    expect(first.positionAnchor).toBeNull()
+    expect(second.positionAnchor).toBeNull()
+    const next = new TestRenderable(testRenderer, {})
+    second.positionAnchor = next
+    expect(second.positionAnchor).toBe(next)
+    next.destroy()
+    expect(second.positionAnchor).toBeNull()
+    second.destroy()
+  })
+
   test("handles constructor, updates, clearing, and destruction without changing insets", () => {
     const first = new TestRenderable(testRenderer, {})
     const second = new TestRenderable(testRenderer, {})

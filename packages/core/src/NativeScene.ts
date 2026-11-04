@@ -232,6 +232,20 @@ export class NativeScene {
     this.changeLayout()
   }
 
+  getPositionAnchor(renderable: Renderable): Renderable | null {
+    const num = this.driver.renderLib.sceneGetPositionAnchor(this.driver.context, renderable._getSceneHandle(this))
+    return this.nodes.get(num) ?? null
+  }
+
+  setPositionAnchor(renderable: Renderable, anchor: Renderable | null): void {
+    this.driver.renderLib.sceneSetPositionAnchor(
+      this.driver.context,
+      renderable._getSceneHandle(this),
+      anchor?._getSceneHandle(this) ?? null,
+    )
+    this.changeLayout()
+  }
+
   setViewport(content: Renderable, viewport: Renderable | null): void {
     this.flushStaged()
     this.driver.renderLib.sceneSetViewport(

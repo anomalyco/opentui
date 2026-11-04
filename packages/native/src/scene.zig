@@ -506,6 +506,11 @@ pub const Node = struct {
     previous: ?*native.NativeRenderable = null,
     next: ?*native.NativeRenderable = null,
     parent: ?*native.NativeRenderable = null,
+    // Doubly linked list of siblings under the same parent.
+    position_anchor: ?*native.NativeRenderable = null,
+    anchor_dependents: ?*native.NativeRenderable = null,
+    anchor_previous: ?*native.NativeRenderable = null,
+    anchor_next: ?*native.NativeRenderable = null,
     children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     paint_children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     // Strictly increasing along paint_children, so a sorted batch of children is in paint order.
@@ -760,6 +765,7 @@ pub const Scene = struct {
     root: ?*native.NativeRenderable = null,
     head: ?*native.NativeRenderable = null,
     count: u32 = 0,
+    anchor_count: u32 = 0,
     hook_count: u32 = 0,
     layout_hook_count: u32 = 0,
     filter_count: u32 = 0,
@@ -867,7 +873,7 @@ pub const Scene = struct {
     }
 
     pub fn deinit(self: *Scene) void {
-        std.debug.assert(self.head == null and self.count == 0 and self.tokens.count() == 0);
+        std.debug.assert(self.head == null and self.count == 0 and self.tokens.count() == 0 and self.anchor_count == 0);
         std.debug.assert(self.hook_count == 0 and self.filter_count == 0 and self.attempt == null);
         std.debug.assert(self.layout_hook_count == 0 and self.scroll_count == 0 and self.layout_callbacks == 0);
         std.debug.assert(self.painted == null);
@@ -955,6 +961,9 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         if (node.kind == api.OT_SCENE_ROOT) return error.YogaInvalidArgument;
         const reparented = node.parent != destination;
+        if (reparented and self.anchor_count != 0) {
+            if (destination) |parent| try self.checkPositionDependency(value, parent);
+        }
         const new_placement = destination != null and (reparented or node.placement == 0);
         if (new_placement and self.last_placement == std.math.maxInt(u64)) return error.ObjectLimit;
         if (destination) |parent| {
@@ -1012,6 +1021,58 @@ pub const Scene = struct {
         self.preparation_dirty = true;
         self.clearPreparation();
         markObservationStale(value);
+    }
+
+    /// Rejects `target` when it already depends on `value` through parent or anchor edges.
+    fn checkPositionDependency(self: *Scene, value: *native.NativeRenderable, target: *native.NativeRenderable) !void {
+        var pending: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty;
+        defer pending.deinit(self.allocator);
+        var visited: std.AutoHashMapUnmanaged(*native.NativeRenderable, void) = .empty;
+        defer visited.deinit(self.allocator);
+        try pending.append(self.allocator, target);
+        while (pending.pop()) |dependency| {
+            if (dependency == value) return error.InvalidOptions;
+            const entry = try visited.getOrPut(self.allocator, dependency);
+            if (entry.found_existing) continue;
+            const node = dependency.scene_node.?;
+            if (node.parent) |parent| try pending.append(self.allocator, parent);
+            if (node.position_anchor) |anchor| try pending.append(self.allocator, anchor);
+        }
+    }
+
+    /// Unlinks the position anchor of a node, updating the anchor's dependent list and counts.
+    fn unlinkPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        const anchor = node.position_anchor orelse return;
+        if (node.anchor_previous) |previous| {
+            previous.scene_node.?.anchor_next = node.anchor_next;
+        } else anchor.scene_node.?.anchor_dependents = node.anchor_next;
+        if (node.anchor_next) |next| next.scene_node.?.anchor_previous = node.anchor_previous;
+        node.position_anchor = null;
+        node.anchor_previous = null;
+        node.anchor_next = null;
+        self.anchor_count -= 1;
+    }
+
+    /// Sets the position anchor of a node, updating the anchor's dependent list and counts.
+    pub fn setPositionAnchor(self: *Scene, value: *native.NativeRenderable, target: ?*native.NativeRenderable) !void {
+        const node = value.scene_node.?;
+        if (target) |anchor| {
+            if (anchor.scene_node.?.owner != self) return error.WrongSession;
+        }
+        if (node.position_anchor == target) return;
+        if (target) |anchor| try self.checkPositionDependency(value, anchor);
+        self.unlinkPositionAnchor(value);
+        if (target) |anchor| {
+            node.position_anchor = anchor;
+            node.anchor_next = anchor.scene_node.?.anchor_dependents;
+            if (node.anchor_next) |next| next.scene_node.?.anchor_previous = value;
+            anchor.scene_node.?.anchor_dependents = value;
+            self.anchor_count += 1;
+        }
+        node.layout_flags.needs_layout = true;
+        self.preparation_dirty = true;
+        self.clearPreparation();
     }
 
     /// Takes a node out of its parent's paint children, attention, and counts.
@@ -1135,6 +1196,11 @@ pub const Scene = struct {
 
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
         const node = value.scene_node.?;
+        self.unlinkPositionAnchor(value);
+        while (node.anchor_dependents) |dependent| {
+            self.unlinkPositionAnchor(dependent);
+            dependent.scene_node.?.layout_flags.needs_layout = true;
+        }
         node.control.deinit(node.kind, self.allocator);
         if (node.culling.index) |index| {
             index.entries.deinit(self.allocator);
@@ -1204,6 +1270,10 @@ pub const Scene = struct {
         var cursor = self.head;
         while (cursor) |value| : (cursor = value.scene_node.?.next) {
             yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.scene_node.?.childYoga(value))) catch unreachable;
+            value.scene_node.?.position_anchor = null;
+            value.scene_node.?.anchor_dependents = null;
+            value.scene_node.?.anchor_previous = null;
+            value.scene_node.?.anchor_next = null;
             value.scene_node.?.parent = null;
             value.scene_node.?.placement = 0;
             value.scene_node.?.children.clearRetainingCapacity();
@@ -1212,6 +1282,7 @@ pub const Scene = struct {
             value.scene_node.?.skip.attention_index = no_slot;
             value.scene_node.?.skip.view_queued = false;
         }
+        self.anchor_count = 0;
         self.view_dirty.clearRetainingCapacity();
     }
 

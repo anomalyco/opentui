@@ -1859,6 +1859,26 @@ test "Context Box details ABI validates records before publishing titles and sty
     try std.testing.expectEqualStrings("owned", node.control.box.?.title);
 }
 
+pub fn ot_scene_set_position_anchor(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, anchor_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const anchor = if (anchor_ptr) |ptr| handleFromC(ptr.*) else null;
+    owner.core.sceneSetPositionAnchor(handleFromC(node.*), anchor) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_scene_get_position_anchor(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, out_ptr: ?*u32) callconv(.c) c.ot_status {
+    const status = sceneReadStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const node = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
+    out.* = owner.core.sceneGetPositionAnchor(handleFromC(node.*)) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_scene_set_viewport(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, viewport_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -3703,18 +3723,20 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     nodes[3].context_id += 1;
     sessions[3].context_id += 1;
     inline for (.{
-        ot_scene_destroy_node,       ot_scene_move_node,  ot_scene_set_measure,      ot_scene_mark_dirty,
-        ot_scene_set_style,          ot_scene_set_paint,  ot_scene_set_surface,      ot_scene_set_box_details,
-        ot_scene_set_viewport,       ot_scene_set_focus,  ot_scene_set_slider,       ot_scene_get_slider_thumb,
-        ot_scene_set_arrow,          ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
-        ot_scene_set_text_selection, ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
-        ot_scene_set_image,          ot_scene_set_scroll, ot_scene_set_scroll_arrow, ot_scene_set_crop,
+        ot_scene_destroy_node,        ot_scene_move_node,  ot_scene_set_measure,      ot_scene_mark_dirty,
+        ot_scene_set_style,           ot_scene_set_paint,  ot_scene_set_surface,      ot_scene_set_box_details,
+        ot_scene_set_viewport,        ot_scene_set_focus,  ot_scene_set_slider,       ot_scene_get_slider_thumb,
+        ot_scene_set_arrow,           ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
+        ot_scene_set_text_selection,  ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
+        ot_scene_set_image,           ot_scene_set_scroll, ot_scene_set_scroll_arrow, ot_scene_set_crop,
+        ot_scene_set_position_anchor,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }
     inline for (.{
-        ot_scene_has_measure,       ot_scene_get_style, ot_scene_get_layout,    ot_scene_get_text_selection,
-        ot_scene_get_selected_text, ot_scene_get_text,  ot_scene_get_text_info, ot_scene_get_text_lines,
+        ot_scene_has_measure,         ot_scene_get_style, ot_scene_get_layout,    ot_scene_get_text_selection,
+        ot_scene_get_selected_text,   ot_scene_get_text,  ot_scene_get_text_info, ot_scene_get_text_lines,
+        ot_scene_get_position_anchor,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, true, handle, &nodes, 0);
     }

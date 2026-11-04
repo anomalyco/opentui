@@ -680,6 +680,12 @@ ot_status ot_scene_create_node(ot_context *, const ot_handle *session, uint32_t 
  * RESET still succeed. */
 ot_status ot_scene_destroy_node(ot_context *, const ot_handle *node);
 ot_status ot_scene_move_node(ot_context *, const ot_handle *node, const ot_handle *parent, uint32_t index);
+/* Same-scene positioning dependency, independent of parentage and Yoga style.
+ * NULL clears. Cycles through parent or anchor edges reject without changing any of them.
+ * Handle buffers are borrowed only for this call. Destroying a target clears its dependents. */
+ot_status ot_scene_set_position_anchor(ot_context *, const ot_handle *node, const ot_handle *anchor);
+/* Returns the target's public number, or zero when unanchored. Output is unchanged on rejection. */
+ot_status ot_scene_get_position_anchor(ot_context *, const ot_handle *node, uint32_t *out_num);
 /* Synchronous owner-thread measurement on leaves. The callback is borrowed until
  * replacement, unset, node destruction, or Context destruction. NULL clears the
  * single provider slot; it does not restore built-in measurement. Each set or clear
