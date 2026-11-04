@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { basename, dirname, extname, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { resolveNativeLibraryPath } from "#opentui/runtime-assets"
 import { resolveAssetPath } from "./assets.js"
 import { resolveBundledFilePath } from "./runtime.js"
 
@@ -135,5 +137,53 @@ describe("platform/runtime", () => {
     )
 
     expect(resolved).toBe(fileURLToPath(bundledUrl))
+  })
+
+  test("loads the native library from setRenderLibPath, then OPENTUI_LIB_PATH, then the package", async () => {
+    const testFile = fileURLToPath(import.meta.url)
+    const workspaceRoot = resolve(
+      testFile,
+      testFile.includes(`${sep}.node-test${sep}`) ? "../../../../../.." : "../../../../..",
+    )
+    const runtimeArgs = process.versions.bun
+      ? []
+      : ["--permission", `--allow-fs-read=${workspaceRoot}`, "--allow-ffi", "--experimental-ffi", "--input-type=module"]
+    // The child clears the variable after import: the error label must come from the import-time read.
+    const child = `const zig = await import(${JSON.stringify(new URL(`../zig${extname(testFile)}`, import.meta.url).href)})
+      delete process.env.OPENTUI_LIB_PATH
+      if (process.env.EXPLICIT_LIB) zig.setRenderLibPath(process.env.EXPLICIT_LIB)
+      try { zig.resolveRenderLib(); console.log("loaded") } catch (error) { console.log(error.message) }
+      process.exit(0)`
+    const packaged = await resolveNativeLibraryPath()
+    const missing = resolve(testFile, "../missing-libopentui.so")
+    // OTUI_ASSET_ROOT names a directory without the library, so only OPENTUI_LIB_PATH can make these rows load.
+    const assetRoot = dirname(testFile)
+    const rows: Array<[env: Record<string, string>, cwd: string | undefined, output: string[]]> = [
+      [{}, undefined, ["loaded"]],
+      [{ OPENTUI_LIB_PATH: packaged, OTUI_ASSET_ROOT: assetRoot }, undefined, ["loaded"]],
+      [{ OPENTUI_LIB_PATH: basename(packaged), OTUI_ASSET_ROOT: assetRoot }, dirname(packaged), ["loaded"]],
+      [{ OPENTUI_LIB_PATH: missing }, undefined, ["does not exist", JSON.stringify(missing), "OPENTUI_LIB_PATH"]],
+      [{ OPENTUI_LIB_PATH: testFile }, undefined, ["Failed to initialize", "OPENTUI_LIB_PATH"]],
+      [{ OPENTUI_LIB_PATH: missing, EXPLICIT_LIB: packaged }, undefined, ["loaded"]],
+      [{ OPENTUI_LIB_PATH: packaged, EXPLICIT_LIB: testFile }, undefined, ["render library: ", testFile]],
+      [
+        { OPENTUI_LIB_PATH: packaged, OPENTUI_LIBC: "foo" },
+        undefined,
+        [process.platform === "linux" ? "OPENTUI_LIBC must be" : "loaded"],
+      ],
+    ]
+    for (const [rowEnv, cwd, output] of rows) {
+      const env = {
+        ...process.env,
+        OPENTUI_LIB_PATH: "",
+        OTUI_ASSET_ROOT: "",
+        OPENTUI_LIBC: "",
+        EXPLICIT_LIB: "",
+        ...rowEnv,
+      }
+      const result = spawnSync(process.execPath, [...runtimeArgs, "-e", child], { cwd, env, timeout: 10_000 })
+      const stdout = result.stdout.toString().trim()
+      for (const part of output) expect(stdout).toContain(part)
+    }
   })
 })
