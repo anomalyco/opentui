@@ -63,6 +63,7 @@ export const nativePointerPolicies = {
   ot_embedded_terminal_get_selected_text: { 0: context, 1: buffer, 2: empty, 4: buffer },
   ot_embedded_terminal_compose: { 0: context, 1: buffer, 2: buffer, 3: optional },
   ot_embedded_terminal_cursor_get: { 0: context, 1: buffer, 2: buffer },
+  ot_embedded_terminal_scrollbar_get: { 0: context, 1: buffer, 2: buffer },
   ot_embedded_terminal_encode_key: { 0: context, 1: buffer, 2: buffer, 3: empty, 5: empty, 7: empty, 9: buffer },
   ot_embedded_terminal_encode_mouse: { 0: context, 1: buffer, 2: buffer, 3: buffer, 5: buffer },
   ot_embedded_terminal_encode_paste: { 0: context, 1: buffer, 2: empty, 4: empty, 6: buffer },

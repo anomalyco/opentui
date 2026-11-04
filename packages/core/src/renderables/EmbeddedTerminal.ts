@@ -150,6 +150,12 @@ export class EmbeddedTerminalRenderable extends Renderable {
     }
   }
 
+  /** Rows from the live screen (0 there), total rows including the visible ones, and visible rows. */
+  public getScroll(): { offset: number; total: number; visible: number } {
+    if (!this.handle) return { offset: 0, total: 0, visible: 0 }
+    return this.lib.contextEmbeddedTerminalScrollbar(this.handle.context, this.handle)
+  }
+
   public write(data: string | Uint8Array): void {
     if (!this.handle) return
     this.lib.contextEmbeddedTerminalWrite(this.handle.context, this.handle, data)

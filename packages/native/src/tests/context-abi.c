@@ -207,6 +207,26 @@ static void input_events(ot_context *context) {
     assert(ot_session_destroy(context, &session) == OT_OK);
 }
 
+static void terminal_scrollbar(ot_context *context) {
+    const ot_embedded_terminal_options options = {
+        .struct_size = sizeof(options), .abi_version = OT_CONTEXT_ABI_VERSION,
+        .cols = 4, .rows = 2, .max_scrollback = 4096,
+    };
+    ot_handle terminal;
+    const ot_status status = ot_embedded_terminal_create(context, &options, &terminal);
+    if (status == OT_UNSUPPORTED_RESOURCE) return;
+    assert(status == OT_OK);
+    const uint8_t lines[] = "1\r\n2\r\n3\r\n4\r\n5";
+    assert(ot_embedded_terminal_write(context, &terminal, lines, sizeof(lines) - 1) == OT_OK);
+    assert(ot_embedded_terminal_command(context, &terminal, OT_EMBEDDED_TERMINAL_SCROLL, -1) == OT_OK);
+    ot_embedded_terminal_scrollbar bar = {sizeof(bar), OT_CONTEXT_ABI_VERSION, 9, 9, 9, 0};
+    assert(ot_embedded_terminal_scrollbar_get(context, &terminal, &bar) == OT_OK);
+    assert(bar.struct_size == sizeof(bar) && bar.offset == 1 && bar.total == 5 && bar.visible == 2);
+    bar.struct_size--;
+    assert(ot_embedded_terminal_scrollbar_get(context, &terminal, &bar) == OT_INVALID_ARGUMENT);
+    assert(ot_embedded_terminal_destroy(context, &terminal) == OT_OK);
+}
+
 int main(void) {
     const ot_context_options valid = {
         .struct_size = sizeof(valid), .abi_version = OT_CONTEXT_ABI_VERSION,
@@ -248,6 +268,7 @@ int main(void) {
     editor(first);
     rendered_output(first);
     input_events(first);
+    terminal_scrollbar(first);
     assert(ot_context_destroy(first) == OT_OK);
     assert(ot_context_destroy(second) == OT_OK);
     return 0;
