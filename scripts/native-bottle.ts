@@ -25,16 +25,23 @@ import { fileURLToPath } from "node:url"
 // the cross-compiled packages saves it. A host build must not, because its library is not the
 // stripped release build that the packaged-distribution tests check.
 
-const BOTTLE_VERSION = 2
-const KEY_PREFIX = "native-bottle-v2"
+const BOTTLE_VERSION = 3
+const KEY_PREFIX = "native-bottle-v3"
 const OPTIMIZE = "ReleaseFast"
 const MANIFEST_NAME = "bottle-manifest.json"
-const HOST_BOTTLE_VERSION = 1
-const HOST_KEY_PREFIX = "native-host-bottle-v1"
+const HOST_BOTTLE_VERSION = 2
+const HOST_KEY_PREFIX = "native-host-bottle-v2"
 const HOST_MANIFEST_NAME = "host-bottle-manifest.json"
 
 // These paths are the inputs of `zig build -Doptimize=ReleaseFast`. Generated output is not an input.
-const INPUTS = ["build.zig", "build.zig.zon", "scripts/prepare-zig-deps.sh", "src"] as const
+const INPUTS = [
+  "build.zig",
+  "build.zig.zon",
+  "include",
+  "scripts/build-ffmpeg.ts",
+  "scripts/prepare-zig-deps.sh",
+  "src",
+] as const
 
 // Output names match packages/native/build.zig. Package and symbol directories match build.ts.
 const BOTTLE_LIBRARIES: ReadonlyArray<{
@@ -43,21 +50,36 @@ const BOTTLE_LIBRARIES: ReadonlyArray<{
   package: string
   symbols: string
 }> = [
-  { dir: "x86_64-linux", files: ["libopentui.so"], package: "core-linux-x64", symbols: "linux-x64" },
-  { dir: "aarch64-linux", files: ["libopentui.so"], package: "core-linux-arm64", symbols: "linux-arm64" },
-  { dir: "x86_64-linux-musl", files: ["libopentui.so"], package: "core-linux-x64-musl", symbols: "linux-x64-musl" },
+  { dir: "x86_64-linux", files: ["libopentui.so", "opentui.h"], package: "core-linux-x64", symbols: "linux-x64" },
+  { dir: "aarch64-linux", files: ["libopentui.so", "opentui.h"], package: "core-linux-arm64", symbols: "linux-arm64" },
+  {
+    dir: "x86_64-linux-musl",
+    files: ["libopentui.so", "opentui.h"],
+    package: "core-linux-x64-musl",
+    symbols: "linux-x64-musl",
+  },
   {
     dir: "aarch64-linux-musl",
-    files: ["libopentui.so"],
+    files: ["libopentui.so", "opentui.h"],
     package: "core-linux-arm64-musl",
     symbols: "linux-arm64-musl",
   },
-  { dir: "x86_64-macos", files: ["libopentui.dylib"], package: "core-darwin-x64", symbols: "darwin-x64" },
-  { dir: "aarch64-macos", files: ["libopentui.dylib"], package: "core-darwin-arm64", symbols: "darwin-arm64" },
-  { dir: "x86_64-windows", files: ["opentui.dll", "opentui.pdb"], package: "core-win32-x64", symbols: "win32-x64" },
+  { dir: "x86_64-macos", files: ["libopentui.dylib", "opentui.h"], package: "core-darwin-x64", symbols: "darwin-x64" },
+  {
+    dir: "aarch64-macos",
+    files: ["libopentui.dylib", "opentui.h"],
+    package: "core-darwin-arm64",
+    symbols: "darwin-arm64",
+  },
+  {
+    dir: "x86_64-windows",
+    files: ["opentui.dll", "opentui.pdb", "opentui.h", "opentui.lib"],
+    package: "core-win32-x64",
+    symbols: "win32-x64",
+  },
   {
     dir: "aarch64-windows",
-    files: ["opentui.dll", "opentui.pdb"],
+    files: ["opentui.dll", "opentui.pdb", "opentui.h", "opentui.lib"],
     package: "core-win32-arm64",
     symbols: "win32-arm64",
   },

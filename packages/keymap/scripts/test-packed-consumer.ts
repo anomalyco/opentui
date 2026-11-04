@@ -16,6 +16,7 @@ import { requireNode26 } from "../../../scripts/node26.mjs"
 
 interface PackageJson {
   name: string
+  peerDependencies?: Record<string, string>
   version: string
 }
 
@@ -23,8 +24,11 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const rootDir = resolve(__dirname, "..")
 const coreRootDir = resolve(rootDir, "..", "core")
+const solidRootDir = resolve(rootDir, "..", "solid")
 const distDir = join(rootDir, "dist")
 const coreDistDir = join(coreRootDir, "dist")
+const solidDistDir = join(solidRootDir, "dist")
+const solidDistPackageJsonPath = join(solidDistDir, "package.json")
 const args = new Set(process.argv.slice(2))
 const keepTemp = args.has("--keep-temp")
 const skipBuild = args.has("--skip-build")
@@ -61,11 +65,18 @@ function runCommand(
 function ensureBuildArtifacts(): void {
   if (!skipBuild) {
     runCommand("bun", ["run", "build"], coreRootDir, "Core build failed")
+    runCommand("bun", ["run", "build"], solidRootDir, "Solid build failed")
     runCommand("bun", ["run", "build"], rootDir, "Keymap build failed")
   }
 
   if (!existsSync(coreDistDir)) {
     throw new Error(`Missing core dist directory at ${coreDistDir}. Run bun run build in packages/core first.`)
+  }
+
+  if (!existsSync(solidDistPackageJsonPath)) {
+    throw new Error(
+      `Missing solid dist package.json at ${solidDistPackageJsonPath}. Run bun run build in packages/solid first.`,
+    )
   }
 
   if (!existsSync(distDir)) {
@@ -103,10 +114,14 @@ function writeConsumerPackage(
   keymapTarball: string,
   coreTarball: string,
   nativeTarball: string,
+  solidTarball: string,
+  solidPackageName: string,
+  solidJsRange: string,
 ): void {
   const keymapDependency = `file:${relative(consumerDir, keymapTarball).replaceAll("\\", "/")}`
   const coreDependency = `file:${relative(consumerDir, coreTarball).replaceAll("\\", "/")}`
   const nativeDependency = `file:${relative(consumerDir, nativeTarball).replaceAll("\\", "/")}`
+  const solidDependency = `file:${relative(consumerDir, solidTarball).replaceAll("\\", "/")}`
 
   writeFileSync(
     join(consumerDir, "package.json"),
@@ -115,10 +130,13 @@ function writeConsumerPackage(
         name: "opentui-keymap-dist-test-node",
         private: true,
         type: "module",
+        // Install local Solid so npm checks the keymap's optional peers against matching workspace metadata.
         dependencies: {
           [packageJson.name]: keymapDependency,
           [corePackageJson.name]: coreDependency,
           [nativePackageName]: nativeDependency,
+          [solidPackageName]: solidDependency,
+          "solid-js": solidJsRange,
         },
       },
       null,
@@ -205,6 +223,14 @@ let tempRoot: string | undefined
 try {
   ensureBuildArtifacts()
 
+  const solidPackageJson = JSON.parse(readFileSync(solidDistPackageJsonPath, "utf8")) as PackageJson
+  const solidJsRange = solidPackageJson.peerDependencies?.["solid-js"]
+  if (!solidJsRange) {
+    throw new Error(
+      `Missing solid-js peer dependency in ${solidDistPackageJsonPath}. Run bun run build in packages/solid first.`,
+    )
+  }
+
   tempRoot = mkdtempSync(join(tmpdir(), "opentui-keymap-dist-test-"))
   const packDir = join(tempRoot, "packs")
   const nodeDir = join(tempRoot, "node")
@@ -214,9 +240,18 @@ try {
 
   const coreTarball = packArtifact(coreDistDir, packDir)
   const nativeTarball = packArtifact(nativePackageDir, packDir)
+  const solidTarball = packArtifact(solidDistDir, packDir)
   const keymapTarball = packArtifact(distDir, packDir)
 
-  writeConsumerPackage(nodeDir, keymapTarball, coreTarball, nativeTarball)
+  writeConsumerPackage(
+    nodeDir,
+    keymapTarball,
+    coreTarball,
+    nativeTarball,
+    solidTarball,
+    solidPackageJson.name,
+    solidJsRange,
+  )
   writeNodeTest(nodeDir)
 
   installAndTest(nodeDir)

@@ -400,7 +400,7 @@ fn benchAccessPatterns(
                 const rope = try RopeType.from_slice(arena.allocator(), &items);
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..10000) |i| {
-                    _ = rope.get(@intCast(i));
+                    std.mem.doNotOptimizeAway(rope.get(@intCast(i)));
                 }
                 stats.record(timer.read());
             }
@@ -432,7 +432,7 @@ fn benchAccessPatterns(
                 const timer = bench_utils.BenchTimer.start(io);
                 for (0..10000) |_| {
                     const pos = random.intRangeAtMost(u32, 0, 9999);
-                    _ = rope.get(pos);
+                    std.mem.doNotOptimizeAway(rope.get(pos));
                 }
                 stats.record(timer.read());
             }

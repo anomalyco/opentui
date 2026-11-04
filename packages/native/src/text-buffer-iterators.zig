@@ -22,30 +22,44 @@ pub const Coords = struct {
     col: u32,
 };
 
+pub const SegmentCallback = *const fn (ctx: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void;
+pub const LineEndCallback = *const fn (ctx: *anyopaque, line_info: LineInfo) void;
+
 /// This is the most efficient way to iterate lines and their content
-pub fn walkLinesAndSegments(
+pub fn walkLinesAndSegments(rope: *const UnifiedRope, ctx: *anyopaque, segment_callback: SegmentCallback, line_end_callback: LineEndCallback) void {
+    walkLineRange(rope, 0, .{ .leaf_index = 0, .weight = 0 }, std.math.maxInt(u32), ctx, segment_callback, line_end_callback);
+}
+
+/// Walks `count` lines from line `first`, whose linestart leaf and weight are `start`.
+pub fn walkLineRange(
     rope: *const UnifiedRope,
+    first: u32,
+    start: UnifiedRope.Position,
+    count: u32,
     ctx: *anyopaque,
-    segment_callback: *const fn (ctx: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void,
-    line_end_callback: *const fn (ctx: *anyopaque, line_info: LineInfo) void,
+    segment_callback: SegmentCallback,
+    line_end_callback: LineEndCallback,
 ) void {
-    if (rope.count() == 0) {
+    if (rope.count() == 0 or count == 0) {
         return;
     }
 
     const WalkContext = struct {
         user_ctx: *anyopaque,
-        seg_callback: *const fn (ctx: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void,
-        line_callback: *const fn (ctx: *anyopaque, line_info: LineInfo) void,
-        current_line_idx: u32 = 0,
-        current_col_offset: u32 = 0,
-        line_start_seg: u32 = 0,
-        current_seg_idx: u32 = 0,
+        seg_callback: SegmentCallback,
+        line_callback: LineEndCallback,
+        first_seg: u32,
+        lines_left: u32,
+        current_line_idx: u32,
+        current_col_offset: u32,
+        line_start_seg: u32,
+        current_seg_idx: u32,
         line_width_cols: u32 = 0,
         chunk_idx_in_line: u32 = 0,
 
-        fn walker(walk_ctx_ptr: *anyopaque, seg: *const Segment, idx: u32) UnifiedRope.Node.WalkerResult {
+        fn walker(walk_ctx_ptr: *anyopaque, seg: *const Segment, relative_idx: u32) UnifiedRope.Node.WalkerResult {
             const walk_ctx = @as(*@This(), @ptrCast(@alignCast(walk_ctx_ptr)));
+            const idx = walk_ctx.first_seg + relative_idx;
 
             if (seg.asText()) |chunk| {
                 walk_ctx.seg_callback(walk_ctx.user_ctx, walk_ctx.current_line_idx, chunk, walk_ctx.chunk_idx_in_line);
@@ -65,10 +79,11 @@ pub fn walkLinesAndSegments(
                 walk_ctx.line_start_seg = idx + 1;
                 walk_ctx.line_width_cols = 0;
                 walk_ctx.chunk_idx_in_line = 0;
+                walk_ctx.lines_left -= 1;
             }
 
             walk_ctx.current_seg_idx = idx + 1;
-            return .{};
+            return .{ .keep_walking = walk_ctx.lines_left > 0 };
         }
     };
 
@@ -76,8 +91,15 @@ pub fn walkLinesAndSegments(
         .user_ctx = ctx,
         .seg_callback = segment_callback,
         .line_callback = line_end_callback,
+        .first_seg = start.leaf_index,
+        .lines_left = count,
+        .current_line_idx = first,
+        .current_col_offset = start.weight,
+        .line_start_seg = start.leaf_index,
+        .current_seg_idx = start.leaf_index,
     };
-    rope.walk(&walk_ctx, WalkContext.walker) catch {};
+    rope.walk_from(start.leaf_index, &walk_ctx, WalkContext.walker) catch {};
+    if (walk_ctx.lines_left == 0) return;
 
     // Emit final line if we have content after last break OR if we had at least one break
     // (A trailing break creates an empty final line)
@@ -101,8 +123,7 @@ pub fn getLineCount(rope: *const UnifiedRope) u32 {
 }
 
 pub fn getMaxLineWidth(rope: *const UnifiedRope) u32 {
-    const metrics = rope.root.metrics();
-    return metrics.custom.max_line_width_cols;
+    return rope.root.metrics().custom.lineWidthMax();
 }
 
 pub fn getTotalWidth(rope: *const UnifiedRope) u32 {
@@ -110,87 +131,70 @@ pub fn getTotalWidth(rope: *const UnifiedRope) u32 {
     return metrics.custom.total_width_cols;
 }
 
-/// Optimized O(1) implementation using linestart marker lookups
-/// Note: Rope weight includes newlines (each .brk adds +1), but col is still display width
-/// Takes mutable rope for lazy marker cache rebuilding
-pub fn coordsToOffset(rope: *UnifiedRope, row: u32, col: u32) ?u32 {
-    const linestart_count = rope.markerCount(.linestart);
-    if (row >= linestart_count) return null;
-
-    const marker = rope.getMarker(.linestart, row) orelse return null;
-    const line_start_weight = marker.global_weight;
-    const line_width = lineWidthAt(rope, row);
-
-    if (col > line_width) return null;
-
-    return line_start_weight + col;
+fn leaves(metrics: *const UnifiedRope.Metrics) u32 {
+    return metrics.count;
 }
 
-/// Optimized O(log n) implementation using binary search on linestart markers
-/// Note: Rope weight includes newlines, so valid offsets are 0..totalWeight() inclusive
-/// Takes mutable rope for lazy marker cache rebuilding
+/// Linestart leaves among the first `leaf_index + 1` leaves, by one descent.
+pub fn lineStartsThroughLeaf(rope: *const UnifiedRope, leaf_index: u32) u32 {
+    return rope.countThrough(leaves, linestarts, leaf_index);
+}
+
+fn linestarts(metrics: *const UnifiedRope.Metrics) u32 {
+    return metrics.custom.linestart_count;
+}
+
+fn newlines(metrics: *const UnifiedRope.Metrics) u32 {
+    return metrics.custom.newline_count;
+}
+
+fn weight(metrics: *const UnifiedRope.Metrics) u32 {
+    return metrics.weight();
+}
+
+fn cells(metrics: *const UnifiedRope.Metrics) u32 {
+    return metrics.custom.total_width_cols;
+}
+
+/// The linestart leaf of `row` and the rope weight before it, by one descent.
+pub fn lineStart(rope: *const UnifiedRope, row: u32) ?UnifiedRope.Position {
+    return rope.seekCount(linestarts, row);
+}
+
+/// Display width of `row`, whose line starts at weight `start`; a break weighs one.
+fn lineWidthFrom(rope: *const UnifiedRope, row: u32, start: u32) u32 {
+    const next = lineStart(rope, row + 1) orelse return rope.totalWeight() - start;
+    std.debug.assert(next.weight > start);
+    return next.weight - start - 1;
+}
+
+/// Note: Rope weight includes newlines (each .brk adds +1), but col is still display width
+pub fn coordsToOffset(rope: *const UnifiedRope, row: u32, col: u32) ?u32 {
+    const start = lineStart(rope, row) orelse return null;
+    if (col > lineWidthFrom(rope, row, start.weight)) return null;
+    return start.weight + col;
+}
+
+/// Valid offsets are 0..totalWeight() inclusive. A break's offset belongs to the line it ends.
 /// TODO: Should clamp to min/max offset and always return valid coords
-pub fn offsetToCoords(rope: *UnifiedRope, offset: u32) ?Coords {
-    const linestart_count = rope.markerCount(.linestart);
-    if (linestart_count == 0) return null;
-
-    const total_weight = rope.totalWeight();
-    if (offset > total_weight) return null;
-
-    var left: u32 = 0;
-    var right: u32 = linestart_count;
-
-    while (left < right) {
-        const mid = left + (right - left) / 2;
-        const marker = rope.getMarker(.linestart, mid) orelse return null;
-        const line_start_weight = marker.global_weight;
-
-        if (offset < line_start_weight) {
-            right = mid;
-        } else {
-            const next_line_start_weight = if (mid + 1 < linestart_count) blk: {
-                const next_marker = rope.getMarker(.linestart, mid + 1) orelse return null;
-                break :blk next_marker.global_weight;
-            } else blk: {
-                // Last line: ends at total weight
-                break :blk total_weight;
-            };
-
-            // Offset belongs to this line if it's before the next line starts
-            // (newline offset at end of non-final line maps to col==line_width)
-            if (offset < next_line_start_weight or (offset == total_weight and mid + 1 == linestart_count)) {
-                return .{
-                    .row = mid,
-                    .col = offset - line_start_weight,
-                };
-            }
-            left = mid + 1;
-        }
-    }
-
-    return null;
+pub fn offsetToCoords(rope: *const UnifiedRope, offset: u32) ?Coords {
+    if (offset > rope.totalWeight()) return null;
+    // Every rope starts with a linestart leaf at weight 0.
+    const starts = rope.countThrough(weight, linestarts, offset);
+    std.debug.assert(starts > 0);
+    const row = starts - 1;
+    return .{ .row = row, .col = offset - lineStart(rope, row).?.weight };
 }
 
 /// Note: Returns display width only (excludes newline weight)
-/// Takes mutable rope for lazy marker cache rebuilding
-pub fn lineWidthAt(rope: *UnifiedRope, row: u32) u32 {
-    const linestart_count = rope.markerCount(.linestart);
-    if (row >= linestart_count) return 0;
+pub fn lineWidthAt(rope: *const UnifiedRope, row: u32) u32 {
+    const start = lineStart(rope, row) orelse return 0;
+    return lineWidthFrom(rope, row, start.weight);
+}
 
-    const line_marker = rope.getMarker(.linestart, row) orelse return 0;
-    const line_start_weight = line_marker.global_weight;
-    if (row + 1 < linestart_count) {
-        // Non-final line: width = (next_line_start - current_start - 1_for_newline)
-        const next_marker = rope.getMarker(.linestart, row + 1) orelse return 0;
-        const next_line_start_weight = next_marker.global_weight;
-        // Guard against underflow (adjacent linestart markers or empty line)
-        if (next_line_start_weight <= line_start_weight) return 0;
-        return next_line_start_weight - line_start_weight - 1;
-    } else {
-        // Final line: width = total_weight - line_start (total weight includes all previous newlines)
-        const total_weight = rope.totalWeight();
-        return total_weight - line_start_weight;
-    }
+/// The first line whose end, in cells that exclude breaks, is past `cell`; the last line if none.
+pub fn firstLineEndingAfter(rope: *const UnifiedRope, cell: u32) u32 {
+    return rope.countThrough(cells, newlines, cell);
 }
 
 pub const GraphemeBounds = struct {
@@ -198,13 +202,11 @@ pub const GraphemeBounds = struct {
     end: u32,
 };
 
-/// Takes mutable rope for lazy marker cache rebuilding
-fn getTextUnitBoundsAt(rope: *UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, width_method: utf8.WidthMethod, cluster_graphemes: bool) ?GraphemeBounds {
+fn getTextUnitBoundsAt(rope: *const UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, control_display: utf8.ControlDisplay, width_method: utf8.WidthMethod, cluster_graphemes: bool) ?GraphemeBounds {
     const line_width = lineWidthAt(rope, row);
     if (col >= line_width) return null;
 
-    const linestart = rope.getMarker(.linestart, row) orelse return null;
-    var seg_idx = linestart.leaf_index + 1;
+    var seg_idx = (lineStart(rope, row) orelse return null).leaf_index + 1;
     var cols_before: u32 = 0;
 
     while (seg_idx < rope.count()) : (seg_idx += 1) {
@@ -217,14 +219,14 @@ fn getTextUnitBoundsAt(rope: *UnifiedRope, mem_registry: *const MemRegistry, row
                 const bytes = chunk.getBytes(mem_registry);
                 const is_ascii = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
                 const pos = if (cluster_graphemes)
-                    utf8.findGraphemePosByWidth(bytes, local_col, tab_width, is_ascii, false, width_method)
+                    utf8.findGraphemePosByWidth(bytes, local_col, tab_width, control_display, is_ascii, false, width_method)
                 else
-                    utf8.findPosByWidth(bytes, local_col, tab_width, is_ascii, false, width_method);
+                    utf8.findPosByWidth(bytes, local_col, tab_width, control_display, is_ascii, false, width_method);
                 if (pos.byte_offset >= bytes.len) return null;
                 const width = if (cluster_graphemes)
-                    utf8.getGraphemeWidthAt(bytes, pos.byte_offset, tab_width, width_method)
+                    utf8.getGraphemeWidthAt(bytes, pos.byte_offset, tab_width, control_display, width_method)
                 else
-                    utf8.getWidthAt(bytes, pos.byte_offset, tab_width, width_method);
+                    utf8.getWidthAt(bytes, pos.byte_offset, tab_width, control_display, width_method);
                 const start = cols_before + pos.columns_used;
                 return .{ .start = start, .end = start + width };
             }
@@ -234,28 +236,26 @@ fn getTextUnitBoundsAt(rope: *UnifiedRope, mem_registry: *const MemRegistry, row
     return null;
 }
 
-pub fn getGraphemeBoundsAt(rope: *UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, width_method: utf8.WidthMethod) ?GraphemeBounds {
-    return getTextUnitBoundsAt(rope, mem_registry, row, col, tab_width, width_method, true);
+pub fn getGraphemeBoundsAt(rope: *const UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, control_display: utf8.ControlDisplay, width_method: utf8.WidthMethod) ?GraphemeBounds {
+    return getTextUnitBoundsAt(rope, mem_registry, row, col, tab_width, control_display, width_method, true);
 }
 
-pub fn getCursorUnitBoundsAt(rope: *UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, width_method: utf8.WidthMethod) ?GraphemeBounds {
-    return getTextUnitBoundsAt(rope, mem_registry, row, col, tab_width, width_method, false);
+pub fn getCursorUnitBoundsAt(rope: *const UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, control_display: utf8.ControlDisplay, width_method: utf8.WidthMethod) ?GraphemeBounds {
+    return getTextUnitBoundsAt(rope, mem_registry, row, col, tab_width, control_display, width_method, false);
 }
 
-pub fn getGraphemeWidthAt(rope: *UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, width_method: utf8.WidthMethod) u32 {
-    const bounds = getCursorUnitBoundsAt(rope, mem_registry, row, col, tab_width, width_method) orelse return 0;
+pub fn getGraphemeWidthAt(rope: *const UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, control_display: utf8.ControlDisplay, width_method: utf8.WidthMethod) u32 {
+    const bounds = getCursorUnitBoundsAt(rope, mem_registry, row, col, tab_width, control_display, width_method) orelse return 0;
     return bounds.end -| col;
 }
 
-/// Takes mutable rope for lazy marker cache rebuilding
-pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, width_method: utf8.WidthMethod) u32 {
+pub fn getPrevGraphemeWidth(rope: *const UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, control_display: utf8.ControlDisplay, width_method: utf8.WidthMethod) u32 {
     if (col == 0) return 0;
 
     const line_width = lineWidthAt(rope, row);
     const clamped_col: u32 = @min(col, line_width);
 
-    const linestart = rope.getMarker(.linestart, row) orelse return 0;
-    var seg_idx = linestart.leaf_index + 1;
+    var seg_idx = (lineStart(rope, row) orelse return 0).leaf_index + 1;
     var cols_before: u32 = 0;
     var prev_chunk: ?struct { chunk: TextChunk, cols_before: u32 } = null;
 
@@ -270,7 +270,7 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
                     // Exactly at chunk boundary - get last grapheme from previous chunk
                     const pc = prev_chunk.?;
                     const bytes = pc.chunk.getBytes(mem_registry);
-                    const prev = utf8.getPrevGraphemeStart(bytes, bytes.len, tab_width, width_method);
+                    const prev = utf8.getPrevGraphemeStart(bytes, bytes.len, tab_width, control_display, width_method);
                     if (prev) |res| {
                         return res.width;
                     }
@@ -281,7 +281,7 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
                 const is_ascii = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
                 const local_col: u32 = clamped_col - cols_before;
 
-                const here = utf8.findPosByWidth(bytes, local_col, tab_width, is_ascii, false, width_method);
+                const here = utf8.findPosByWidth(bytes, local_col, tab_width, control_display, is_ascii, false, width_method);
 
                 const grapheme_start_col = here.columns_used;
 
@@ -291,7 +291,7 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
                     // We're in the middle of a wide grapheme cluster - need to look at previous chunk or grapheme
                     if (prev_chunk) |pc| {
                         const prev_bytes = pc.chunk.getBytes(mem_registry);
-                        const prev = utf8.getPrevGraphemeStart(prev_bytes, prev_bytes.len, tab_width, width_method);
+                        const prev = utf8.getPrevGraphemeStart(prev_bytes, prev_bytes.len, tab_width, control_display, width_method);
                         if (prev) |res| return res.width;
                     }
                     return 0;
@@ -301,7 +301,7 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
 
                 if (offset_into_grapheme > 0) {
                     // We need to jump back: offset_into_grapheme + width of previous grapheme
-                    const prev = utf8.getPrevGraphemeStart(bytes, @intCast(here.byte_offset), tab_width, width_method);
+                    const prev = utf8.getPrevGraphemeStart(bytes, @intCast(here.byte_offset), tab_width, control_display, width_method);
                     if (prev) |res| {
                         const total_distance = offset_into_grapheme + res.width;
                         return total_distance;
@@ -309,7 +309,7 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
                     return offset_into_grapheme;
                 }
 
-                const prev = utf8.getPrevGraphemeStart(bytes, @intCast(here.byte_offset), tab_width, width_method);
+                const prev = utf8.getPrevGraphemeStart(bytes, @intCast(here.byte_offset), tab_width, control_display, width_method);
                 if (prev) |res| {
                     return res.width;
                 }
@@ -325,51 +325,53 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
 
 /// Extract text between display-width offsets into a buffer
 /// Automatically snaps to grapheme boundaries:
-/// - start_offset excludes graphemes that start before it
-/// - end_offset includes graphemes that start before it
-/// Returns number of bytes written to out_buffer
+/// - start_offset snaps backward to the containing grapheme
+/// - end_offset snaps forward to include a partially selected grapheme
+/// Returns bytes written, or the exact byte count when out_buffer is null.
 pub fn extractTextBetweenOffsets(
     rope: *const UnifiedRope,
     mem_registry: *const MemRegistry,
     tab_width: u8,
+    control_display: utf8.ControlDisplay,
     start_offset: u32,
     end_offset: u32,
-    out_buffer: []u8,
+    out_buffer: ?[]u8,
     width_method: utf8.WidthMethod,
 ) usize {
     if (start_offset >= end_offset) return 0;
-    if (out_buffer.len == 0) return 0;
+    if (out_buffer) |out| if (out.len == 0) return 0;
 
-    const line_count = rope.root.metrics().custom.linestart_count;
-
-    var out_index: usize = 0;
-    var col_offset: u32 = 0;
+    const first = rope.findByWeight(start_offset) orelse return 0;
 
     const Context = struct {
-        rope: *const UnifiedRope,
         mem_registry: *const MemRegistry,
         tab_width: u8,
-        out_buffer: []u8,
-        out_index: *usize,
-        col_offset: *u32,
+        control_display: utf8.ControlDisplay,
+        out_buffer: ?[]u8,
+        out_index: usize = 0,
+        col_offset: u32,
         start: u32,
         end: u32,
-        line_count: u32,
         width_method: utf8.WidthMethod,
 
-        fn segment_callback(ctx_ptr: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void {
-            _ = line_idx;
-            _ = chunk_idx_in_line;
+        fn walk(ctx_ptr: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
             const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-
-            const chunk_start_offset = ctx.col_offset.*;
-            const chunk_end_offset = chunk_start_offset + chunk.width_cols;
-
-            // Skip chunk if it's entirely outside range
-            if (chunk_end_offset <= ctx.start or chunk_start_offset >= ctx.end) {
-                ctx.col_offset.* = chunk_end_offset;
-                return;
+            if (ctx.col_offset >= ctx.end) return .{ .keep_walking = false };
+            if (segment.asText()) |chunk| {
+                ctx.text(chunk);
+            } else if (segment.isBreak()) {
+                if (ctx.col_offset >= ctx.start) ctx.append("\n");
+                ctx.col_offset += 1;
             }
+            return .{};
+        }
+
+        fn text(ctx: *@This(), chunk: *const TextChunk) void {
+            const chunk_start_offset = ctx.col_offset;
+            const chunk_end_offset = chunk_start_offset + chunk.width_cols;
+            ctx.col_offset = chunk_end_offset;
+
+            if (chunk_end_offset <= ctx.start) return;
 
             const chunk_bytes = chunk.getBytes(ctx.mem_registry);
             const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
@@ -381,59 +383,44 @@ pub fn extractTextBetweenOffsets(
             var byte_end: u32 = @intCast(chunk_bytes.len);
 
             if (local_start_col > 0) {
-                const start_result = utf8.findGraphemePosByWidth(chunk_bytes, local_start_col, ctx.tab_width, is_ascii_only, false, ctx.width_method);
+                const start_result = utf8.findGraphemePosByWidth(chunk_bytes, local_start_col, ctx.tab_width, ctx.control_display, is_ascii_only, false, ctx.width_method);
                 byte_start = start_result.byte_offset;
             }
 
             if (local_end_col < chunk.width_cols) {
-                const end_result = utf8.findGraphemePosByWidth(chunk_bytes, local_end_col, ctx.tab_width, is_ascii_only, true, ctx.width_method);
+                const end_result = utf8.findGraphemePosByWidth(chunk_bytes, local_end_col, ctx.tab_width, ctx.control_display, is_ascii_only, true, ctx.width_method);
                 byte_end = end_result.byte_offset;
             }
 
             if (byte_start < byte_end and byte_start < chunk_bytes.len) {
                 const actual_end = @min(byte_end, @as(u32, @intCast(chunk_bytes.len)));
-                const selected_bytes = chunk_bytes[byte_start..actual_end];
-                const copy_len = @min(selected_bytes.len, ctx.out_buffer.len - ctx.out_index.*);
-
-                if (copy_len > 0) {
-                    @memcpy(ctx.out_buffer[ctx.out_index.* .. ctx.out_index.* + copy_len], selected_bytes[0..copy_len]);
-                    ctx.out_index.* += copy_len;
-                }
+                ctx.append(chunk_bytes[byte_start..actual_end]);
             }
-
-            ctx.col_offset.* = chunk_end_offset;
         }
 
-        fn line_end_callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
-            const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-
-            // Add newline when the newline offset is inside the selected range,
-            // even for empty logical lines.
-            const newline_offset = ctx.col_offset.*;
-            if (line_info.line_idx < ctx.line_count - 1 and newline_offset >= ctx.start and newline_offset < ctx.end and ctx.out_index.* < ctx.out_buffer.len) {
-                ctx.out_buffer[ctx.out_index.*] = '\n';
-                ctx.out_index.* += 1;
+        fn append(ctx: *@This(), bytes: []const u8) void {
+            if (ctx.out_buffer) |out| {
+                const count = @min(bytes.len, out.len - ctx.out_index);
+                @memcpy(out[ctx.out_index..][0..count], bytes[0..count]);
+                ctx.out_index += count;
+            } else {
+                ctx.out_index += bytes.len;
             }
-
-            // Account for newline in display offset
-            ctx.col_offset.* += 1;
         }
     };
 
     var ctx: Context = .{
-        .rope = rope,
         .mem_registry = mem_registry,
         .tab_width = tab_width,
+        .control_display = control_display,
         .out_buffer = out_buffer,
-        .out_index = &out_index,
-        .col_offset = &col_offset,
+        .col_offset = first.start_weight,
         .start = start_offset,
         .end = end_offset,
-        .line_count = line_count,
         .width_method = width_method,
     };
 
-    walkLinesAndSegments(rope, &ctx, Context.segment_callback, Context.line_end_callback);
+    rope.walk_from(first.leaf_index, &ctx, Context.walk) catch unreachable;
 
-    return out_index;
+    return ctx.out_index;
 }

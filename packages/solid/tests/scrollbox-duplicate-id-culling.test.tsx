@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import type { Renderable, ScrollBoxRenderable } from "@opentui/core"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { createSignal, For } from "solid-js"
 import { testRender } from "../index.js"
 
@@ -48,10 +48,7 @@ test("removing a multi-file tool block does not orphan a duplicate-id child in s
   await setup.renderOnce()
 
   const duplicateChildren = scroll!.getChildren().filter((child) => child.id === "tool-block-part")
-  const content = scroll!.content as unknown as {
-    getChildrenSortedByPrimaryAxis(): Renderable[]
-  }
-  const sortedChildren = content.getChildrenSortedByPrimaryAxis().filter((child) => typeof child.screenY === "number")
+  const sortedChildren = scroll!.getChildrenSortedByPrimaryAxis().filter((child) => typeof child.screenY === "number")
   const sortedMonotonically = sortedChildren.every(
     (child, index) => index === 0 || child.screenY >= sortedChildren[index - 1]!.screenY,
   )

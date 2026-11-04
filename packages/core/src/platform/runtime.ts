@@ -4,7 +4,6 @@ import { dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import stringWidthLib from "string-width"
-import stripAnsiLib from "strip-ansi"
 
 import { resolveAssetRootPath } from "./assets.js"
 
@@ -16,7 +15,6 @@ export interface WriteFileOptions {
 interface BunLike {
   sleep(msOrDate: number | Date): Promise<void>
   stringWidth(text: string): number
-  stripANSI(text: string): string
   write(destination: string | URL, data: string | ArrayBufferView, options?: WriteFileOptions): Promise<number>
 }
 
@@ -38,7 +36,6 @@ const bun = (globalThis as GlobalWithBun).Bun
 
 export const sleep: (msOrDate: number | Date) => Promise<void> = bun?.sleep ?? standardSleep
 export const stringWidth: (text: string) => number = bun?.stringWidth ?? stringWidthLib
-export const stripANSI: (text: string) => string = bun?.stripANSI ?? stripAnsiLib
 export const writeFile: (
   destination: string | URL,
   data: string | ArrayBufferView,

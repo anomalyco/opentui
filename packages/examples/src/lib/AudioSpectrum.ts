@@ -76,21 +76,22 @@ function formatFrequency(value: number): string {
   return value >= 1000 ? `${value / 1000}k` : value.toString()
 }
 
-function writeBufferRgb(
-  backgrounds: Uint16Array,
-  bufferWidth: number,
+// Paint hooks cannot read the frame, so the meters fill their backgrounds instead of editing existing cells.
+function fillRow(
+  buffer: OptimizedBuffer,
   x: number,
   y: number,
+  width: number,
   red: number,
   green: number,
   blue: number,
   bounds: RasterBounds,
 ): void {
-  if (x < bounds.left || x >= bounds.right || y < bounds.top || y >= bounds.bottom) return
-  const index = (y * bufferWidth + x) * 4
-  backgrounds[index] = ((backgrounds[index] ?? 0) & 0xff00) | red
-  backgrounds[index + 1] = ((backgrounds[index + 1] ?? 0) & 0xff00) | green
-  backgrounds[index + 2] = ((backgrounds[index + 2] ?? 0) & 0xff00) | blue
+  if (y < bounds.top || y >= bounds.bottom) return
+  const start = Math.max(x, bounds.left)
+  const end = Math.min(x + width, bounds.right)
+  if (start >= end) return
+  buffer.fillRect(start, y, end - start, 1, RGBA.fromInts(red, green, blue))
 }
 
 export class AudioSpectrumRenderable extends BoxRenderable {
@@ -208,10 +209,8 @@ export class AudioSpectrumRenderable extends BoxRenderable {
     }
     if (bounds.left >= bounds.right || bounds.top >= bounds.bottom) return
 
-    const backgrounds = buffer.buffers.bg
     this.renderLevelMeter(
       buffer,
-      backgrounds,
       innerX,
       innerY,
       innerWidth,
@@ -223,7 +222,6 @@ export class AudioSpectrumRenderable extends BoxRenderable {
     )
     this.renderLevelMeter(
       buffer,
-      backgrounds,
       innerX,
       innerY + 1,
       innerWidth,
@@ -264,9 +262,7 @@ export class AudioSpectrumRenderable extends BoxRenderable {
         const red = Math.round(baseRed * intensity)
         const green = Math.round(baseGreen * intensity)
         const blue = Math.round(baseBlue * intensity)
-        for (let x = xStart; x < xStart + barWidth; x += 1) {
-          writeBufferRgb(backgrounds, buffer.width, x, y, red, green, blue, bounds)
-        }
+        fillRow(buffer, xStart, y, barWidth, red, green, blue, bounds)
       }
 
       if (peak > 0.01) {
@@ -274,9 +270,7 @@ export class AudioSpectrumRenderable extends BoxRenderable {
         const peakRed = Math.round(baseRed * 0.45 + 140)
         const peakGreen = Math.round(baseGreen * 0.45 + 140)
         const peakBlue = Math.round(baseBlue * 0.45 + 140)
-        for (let x = xStart; x < xStart + barWidth; x += 1) {
-          writeBufferRgb(backgrounds, buffer.width, x, peakY, peakRed, peakGreen, peakBlue, bounds)
-        }
+        fillRow(buffer, xStart, peakY, barWidth, peakRed, peakGreen, peakBlue, bounds)
       }
 
       if (showLabels && bandCount === BAND_CENTERS.length && barWidth >= 3) {
@@ -289,7 +283,6 @@ export class AudioSpectrumRenderable extends BoxRenderable {
 
   private renderLevelMeter(
     buffer: OptimizedBuffer,
-    backgrounds: Uint16Array,
     x: number,
     y: number,
     width: number,
@@ -309,11 +302,11 @@ export class AudioSpectrumRenderable extends BoxRenderable {
       const active = column < filled
       const progress = meterWidth <= 1 ? 1 : column / (meterWidth - 1)
       const intensity = active ? 0.45 + progress * 0.55 : 0.16
-      writeBufferRgb(
-        backgrounds,
-        buffer.width,
+      fillRow(
+        buffer,
         meterX + column,
         y,
+        1,
         Math.round(rgb[0] * intensity),
         Math.round(rgb[1] * intensity),
         Math.round(rgb[2] * intensity),

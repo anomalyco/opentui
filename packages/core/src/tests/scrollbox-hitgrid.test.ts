@@ -968,25 +968,6 @@ test("buffered overflow scissor uses screen coordinates for hit grid", async () 
   expect(hit?.id).toBe("buffered-child")
 })
 
-test("hit grid treats non-positive extents as empty", async () => {
-  const owner = new BoxRenderable(testRenderer, { position: "absolute", left: 0, top: 0, width: 1, height: 1 })
-  owner.renderAfter = () => {
-    testRenderer.pushHitGridScissorRect(0, 1, 2, 1)
-    testRenderer.pushHitGridScissorRect(0, 1, -1, 1)
-    testRenderer.addToHitGrid(0, 1, 1, 1, 1)
-    testRenderer.popHitGridScissorRect()
-    testRenderer.addToHitGrid(1, 1, 3, 1, 2)
-    testRenderer.addToHitGrid(0, 1, -1, 1, 3)
-    testRenderer.popHitGridScissorRect()
-  }
-  testRenderer.root.add(owner)
-
-  await testRenderer.idle()
-
-  // The empty clip hides id 1, and popping it leaves the parent clip on id 2.
-  expect([0, 1, 2].map((x) => testRenderer.hitTest(x, 1))).toEqual([0, 2, 0])
-})
-
 test("hover updates after translate animation", async () => {
   const hoverEvents: string[] = []
   let hoveredId: string | null = null

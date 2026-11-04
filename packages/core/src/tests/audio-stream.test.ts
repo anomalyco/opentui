@@ -1547,47 +1547,70 @@ test("Audio rejects an invalid MP3 during decoder setup", async () => {
   expect(audio.getStats()?.voicesActive).toBe(0)
 })
 
-test("Audio enforces the default decoder probe limit and accepts a configured override", async () => {
+test("Audio rejects a stream whose decoder reads past the probe limit and plays one that does not", async () => {
   const mp3 = new Uint8Array(await readFile(MP3_URL))
+  const flac = new Uint8Array(await readFile(FLAC_URL))
   const taggedMp3 = prependId3Padding(mp3, 1024 * 1024)
   const audio = Audio.create({ autoStart: false })
   audios.push(audio)
   expect(audio.startMixer()).toBe(true)
 
-  let defaultRejection: unknown
-  try {
-    await audio.playStream(
-      (async function* () {
-        yield taggedMp3
-      })(),
-    )
-  } catch (error) {
-    defaultRejection = error
+  const decoderError = { action: "decoder", errorCode: -3 }
+  const lib = resolveRenderLib()
+  const { audioGetStreamStats: getStats, audioWriteStream: write } = lib
+  // Rows: source bytes, whether the source ends, options, a write failure to inject (after a decoder failure, or
+  // with unreadable stats), and the rejection context, or null when the stream plays.
+  const rows: Array<[Uint8Array, boolean, AudioStreamBodyOptions, "decoder" | "write" | null, object | null]> = [
+    [mp3, true, { maxProbeBytes: 1500 }, null, null],
+    [taggedMp3, true, { maxProbeBytes: 1024 * 1024 + 1000 }, null, null],
+    [taggedMp3, true, {}, null, decoderError],
+    [taggedMp3.subarray(0, 1024 * 1024), false, {}, null, decoderError],
+    [taggedMp3, true, {}, "decoder", decoderError],
+    [taggedMp3, true, {}, "write", { action: "write", status: -1 }],
+    [flac, true, { format: "flac", maxProbeBytes: 4096 }, null, decoderError],
+  ]
+  for (const [bytes, ends, options, writeFault, rejection] of rows) {
+    let injected = null as typeof writeFault
+    const restoreStats = replaceMethod(lib, "audioGetStreamStats", (...args: Parameters<typeof getStats>) => {
+      const stats = getStats.apply(lib, args)
+      if (injected === "write" || stats == null) return null
+      return injected === "decoder" ? { ...stats, state: NativeAudioStreamState.Failed, errorCode: -3 } : stats
+    })
+    const restoreWrite = replaceMethod(lib, "audioWriteStream", (...args: Parameters<typeof write>) => {
+      if (writeFault == null) return write.apply(lib, args)
+      injected = writeFault
+      return -1
+    })
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes)
+        if (ends) controller.close()
+      },
+    })
+    try {
+      const played = audio.playStream(source, options)
+      if (rejection != null) {
+        await expect(played).rejects.toHaveProperty("context", rejection)
+      } else {
+        const stream = await played
+        let heardAudio = false
+        await waitFor(
+          () => stream.getStats().state === "ended",
+          "Stream within the probe limit did not finish playback",
+          () => {
+            heardAudio = hasSignal(audio.mixFrames(256, 2) ?? new Float32Array()) || heardAudio
+          },
+        )
+        await stream.closed
+        expect(heardAudio).toBe(true)
+      }
+    } finally {
+      restoreWrite()
+      restoreStats()
+    }
+    expect(injected).toBe(writeFault)
+    expect(audio.getStats()?.voicesActive).toBe(0)
   }
-  expect(expectAudioStreamError(defaultRejection).context).toEqual({
-    action: "decoder",
-    errorCode: -3,
-  })
-  expect(audio.getStats()?.voicesActive).toBe(0)
-
-  const stream = await audio.playStream(
-    (async function* () {
-      yield taggedMp3
-    })(),
-    { maxProbeBytes: taggedMp3.byteLength },
-  )
-  let heardAudio = false
-  await waitFor(
-    () => stream.getStats().state === "ended",
-    "Tagged MP3 did not finish playback",
-    () => {
-      const mixed = audio.mixFrames(256, 2)
-      heardAudio = heardAudio || hasSignal(mixed ?? new Float32Array())
-    },
-  )
-  await stream.closed
-  expect(heardAudio).toBe(true)
-  expect(stream.getStats().framesPlayed).toBeGreaterThan(0n)
 })
 
 test("Audio reports a byte-source failure after stream setup", async () => {

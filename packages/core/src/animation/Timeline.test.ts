@@ -15,6 +15,17 @@ describe("Timeline", () => {
     engine.clear()
   })
 
+  it.each(["pause", "complete"] as const)("notifies the engine when the %s callback throws", (operation) => {
+    const fail = () => {
+      throw new Error("timeline callback")
+    }
+    const timeline = createTimeline({ duration: 1, onPause: fail, onComplete: fail })
+    const states: boolean[] = []
+    timeline.addStateChangeListener(() => states.push(timeline.isPlaying))
+    expect(() => (operation === "pause" ? timeline.pause() : engine.update(1))).toThrow("timeline callback")
+    expect(states).toEqual([false])
+  })
+
   describe("Basic Animation", () => {
     it("should animate a single property", () => {
       timeline = createTimeline({ duration: 1000, autoplay: false })

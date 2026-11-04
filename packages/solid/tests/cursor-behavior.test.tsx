@@ -585,7 +585,7 @@ describe("Textarea Cursor Behavior Tests", () => {
       const heights: number[] = []
       const captureHeight = () => {
         if (textareaRef) {
-          heights.push(textareaRef.getLayoutNode().getComputedHeight())
+          heights.push(textareaRef.getLayout().height)
         }
       }
 

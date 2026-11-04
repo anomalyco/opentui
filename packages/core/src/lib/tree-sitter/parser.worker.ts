@@ -54,6 +54,25 @@ interface ReusableParserState {
   }
 }
 
+// web-tree-sitter ignores the #lua-match? predicates of nvim-treesitter queries, so they would match every node.
+// Rewrites one to #match? when its Lua pattern uses only what the bundled queries use: literals, an anchor at
+// either end, sets of literals and %d, "." (which also matches a newline in Lua), "*", and "+". Any other
+// pattern, or one RegExp rejects, keeps #lua-match? so the query still loads.
+function translateLuaMatch(query: string): string {
+  return query.replace(
+    /#(not-)?(any-)?lua-match\?(\s+@[\w.-]+\s+)"(\^?(?:(?:[\w/!:#.]|\[\^?(?:[\w*-]|%d)+\])[*+]?)*\$?)"/g,
+    (predicate, not = "", any = "", capture: string, pattern: string) => {
+      const source = pattern.replaceAll("%d", "0-9").replaceAll(".", "[^]")
+      try {
+        new RegExp(source)
+      } catch {
+        return predicate
+      }
+      return `#${any}${not}match?${capture}"${source}"`
+    },
+  )
+}
+
 class ParserWorker {
   private bufferParsers: Map<number, ParserState> = new Map()
   private filetypeParserOptions: Map<string, FiletypeParserOptions> = new Map()
@@ -81,7 +100,7 @@ class ParserWorker {
     if (!this.tsDataPath) {
       return ""
     }
-    return DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype)
+    return translateLuaMatch(await DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype))
   }
 
   async initialize({ dataPath, treeSitterWasmPath }: { dataPath: string; treeSitterWasmPath?: string }) {

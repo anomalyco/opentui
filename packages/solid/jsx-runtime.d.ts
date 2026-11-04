@@ -14,6 +14,7 @@ import type {
   TabSelectProps,
   TextareaProps,
   TextProps,
+  VideoProps,
 } from "./src/types/elements.js"
 import type { JSX as SolidJSX } from "solid-js"
 
@@ -40,6 +41,7 @@ export declare namespace JSX {
     textarea: TextareaProps
     markdown: MarkdownProps
     image: ImageProps
+    video: VideoProps
 
     b: SpanProps
     strong: SpanProps

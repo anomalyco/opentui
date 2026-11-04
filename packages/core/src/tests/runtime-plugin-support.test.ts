@@ -31,7 +31,11 @@ describe("runtime plugin support", () => {
     expect(result.exitCode).toBe(0)
     expect(stdout).toContain("first=true")
     expect(stdout).toContain("second=false")
+    expect(stdout).toContain(
+      "mismatch=OpenTUI Core runtime plugin support is already installed with different preserve options.",
+    )
     expect(stdout).toContain("extra=ok")
+    expect(stdout).toContain("preserved=host")
   })
 
   it("throws when modules are added after side-effect installation", () => {

@@ -1,0 +1,76 @@
+diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
+--- a/yoga/algorithm/Cache.cpp
++++ b/yoga/algorithm/Cache.cpp
+@@ -63,7 +63,10 @@
+ 
+   const float pointScaleFactor = config->getPointScaleFactor();
+ 
+-  bool useRoundedComparison = config != nullptr && pointScaleFactor != 0;
++  // OpenTUI: with absolute-edge rounding, a subtree laid out for one
++  // fractional size can round differently at another that rounds the same.
++  bool useRoundedComparison = config != nullptr && pointScaleFactor != 0 &&
++      !config->roundsPositionsFromAbsoluteEdges();
+   bool hasSameWidthSpec = false;
+   if (lastWidthMode == widthMode) {
+     const float effectiveWidth = useRoundedComparison
+diff --git a/yoga/algorithm/PixelGrid.cpp b/yoga/algorithm/PixelGrid.cpp
+--- a/yoga/algorithm/PixelGrid.cpp
++++ b/yoga/algorithm/PixelGrid.cpp
+@@ -88,12 +88,28 @@
+     // size as this could lead to unwanted text truncation.
+     const bool textRounding = node->getNodeType() == NodeType::Text;
+ 
++    // OpenTUI: rounding the relative position on its own can put a child's
++    // rounded edge one point outside its parent's, because the width below is
++    // rounded from absolute edges. Opted-in configs take both from those edges.
++    const bool absoluteEdges =
++        node->getConfig()->roundsPositionsFromAbsoluteEdges();
+     node->setLayoutPosition(
+-        roundValueToPixelGrid(nodeLeft, pointScaleFactor, false, textRounding),
++        absoluteEdges
++            ? roundValueToPixelGrid(
++                  absoluteNodeLeft, pointScaleFactor, false, textRounding) -
++                roundValueToPixelGrid(
++                    absoluteLeft, pointScaleFactor, false, false)
++            : roundValueToPixelGrid(
++                  nodeLeft, pointScaleFactor, false, textRounding),
+         PhysicalEdge::Left);
+ 
+     node->setLayoutPosition(
+-        roundValueToPixelGrid(nodeTop, pointScaleFactor, false, textRounding),
++        absoluteEdges
++            ? roundValueToPixelGrid(
++                  absoluteNodeTop, pointScaleFactor, false, textRounding) -
++                roundValueToPixelGrid(absoluteTop, pointScaleFactor, false, false)
++            : roundValueToPixelGrid(
++                  nodeTop, pointScaleFactor, false, textRounding),
+         PhysicalEdge::Top);
+ 
+     // We multiply dimension by scale factor and if the result is close to the
+diff --git a/yoga/config/Config.h b/yoga/config/Config.h
+--- a/yoga/config/Config.h
++++ b/yoga/config/Config.h
+@@ -50,6 +50,15 @@
+   void setPointScaleFactor(float pointScaleFactor);
+   float getPointScaleFactor() const;
+ 
++  // OpenTUI: round each position from the absolute edges that size the node,
++  // so a child's rounded edges stay inside its parent's.
++  void setRoundsPositionsFromAbsoluteEdges(bool enabled) {
++    roundsPositionsFromAbsoluteEdges_ = enabled;
++  }
++  bool roundsPositionsFromAbsoluteEdges() const {
++    return roundsPositionsFromAbsoluteEdges_;
++  }
++
+   void setContext(void* context);
+   void* getContext() const;
+ 
+@@ -73,6 +82,7 @@
+   YGLogger logger_{};
+ 
+   bool useWebDefaults_ : 1 = false;
++  bool roundsPositionsFromAbsoluteEdges_ : 1 = false;
+ 
+   uint32_t version_ = 0;
+   ExperimentalFeatureSet experimentalFeatures_{};

@@ -251,7 +251,7 @@ describe("SolidJS Renderer - Control Flow Components", () => {
       const placeholder = children.find((child) => child instanceof LayoutSlotRenderable)!
       try {
         expect(placeholder).toBeInstanceOf(LayoutSlotRenderable)
-        expect(placeholder.getLayoutNode().isFreed()).toBe(false)
+        expect(placeholder.isFreed()).toBe(false)
 
         if (cleanup === "replacement") {
           setVisible(true)
@@ -261,7 +261,7 @@ describe("SolidJS Renderer - Control Flow Components", () => {
         await new Promise<void>((resolve) => process.nextTick(resolve))
 
         expect(placeholder.parent).toBeNull()
-        expect(placeholder.getLayoutNode().isFreed()).toBe(true)
+        expect(placeholder.isFreed()).toBe(true)
       } finally {
         testSetup.renderer.destroy()
         placeholder?.destroy()

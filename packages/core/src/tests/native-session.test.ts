@@ -1,0 +1,704 @@
+import { expect, test } from "bun:test"
+import assert from "node:assert/strict"
+import { Writable } from "node:stream"
+import { clearEnvCache } from "../lib/env.js"
+import { NativeSession, type NativeSessionDriverOptions, type NativeSessionScheduler } from "../NativeSession.js"
+import { CliRenderer } from "../renderer.js"
+import { settle } from "../testing/harness.js"
+import { ManualClock } from "../testing/manual-clock.js"
+import { createTestStdin, RecordingWriteStream } from "../testing/test-streams.js"
+import { NativeError, NativeStatus, resolveRenderLib, type NativeContextHandle } from "../zig.js"
+
+const lib = resolveRenderLib()
+const MS = 1_000_000n
+const output = { chunkSize: 4096, spanCapacity: 8, maxBytes: 65_536n, controlCapacity: 4096 }
+
+/** Host scheduler with a manual clock. Set `failure` to make the next `schedule()` call throw. */
+class ManualScheduler implements NativeSessionScheduler {
+  time = 0n
+  failure: Error | null = null
+  private readonly tasks = new Set<{ at: bigint; callback: () => void }>()
+
+  now(): bigint {
+    return this.time
+  }
+
+  schedule(callback: () => void, delayMs = 0): () => void {
+    if (this.failure) throw this.failure
+    const task = { at: this.time + BigInt(delayMs) * MS, callback }
+    this.tasks.add(task)
+    return () => void this.tasks.delete(task)
+  }
+
+  /** Sets the clock to `ms` (if given), then runs due tasks, one per host turn, until none is due. */
+  async run(ms?: number): Promise<void> {
+    if (ms !== undefined) {
+      assert.ok(BigInt(ms) * MS >= this.time, "the clock is monotonic")
+      this.time = BigInt(ms) * MS
+    }
+    for (let turn = 0; turn < 4096; turn++) {
+      await settle()
+      const due = [...this.tasks].find((task) => task.at <= this.time)
+      if (!due) return
+      this.tasks.delete(due)
+      due.callback()
+    }
+    throw new Error("scheduler did not settle within 4096 turns")
+  }
+
+  /** Advances 1 ms per host turn and runs the tasks that were due at the start of each turn. */
+  async turns(count: number): Promise<void> {
+    for (let turn = 0; turn < count; turn++) {
+      this.time += MS
+      for (const task of [...this.tasks]) {
+        if (task.at <= this.time && this.tasks.delete(task)) task.callback()
+      }
+      await settle()
+    }
+  }
+}
+
+/** Highwater mark 1: every write reports pressure. A write can be parked, failed, or made to throw. */
+class Sink extends Writable {
+  readonly chunks: Buffer[] = []
+  throwOnWrite: Error | null = null
+  private parked: ((error?: Error | null) => void) | undefined
+
+  constructor(private held = false) {
+    super({ highWaterMark: 1 })
+  }
+
+  override write(chunk: any, encoding?: any, callback?: any): boolean {
+    if (this.throwOnWrite) throw this.throwOnWrite
+    return super.write(chunk, encoding, callback)
+  }
+
+  override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.chunks.push(Buffer.from(chunk))
+    if (this.held) this.parked = callback
+    else callback()
+  }
+
+  get pending(): boolean {
+    return this.parked !== undefined
+  }
+
+  hold(): void {
+    this.held = true
+  }
+
+  release(error?: Error): void {
+    this.held = false
+    const parked = this.parked
+    this.parked = undefined
+    parked?.(error)
+  }
+
+  listenerTotal(): number {
+    return ["error", "close", "finish", "drain"].reduce((count, event) => count + this.listenerCount(event), 0)
+  }
+}
+
+function outcome(promise: Promise<void>): Promise<string> {
+  return promise.then(
+    () => "closed",
+    (error: Error) => error.message,
+  )
+}
+
+const timeout = "NativeSession graceful close timed out; output cancelled without restoration"
+const late = "NativeSession graceful close ran late; queued output was dropped"
+
+// #1875: at a deadline with nothing acknowledged, the queue is dropped and the write in flight kept. The close ends
+// late once that write completes, or times out if it does not complete within another deadline.
+test.each([
+  { name: "raw output acknowledged before the deadline closes", release: 9, expected: "closed" },
+  { name: "a write in flight at the deadline closes late without the queue", queue: true, release: 40, expected: late },
+  { name: "a write still in flight a deadline later times out", queue: true, expected: timeout },
+  { name: "restoration whose last settle wait is due closes", attach: true, expected: "closed" },
+])("a turn that runs late at the close deadline: $name", async ({ expected, ...row }) => {
+  const scheduler = new ManualScheduler()
+  const stdout = new RecordingWriteStream(4, 2, { highWaterMark: 1 })
+  const driver = new NativeSession(stdout, { scheduler, closeTimeoutMs: 25, output })
+  try {
+    if (row.attach) {
+      driver.attachRenderer({ width: 4, height: 2 })
+      const setup = driver.setupTerminal()
+      await scheduler.run()
+      await setup
+    } else {
+      stdout.hold()
+      expect(driver.write(Buffer.from("restore"))).toBe(true)
+      await scheduler.run()
+      expect(stdout.pendingWrite).toBe(true)
+      if (row.queue) expect(driver.write(Buffer.from("queued"))).toBe(true)
+    }
+    const closed = outcome(driver.close())
+    // Restoration waits 10 ms twice for the cursor to settle, so its last wait is due at 20 ms. The turn that is due
+    // before the deadline runs at it.
+    await scheduler.run()
+    for (const ms of [row.attach ? 10 : 9, 25, 40, 50]) {
+      await scheduler.run(ms)
+      if (ms === row.release) stdout.release()
+    }
+    expect(await closed).toBe(expected)
+    expect(driver.disposed).toBe(true)
+    if (!row.attach) expect(stdout.text()).toBe("restore")
+  } finally {
+    stdout.release()
+    driver.dispose()
+  }
+})
+
+test.each([
+  {
+    name: "a write callback error",
+    held: true,
+    inject: (sink: Sink) => sink.release(new Error("callback failed")),
+    message: "callback failed",
+  },
+  {
+    name: "a sink destroyed with an error",
+    inject: (sink: Sink) => sink.destroy(new Error("sink failed")),
+    message: "sink failed",
+  },
+  {
+    name: "a destroyed sink",
+    inject: (sink: Sink) => sink.destroy(),
+    message: "NativeSession sink closed before graceful close",
+  },
+  {
+    name: "an ended sink",
+    inject: (sink: Sink) => sink.end(),
+    message: "NativeSession sink finished before graceful close",
+  },
+  {
+    name: "a sink write that throws",
+    inject: (sink: Sink, driver: NativeSession) => {
+      sink.throwOnWrite = new Error("write threw")
+      driver.write(Buffer.from("next"))
+    },
+    message: "write threw",
+  },
+  {
+    name: "a host scheduler that throws",
+    inject: (_sink: Sink, driver: NativeSession, scheduler: ManualScheduler) => {
+      scheduler.failure = new Error("schedule failed")
+      driver.write(Buffer.from("next"))
+    },
+    message: "schedule failed",
+  },
+])("$name fails the Session once and releases it", async ({ inject, message, ...row }) => {
+  const scheduler = new ManualScheduler()
+  const sink = new Sink()
+  const driver = new NativeSession(sink, { scheduler, output })
+  const closed = outcome(driver.closed)
+  sink.hold()
+  expect(driver.write(Buffer.from("first"))).toBe(true)
+  await scheduler.run()
+  if (!("held" in row)) sink.release()
+  await scheduler.run()
+
+  inject(sink, driver, scheduler)
+  await scheduler.run()
+  expect(await closed).toBe(message)
+  expect(driver.error?.message).toBe(message)
+  expect([driver.disposed, driver.contextDisposed]).toEqual([true, true])
+  expect(sink.listenerTotal()).toBe(0)
+  expect(() => driver.write(Buffer.from("late"))).toThrow(message)
+  driver.dispose()
+  expect(await outcome(driver.close())).toBe(message)
+})
+
+test("a throwing host scheduler fails each Session that schedules on it, and later Sessions cannot start", async () => {
+  const scheduler = new ManualScheduler()
+  const drivers = [0, 1].map(() => new NativeSession(new Sink(), { scheduler, output }))
+  const closed = drivers.map((driver) => outcome(driver.closed))
+  scheduler.failure = new Error("schedule failed")
+  for (const driver of drivers) expect(driver.write(Buffer.from("x"))).toBe(true)
+  expect(await Promise.all(closed)).toEqual(["schedule failed", "schedule failed"])
+  expect(drivers.map((driver) => driver.disposed)).toEqual([true, true])
+  scheduler.failure = null
+  assert.throws(() => new NativeSession(new Sink(), { scheduler, output }), /schedule failed/)
+})
+
+test("an inline host scheduler fails the Session instead of stalling ready work", async () => {
+  const scheduler: NativeSessionScheduler = {
+    now: () => 0n,
+    schedule(callback) {
+      callback()
+      return () => {}
+    },
+  }
+  const driver = new NativeSession(new Sink(), { scheduler, output })
+  driver.write(Buffer.from("x"))
+  expect(await outcome(driver.closed)).toBe("NativeSessionScheduler.schedule ran a callback inline")
+  expect(driver.disposed).toBe(true)
+})
+
+test("seeded writes reach the sink in order, and idle waits for the last acknowledgement", async () => {
+  let refused = 0
+  for (const [seed, outputBufferSize] of [
+    [1, 7],
+    [2, 64],
+    [3, 4096],
+  ] as const) {
+    let state = seed
+    const random = (limit: number) => {
+      state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0
+      return state % limit
+    }
+    const scheduler = new ManualScheduler()
+    const sink = new Sink()
+    const driver = new NativeSession(sink, {
+      scheduler,
+      outputBufferSize,
+      output: { chunkSize: 64, spanCapacity: 8, maxBytes: 512n, controlCapacity: 0 },
+    })
+    try {
+      assert.throws(() => driver.write(new Uint8Array(Number(driver.maxAtomicWriteBytes) + 1)), RangeError)
+      const accepted: number[] = []
+      for (let step = 0; step < 200; step++) {
+        const operation = random(8)
+        if (operation < 4) {
+          const bytes = Uint8Array.from({ length: random(97) }, () => random(256))
+          if (driver.write(bytes)) accepted.push(...bytes)
+          else refused++
+        } else if (operation === 4) sink.hold()
+        else if (operation === 5) sink.release()
+        else await scheduler.run()
+      }
+      sink.hold()
+      await scheduler.run()
+      let idle = false
+      const waiting = driver.idle().then(() => (idle = true))
+      await scheduler.run()
+      expect(idle).toBe(!sink.pending)
+      sink.release()
+      await scheduler.run()
+      await waiting
+      expect(Buffer.concat(sink.chunks)).toEqual(Buffer.from(accepted))
+    } finally {
+      sink.release()
+      driver.dispose()
+    }
+  }
+  expect(refused).toBeGreaterThan(0)
+})
+
+test("terminal transitions share a pending request, refuse another kind, and close interrupts them", async () => {
+  const scheduler = new ManualScheduler()
+  const sink = new Sink(true)
+  const driver = new NativeSession(sink, { scheduler, output })
+  driver.attachRenderer({ width: 4, height: 2 })
+  const setup = driver.setupTerminal()
+  expect(driver.setupTerminal()).toBe(setup)
+  expect(() => driver.suspend()).toThrow("NativeSession terminal transition is pending")
+  await scheduler.run()
+  expect(sink.pending).toBe(true)
+
+  const interrupted = setup.catch((error: unknown) => error)
+  const closed = outcome(driver.close())
+  expect(driver.isCloseInterruption(await interrupted)).toBe(true)
+  expect(driver.isCloseInterruption(new Error("other"))).toBe(false)
+  expect(driver.close()).toBe(driver.closed)
+  sink.release()
+  await scheduler.run()
+  await scheduler.run(10)
+  await scheduler.run(20)
+  expect(await closed).toBe("closed")
+  expect(sink.listenerTotal()).toBe(0)
+  driver.dispose()
+  expect(driver.restoreOnExit()).toBe(false)
+})
+
+test("dispose keeps a busy Context and completes when called again after the lease is released", async () => {
+  const sink = new Sink()
+  const driver = new NativeSession(sink, { output })
+  driver.attachRenderer({ width: 4, height: 2 })
+  const lease = lib.sessionAcquireBufferLease(driver.context, driver.session, "next")
+  // Exit restoration supports only real stdout; the caller disposes next either way.
+  expect(driver.restoreOnExit()).toBe(false)
+  driver.dispose()
+  expect([driver.disposed, driver.contextDisposed]).toEqual([false, false])
+  expect(driver.error?.message).toBe("NativeSession disposed without graceful close")
+  lib.contextReleaseBufferLease(driver.context, lease.handle)
+  driver.dispose()
+  expect([driver.disposed, driver.contextDisposed]).toEqual([true, true])
+  expect(await outcome(driver.closed)).toBe("NativeSession disposed without graceful close")
+})
+
+test("failed session creation or listener registration releases its Context", () => {
+  const options: NativeSessionDriverOptions = {
+    context: { objectCapacity: 2, renderCellsMax: 16 },
+    output: { chunkSize: 4, spanCapacity: 2, maxBytes: 8n },
+  }
+  const create = lib.createContext
+  let allocated: NativeContextHandle | undefined
+  lib.createContext = (createOptions) => (allocated = create.call(lib, createOptions))
+  try {
+    for (const failure of ["session", "listener"]) {
+      const sink = new Sink()
+      if (failure === "listener")
+        sink.once("newListener", () => {
+          throw new Error("listener registration")
+        })
+      const output = failure === "session" ? { ...options.output!, maxBytes: 9n } : options.output
+      assert.throws(() => new NativeSession(sink, { ...options, output }))
+      assert.ok(allocated)
+      assert.throws(() => lib.destroyContext(allocated!), { status: NativeStatus.WrongContext })
+      assert.equal(sink.listenerTotal(), 0)
+    }
+  } finally {
+    lib.createContext = create
+  }
+})
+
+test("host limits reject invalid options", () => {
+  const sink = new Sink()
+  for (const outputBufferSize of [0, -1, 0.5, NaN, Infinity, 0x1_0000_0000]) {
+    assert.throws(() => new NativeSession(sink, { output, outputBufferSize }), RangeError)
+  }
+  for (const closeTimeoutMs of [-1, 0.5, NaN, Infinity, 0x8000_0000]) {
+    assert.throws(() => new NativeSession(sink, { output, closeTimeoutMs }), RangeError)
+  }
+  sink.end()
+  assert.throws(() => new NativeSession(sink, { output }), /sink is not writable/)
+})
+
+test("environment limits reject before attachment and accept the boundary", () => {
+  const entries = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`K${index}`, ""]))
+  // Each entry takes 8 length bytes; 65,536 bytes is the whole budget.
+  const invalid: [Record<string, unknown>, new (...args: never[]) => Error][] = [
+    [{ "": "1" }, NativeError],
+    [{ "a=b": "1" }, NativeError],
+    [{ "a\0": "1" }, NativeError],
+    [{ a: "\0" }, NativeError],
+    [{ a: 1 }, TypeError],
+    [entries(257), NativeError],
+    [{ a: "x".repeat(65_528) }, RangeError],
+    [{ a: "\u00e9".repeat(32_764) }, RangeError],
+  ]
+  const valid = [entries(256), { a: "x".repeat(65_527) }, { a: "\u00e9".repeat(32_763) }]
+  for (const [environment, error] of invalid) {
+    const driver = new NativeSession(new Sink(), { output })
+    try {
+      assert.throws(() => driver.attachRenderer({ width: 4, height: 2, environment: environment as never }), error)
+      driver.attachRenderer({ width: 4, height: 2 })
+    } finally {
+      driver.dispose()
+    }
+  }
+  for (const environment of valid) {
+    const driver = new NativeSession(new Sink(), { output })
+    try {
+      driver.attachRenderer({ width: 4, height: 2, environment })
+    } finally {
+      driver.dispose()
+    }
+  }
+})
+
+function rendererFor(scheduler: ManualScheduler, stdout: Writable, clock: ManualClock, closeTimeoutMs?: number) {
+  return new CliRenderer(createTestStdin(), stdout as NodeJS.WriteStream, 2, 1, {
+    nativeSession: new NativeSession(stdout, { scheduler, closeTimeoutMs }),
+    clock,
+    remote: true,
+    screenMode: "main-screen",
+    consoleMode: "disabled",
+    exitSignals: [],
+    debounceDelay: 1,
+  })
+}
+
+test("blocked output and host promises do not hold other renderers' input, resize or shutdown", async () => {
+  const scheduler = new ManualScheduler()
+  const clock = new ManualClock()
+  const host = Promise.withResolvers<void>()
+  let release: (() => void) | undefined
+  let hold = true
+  const animation: number[] = []
+  const inputs: number[] = []
+  const resizes: number[] = []
+  const closed: number[] = []
+  const renderers = Array.from({ length: 3 }, (_, index) =>
+    rendererFor(
+      scheduler,
+      new Writable({
+        highWaterMark: 1,
+        write(_bytes, _encoding, done) {
+          if (index === 0 && hold) release = done
+          else done()
+        },
+      }),
+      clock,
+    ),
+  )
+  try {
+    for (const [index, renderer] of renderers.entries()) {
+      renderer.keyInput.on("keypress", () => inputs.push(index))
+      renderer.on("resize", () => resizes.push(index))
+      renderer.pause()
+      for (let call = 0; call < 2; call++) renderer.requestAnimationFrame(() => animation.push(index))
+      if (index === 2) renderer.setFrameCallback(() => host.promise)
+      renderer.start()
+    }
+    await scheduler.turns(24)
+    expect(animation).toEqual([0, 1, 2, 0, 1, 2])
+    expect(release).toBeDefined()
+    for (const renderer of renderers) {
+      renderer.stdin.emit("data", Buffer.from("a"))
+      renderer.requestResize(4, 2)
+      renderer.requestResize(3, 1)
+    }
+    expect(inputs).toEqual([0, 1, 2])
+    clock.advance(2)
+    await scheduler.turns(24)
+    expect(resizes).toEqual([1])
+    expect(renderers.map((renderer) => renderer.width)).toEqual([2, 3, 2])
+    for (const [index, renderer] of renderers.entries()) {
+      renderer.destroy()
+      void renderer.closed.then(() => closed.push(index))
+    }
+    await scheduler.turns(24)
+    expect(closed.sort()).toEqual([1, 2])
+    hold = false
+    release?.()
+    release = undefined
+    await scheduler.turns(24)
+    await Promise.all(renderers.map((renderer) => renderer.closed))
+    expect(animation).toHaveLength(6)
+  } finally {
+    host.resolve()
+    hold = false
+    release?.()
+    for (const renderer of renderers) {
+      renderer.destroy()
+      renderer.nativeScene.driver.dispose()
+    }
+    await scheduler.turns(8)
+    await Promise.allSettled(renderers.map((renderer) => renderer.closed))
+  }
+})
+
+// #1875: a late close drops the frame the render loop waits for. Its presentation rejects, and the loop ends
+// without reporting an error for the closed Session.
+test("a late close rejects the dropped frame's presentation and the render loop ends quietly", async () => {
+  const scheduler = new ManualScheduler()
+  const clock = new ManualClock()
+  const stdout = new RecordingWriteStream(2, 1, { highWaterMark: 1 })
+  const renderer = rendererFor(scheduler, stdout, clock, 25)
+  const errors: unknown[] = []
+  renderer.on("render:error", (event) => errors.push(event.error))
+  try {
+    stdout.hold()
+    renderer.start()
+    await scheduler.turns(8)
+    const driver = renderer.nativeScene.driver
+    const presented = outcome(driver.whenPresented())
+    const closed = outcome(driver.close())
+    await scheduler.turns(40)
+    stdout.release()
+    await scheduler.turns(40)
+    expect([await presented, await closed, errors]).toEqual([late, late, []])
+  } finally {
+    stdout.release()
+    renderer.destroy()
+    renderer.nativeScene.driver.dispose()
+    await scheduler.turns(8)
+  }
+})
+
+/**
+ * Process stdout through a scripted stdout writer (post_stdout over the ticket ABI): copy n's write ends at
+ * `doneAt[n]` ms; `null` is a copy the thread never picks up, which wait=1 takes back unread. drain_stdout writes
+ * through the ticket ABI too. Records each post's byte limit, and counts drains and started copies.
+ */
+async function withStdoutWriter(
+  doneAt: readonly (number | null)[],
+  closeTimeoutMs: number,
+  run: (
+    driver: NativeSession,
+    scheduler: ManualScheduler,
+    posts: { maxBytes: number; wait: boolean; at: bigint }[],
+    counts: { drains: number; copies: number },
+  ) => Promise<void>,
+): Promise<void> {
+  const scheduler = new ManualScheduler()
+  const sink = new Sink()
+  Object.assign(sink, { fd: 1 })
+  const stdout = Object.getOwnPropertyDescriptor(process, "stdout")!
+  const postStdout = lib.sessionPostStdout
+  const drainStdout = lib.sessionDrainStdout
+  const posts: { maxBytes: number; wait: boolean; at: bigint }[] = []
+  const counts = { drains: 0, copies: 0 }
+  let copy: { ticket: NonNullable<ReturnType<typeof lib.sessionReadOutput>>; done: bigint } | null = null
+  let parked = false
+  let started = 0
+  Object.defineProperty(process, "stdout", { value: sink, configurable: true, writable: true })
+  lib.sessionDrainStdout = (context, session) => {
+    counts.drains++
+    const ticket = lib.sessionReadOutput(context, session, new Uint8Array(65_536))
+    if (!ticket) return 0
+    lib.sessionCompleteOutput(context, session, ticket, true)
+    return ticket.byteCount
+  }
+  lib.sessionPostStdout = (context, session, maxBytes, wait) => {
+    posts.push({ maxBytes, wait, at: scheduler.time })
+    if (posts.length > 1000) throw new Error("the driver keeps posting")
+    if (parked) {
+      if (!wait) return { written: 0, inFlight: true }
+      parked = false
+      return { written: 0, inFlight: false }
+    }
+    let written = 0
+    if (copy) {
+      if (scheduler.time < copy.done && !wait) return { written: 0, inFlight: true }
+      lib.sessionCompleteOutput(context, session, copy.ticket, true)
+      written = copy.ticket.byteCount
+      copy = null
+    }
+    if (wait || maxBytes === 0) return { written, inFlight: false }
+    const done = doneAt[started++]
+    if (done === null) {
+      parked = true
+      return { written, inFlight: true }
+    }
+    const ticket = lib.sessionReadOutput(context, session, new Uint8Array(maxBytes))
+    if (!ticket) return { written, inFlight: false }
+    counts.copies++
+    copy = { ticket, done: BigInt(done!) * MS }
+    return { written, inFlight: true }
+  }
+  try {
+    const driver = new NativeSession(sink, { scheduler, output, closeTimeoutMs })
+    try {
+      await run(driver, scheduler, posts, counts)
+    } finally {
+      if (!driver.disposed) driver.dispose()
+    }
+  } finally {
+    lib.sessionPostStdout = postStdout
+    lib.sessionDrainStdout = drainStdout
+    Object.defineProperty(process, "stdout", stdout)
+  }
+}
+
+test("the stdout writer is polled in one task with a growing backoff, and a collect starts the next copy", async () => {
+  await withStdoutWriter([40, 41], 100, async (driver, scheduler, posts) => {
+    const delays: (number | undefined)[] = []
+    const schedule = scheduler.schedule.bind(scheduler)
+    let live = 0
+    let most = 0
+    scheduler.schedule = (callback, delayMs) => {
+      delays.push(delayMs)
+      most = Math.max(most, ++live)
+      const cancel = schedule(() => (live--, callback()), delayMs)
+      return () => (live--, cancel())
+    }
+    expect(driver.write(new Uint8Array(6000).fill(97))).toBe(true)
+    for (let ms = 0; ms <= 60; ms++) await scheduler.run(ms)
+    // The post, then the next turn, then timed polls from 1 ms that grow with the copy's age to at most 50 ms
+    // (R21: one task at a time). Untimed entries after the first two are the scheduler's own ready turns.
+    expect(delays.slice(0, 2)).toEqual([undefined, undefined])
+    const steps = delays.filter((delay) => delay !== undefined)
+    expect(steps.slice(0, 8)).toEqual([1, 1, 1, 1, 1, 1, 1, 1])
+    expect(steps).toContain(5)
+    expect(Math.max(...steps)).toBeLessThanOrEqual(50)
+    expect(most).toBe(1)
+    // The first poll after 40 ms collected the first copy and started the second in the same call (I12).
+    const collect = posts.find((post) => post.at >= 40n * MS)!
+    expect(collect.maxBytes).toBeGreaterThan(0)
+    // Two copies in all: the write was 6000 bytes in 4 KiB chunks.
+    expect(posts.filter((post) => post.maxBytes > 0 && !post.wait).length).toBeGreaterThanOrEqual(2)
+    let idle = false
+    void driver.idle().then(() => (idle = true))
+    await scheduler.run(61)
+    expect(idle).toBe(true)
+  })
+})
+
+// #1870: the second copy ends at 300 ms, after the deadline: 175 polls in all, the last at 329 ms. A 1 ms grace caps
+// the close at 10 ms (#1875), which drops the copy queued behind the first, in flight until 300 ms; its polls still
+// back off. With stdout corked the third copy waits with nothing in flight, so the deadline restarted at the collect
+// drops it at 429 ms; the close ends late if stdout moves within another deadline. A copy collected at 900 ms with
+// stdout corked restarts the deadline past the cap, and the cap still drops at 1000 ms. A deadline from
+// armCloseTimeout is held the same way.
+test.each([
+  { timeoutMs: 100, bytes: 6000, expected: "closed" },
+  { timeoutMs: 1, bytes: 6000, doneAt: [300], posts: 103, expected: late },
+  { timeoutMs: 100, bytes: 9000, cork: true, expected: timeout },
+  { timeoutMs: 100, bytes: 9000, cork: true, uncork: 450, expected: late },
+  { timeoutMs: 100, bytes: 6000, doneAt: [900], cork: true, posts: 113, settledMs: 1100, expected: timeout },
+  { timeoutMs: 100, bytes: 6000, arm: true, expected: "closed" },
+])("a close waits for the writer's copy in flight past the deadline: %o", async ({ timeoutMs, bytes, ...row }) => {
+  await withStdoutWriter(row.doneAt ?? [10, 300], timeoutMs, async (driver, scheduler, posts) => {
+    expect(driver.write(new Uint8Array(bytes).fill(98))).toBe(true)
+    if (row.arm) driver.armCloseTimeout()
+    let settledMs = 0
+    const close = () => outcome(driver.close()).finally(() => (settledMs = Number(scheduler.time / MS)))
+    let closed = row.arm ? null : close()
+    for (let ms = 0; ms <= 1200; ms++) {
+      if (row.cork && ms === 20) process.stdout.cork()
+      if (ms === row.uncork) process.stdout.uncork()
+      if (row.arm && ms === 350) closed = close()
+      await scheduler.run(ms)
+    }
+    expect(await closed).toBe(row.expected)
+    expect(posts.length).toBe(row.posts ?? 175)
+    if (row.settledMs) expect(settledMs).toBe(row.settledMs)
+  })
+})
+
+// #1875: five copies, the first in flight until 1050 ms. The cap, ten deadlines after close, drops the other four, and
+// the close ends late once the first is written; a copy collected at the cap starts no other. An exit during the held
+// close, or during the split-footer flush before it (armed deadline), drops them at once, and on the drain path (no
+// writer) it drains none of them.
+test.each([
+  { firstMs: 1050, exitAt: null, drain: false },
+  { firstMs: 1000, exitAt: null, drain: false },
+  { firstMs: 1050, exitAt: 500, drain: false },
+  { firstMs: 1050, exitAt: 500, drain: false, arm: true },
+  { firstMs: 1050, exitAt: 0, drain: true },
+])("a held close keeps only the copy in flight: %o", async ({ firstMs, exitAt, drain, arm }) => {
+  if (drain) process.env.OTUI_STDOUT_THREAD = "0"
+  clearEnvCache()
+  try {
+    await withStdoutWriter(
+      [0, 1, 2, 3, 4].map((n) => firstMs + n),
+      100,
+      async (driver, scheduler, _posts, counts) => {
+        expect(driver.write(new Uint8Array(20_000).fill(99))).toBe(true)
+        const closed = arm ? driver.armCloseTimeout() : outcome(driver.close())
+        for (let ms = 0; ms <= 2100; ms += 10) {
+          if (ms === exitAt) expect(driver.restoreOnExit()).toBe(true)
+          await scheduler.run(ms)
+        }
+        expect(counts.copies + counts.drains).toBe(drain ? 0 : 1)
+        if (exitAt === null) expect(await closed).toBe(late)
+      },
+    )
+  } finally {
+    delete process.env.OTUI_STDOUT_THREAD
+    clearEnvCache()
+  }
+})
+
+test.each([
+  // A finished copy the driver has not polled yet: exit's first wait collects it (R8).
+  { doneAt: [1], bytes: 100, posted: 0, drained: 0 },
+  // The thread never picks the exit's copy up: exit takes it back once and drains (R8).
+  { doneAt: [1, null], bytes: 6000, posted: 1, drained: 1 },
+  // The thread never picks up the copy posted before exit: no new writer during exit.
+  { doneAt: [null], bytes: 100, posted: 0, drained: 1 },
+])("exit restores through the stdout writer, or after a take-back through the drain: $doneAt", async (row) => {
+  await withStdoutWriter(row.doneAt, 100, async (driver, scheduler, posts, counts) => {
+    expect(driver.write(new Uint8Array(row.bytes).fill(97))).toBe(true)
+    await scheduler.run(0)
+    scheduler.time = MS
+    const before = posts.length
+    expect(driver.restoreOnExit()).toBe(true)
+    expect(posts.slice(before).filter((post) => !post.wait && post.maxBytes > 0)).toHaveLength(row.posted)
+    expect(counts.drains).toBe(row.drained)
+  })
+})

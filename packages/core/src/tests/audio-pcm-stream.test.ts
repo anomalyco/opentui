@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { createServer } from "node:http"
-import { Audio, AudioStream, AudioStreamError, type AudioStreamOptions } from "../index.js"
+import { Audio, AudioStream, type AudioStreamOptions } from "../index.js"
 import { resolveRenderLib } from "../zig.js"
 
 const audios: Audio[] = []
@@ -219,16 +219,17 @@ for (const [inputRate, outputRate] of [
         ...options,
         sampleRate: inputRate,
         channels: 1,
-        buffer: { capacityMs: 100, startupMs: 1, resumeMs: 1 },
+        // The clip is shorter than startup, so playback waits for decoded EOF and a slow decoder cannot underrun.
+        buffer: { capacityMs: 100, startupMs: 100, resumeMs: 1 },
       })
-      // Let the finite source reach EOF before comparing samples; mixing during ingestion would add underrun silence.
-      await until(() => stream.getStats().bytesReceived === BigInt(bytes.length))
       const output = await drive(audio, stream)
       const stats = stream.getStats()
       expect(stats.framesPlayed).toBe(stats.framesDecoded)
       expect(Number(stats.framesPlayed)).toBeGreaterThanOrEqual(Math.floor(outputRate * 0.04))
       expect(Number(stats.framesPlayed)).toBeLessThan(Math.ceil(outputRate * 0.045))
-      const audible = output.slice(0, Number(stats.framesPlayed) * 2)
+      // Mixes before playback starts return whole silent 128-frame chunks.
+      const first = output.findIndex((sample) => sample !== 0)
+      const audible = output.slice(first - (first % 256), first - (first % 256) + Number(stats.framesPlayed) * 2)
       let crossings = 0
       for (let i = 2; i < audible.length; i += 2) {
         expect(audible[i]).toBeCloseTo(audible[i + 1], 6)
@@ -269,7 +270,7 @@ test("PCM rejects an incomplete final frame and non-finite samples through share
     await stream.closed
     expect(stream.state).toBe("errored")
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toBeInstanceOf(AudioStreamError)
+    expect(errors[0]).toHaveProperty("context", { action: "decoder", errorCode: -3 })
     expect(audio.getStats()!.voicesActive).toBe(0)
   }
 })

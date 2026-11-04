@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const buffer = @import("buffer.zig");
-const events = @import("event-emitter.zig");
+const text_work = @import("text-work.zig");
 
 pub const RGBA = buffer.RGBA;
 
@@ -19,7 +19,36 @@ pub const SyntaxStyleError = error{
     StyleNotFound,
 };
 
-pub const Event = enum { Destroy };
+/// A text buffer's binding to the style it draws with. The style lists its borrowers, so a
+/// definition change visits only them. `dependent` is the Context object that owns the buffer.
+pub const Borrower = struct {
+    style: ?*SyntaxStyle = null,
+    previous: ?*Borrower = null,
+    next: ?*Borrower = null,
+    dependent: Dependent = .none,
+
+    pub const Dependent = union(enum) { none, text: *anyopaque, edit: *anyopaque };
+
+    /// Binding never allocates, so it cannot fail.
+    pub fn bind(self: *Borrower, style: ?*SyntaxStyle) void {
+        if (self.style == style) return;
+        self.unbind();
+        const next = style orelse return;
+        self.* = .{ .style = next, .next = next.borrowers, .dependent = self.dependent };
+        if (next.borrowers) |head| head.previous = self;
+        next.borrowers = self;
+    }
+
+    fn unbind(self: *Borrower) void {
+        const style = self.style orelse return;
+        if (self.previous) |previous| previous.next = self.next else style.borrowers = self.next;
+        if (self.next) |next| next.previous = self.previous;
+        self.* = .{ .dependent = self.dependent };
+    }
+};
+
+/// The first id that registration never returns (`OT_STYLE_RUN_FLAG`).
+pub const id_limit: u32 = 0x8000_0000;
 
 pub const SyntaxStyle = struct {
     allocator: Allocator,
@@ -30,9 +59,7 @@ pub const SyntaxStyle = struct {
     id_to_style: std.AutoHashMapUnmanaged(u32, StyleDefinition),
     next_id: u32,
 
-    merged_cache: std.StringHashMapUnmanaged(StyleDefinition),
-
-    emitter: events.EventEmitter(Event),
+    borrowers: ?*Borrower = null,
 
     pub fn init(global_allocator: Allocator) SyntaxStyleError!*SyntaxStyle {
         const self = global_allocator.create(SyntaxStyle) catch return SyntaxStyleError.OutOfMemory;
@@ -51,8 +78,6 @@ pub const SyntaxStyle = struct {
             .name_to_id = .empty,
             .id_to_style = .empty,
             .next_id = 1, // Start from 1, 0 can be used as "invalid"
-            .merged_cache = .empty,
-            .emitter = events.EventEmitter(Event).init(internal_allocator),
         };
 
         return self;
@@ -62,26 +87,32 @@ pub const SyntaxStyle = struct {
         const global_allocator = self.global_allocator;
         defer global_allocator.destroy(self);
 
-        self.emitter.emit(.Destroy);
-        self.emitter.deinit();
+        // Borrowers outlive the style: they draw without it from now on.
+        while (self.borrowers) |borrower| borrower.unbind();
         self.arena.deinit();
         global_allocator.destroy(self.arena);
         self.* = undefined;
     }
 
-    fn putStyle(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
+    pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
+        text_work.add(.style_registrations, 1);
         if (self.name_to_id.get(name)) |existing_id| {
-            try self.id_to_style.put(self.allocator, existing_id, definition);
+            self.id_to_style.getPtr(existing_id).?.* = definition;
             return existing_id;
         }
 
         const id = self.next_id;
-        self.next_id += 1;
+        // Ids with bit 31 set name a text buffer's run styles.
+        if (id == 0 or id >= id_limit) return SyntaxStyleError.InvalidId;
 
+        try self.name_to_id.ensureUnusedCapacity(self.allocator, 1);
+        try self.id_to_style.ensureUnusedCapacity(self.allocator, 1);
+        // Duplicate last so a rejected registration cannot strand an arena-owned name.
         const owned_name = self.allocator.dupe(u8, name) catch return SyntaxStyleError.OutOfMemory;
 
-        try self.name_to_id.put(self.allocator, owned_name, id);
-        try self.id_to_style.put(self.allocator, id, definition);
+        self.name_to_id.putAssumeCapacity(owned_name, id);
+        self.id_to_style.putAssumeCapacity(id, definition);
+        self.next_id += 1;
 
         return id;
     }
@@ -92,10 +123,6 @@ pub const SyntaxStyle = struct {
             .bg = bg,
             .attributes = attributes,
         });
-    }
-
-    pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
-        return self.putStyle(name, definition);
     }
 
     pub fn resolveById(self: *const SyntaxStyle, id: u32) ?StyleDefinition {
@@ -111,63 +138,7 @@ pub const SyntaxStyle = struct {
         return self.resolveById(id);
     }
 
-    pub fn mergeStyles(self: *SyntaxStyle, ids: []const u32) SyntaxStyleError!StyleDefinition {
-        var cache_key_buffer: [512]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&cache_key_buffer);
-
-        for (ids, 0..) |id, i| {
-            if (i > 0) writer.writeByte(':') catch return SyntaxStyleError.OutOfMemory;
-            writer.print("{d}", .{id}) catch return SyntaxStyleError.OutOfMemory;
-        }
-
-        const cache_key = writer.buffered();
-
-        if (self.merged_cache.get(cache_key)) |cached| {
-            return cached;
-        }
-
-        var merged: StyleDefinition = .{
-            .fg = null,
-            .bg = null,
-            .attributes = 0,
-        };
-
-        for (ids) |id| {
-            if (self.resolveById(id)) |style| {
-                if (style.fg) |fg| {
-                    merged.fg = fg;
-                }
-                if (style.bg) |bg| {
-                    merged.bg = bg;
-                }
-                // Attributes are OR'd together
-                merged.attributes |= style.attributes;
-            }
-        }
-
-        const owned_cache_key = self.allocator.dupe(u8, cache_key) catch return SyntaxStyleError.OutOfMemory;
-        self.merged_cache.put(self.allocator, owned_cache_key, merged) catch return SyntaxStyleError.OutOfMemory;
-
-        return merged;
-    }
-
-    pub fn clearCache(self: *SyntaxStyle) void {
-        self.merged_cache.clearRetainingCapacity();
-    }
-
-    pub fn getCacheSize(self: *const SyntaxStyle) usize {
-        return self.merged_cache.count();
-    }
-
     pub fn getStyleCount(self: *const SyntaxStyle) usize {
         return self.id_to_style.count();
-    }
-
-    pub fn onDestroy(self: *SyntaxStyle, ctx: *anyopaque, handle: *const fn (*anyopaque) void) SyntaxStyleError!void {
-        self.emitter.on(.Destroy, .{ .ctx = ctx, .handle = handle }) catch return SyntaxStyleError.OutOfMemory;
-    }
-
-    pub fn offDestroy(self: *SyntaxStyle, ctx: *anyopaque, handle: *const fn (*anyopaque) void) void {
-        self.emitter.off(.Destroy, .{ .ctx = ctx, .handle = handle });
     }
 };

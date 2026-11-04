@@ -2,6 +2,9 @@ import type { CliRenderer } from "../renderer.js"
 
 export interface TimelineOptions {
   duration?: number
+  /** Updates per second while it plays, above 0 (Infinity allowed). Below the renderer's targetFps it ticks on the
+   * shared animation clock instead of holding the render loop. Default: the engine's `defaults.frameRate` (60). */
+  frameRate?: number
   loop?: boolean
   autoplay?: boolean
   onComplete?: () => void
@@ -288,6 +291,7 @@ export class Timeline {
   public isPlaying: boolean = false
   public isComplete: boolean = false
   public duration: number
+  private _frameRate: number | undefined
   public loop: boolean
   public synced: boolean = false
   private autoplay: boolean
@@ -297,10 +301,20 @@ export class Timeline {
 
   constructor(options: TimelineOptions = {}) {
     this.duration = options.duration || 1000
+    this.frameRate = options.frameRate
     this.loop = options.loop === true
     this.autoplay = options.autoplay !== false
     this.onComplete = options.onComplete
     this.onPause = options.onPause
+  }
+
+  public get frameRate(): number | undefined {
+    return this._frameRate
+  }
+
+  public set frameRate(value: number | undefined) {
+    if (value !== undefined && !(value > 0)) throw new RangeError(`frameRate must be above 0, got ${value}`)
+    this._frameRate = value
   }
 
   public addStateChangeListener(listener: (timeline: Timeline) => void): void {
@@ -418,10 +432,11 @@ export class Timeline {
       subTimeline.timeline.pause()
     })
     this.isPlaying = false
-    if (this.onPause) {
-      this.onPause()
+    try {
+      this.onPause?.()
+    } finally {
+      this.notifyStateChange()
     }
-    this.notifyStateChange()
     return this
   }
 
@@ -489,62 +504,90 @@ export class Timeline {
       this.isPlaying = false
       this.isComplete = true
 
-      if (this.onComplete) {
-        this.onComplete()
+      try {
+        this.onComplete?.()
+      } finally {
+        this.notifyStateChange()
       }
-      this.notifyStateChange()
     }
   }
 }
 
+const rendererEngines = new WeakMap<CliRenderer, TimelineEngine>()
+const timelineOwners = new WeakMap<Timeline, TimelineEngine>()
+
 class TimelineEngine {
   private timelines: Set<Timeline> = new Set()
   private renderer: CliRenderer | null = null
-  private frameCallback: ((deltaTime: number) => Promise<void>) | null = null
+  // While the engine ticks, the tick updates timelines instead, so their render requests share its frame.
+  private frameCallback = async (deltaTime: number): Promise<void> => {
+    if (this.tickFps === 0) this.update(deltaTime)
+  }
   private isLive: boolean = false
+  private tickFps = 0
+  private stopTicks: (() => void) | undefined
   public defaults = {
     frameRate: 60,
   }
 
+  /** The default engine moves to the renderer. A renderer-owned engine attaches to one owner; detach it first. */
   attach(renderer: CliRenderer): void {
-    if (this.renderer) {
-      this.detach()
+    if (renderer.isDestroyed) throw new Error("Cannot attach timelines to a destroyed renderer")
+    if (this.renderer === renderer) {
+      if (!renderer.hasFrameCallback(this.frameCallback)) renderer.setFrameCallback(this.frameCallback)
+      return
     }
-
+    if (this === engine) this.detach()
+    else if (this.renderer)
+      throw new Error("Timeline engine is already attached; use getTimelineEngine(renderer) for another renderer")
+    else if (rendererEngines.has(renderer))
+      throw new Error("Renderer already has a timeline engine; use getTimelineEngine(renderer)")
+    else rendererEngines.set(renderer, this)
     this.renderer = renderer
-    this.frameCallback = async (deltaTime: number) => {
-      this.update(deltaTime)
-    }
-
     renderer.setFrameCallback(this.frameCallback)
+    this.updateLiveState()
   }
 
   detach(): void {
-    if (this.renderer && this.frameCallback) {
+    if (this.renderer) {
+      if (this !== engine) rendererEngines.delete(this.renderer)
       this.renderer.removeFrameCallback(this.frameCallback)
       if (this.isLive) {
         this.renderer.dropLive()
         this.isLive = false
       }
+      this.setTickFps(0)
     }
     this.renderer = null
-    this.frameCallback = null
   }
 
+  // The fastest playing timeline sets the rate. At or above targetFps it holds the loop, as before frameRate was
+  // read, and the frame callback updates timelines; below it, the clock's ticks update them.
   private updateLiveState(): void {
     if (!this.renderer) return
 
-    const hasRunningTimelines = Array.from(this.timelines).some(
-      (timeline) => !timeline.synced && timeline.isPlaying && !timeline.isComplete,
-    )
+    let fps = 0
+    for (const timeline of this.timelines) {
+      if (timeline.synced || !timeline.isPlaying || timeline.isComplete) continue
+      fps = Math.max(fps, timeline.frameRate ?? this.defaults.frameRate)
+    }
+    const live = fps > 0 && fps >= this.renderer.targetFps
 
-    if (hasRunningTimelines && !this.isLive) {
+    if (live && !this.isLive) {
       this.renderer.requestLive()
       this.isLive = true
-    } else if (!hasRunningTimelines && this.isLive) {
+    } else if (!live && this.isLive) {
       this.renderer.dropLive()
       this.isLive = false
     }
+    this.setTickFps(live ? 0 : fps)
+  }
+
+  private setTickFps(fps: number): void {
+    if (fps === this.tickFps) return
+    this.stopTicks?.()
+    this.stopTicks = fps > 0 ? this.renderer?.onAnimationTick(fps, (deltaTime) => this.update(deltaTime)) : undefined
+    this.tickFps = fps
   }
 
   private onTimelineStateChange = (timeline: Timeline): void => {
@@ -552,7 +595,10 @@ class TimelineEngine {
   }
 
   register(timeline: Timeline): void {
+    const owner = timelineOwners.get(timeline)
+    if (owner && owner !== this) throw new Error("Timeline belongs to another timeline engine; unregister it first")
     if (!this.timelines.has(timeline)) {
+      timelineOwners.set(timeline, this)
       this.timelines.add(timeline)
       timeline.addStateChangeListener(this.onTimelineStateChange)
       this.updateLiveState()
@@ -562,6 +608,7 @@ class TimelineEngine {
   unregister(timeline: Timeline): void {
     if (this.timelines.has(timeline)) {
       this.timelines.delete(timeline)
+      timelineOwners.delete(timeline)
       timeline.removeStateChangeListener(this.onTimelineStateChange)
       this.updateLiveState()
     }
@@ -569,6 +616,7 @@ class TimelineEngine {
 
   clear(): void {
     for (const timeline of this.timelines) {
+      timelineOwners.delete(timeline)
       timeline.removeStateChangeListener(this.onTimelineStateChange)
     }
     this.timelines.clear()
@@ -577,6 +625,7 @@ class TimelineEngine {
 
   update(deltaTime: number): void {
     for (const timeline of this.timelines) {
+      if (this.renderer?.isDestroyed) break
       if (!timeline.synced) {
         timeline.update(deltaTime)
       }
@@ -584,15 +633,36 @@ class TimelineEngine {
   }
 }
 
+/** Default engine, kept apart from renderer-owned engines. The last React or Solid render() call drives it. */
 export const engine = new TimelineEngine()
 
-export function createTimeline(options: TimelineOptions = {}): Timeline {
+/** Returns the renderer's engine and restores its frame callback if the caller cleared renderer callbacks.
+ * Renderer destruction unregisters its timelines and releases the engine's live request. */
+export function getTimelineEngine(renderer: CliRenderer): TimelineEngine {
+  const owner = rendererEngines.get(renderer) ?? new TimelineEngine()
+  owner.attach(renderer)
+  return owner
+}
+
+/** @internal Renderer finalization releases ownership even when a destroy listener throws. */
+export function destroyTimelineEngine(renderer: CliRenderer): void {
+  const owner = rendererEngines.get(renderer)
+  owner?.clear()
+  owner?.detach()
+  if (engine["renderer"] === renderer) engine.detach()
+}
+
+/** Creates and registers a timeline, playing unless autoplay is false.
+ * Pass the renderer explicitly for independent sessions: createTimeline({ duration: 500 }, renderer).
+ * Omitting the renderer uses the default engine, which the last React or Solid render() call attached. */
+export function createTimeline(options: TimelineOptions = {}, renderer?: CliRenderer): Timeline {
+  const owner = renderer ? getTimelineEngine(renderer) : engine
   const timeline = new Timeline(options)
   if (options.autoplay !== false) {
     timeline.play()
   }
 
-  engine.register(timeline)
+  owner.register(timeline)
 
   return timeline
 }

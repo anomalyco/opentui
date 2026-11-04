@@ -1,0 +1,20 @@
+{
+  "name": "@fixture/pkg",
+  "types": "./ignored.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
+    "./extra": {
+      "import": {
+        "types": "./extra.d.ts",
+        "default": "./extra.js"
+      }
+    },
+    "./runtime": {
+      "import": "./runtime.js"
+    },
+    "./jsx": "./jsx.d.ts"
+  }
+}

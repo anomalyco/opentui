@@ -1,9 +1,9 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
 const testing = std.testing;
 const iter_mod = @import("../text-buffer-iterators.zig");
 const seg_mod = @import("../text-buffer-segment.zig");
 const text_buffer = @import("../text-buffer.zig");
-const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
 const Segment = seg_mod.Segment;
@@ -183,427 +183,377 @@ test "coordsToOffset and offsetToCoords - round trip" {
 }
 
 test "getGraphemeWidthAt - ASCII text" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("Hello");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - emoji and wide characters" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("a😀b");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - multiple chunks" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("Hello World");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 11, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 11, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - empty line" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - at chunk boundary" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("abcdef");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - after break segment" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("abc\ndef");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - ASCII text" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("Hello");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - emoji and wide characters" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("a😀b");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - at chunk boundary" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("abcdef");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - emoji at chunk boundary" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("a😀b");
 
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - multiple chunks" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("Hello 😀");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - empty line" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - col beyond line width" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("abc");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 100, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 100, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - multiline" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("abc\n😀xyz");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 3, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 1, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - CJK characters (Chinese)" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("a世界b");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - various emoji including star" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("🌟🎉");
 
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - tab characters" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     tb.setTabWidth(4);
 
     try tb.setText("a\tb\t\tc");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 14, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 14, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt - tab with different tab_width" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("x\ty");
 
     tb.setTabWidth(2);
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 2, .unicode));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 2, .hidden, .unicode));
 
     tb.setTabWidth(8);
-    try testing.expectEqual(@as(u32, 8), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 8, .unicode));
+    try testing.expectEqual(@as(u32, 8), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, 8, .hidden, .unicode));
 }
 
 test "getGraphemeWidthAt - middle of wide character" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("世");
 
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    const result = iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod());
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    const result = iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod());
     try testing.expectEqual(@as(u32, 1), result);
 
-    const bounds = iter_mod.getGraphemeBoundsAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()).?;
+    const bounds = iter_mod.getGraphemeBoundsAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()).?;
     try testing.expectEqual(@as(u32, 0), bounds.start);
     try testing.expectEqual(@as(u32, 2), bounds.end);
 }
 
 test "getGraphemeWidthAt - invalid row" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("test");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 5, 0, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 5, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - CJK characters" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("a世界b");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - star emoji" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("x🌟y");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 3, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 4, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - tabs" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     tb.setTabWidth(4);
 
     try tb.setText("a\tb");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getPrevGraphemeWidth - invalid row" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     try tb.setText("test");
 
-    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 10, 5, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 0), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 10, 5, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }
 
 test "getGraphemeWidthAt and getPrevGraphemeWidth - mixed content" {
-    const pool = gp.initGlobalPool(testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     tb.setTabWidth(4);
 
     try tb.setText("Hi\t世🌟!");
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 0, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getGraphemeWidthAt(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.widthMethod()));
-    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 1, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 1), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 2, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 4), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 6, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 8, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
+    try testing.expectEqual(@as(u32, 2), iter_mod.getPrevGraphemeWidth(tb.rope(), tb.memRegistry(), 0, 10, tb.tabWidth(), tb.controlDisplay(), tb.widthMethod()));
 }

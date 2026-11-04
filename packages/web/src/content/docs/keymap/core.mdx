@@ -469,7 +469,8 @@ The root runtime values are:
 | `stringifyKeySequence`     | Format parsed sequence parts.                 |
 | `KEYMAP_EXTENSION_CONTEXT` | Access the advanced engine extension context. |
 
-`keymap[KEYMAP_EXTENSION_CONTEXT]()` returns `state`, `host`, `conditions`, `catalog`, and `activation` services.
+`keymap[KEYMAP_EXTENSION_CONTEXT]()` returns `state`, `host`, `conditions`, `catalog`, `activation`, and `layers`
+services.
 This surface is for tightly coupled engine extensions. Normal addons should use the public registration methods.
 
 The root type surface is grouped below. Advanced callback types appear only in the final two rows.

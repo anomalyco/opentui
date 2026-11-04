@@ -60,7 +60,7 @@ const PALETTE = {
   error: "#FF9B9B",
 } as const
 
-const SURFACE_SYNTAX_STYLE = SyntaxStyle.fromStyles({
+const SURFACE_SYNTAX_STYLES = {
   default: { fg: RGBA.fromInts(230, 237, 243, 255) },
   keyword: { fg: RGBA.fromInts(255, 123, 114, 255), bold: true },
   string: { fg: RGBA.fromInts(165, 214, 255, 255) },
@@ -80,7 +80,7 @@ const SURFACE_SYNTAX_STYLE = SyntaxStyle.fromStyles({
   "markup.link.label": { fg: RGBA.fromInts(88, 166, 255, 255), underline: true },
   "markup.link.url": { fg: RGBA.fromInts(88, 166, 255, 255), underline: true },
   conceal: { fg: RGBA.fromInts(98, 114, 130, 255) },
-})
+}
 
 const SCENARIOS: Record<StreamKind, ScenarioDefinition> = {
   text: {
@@ -365,57 +365,67 @@ class SplitFooterStreamingDemo {
       startOnNewLine: this.inlinePrefix ? false : !spaced,
     })
 
-    let renderable: TextRenderable | CodeRenderable | MarkdownRenderable
-    switch (scenario.kind) {
-      case "text":
-        renderable = new TextRenderable(surface.renderContext, {
-          id: `split-footer-stream-text-${this.nextRunId}`,
-          content: "",
-          width: "100%",
-          wrapMode: "char",
-          fg: PALETTE.title,
-        })
-        break
-      case "code":
-        renderable = new CodeRenderable(surface.renderContext, {
-          id: `split-footer-stream-code-${this.nextRunId}`,
-          content: "",
-          filetype: "typescript",
-          syntaxStyle: SURFACE_SYNTAX_STYLE,
-          width: "100%",
-          wrapMode: "char",
-          drawUnstyledText: false,
-          streaming: true,
-          treeSitterClient: this.treeSitterClient,
-        })
-        break
-      case "markdown":
-        renderable = new MarkdownRenderable(surface.renderContext, {
-          id: `split-footer-stream-markdown-${this.nextRunId}`,
-          content: "",
-          syntaxStyle: SURFACE_SYNTAX_STYLE,
-          width: "100%",
-          streaming: true,
-          internalBlockMode: "top-level",
-          tableOptions: { widthMode: "content" },
-          treeSitterClient: this.treeSitterClient,
-        })
-        break
-    }
+    try {
+      const syntaxStyle =
+        scenario.kind === "text"
+          ? undefined
+          : SyntaxStyle.fromStyles(SURFACE_SYNTAX_STYLES, surface.renderContext.nativeScene!)
+      surface.root.prependOnceListener("destroyed", () => syntaxStyle?.destroy())
+      let renderable: TextRenderable | CodeRenderable | MarkdownRenderable
+      switch (scenario.kind) {
+        case "text":
+          renderable = new TextRenderable(surface.renderContext, {
+            id: `split-footer-stream-text-${this.nextRunId}`,
+            content: "",
+            width: "100%",
+            wrapMode: "char",
+            fg: PALETTE.title,
+          })
+          break
+        case "code":
+          renderable = new CodeRenderable(surface.renderContext, {
+            id: `split-footer-stream-code-${this.nextRunId}`,
+            content: "",
+            filetype: "typescript",
+            syntaxStyle: syntaxStyle!,
+            width: "100%",
+            wrapMode: "char",
+            drawUnstyledText: false,
+            streaming: true,
+            treeSitterClient: this.treeSitterClient,
+          })
+          break
+        case "markdown":
+          renderable = new MarkdownRenderable(surface.renderContext, {
+            id: `split-footer-stream-markdown-${this.nextRunId}`,
+            content: "",
+            syntaxStyle: syntaxStyle!,
+            width: "100%",
+            streaming: true,
+            internalBlockMode: "top-level",
+            tableOptions: { widthMode: "content" },
+            treeSitterClient: this.treeSitterClient,
+          })
+          break
+      }
 
-    surface.root.add(renderable)
+      surface.root.add(renderable)
 
-    return {
-      id: this.nextRunId++,
-      scenario,
-      surface,
-      renderable,
-      content: "",
-      chunkIndex: 0,
-      committedRows: 0,
-      committedBlocks: 0,
-      cancelled: false,
-      done: false,
+      return {
+        id: this.nextRunId++,
+        scenario,
+        surface,
+        renderable,
+        content: "",
+        chunkIndex: 0,
+        committedRows: 0,
+        committedBlocks: 0,
+        cancelled: false,
+        done: false,
+      }
+    } catch (error) {
+      surface.destroy()
+      throw error
     }
   }
 

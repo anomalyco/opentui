@@ -1,0 +1,266 @@
+base 0.4.5
++ @opentui/core: class AudioCaptureStream extends EventEmitter<AudioCaptureStreamEvents>
++ @opentui/core: class AudioCaptureStreamError extends Error
++ @opentui/core: class AudioRecorder extends EventEmitter<AudioRecorderEvents>
++ @opentui/core: class AudioRecorderError extends Error
++ @opentui/core: class ImageError extends Error
++ @opentui/core: class ImageLoadError extends Error
++ @opentui/core: class ImageRenderable extends Renderable
++ @opentui/core: class NativeImage
++ @opentui/core: constructor AudioCaptureStreamError(message: string, context: AudioCaptureStreamErrorContext, cause?: unknown)
++ @opentui/core: constructor AudioRecorderError(message: string, context: AudioRecorderErrorContext, cause?: unknown)
++ @opentui/core: constructor ImageError(status: number)
++ @opentui/core: constructor ImageLoadError(code: ImageLoadErrorCode, source: string, message: string, options?: { cause?: unknown; status?: number; })
++ @opentui/core: constructor ImageRenderable(ctx: RenderContext, options: ImageRenderableOptions)
++ @opentui/core: enum-member CliRenderEvents.HANDLER_ERROR = "handler:error"
++ @opentui/core: enum-member CliRenderEvents.RENDER_ERROR = "render:error"
++ @opentui/core: function imageInfo(data: Uint8Array | ArrayBuffer): ImageInfo
++ @opentui/core: function resolveImageRenderProtocol(requested: ImageRenderProtocol, capabilities: TerminalCapabilities | null, hasResolution: boolean): Exclude<ImageRenderProtocol, "auto">
++ @opentui/core: interface AudioCaptureDevice
++ @opentui/core: interface AudioCaptureOptions
++ @opentui/core: interface AudioCaptureReadResult
++ @opentui/core: interface AudioCaptureStats
++ @opentui/core: interface AudioCaptureStreamErrorContext
++ @opentui/core: interface AudioCaptureStreamEvents
++ @opentui/core: interface AudioCaptureStreamOptions extends AudioCaptureOptions
++ @opentui/core: interface AudioCaptureStreamStats extends AudioCaptureStats
++ @opentui/core: interface AudioRecorderErrorContext
++ @opentui/core: interface AudioRecorderEvents
++ @opentui/core: interface AudioRecorderStats extends AudioCaptureStats
++ @opentui/core: interface CliRendererErrorEvent
++ @opentui/core: interface CliRendererHandlerErrorEvent
++ @opentui/core: interface CompositeOptions
++ @opentui/core: interface ExtendOptions
++ @opentui/core: interface ExtractOptions
++ @opentui/core: interface ImageInfo
++ @opentui/core: interface ImageLoadOptions
++ @opentui/core: interface ImageRenderableOptions extends RenderableOptions<ImageRenderable>
++ @opentui/core: interface MeasureResult
++ @opentui/core: interface OwnedRawImage extends RawImage
++ @opentui/core: interface RawImage
++ @opentui/core: interface ResizeOptions
++ @opentui/core: method Audio.clearCaptureDeviceSelection(): void
++ @opentui/core: method Audio.getCaptureStats(): AudioCaptureStats | null
++ @opentui/core: method Audio.isCapturing(): boolean
++ @opentui/core: method Audio.listCaptureDevices(): AudioCaptureDevice[] | null
++ @opentui/core: method Audio.openCapture(options?: AudioCaptureStreamOptions): Promise<AudioCaptureStream>
++ @opentui/core: method Audio.readCaptureFrames(frameCount: number): AudioCaptureReadResult | null
++ @opentui/core: method Audio.recordToFile(filePath: string, options?: AudioRecordToFileOptions): Promise<AudioRecorder>
++ @opentui/core: method Audio.selectCaptureDevice(index: number): boolean
++ @opentui/core: method Audio.startCapture(options?: AudioCaptureOptions): boolean
++ @opentui/core: method Audio.stopCapture(): boolean
++ @opentui/core: method AudioCaptureStream.dispose(): void
++ @opentui/core: method AudioCaptureStream.getStats(): AudioCaptureStreamStats
++ @opentui/core: method AudioCaptureStream.stop(): void
++ @opentui/core: method AudioRecorder.dispose(): void
++ @opentui/core: method AudioRecorder.getStats(): AudioRecorderStats
++ @opentui/core: method AudioRecorder.stop(): void
++ @opentui/core: protected method ImageRenderable.destroySelf(): void
++ @opentui/core: method ImageRenderable.getFittedSize(targetWidth: number, targetHeight: number, cellAspectRatio?: number, sourceWidth?: number, sourceHeight?: number): { width: number; height: number; }
++ @opentui/core: method ImageRenderable.render(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: protected method ImageRenderable.renderSelf(buffer: OptimizedBuffer): void
++ @opentui/core: method NativeImage.clone(): NativeImage
++ @opentui/core: method NativeImage.composite(overlay: NativeImage, options?: CompositeOptions): NativeImage
++ @opentui/core: method NativeImage.copyTo(destination: Uint8Array, options?: { stride?: number; format?: PixelFormat; }): void
++ @opentui/core: static method NativeImage.decode(data: Uint8Array | ArrayBuffer): NativeImage
++ @opentui/core: method NativeImage.dispose(): void
++ @opentui/core: method NativeImage.extend(options?: ExtendOptions): NativeImage
++ @opentui/core: method NativeImage.extract(options: ExtractOptions): NativeImage
++ @opentui/core: method NativeImage.flip(): NativeImage
++ @opentui/core: method NativeImage.flop(): NativeImage
++ @opentui/core: static method NativeImage.fromRgba(pixels: Uint8Array, width: number, height: number, stride?: number): NativeImage
++ @opentui/core: method NativeImage.info(): ImageInfo
++ @opentui/core: static method NativeImage.load(source: ImageSource, options?: ImageLoadOptions): Promise<NativeImage>
++ @opentui/core: method NativeImage.raw(format?: PixelFormat): RawImage
++ @opentui/core: method NativeImage.resize(options: ResizeOptions): NativeImage
++ @opentui/core: method NativeImage.rotate(angle: 90 | 180 | 270): NativeImage
++ @opentui/core: method NativeImage.takeRaw(): OwnedRawImage
++ @opentui/core: method OptimizedBuffer.drawImage(image: NativeImage, x: number, y: number, width: number, height: number, pixelWidth?: number, pixelHeight?: number, sourceX?: number, sourceY?: number, sourceWidth?: number, sourceHeight?: number, protocol?: ImageRenderProtocol): boolean
++ @opentui/core: method OwnedRawImage.dispose(): void
++ @opentui/core: method RootRenderable.takeCurrentRenderable(): Renderable | undefined
++ @opentui/core: method StdinParser.hasPendingPixelResolutionResponse(): boolean
++ @opentui/core: method StdinParser.pausePendingTimeout(): void
++ @opentui/core: method StdinParser.resumePendingTimeout(): void
+- @opentui/core: method TextBufferView.measureForDimensions(width: number, height: number): { lineCount: number; widthColsMax: number; } | null
++ @opentui/core: method TextBufferView.measureForDimensions(width: number, height: number): MeasureResult | null
++ @opentui/core: property AudioCaptureDevice.index: number
++ @opentui/core: property AudioCaptureDevice.isDefault: boolean
++ @opentui/core: property AudioCaptureDevice.name: string
++ @opentui/core: property AudioCaptureOptions.capacityFrames?: number
++ @opentui/core: property AudioCaptureOptions.channels?: number
++ @opentui/core: property AudioCaptureOptions.startOptions?: AudioStartOptions
++ @opentui/core: property AudioCaptureReadResult.frames: Float32Array
++ @opentui/core: property AudioCaptureReadResult.framesRead: number
++ @opentui/core: property AudioCaptureStats.bufferedFrames: number
++ @opentui/core: property AudioCaptureStats.capacityFrames: number
++ @opentui/core: property AudioCaptureStats.channels: number
++ @opentui/core: property AudioCaptureStats.framesDropped: bigint
++ @opentui/core: property AudioCaptureStats.framesRead: bigint
++ @opentui/core: property AudioCaptureStats.framesReceived: bigint
++ @opentui/core: property AudioCaptureStats.sampleRate: number
++ @opentui/core: readonly property AudioCaptureStream.channels: number
++ @opentui/core: readonly property AudioCaptureStream.chunkFrames: number
++ @opentui/core: readonly property AudioCaptureStream.closed: Promise<void>
++ @opentui/core: readonly property AudioCaptureStream.readable: ReadableStream<Float32Array>
++ @opentui/core: readonly property AudioCaptureStream.sampleRate: number
++ @opentui/core: readonly property AudioCaptureStream.state: AudioCaptureStreamState
++ @opentui/core: readonly property AudioCaptureStreamError.context: AudioCaptureStreamErrorContext
++ @opentui/core: property AudioCaptureStreamErrorContext.action: AudioCaptureStreamAction
++ @opentui/core: property AudioCaptureStreamErrorContext.status?: number
++ @opentui/core: property AudioCaptureStreamEvents.disposed: [ ]
++ @opentui/core: property AudioCaptureStreamEvents.error: [ error: AudioCaptureStreamError, context: AudioCaptureStreamErrorContext ]
++ @opentui/core: property AudioCaptureStreamEvents.stopped: [ ]
++ @opentui/core: property AudioCaptureStreamOptions.chunkFrames?: number
++ @opentui/core: property AudioCaptureStreamOptions.signal?: AbortSignal
++ @opentui/core: property AudioCaptureStreamStats.bufferedDurationMs: number
++ @opentui/core: property AudioCaptureStreamStats.state: AudioCaptureStreamState
++ @opentui/core: property AudioEngineLib.audioClearCaptureDeviceSelection: (engine: AudioEngineHandle) => void
++ @opentui/core: property AudioEngineLib.audioGetCaptureDeviceCount: (engine: AudioEngineHandle) => number
++ @opentui/core: property AudioEngineLib.audioGetCaptureDeviceName: (engine: AudioEngineHandle, index: number) => string
++ @opentui/core: property AudioEngineLib.audioGetCaptureStats: (engine: AudioEngineHandle) => { status: number; stats: NativeAudioCaptureStats | null; }
++ @opentui/core: property AudioEngineLib.audioIsCaptureDeviceDefault: (engine: AudioEngineHandle, index: number) => boolean
++ @opentui/core: property AudioEngineLib.audioIsCaptureRunning: (engine: AudioEngineHandle) => boolean
++ @opentui/core: property AudioEngineLib.audioReadCapture: (engine: AudioEngineHandle, outBuffer: Float32Array, frameCount: number) => { status: number; framesRead: number; }
++ @opentui/core: property AudioEngineLib.audioRefreshCaptureDevices: (engine: AudioEngineHandle) => number
++ @opentui/core: property AudioEngineLib.audioSelectCaptureDevice: (engine: AudioEngineHandle, index: number) => number
++ @opentui/core: property AudioEngineLib.audioStartCapture: (engine: AudioEngineHandle, options: AudioStartOptions | undefined, channels: number, capacityFrames: number) => number
++ @opentui/core: property AudioEngineLib.audioStopCapture: (engine: AudioEngineHandle) => number
++ @opentui/core: property AudioEvents.captureStarted: [ ]
++ @opentui/core: property AudioEvents.captureStopped: [ ]
++ @opentui/core: readonly property AudioRecorder.channels: number
++ @opentui/core: readonly property AudioRecorder.closed: Promise<void>
++ @opentui/core: readonly property AudioRecorder.filePath: string
++ @opentui/core: readonly property AudioRecorder.format: "wav"
++ @opentui/core: readonly property AudioRecorder.sampleRate: number
++ @opentui/core: readonly property AudioRecorder.state: AudioRecorderState
++ @opentui/core: readonly property AudioRecorderError.context: AudioRecorderErrorContext
++ @opentui/core: property AudioRecorderErrorContext.action: AudioRecorderAction
++ @opentui/core: property AudioRecorderErrorContext.status?: number
++ @opentui/core: property AudioRecorderEvents.disposed: [ ]
++ @opentui/core: property AudioRecorderEvents.error: [ error: AudioRecorderError, context: AudioRecorderErrorContext ]
++ @opentui/core: property AudioRecorderEvents.stopped: [ ]
++ @opentui/core: property AudioRecorderStats.bufferedDurationMs: number
++ @opentui/core: property AudioRecorderStats.dataBytesWritten: bigint
++ @opentui/core: property AudioRecorderStats.durationMs: number
++ @opentui/core: property AudioRecorderStats.framesWritten: bigint
++ @opentui/core: property AudioRecorderStats.state: AudioRecorderState
++ @opentui/core: property CliRendererErrorEvent.error: Error
++ @opentui/core: property CliRendererErrorEvent.renderable: Renderable | undefined
++ @opentui/core: property CliRendererHandlerErrorEvent.error: unknown
++ @opentui/core: property CliRendererHandlerErrorEvent.event: MouseEvent
++ @opentui/core: property CompositeOptions.blend?: BlendMode
++ @opentui/core: property CompositeOptions.left?: number
++ @opentui/core: property CompositeOptions.opacity?: number
++ @opentui/core: property CompositeOptions.top?: number
++ @opentui/core: property EnvVarConfig.required?: boolean
++ @opentui/core: property ExtendOptions.background?: readonly [ number, number, number, number ]
++ @opentui/core: property ExtendOptions.bottom?: number
++ @opentui/core: property ExtendOptions.left?: number
++ @opentui/core: property ExtendOptions.right?: number
++ @opentui/core: property ExtendOptions.top?: number
++ @opentui/core: property ExtractOptions.height: number
++ @opentui/core: property ExtractOptions.left: number
++ @opentui/core: property ExtractOptions.top: number
++ @opentui/core: property ExtractOptions.width: number
++ @opentui/core: readonly property ImageError.code: ImageErrorCode
++ @opentui/core: readonly property ImageError.status: number
++ @opentui/core: property ImageInfo.colorStatus: ImageColorStatus
++ @opentui/core: property ImageInfo.format: ImageFormat
++ @opentui/core: property ImageInfo.hasAlpha: boolean
++ @opentui/core: property ImageInfo.height: number
++ @opentui/core: property ImageInfo.orientation: number
++ @opentui/core: property ImageInfo.sourceHeight: number
++ @opentui/core: property ImageInfo.sourceWidth: number
++ @opentui/core: property ImageInfo.width: number
++ @opentui/core: readonly property ImageLoadError.code: ImageLoadErrorCode
++ @opentui/core: readonly property ImageLoadError.source: string
++ @opentui/core: readonly property ImageLoadError.status?: number
++ @opentui/core: property ImageLoadOptions.fetch?: (input: URL, init?: RequestInit) => Promise<Response>
++ @opentui/core: property ImageLoadOptions.signal?: AbortSignal
++ @opentui/core: readonly property ImageRenderable.cellAspectRatio: number
++ @opentui/core: readonly property ImageRenderable.effectiveProtocol: Exclude<ImageRenderProtocol, "auto">
++ @opentui/core: property ImageRenderable.fit: ImageFit
++ @opentui/core: readonly property ImageRenderable.image: NativeImage | null
++ @opentui/core: readonly property ImageRenderable.loadError: unknown
++ @opentui/core: property ImageRenderable.loadPromise: Promise<void> | null
++ @opentui/core: readonly property ImageRenderable.loading: boolean
++ @opentui/core: property ImageRenderable.onError?: (error: unknown) => void
++ @opentui/core: property ImageRenderable.onLoad?: (image: NativeImage) => void
++ @opentui/core: property ImageRenderable.protocol: ImageRenderProtocol
++ @opentui/core: property ImageRenderable.source: ImageSource | undefined
++ @opentui/core: property ImageRenderableOptions.fit?: ImageFit
++ @opentui/core: property ImageRenderableOptions.onError?: (error: unknown) => void
++ @opentui/core: property ImageRenderableOptions.onLoad?: (image: NativeImage) => void
++ @opentui/core: property ImageRenderableOptions.protocol?: ImageRenderProtocol
++ @opentui/core: property ImageRenderableOptions.source?: ImageSource
++ @opentui/core: property MeasureResult.lineCount: number
++ @opentui/core: property MeasureResult.widthColsMax: number
++ @opentui/core: readonly property MouseEvent.currentTarget: Renderable | null
++ @opentui/core: readonly property NativeImage.height: number
++ @opentui/core: readonly property NativeImage.ptr: ImageHandle
++ @opentui/core: readonly property NativeImage.width: number
++ @opentui/core: property RawImage.alpha: "straight"
++ @opentui/core: property RawImage.colorSpace: "srgb"
++ @opentui/core: property RawImage.data: Uint8Array
++ @opentui/core: property RawImage.format: PixelFormat
++ @opentui/core: property RawImage.height: number
++ @opentui/core: property RawImage.stride: number
++ @opentui/core: property RawImage.width: number
++ @opentui/core: property RenderContext.resolution?: { width: number; height: number; } | null
++ @opentui/core: property RenderContext.terminalHeight?: number
++ @opentui/core: property RenderContext.terminalWidth?: number
++ @opentui/core: property RenderLib.bufferDrawImage: (buffer: OptimizedBufferHandle, image: ImageHandle, x: number, y: number, width: number, height: number, pixelWidth: number, pixelHeight: number, sourceX: number, sourceY: number, sourceWidth: number, sourceHeight: number, protocol: ImageRenderProtocol) => boolean
++ @opentui/core: property RenderLib.imageClone: (image: ImageHandle) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageComposite: (base: ImageHandle, overlay: ImageHandle, left: number, top: number, blend: number, opacity: number) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageCopyPixels: (image: ImageHandle, destination: Uint8Array, stride: number, bgra: boolean) => number
++ @opentui/core: property RenderLib.imageCreateFromRgba: (pixels: Uint8Array, width: number, height: number, stride: number) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageDecode: (data: Uint8Array) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageDestroy: (image: ImageHandle) => void
++ @opentui/core: property RenderLib.imageExtend: (image: ImageHandle, top: number, right: number, bottom: number, left: number, background: Uint8Array) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageExtract: (image: ImageHandle, left: number, top: number, width: number, height: number) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageGetInfo: (image: ImageHandle) => { status: number; info: NativeImageInfo; }
++ @opentui/core: property RenderLib.imageGetPixelsPtr: (image: ImageHandle) => Pointer | null
++ @opentui/core: property RenderLib.imageInfo: (data: Uint8Array) => { status: number; info: NativeImageInfo; }
++ @opentui/core: property RenderLib.imageResize: (image: ImageHandle, width: number, height: number, filter: number) => { status: number; handle: ImageHandle | null; }
++ @opentui/core: property RenderLib.imageTransform: (image: ImageHandle, operation: number) => { status: number; handle: ImageHandle | null; }
+- @opentui/core: property RenderLib.textBufferViewMeasureForDimensions: (view: TextBufferViewHandle, width: number, height: number) => { lineCount: number; widthColsMax: number; } | null
++ @opentui/core: property RenderLib.textBufferViewMeasureForDimensions: (view: TextBufferViewHandle, width: number, height: number) => MeasureResult | null
++ @opentui/core: property ResizeOptions.height?: number
++ @opentui/core: property ResizeOptions.kernel?: ResizeKernel
++ @opentui/core: property ResizeOptions.width?: number
++ @opentui/core: readonly property RootRenderable.currentRenderable: Renderable | undefined
++ @opentui/core: property TerminalCapabilities.image_protocol?: ImageRenderProtocol
+- @opentui/core: type AudioAction = "createAudioEngine" | "start" | "startMixer" | "stop" | "loadSound" | "loadSoundFile" | "unloadSound" | "group" | "play" | "stopVoice" | "setVoiceGroup" | "setGroupVolume" | "setMasterVolume" | "mixFrames" | "enableTap" | "readTapFrames" | "listPlaybackDevices" | "selectPlaybackDevice" | "clearPlaybackDeviceSelection" | "getStats"
++ @opentui/core: type AudioAction = "createAudioEngine" | "start" | "startMixer" | "stop" | "loadSound" | "loadSoundFile" | "unloadSound" | "group" | "play" | "stopVoice" | "setVoiceGroup" | "setGroupVolume" | "setMasterVolume" | "mixFrames" | "enableTap" | "readTapFrames" | "listPlaybackDevices" | "selectPlaybackDevice" | "clearPlaybackDeviceSelection" | "listCaptureDevices" | "selectCaptureDevice" | "clearCaptureDeviceSelection" | "startCapture" | "readCaptureFrames" | "getCaptureStats" | "stopCapture" | "getStats"
++ @opentui/core: type AudioCaptureStreamAction = "start" | "read" | "stop" | "stats" | "destroy"
++ @opentui/core: type AudioCaptureStreamState = "initializing" | "capturing" | "stopping" | "stopped" | "errored" | "disposed"
++ @opentui/core: type AudioRecordToFileOptions = AudioCaptureStreamOptions
++ @opentui/core: type AudioRecorderAction = "open" | "start" | "read" | "write" | "stop" | "finalize" | "publish" | "stats" | "destroy"
++ @opentui/core: type AudioRecorderState = "initializing" | "recording" | "stopping" | "stopped" | "errored" | "disposed"
++ @opentui/core: type BlendMode = "source-over" | "source" | "destination-over"
++ @opentui/core: type ImageColorStatus = "assumed-srgb" | "explicit-srgb"
++ @opentui/core: type ImageErrorCode = "invalid-handle" | "unsupported-format" | "unsupported-color-space" | "malformed-data" | "dimension-limit" | "memory-limit" | "invalid-argument" | "out-of-memory" | "output-too-small" | "internal-error" | "unsupported-feature"
++ @opentui/core: type ImageFit = "fit" | "cover" | "fill"
++ @opentui/core: type ImageFormat = "png" | "raw-rgba" | "jpeg" | "webp" | "gif"
++ @opentui/core: type ImageHandle = NativeHandle<"image">
++ @opentui/core: type ImageLoadErrorCode = "file-read" | "network" | "http-status" | "unsupported-url-scheme"
++ @opentui/core: type ImageRenderProtocol = "auto" | "kitty" | "sixel" | "blocks"
++ @opentui/core: type ImageSource = string | URL | Uint8Array | ArrayBuffer | Blob | Response
++ @opentui/core: type NativeAudioCaptureStats = { framesReceived: bigint; framesRead: bigint; framesDropped: bigint; sampleRate: number; channels: number; bufferedFrames: number; capacityFrames: number; }
++ @opentui/core: type PixelFormat = "rgba8" | "bgra8"
++ @opentui/core: type ResizeKernel = "default" | "area" | "triangle" | "cubic-bspline" | "catmull-rom" | "mitchell" | "nearest"
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.image: ImageProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.image: ImageProps
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; markdown: typeof MarkdownRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; a: typeof LinkRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; markdown: typeof MarkdownRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; image: typeof ImageRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; a: typeof LinkRenderable; }
+- @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : NonStyledProps
++ @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : NonStyledProps
++ @opentui/react: type ImageProps = ComponentProps<ImageRenderableOptions, ImageRenderable>
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.image: ImageProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.image: ImageProps
+- @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; markdown: typeof MarkdownRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; a: typeof LinkRenderable; }
++ @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; markdown: typeof MarkdownRenderable; image: typeof ImageRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; a: typeof LinkRenderable; }
++ @opentui/solid: property JSX.IntrinsicElements.image: ImageProps
+- @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : NonStyledProps
++ @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : TConstructor extends RenderableConstructor<ImageRenderable> ? NonStyledProps | "source" : NonStyledProps
++ @opentui/solid: type ImageProps = ComponentProps<ImageRenderableOptions, ImageRenderable>

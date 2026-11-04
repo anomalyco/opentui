@@ -4,6 +4,10 @@ inputs:
   zig-version:
     description: Zig version that must have produced the library
     required: true
+  ffmpeg:
+    description: On a miss, also restore the FFmpeg build cache, for jobs that then build the library
+    required: false
+    default: "true"
 outputs:
   cache-hit:
     description: true only when the restored library matches the current native inputs
@@ -42,3 +46,13 @@ runs:
         fi
         echo "hit=$hit" >> "$GITHUB_OUTPUT"
         echo "Native host bottle hit: $hit"
+
+    # Native video statically links FFmpeg. Its static libraries depend only on the pinned build script.
+    - name: Restore FFmpeg build cache
+      if: steps.decide.outputs.hit != 'true' && inputs.ffmpeg == 'true'
+      uses: actions/cache@v5
+      with:
+        path: |
+          packages/native/.cache/ffmpeg/prefix
+          packages/native/.cache/ffmpeg/downloads
+        key: ffmpeg-v1-${{ runner.os }}-${{ hashFiles('packages/native/scripts/build-ffmpeg.ts') }}

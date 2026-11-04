@@ -27,7 +27,8 @@ interface PackageJson {
 
 export type PublishedState = "missing" | "identical" | "different"
 
-const SERVED_TIMEOUT_MS = 10 * 60_000
+// npm served @opentui/three@0.5.15 25 minutes after `npm publish` succeeded.
+const SERVED_TIMEOUT_MS = 30 * 60_000
 const SERVED_POLL_MS = 10_000
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -70,6 +71,34 @@ export function publishDirs(names: readonly string[] = []): string[] {
   )
 }
 
+// Semver precedence: negative when left is older than right.
+export function compareVersions(left: string, right: string): number {
+  const [leftCore = "", leftPre] = left.split(/-(.*)/)
+  const [rightCore = "", rightPre] = right.split(/-(.*)/)
+  const leftParts = leftCore.split(".").map(Number)
+  const rightParts = rightCore.split(".").map(Number)
+  for (let index = 0; index < 3; index++) {
+    const difference = leftParts[index]! - rightParts[index]!
+    if (difference !== 0) return difference
+  }
+  if (leftPre === undefined || rightPre === undefined)
+    return (leftPre === undefined ? 1 : 0) - (rightPre === undefined ? 1 : 0)
+  const leftIds = leftPre.split(".")
+  const rightIds = rightPre.split(".")
+  for (let index = 0; index < Math.max(leftIds.length, rightIds.length); index++) {
+    const leftId = leftIds[index]
+    const rightId = rightIds[index]
+    if (leftId === undefined || rightId === undefined) return leftId === undefined ? -1 : 1
+    if (leftId === rightId) continue
+    const leftNumeric = /^\d+$/.test(leftId)
+    const rightNumeric = /^\d+$/.test(rightId)
+    if (leftNumeric && rightNumeric) return Number(leftId) - Number(rightId)
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1
+    return leftId < rightId ? -1 : 1
+  }
+  return 0
+}
+
 function isSnapshotVersion(version: string): boolean {
   return version.includes("-snapshot") || /^0\.0\.0-\d{8}-[a-f0-9]{8}$/.test(version)
 }
@@ -86,7 +115,7 @@ export function localIntegrity(directory: string): string {
   return integrity
 }
 
-async function registryIntegrity(name: string, version: string): Promise<string | undefined> {
+export async function registryIntegrity(name: string, version: string): Promise<string | undefined> {
   const response = await fetch(`${packageUrl(name)}/${version}`, { headers: { accept: "application/json" } })
   if (response.status === 404) return undefined
   if (!response.ok) throw new Error(`npm registry returned ${response.status} for ${name}@${version}`)
@@ -102,7 +131,21 @@ export async function publishedState(directory: string): Promise<PublishedState>
   return remote === localIntegrity(directory) ? "identical" : "different"
 }
 
-export async function publishPackage(directory: string): Promise<void> {
+// The npm dist-tag when NPM_DIST_TAG is not set: for snapshots, and publishes run by hand. `npm publish`
+// moves the tag to the version it publishes, so a version older than the latest release, a patch of an
+// older line, goes to latest-X.Y instead of latest.
+export async function distTag(version: string): Promise<string> {
+  if (isSnapshotVersion(version)) return "snapshot"
+  const name = RELEASE_PACKAGES[0]!.name
+  const response = await fetch(packageUrl(name), { headers: { accept: "application/vnd.npm.install-v1+json" } })
+  if (!response.ok) throw new Error(`npm registry returned ${response.status} for ${name}`)
+  const latest = ((await response.json()) as { "dist-tags"?: { latest?: string } })["dist-tags"]?.latest
+  if (latest === undefined || compareVersions(version, latest) >= 0) return "latest"
+  const [major, minor] = version.split(".")
+  return `latest-${major}.${minor}`
+}
+
+export async function publishPackage(directory: string, tag: string): Promise<void> {
   const { name, version } = readPackageJson(directory)
   const state = await publishedState(directory)
   if (state === "identical") {
@@ -111,8 +154,8 @@ export async function publishPackage(directory: string): Promise<void> {
   }
   if (state === "different") throw new Error(`${name}@${version} is already on npm with different contents`)
 
-  const args = ["publish", "--access=public", ...(isSnapshotVersion(version) ? ["--tag", "snapshot"] : [])]
-  console.log(`\nPublishing ${name}@${version}${isSnapshotVersion(version) ? " (--tag snapshot)" : ""}...`)
+  const args = ["publish", "--access=public", "--tag", tag]
+  console.log(`\nPublishing ${name}@${version} (--tag ${tag})...`)
   const result = spawnSync("npm", args, { cwd: directory, stdio: "inherit" })
   if (result.status !== 0) throw new Error(`Failed to publish ${name}@${version}`)
   console.log(`Successfully published ${name}@${version}`)
@@ -170,7 +213,11 @@ export async function waitUntilServed(directories: readonly string[]): Promise<v
 async function main(): Promise<void> {
   const [command, ...names] = process.argv.slice(2)
   if (command === "publish") {
-    for (const directory of publishDirs(names)) await publishPackage(directory)
+    const directories = publishDirs(names)
+    // release.yml decides the tag of a release from the release tags. Release packages share one
+    // version, so they share one tag.
+    const tag = process.env.NPM_DIST_TAG || (await distTag(readPackageJson(directories[0]!).version))
+    for (const directory of directories) await publishPackage(directory, tag)
     return
   }
   if (command === "wait") {

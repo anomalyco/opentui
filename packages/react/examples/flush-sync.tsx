@@ -1,5 +1,5 @@
 import { createCliRenderer } from "@opentui/core"
-import { createRoot, flushSync, useKeyboard } from "@opentui/react"
+import { createRoot, flushSync, useKeyboard, useRenderer } from "@opentui/react"
 import { useRef, useState } from "react"
 
 /**
@@ -8,6 +8,7 @@ import { useRef, useState } from "react"
  * Press 's' to see flushSync updates (3 separate renders).
  */
 export const App = () => {
+  const renderer = useRenderer()
   const [a, setA] = useState(0)
   const [b, setB] = useState(0)
   const [c, setC] = useState(0)
@@ -17,7 +18,7 @@ export const App = () => {
   renderCount.current++
 
   useKeyboard((key) => {
-    if (key.name === "q") process.exit(0)
+    if (key.name === "q") renderer.destroy()
 
     if (key.name === "a") {
       const before = renderCount.current

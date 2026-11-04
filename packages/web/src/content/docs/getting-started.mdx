@@ -11,12 +11,12 @@ skill:
 OpenTUI is a native terminal UI core written in Zig with TypeScript bindings.
 
 It renders a component tree, lays it out with Flexbox, handles terminal input, and updates the cells that changed.
-OpenTUI's TypeScript packages call the native Zig library through an internal ABI. OpenTUI powers OpenCode in production.
+OpenTUI's TypeScript packages call the Zig library through its native interface. OpenTUI powers OpenCode in production.
 
 ## Start with the quickstart
 
-[Build your first app in the quickstart](/docs/getting-started/quickstart). You will create a project from an empty
-directory, compose a small interface, handle keyboard input, and run it in your terminal.
+[Build your first app in the quickstart](/docs/getting-started/quickstart). In the quickstart, you create a project
+from an empty directory, compose a small interface, handle keyboard input, and run it in your terminal.
 
 The quickstart uses `@opentui/core` directly to teach the renderer, component tree, input, and layout model once. You
 do not need to choose a framework before you complete it.
@@ -41,6 +41,7 @@ If you use Core, read [Renderables](/docs/core-concepts/renderables) after the q
 - [Testing](/docs/core-concepts/testing) renders apps in memory for assertions and snapshots.
 - [Package entry points](/docs/reference/package-entrypoints) lists supported import paths.
 - [Lifecycle and cleanup](/docs/core-concepts/lifecycle) owns terminal restoration and resource release.
+- [Native rendering](/docs/native/overview) explains the scene model and native C and Zig interfaces.
 
 ## Explore the examples
 
@@ -55,11 +56,22 @@ On Windows, download the latest release from [GitHub Releases](https://github.co
 
 ## Give an agent the docs
 
-OpenTUI includes a skill that teaches AI coding assistants its APIs and patterns. Install it with
-[`npx skills`](https://skills.sh):
+OpenTUI includes a skill that teaches AI coding assistants its APIs and patterns. It holds these docs and the release
+notes. Install the skill of the latest release with [`npx skills`](https://skills.sh):
 
 ```bash
-npx skills add anomalyco/opentui --skill opentui
+npx skills add https://opentui.com --skill opentui
 ```
 
-Add `-g` to install the skill globally for every project. OpenCode uses the same install command.
+Add `-g` to install the skill globally for every project. OpenCode uses the same install command. `npx skills update`
+moves the skill to the newest release. For the main branch, install from `https://opentui.com/docs/next` instead.
+
+A skill installed with `npx skills add anomalyco/opentui` follows the main branch. Run the command above to switch it
+to releases.
+
+## Versions
+
+These docs describe one release. The site header names it, and `next` beside it opens the docs of the main branch,
+which include unreleased changes. [Releases](/docs/releases) lists what changed in each release, and the [API reference](/docs/api)
+names the release that added each export. Above its previous and next links, a page lists its changes in recent
+releases.

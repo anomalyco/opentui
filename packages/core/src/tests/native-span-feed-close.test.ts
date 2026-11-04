@@ -1,8 +1,56 @@
-import { test, expect } from "bun:test"
+import { test, expect, spyOn } from "bun:test"
 import { NativeSpanFeed } from "../NativeSpanFeed.js"
 import { resolveRenderLib } from "../zig.js"
 
 const lib = resolveRenderLib()
+
+test("failed registration releases the native stream and callback entry", () => {
+  const register = lib.registerNativeSpanFeedStream.bind(lib)
+  const destroy = spyOn(lib, "destroyNativeSpanFeed")
+  const unregister = spyOn(lib, "unregisterNativeSpanFeedStream")
+  const registration = spyOn(lib, "registerNativeSpanFeedStream").mockImplementation((ptr, handler) => {
+    register(ptr, handler)
+    throw new Error("registration failed")
+  })
+  try {
+    expect(() => NativeSpanFeed.create({ chunkSize: 8, initialChunks: 1 })).toThrow("registration failed")
+    expect(unregister).toHaveBeenCalledTimes(1)
+    expect(destroy).toHaveBeenCalledTimes(1)
+  } finally {
+    registration.mockRestore()
+    unregister.mockRestore()
+    destroy.mockRestore()
+  }
+})
+
+test("failed attach leaves the caller-owned stream available for destruction", () => {
+  const ptr = lib.createNativeSpanFeed({ chunkSize: 8, initialChunks: 1 })
+  expect(lib.streamClose(ptr)).toBe(0)
+  expect(() => NativeSpanFeed.attach(ptr)).toThrow("Failed to attach stream")
+  expect(lib.destroyNativeSpanFeed(ptr)).toBe(0)
+})
+
+test("close during a batch releases undispatched spans and waits for delivered data", async () => {
+  const ptr = lib.createNativeSpanFeed({ chunkSize: 8, initialChunks: 4, maxBytes: 32n })
+  for (let i = 0; i < 4; i++) expect(lib.streamWrite(ptr, new Uint8Array(8).fill(i))).toBe(0)
+  const stream = NativeSpanFeed.attach(ptr)
+  const gate = Promise.withResolvers<void>()
+  let calls = 0
+  let validAtCompletion = false
+  stream.onData(async (data) => {
+    calls++
+    stream.close()
+    await gate.promise
+    validAtCompletion = data.every((byte) => byte === 0)
+  })
+  expect(calls).toBe(1)
+  expect(lib.streamGetStats(ptr)?.outstandingSpans).toBe(1)
+  expect(lib.destroyNativeSpanFeed(ptr)).toBe(-5)
+  gate.resolve()
+  await stream.idle()
+  expect(validAtCompletion).toBe(true)
+  expect((stream as any).destroyed).toBe(true)
+})
 
 function nextTick(): Promise<void> {
   // Use a timer turn instead of process.nextTick so Promise/microtask work
@@ -113,8 +161,8 @@ test("close should not destroy when native close reports Busy", () => {
   } finally {
     if (!(stream as any).destroyed) {
       lib.streamCommitReserved(ptr, 0)
-      lib.streamClose(ptr)
-      lib.destroyNativeSpanFeed(ptr)
+      stream.close()
+      expect((stream as any).destroyed).toBe(true)
     }
   }
 })

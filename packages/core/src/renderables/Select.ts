@@ -15,6 +15,9 @@ import {
 
 type KeyAliasMap = Record<string, string>
 
+const transparent = RGBA.fromValues(0, 0, 0, 0)
+const indicatorColor = parseColor("#666666")
+
 export interface SelectOption {
   name: string
   description: string
@@ -64,12 +67,12 @@ export enum SelectRenderableEvents {
 }
 
 export class SelectRenderable extends Renderable {
-  protected _focusable: boolean = true
+  protected static override readonly defaultFocusable = true
 
   private _options: SelectOption[] = []
   private _selectedIndex: number = 0
   private scrollOffset: number = 0
-  private maxVisibleItems: number
+  private maxVisibleItems!: number
 
   private _backgroundColor: RGBA
   private _textColor: RGBA
@@ -85,7 +88,7 @@ export class SelectRenderable extends Renderable {
   private _showSelectionIndicator: boolean
   private _font?: keyof typeof fonts
   private _itemSpacing: number
-  private linesPerItem: number
+  private linesPerItem!: number
   private fontHeight: number
   private _fastScrollStep: number
   private _keyBindingsMap: Map<string, SelectAction>
@@ -111,140 +114,120 @@ export class SelectRenderable extends Renderable {
   } satisfies Partial<SelectRenderableOptions>
 
   constructor(ctx: RenderContext, options: SelectRenderableOptions) {
-    super(ctx, { ...options, buffered: true })
-    this._options = options.options || []
-    const requestedIndex = options.selectedIndex ?? this._defaultOptions.selectedIndex
-    this._selectedIndex = this._options.length > 0 ? Math.min(requestedIndex, this._options.length - 1) : 0
-    this._backgroundColor = parseColor(options.backgroundColor || this._defaultOptions.backgroundColor)
-    this._textColor = parseColor(options.textColor || this._defaultOptions.textColor)
-    this._focusedBackgroundColor = parseColor(
-      options.focusedBackgroundColor || this._defaultOptions.focusedBackgroundColor,
-    )
-    this._focusedTextColor = parseColor(options.focusedTextColor || this._defaultOptions.focusedTextColor)
+    super(ctx, options)
+    try {
+      this._options = options.options || []
+      const requestedIndex = options.selectedIndex ?? this._defaultOptions.selectedIndex
+      this._selectedIndex = this._options.length > 0 ? Math.min(requestedIndex, this._options.length - 1) : 0
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || this._defaultOptions.backgroundColor))
+      this._textColor = RGBA.clone(parseColor(options.textColor || this._defaultOptions.textColor))
+      this._focusedBackgroundColor = RGBA.clone(
+        parseColor(options.focusedBackgroundColor || this._defaultOptions.focusedBackgroundColor),
+      )
+      this._focusedTextColor = RGBA.clone(parseColor(options.focusedTextColor || this._defaultOptions.focusedTextColor))
 
-    this._showScrollIndicator = options.showScrollIndicator ?? this._defaultOptions.showScrollIndicator
-    this._wrapSelection = options.wrapSelection ?? this._defaultOptions.wrapSelection
-    this._showDescription = options.showDescription ?? this._defaultOptions.showDescription
-    this._showSelectionIndicator = options.showSelectionIndicator ?? this._defaultOptions.showSelectionIndicator
-    this._font = options.font
-    this._itemSpacing = options.itemSpacing || this._defaultOptions.itemSpacing
+      this._showScrollIndicator = options.showScrollIndicator ?? this._defaultOptions.showScrollIndicator
+      this._wrapSelection = options.wrapSelection ?? this._defaultOptions.wrapSelection
+      this._showDescription = options.showDescription ?? this._defaultOptions.showDescription
+      this._showSelectionIndicator = options.showSelectionIndicator ?? this._defaultOptions.showSelectionIndicator
+      this._font = options.font
+      this._itemSpacing = options.itemSpacing || this._defaultOptions.itemSpacing
 
-    this.fontHeight = this._font ? measureText({ text: "A", font: this._font }).height : 1
-    this.linesPerItem = this._showDescription
-      ? this._font
-        ? this.fontHeight + 1
-        : 2
-      : this._font
-        ? this.fontHeight
-        : 1
-    this.linesPerItem += this._itemSpacing
+      this.fontHeight = this._font ? measureText({ text: "A", font: this._font }).height : 1
+      this.updateItemLayout()
 
-    this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+      this._selectedBackgroundColor = RGBA.clone(
+        parseColor(options.selectedBackgroundColor || this._defaultOptions.selectedBackgroundColor),
+      )
+      this._selectedTextColor = RGBA.clone(
+        parseColor(options.selectedTextColor || this._defaultOptions.selectedTextColor),
+      )
+      this._descriptionColor = RGBA.clone(parseColor(options.descriptionColor || this._defaultOptions.descriptionColor))
+      this._selectedDescriptionColor = RGBA.clone(
+        parseColor(options.selectedDescriptionColor || this._defaultOptions.selectedDescriptionColor),
+      )
+      this._fastScrollStep = options.fastScrollStep || this._defaultOptions.fastScrollStep
 
-    this._selectedBackgroundColor = parseColor(
-      options.selectedBackgroundColor || this._defaultOptions.selectedBackgroundColor,
-    )
-    this._selectedTextColor = parseColor(options.selectedTextColor || this._defaultOptions.selectedTextColor)
-    this._descriptionColor = parseColor(options.descriptionColor || this._defaultOptions.descriptionColor)
-    this._selectedDescriptionColor = parseColor(
-      options.selectedDescriptionColor || this._defaultOptions.selectedDescriptionColor,
-    )
-    this._fastScrollStep = options.fastScrollStep || this._defaultOptions.fastScrollStep
+      this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
+      this._keyBindings = options.keyBindings || []
+      const mergedBindings = mergeKeyBindings(defaultSelectKeybindings, this._keyBindings)
+      this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
 
-    this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
-    this._keyBindings = options.keyBindings || []
-    const mergedBindings = mergeKeyBindings(defaultSelectKeybindings, this._keyBindings)
-    this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
-
-    this.updateScrollOffset()
-    this.requestRender() // Initial render needed
-  }
-
-  protected renderSelf(buffer: OptimizedBuffer, deltaTime: number): void {
-    if (!this.visible || !this.frameBuffer) return
-
-    if (this.isDirty) {
-      this.refreshFrameBuffer()
+      this.updateScrollOffset()
+      this.requestRender() // Initial render needed
+    } catch (error) {
+      this.abortConstruction(error)
     }
   }
 
-  private refreshFrameBuffer(): void {
-    if (!this.frameBuffer) return
-
+  // Draws at the paint origin every frame. An opaque selection's rows get no background fill, and glyphs blend
+  // over the fills with a transparent background, so the frame matches the composed buffer of `buffered: true`.
+  protected renderSelf(buffer: OptimizedBuffer, deltaTime: number): void {
+    const [x, y] = this._paintOrigin(buffer)
+    const width = this._paintWidth
+    const height = this._paintHeight
     const bgColor = this._focused ? this._focusedBackgroundColor : this._backgroundColor
-    this.frameBuffer.clear(bgColor)
-    if (this._options.length === 0) return
+    const selectedY = (this._selectedIndex - this.scrollOffset) * this.linesPerItem
+    const selectedHeight = this.linesPerItem - this._itemSpacing
+    const hole =
+      this._options.length > 0 && selectedY + this.linesPerItem <= height && this._selectedBackgroundColor.a === 1
+    const top = hole ? selectedY : height
+    const bottom = hole ? selectedY + selectedHeight : height
+    const scrolls = this._showScrollIndicator && this._options.length > this.maxVisibleItems
+    const scrollPercent = this.scrollOffset / (this._options.length - this.maxVisibleItems)
+    const indicatorY = scrolls ? y + 1 + Math.floor(scrollPercent * Math.max(1, height - 2)) : -1
+    // Text on the indicator's row ends before it, so the indicator never covers half of a wide glyph.
+    const draw = (text: string, textX: number, textY: number, color: RGBA) => {
+      const end = textY === indicatorY ? x + width - 1 : x + width
+      buffer.drawTextFit(text, textX, textY, end - textX, color, transparent)
+    }
 
-    const contentX = 0
-    const contentY = 0
-    const contentWidth = this.width
-    const contentHeight = this.height
+    buffer.pushScissorRect(x, y, width, height)
+    if (buffer === this.frameBuffer) buffer.clear(bgColor)
+    else {
+      buffer.fillRect(x, y, width, top, bgColor)
+      buffer.fillRect(x, y + bottom, width, height - bottom, bgColor)
+    }
 
     const visibleOptions = this._options.slice(this.scrollOffset, this.scrollOffset + this.maxVisibleItems)
-
     for (let i = 0; i < visibleOptions.length; i++) {
-      const actualIndex = this.scrollOffset + i
       const option = visibleOptions[i]
-      const isSelected = actualIndex === this._selectedIndex
-      const itemY = contentY + i * this.linesPerItem
+      const isSelected = this.scrollOffset + i === this._selectedIndex
+      const itemY = y + i * this.linesPerItem
 
-      if (itemY + this.linesPerItem - 1 >= contentY + contentHeight) break
+      if (itemY + this.linesPerItem - 1 >= y + height) break
 
       if (isSelected) {
-        const contentHeight = this.linesPerItem - this._itemSpacing
-        this.frameBuffer.fillRect(contentX, itemY, contentWidth, contentHeight, this._selectedBackgroundColor)
+        buffer.fillRect(x, itemY, width, selectedHeight, this._selectedBackgroundColor)
       }
 
       const indicator = this._showSelectionIndicator ? (isSelected ? "▶ " : "  ") : ""
-      const indicatorWidth = this._showSelectionIndicator ? 2 : 0
-      const nameContent = `${indicator}${option.name}`
       const baseTextColor = this._focused ? this._focusedTextColor : this._textColor
       const nameColor = isSelected ? this._selectedTextColor : baseTextColor
-      const textX = contentX + 1 + indicatorWidth
+      const textX = x + 1 + (this._showSelectionIndicator ? 2 : 0)
 
       if (this._font) {
-        if (indicator) {
-          this.frameBuffer.drawText(indicator, contentX + 1, itemY, nameColor)
-        }
-
-        renderFontToFrameBuffer(this.frameBuffer, {
+        if (indicator) draw(indicator, x + 1, itemY, nameColor)
+        renderFontToFrameBuffer(buffer, {
           text: option.name,
           x: textX,
           y: itemY,
           color: nameColor,
-          backgroundColor: isSelected ? this._selectedBackgroundColor : bgColor,
+          backgroundColor: transparent,
           font: this._font,
         })
       } else {
-        this.frameBuffer.drawText(nameContent, contentX + 1, itemY, nameColor)
+        draw(`${indicator}${option.name}`, x + 1, itemY, nameColor)
       }
 
-      if (this._showDescription && itemY + this.fontHeight < contentY + contentHeight) {
+      if (this._showDescription && itemY + this.fontHeight < y + height) {
         const descColor = isSelected ? this._selectedDescriptionColor : this._descriptionColor
-        this.frameBuffer.drawText(option.description, textX, itemY + this.fontHeight, descColor)
+        draw(option.description, textX, itemY + this.fontHeight, descColor)
       }
     }
 
-    if (this._showScrollIndicator && this._options.length > this.maxVisibleItems) {
-      this.renderScrollIndicatorToFrameBuffer(contentX, contentY, contentWidth, contentHeight)
-    }
-  }
-
-  private renderScrollIndicatorToFrameBuffer(
-    contentX: number,
-    contentY: number,
-    contentWidth: number,
-    contentHeight: number,
-  ): void {
-    if (!this.frameBuffer) return
-
-    const maxScrollOffset = this._options.length - this.maxVisibleItems
-    const scrollPercent = this.scrollOffset / maxScrollOffset
-    const indicatorHeight = Math.max(1, contentHeight - 2)
-    const indicatorY = contentY + 1 + Math.floor(scrollPercent * indicatorHeight)
-    const indicatorX = contentX + contentWidth - 1
-
-    this.frameBuffer.drawText("█", indicatorX, indicatorY, parseColor("#666666"))
+    if (scrolls) buffer.drawText("█", x + width - 1, indicatorY, indicatorColor, transparent)
+    buffer.popScissorRect()
   }
 
   public get options(): SelectOption[] {
@@ -314,9 +297,13 @@ export class SelectRenderable extends Renderable {
     }
   }
 
-  private updateScrollOffset(): void {
-    if (!this._options) return
+  private updateItemLayout(): void {
+    const nameLines = this._font ? this.fontHeight : 1
+    this.linesPerItem = nameLines + (this._showDescription ? 1 : 0) + this._itemSpacing
+    this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+  }
 
+  private updateScrollOffset(): void {
     const halfVisible = Math.floor(this.maxVisibleItems / 2)
     const newScrollOffset = Math.max(
       0,
@@ -377,16 +364,7 @@ export class SelectRenderable extends Renderable {
   public set showDescription(show: boolean) {
     if (this._showDescription !== show) {
       this._showDescription = show
-      this.linesPerItem = this._showDescription
-        ? this._font
-          ? this.fontHeight + 1
-          : 2
-        : this._font
-          ? this.fontHeight
-          : 1
-      this.linesPerItem += this._itemSpacing
-
-      this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+      this.updateItemLayout()
       this.updateScrollOffset()
       this.requestRender()
     }
@@ -413,96 +391,56 @@ export class SelectRenderable extends Renderable {
   }
 
   public set backgroundColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.backgroundColor)
-    if (this._backgroundColor !== newColor) {
-      this._backgroundColor = newColor
-      this.requestRender()
-    }
+    this._backgroundColor = RGBA.clone(parseColor(value ?? this._defaultOptions.backgroundColor))
+    this.requestRender()
   }
 
   public set textColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.textColor)
-    if (this._textColor !== newColor) {
-      this._textColor = newColor
-      this.requestRender()
-    }
+    this._textColor = RGBA.clone(parseColor(value ?? this._defaultOptions.textColor))
+    this.requestRender()
   }
 
   public set focusedBackgroundColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.focusedBackgroundColor)
-    if (this._focusedBackgroundColor !== newColor) {
-      this._focusedBackgroundColor = newColor
-      this.requestRender()
-    }
+    this._focusedBackgroundColor = RGBA.clone(parseColor(value ?? this._defaultOptions.focusedBackgroundColor))
+    this.requestRender()
   }
 
   public set focusedTextColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.focusedTextColor)
-    if (this._focusedTextColor !== newColor) {
-      this._focusedTextColor = newColor
-      this.requestRender()
-    }
+    this._focusedTextColor = RGBA.clone(parseColor(value ?? this._defaultOptions.focusedTextColor))
+    this.requestRender()
   }
 
   public set selectedBackgroundColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.selectedBackgroundColor)
-    if (this._selectedBackgroundColor !== newColor) {
-      this._selectedBackgroundColor = newColor
-      this.requestRender()
-    }
+    this._selectedBackgroundColor = RGBA.clone(parseColor(value ?? this._defaultOptions.selectedBackgroundColor))
+    this.requestRender()
   }
 
   public set selectedTextColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.selectedTextColor)
-    if (this._selectedTextColor !== newColor) {
-      this._selectedTextColor = newColor
-      this.requestRender()
-    }
+    this._selectedTextColor = RGBA.clone(parseColor(value ?? this._defaultOptions.selectedTextColor))
+    this.requestRender()
   }
 
   public set descriptionColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.descriptionColor)
-    if (this._descriptionColor !== newColor) {
-      this._descriptionColor = newColor
-      this.requestRender()
-    }
+    this._descriptionColor = RGBA.clone(parseColor(value ?? this._defaultOptions.descriptionColor))
+    this.requestRender()
   }
 
   public set selectedDescriptionColor(value: ColorInput) {
-    const newColor = parseColor(value ?? this._defaultOptions.selectedDescriptionColor)
-    if (this._selectedDescriptionColor !== newColor) {
-      this._selectedDescriptionColor = newColor
-      this.requestRender()
-    }
+    this._selectedDescriptionColor = RGBA.clone(parseColor(value ?? this._defaultOptions.selectedDescriptionColor))
+    this.requestRender()
   }
 
   public set font(font: keyof typeof fonts) {
     this._font = font
     this.fontHeight = measureText({ text: "A", font: this._font }).height
-    this.linesPerItem = this._showDescription
-      ? this._font
-        ? this.fontHeight + 1
-        : 2
-      : this._font
-        ? this.fontHeight
-        : 1
-    this.linesPerItem += this._itemSpacing
-    this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+    this.updateItemLayout()
     this.updateScrollOffset()
     this.requestRender()
   }
 
   public set itemSpacing(spacing: number) {
     this._itemSpacing = spacing
-    this.linesPerItem = this._showDescription
-      ? this._font
-        ? this.fontHeight + 1
-        : 2
-      : this._font
-        ? this.fontHeight
-        : 1
-    this.linesPerItem += this._itemSpacing
-    this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+    this.updateItemLayout()
     this.updateScrollOffset()
     this.requestRender()
   }
