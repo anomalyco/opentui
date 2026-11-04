@@ -55,7 +55,7 @@ export function separateNativeSymbols(options: SymbolOptions) {
   let binaryIdentity: string
   let identityKind: string
 
-  if (platform === "linux") {
+  if (platform === "linux" || platform === "freebsd") {
     const elf = (...args: string[]) => run(tool("readelf"), args)
     const sections = elf("-SW", binary)
     if (!sections.includes(".debug_info")) throw new Error(`No release DWARF in ${binary}`)
