@@ -191,6 +191,76 @@ describe("Renderable", () => {
   })
 })
 
+describe("Renderable - positionAnchor", () => {
+  test("handles constructor, updates, clearing, and destruction without changing insets", () => {
+    const first = new TestRenderable(testRenderer, {})
+    const second = new TestRenderable(testRenderer, {})
+    const renderable = new TestRenderable(testRenderer, {
+      positionAnchor: first,
+      position: "absolute",
+      top: 2,
+      left: 3,
+    })
+    expect(first.positionAnchor).toBeNull()
+    expect(renderable.positionAnchor).toBe(first)
+    const requestRender = spyOn(renderable, "requestRender")
+    try {
+      for (const [value, requests] of [
+        [first, 0],
+        [second, 1],
+        [null, 2],
+        [first, 3],
+        [undefined, 4],
+        [null, 4],
+      ] as const) {
+        renderable.positionAnchor = value
+        expect(renderable.positionAnchor).toBe(value ?? null)
+        expect(requestRender).toHaveBeenCalledTimes(requests)
+      }
+      expect(renderable.getPositionType()).toBe(PositionType.Absolute)
+      expect(renderable.top).toBe(2)
+      expect(renderable.left).toBe(3)
+      renderable.positionAnchor = first
+      renderable.destroy()
+      expect(renderable.positionAnchor).toBeNull()
+      renderable.positionAnchor = second
+      expect(renderable.positionAnchor).toBeNull()
+    } finally {
+      requestRender.mockRestore()
+    }
+  })
+
+  test("rejects invalid value types without replacing the anchor", () => {
+    const anchor = new TestRenderable(testRenderer, {})
+    const renderable = new TestRenderable(testRenderer, { positionAnchor: anchor })
+    for (const value of ["top-left", 1, false, {}, new TestBaseRenderable({})]) {
+      expect(() => Reflect.set(renderable, "positionAnchor", value)).toThrow(TypeError)
+      expect(renderable.positionAnchor).toBe(anchor)
+      expect(() => new TestRenderable(testRenderer, { positionAnchor: value as Renderable })).toThrow(TypeError)
+    }
+  })
+
+  test("rejects self, destroyed, and foreign anchors without replacing the anchor", async () => {
+    const other = await createTestRenderer({})
+    try {
+      const anchor = new TestRenderable(testRenderer, {})
+      const renderable = new TestRenderable(testRenderer, { positionAnchor: anchor })
+      const destroyed = new TestRenderable(testRenderer, {})
+      const foreign = new TestRenderable(other.renderer, {})
+      destroyed.destroy()
+      for (const value of [renderable, destroyed, foreign]) {
+        expect(() => Reflect.set(renderable, "positionAnchor", value)).toThrow()
+        expect(renderable.positionAnchor).toBe(anchor)
+      }
+      for (const value of [destroyed, foreign]) {
+        expect(() => new TestRenderable(testRenderer, { positionAnchor: value })).toThrow()
+      }
+    } finally {
+      other.renderer.destroy()
+    }
+  })
+})
+
 describe("Renderable - layout values beyond the cell range", () => {
   // Issue 202: each value failed every frame. It must paint like the reference values, which fit i32 cells, both
   // natively and from a host renderSelf, after a translate-only change (`then`, by default translateX + 1).

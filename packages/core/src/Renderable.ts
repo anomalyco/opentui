@@ -137,6 +137,7 @@ export interface LayoutOptions extends BaseRenderableOptions {
   alignSelf?: AlignString
   flexBasis?: number | "auto" | undefined
   position?: PositionTypeString
+  positionAnchor?: Renderable | null
   overflow?: OverflowString
   top?: number | "auto" | `${number}%`
   right?: number | "auto" | `${number}%`
@@ -370,6 +371,7 @@ export abstract class Renderable extends BaseRenderable {
   private _keyListeners: Partial<Record<"down", (key: KeyEvent) => void>> = {}
 
   protected _positionType: PositionTypeString = "relative"
+  protected _positionAnchor: Renderable | null = null
   protected _overflow: OverflowString = "visible"
   protected _position: Position = {}
   protected _opacity: number = 1.0
@@ -427,6 +429,7 @@ export abstract class Renderable extends BaseRenderable {
       this.publishHooks(hooks)
       this.setDisplay(this._visible ? Display.Flex : Display.None)
       this.setupYogaProperties(options)
+      this.positionAnchor = options.positionAnchor
       if (this.nativeIntegration.measure) this.setMeasureFunc(this.nativeIntegration.measure.bind(this))
       // Native create already has default z-index, opacity, and translations.
       // Subclasses publish their real paint; keep this write for non-default values.
@@ -1349,6 +1352,31 @@ export abstract class Renderable extends BaseRenderable {
     })
   }
 
+  get positionAnchor(): Renderable | null {
+    return this._positionAnchor
+  }
+
+  set positionAnchor(positionAnchor: Renderable | null | undefined) {
+    positionAnchor ??= null
+    if (this._positionAnchor === positionAnchor) return
+
+    this.runMutation(() => {
+      if (positionAnchor !== null) {
+        if (positionAnchor === this) {
+          throw new Error("A renderable cannot anchor to itself")
+        }
+        if (positionAnchor.isDestroyed || positionAnchor.isFreed()) {
+          throw new Error("Renderable is destroyed or freed")
+        }
+        if (positionAnchor.ctx.nativeScene !== this._ctx.nativeScene) {
+          throw new Error("invalid positionAnchor")
+        }
+      }
+      this._positionAnchor = positionAnchor
+      this.requestRender()
+    })
+  }
+
   get overflow(): OverflowString {
     return this._overflow
   }
@@ -2186,6 +2214,7 @@ export abstract class Renderable extends BaseRenderable {
         })
       }
       if (cleanup) run(() => cleanup(run))
+      this._positionAnchor = null
       this._isDestroyed = true
       if (hasHandle) run(() => scene.destroyNode(this))
       this._cleanupInProgress = false
