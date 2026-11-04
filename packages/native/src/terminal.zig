@@ -235,7 +235,8 @@ sync_reply_settled: bool = false,
 /// The host says a multiplexer runs between the app and the link. Never derived from forwarded or
 /// client environment, which can describe the other side of the link.
 multiplexer_on_host: bool = false,
-unicode_wide_locked: ?bool = null,
+/// The last DECRPM reply for mode 2027 (grapheme clusters), 0 (unrecognized) to 4 (permanently reset).
+mode_2027: ?u8 = null,
 host_env_hyperlinks: bool = false,
 hyperlinks_override: ?bool = null,
 
@@ -360,7 +361,6 @@ pub fn exitAltScreen(self: *Terminal, tty: anytype) !void {
 
 pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.checkEnvironmentOverrides();
-    self.unicode_wide_locked = self.caps.unicode == .unicode_wide;
     self.startup_cursor_query_pending = true;
     self.startup_cursor_query_captured = false;
 
@@ -681,6 +681,7 @@ fn parseProgramStatusReply(self: *Terminal, response: []const u8) void {
 }
 
 pub fn checkEnvironmentOverrides(self: *Terminal) void {
+    defer self.caps.unicode = self.selectWidthMethod();
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
     } else if (self.isXtversionZellij()) {
@@ -719,8 +720,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
         self.caps.remote = self.remote;
     }
 
-    const env_is_forwarded = if (self.host_env_map) |*host_env_map| env_map == host_env_map else false;
-    self.applyKnownUnicodeWidthIdentity();
     // Unlike the identity keys below, color depth describes the endpoint in every mode:
     // sshd takes TERM from the client's PTY request, and COLORTERM comes from the client or the session itself.
     if (env_map.get("TERM")) |term| {
@@ -736,14 +735,11 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.caps.ansi256 = true;
         }
     }
-    if (self.opts.remote_mode == .auto and self.remote and env_is_forwarded) {
-        return;
-    }
+    if (self.identityEnv() == null) return;
 
     if (!self.term_info.from_xtversion) {
         if (env_map.get("TMUX")) |_| {
             self.multiplexer = .tmux;
-            self.caps.unicode = .wcwidth;
             self.caps.explicit_cursor_positioning = true;
         } else if (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null) {
             self.multiplexer = .zellij;
@@ -755,17 +751,14 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
         } else if (env_map.get("STY") != null) {
             self.multiplexer = .screen;
             self.skip_graphics_query = true;
-            self.caps.unicode = .wcwidth;
             self.caps.explicit_cursor_positioning = true;
         } else if (env_map.get("TERM")) |term| {
             if (std.mem.startsWith(u8, term, "tmux")) {
                 self.multiplexer = .tmux;
-                self.caps.unicode = .wcwidth;
                 self.caps.explicit_cursor_positioning = true;
             } else if (std.mem.startsWith(u8, term, "screen")) {
                 self.multiplexer = .screen;
                 self.skip_graphics_query = true;
-                self.caps.unicode = .wcwidth;
                 self.caps.explicit_cursor_positioning = true;
             }
             if (std.mem.find(u8, term, "alacritty") != null) {
@@ -820,7 +813,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
 
             if (!self.isInZellij() and std.mem.eql(u8, prog, "tmux")) {
                 self.multiplexer = .tmux;
-                self.caps.unicode = .wcwidth;
                 self.caps.explicit_cursor_positioning = true;
             }
 
@@ -833,15 +825,10 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
                     self.term_info.version_len = ver_len;
                 }
             }
-        }
 
-        if (env_map.get("TERM_PROGRAM")) |prog| {
             if (std.mem.eql(u8, prog, "vscode")) {
                 self.caps.kitty_keyboard = false;
                 self.caps.kitty_graphics = false;
-                self.caps.unicode = .unicode;
-            } else if (std.mem.eql(u8, prog, "Apple_Terminal")) {
-                self.caps.unicode = .wcwidth;
             } else if (std.mem.eql(u8, prog, "Alacritty")) {
                 self.caps.explicit_cursor_positioning = true;
             }
@@ -877,28 +864,9 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
 
     self.enforceNotificationProtocolForMultiplexer();
 
-    if (!self.term_info.from_xtversion) {
-        if (env_map.get("TERMUX_VERSION")) |_| {
-            self.caps.unicode = .wcwidth;
-        }
-
-        if (env_map.get("VHS_RECORD")) |_| {
-            self.caps.unicode = .wcwidth;
-            self.caps.kitty_keyboard = false;
-            self.caps.kitty_graphics = false;
-        }
-    }
-
-    self.applyKnownUnicodeWidthIdentity();
-
-    if (env_map.get("OPENTUI_FORCE_WCWIDTH")) |_| {
-        self.caps.unicode = .wcwidth;
-    }
-    if (env_map.get("OPENTUI_FORCE_UNICODE")) |_| {
-        self.caps.unicode = .unicode;
-    }
-    if (env_map.get("OPENTUI_FORCE_NOZWJ")) |_| {
-        self.caps.unicode = .no_zwj;
+    if (!self.term_info.from_xtversion and env_map.get("VHS_RECORD") != null) {
+        self.caps.kitty_keyboard = false;
+        self.caps.kitty_graphics = false;
     }
 
     if (env_map.get("OPENTUI_FORCE_EXPLICIT_WIDTH")) |val| {
@@ -1272,25 +1240,84 @@ fn applyKnownGraphicsIdentity(self: *Terminal) void {
     }
 }
 
-fn applyKnownUnicodeWidthIdentity(self: *Terminal) void {
-    if (self.unicode_wide_locked) |enabled| {
-        if (enabled) {
-            self.caps.unicode = .unicode_wide;
-        }
-        return;
-    }
+/// What a terminal's identity says about its widths, before or beside its DECRPM 2027 reply.
+const WidthIdentity = enum { unknown, wcwidth, graphemes, ghostty };
 
-    if (self.caps.unicode == .unicode_wide) {
-        self.caps.unicode = .unicode;
+/// Chooses the width method from the strongest evidence: an OPENTUI_FORCE_* variable (applied over
+/// SSH too: it configures the app, not the terminal), the multiplexer that draws the cells, the
+/// DECRPM 2027 reply, then the terminal's identity.
+fn selectWidthMethod(self: *Terminal) WidthMethod {
+    if (self.opts.env_map) |env| {
+        if (env.get("OPENTUI_FORCE_NOZWJ") != null) return .no_zwj;
+        if (env.get("OPENTUI_FORCE_UNICODE") != null) return .unicode;
+        if (env.get("OPENTUI_FORCE_WCWIDTH") != null) return .wcwidth;
     }
-    if (self.remote or self.multiplexer != .none) return;
-    const env_map = self.opts.env_map orelse return;
-    const term_program = env_map.get("TERM_PROGRAM") orelse return;
-    if (!std.ascii.eqlIgnoreCase(term_program, "ghostty")) return;
-    const version = env_map.get("TERM_PROGRAM_VERSION") orelse return;
-    if (!ghosttyWideGraphemeWidths(version)) return;
-    if (self.term_info.from_xtversion and !std.ascii.eqlIgnoreCase(self.getTerminalName(), "ghostty")) return;
-    self.caps.unicode = .unicode_wide;
+    const env_map = self.identityEnv();
+    // TMUX and TERM_PROGRAM=tmux are inherited by terminals and multiplexers started inside tmux. tmux
+    // answers XTVERSION before DECRPM 2027, so a 2027 reply without it comes from another terminal, and
+    // an inner screen or Zellij answers neither.
+    const env_tmux_inner = if (env_map) |env| env.get("STY") != null or env.get("ZELLIJ") != null else false;
+    switch (self.multiplexer) {
+        .none => {},
+        .tmux => if (self.term_info.from_xtversion or self.mode_2027 == null) {
+            const graphemes = std.mem.eql(u8, self.getTerminalName(), "tmux") and tmuxGraphemes(self.getTerminalVersion());
+            return if (graphemes and (self.term_info.from_xtversion or !env_tmux_inner)) .unicode else .wcwidth;
+        },
+        else => return .wcwidth,
+    }
+    const identity: WidthIdentity = if (self.term_info.from_xtversion)
+        xtversionWidthIdentity(self.getTerminalName(), self.getTerminalVersion())
+    else if (env_map) |env| self.envWidthIdentity(env) else .unknown;
+    const mode = self.mode_2027 orelse return switch (identity) {
+        .unknown, .graphemes => .unicode,
+        .wcwidth => .wcwidth,
+        .ghostty => .unicode_wide,
+    };
+    // kitty and iTerm2 cluster graphemes without mode 2027; other terminals that lack it draw code points.
+    if ((mode == 0 or mode == 4) and identity != .graphemes) return .wcwidth;
+    return if (identity == .ghostty) .unicode_wide else .unicode;
+}
+
+/// The environment that may describe the terminal: not a remote client's forwarded map in auto mode.
+fn identityEnv(self: *const Terminal) ?*const std.process.Environ.Map {
+    const env_map = self.opts.env_map orelse return null;
+    const forwarded = if (self.host_env_map) |*host_env_map| env_map == host_env_map else false;
+    if (self.opts.remote_mode == .auto and self.remote and forwarded) return null;
+    return env_map;
+}
+
+/// TERM comes from the innermost terminal. TERM_PROGRAM can be inherited from the terminal that
+/// started it, so it counts only when TERM does not name another terminal.
+fn envWidthIdentity(self: *const Terminal, env: *const std.process.Environ.Map) WidthIdentity {
+    if (env.get("TERMUX_VERSION") != null or env.get("VHS_RECORD") != null) return .wcwidth;
+    const term = env.get("TERM") orelse "";
+    if (std.mem.startsWith(u8, term, "xterm-kitty")) return .graphemes;
+    if (std.mem.startsWith(u8, term, "alacritty") or std.mem.startsWith(u8, term, "rxvt")) return .wcwidth;
+    if (term.len != 0 and !std.mem.startsWith(u8, term, "xterm")) return .unknown;
+    const program = env.get("TERM_PROGRAM") orelse "";
+    if (std.ascii.eqlIgnoreCase(program, "ghostty") and !self.remote and ghosttyWideGraphemeWidths(env.get("TERM_PROGRAM_VERSION") orelse "")) return .ghostty;
+    if (std.mem.eql(u8, program, "vscode") or std.mem.eql(u8, program, "Apple_Terminal")) return .wcwidth;
+    if (program.len != 0 or env.get("KONSOLE_VERSION") != null) return .unknown;
+    if (env.get("VTE_VERSION") != null or env.get("XTERM_VERSION") != null or env.get("ALACRITTY_SOCKET") != null or env.get("ALACRITTY_LOG") != null) return .wcwidth;
+    return .unknown;
+}
+
+fn xtversionWidthIdentity(name: []const u8, version: []const u8) WidthIdentity {
+    if (std.ascii.eqlIgnoreCase(name, "libghostty") or (std.ascii.eqlIgnoreCase(name, "ghostty") and ghosttyWideGraphemeWidths(version))) return .ghostty;
+    if (std.ascii.eqlIgnoreCase(name, "kitty") or std.ascii.eqlIgnoreCase(name, "iTerm2")) return .graphemes;
+    if (std.ascii.eqlIgnoreCase(name, "XTerm") or std.ascii.eqlIgnoreCase(name, "VTE") or std.ascii.eqlIgnoreCase(name, "xterm.js")) return .wcwidth;
+    return .unknown;
+}
+
+/// tmux 3.6 draws VS16, keycap, ZWJ and emoji modifier sequences as one cluster. Accepts "3.6",
+/// "3.6a", "3.6-rc" and "next-3.8"; not "openbsd-7.8".
+fn tmuxGraphemes(version: []const u8) bool {
+    const release = if (std.mem.startsWith(u8, version, "next-")) version["next-".len..] else version;
+    const dot = std.mem.findScalar(u8, release, '.') orelse return false;
+    const major = std.fmt.parseInt(u32, release[0..dot], 10) catch return false;
+    const minor_text = release[dot + 1 ..];
+    const minor = std.fmt.parseInt(u32, minor_text[0 .. std.mem.findNone(u8, minor_text, "0123456789") orelse minor_text.len], 10) catch return false;
+    return major > 3 or (major == 3 and minor >= 6);
 }
 
 pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
@@ -1305,8 +1332,9 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     if (std.mem.find(u8, response, "1016;2$y")) |_| {
         self.caps.sgr_pixels = true;
     }
-    if (std.mem.find(u8, response, "2027;2$y")) |_| {
-        self.caps.unicode = .unicode;
+    if (std.mem.find(u8, response, "?2027;")) |start| {
+        const reply = response[start + "?2027;".len ..];
+        if (reply.len >= 3 and reply[0] >= '0' and reply[0] <= '4' and std.mem.eql(u8, reply[1..3], "$y")) self.mode_2027 = reply[0] - '0';
     }
     if (std.mem.find(u8, response, "2031;1$y") != null or std.mem.find(u8, response, "2031;2$y") != null) {
         self.caps.color_scheme_updates = true;
@@ -1396,7 +1424,6 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     // complete XTVERSION response determines the direct endpoint.
     if (self.term_info.from_xtversion and std.ascii.eqlIgnoreCase(self.getTerminalName(), "kitty")) {
         self.caps.kitty_keyboard = true;
-        self.caps.unicode = .unicode;
         self.caps.rgb = true;
         self.caps.ansi256 = true;
         self.caps.bracketed_paste = true;
@@ -1421,11 +1448,6 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         }
     }
 
-    if (std.mem.find(u8, response, "tmux")) |_| {
-        self.caps.unicode = .wcwidth;
-        self.caps.explicit_cursor_positioning = true;
-    }
-
     if (std.mem.find(u8, response, "alacritty")) |_| {
         self.caps.explicit_cursor_positioning = true;
     }
@@ -1441,7 +1463,9 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
         self.caps.hyperlinks = enabled;
     }
 
+    self.caps.unicode = self.selectWidthMethod();
     if (self.isInTmux()) {
+        self.caps.explicit_cursor_positioning = true;
         // tmux has reported pane focus changes since 1.8 but answers DECRQM
         // for mode 1004 only since 3.6.
         self.caps.focus_tracking = true;

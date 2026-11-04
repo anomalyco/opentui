@@ -181,7 +181,7 @@ describe("remote detection", () => {
     expect([caps.rgb, caps.hyperlinks]).toEqual([true, true])
   })
 
-  test("explicit local mode forwards hyperlink detection keys by default", async () => {
+  test("explicit local mode forwards hyperlink and width detection keys by default", async () => {
     const baseEnv = {
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
@@ -196,9 +196,16 @@ describe("remote detection", () => {
       { remote: false },
       { ...baseEnv, TERM: "xterm-kitty", FORCE_HYPERLINK: "0" },
     )
+    const xterm = await getCapabilitiesFromChild({ remote: false }, { ...baseEnv, XTERM_VERSION: "XTerm(411)" })
+    // Konsole keeps an XTERM_VERSION inherited from the xterm that started it.
+    const konsole = await getCapabilitiesFromChild(
+      { remote: false },
+      { ...baseEnv, XTERM_VERSION: "XTerm(411)", KONSOLE_VERSION: "250400" },
+    )
 
     expect(vte.hyperlinks).toBe(true)
     expect(forcedOff.hyperlinks).toBe(false)
+    expect([xterm.unicode, konsole.unicode]).toEqual(["wcwidth", "unicode"])
   })
 
   test("process stdout with memory output preserves auto remote detection", async () => {

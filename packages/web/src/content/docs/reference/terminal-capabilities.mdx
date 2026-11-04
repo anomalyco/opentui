@@ -154,7 +154,8 @@ enables `ansi256`, and a `COLORTERM` of `truecolor` or `24bit` enables `rgb` and
 remote endpoint: `sshd` takes `TERM` from the client's PTY request, and `COLORTERM` comes from the client when ssh is
 configured to send it, or from the server session itself, such as a shell rc file. OpenTUI ignores the other keys, such
 as `TERM_PROGRAM`, the multiplexer variables, and the `OPENTUI_*` overrides. On the process host, they can describe the
-wrong terminal endpoint.
+wrong terminal endpoint. The width overrides `OPENTUI_FORCE_WCWIDTH`, `OPENTUI_FORCE_UNICODE`, and `OPENTUI_FORCE_NOZWJ`
+are the exception: they configure the app, so OpenTUI applies them whenever they are in the forwarded environment.
 
 Without `COLORTERM`, a `256color` `TERM` gives 256-color output, even in a terminal that supports truecolor. To keep
 truecolor in an SSH session, export `COLORTERM=truecolor` on the server, forward it with `SendEnv COLORTERM` on the
