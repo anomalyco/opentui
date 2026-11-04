@@ -482,7 +482,8 @@ test.each([
   expect(screen.join("\n").replace(/ +$/gm, "").trimEnd()).toBe((size ? rows : [...rows, "", "FFFFFFFFF"]).join("\n"))
 })
 
-// Each commit is "text:rowColumns", plus "\n" when it ends its line. The last column selects the width method.
+// Each commit is "text:rowColumns", plus "\n" when it ends its line. No variable of the test's environment reaches the
+// renderer: the last column alone selects the width method.
 const wcwidth = { environment: { OPENTUI_FORCE_WCWIDTH: "1" } }
 const ghostty = { environment: { TERM_PROGRAM: "ghostty", TERM_PROGRAM_VERSION: "1.3.0" }, remote: false }
 test.each<[string, string | string[], string[], TestRendererOptions?]>([
@@ -507,7 +508,7 @@ test.each<[string, string | string[], string[], TestRendererOptions?]>([
   ["keeps a wide character that wraps early", ["abc", "defgh一", "x\n"], ["abc:3", "defgh:6", "一:2", "x:1\n"]],
 ])("captured stdout %s", async (_name, text, commits, options) => {
   const stdout = createTestStdout(9, 10)
-  const { renderer } = await setup({ width: 9, stdout, ...options })
+  const { renderer } = await setup({ width: 9, stdout, forwardEnvKeys: [], ...options })
   const written: string[] = []
   renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, ({ snapshot, rowColumns, trailingNewline }) => {
     expect(snapshot.width).toBe(Math.max(1, rowColumns))
