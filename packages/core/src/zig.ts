@@ -98,6 +98,13 @@ registerEnvVar({
   default: "",
 })
 
+registerEnvVar({
+  name: "OPENTUI_LIB_PATH",
+  description: "Load the native library from this file instead of the platform package.",
+  type: "string",
+  default: "",
+})
+
 export type NativeHandle<T extends string> = Pointer & { readonly __nativeHandle: T }
 
 // Public numeric handles never identify a later resource or a different library instance.
@@ -1006,6 +1013,7 @@ export type EmbeddedTerminalMouse = {
 }
 let targetLibPath: string | undefined
 let targetLibError: Error | undefined
+const targetLibSource = process.env.OPENTUI_LIB_PATH ? " (set by OPENTUI_LIB_PATH)" : ""
 
 try {
   targetLibPath = await resolveNativeLibraryPath()
@@ -1016,6 +1024,7 @@ try {
     throw new Error(`OpenTUI native library does not exist at ${JSON.stringify(targetLibPath)}`)
   }
 } catch (error) {
+  targetLibPath = undefined
   targetLibError = error instanceof Error ? error : new Error(String(error))
 }
 
@@ -3220,6 +3229,14 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
   })
+
+  const abiVersion = rawSymbols.symbols.ot_context_abi_version()
+  if (abiVersion !== nativeConstants.OT_CONTEXT_ABI_VERSION) {
+    rawSymbols.close()
+    throw new Error(
+      `OpenTUI native library at ${JSON.stringify(resolvedLibPath)} has context ABI version ${abiVersion}, expected ${nativeConstants.OT_CONTEXT_ABI_VERSION}`,
+    )
+  }
 
   if (env.OTUI_DEBUG_FFI || env.OTUI_TRACE_FFI) {
     return {
@@ -9857,8 +9874,9 @@ export function resolveRenderLib(): RenderLib {
     try {
       opentuiLib = new FFIRenderLib(opentuiLibPath)
     } catch (error) {
+      const source = opentuiLibPath ? "" : targetLibSource
       throw new Error(
-        `Failed to initialize OpenTUI render library: ${error instanceof Error ? error.message : "Unknown error"}`,
+        `Failed to initialize OpenTUI render library${source}: ${error instanceof Error ? error.message : "Unknown error"}`,
       )
     }
   }
