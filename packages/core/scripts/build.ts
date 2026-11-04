@@ -188,6 +188,13 @@ function checkStaticArchive(path: string): void {
   if (nested.length > 0) throw new Error(`${path} contains nested archives: ${nested.join(", ")}`)
 }
 
+// The header hash that opentui-rust's opentui-sys build checks.
+function fnv1a64(bytes: Uint8Array): string {
+  let hash = 0xcbf29ce484222325n
+  for (const byte of bytes) hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn
+  return `0x${hash.toString(16).padStart(16, "0")}`
+}
+
 if (buildNative) {
   runCommand(
     "bun",
@@ -246,6 +253,18 @@ if (buildNative) {
     }
 
     checkStaticArchive(join(libDir, platform === "win32" ? "opentui-static.lib" : "libopentui.a"))
+
+    // The Zig build installs the header it compiled beside the libraries. A different header means the libraries
+    // are stale, and a C or Rust host would bind declarations they do not implement.
+    const header = readFileSync(join(libDir, "opentui.h"))
+    const headerHash = fnv1a64(header)
+    const sourceHash = fnv1a64(readFileSync(join(nativeRoot, "include", "opentui.h")))
+    if (headerHash !== sourceHash) {
+      throw new Error(`${libDir}/opentui.h (${headerHash}) is not include/opentui.h (${sourceHash}); rebuild native`)
+    }
+    writeFileSync(join(nativeDir, "opentui.h"), header)
+    // A Windows host links the DLL through its import library.
+    if (platform === "win32") copyFileSync(join(libDir, "opentui.lib"), join(nativeDir, "opentui.lib"))
 
     if (!isDev && !skipSymbols && libraryFileName) {
       separateNativeSymbols({
@@ -312,7 +331,12 @@ export default module.default
     writeFileSync(
       join(nativeDir, "README.md"),
       replaceLinks(
-        `## ${nativeName}\n\n> Prebuilt ${platform}-${arch}${abi ? `-${abi}` : ""} binaries for \`${packageJson.name}\`.`,
+        `## ${nativeName}\n\n> Prebuilt ${platform}-${arch}${abi ? `-${abi}` : ""} binaries for \`${packageJson.name}\`.\n\n` +
+          `\`opentui.h\` beside \`${libraryFileName}\` is the C ABI header that this library was built from ` +
+          `(FNV-1a 64 \`${headerHash}\`). A C host compiles against it and links the library in this directory` +
+          `${platform === "win32" ? " through `opentui.lib`" : ""}. For opentui-rust, set \`OPENTUI_LIB_DIR\` to this ` +
+          `directory; its build fails when the header differs from the one its bindings were generated from. ` +
+          `See [C](https://opentui.com/docs/native/c).`,
       ),
     )
 
@@ -332,7 +356,7 @@ export default module.default
       if (!existsSync(source)) throw new Error(`Required native license file is missing: ${source}`)
       copyFileSync(source, join(nativeDir, destination))
     }
-    console.log("Built:", nativeName)
+    console.log("Built:", nativeName, `opentui.h FNV-1a 64 ${headerHash}`)
   }
 }
 
