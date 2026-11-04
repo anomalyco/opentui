@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const clipboard_clock = @import("clock.zig");
 const sync = @import("sync.zig");
 const posix_io = @import("posix-io.zig");
+const test_env = @import("../tests/test-env.zig");
 
 const SocketAddress = extern union {
     any: std.posix.sockaddr,
@@ -2744,20 +2745,13 @@ test "X11 connect failures report their cause once per process" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     try clipboard_clock.init();
     const Fake = struct {
-        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
         var error_code: c_int = 0;
         fn connectionError(_: *linux.XcbConnection) callconv(.c) c_int {
             return error_code;
         }
     };
-    const saved = if (posix_io.getEnv("DISPLAY")) |old| try std.testing.allocator.dupeSentinel(u8, old, 0) else null;
-    defer if (saved) |old| {
-        _ = Fake.setenv("DISPLAY", old, 1);
-        std.testing.allocator.free(old);
-    } else {
-        _ = Fake.unsetenv("DISPLAY");
-    };
+    const saved = try test_env.save(&.{"DISPLAY"});
+    defer saved.restore();
     var symbols: linux.XcbSymbols = undefined;
     symbols.xcb_connect_to_fd = fakeImmediateConnectToFd;
     symbols.xcb_connection_has_error = Fake.connectionError;
@@ -2775,7 +2769,7 @@ test "X11 connect failures report their cause once per process" {
         .{ .display = ":0", .connected = true, .reports = "" },
     };
     for (cases) |case| {
-        try std.testing.expectEqual(@as(c_int, 0), Fake.setenv("DISPLAY", case.display, 1));
+        test_env.set("DISPLAY", case.display);
         Fake.error_code = case.error_code;
         linux.test_log.begin();
         defer _ = linux.test_log.end();
