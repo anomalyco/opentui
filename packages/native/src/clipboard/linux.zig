@@ -211,6 +211,7 @@ pub const XcbSelectionNotifyEvent = extern struct {
 
 pub const WaylandSymbols = struct {
     wl_display_connect: *const fn (?[*:0]const u8) callconv(.c) ?*WlDisplay,
+    wl_display_connect_to_fd: *const fn (c_int) callconv(.c) ?*WlDisplay,
     wl_display_disconnect: *const fn (*WlDisplay) callconv(.c) void,
     wl_display_get_fd: *const fn (*WlDisplay) callconv(.c) c_int,
     wl_display_dispatch_pending: *const fn (*WlDisplay) callconv(.c) c_int,
