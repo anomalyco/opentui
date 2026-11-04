@@ -10,6 +10,7 @@ const clipboard_windows_dib = @import("windows-dib.zig");
 const clipboard_macos = @import("macos.zig");
 const sync = @import("sync.zig");
 const posix_io = @import("posix-io.zig");
+const test_env = @import("../tests/test-env.zig");
 
 test {
     _ = clipboard_clock;
@@ -2656,13 +2657,12 @@ test "clipboard Wayland fallback goes to X11 and reports causes only when no bac
 
 test "clipboard Wayland connection takes WSL detection from the service" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
-    const env = clipboard_wayland.test_env;
-    const saved = try env.save();
-    defer env.restore(saved);
+    const saved = try test_env.save(&.{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "WAYLAND_SOCKET" });
+    defer saved.restore();
     // No socket has this name in either directory, so no connect reaches the caller's compositor.
-    _ = env.unsetenv("WAYLAND_SOCKET");
-    try std.testing.expectEqual(@as(c_int, 0), env.setenv("XDG_RUNTIME_DIR", "", 1));
-    try std.testing.expectEqual(@as(c_int, 0), env.setenv("WAYLAND_DISPLAY", "opentui-absent-wayland", 1));
+    test_env.set("WAYLAND_SOCKET", null);
+    test_env.set("XDG_RUNTIME_DIR", "");
+    test_env.set("WAYLAND_DISPLAY", "opentui-absent-wayland");
     const previous = clipboard_linux.testSwapWaylandSymbols(clipboard_wayland.testSymbols());
     defer _ = clipboard_linux.testSwapWaylandSymbols(previous);
     for ([_]bool{ false, true }) |is_wsl| {
