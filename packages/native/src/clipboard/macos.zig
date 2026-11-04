@@ -224,7 +224,7 @@ fn readMime(
     var shim_bytes: ?[*]u8 = null;
     var length: u32 = 0;
     const status = shimStatus(ot_clipboard_macos_read(
-        @intFromEnum(mime),
+        @backingInt(mime),
         max_bytes,
         max_image_pixels,
         max_conversion_bytes,
@@ -257,9 +257,9 @@ fn readMime(
 }
 
 fn shimStop(context: ?*const anyopaque) callconv(.c) i32 {
-    const options: *const ExecuteOptions = @ptrCast(@alignCast(context orelse return @intFromEnum(ShimStatus.failed)));
-    const status = stopStatus(options.*) orelse return @intFromEnum(ShimStatus.ok);
-    return @intFromEnum(switch (status) {
+    const options: *const ExecuteOptions = @ptrCast(@alignCast(context orelse return @backingInt(ShimStatus.failed)));
+    const status = stopStatus(options.*) orelse return @backingInt(ShimStatus.ok);
+    return @backingInt(switch (status) {
         .cancelled => ShimStatus.cancelled,
         .timed_out => ShimStatus.timed_out,
         .failed => ShimStatus.failed,

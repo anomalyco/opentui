@@ -316,30 +316,33 @@ export function run(renderer: CliRenderer): void {
 
 export function destroy(renderer: CliRenderer): void {
   renderer.clearFrameCallbacks()
+  renderer.console.hide()
+  renderer.console.onCopySelection = undefined
+  renderer.console.keyBindings = []
 
   if (titleText) {
-    renderer.root.remove(titleText)
+    titleText.destroyRecursively()
     titleText = null
   }
 
   if (instructionsText) {
-    renderer.root.remove(instructionsText)
+    instructionsText.destroyRecursively()
     instructionsText = null
   }
 
   if (statusText) {
-    renderer.root.remove(statusText)
+    statusText.destroyRecursively()
     statusText = null
   }
 
   for (const button of consoleButtons) {
-    renderer.root.remove(button)
+    button.destroyRecursively()
   }
   consoleButtons = []
 
   for (const id of ["decor1", "decor2"]) {
     const decor = renderer.root.getRenderable(id)
-    if (decor) renderer.root.remove(decor)
+    decor?.destroyRecursively()
   }
 
   buttonCounters = {

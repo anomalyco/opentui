@@ -1,17 +1,19 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { clearEnvCache } from "../lib/env.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 
-const originalStdinLog = process.env.OTUI_STDIN_LOG
+const originalEnv = {
+  OTUI_STDIN_LOG: process.env.OTUI_STDIN_LOG,
+  OTUI_NATIVE_INPUT_SHADOW: process.env.OTUI_NATIVE_INPUT_SHADOW,
+}
 
 afterEach(() => {
-  if (originalStdinLog === undefined) {
-    delete process.env.OTUI_STDIN_LOG
-  } else {
-    process.env.OTUI_STDIN_LOG = originalStdinLog
+  for (const [name, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
   }
   clearEnvCache()
 })
@@ -41,5 +43,30 @@ test("writes the raw stdin byte stream to OTUI_STDIN_LOG", async () => {
   } finally {
     renderer?.destroy()
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("OTUI_NATIVE_INPUT_SHADOW delivers one parser's events and logs each difference", async () => {
+  process.env.OTUI_NATIVE_INPUT_SHADOW = "true"
+  clearEnvCache()
+  for (const native of [false, true]) {
+    const warn = spyOn(console, "warn").mockImplementation(() => {})
+    const { renderer } = await createTestRenderer({ experimental_nativeInput: native })
+    const names: string[] = []
+    renderer.keyInput.on("keypress", (key) => names.push(key.name))
+    try {
+      // Both parsers survive suspension. Only Alt+. differs: legacy names it "" (issue 046).
+      await renderer.setupTerminal()
+      await renderer.suspend()
+      await renderer.resume()
+      renderer.stdin.emit("data", Buffer.from("a\x1b.b"))
+      expect(names).toEqual(["a", native ? "." : "", "b"])
+      expect(warn.mock.calls.map(([line]) => String(line).split("=")[0])).toEqual([
+        `[stdin-shadow] ${native ? "native" : "legacy"}`,
+      ])
+    } finally {
+      renderer.destroy()
+      warn.mockRestore()
+    }
   }
 })

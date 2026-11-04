@@ -81,9 +81,9 @@ fn matrixOutput(result: MatrixColor) RGBA {
 /// strength: global multiplier applied to each cell's strength value (1.0 = no change)
 /// target: which buffer(s) to apply the matrix to (FG=1, BG=2, Both=3)
 /// No clamping is performed - output values may exceed [0, 1] range
-pub fn colorMatrix(self: anytype, matrix: []const f32, cellMask: []const f32, strength: f32, target: ColorTarget) void {
+pub fn colorMatrix(self: anytype, matrix: []align(1) const f32, cellMask: []align(1) const f32, strength: f32, target: ColorTarget) void {
     if (matrix.len < 16 or cellMask.len < 3) return;
-    if (@intFromEnum(target) == 0) return;
+    if (@backingInt(target) == 0) return;
     if (!math.isFinite(strength)) return;
 
     const width = self.width;
@@ -104,7 +104,7 @@ pub fn colorMatrix(self: anytype, matrix: []const f32, cellMask: []const f32, st
         // Skip if coordinates are negative or non-finite before conversion
         if (x_f < 0.0 or y_f < 0.0) continue;
         if (!math.isFinite(x_f) or !math.isFinite(y_f)) continue;
-        if (x_f > max_u32_f or y_f > max_u32_f) continue;
+        if (x_f >= max_u32_f or y_f >= max_u32_f) continue;
 
         const x: u32 = @intFromFloat(x_f);
         const y: u32 = @intFromFloat(y_f);
@@ -118,14 +118,14 @@ pub fn colorMatrix(self: anytype, matrix: []const f32, cellMask: []const f32, st
         const index = y * width + x;
 
         // Apply color matrix to foreground if target includes FG
-        if (@intFromEnum(target) & 1 != 0) {
+        if (@backingInt(target) & 1 != 0) {
             const input = matrixInput(fg[index]);
             const fg_result = applyMatrix4x4Scalar(&mat4, input.r, input.g, input.b, input.a, cellStrength);
             fg[index] = matrixOutput(fg_result);
         }
 
         // Apply color matrix to background if target includes BG
-        if (@intFromEnum(target) & 2 != 0) {
+        if (@backingInt(target) & 2 != 0) {
             const input = matrixInput(bg[index]);
             const bg_result = applyMatrix4x4Scalar(&mat4, input.r, input.g, input.b, input.a, cellStrength);
             bg[index] = matrixOutput(bg_result);
@@ -143,9 +143,9 @@ pub fn colorMatrix(self: anytype, matrix: []const f32, cellMask: []const f32, st
 /// target: which buffer(s) to apply the matrix to (FG=1, BG=2, Both=3)
 /// This uses 4-wide SIMD to process pixels in batches for maximum throughput.
 /// No clamping is performed - output values may exceed [0, 1] range
-pub fn colorMatrixUniform(self: anytype, matrix: []const f32, strength: f32, target: ColorTarget) void {
+pub fn colorMatrixUniform(self: anytype, matrix: []align(1) const f32, strength: f32, target: ColorTarget) void {
     if (matrix.len < 16 or strength == 0.0) return;
-    if (@intFromEnum(target) == 0) return;
+    if (@backingInt(target) == 0) return;
     if (!math.isFinite(strength)) return;
 
     const width = self.width;
@@ -157,8 +157,8 @@ pub fn colorMatrixUniform(self: anytype, matrix: []const f32, strength: f32, tar
     // Use matrix directly as 4x4
     const mat4 = matrix[0..16].*;
 
-    const processFG = @intFromEnum(target) & 1 != 0;
-    const processBG = @intFromEnum(target) & 2 != 0;
+    const processFG = @backingInt(target) & 1 != 0;
+    const processBG = @backingInt(target) & 2 != 0;
 
     // Process 4 pixels at a time using SIMD
     const strength_vec: Vec4 = @splat(strength);

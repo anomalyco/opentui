@@ -1,7 +1,7 @@
-import { afterEach, expect, test } from "bun:test"
+import { ResourceContext, type OptimizedBuffer } from "../buffer.js"
+import { beforeEach, afterEach, expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 
-import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
@@ -15,15 +15,19 @@ import type { RenderContext } from "../types.js"
 import { getLinkId } from "../utils.js"
 
 type ClaimedCommit = {
-  snapshot: OptimizedBuffer
+  snapshot: Pick<OptimizedBuffer, "width" | "height" | "widthMethod" | "withBuffers" | "getRealCharBytes" | "destroy">
   rowColumns: number
   startOnNewLine: boolean
   trailingNewline: boolean
 }
 
 const decoder = new TextDecoder()
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+let resourceContext: ResourceContext
+let syntaxStyle: SyntaxStyle
+
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 64, renderCellsMax: 1 })
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, resourceContext)
 })
 
 class CountingRenderable extends Renderable {
@@ -42,12 +46,18 @@ const activeRenderers: TestRenderer[] = []
 const activeTreeSitterClients: MockTreeSitterClient[] = []
 
 afterEach(async () => {
-  for (const renderer of activeRenderers.splice(0)) {
-    renderer.destroy()
-  }
-  for (const client of activeTreeSitterClients.splice(0)) {
-    client.resolveAllHighlightOnce()
-    await client.destroy()
+  try {
+    for (const renderer of activeRenderers.splice(0)) {
+      renderer.destroy()
+      await renderer.closed
+    }
+    for (const client of activeTreeSitterClients.splice(0)) {
+      client.resolveAllHighlightOnce()
+      await client.destroy()
+    }
+  } finally {
+    syntaxStyle?.destroy()
+    resourceContext?.destroy()
   }
 })
 
@@ -167,7 +177,9 @@ test("ScrollbackSurface retains loaded images for native scrollback rendering", 
   const commits = claimCommits(renderer)
   try {
     expect(commits).toHaveLength(2)
-    expect(commits[0]!.snapshot.buffers.char.some((char) => (char & 0xc0000000) >>> 0 === 0x40000000)).toBe(true)
+    expect(
+      commits[0]!.snapshot.withBuffers((cells) => cells.char.some((char) => (char & 0xc0000000) >>> 0 === 0x40000000)),
+    ).toBe(true)
     expect(nextTailColumn).toBe(8)
   } finally {
     destroyClaimedCommits(commits)
@@ -334,14 +346,15 @@ test("ScrollbackSurface forwards hyperlink capability changes to existing Markdo
     expect(frames[1]).not.toContain(url)
     expect(frames[2]).toContain(`OpenTUI (${url})`)
 
+    const driver = renderer.nativeScene.driver
     for (const [index, commit] of commits.entries()) {
       const lines = frames[index]!.split("\n")
       const y = lines.findIndex((line) => line.includes("OpenTUI"))
       expect(y).toBeGreaterThanOrEqual(0)
       const x = lines[y]!.indexOf("OpenTUI")
 
-      const attributes = commit.snapshot.buffers.attributes[y * commit.snapshot.width + x]!
-      expect(commit.snapshot.lib.linkGetUrl(getLinkId(attributes))).toBe(url)
+      const attributes = commit.snapshot.withBuffers((cells) => cells.attributes[y * cells.width + x]!)
+      expect(driver.renderLib.contextGetLinkUrl(driver.context, getLinkId(attributes))).toBe(url)
     }
   } finally {
     destroyClaimedCommits(commits)
@@ -565,37 +578,35 @@ test("ScrollbackSurface preserves inline first-line offset when the first markdo
   expect(replacementRenderable.height).toBe(2)
 })
 
-test("ScrollbackSurface.commitRows rejects stale geometry after resize", async () => {
-  const { renderer, resize } = await createSplitFooterRenderer({
-    width: 40,
-    height: 10,
-    footerHeight: 4,
-  })
-
-  const surface = renderer.createScrollbackSurface()
-  const text = new TextRenderable(surface.renderContext, {
-    id: "surface-resize",
-    content: "resize me",
-    width: "100%",
-  })
-
-  surface.root.add(text)
+test.each([
+  ["a resize", ({ resize }: Awaited<ReturnType<typeof createSplitFooterRenderer>>) => resize(60, 16)],
+  [
+    "a width method change",
+    ({ renderer }: Awaited<ReturnType<typeof createSplitFooterRenderer>>) =>
+      setRendererCapabilities(renderer, { unicode: "wcwidth" }),
+  ],
+] as const)("ScrollbackSurface.commitRows rejects rows rendered before %s", async (_name, change) => {
+  const setup = await createSplitFooterRenderer({ width: 40, height: 10, footerHeight: 4 })
+  const surface = setup.renderer.createScrollbackSurface()
+  surface.root.add(new TextRenderable(surface.renderContext, { content: "resize me", width: "100%" }))
   surface.render()
 
-  resize(60, 16)
+  change(setup)
 
-  expect(() => {
-    surface.commitRows(0, surface.height)
-  }).toThrow("ScrollbackSurface.commitRows requires render() after renderer geometry changes")
-
+  expect(() => surface.commitRows(0, surface.height)).toThrow(
+    "ScrollbackSurface.commitRows requires render() after renderer geometry changes",
+  )
   surface.render()
+  surface.commitRows(0, surface.height)
 
-  expect(() => {
-    surface.commitRows(0, surface.height)
-  }).not.toThrow()
-
-  const commits = claimCommits(renderer)
-  destroyClaimedCommits(commits)
+  const commits = claimCommits(setup.renderer)
+  try {
+    expect(commits.map(({ snapshot }) => [snapshot.width, snapshot.widthMethod])).toEqual([
+      [setup.renderer.width, setup.renderer.widthMethod],
+    ])
+  } finally {
+    destroyClaimedCommits(commits)
+  }
 })
 
 test("CliRenderer writeToScrollback lays out tall snapshots against the resolved snapshot height", async () => {

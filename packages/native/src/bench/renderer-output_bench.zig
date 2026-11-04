@@ -24,7 +24,7 @@ fn runScenario(
     const feed = try native_span_feed.Stream.create(allocator, options);
     defer feed.destroy();
 
-    var backend = renderer_output.FeedBackend.create(feed);
+    var backend = renderer_output.FeedBackend.createWithIo(io, feed);
     defer backend.deinit();
     const bytes = try allocator.alloc(u8, byte_count);
     defer allocator.free(bytes);

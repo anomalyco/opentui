@@ -1,6 +1,5 @@
 import type { EditBuffer } from "../edit-buffer.js"
 import type { EditorView } from "../editor-view.js"
-import { stringWidth } from "../platform/runtime.js"
 import { ExtmarksHistory, type ExtmarksSnapshot } from "./extmarks-history.js"
 
 export interface Extmark {
@@ -59,8 +58,12 @@ export class ExtmarksController {
   private originalNewLine: typeof EditBuffer.prototype.newLine
   private originalDeleteLine: typeof EditBuffer.prototype.deleteLine
   private originalEditorViewDeleteSelectedText: typeof EditorView.prototype.deleteSelectedText
+  private originalEditorViewReplaceSelectedText: typeof EditorView.prototype._replaceSelectedText
   private originalUndo: typeof EditBuffer.prototype.undo
   private originalRedo: typeof EditBuffer.prototype.redo
+  private readonly contentChangeListener = () => {
+    if (!this.destroyed) this.updateHighlights()
+  }
 
   constructor(editBuffer: EditBuffer, editorView: EditorView) {
     this.editBuffer = editBuffer
@@ -82,6 +85,7 @@ export class ExtmarksController {
     this.originalNewLine = editBuffer.newLine.bind(editBuffer)
     this.originalDeleteLine = editBuffer.deleteLine.bind(editBuffer)
     this.originalEditorViewDeleteSelectedText = editorView.deleteSelectedText.bind(editorView)
+    this.originalEditorViewReplaceSelectedText = editorView._replaceSelectedText.bind(editorView)
     this.originalUndo = editBuffer.undo.bind(editBuffer)
     this.originalRedo = editBuffer.redo.bind(editBuffer)
 
@@ -100,7 +104,7 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
       if (hasSelection) {
@@ -116,7 +120,7 @@ export class ExtmarksController {
 
       const virtualExtmark = this.findVirtualExtmarkContaining(targetOffset)
       if (virtualExtmark && currentOffset >= virtualExtmark.end) {
-        this.editBuffer.setCursorByOffset(virtualExtmark.start - 1)
+        this.editBuffer.setCursorByOffset(Math.max(0, virtualExtmark.start - 1))
         return
       }
 
@@ -129,7 +133,7 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
       if (hasSelection) {
@@ -138,9 +142,8 @@ export class ExtmarksController {
       }
 
       const targetOffset = currentOffset + 1
-      const textLength = this.editBuffer.getText().length
-
-      if (targetOffset > textLength) {
+      // A target past the end of the buffer has no position.
+      if (this.editBuffer.offsetToPosition(targetOffset) === null) {
         this.originalMoveCursorRight()
         return
       }
@@ -167,9 +170,9 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       this.originalMoveUpVisual()
-      const newOffset = this.editorView.getVisualCursor().offset
+      const newOffset = this.editBuffer.getCursorPosition().offset
 
       const virtualExtmark = this.findVirtualExtmarkContaining(newOffset)
       if (virtualExtmark) {
@@ -177,7 +180,7 @@ export class ExtmarksController {
         const distanceToEnd = virtualExtmark.end - newOffset
 
         if (distanceToStart < distanceToEnd) {
-          this.editorView.setCursorByOffset(virtualExtmark.start - 1)
+          this.editorView.setCursorByOffset(Math.max(0, virtualExtmark.start - 1))
         } else {
           this.editorView.setCursorByOffset(virtualExtmark.end)
         }
@@ -197,9 +200,9 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       this.originalMoveDownVisual()
-      const newOffset = this.editorView.getVisualCursor().offset
+      const newOffset = this.editBuffer.getCursorPosition().offset
 
       const virtualExtmark = this.findVirtualExtmarkContaining(newOffset)
       if (virtualExtmark) {
@@ -222,7 +225,7 @@ export class ExtmarksController {
         return
       }
 
-      const currentOffset = this.editorView.getVisualCursor().offset
+      const currentOffset = this.editBuffer.getCursorPosition().offset
       const hasSelection = this.editorView.hasSelection()
 
       if (hasSelection) {
@@ -241,7 +244,7 @@ export class ExtmarksController {
       } else {
         for (const extmark of this.extmarks.values()) {
           if (extmark.virtual && currentOffset >= extmark.end && offset < extmark.end && offset >= extmark.start) {
-            this.originalSetCursorByOffset(extmark.start - 1)
+            this.originalSetCursorByOffset(Math.max(0, extmark.start - 1))
             return
           }
         }
@@ -252,181 +255,146 @@ export class ExtmarksController {
   }
 
   private wrapDeletion(): void {
-    this.editBuffer.deleteCharBackward = (): void => {
-      if (this.destroyed) {
-        this.originalDeleteCharBackward()
-        return
-      }
+    this.editBuffer.deleteCharBackward = (): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalDeleteCharBackward()
+          return
+        }
 
-      this.saveSnapshot()
+        const currentOffset = this.editBuffer.getCursorPosition().offset
+        const hadSelection = this.editorView.hasSelection()
 
-      const currentOffset = this.editorView.getVisualCursor().offset
-      const hadSelection = this.editorView.hasSelection()
+        if (currentOffset === 0 || hadSelection) {
+          this.originalDeleteCharBackward()
+          this.saveSnapshot()
+          return
+        }
 
-      if (currentOffset === 0) {
-        this.originalDeleteCharBackward()
-        return
-      }
+        const targetOffset = currentOffset - 1
+        const virtualExtmark = this.findVirtualExtmarkContaining(targetOffset)
 
-      if (hadSelection) {
-        this.originalDeleteCharBackward()
-        return
-      }
+        if (virtualExtmark && currentOffset === virtualExtmark.end) {
+          const startCursor = this.offsetToPosition(virtualExtmark.start)
+          const endCursor = this.offsetToPosition(virtualExtmark.end)
+          const deleteOffset = virtualExtmark.start
 
-      const targetOffset = currentOffset - 1
-      const virtualExtmark = this.findVirtualExtmarkContaining(targetOffset)
+          const change = this.measureChange(() =>
+            this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col),
+          )
+          this.saveSnapshot()
+          this.deleteExtmarkById(virtualExtmark.id)
+          this.shiftExtmarks(deleteOffset, change)
 
-      if (virtualExtmark && currentOffset === virtualExtmark.end) {
-        const startCursor = this.offsetToPosition(virtualExtmark.start)
-        const endCursor = this.offsetToPosition(virtualExtmark.end)
-        const deleteOffset = virtualExtmark.start
-        const deleteLength = virtualExtmark.end - virtualExtmark.start
+          return
+        }
 
-        this.deleteExtmarkById(virtualExtmark.id)
+        // The deletion starts at the cursor stop before, which a grapheme it joins can move the cursor past.
+        const deleteOffset = this.editBuffer._getPrevCharBoundary().offset
+        const change = this.measureChange(() => this.originalDeleteCharBackward())
+        this.saveSnapshot()
+        this.shiftExtmarks(deleteOffset, change)
+      })
 
-        this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
-        this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
+    this.editBuffer.deleteChar = (): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalDeleteChar()
+          return
+        }
 
-        this.updateHighlights()
+        const currentOffset = this.editBuffer.getCursorPosition().offset
+        const hadSelection = this.editorView.hasSelection()
 
-        return
-      }
+        if (hadSelection) {
+          this.originalDeleteChar()
+          this.saveSnapshot()
+          return
+        }
 
-      this.originalDeleteCharBackward()
-      const deleteOffset = this.editorView.getVisualCursor().offset
-      const deleteLength = currentOffset - deleteOffset
-      if (deleteLength > 0) {
-        this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
-      }
-    }
+        const targetOffset = currentOffset
+        const virtualExtmark = this.findVirtualExtmarkContaining(targetOffset)
 
-    this.editBuffer.deleteChar = (): void => {
-      if (this.destroyed) {
-        this.originalDeleteChar()
-        return
-      }
+        if (virtualExtmark && currentOffset === virtualExtmark.start) {
+          const startCursor = this.offsetToPosition(virtualExtmark.start)
+          const endCursor = this.offsetToPosition(virtualExtmark.end)
+          const deleteOffset = virtualExtmark.start
 
-      this.saveSnapshot()
+          const change = this.measureChange(() =>
+            this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col),
+          )
+          this.saveSnapshot()
+          this.deleteExtmarkById(virtualExtmark.id)
+          this.shiftExtmarks(deleteOffset, change)
 
-      const currentOffset = this.editorView.getVisualCursor().offset
-      const hadSelection = this.editorView.hasSelection()
+          return
+        }
 
-      if (hadSelection) {
-        this.originalDeleteChar()
-        return
-      }
+        const change = this.measureChange(() => this.originalDeleteChar())
+        this.saveSnapshot()
+        this.shiftExtmarks(currentOffset, change)
+      })
 
-      const targetOffset = currentOffset
-      const virtualExtmark = this.findVirtualExtmarkContaining(targetOffset)
+    this.editBuffer.deleteRange = (startLine: number, startCol: number, endLine: number, endCol: number): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalDeleteRange(startLine, startCol, endLine, endCol)
+          return
+        }
 
-      if (virtualExtmark && currentOffset === virtualExtmark.start) {
-        const startCursor = this.offsetToPosition(virtualExtmark.start)
-        const endCursor = this.offsetToPosition(virtualExtmark.end)
-        const deleteOffset = virtualExtmark.start
-        const deleteLength = virtualExtmark.end - virtualExtmark.start
+        const startOffset = Math.min(this.positionToOffset(startLine, startCol), this.positionToOffset(endLine, endCol))
+        const change = this.measureChange(() => this.originalDeleteRange(startLine, startCol, endLine, endCol))
+        this.saveSnapshot()
+        this.shiftExtmarks(startOffset, change)
+      })
 
-        this.deleteExtmarkById(virtualExtmark.id)
+    this.editBuffer.deleteLine = (): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalDeleteLine()
+          return
+        }
 
-        this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
-        this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
+        // Native deletes the line with the line break after it, or with the one before it on the last line.
+        const row = this.editBuffer.getCursorPosition().row
+        const lineStart = this.editBuffer.getLineStartOffset(row)
+        const [start, end] =
+          row + 1 < this.editBuffer.getLineCount()
+            ? [lineStart, this.editBuffer.getLineStartOffset(row + 1)]
+            : [Math.max(0, lineStart - 1), this.editBuffer.getEOL().offset]
 
-        this.updateHighlights()
-
-        return
-      }
-
-      const deleteEndOffset = this.getNextCursorOffset(currentOffset)
-      const deleteLength = deleteEndOffset - currentOffset
-
-      this.originalDeleteChar()
-
-      if (deleteLength > 0) {
-        this.adjustExtmarksAfterDeletion(currentOffset, deleteLength)
-      }
-    }
-
-    this.editBuffer.deleteRange = (startLine: number, startCol: number, endLine: number, endCol: number): void => {
-      if (this.destroyed) {
-        this.originalDeleteRange(startLine, startCol, endLine, endCol)
-        return
-      }
-
-      this.saveSnapshot()
-
-      const startOffset = this.positionToOffset(startLine, startCol)
-      const endOffset = this.positionToOffset(endLine, endCol)
-      const length = endOffset - startOffset
-
-      this.originalDeleteRange(startLine, startCol, endLine, endCol)
-      this.adjustExtmarksAfterDeletion(startOffset, length)
-    }
-
-    this.editBuffer.deleteLine = (): void => {
-      if (this.destroyed) {
         this.originalDeleteLine()
-        return
-      }
-
-      this.saveSnapshot()
-
-      const text = this.editBuffer.getText()
-      const currentOffset = this.editorView.getVisualCursor().offset
-
-      let lineStart = 0
-      for (let i = currentOffset - 1; i >= 0; i--) {
-        if (text[i] === "\n") {
-          lineStart = i + 1
-          break
-        }
-      }
-
-      let lineEnd = text.length
-      for (let i = currentOffset; i < text.length; i++) {
-        if (text[i] === "\n") {
-          lineEnd = i + 1
-          break
-        }
-      }
-
-      const deleteLength = lineEnd - lineStart
-
-      this.originalDeleteLine()
-      this.adjustExtmarksAfterDeletion(lineStart, deleteLength)
-    }
+        this.saveSnapshot()
+        this.adjustExtmarksAfterDeletion(start, end - start)
+      })
   }
 
   private wrapInsertion(): void {
-    this.editBuffer.insertText = (text: string): void => {
-      if (this.destroyed) {
-        this.originalInsertText(text)
-        return
-      }
+    this.editBuffer.insertText = (text: string): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalInsertText(text)
+          return
+        }
 
-      this.saveSnapshot()
+        const currentOffset = this.editBuffer.getCursorPosition().offset
+        const change = this.measureChange(() => this.originalInsertText(text))
+        this.saveSnapshot()
+        this.shiftExtmarks(currentOffset, change)
+      })
 
-      const currentOffset = this.editorView.getVisualCursor().offset
-      this.originalInsertText(text)
-      const insertLength = this.editorView.getVisualCursor().offset - currentOffset
-      if (insertLength > 0) {
-        this.adjustExtmarksAfterInsertion(currentOffset, insertLength)
-      }
-    }
+    this.editBuffer.insertChar = (char: string): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalInsertChar(char)
+          return
+        }
 
-    this.editBuffer.insertChar = (char: string): void => {
-      if (this.destroyed) {
-        this.originalInsertChar(char)
-        return
-      }
-
-      this.saveSnapshot()
-
-      const currentOffset = this.editorView.getVisualCursor().offset
-      this.originalInsertChar(char)
-      const insertLength = this.editorView.getVisualCursor().offset - currentOffset
-      if (insertLength > 0) {
-        this.adjustExtmarksAfterInsertion(currentOffset, insertLength)
-      }
-    }
+        const currentOffset = this.editBuffer.getCursorPosition().offset
+        const change = this.measureChange(() => this.originalInsertChar(char))
+        this.saveSnapshot()
+        this.shiftExtmarks(currentOffset, change)
+      })
 
     this.editBuffer.setText = (text: string): void => {
       if (this.destroyed) {
@@ -434,8 +402,10 @@ export class ExtmarksController {
         return
       }
 
-      this.clear()
-      this.originalSetText(text)
+      this.editBuffer.runMutation(() => {
+        this.originalSetText(text)
+        this.clear()
+      })
     }
 
     this.editBuffer.replaceText = (text: string): void => {
@@ -444,68 +414,83 @@ export class ExtmarksController {
         return
       }
 
-      this.saveSnapshot()
-      this.clear()
-      this.originalReplaceText(text)
+      this.editBuffer.runMutation(() => {
+        this.originalReplaceText(text)
+        this.saveSnapshot()
+        this.clear()
+      })
     }
 
-    this.editBuffer.clear = (): void => {
-      if (this.destroyed) {
+    this.editBuffer.clear = (): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalClear()
+          return
+        }
+
         this.originalClear()
-        return
-      }
+        this.saveSnapshot()
+        this.clear()
+      })
 
-      this.saveSnapshot()
+    this.editBuffer.newLine = (): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalNewLine()
+          return
+        }
 
-      this.clear()
-      this.originalClear()
-    }
-
-    this.editBuffer.newLine = (): void => {
-      if (this.destroyed) {
+        const currentOffset = this.editBuffer.getCursorPosition().offset
         this.originalNewLine()
-        return
-      }
-
-      this.saveSnapshot()
-
-      const currentOffset = this.editorView.getVisualCursor().offset
-      this.originalNewLine()
-      this.adjustExtmarksAfterInsertion(currentOffset, 1)
-    }
+        this.saveSnapshot()
+        this.adjustExtmarksAfterInsertion(currentOffset, 1)
+      })
   }
 
   private wrapEditorViewDeleteSelectedText(): void {
-    this.editorView.deleteSelectedText = (): void => {
-      if (this.destroyed) {
-        this.originalEditorViewDeleteSelectedText()
-        return
-      }
+    this.editorView._replaceSelectedText = (text: string) =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) return this.originalEditorViewReplaceSelectedText(text)
+        const selection = this.editorView.getSelection()
+        const deleteOffset = selection ? Math.min(selection.start, selection.end) : 0
+        const cursorOffset = this.editBuffer.getCursorPosition().offset
+        let result!: ReturnType<typeof this.originalEditorViewReplaceSelectedText>
+        const change = this.measureChange(() => (result = this.originalEditorViewReplaceSelectedText(text)))
+        const insertOffset = result.deleted ? deleteOffset : cursorOffset
+        const insertLength = result.inserted ? this.editBuffer.getCursorPosition().offset - insertOffset : 0
+        if (result.deleted) {
+          this.saveSnapshot()
+          this.shiftExtmarks(deleteOffset, change - insertLength, false)
+        }
+        if (result.inserted) this.saveSnapshot()
+        this.shiftExtmarks(insertOffset, insertLength, false)
+        if (change !== 0 || insertLength !== 0) this.updateHighlights()
+        return result
+      })
 
-      this.saveSnapshot()
+    this.editorView.deleteSelectedText = (): void =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed) {
+          this.originalEditorViewDeleteSelectedText()
+          return
+        }
 
-      const selection = this.editorView.getSelection()
-      if (!selection) {
-        this.originalEditorViewDeleteSelectedText()
-        return
-      }
+        const selection = this.editorView.getSelection()
+        if (!selection) {
+          this.originalEditorViewDeleteSelectedText()
+          this.saveSnapshot()
+          return
+        }
 
-      const deleteOffset = Math.min(selection.start, selection.end)
-      const deleteLength = Math.abs(selection.end - selection.start)
-
-      this.originalEditorViewDeleteSelectedText()
-
-      if (deleteLength > 0) {
-        this.adjustExtmarksAfterDeletion(deleteOffset, deleteLength)
-      }
-    }
+        const deleteOffset = Math.min(selection.start, selection.end)
+        const change = this.measureChange(() => this.originalEditorViewDeleteSelectedText())
+        this.saveSnapshot()
+        this.shiftExtmarks(deleteOffset, change)
+      })
   }
 
   private setupContentChangeListener(): void {
-    this.editBuffer.on("content-changed", () => {
-      if (this.destroyed) return
-      this.updateHighlights()
-    })
+    this.editBuffer.on("content-changed", this.contentChangeListener)
   }
 
   private deleteExtmarkById(id: number): void {
@@ -526,7 +511,7 @@ export class ExtmarksController {
     return null
   }
 
-  private adjustExtmarksAfterInsertion(insertOffset: number, length: number): void {
+  private adjustExtmarksAfterInsertion(insertOffset: number, length: number, updateHighlights = true): void {
     for (const extmark of this.extmarks.values()) {
       if (extmark.start >= insertOffset) {
         extmark.start += length
@@ -535,10 +520,10 @@ export class ExtmarksController {
         extmark.end += length
       }
     }
-    this.updateHighlights()
+    if (updateHighlights) this.updateHighlights()
   }
 
-  public adjustExtmarksAfterDeletion(deleteOffset: number, length: number): void {
+  public adjustExtmarksAfterDeletion(deleteOffset: number, length: number, updateHighlights = true): void {
     const toDelete: number[] = []
 
     for (const extmark of this.extmarks.values()) {
@@ -566,7 +551,7 @@ export class ExtmarksController {
       this.deleteExtmarkById(id)
     }
 
-    this.updateHighlights()
+    if (updateHighlights) this.updateHighlights()
   }
 
   private offsetToPosition(offset: number): { row: number; col: number } {
@@ -581,11 +566,16 @@ export class ExtmarksController {
     return this.editBuffer.positionToOffset(row, col)
   }
 
-  private getNextCursorOffset(currentOffset: number): number {
-    this.originalMoveCursorRight()
-    const nextOffset = this.editorView.getVisualCursor().offset
-    this.originalSetCursorByOffset(currentOffset)
-    return nextOffset
+  /** Cells an edit adds to the document, negative when it removes them. A grapheme rejoined across the edit changes widths, so measure the end. */
+  private measureChange(edit: () => void): number {
+    const before = this.editBuffer._getEOF().offset
+    edit()
+    return this.editBuffer._getEOF().offset - before
+  }
+
+  private shiftExtmarks(offset: number, change: number, updateHighlights = true): void {
+    if (change > 0) this.adjustExtmarksAfterInsertion(offset, change, updateHighlights)
+    else if (change < 0) this.adjustExtmarksAfterDeletion(offset, -change, updateHighlights)
   }
 
   private updateHighlights(): void {
@@ -595,62 +585,21 @@ export class ExtmarksController {
       if (extmark.styleId !== undefined) {
         // extmark.start/end are display-width offsets including newlines (from cursor operations)
         // addHighlightByCharRange expects display-width offsets excluding newlines
-        // So we need to subtract the number of newlines before each position
-        const startWithoutNewlines = this.offsetExcludingNewlines(extmark.start)
-        const endWithoutNewlines = this.offsetExcludingNewlines(extmark.end)
-
         this.editBuffer.addHighlightByCharRange({
-          start: startWithoutNewlines,
-          end: endWithoutNewlines,
+          start: this.offsetExcludingNewlines(extmark.start),
+          end: this.offsetExcludingNewlines(extmark.end),
           styleId: extmark.styleId,
           priority: extmark.priority ?? 0,
-          hlRef: extmark.id,
+          hlRef: extmark.id & 0xffff,
         })
       }
     }
   }
 
+  // Each newline before the offset adds one, and native layout owns the cell widths of the text between them. An
+  // offset past the end stays past the end, where native highlights clamp it.
   private offsetExcludingNewlines(offset: number): number {
-    // offset is a display-width offset from the start of the buffer (includes newlines)
-    // We need to convert to display-width excluding newlines
-    // This means: subtract 1 for each newline encountered before this offset
-    const text = this.editBuffer.getText()
-    let displayWidthSoFar = 0
-    let newlineCount = 0
-
-    // Walk through the text and calculate display widths
-    let i = 0
-    while (i < text.length && displayWidthSoFar < offset) {
-      if (text[i] === "\n") {
-        displayWidthSoFar++ // newline counts as width 1 in cursor offset
-        newlineCount++
-        i++
-      } else {
-        // Find the next newline or end of string
-        let j = i
-        while (j < text.length && text[j] !== "\n") {
-          j++
-        }
-        const chunk = text.substring(i, j)
-        const chunkWidth = stringWidth(chunk)
-
-        if (displayWidthSoFar + chunkWidth < offset) {
-          // Entire chunk fits before offset
-          displayWidthSoFar += chunkWidth
-          i = j
-        } else {
-          // Offset is within this chunk - need to find exact position
-          // Walk character by character
-          for (let k = i; k < j && displayWidthSoFar < offset; k++) {
-            const charWidth = stringWidth(text[k])
-            displayWidthSoFar += charWidth
-          }
-          break
-        }
-      }
-    }
-
-    return offset - newlineCount
+    return offset - (this.editBuffer.offsetToPosition(offset)?.row ?? 0)
   }
 
   public create(options: ExtmarkOptions): number {
@@ -682,7 +631,14 @@ export class ExtmarksController {
       this.metadata.set(id, options.metadata)
     }
 
-    this.updateHighlights()
+    try {
+      this.updateHighlights()
+    } catch (error) {
+      // Native rejects some highlights (priority above 255); keep the controller as it was.
+      this.deleteExtmarkById(id)
+      this.updateHighlights()
+      throw error
+    }
 
     return id
   }
@@ -740,57 +696,68 @@ export class ExtmarksController {
   }
 
   private saveSnapshot(): void {
-    this.history.saveSnapshot(this.extmarks, this.nextId)
+    this.history.saveSnapshot(this.snapshotExtmarks(), this.nextId)
+  }
+
+  private snapshotExtmarks(): Map<number, Extmark & { metadata?: any }> {
+    return new Map(Array.from(this.extmarks, ([id, extmark]) => [id, { ...extmark, metadata: this.metadata.get(id) }]))
   }
 
   private restoreSnapshot(snapshot: ExtmarksSnapshot): void {
-    this.extmarks = new Map(Array.from(snapshot.extmarks.entries()).map(([id, extmark]) => [id, { ...extmark }]))
+    this.extmarks.clear()
+    this.extmarksByTypeId.clear()
+    this.metadata.clear()
+    for (const [id, saved] of snapshot.extmarks) {
+      const { metadata, ...extmark } = saved as Extmark & { metadata?: any }
+      this.extmarks.set(id, extmark)
+      if (!this.extmarksByTypeId.has(extmark.typeId)) {
+        this.extmarksByTypeId.set(extmark.typeId, new Set())
+      }
+      this.extmarksByTypeId.get(extmark.typeId)!.add(id)
+      if (metadata !== undefined) this.metadata.set(id, metadata)
+    }
     this.nextId = snapshot.nextId
     this.updateHighlights()
   }
 
   private wrapUndoRedo(): void {
-    this.editBuffer.undo = (): string | null => {
-      if (this.destroyed) {
-        return this.originalUndo()
-      }
+    this.editBuffer.undo = (): string | null =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed || !this.history.canUndo()) {
+          return this.originalUndo()
+        }
 
-      if (!this.history.canUndo()) {
-        return this.originalUndo()
-      }
+        const result = this.originalUndo()
+        const currentSnapshot: ExtmarksSnapshot = {
+          extmarks: this.snapshotExtmarks(),
+          nextId: this.nextId,
+        }
+        this.history.pushRedo(currentSnapshot)
 
-      const currentSnapshot: ExtmarksSnapshot = {
-        extmarks: new Map(Array.from(this.extmarks.entries()).map(([id, extmark]) => [id, { ...extmark }])),
-        nextId: this.nextId,
-      }
-      this.history.pushRedo(currentSnapshot)
+        const snapshot = this.history.undo()!
+        this.restoreSnapshot(snapshot)
 
-      const snapshot = this.history.undo()!
-      this.restoreSnapshot(snapshot)
+        return result
+      })
 
-      return this.originalUndo()
-    }
+    this.editBuffer.redo = (): string | null =>
+      this.editBuffer.runMutation(() => {
+        if (this.destroyed || !this.history.canRedo()) {
+          return this.originalRedo()
+        }
 
-    this.editBuffer.redo = (): string | null => {
-      if (this.destroyed) {
-        return this.originalRedo()
-      }
+        const result = this.originalRedo()
+        const currentSnapshot: ExtmarksSnapshot = {
+          extmarks: this.snapshotExtmarks(),
+          nextId: this.nextId,
+        }
+        this.history.pushUndo(currentSnapshot)
 
-      if (!this.history.canRedo()) {
-        return this.originalRedo()
-      }
+        const snapshot = this.history.redo()!
+        this.restoreSnapshot(snapshot)
 
-      const currentSnapshot: ExtmarksSnapshot = {
-        extmarks: new Map(Array.from(this.extmarks.entries()).map(([id, extmark]) => [id, { ...extmark }])),
-        nextId: this.nextId,
-      }
-      this.history.pushUndo(currentSnapshot)
-
-      const snapshot = this.history.redo()!
-      this.restoreSnapshot(snapshot)
-
-      return this.originalRedo()
-    }
+        return result
+      })
   }
 
   public registerType(typeName: string): number {
@@ -826,6 +793,7 @@ export class ExtmarksController {
 
   public destroy(): void {
     if (this.destroyed) return
+    this.editBuffer.off("content-changed", this.contentChangeListener)
 
     this.editBuffer.moveCursorLeft = this.originalMoveCursorLeft
     this.editBuffer.moveCursorRight = this.originalMoveCursorRight
@@ -843,6 +811,7 @@ export class ExtmarksController {
     this.editBuffer.newLine = this.originalNewLine
     this.editBuffer.deleteLine = this.originalDeleteLine
     this.editorView.deleteSelectedText = this.originalEditorViewDeleteSelectedText
+    this.editorView._replaceSelectedText = this.originalEditorViewReplaceSelectedText
     this.editBuffer.undo = this.originalUndo
     this.editBuffer.redo = this.originalRedo
 

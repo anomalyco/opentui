@@ -1,6 +1,7 @@
 const std = @import("std");
 const bench_utils = @import("../bench-utils.zig");
 const utf8 = @import("../utf8.zig");
+const utils = @import("../utils.zig");
 
 const BenchResult = bench_utils.BenchResult;
 const BenchStats = bench_utils.BenchStats;
@@ -70,7 +71,7 @@ fn benchIsAsciiOnly(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.isAsciiOnly(text);
+                std.mem.doNotOptimizeAway(utf8.isAsciiOnly(text));
                 stats.record(timer.read());
             }
 
@@ -97,7 +98,7 @@ fn benchIsAsciiOnly(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.isAsciiOnly(text);
+                std.mem.doNotOptimizeAway(utf8.isAsciiOnly(text));
                 stats.record(timer.read());
             }
 
@@ -124,7 +125,7 @@ fn benchIsAsciiOnly(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.isAsciiOnly(text);
+                std.mem.doNotOptimizeAway(utf8.isAsciiOnly(text));
                 stats.record(timer.read());
             }
 
@@ -151,7 +152,7 @@ fn benchIsAsciiOnly(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.isAsciiOnly(text);
+                std.mem.doNotOptimizeAway(utf8.isAsciiOnly(text));
                 stats.record(timer.read());
             }
 
@@ -302,7 +303,7 @@ fn benchFindChunkLayoutInfo(
 
     const name = "findChunkLayoutInfo: ASCII punctuation (62.5 KiB)";
     if (bench_utils.matchesBenchFilter(name, bench_filter)) {
-        const text = "word-" ** 12_800;
+        const text = utils.repeat(u8, "word-", 12_800);
         var temp = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer temp.deinit();
         const alloc = temp.allocator();
@@ -312,7 +313,7 @@ fn benchFindChunkLayoutInfo(
         var stats: BenchStats = .{};
         for (0..iterations) |_| {
             const timer = bench_utils.BenchTimer.start(io);
-            const word_classes = try utf8.findChunkLayoutInfo(alloc, text, 4, true, .unicode, &wrap_breaks);
+            const word_classes = try utf8.findChunkLayoutInfo(alloc, text, 4, .hidden, true, .unicode, &wrap_breaks);
             stats.record(timer.read());
 
             if (wrap_breaks.items.len != 12_800 or word_classes.first != .ascii_word or word_classes.last != .other) {
@@ -354,8 +355,10 @@ fn benchFindWrapPosByWidth(
 
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
+                var input = text;
+                std.mem.doNotOptimizeAway(&input);
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 40, 4, true, .unicode);
+                std.mem.doNotOptimizeAway(utf8.findWrapPosByWidth(input, 40, 4, .hidden, true, .unicode));
                 stats.record(timer.read());
             }
 
@@ -381,8 +384,10 @@ fn benchFindWrapPosByWidth(
 
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
+                var input = text;
+                std.mem.doNotOptimizeAway(&input);
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 120, 4, true, .unicode);
+                std.mem.doNotOptimizeAway(utf8.findWrapPosByWidth(input, 120, 4, .hidden, true, .unicode));
                 stats.record(timer.read());
             }
 
@@ -409,7 +414,7 @@ fn benchFindWrapPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 80, 4, false, .unicode);
+                _ = utf8.findWrapPosByWidth(text, 80, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -436,7 +441,7 @@ fn benchFindWrapPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findWrapPosByWidth(text, 80, 4, false, .unicode);
+                _ = utf8.findWrapPosByWidth(text, 80, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -475,8 +480,10 @@ fn benchFindPosByWidth(
 
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
+                var input = text;
+                std.mem.doNotOptimizeAway(&input);
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findPosByWidth(text, 500, 4, true, true, .unicode);
+                std.mem.doNotOptimizeAway(utf8.findPosByWidth(input, 500, 4, .hidden, true, true, .unicode));
                 stats.record(timer.read());
             }
 
@@ -502,8 +509,10 @@ fn benchFindPosByWidth(
 
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
+                var input = text;
+                std.mem.doNotOptimizeAway(&input);
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findPosByWidth(text, 90000, 4, true, true, .unicode);
+                std.mem.doNotOptimizeAway(utf8.findPosByWidth(input, 90000, 4, .hidden, true, true, .unicode));
                 stats.record(timer.read());
             }
 
@@ -530,7 +539,7 @@ fn benchFindPosByWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.findPosByWidth(text, 5000, 4, false, true, .unicode);
+                _ = utf8.findPosByWidth(text, 5000, 4, .hidden, false, true, .unicode);
                 stats.record(timer.read());
             }
 
@@ -569,8 +578,10 @@ fn benchCalculateTextWidth(
 
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
+                var input = text;
+                std.mem.doNotOptimizeAway(&input);
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, true, .unicode);
+                std.mem.doNotOptimizeAway(utf8.calculateTextWidth(input, 4, .hidden, true, .unicode));
                 stats.record(timer.read());
             }
 
@@ -596,8 +607,10 @@ fn benchCalculateTextWidth(
 
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
+                var input = text;
+                std.mem.doNotOptimizeAway(&input);
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, true, .unicode);
+                std.mem.doNotOptimizeAway(utf8.calculateTextWidth(input, 4, .hidden, true, .unicode));
                 stats.record(timer.read());
             }
 
@@ -623,8 +636,10 @@ fn benchCalculateTextWidth(
 
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
+                var input = text;
+                std.mem.doNotOptimizeAway(&input);
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, true, .unicode);
+                std.mem.doNotOptimizeAway(utf8.calculateTextWidth(input, 4, .hidden, true, .unicode));
                 stats.record(timer.read());
             }
 
@@ -660,7 +675,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text.items, 4, false, .unicode);
+                _ = utf8.calculateTextWidth(text.items, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -687,7 +702,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, false, .unicode);
+                _ = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 
@@ -714,7 +729,7 @@ fn benchCalculateTextWidth(
             var stats: BenchStats = .{};
             for (0..iterations) |_| {
                 const timer = bench_utils.BenchTimer.start(io);
-                _ = utf8.calculateTextWidth(text, 4, false, .unicode);
+                _ = utf8.calculateTextWidth(text, 4, .hidden, false, .unicode);
                 stats.record(timer.read());
             }
 

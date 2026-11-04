@@ -77,7 +77,8 @@ trust boundaries.
 
 React JSX intrinsic elements map to Core renderables and use kebab-case names such as `<ascii-font>` and
 `<tab-select>`. See the [Components overview](/docs/components) for availability and
-registration requirements. React reconciles these elements into the renderer tree.
+registration requirements. React creates one Core renderable for each element and updates the renderable tree on each
+commit.
 
 ## API reference
 
@@ -98,12 +99,16 @@ const root = createRoot(renderer)
 root.render(<App />)
 ```
 
+A later `root.render(node)` updates the mounted tree in place and keeps component state, as in `react-dom`. It also
+retries a tree that failed with an uncaught error.
+
 For plugin slots, see [Plugin slots](/docs/plugins/slots) and [React plugin slots](/docs/plugins/react).
 
 ## Lifecycle and cleanup
 
-The React root does not own the renderer. `root.unmount()` removes the React tree and runs React effect cleanup while
-the renderer stays active. `renderer.destroy()` releases the terminal and renderer resources. It also unmounts the
+The React root does not own the renderer. `root.unmount()` removes the React tree while the renderer stays active.
+Called outside React work, it runs React effect cleanup before it returns; called from an effect, it runs the cleanup
+right after the current commit. `renderer.destroy()` releases the terminal and renderer resources. It also unmounts the
 React root.
 
 The code that creates the renderer owns `renderer.destroy()`. Call it on every application shutdown path. See
@@ -444,6 +449,12 @@ function App() {
 const renderer = await createCliRenderer()
 createRoot(renderer).render(<App />)
 ```
+
+React calls the constructor with `{ id, ...props }`. After construction, React applies each prop to the instance again.
+For an ordinary prop, React assigns the value to the instance property of the same name. React assigns each entry of
+the `style` prop as a separate property. On each update, React applies the changed props and sets removed props to
+`null`. Read [Custom renderables](/docs/extend/custom-renderables) to draw custom content and to
+compare React and Solid construction.
 
 ## React DevTools
 

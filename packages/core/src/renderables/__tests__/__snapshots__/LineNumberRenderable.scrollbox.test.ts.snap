@@ -107,9 +107,9 @@ exports[`LineNumberRenderable in ScrollBox multiple Code renderables with line n
 └────────────────────────────────────────────────┘         █
                                                            █
                                                            █
-┌────────────────────────────────────────────────┐          
-│  1 function test1() {                          │          
-│  2   console.log("Line 1");                    │          
+┌────────────────────────────────────────────────┐         █
+│  1 function test1() {                          │         █
+│  2   console.log("Line 1");                    │         █
 │  3   return 1;                                 │          
 │  4 }                                           │          
 │  5 function test2() {                          │          
@@ -124,8 +124,8 @@ exports[`LineNumberRenderable in ScrollBox multiple Code renderables with line n
 "│  5 function test2() {                          │          
 │  6   console.log("Line 2");                    │          
 └────────────────────────────────────────────────┘          
-                                                            
-                                                            
+                                                           ▄
+                                                           █
 ┌────────────────────────────────────────────────┐         █
 │  1 function test1() {                          │         █
 │  2   console.log("Line 1");                    │         █
@@ -136,8 +136,8 @@ exports[`LineNumberRenderable in ScrollBox multiple Code renderables with line n
 └────────────────────────────────────────────────┘         █
                                                            █
                                                            █
-┌────────────────────────────────────────────────┐          
-│  1 function test1() {                          │          
+┌────────────────────────────────────────────────┐         █
+│  1 function test1() {                          │         ▀
 │  2   console.log("Line 1");                    │          
 │  3   return 1;                                 │          
 │  4 }                                           │          
@@ -409,9 +409,9 @@ exports[`LineNumberRenderable in ScrollBox line colors span full width in Scroll
 `;
 
 exports[`LineNumberRenderable in ScrollBox viewport culling with line numbers - dimensions stable 1`] = `
-"┌───────────────────────────────────────────┐              ▀
-│  1 function test1() {                     │               
-│  2   console.log("Line 1");               │               
+"┌───────────────────────────────────────────┐              █
+│  1 function test1() {                     │              █
+│  2   console.log("Line 1");               │              ▀
 │  3   return 1;                            │               
 │  4 }                                      │               
 └───────────────────────────────────────────┘               
@@ -447,9 +447,9 @@ exports[`LineNumberRenderable in ScrollBox viewport culling with line numbers - 
                                                             
 ┌───────────────────────────────────────────┐               
 │  1 function test1() {                     │               
-│  2   console.log("Line 1");               │               
-│  3   return 1;                            │               
-│  4 }                                      │              ▄
+│  2   console.log("Line 1");               │              ▄
+│  3   return 1;                            │              █
+│  4 }                                      │              █
 └───────────────────────────────────────────┘               
                                                             
 ┌───────────────────────────────────────────┐               

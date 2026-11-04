@@ -1,0 +1,4 @@
+base 0.6.1
++ @opentui/core: function measureEditText(text: string, options: { widthMethod: WidthMethod; tabWidth?: number; }): number
++ @opentui/core: method FFIRenderLib.editMeasureText(bytes: Uint8Array, widthMethod: WidthMethod, tabWidth: number): number
++ opentui.h: function ot_edit_measure_text(ot_context *, const uint8_t *bytes, uint32_t byte_count, uint32_t width_method, uint32_t tab_width, uint32_t *out_width): ot_status

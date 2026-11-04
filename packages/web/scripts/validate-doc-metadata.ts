@@ -3,6 +3,7 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 
+import { RESERVED_DOC_SEGMENTS } from "../src/lib/docs-channel"
 import { DOC_LEARNING_SEQUENCES, DOC_MANIFEST } from "../src/lib/docs-manifest"
 import { buildDocsIndex, DOC_SECTION_CONFIG, type DocPage } from "../src/lib/docs-index"
 
@@ -100,6 +101,13 @@ async function main() {
         if (related === page.sourceId) {
           violations.push(`${page.sourcePath}: related pages must not include the page itself`)
         }
+      }
+    }
+
+    for (const page of index.allPages) {
+      const segment = page.slug.split("/")[0]
+      if (RESERVED_DOC_SEGMENTS.includes(segment)) {
+        violations.push(`${page.sourcePath}: slug \`${page.slug}\` starts with \`${segment}\`, which the site reserves`)
       }
     }
 

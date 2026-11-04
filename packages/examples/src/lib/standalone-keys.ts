@@ -1,4 +1,4 @@
-import { resolveRenderLib, type CliRenderer, type KeyEvent } from "@opentui/core"
+import { type CliRenderer, type KeyEvent } from "@opentui/core"
 
 export function setupCommonDemoKeys(renderer: CliRenderer) {
   renderer.keyInput.on("keypress", (key: KeyEvent) => {
@@ -15,11 +15,6 @@ export function setupCommonDemoKeys(renderer: CliRenderer) {
       renderer.stop()
     } else if (key.name === "a" && key.shift) {
       renderer.auto()
-    } else if (key.name === "a" && key.ctrl) {
-      const lib = resolveRenderLib()
-      const rawBytes = lib.getArenaAllocatedBytes()
-      const formattedBytes = `${(rawBytes / 1024 / 1024).toFixed(2)} MB`
-      console.log("arena allocated bytes:", formattedBytes)
     }
   })
 }

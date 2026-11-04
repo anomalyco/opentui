@@ -1,5 +1,6 @@
 const std = @import("std");
 const image = @import("../image.zig");
+const utils = @import("../utils.zig");
 
 fn makeImage(pixels: []const u8, width: u32, height: u32) !*image.Image {
     return image.createFromRgba(std.testing.allocator, pixels, width, height, width * 4);
@@ -53,7 +54,7 @@ test "reusable pixel updates convert strided 65x3 BGRA without allocating" {
     const width = 65;
     const height = 3;
     const stride = width * 4 + 7;
-    var source = [_]u8{0} ** (1 + stride * (height - 1) + width * 4);
+    var source: [1 + stride * (height - 1) + width * 4]u8 = @splat(0);
     var expected: [width * height * 4]u8 = undefined;
     for (0..height) |y| {
         for (0..width) |x| {
@@ -313,7 +314,7 @@ test "GIF probe and first frame decode preserve logical canvas transparency" {
     defer std.testing.allocator.free(gif);
     var info: image.Info = .{};
     try std.testing.expectEqual(image.Status.ok, image.probe(gif, .{}, &info));
-    try std.testing.expectEqual(@as(u32, @intFromEnum(image.Format.gif)), info.format);
+    try std.testing.expectEqual(@as(u32, @backingInt(image.Format.gif)), info.format);
     try std.testing.expectEqual(@as(u32, 2), info.width);
     try std.testing.expectEqual(@as(u32, 2), info.height);
     try std.testing.expectEqual(@as(u32, 1), info.has_alpha);
@@ -363,7 +364,7 @@ test "baseline and progressive JPEG decode to opaque RGBA" {
         defer std.testing.allocator.free(jpeg);
         var info: image.Info = .{};
         try std.testing.expectEqual(image.Status.ok, image.probe(jpeg, .{}, &info));
-        try std.testing.expectEqual(@as(u32, @intFromEnum(image.Format.jpeg)), info.format);
+        try std.testing.expectEqual(@as(u32, @backingInt(image.Format.jpeg)), info.format);
         try std.testing.expectEqual(@as(u32, 3), info.width);
         try std.testing.expectEqual(@as(u32, 2), info.height);
         try std.testing.expectEqual(@as(u32, 0), info.has_alpha);
@@ -506,14 +507,14 @@ test "lossy lossless and alpha WebP decode to canonical RGBA" {
             .width = 3,
             .height = 2,
             .has_alpha = 0,
-            .pixels = &([_]u8{ 255, 1, 0, 255 } ** 6),
+            .pixels = utils.repeat(u8, &.{ 255, 1, 0, 255 }, 6),
         },
         .{
             .encoded = "UklGRhwAAABXRUJQVlA4TA8AAAAvAkAAAAcQ/Y/+ByKi/wEA",
             .width = 3,
             .height = 2,
             .has_alpha = 0,
-            .pixels = &([_]u8{ 255, 0, 0, 255 } ** 6),
+            .pixels = utils.repeat(u8, &.{ 255, 0, 0, 255 }, 6),
         },
         .{
             .encoded = "UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAEA8Q8x/zH4wViOh/CAA=",
@@ -531,7 +532,7 @@ test "lossy lossless and alpha WebP decode to canonical RGBA" {
         defer std.testing.allocator.free(webp);
         var info: image.Info = .{};
         try std.testing.expectEqual(image.Status.ok, image.probe(webp, .{}, &info));
-        try std.testing.expectEqual(@as(u32, @intFromEnum(image.Format.webp)), info.format);
+        try std.testing.expectEqual(@as(u32, @backingInt(image.Format.webp)), info.format);
         try std.testing.expectEqual(fixture.width, info.width);
         try std.testing.expectEqual(fixture.height, info.height);
         try std.testing.expectEqual(fixture.has_alpha, info.has_alpha);
@@ -578,7 +579,7 @@ test "image creation records actual transparency" {
 }
 
 test "image creation rejects invalid stride and short input" {
-    const pixels = [_]u8{0} ** 16;
+    const pixels: [16]u8 = @splat(0);
     try std.testing.expectError(error.InvalidArgument, image.createFromRgba(std.testing.allocator, &pixels, 2, 2, 7));
     try std.testing.expectError(error.InvalidArgument, image.createFromRgba(std.testing.allocator, pixels[0..15], 2, 2, 8));
 }
@@ -588,7 +589,7 @@ test "pixel import converts strided RGBA and BGRA into owned straight RGBA" {
     const expected = [_]u8{ 255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 7, 11, 23, 254 };
     for ([_]image.PixelFormat{ .rgba8, .bgra8 }) |format| {
         for ([_]image.PixelAlpha{ .straight, .@"opaque" }) |alpha| {
-            var source = [_]u8{99} ** 24;
+            var source: [24]u8 = @splat(99);
             for (0..4) |index| {
                 const src = index * 4;
                 const dst = 1 + (index / 2) * 11 + (index % 2) * 4;
@@ -617,8 +618,8 @@ test "pixel import converts strided RGBA and BGRA into owned straight RGBA" {
                 .height = 2,
                 .source_width = 2,
                 .source_height = 2,
-                .format = @intFromEnum(image.Format.raw_rgba),
-                .color_status = @intFromEnum(image.ColorStatus.explicit_srgb),
+                .format = @backingInt(image.Format.raw_rgba),
+                .color_status = @backingInt(image.ColorStatus.explicit_srgb),
                 .has_alpha = @intFromBool(alpha == .straight),
             }, value.info());
         }
@@ -636,7 +637,7 @@ test "pixel import ignores padding when detecting transparency" {
 test "pixel import handles vector boundaries and transparency in the final pixel" {
     for ([_]u32{ 3, 4, 5, 8 }) |width| {
         const len = width * 4;
-        var pixels = [_]u8{255} ** (8 * 4);
+        var pixels: [8 * 4]u8 = @splat(255);
         for ([_]image.PixelFormat{ .rgba8, .bgra8 }) |format| {
             for ([_]image.PixelAlpha{ .straight, .@"opaque" }) |alpha| {
                 for ([_]u8{ 255, 0, 128, 254 }) |last_alpha| {
@@ -663,7 +664,7 @@ test "pixel import handles vector boundaries and transparency in the final pixel
 test "pixel import rejects invalid geometry and short input before allocation" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const allocator = failing.allocator();
-    const pixels = [_]u8{0} ** 20;
+    const pixels: [20]u8 = @splat(0);
     for ([_]struct { width: u32, height: u32, stride: u32, len: usize, err: anyerror }{
         .{ .width = 0, .height = 1, .stride = 4, .len = 4, .err = error.DimensionLimit },
         .{ .width = 1, .height = 0, .stride = 4, .len = 4, .err = error.DimensionLimit },
@@ -814,7 +815,7 @@ test "copyPixels supports RGBA, BGRA, and padded rows" {
         9, 10, 11, 12, 13, 14, 15, 16,
     }, 2, 2);
     defer source.deinit();
-    var rgba = [_]u8{99} ** 24;
+    var rgba: [24]u8 = @splat(99);
     try std.testing.expectEqual(image.Status.ok, image.copyPixels(source, &rgba, 12, false));
     try std.testing.expectEqualSlices(u8, &[_]u8{
         1, 2,  3,  4,  5,  6,  7,  8,  99, 99, 99, 99,
@@ -841,14 +842,18 @@ test "source-over composite uses linear light and correct alpha" {
 }
 
 test "composite clips negative offsets and supports source mode" {
-    const base = try makeImage(&([_]u8{ 0, 0, 0, 255 } ** 4), 2, 2);
+    const base = try makeImage(utils.repeat(u8, &.{ 0, 0, 0, 255 }, 4), 2, 2);
     defer base.deinit();
-    const overlay = try makeImage(&([_]u8{ 255, 0, 0, 255 } ** 4), 2, 2);
+    const overlay = try makeImage(utils.repeat(u8, &.{ 255, 0, 0, 255 }, 4), 2, 2);
     defer overlay.deinit();
     const output = try image.composite(std.testing.allocator, base, overlay, -1, -1, .source, 128);
     defer output.deinit();
     try std.testing.expectEqualSlices(u8, &[_]u8{ 255, 0, 0, 128 }, output.pixels[0..4]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 255 }, output.pixels[4..8]);
+    // The overlay starts 2^31 pixels left of the base, past the overlay's own width.
+    const far = try image.composite(std.testing.allocator, base, overlay, std.math.minInt(i32), 0, .source, 128);
+    defer far.deinit();
+    try std.testing.expectEqualSlices(u8, base.pixels, far.pixels);
 }
 
 test "resize performs alpha-aware sRGB reduction" {

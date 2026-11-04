@@ -1,0 +1,10 @@
+base 0.3.1
++ @opentui/core: function createMarkdownCodeBlockRenderer(renderers: MarkdownCodeBlockRendererMap): MarkdownOptions["renderNode"]
++ @opentui/core: protected method CodeRenderable.onResize(width: number, height: number): void
++ @opentui/core: protected method CodeRenderable.updateTextInfo(): void
++ @opentui/core: method DiffRenderable.getHunkRowOffsets(): number[]
++ @opentui/core: property BlockState.canUpdateInPlace: boolean
++ @opentui/core: readonly property CodeRenderable.lineInfo: LineInfo
++ @opentui/core: property CodeRenderable.wrapMode: "none" | "char" | "word"
++ @opentui/core: type MarkdownCodeBlockRenderer = (token: Tokens.Code, context: RenderNodeContext) => Renderable | undefined | null
++ @opentui/core: type MarkdownCodeBlockRendererMap = ReadonlyMap<string, MarkdownCodeBlockRenderer> | Readonly<Record<string, MarkdownCodeBlockRenderer>>

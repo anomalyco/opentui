@@ -1,6 +1,9 @@
 import { test, expect, describe } from "bun:test"
 import { detectLinks } from "./detect-links.js"
+import { ResourceContext } from "../buffer.js"
+import { SyntaxStyle } from "../syntax-style.js"
 import type { TextChunk } from "../text-buffer.js"
+import { createTextAttributes } from "../utils.js"
 import type { SimpleHighlight } from "./tree-sitter/types.js"
 import { RGBA } from "./RGBA.js"
 
@@ -316,6 +319,30 @@ describe("detectLinks", () => {
       [", then (", undefined],
       ["http://two.test/a_(b)", "http://two.test/a_(b)"],
       [").", undefined],
+    ])
+  })
+
+  test("styles only bare URLs like link labels and keeps their attributes", () => {
+    const content = "<https://auto.test> https://bare.test"
+    const highlights: SimpleHighlight[] = [[1, 18, "markup.link.url"]]
+    const bold = createTextAttributes({ bold: true })
+    const resourceContext = new ResourceContext({ objectCapacity: 64, renderCellsMax: 1 })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      { "markup.link.label": { fg: RGBA.fromInts(100, 150, 255, 255), underline: true } },
+      resourceContext,
+    )
+
+    const result = detectLinks([{ ...chunk(content), attributes: bold }], { content, highlights, syntaxStyle })
+    syntaxStyle.destroy()
+    resourceContext.destroy()
+
+    const white: [number, number, number, number] = [255, 255, 255, 255]
+    const blue: [number, number, number, number] = [100, 150, 255, 255]
+    expect(result.map((item) => [item.text, item.fg?.toInts(), item.attributes])).toEqual([
+      ["<", white, bold],
+      ["https://auto.test", white, bold],
+      ["> ", white, bold],
+      ["https://bare.test", blue, createTextAttributes({ bold: true, underline: true })],
     ])
   })
 

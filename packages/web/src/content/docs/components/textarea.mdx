@@ -57,7 +57,7 @@ Keep paragraphs readable.
 
 ## Submit handling
 
-Bind a submit action and listen for `onSubmit`:
+By default, Meta+Return and Meta+keypad Enter submit. To use another key, bind the `submit` action and listen for `onSubmit`:
 
 ```typescript
 import { TextareaRenderable } from "@opentui/core"
@@ -126,7 +126,7 @@ background is transparent, and the focused text uses `#FFFFFF`.
 
 ## Cursor and selection control
 
-`TextareaRenderable` and its base `EditBufferRenderable` expose a programmatic API. You can move the cursor, edit text, and drive selections from your own key bindings or commands. All selection-aware movement methods accept `{ select: true }` to extend the current selection instead of moving the cursor.
+`TextareaRenderable` and its base `EditBufferRenderable` expose a programmatic API. Use it to move the cursor, edit text, and control selections from your own key bindings or commands. Methods that accept `{ select: true }` move the cursor and extend the selection to the new cursor position. Without that option, they clear the selection. If a selection exists, each of these methods except `moveCursorUp()` and `moveCursorDown()` then only moves the cursor to the selection start or end.
 
 ### Cursor movement
 
@@ -143,7 +143,7 @@ textarea.moveWordBackward()
 textarea.gotoLine(0)
 textarea.gotoLineStart()
 textarea.gotoLineTextEnd()
-textarea.gotoLineHome({ select: true }) // Emacs-style smart home
+textarea.gotoLineHome({ select: true }) // At column 0, moves to the end of the previous line
 textarea.gotoLineEnd()
 textarea.gotoVisualLineHome()
 textarea.gotoVisualLineEnd()
@@ -191,8 +191,9 @@ textarea.undo()
 textarea.redo()
 ```
 
-These methods update the editor and request a render as needed. Selection behavior depends on the method. Movement with
-`{ select: true }` extends the selection. Call `clearSelection()` when a command must clear the global selection.
+These methods update the editor and request a render. If a selection exists, `insertChar()` and `insertText()` replace
+the selected text. `deleteChar()`, `deleteCharBackward()`, `deleteWordForward()`, and `deleteWordBackward()` delete it.
+Call `clearSelection()` when a command must clear the renderer's selection.
 
 The default occupancy is `cell`: the selection covers both endpoint cells, so the first shift+right selects two
 cells. If you use a bar cursor (`cursorStyle: { style: "line" }`), also set `selectionOccupancy: "boundary"`. The
@@ -200,7 +201,7 @@ cursor style is visual only and never changes which text you select, copy, or de
 
 ## Traits
 
-The `traits` property tells a host UI which built-in keys the editor wants to capture. It also supplies a visual-suspension hint and an optional status label. Assigning a different `EditorTraits` object emits the `traits-changed` event.
+The `traits` property tells a host UI which built-in keys the editor wants to capture. It also supplies a visual-suspension hint and an optional status label. Assigning traits with a different `capture`, `suspend`, or `status` value emits the `traits-changed` event. The listener receives the new and previous traits. A new object with the same values emits nothing.
 
 ```typescript
 import { EditBufferRenderableEvents, type EditorTraits } from "@opentui/core"
@@ -216,11 +217,11 @@ textarea.on(EditBufferRenderableEvents.TRAITS_CHANGED, (traits) => {
 })
 ```
 
-| Field     | Type              | Description                                                                     |
-| --------- | ----------------- | ------------------------------------------------------------------------------- |
-| `capture` | `EditorCapture[]` | Keys the editor wants to capture: `"escape"`, `"navigate"`, `"submit"`, `"tab"` |
-| `suspend` | `boolean`         | Hint to the host to suspend ambient UI (dim borders, hide hints, etc.)          |
-| `status`  | `string`          | Optional short label surfacing editor mode in a status bar                      |
+| Field     | Type              | Description                                                                                                                     |
+| --------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `capture` | `EditorCapture[]` | Keys the editor wants to capture: `"escape"`, `"navigate"`, `"submit"`, `"tab"`                                                 |
+| `suspend` | `boolean`         | Hint to the host to suspend ambient UI, for example to dim borders or hide hints. While `true`, Textarea skips its key bindings |
+| `status`  | `string`          | Optional short label that shows the editor mode in a status bar                                                                 |
 
 Traits reset to an empty object when you destroy the renderable. Use `isEditBufferRenderable(renderable)` if you need to distinguish editor renderables from plain text renderables in a generic tree.
 

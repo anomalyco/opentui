@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const clipboard_clock = @import("clock.zig");
 const sync = @import("sync.zig");
 const posix_io = @import("posix-io.zig");
+const test_env = @import("../tests/test-env.zig");
 
 const SocketAddress = extern union {
     any: std.posix.sockaddr,
@@ -222,7 +223,7 @@ pub const Connection = struct {
     root_window: u32 = 0,
     owner_window: u32 = 0,
     maximum_request_bytes: u32 = 0,
-    providers: [MAX_PROVIDERS]?*Provider = .{null} ** MAX_PROVIDERS,
+    providers: [MAX_PROVIDERS]?*Provider = @splat(null),
     clipboard_provider: ?*Provider = null,
     primary_provider: ?*Provider = null,
     transfers: []Transfer = &.{},
@@ -326,7 +327,10 @@ pub const Connection = struct {
             self.phase = .unsupported;
             return .unsupported;
         };
-        if (self.symbols.xcb_connection_has_error(connection) != 0) {
+        const connection_error = self.symbols.xcb_connection_has_error(connection);
+        if (connection_error != 0) {
+            const display = linux.bounded(posix_io.getEnv("DISPLAY") orelse "");
+            linux.recordCause(.x11, .x11_connect, "X11 connection to display {s} failed (xcb error {d})", .{ display, connection_error });
             self.phase = .unsupported;
             return .unsupported;
         }
@@ -335,7 +339,11 @@ pub const Connection = struct {
     }
 
     fn connectWorker(self: *Connection) void {
-        self.connectWorkerRun() catch {};
+        linux.clearCause(.x11);
+        self.connectWorkerRun() catch |err| if (!self.cancelRequested()) {
+            const display = linux.bounded(posix_io.getEnv("DISPLAY") orelse "");
+            linux.recordCause(.x11, .x11_connect, "cannot connect to X11 display {s}: {s}", .{ display, @errorName(err) });
+        };
         self.connect_mutex.lock();
         std.debug.assert(self.connect_cancel_fd == null);
         self.connect_mutex.unlock();
@@ -450,16 +458,19 @@ pub const Connection = struct {
     fn connectSocket(self: *Connection, endpoint: *DisplayEndpoint) !std.posix.fd_t {
         const candidate_count: u8 = displayCandidateCount(endpoint.*);
         var candidate_index: u8 = 0;
+        // The last candidate's error says why: a missing socket file, a denied one, or a refusal.
+        var last_error: anyerror = error.ConnectionRefused;
         while (candidate_index < candidate_count) : (candidate_index += 1) {
             const candidate = try displayAddress(endpoint.*, candidate_index);
             const fd = self.connectCandidate(candidate) catch |err| {
                 if (err == error.Cancelled) return err;
+                last_error = err;
                 continue;
             };
             endpoint.kind = candidate.kind;
             return fd;
         }
-        return error.ConnectionRefused;
+        return last_error;
     }
 
     fn connectCandidate(self: *Connection, candidate: DisplayAddress) !std.posix.fd_t {
@@ -1042,7 +1053,10 @@ pub const Connection = struct {
     pub fn pollEvent(self: *Connection) ?*linux.XcbGenericEvent {
         const connection = self.connection orelse return null;
         if (self.phase != .ready) return null;
-        return self.symbols.xcb_poll_for_event(connection);
+        const event = self.symbols.xcb_poll_for_event(connection);
+        // xcb reports a lost server only through the connection error; nothing else polls it once ready.
+        if (event == null and self.symbols.xcb_connection_has_error(connection) != 0) _ = self.fail(.connection);
+        return event;
     }
 
     pub fn handleProviderEvent(self: *Connection, event: *const linux.XcbGenericEvent) void {
@@ -1391,7 +1405,7 @@ pub const Connection = struct {
             .target = request.target,
             .property = property,
         };
-        var event_bytes = [_]u8{0} ** 32;
+        var event_bytes: [32]u8 = @splat(0);
         @memcpy(event_bytes[0..@sizeOf(linux.XcbSelectionNotifyEvent)], std.mem.asBytes(&notify));
         _ = self.symbols.xcb_send_event(self.connection.?, 0, request.requestor, 0, &event_bytes);
         _ = self.queueFlush();
@@ -2019,7 +2033,7 @@ test "X11 property parsing enforces reply framing bounds" {
             .atom_type = 1,
             .bytes_after = 0,
             .value_length = 4,
-            .pad0 = .{0} ** 12,
+            .pad0 = @splat(0),
         },
         .data = "test".*,
     };
@@ -2079,7 +2093,7 @@ test "X11 buffers early INCR notifications while the previous property reply is 
         .atom = 107,
         .time = 1,
         .state = 0,
-        .pad1 = .{0} ** 3,
+        .pad1 = @splat(0),
     };
     try std.testing.expect(connection.routeReadEvent(&state, @ptrCast(&event)));
     try std.testing.expect(state.notification_pending);
@@ -2117,7 +2131,7 @@ test "X11 buffers INCR deletions while a checked chunk response is pending" {
         .atom = 20,
         .time = 1,
         .state = PROPERTY_DELETE,
-        .pad1 = .{0} ** 3,
+        .pad1 = @splat(0),
     };
     connection.handleTransferProperty(&event);
     try std.testing.expect(connection.transfers[0].delete_pending);
@@ -2166,7 +2180,7 @@ test "X11 timestamp events are isolated by per-mutation windows" {
         .atom = 110,
         .time = 7,
         .state = 0,
-        .pad1 = .{0} ** 3,
+        .pad1 = @splat(0),
     };
 
     try std.testing.expect(!connection.routeWriteEvent(&successor, @ptrCast(&stale)));
@@ -2207,7 +2221,7 @@ test "X11 write and clear commit after the server confirms selection ownership" 
         .atom = 110,
         .time = 7,
         .state = 0,
-        .pad1 = .{0} ** 3,
+        .pad1 = @splat(0),
     };
 
     try std.testing.expect(connection.routeWriteEvent(&state, @ptrCast(&event)));
@@ -2471,7 +2485,7 @@ test "X11 cancelled timestamp windows remain tombstoned until their event is con
         .atom = 110,
         .time = 7,
         .state = 0,
-        .pad1 = .{0} ** 3,
+        .pad1 = @splat(0),
     };
 
     try std.testing.expect(connection.consumeRetiredTimestampEvent(@ptrCast(&event)));
@@ -2503,7 +2517,7 @@ test "X11 timestamp request errors retire active and tombstoned windows" {
         .minor_code = 0,
         .major_code = 18,
         .pad0 = 0,
-        .pad = .{0} ** 5,
+        .pad = @splat(0),
         .full_sequence = 0,
     };
     try std.testing.expect(connection.routeWriteEvent(&active, @ptrCast(&active_error)));
@@ -2623,7 +2637,7 @@ test "X11 Xauthority FIFO is rejected without waiting for a writer" {
     const dir_path = dir_path_buffer[0..try tmp.dir.realPath(std.testing.io, &dir_path_buffer)];
     const fifo_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "authority.fifo" });
     defer std.testing.allocator.free(fifo_path);
-    const fifo_path_z = try std.testing.allocator.dupeZ(u8, fifo_path);
+    const fifo_path_z = try std.testing.allocator.dupeSentinel(u8, fifo_path, 0);
     defer std.testing.allocator.free(fifo_path_z);
     if (mkfifo(fifo_path_z, 0o600) != 0) return error.MkfifoFailed;
 
@@ -2725,6 +2739,60 @@ test "X11 connection establishment does not block a drive unit" {
     clipboard_clock.sleep(250 * std.time.ns_per_ms);
     try std.testing.expectEqual(Progress.pending, connection.drive());
     connection.deinit();
+}
+
+test "X11 connect failures report their cause once per process" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    try clipboard_clock.init();
+    const Fake = struct {
+        var error_code: c_int = 0;
+        fn connectionError(_: *linux.XcbConnection) callconv(.c) c_int {
+            return error_code;
+        }
+    };
+    const saved = try test_env.save(&.{"DISPLAY"});
+    defer saved.restore();
+    var symbols: linux.XcbSymbols = undefined;
+    symbols.xcb_connect_to_fd = fakeImmediateConnectToFd;
+    symbols.xcb_connection_has_error = Fake.connectionError;
+    symbols.xcb_disconnect = fakeDisconnect;
+    // A DISPLAY longer than any socket path still leaves room for the reason.
+    var long_display: [4101:0]u8 = @splat('9');
+    long_display[0] = ':';
+    var long_report: [512]u8 = undefined;
+    const cases = [_]struct { display: [*:0]const u8, connected: bool = false, error_code: c_int = 0, reports: []const u8 }{
+        // A remote display is refused before any socket opens.
+        .{ .display = "example.com:0", .reports = "Clipboard: cannot connect to X11 display example.com:0: UnsupportedDisplay\n" },
+        .{ .display = "/nonexistent-427/X0", .reports = "Clipboard: cannot connect to X11 display /nonexistent-427/X0: FileNotFound\n" },
+        .{ .display = &long_display, .reports = try std.fmt.bufPrint(&long_report, "Clipboard: cannot connect to X11 display {s}: UnsupportedDisplay\n", .{long_display[0..256]}) },
+        .{ .display = ":0", .connected = true, .error_code = 1, .reports = "Clipboard: X11 connection to display :0 failed (xcb error 1)\n" },
+        .{ .display = ":0", .connected = true, .reports = "" },
+    };
+    for (cases) |case| {
+        test_env.set("DISPLAY", case.display);
+        Fake.error_code = case.error_code;
+        linux.test_log.begin();
+        defer _ = linux.test_log.end();
+        // Each connect replaces the cause an earlier one left.
+        linux.recordCause(.x11, .x11_connect, "stale", .{});
+        // Every operation after a failure makes a new connection.
+        for (0..2) |_| {
+            var connection = Connection.init(std.testing.allocator, &symbols, 1);
+            defer connection.deinit();
+            const sockets = try testSocketPair();
+            defer posix_io.close(sockets[1]);
+            if (case.connected) connection.test_connected_fd = sockets[0] else posix_io.close(sockets[0]);
+            for (0..2000) |_| {
+                if (connection.drive() != .pending or connection.phase != .idle) break;
+                clipboard_clock.sleep(std.time.ns_per_ms);
+            }
+            const healthy = case.connected and case.error_code == 0;
+            try std.testing.expectEqual(if (healthy) Phase.atoms else Phase.unsupported, connection.phase);
+            try std.testing.expectEqual(if (healthy) null else linux.Report.x11_connect, linux.testCauseReport(.x11));
+            linux.reportUnavailable();
+        }
+        try std.testing.expectEqualStrings(case.reports, linux.test_log.end());
+    }
 }
 
 test "X11 shutdown cancels a silent setup connection" {
@@ -3057,7 +3125,7 @@ fn fakePollSelectionOwnerReply(
         .sequence = 0,
         .length = 0,
         .owner = fake.selection_owner,
-        .pad1 = .{0} ** 20,
+        .pad1 = @splat(0),
     };
     reply_pointer.* = reply;
     return 1;
@@ -3156,7 +3224,7 @@ var fake_setup: linux.XcbSetup = .{
     .bitmap_format_scanline_pad = 0,
     .min_keycode = 0,
     .max_keycode = 0,
-    .pad1 = .{0} ** 4,
+    .pad1 = @splat(0),
 };
 var fake_screen: linux.XcbScreen = .{
     .root = 1,

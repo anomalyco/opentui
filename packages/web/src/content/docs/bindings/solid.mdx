@@ -12,14 +12,15 @@ Use Solid components and reactive primitives to build an OpenTUI application.
 
 ## Requirements
 
-`@opentui/solid` requires `solid-js` 1.9.12 exactly. See
+`@opentui/solid` supports Solid 1.x from `solid-js` 1.9.12 (`^1.9.12`). Use the latest 1.9.x release: releases
+before 1.9.16 depend on a Seroval version with known security advisories. See
 [Runtime and platform support](/docs/getting-started/runtime-support) for the current runtime, operating system,
 architecture, and native renderer matrix.
 
 ## Installation
 
 ```bash
-bun install solid-js @opentui/solid
+bun install solid-js@^1.9 @opentui/solid
 ```
 
 ## Setup
@@ -150,8 +151,19 @@ Register custom renderables as JSX intrinsic elements.
 import { BoxRenderable } from "@opentui/core"
 import { extend } from "@opentui/solid"
 
+declare module "@opentui/solid" {
+  interface OpenTUIComponents {
+    custom_box: typeof BoxRenderable
+  }
+}
+
 extend({ custom_box: BoxRenderable })
 ```
+
+The `declare module` block adds the element to the JSX types.
+Solid calls the constructor with `{ id }` only. After construction, Solid applies each JSX prop to the instance.
+A class that reads a value only from its constructor options does not get that value from JSX.
+Read [Custom renderables](/docs/extend/custom-renderables) to draw custom content and to adapt such classes.
 
 ### `getComponentCatalogue()`
 

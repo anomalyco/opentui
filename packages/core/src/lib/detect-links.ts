@@ -1,3 +1,4 @@
+import type { SyntaxStyle } from "../syntax-style.js"
 import type { TextChunk } from "../text-buffer.js"
 import type { SimpleHighlight } from "./tree-sitter/types.js"
 
@@ -11,14 +12,19 @@ export function normalizeMarkdownLinkTarget(destination: string): string {
 
 export function detectLinks(
   chunks: TextChunk[],
-  context: { content: string; highlights: SimpleHighlight[]; sourceRanges?: Array<{ start: number; end: number }> },
+  context: {
+    content: string
+    highlights: SimpleHighlight[]
+    sourceRanges?: Array<{ start: number; end: number }>
+    syntaxStyle?: SyntaxStyle
+  },
 ): TextChunk[] {
   const content = context.content
   const highlights = context.highlights
   const hasBareUrl = HTTP_URL_PREFIX.test(content)
   if (!hasBareUrl && !highlights.some(([, , group]) => URL_SCOPES.includes(group))) return chunks
 
-  const ranges: Array<{ start: number; end: number; url: string; label?: boolean }> = []
+  const ranges: Array<{ start: number; end: number; url: string; label?: boolean; bare?: boolean }> = []
   const rawRanges: Array<{ start: number; end: number }> = []
   const labels = new Map<number, { start: number; end: number }>()
   const concealedDelimiters = new Map<number, number>()
@@ -96,13 +102,14 @@ export function detectLinks(
       while (highlightedIndex < ranges.length && ranges[highlightedIndex].end <= start) highlightedIndex++
       if (highlightedIndex < ranges.length && ranges[highlightedIndex].start < end) continue
 
-      ranges.push({ start, end, url })
+      ranges.push({ start, end, url, bare: true })
     }
   }
 
   if (ranges.length === 0) return chunks
   ranges.sort((a, b) => a.start - b.start || b.end - a.end || Number(b.label ?? false) - Number(a.label ?? false))
 
+  const bareStyle = context.syntaxStyle?.mergeStyles("markup.link.label")
   const linkedChunks: TextChunk[] = []
   let contentPos = 0
   let rangeIndex = 0
@@ -142,16 +149,17 @@ export function detectLinks(
         linkedChunks.push({ ...chunk, text: chunk.text.slice(position - start, linkStart - start) })
       }
 
-      if (linkStart === start && linkEnd === end) {
-        chunk.link = { url: range.url }
-        linkedChunks.push(chunk)
-      } else {
-        linkedChunks.push({
-          ...chunk,
-          text: chunk.text.slice(linkStart - start, linkEnd - start),
-          link: { url: range.url },
-        })
+      const linked: TextChunk =
+        linkStart === start && linkEnd === end
+          ? chunk
+          : { ...chunk, text: chunk.text.slice(linkStart - start, linkEnd - start) }
+      linked.link = { url: range.url }
+      if (range.bare && bareStyle) {
+        if (bareStyle.fg) linked.fg = bareStyle.fg
+        if (bareStyle.bg) linked.bg = bareStyle.bg
+        linked.attributes = (linked.attributes ?? 0) | bareStyle.attributes
       }
+      linkedChunks.push(linked)
       position = linkEnd
       if (position === end) break
     }

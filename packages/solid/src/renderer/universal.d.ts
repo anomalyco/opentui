@@ -17,7 +17,7 @@ export interface Renderer<NodeType> {
   render(code: () => NodeType, node: NodeType): () => void
   effect<T>(fn: (prev?: T) => T, init?: T): void
   memo<T>(fn: () => T, equal: boolean): () => T
-  createComponent<T>(Comp: (props: T) => NodeType, props: T): NodeType
+  createComponent<T>(Comp: (props: T) => unknown, props: T): NodeType
   createElement(tag: string): NodeType
   createTextNode(value: string): NodeType
   insertNode(parent: NodeType, node: NodeType, anchor?: NodeType): void

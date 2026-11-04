@@ -69,24 +69,72 @@ If host creation fails, no host object exists to release. If later setup fails, 
 
 ## Destroy the renderer
 
-`renderer.destroy()` is synchronous and idempotent. It marks the renderer as destroyed before cleanup starts. If a render pass is active, OpenTUI restores input and terminal state immediately, then finishes native teardown when the pass unwinds.
+`renderer.destroy()` is synchronous and idempotent. It marks the renderer as destroyed and stops input and scheduling.
+Output flushing, terminal restoration, and native reclamation can finish asynchronously.
+Before you reuse streams or deliberately exit after graceful shutdown, await `closed`:
+
+```typescript
+renderer.destroy()
+await renderer.closed
+```
+
+An active frame or buffer lease can delay reclamation. A failed output endpoint rejects `closed`. Destruction alone
+does not prove that restoration bytes reached the terminal.
+
+Over a slow link, `closed` waits while the terminal takes the queued output. When no output is written for one second
+while no write is in progress, or the close has run for ten seconds, the renderer stops waiting for the queue. It lets
+the write in progress finish, drops the output still queued, writes the restoration, and rejects `closed` with an
+error that says the close ran late. The dropped output can include frames, split-footer rows not yet written,
+clipboard and title updates, and image uploads. If the restoration then writes nothing for another second, the
+Session cancels it without restoration. A process exit during a slow close drops the queue the same way.
+
+The ten seconds bound when the renderer stops waiting, not when `closed` settles: the write in progress can be up to
+64 KiB, which takes 16 seconds at 4 KB/s. The one-second limit applies where writes do not block (a non-blocking
+stdout or a custom stream). The native stdout writer waits for its write in progress without a limit, and a blocking
+stdout without the writer (`OTUI_STDOUT_THREAD=0`, or a platform without it) waits inside `write(2)`, so on a link
+that never moves `closed` stays pending.
 
 Renderer destruction performs these actions:
 
 - Removes renderer signal, process, resize, input, and warning listeners.
 - Stops renderer timers, frame scheduling, capability detection, and memory snapshots.
-- Disables raw input, removes the data listener, pauses the input stream, and clears parser state.
-- Flushes queued split-footer output and restores the configured `stdout.write` method.
+- Removes the data listener, pauses the input stream, and clears parser state.
+- Starts ordered split-footer flushing and terminal restoration, and restores the configured `stdout.write` method.
 - Emits the renderer `destroy` event.
-- Destroys the renderable tree, console overlay, native renderer, buffers, and renderer-owned output feed.
-- Releases exclusive ownership of the configured input and output stream objects.
-- Calls `onDestroy` after renderer cleanup. Errors from this callback are logged.
+- Releases the renderable tree, console overlay, native resources, and stream ownership as cleanup completes.
+- Calls `onDestroy` after host cleanup. Use `closed` to wait for output and native teardown. OpenTUI logs callback errors.
 
-The native shutdown sequence resets text attributes and the mouse pointer. It disables mouse, focus, paste, keyboard, and color-scheme modes that OpenTUI enabled. It exits the alternate screen, resets the terminal title and cursor style, and shows the cursor. OpenTUI also sets stdin raw mode to `false`.
+The native shutdown sequence resets text attributes and the mouse pointer. It disables mouse, focus, paste, keyboard, and color-scheme modes that OpenTUI enabled. It exits the alternate screen, resets the terminal title, cursor color, and cursor style, and shows the cursor. OpenTUI sets stdin raw mode to `false` only after the sequence ends, so the terminal does not echo late mouse reports.
 
 `clearOnShutdown: false` keeps the renderer-owned main-screen region visible. It does not skip terminal mode restoration.
 
-Cleanup is best effort. Most renderer cleanup errors are logged so later cleanup can continue. `destroy()` does not dispose application services, close a caller-owned transport, or await asynchronous resource release.
+Cleanup is best effort. OpenTUI logs most renderer cleanup errors, so later cleanup can continue. `destroy()` does not dispose application services, close a caller-owned transport, or await asynchronous resource release.
+
+During actual process exit, native rendering attempts synchronous restoration on real `process.stdout` before
+termination-capable cleanup callbacks. It cannot replay an uncompleted write or finish an arbitrary asynchronous
+transport after the event loop stops. This last-chance path does not replace awaiting `closed` during normal shutdown.
+
+## Suspend and resume
+
+`suspend()` stops rendering and starts terminal restoration, which finishes asynchronously. Await it before you give
+the terminal to another program, such as an editor or the shell after `SIGTSTP`:
+
+```typescript
+import { spawnSync } from "node:child_process"
+
+await renderer.suspend()
+spawnSync(process.env.EDITOR ?? "vi", [file], { stdio: "inherit" })
+await renderer.resume()
+```
+
+The restoration disables the mouse and the other input modes that OpenTUI enabled and exits the alternate screen.
+Stdin stays in raw mode until the promise settles, so the terminal does not echo mouse reports that it sent before it
+handled the reset. When the promise settles, OpenTUI leaves raw mode and discards the input that the terminal queued on
+process stdin, so the next program does not read those reports as typed text. Keys typed during the transition, about
+20 ms on a fast terminal, are discarded too. Input that arrives after the promise settles is kept for the next program.
+
+If you do not await `suspend()`, the next program starts while stdin is still in raw mode and mouse reporting is still
+on. `resume()` enters raw mode before the Session turns mouse reporting back on.
 
 ## Signal handling
 
@@ -203,7 +251,7 @@ Runtime module support has process lifetime. Installing the Bun runtime plugin r
 
 For a socket, pseudo-terminal, or custom stream session, give each active connection its own renderer. The renderer owns exclusive leases on the input and output stream objects. It does not own the underlying transport.
 
-For custom output, renderer destruction drains the renderer-owned `NativeSpanFeed`, emits terminal restoration bytes, restores `stdout.write`, and closes the feed. Keep the transport open until its own completion API reports that pending write callbacks finished. The renderer exposes no promise for caller-owned transport completion. See [Renderer custom streams](/docs/core-concepts/renderer#custom-streams) and [`NativeSpanFeed`](/docs/reference/native-span-feed#close-and-destruction).
+For custom output, renderer destruction writes the remaining frame output and the terminal restoration bytes to your `Writable` in order, and restores `stdout.write`. The renderer does not use `NativeSpanFeed` for this output. `await renderer.closed` waits until the `Writable` calls back for those writes. If that takes longer than one second, the Session drops the output still queued, writes the restoration once the write in progress calls back, and rejects `closed` as late. If the write in progress and the restoration do not call back within another second, the Session cancels the output without restoration. A `Writable` callback does not prove that the underlying transport sent the bytes. Keep the transport open until its own completion API reports that pending writes finished. See [Renderer custom streams](/docs/core-concepts/renderer#custom-streams).
 
 After `NativeSpanFeed.create()` or `NativeSpanFeed.attach()` succeeds, the wrapper owns the native feed. Call the unsubscribe functions from `onData()` and `onError()`, then call `feed.close()`. `close()` is idempotent and defers final destruction while callbacks or asynchronous handlers still hold borrowed chunks.
 
@@ -222,7 +270,7 @@ middleware cleanup. Await those owners separately. See
 
 Use `onRemove()` for detachment from a parent. A renderable can be removed and later attached again, so removal is not final destruction.
 
-Override `destroySelf()` for final resource release. `destroy()` calls it once after detachment, child removal, listener cleanup, and frame-buffer cleanup. `destroyRecursively()` destroys descendants first. Call `super.destroySelf()` when a base class owns resources. See [Custom renderables](/docs/extend/custom-renderables) and [Renderables](/docs/core-concepts/renderables).
+Override `destroySelf()` for final resource release. `destroy()` calls it once after detachment, child removal, listener cleanup, and frame-buffer cleanup. After `destroySelf()` returns, `destroy()` releases the node's native scene node. `destroyRecursively()` destroys descendants first. Call `super.destroySelf()` when a base class owns resources. See [Custom renderables](/docs/extend/custom-renderables) and [Renderables](/docs/core-concepts/renderables).
 
 ## Next
 

@@ -15,6 +15,7 @@ describe("Textarea - Event Handlers Tests", () => {
     } = await createTestRenderer({
       width: 80,
       height: 24,
+      otherModifiersMode: true,
     }))
   })
 
@@ -304,59 +305,27 @@ describe("Textarea - Event Handlers Tests", () => {
         expect(editor.plainText).toBe("Hello World")
       })
 
-      it("should fire onContentChange after undo", async () => {
-        let contentChangeCount = 0
-
+      it("fires onContentChange once per edit, undo, and redo step", async () => {
+        let count = 0
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-          initialValue: "",
           width: 40,
           height: 10,
-          onContentChange: () => {
-            contentChangeCount++
-          },
+          onContentChange: () => count++,
         })
-
         editor.focus()
-
-        currentMockInput.pressKey("T")
-        currentMockInput.pressKey("e")
-        await new Promise((resolve) => setTimeout(resolve, 20))
-
-        const beforeUndo = contentChangeCount
-
-        editor.undo()
-        await new Promise((resolve) => setTimeout(resolve, 20))
-
-        expect(contentChangeCount).toBeGreaterThanOrEqual(beforeUndo)
-        expect(editor.plainText).toBe("T")
-      })
-
-      it("should fire onContentChange after redo", async () => {
-        let contentChangeCount = 0
-
-        const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-          initialValue: "",
-          width: 40,
-          height: 10,
-          onContentChange: () => {
-            contentChangeCount++
-          },
-        })
-
-        editor.focus()
-
-        currentMockInput.pressKey("X")
-        await new Promise((resolve) => setTimeout(resolve, 20))
-        editor.undo()
-        await new Promise((resolve) => setTimeout(resolve, 20))
-
-        const beforeRedo = contentChangeCount
-
-        editor.redo()
-        await new Promise((resolve) => setTimeout(resolve, 20))
-
-        expect(contentChangeCount).toBeGreaterThanOrEqual(beforeRedo)
-        expect(editor.plainText).toBe("X")
+        const steps = [
+          ["type", () => currentMockInput.typeText("one two"), "one two", 7],
+          ["Ctrl+W", () => currentMockInput.pressKey("w", { ctrl: true }), "one ", 1],
+          ["undo", () => currentMockInput.pressKey("-", { ctrl: true }), "one two", 1],
+          ["redo", () => currentMockInput.pressKey(".", { ctrl: true }), "one ", 1],
+          ["redo without history", () => currentMockInput.pressKey(".", { ctrl: true }), "one ", 0],
+        ] as const
+        for (const [name, press, text, expected] of steps) {
+          count = 0
+          press()
+          await new Promise((resolve) => setTimeout(resolve, 0))
+          expect([name, editor.plainText, count]).toEqual([name, text, expected])
+        }
       })
 
       it("should fire onContentChange when setting value programmatically", async () => {

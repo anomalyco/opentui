@@ -1,0 +1,4 @@
+base 0.6.0
++ @opentui/core: method EditBuffer.measureText(text: string): number
++ @opentui/core: method FFIRenderLib.contextEditBufferMeasureText(context: NativeContextHandle, editBuffer: ContextEditBufferHandle, bytes: Uint8Array): number
++ opentui.h: function ot_edit_buffer_measure_text(ot_context *, const ot_handle *edit_buffer, const uint8_t *bytes, uint32_t byte_count, uint32_t *out_width): ot_status
