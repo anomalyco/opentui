@@ -1090,7 +1090,7 @@ const Leaf = struct {
     fn measure(target: ?*anyopaque, width: f32, width_mode: u32, _: f32, _: u32) callconv(.c) yoga.ExternalYogaSize {
         const self: *@This() = @ptrCast(@alignCast(target.?));
         self.calls += 1;
-        const wrap: u32 = if (width_mode == @backingInt(yoga.YogaMeasureMode.undefined) or !(width >= 1)) 0 else @intFromFloat(@min(@floor(width), 1e6));
+        const wrap: u32 = if (width_mode == @backingInt(yoga.YogaMeasureMode.undefined)) 0 else @min(@import("../native-renderable.zig").measureCells(width), 1_000_000);
         const lines = if (wrap == 0) 1 else (self.len + wrap - 1) / wrap;
         var size: yoga.ExternalYogaSize = .{ .width = @floatFromInt(@max(1, if (wrap == 0) self.len else @min(self.len, wrap))), .height = @floatFromInt(@max(1, lines)) };
         if (width_mode == @backingInt(yoga.YogaMeasureMode.at_most) and !self.absolute) size.width = @min(width, size.width);
