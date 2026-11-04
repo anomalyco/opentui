@@ -8,6 +8,7 @@ const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const renderer = @import("../renderer.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
+const test_env = @import("test-env.zig");
 
 const asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s.mp4";
 const video_only_asset = "../core/src/tests/fixtures/video/testsrc-160x90-24fps-2s-video-only.mp4";
@@ -292,14 +293,12 @@ test "video output reconfiguration keeps the current frame presentable" {
 
 test "video experimental hardware decoding matches software or falls back to it" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const Environment = struct {
-        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-        extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-    };
+    const saved = try test_env.save(&.{"OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL"});
+    defer saved.restore();
     // macOS decodes through VideoToolbox; other platforms keep software decoding.
-    _ = Environment.setenv("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL", "1", 1);
+    test_env.set("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL", "1");
     const hardware = openAsset(false);
-    _ = Environment.unsetenv("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL");
+    test_env.set("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL", "0");
     const accelerated = try hardware;
     defer accelerated.deinit();
     _ = try accelerated.configureOutput(64, 96, false, null);

@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const clipboard_clock = @import("clock.zig");
 const linux = @import("linux.zig");
 const protocol = @import("wayland-protocol.zig");
+const test_env = @import("../tests/test-env.zig");
 
 const WlArgument = linux.WlArgument;
 const WlInterface = linux.WlInterface;
@@ -1475,8 +1476,6 @@ test "Wayland core helper destroys its role before its surface" {
 test "Wayland connection setup caps the receive buffer, records an inherited socket, and tries WSLg on WSL" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const Environment = struct {
-        const setenv = test_env.setenv;
-        const unsetenv = test_env.unsetenv;
         extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
         // `default` leaves only the WSLg socket, and `backlog` fills the display's accept queue.
         var refused: enum { none, default, all, backlog } = .none;
@@ -1487,7 +1486,7 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         var inheritable: bool = false;
         // Like libwayland, connecting consumes an inherited WAYLAND_SOCKET.
         fn connect(_: ?[*:0]const u8) callconv(.c) ?*linux.WlDisplay {
-            _ = unsetenv("WAYLAND_SOCKET");
+            test_env.set("WAYLAND_SOCKET", null);
             count += 1;
             return if (refused == .none) @ptrFromInt(1) else null;
         }
@@ -1559,8 +1558,8 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
         .{ .refused = .backlog, .runtime_dir = .empty, .display = .absolute, .peer = .none, .connects = 0 },
         .{ .refused = .backlog, .runtime_dir = .empty, .wsl = true, .peer = .none, .connects = 0 },
     };
-    const saved = try test_env.save();
-    defer test_env.restore(saved);
+    const saved = try test_env.save(&.{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "WAYLAND_SOCKET" });
+    defer saved.restore();
     // A socket path must fit sun_path, which the test cache directory can exceed.
     var dir_buffer = "/tmp/opentui-wayland-XXXXXX".*;
     const dir = std.mem.span(Environment.mkdtemp(&dir_buffer) orelse return error.MkdtempFailed);
@@ -1616,17 +1615,15 @@ test "Wayland connection setup caps the receive buffer, records an inherited soc
             .unset => null,
             .absolute, .longest, .too_long => display_path,
         };
-        if (display) |name| {
-            try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_DISPLAY", name, 1));
-        } else _ = Environment.unsetenv("WAYLAND_DISPLAY");
+        test_env.set("WAYLAND_DISPLAY", if (display) |name| name.ptr else null);
         const runtime_value: [:0]const u8 = switch (case.runtime_dir) {
             .set => runtime_dir,
             .empty => "",
             .relative => runtime_dir[1..],
         };
-        try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("XDG_RUNTIME_DIR", runtime_value, 1));
-        if (case.inherited) try std.testing.expectEqual(@as(c_int, 0), Environment.setenv("WAYLAND_SOCKET", "99", 1));
-        defer _ = Environment.unsetenv("WAYLAND_SOCKET");
+        test_env.set("XDG_RUNTIME_DIR", runtime_value);
+        if (case.inherited) test_env.set("WAYLAND_SOCKET", "99");
+        defer test_env.set("WAYLAND_SOCKET", null);
         linux.test_log.begin();
         defer _ = linux.test_log.end();
         // A new connection attempt replaces the cause an earlier one left.
@@ -1843,30 +1840,6 @@ test "Wayland fatal selection flush preserves local ownership state" {
 }
 
 // Fake libwayland entry points for tests that drive a connection without a compositor.
-// Saves and restores the variables a Wayland connection reads, for tests that set them.
-pub const test_env = struct {
-    pub extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-    pub extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-    const names = [_][*:0]const u8{ "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "WAYLAND_SOCKET" };
-
-    pub fn save() ![names.len]?[:0]u8 {
-        var saved: [names.len]?[:0]u8 = undefined;
-        for (names, &saved) |name, *value| {
-            value.* = if (posix_io.getEnv(name)) |current| try std.testing.allocator.dupeSentinel(u8, current, 0) else null;
-        }
-        return saved;
-    }
-
-    pub fn restore(saved: [names.len]?[:0]u8) void {
-        for (names, saved) |name, value| {
-            if (value) |restored| {
-                _ = setenv(name, restored, 1);
-                std.testing.allocator.free(restored);
-            } else _ = unsetenv(name);
-        }
-    }
-};
-
 pub fn testSymbols() linux.WaylandSymbols {
     var symbols: linux.WaylandSymbols = undefined;
     symbols.wl_proxy_marshal_array_constructor_versioned = testMarshal;
