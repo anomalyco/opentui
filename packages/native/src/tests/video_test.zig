@@ -298,7 +298,7 @@ test "video experimental hardware decoding matches software or falls back to it"
     // macOS decodes through VideoToolbox; other platforms keep software decoding.
     test_env.set("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL", "1");
     const hardware = openAsset(false);
-    test_env.set("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL", null);
+    test_env.set("OPENTUI_EXPERIMENTAL_VIDEO_HWACCEL", "0");
     const accelerated = try hardware;
     defer accelerated.deinit();
     _ = try accelerated.configureOutput(64, 96, false, null);
