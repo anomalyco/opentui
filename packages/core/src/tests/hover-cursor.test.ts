@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, afterEach } from "bun:test"
-import { createTestRenderer, MouseButtons, type MockMouse, type TestRenderer } from "../testing.js"
+import { createTestRenderer, type MockMouse, type TestRenderer } from "../testing.js"
 import { BoxRenderable } from "../renderables/index.js"
 import type { MousePointerStyle } from "../types.js"
 
@@ -27,49 +27,46 @@ describe("mouse pointer style", () => {
     expect((renderer as any)._currentMousePointerStyle).toBe("default")
   })
 
-  test("setMousePointer supports all style types", async () => {
-    const styles: MousePointerStyle[] = [
-      "auto",
-      "default",
-      "none",
-      "context-menu",
-      "help",
-      "pointer",
-      "progress",
-      "wait",
-      "cell",
-      "crosshair",
-      "text",
-      "vertical-text",
-      "alias",
-      "copy",
-      "move",
-      "no-drop",
-      "not-allowed",
-      "grab",
-      "grabbing",
-      "all-scroll",
-      "col-resize",
-      "row-resize",
-      "n-resize",
-      "e-resize",
-      "s-resize",
-      "w-resize",
-      "ne-resize",
-      "nw-resize",
-      "se-resize",
-      "sw-resize",
-      "ew-resize",
-      "ns-resize",
-      "nesw-resize",
-      "nwse-resize",
-      "zoom-in",
-      "zoom-out",
-    ]
-    for (const style of styles) {
-      renderer.setMousePointer(style)
-      expect((renderer as any)._currentMousePointerStyle).toBe(style)
-    }
+  test.each<MousePointerStyle>([
+    "alias",
+    "all-scroll",
+    "auto",
+    "cell",
+    "col-resize",
+    "context-menu",
+    "copy",
+    "crosshair",
+    "default",
+    "e-resize",
+    "ew-resize",
+    "grab",
+    "grabbing",
+    "help",
+    "move",
+    "n-resize",
+    "ne-resize",
+    "nesw-resize",
+    "no-drop",
+    "none",
+    "not-allowed",
+    "ns-resize",
+    "nw-resize",
+    "nwse-resize",
+    "pointer",
+    "progress",
+    "row-resize",
+    "s-resize",
+    "se-resize",
+    "sw-resize",
+    "text",
+    "vertical-text",
+    "w-resize",
+    "wait",
+    "zoom-in",
+    "zoom-out",
+  ])("setMousePointer supports pointer style: %s", (style) => {
+    renderer.setMousePointer(style)
+    expect(renderer).toHaveProperty("_currentMousePointerStyle", style)
   })
 
   test("onMouseOver callback can set mouse pointer", async () => {
