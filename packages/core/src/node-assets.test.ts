@@ -6,7 +6,7 @@ import { getNodeAssets } from "./node-assets.js"
 
 describe("getNodeAssets", () => {
   test("rejects unsupported targets and invalid libc combinations", () => {
-    expect(() => getNodeAssets({ platform: "freebsd" as "linux", arch: "x64" })).toThrow("Unsupported")
+    expect(() => getNodeAssets({ platform: "sunos" as "linux", arch: "x64" })).toThrow("Unsupported")
     expect(() => getNodeAssets({ platform: "toString" as "linux", arch: "x64" })).toThrow("Unsupported")
     expect(() => getNodeAssets({ platform: "linux", arch: "ia32" as "x64" })).toThrow("Unsupported")
     expect(() => getNodeAssets({ platform: "darwin", arch: "arm64", libc: "musl" })).toThrow(
@@ -19,7 +19,7 @@ describe("getNodeAssets", () => {
 
   test("returns a deterministic key-sorted manifest for the host", () => {
     const target = {
-      platform: process.platform as "darwin" | "linux" | "win32",
+      platform: process.platform as "darwin" | "linux" | "win32" | "freebsd",
       arch: process.arch as "arm64" | "x64",
       ...(process.platform === "linux" ? { libc: "glibc" as const } : {}),
     }

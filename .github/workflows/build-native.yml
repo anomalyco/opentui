@@ -248,6 +248,32 @@ jobs:
           test -s native-windows-arm64.zip || (echo "❌ windows-arm64 zip is empty" && exit 1)
           echo "✅ windows-arm64 packaged successfully ($(du -h native-windows-arm64.zip | cut -f1))"
 
+      - name: Package native binaries - freebsd-x64
+        run: |
+          set -e
+          mkdir -p artifacts/native-freebsd-x64
+          cp packages/core/node_modules/@opentui/core-freebsd-x64/libopentui.so artifacts/native-freebsd-x64/
+          cp packages/native/lib/x86_64-freebsd/{libopentui.a,opentui.h} artifacts/native-freebsd-x64/
+          cp artifacts/native-notices/* artifacts/native-freebsd-x64/
+          cd artifacts
+          zip -r native-freebsd-x64.zip native-freebsd-x64/
+          test -f native-freebsd-x64.zip || (echo "❌ Failed to create freebsd-x64 zip" && exit 1)
+          test -s native-freebsd-x64.zip || (echo "❌ freebsd-x64 zip is empty" && exit 1)
+          echo "✅ freebsd-x64 packaged successfully ($(du -h native-freebsd-x64.zip | cut -f1))"
+
+      - name: Package native binaries - freebsd-arm64
+        run: |
+          set -e
+          mkdir -p artifacts/native-freebsd-arm64
+          cp packages/core/node_modules/@opentui/core-freebsd-arm64/libopentui.so artifacts/native-freebsd-arm64/
+          cp packages/native/lib/aarch64-freebsd/{libopentui.a,opentui.h} artifacts/native-freebsd-arm64/
+          cp artifacts/native-notices/* artifacts/native-freebsd-arm64/
+          cd artifacts
+          zip -r native-freebsd-arm64.zip native-freebsd-arm64/
+          test -f native-freebsd-arm64.zip || (echo "❌ Failed to create freebsd-arm64 zip" && exit 1)
+          test -s native-freebsd-arm64.zip || (echo "❌ freebsd-arm64 zip is empty" && exit 1)
+          echo "✅ freebsd-arm64 packaged successfully ($(du -h native-freebsd-arm64.zip | cut -f1))"
+
       # Package the built npm packages (for use by build-examples and npm-publish)
       - name: Package npm packages
         run: |
@@ -278,6 +304,8 @@ jobs:
             packages/core/node_modules/@opentui/core-linux-arm64-musl \
             packages/core/node_modules/@opentui/core-win32-x64 \
             packages/core/node_modules/@opentui/core-win32-arm64 \
+            packages/core/node_modules/@opentui/core-freebsd-x64 \
+            packages/core/node_modules/@opentui/core-freebsd-arm64 \
             artifacts/npm-packages/core-native-packages
           test -d artifacts/npm-packages/core-native-packages/core-linux-x64-musl || (echo "❌ core-linux-x64-musl package missing from npm artifact!" && exit 1)
           test -d artifacts/npm-packages/core-native-packages/core-linux-arm64-musl || (echo "❌ core-linux-arm64-musl package missing from npm artifact!" && exit 1)
@@ -330,8 +358,10 @@ jobs:
           test -f artifacts/native-linux-arm64-musl.zip || (echo "❌ native-linux-arm64-musl.zip missing!" && exit 1)
           test -f artifacts/native-windows-x64.zip || (echo "❌ native-windows-x64.zip missing!" && exit 1)
           test -f artifacts/native-windows-arm64.zip || (echo "❌ native-windows-arm64.zip missing!" && exit 1)
+          test -f artifacts/native-freebsd-x64.zip || (echo "❌ native-freebsd-x64.zip missing!" && exit 1)
+          test -f artifacts/native-freebsd-arm64.zip || (echo "❌ native-freebsd-arm64.zip missing!" && exit 1)
           test -f artifacts/npm-packages.zip || (echo "❌ npm-packages.zip missing!" && exit 1)
-          for directory in artifacts/native-{darwin-x64,darwin-arm64,linux-x64,linux-arm64,linux-x64-musl,linux-arm64-musl,windows-x64,windows-arm64}; do
+          for directory in artifacts/native-{darwin-x64,darwin-arm64,linux-x64,linux-arm64,linux-x64-musl,linux-arm64-musl,windows-x64,windows-arm64,freebsd-x64,freebsd-arm64}; do
             test -f "$directory/LICENSE" || (echo "❌ OpenTUI license missing from $directory" && exit 1)
             test -f "$directory/LICENSE-GHOSTTY" || (echo "❌ Ghostty notices missing from $directory" && exit 1)
             test -f "$directory/LICENSE-LIBWEBP" || (echo "❌ libwebp notice missing from $directory" && exit 1)
@@ -346,7 +376,7 @@ jobs:
           done
 
           echo ""
-          echo "✅ All 8 native artifacts verified. Ready to upload:"
+          echo "✅ All 10 native artifacts verified. Ready to upload:"
           ls -lah artifacts/*.zip
 
       - name: Upload native binaries artifacts
@@ -362,6 +392,8 @@ jobs:
             artifacts/native-linux-arm64-musl.zip
             artifacts/native-windows-x64.zip
             artifacts/native-windows-arm64.zip
+            artifacts/native-freebsd-x64.zip
+            artifacts/native-freebsd-arm64.zip
           if-no-files-found: error
           retention-days: 30
 
