@@ -74,6 +74,70 @@ test "Scene position anchor resolves numeric offsets outside flex flow" {
     try testing.expectEqual(@as(f64, 1), (try f.owner.sceneGetLayout(sibling, false)).screenY);
 }
 
+test "Scene position anchor resolves edge keywords and trailing insets" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const popup = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    for ([_]context.Handle{ popup, anchor }, 0..) |node, index| try f.owner.sceneMoveNode(node, f.root, @intCast(index));
+    try f.owner.sceneSetPositions(anchor, 3, .{ 1, 1, 0, 0 }, .{ 2, 1, 0, 0 });
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    const left, const top, const right, const bottom = .{ c.OT_UNIT_ANCHOR_LEFT, c.OT_UNIT_ANCHOR_TOP, c.OT_UNIT_ANCHOR_RIGHT, c.OT_UNIT_ANCHOR_BOTTOM };
+    const Case = struct { [4]u32, [4]f32, [2]f64, bool };
+    for ([_]Case{ .{ .{ right, bottom, 0, 0 }, .{ 0, 0, 0, 0 }, .{ 8, 4 }, false }, .{ .{ 0, 0, left, top }, .{ 0, 0, 0, 0 }, .{ 0, 0 }, false }, .{ .{ 0, 0, 1, 1 }, .{ 0, 0, 1, 1 }, .{ 5, 2 }, false }, .{ .{ 1, 1, right, bottom }, .{ 1, 2, 0, 0 }, .{ 3, 3 }, false }, .{ .{ 0, 0, right, bottom }, .{ 0, 0, 0, 0 }, .{ 5, 3 }, true } }) |case| {
+        try dimensions(f.owner, anchor, if (case[3]) 7 else 6, if (case[3]) 4 else 3);
+        try dimensions(f.owner, popup, if (case[3]) 4 else 2, if (case[3]) 2 else 1);
+        try f.owner.sceneSetPositions(popup, 15, case[0], case[1]);
+        try repaint(f.owner, f.id, frame_options.background, true, 0);
+        const layout = try f.owner.sceneGetLayout(popup, false);
+        try testing.expectEqual(case[2], [2]f64{ layout.screenX, layout.screenY });
+    }
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositions(popup, 3, .{ c.OT_UNIT_ANCHOR_RIGHT, c.OT_UNIT_ANCHOR_LEFT, 0, 0 }, .{ 0, 0, 0, 0 }));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_TOP, c.OT_UNIT_ANCHOR_RIGHT, 0, 0));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, c.OT_EDGE_NONE, c.OT_UNIT_ANCHOR_LEFT, 0, 0));
+}
+
+test "Scene position anchor cached culling follows relationship and keyword changes with clean Yoga" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const content, const popup = .{ try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2), try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 5) };
+    try dimensions(f.owner, content, 20, 40);
+    try f.owner.sceneSetStyle(content, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+    try f.owner.sceneMoveNode(content, f.root, 0);
+    try f.owner.sceneSetViewport(content, f.root);
+    var children: [20]context.Handle = undefined;
+    try filterChildren(f.owner, f.id, content, &children);
+    const targets = [2]context.Handle{ try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3), try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4) };
+    for (targets ++ [_]context.Handle{popup}, 0..) |node, index| {
+        try dimensions(f.owner, node, if (index == 2) 2 else 6, if (index == 2) 1 else 3);
+        try f.owner.sceneSetStyle(node, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
+        try f.owner.sceneSetPositions(node, 3, .{ if (index == 2) c.OT_UNIT_ANCHOR_RIGHT else 1, 1, 0, 0 }, .{ @floatFromInt(2 + index * 8), if (index == 2) 40 else @as(f32, @floatFromInt(index)) - 38, 0, 0 });
+        try f.owner.sceneMoveNode(node, if (index == 2) content else f.root, if (index == 2) 20 else @intCast(index + 1));
+    }
+    try f.owner.sceneSetPaint(popup, .{ .background = .{ 200, 0, 0, 255 }, .zIndex = 10 });
+    for (0..2) |_| try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try testing.expect((try f.owner.raw().getRenderable(content)).scene_node.?.culling.index.?.usable);
+    const Case = struct { enum { assign, keyword, keyword_style, clear, destroy }, [2]f64 };
+    for ([_]Case{ .{ .assign, .{ 8, 2 } }, .{ .keyword, .{ 2, 2 } }, .{ .keyword_style, .{ 8, 2 } }, .{ .clear, .{ 0, 4 } }, .{ .destroy, .{ 0, 4 } } }) |case| {
+        if (case[0] == .clear) try f.owner.sceneSetPaint(content, .{ .translateY = -36 });
+        if (case[0] == .destroy) try f.owner.sceneSetPositionAnchor(popup, targets[1]);
+        switch (case[0]) {
+            .assign => try f.owner.sceneSetPositionAnchor(popup, targets[0]),
+            .keyword => try f.owner.sceneSetPositions(popup, 1, .{ c.OT_UNIT_ANCHOR_LEFT, 0, 0, 0 }, .{ 0, 0, 0, 0 }),
+            .keyword_style => try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_LEFT, c.OT_UNIT_ANCHOR_RIGHT, 0, 0),
+            .clear => try f.owner.sceneSetPositionAnchor(popup, null),
+            .destroy => try f.owner.sceneDestroyNode(targets[1]),
+        }
+        try repaint(f.owner, f.id, frame_options.background, true, 0);
+        if (case[0] != .destroy) try testing.expectEqual(@as(u64, 0), f.state.frame_work.yoga_solves);
+        const layout = try f.owner.sceneGetLayout(popup, false);
+        try testing.expectEqual(case[1], [2]f64{ layout.screenX, layout.screenY });
+        const column, const row = .{ @as(u32, @intFromFloat(case[1][0])), @as(u32, @intFromFloat(case[1][1])) };
+        try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(column, row).?.bg);
+        try testing.expectEqual((try f.owner.raw().getRenderable(popup)).scene_node.?.token, f.draftHit(row * 20 + column));
+    }
+}
+
 test "Scene position anchor chains exceed the Yoga depth bound without frame allocations after warmup" {
     const chain_length = yoga.depth_max + 2;
     const f = try Fixture.init(testing.allocator, chain_length + 2, 2, .{ .limits = .{ .object_capacity = chain_length + 16 } });

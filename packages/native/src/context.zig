@@ -2359,14 +2359,21 @@ pub const Context = struct {
         if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
         const target = if (content) scroll.?.content_node else node.yoga_node;
         const anchored_position = !content and group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_POSITION_TYPE and node.scene_node.?.position_anchor != null;
+        const position = !content and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_POSITION;
+        const inset_unit = if (position) try scene.anchorInsetUnit(edge, unit) else 0;
+        if (!position and unit >= api.OT_UNIT_ANCHOR_LEFT) return error.InvalidOptions;
         try yoga.check(switch (group) {
             api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, if (anchored_position) api.OT_POSITION_ABSOLUTE else @intFromFloat(value)),
             api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(target, kind, value),
             // Finite summed edges and gaps saturate so Yoga's f32 sums stay finite; NaN still unsets.
-            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(target, kind, edge, unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
+            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(target, kind, edge, if (inset_unit != 0) api.OT_UNIT_UNDEFINED else unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
+        if (position and edge <= api.OT_EDGE_BOTTOM and node.scene_node.?.anchor_insets[edge] != inset_unit) {
+            node.scene_node.?.anchor_insets[edge] = inset_unit;
+            node.scene_node.?.owner.invalidateGeometry(node);
+        }
         if (anchored_position) node.scene_node.?.anchor_position_type = @intFromFloat(value);
         if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
             node.scene_node.?.owner.visibility_epoch +%= 1;
@@ -2415,7 +2422,18 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         const node = try self.sceneMutableNode(handle);
-        try yoga.check(yoga.yogaNodeStyleSetPositionsChecked(node.yoga_node, mask, &units, &values));
+        var yoga_units = units;
+        var insets = node.scene_node.?.anchor_insets;
+        for (&insets, &yoga_units, units, 0..) |*inset, *yoga_unit, unit, edge| {
+            if (mask & (@as(u32, 1) << @intCast(edge)) == 0) continue;
+            inset.* = try scene.anchorInsetUnit(@intCast(edge), unit);
+            if (inset.* != 0) yoga_unit.* = api.OT_UNIT_UNDEFINED;
+        }
+        try yoga.check(yoga.yogaNodeStyleSetPositionsChecked(node.yoga_node, mask, &yoga_units, &values));
+        if (!std.meta.eql(insets, node.scene_node.?.anchor_insets)) {
+            node.scene_node.?.anchor_insets = insets;
+            node.scene_node.?.owner.invalidateGeometry(node);
+        }
     }
 
     pub fn sceneSetPaint(self: *Context, handle: Handle, paint: scene.Paint) !void {

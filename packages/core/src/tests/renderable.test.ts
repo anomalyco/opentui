@@ -192,6 +192,39 @@ describe("Renderable", () => {
 })
 
 describe("Renderable - positionAnchor", () => {
+  test("keeps edge keywords across updates and anchor lifecycle", async () => {
+    const anchor = new BoxRenderable(testRenderer, { position: "absolute", left: 2, top: 1, width: 6, height: 3 })
+    const popup = new BoxRenderable(testRenderer, {
+      position: "absolute",
+      width: 2,
+      height: 1,
+      left: "right",
+      top: "bottom",
+      positionAnchor: anchor,
+    })
+    testRenderer.root.add(popup)
+    testRenderer.root.add(anchor)
+    const place = async () => {
+      await renderOnce()
+      return [popup.x, popup.y]
+    }
+    expect(await place()).toEqual([8, 4])
+    expect(() => popup.setPosition({ left: 1, top: "left" } as any)).toThrow(TypeError)
+    expect(() => (popup.top = "left" as any)).toThrow(TypeError)
+    popup.left = "left"
+    expect([popup.left, popup.top, ...(await place())]).toEqual(["left", "bottom", 2, 4])
+    popup.setPosition({ left: 1, top: 2 })
+    expect(await place()).toEqual([3, 3])
+    popup.setPosition({ left: undefined, top: undefined, right: "right", bottom: "top" })
+    expect(await place()).toEqual([6, 0])
+    popup.positionAnchor = null
+    expect([...(await place()), popup.right, popup.bottom]).toEqual([0, 0, "right", "top"])
+    popup.positionAnchor = anchor
+    expect(await place()).toEqual([6, 0])
+    anchor.destroy()
+    expect([...(await place()), popup.positionAnchor]).toEqual([0, 0, null])
+  })
+
   test("positions across branches and restores the requested layout mode", async () => {
     testRenderer.root.flexDirection = "row"
     const anchorBranch = new BoxRenderable(testRenderer, { width: 8, height: 6 })

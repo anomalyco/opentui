@@ -508,6 +508,7 @@ pub const Node = struct {
     parent: ?*native.NativeRenderable = null,
     position_anchor: ?*native.NativeRenderable = null,
     anchor_position_type: ?u32 = null,
+    anchor_insets: [4]u8 = .{ 0, 0, 0, 0 },
     // Head nodes anchored to this one, linked through anchor_previous/anchor_next.
     anchor_dependents: ?*native.NativeRenderable = null,
     anchor_previous: ?*native.NativeRenderable = null,
@@ -1048,6 +1049,7 @@ pub const Scene = struct {
     fn unlinkPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
         const node = value.scene_node.?;
         const anchor = node.position_anchor orelse return;
+        node.geometry_epoch = 0;
         if (node.anchor_previous) |previous| {
             previous.scene_node.?.anchor_next = node.anchor_next;
         } else anchor.scene_node.?.anchor_dependents = node.anchor_next;
@@ -1087,9 +1089,7 @@ pub const Scene = struct {
             anchor.scene_node.?.anchor_dependents = value;
             self.anchor_count += 1;
         }
-        node.layout_flags.needs_layout = true;
-        self.preparation_dirty = true;
-        self.clearPreparation();
+        self.invalidateGeometry(value);
     }
 
     /// Takes a node out of its parent's paint children, attention, and counts.
@@ -1219,7 +1219,7 @@ pub const Scene = struct {
                 _ = yoga.yogaNodeStyleSetEnumChecked(dependent.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, original);
             }
             self.unlinkPositionAnchor(dependent);
-            dependent.scene_node.?.layout_flags.needs_layout = true;
+            self.invalidateGeometry(dependent);
         }
         node.control.deinit(node.kind, self.allocator);
         if (node.culling.index) |index| {
@@ -1752,6 +1752,15 @@ pub const Scene = struct {
         if (owner.attempt != null or node.skip.view_queued) return;
         node.skip.view_queued = true;
         owner.view_dirty.appendAssumeCapacity(value);
+    }
+
+    pub fn invalidateGeometry(self: *Scene, value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        node.geometry_epoch = 0;
+        node.layout_flags.needs_layout = true;
+        self.selection_epoch +%= 1;
+        if (node.parent) |parent| staleCull(parent);
+        self.invalidateObservation(value);
     }
 
     pub fn invalidateObservation(self: *Scene, value: *native.NativeRenderable) void {
@@ -3735,6 +3744,23 @@ fn composedLayout(value: *const native.NativeRenderable, comptime source: enum {
     return result;
 }
 
+pub fn anchorInsetUnit(edge: u32, unit: u32) !u8 {
+    if (unit < api.OT_UNIT_ANCHOR_LEFT) return 0;
+    if (edge > api.OT_EDGE_BOTTOM or unit > api.OT_UNIT_ANCHOR_BOTTOM or
+        (edge % 2 != (unit - api.OT_UNIT_ANCHOR_LEFT) % 2)) return error.InvalidOptions;
+    return @intCast(unit);
+}
+
+fn anchorInset(value: *const native.NativeRenderable, edge: u32, anchor_size: f32, trailing: bool) !?f32 {
+    const unit = value.scene_node.?.anchor_insets[edge];
+    if (unit != 0) return if (unit >= api.OT_UNIT_ANCHOR_RIGHT) anchor_size else 0;
+    var encoded: u64 = 0;
+    try yoga.check(yoga.yogaNodeStyleGetValueChecked(value.yoga_node, api.OT_STYLE_VALUE_POSITION, edge, &encoded));
+    if (@as(u32, @truncate(encoded)) != api.OT_UNIT_POINT) return null;
+    const inset: f32 = @bitCast(@as(u32, @truncate(encoded >> 32)));
+    return if (trailing) anchor_size - inset else inset;
+}
+
 fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) !Layout {
     const node = value.scene_node.?;
     if (source == .observed) return node.observed_layout;
@@ -3742,12 +3768,17 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     var computed: yoga.ExternalYogaLayout = undefined;
     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
     var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
-    if (node.position_anchor != null) {
+    if (node.position_anchor) |anchor| {
+        var anchor_layout: yoga.ExternalYogaLayout = undefined;
+        try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(anchor.yoga_node, &anchor_layout));
         var offsets: [2]f32 = .{ 0, 0 };
-        for (&offsets, [_]u32{ api.OT_EDGE_LEFT, api.OT_EDGE_TOP }) |*offset, edge| {
-            var encoded: u64 = 0;
-            try yoga.check(yoga.yogaNodeStyleGetValueChecked(value.yoga_node, api.OT_STYLE_VALUE_POSITION, edge, &encoded));
-            if (@as(u32, @truncate(encoded)) == api.OT_UNIT_POINT) offset.* = @bitCast(@as(u32, @truncate(encoded >> 32)));
+        for (&offsets, [_]f32{ anchor_layout.width, anchor_layout.height }, [_]f32{ layout.width, layout.height }, 0..) |*offset, anchor_size, size, axis| {
+            const edge: u32 = @intCast(axis);
+            if (try anchorInset(value, edge, anchor_size, false)) |inset| {
+                offset.* = inset;
+            } else if (try anchorInset(value, edge + 2, anchor_size, true)) |inset| {
+                offset.* = inset - size;
+            }
         }
         layout.left = offsets[0];
         layout.top = offsets[1];

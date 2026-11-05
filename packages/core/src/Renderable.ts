@@ -113,21 +113,30 @@ export enum RenderableEvents {
   DESTROYED = "destroyed",
 }
 
+export type VerticalAnchorEdge = "top" | "bottom"
+export type HorizontalAnchorEdge = "left" | "right"
+
+type Inset<Anchor> = number | "auto" | `${number}%` | Anchor
+
 export interface Position {
-  top?: number | "auto" | `${number}%`
-  right?: number | "auto" | `${number}%`
-  bottom?: number | "auto" | `${number}%`
-  left?: number | "auto" | `${number}%`
+  top?: Inset<VerticalAnchorEdge>
+  right?: Inset<HorizontalAnchorEdge>
+  bottom?: Inset<VerticalAnchorEdge>
+  left?: Inset<HorizontalAnchorEdge>
 }
 
 // Indexed by Yoga edge: Edge.Left is 0 and Edge.Bottom is 3.
 const positionKeys = ["left", "top", "right", "bottom"] as const
 
+function isAnchorInset(value: unknown): value is VerticalAnchorEdge | HorizontalAnchorEdge {
+  return positionKeys.some((key) => key === value)
+}
+
 export interface BaseRenderableOptions {
   id?: string
 }
 
-export interface LayoutOptions extends BaseRenderableOptions {
+export interface LayoutOptions extends BaseRenderableOptions, Position {
   flexGrow?: number
   flexShrink?: number
   flexDirection?: FlexDirectionString
@@ -139,10 +148,6 @@ export interface LayoutOptions extends BaseRenderableOptions {
   position?: PositionTypeString
   positionAnchor?: Renderable | null
   overflow?: OverflowString
-  top?: number | "auto" | `${number}%`
-  right?: number | "auto" | `${number}%`
-  bottom?: number | "auto" | `${number}%`
-  left?: number | "auto" | `${number}%`
   minWidth?: number | "auto" | `${number}%`
   minHeight?: number | "auto" | `${number}%`
   maxWidth?: number | "auto" | `${number}%`
@@ -830,42 +835,42 @@ export abstract class Renderable extends BaseRenderable {
     this.left = value
   }
 
-  public get top(): number | "auto" | `${number}%` | undefined {
+  public get top(): Position["top"] {
     return this._position.top
   }
 
-  public set top(value: number | "auto" | `${number}%` | null | undefined) {
-    if (isPositionType(value) || value == null) {
+  public set top(value: Position["top"] | null) {
+    if (isPositionType(value) || value == null || isAnchorInset(value)) {
       this.setPosition({ top: value ?? undefined })
     }
   }
 
-  public get right(): number | "auto" | `${number}%` | undefined {
+  public get right(): Position["right"] {
     return this._position.right
   }
 
-  public set right(value: number | "auto" | `${number}%` | null | undefined) {
-    if (isPositionType(value) || value == null) {
+  public set right(value: Position["right"] | null) {
+    if (isPositionType(value) || value == null || isAnchorInset(value)) {
       this.setPosition({ right: value ?? undefined })
     }
   }
 
-  public get bottom(): number | "auto" | `${number}%` | undefined {
+  public get bottom(): Position["bottom"] {
     return this._position.bottom
   }
 
-  public set bottom(value: number | "auto" | `${number}%` | null | undefined) {
-    if (isPositionType(value) || value == null) {
+  public set bottom(value: Position["bottom"] | null) {
+    if (isPositionType(value) || value == null || isAnchorInset(value)) {
       this.setPosition({ bottom: value ?? undefined })
     }
   }
 
-  public get left(): number | "auto" | `${number}%` | undefined {
+  public get left(): Position["left"] {
     return this._position.left
   }
 
-  public set left(value: number | "auto" | `${number}%` | null | undefined) {
-    if (isPositionType(value) || value == null) {
+  public set left(value: Position["left"] | null) {
+    if (isPositionType(value) || value == null || isAnchorInset(value)) {
       this.setPosition({ left: value ?? undefined })
     }
   }
@@ -1408,11 +1413,20 @@ export abstract class Renderable extends BaseRenderable {
     for (let edge = 0; edge < positionKeys.length; edge++) {
       const key = positionKeys[edge]
       const input = position[key] ?? undefined
-      if (!(key in position) || (input !== undefined && !isPositionType(input))) continue
-      const value = parseYogaValue(input)
+      if (!(key in position)) continue
+      if (isAnchorInset(input)) {
+        const anchorEdge = positionKeys.indexOf(input)
+        if (edge % 2 !== anchorEdge % 2) {
+          throw new TypeError(`Invalid ${key} anchor inset: ${input}`)
+        }
+        units[edge] = nativeConstants.OT_UNIT_ANCHOR_LEFT + anchorEdge
+      } else {
+        if (input !== undefined && !isPositionType(input)) continue
+        const value = parseYogaValue(input)
+        units[edge] = value.unit
+        values[edge] = value.value
+      }
       mask |= 1 << edge
-      units[edge] = value.unit
-      values[edge] = value.value
     }
     this._ctx.nativeScene.setPositions(this, mask, units, values)
   }
