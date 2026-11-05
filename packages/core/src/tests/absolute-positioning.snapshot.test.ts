@@ -296,6 +296,36 @@ describe("Absolute Positioning - Snapshot Tests", () => {
   })
 
   describe("Mixed positioning", () => {
+    test("absolute child inside explicit static parent resolves against the nearest positioned ancestor", async () => {
+      const container = new BoxRenderable(testRenderer, {
+        width: 40,
+        height: 20,
+      })
+
+      const staticParent = new BoxRenderable(testRenderer, {
+        position: "static",
+        width: 10,
+        height: 4,
+        marginLeft: 10,
+      })
+
+      const absoluteChild = new BoxRenderable(testRenderer, {
+        position: "absolute",
+        left: 20,
+        top: 0,
+        width: 5,
+        height: 1,
+      })
+
+      staticParent.add(absoluteChild)
+      container.add(staticParent)
+      testRenderer.root.add(container)
+
+      await renderOnce()
+      expect(absoluteChild.x).toBe(20)
+      expect(absoluteChild.y).toBe(0)
+    })
+
     test("absolute child inside relative parent", async () => {
       const container = new BoxRenderable(testRenderer, {
         width: 40,
