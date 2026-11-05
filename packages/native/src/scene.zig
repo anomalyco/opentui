@@ -506,8 +506,9 @@ pub const Node = struct {
     previous: ?*native.NativeRenderable = null,
     next: ?*native.NativeRenderable = null,
     parent: ?*native.NativeRenderable = null,
-    // Doubly linked list of siblings under the same parent.
     position_anchor: ?*native.NativeRenderable = null,
+    anchor_position_type: ?u32 = null,
+    // Head nodes anchored to this one, linked through anchor_previous/anchor_next.
     anchor_dependents: ?*native.NativeRenderable = null,
     anchor_previous: ?*native.NativeRenderable = null,
     anchor_next: ?*native.NativeRenderable = null,
@@ -842,6 +843,7 @@ pub const Scene = struct {
     marked: std.ArrayListUnmanaged(handles.Handle) = .empty,
     remarked: std.ArrayListUnmanaged(Remark) = .empty,
     scratch: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
+    composition_ancestors: std.ArrayListUnmanaged(*const native.NativeRenderable) = .empty,
     layout_pending: bool = false,
     layout_width: u32 = 0,
     layout_height: u32 = 0,
@@ -887,6 +889,7 @@ pub const Scene = struct {
         self.marked.deinit(self.allocator);
         self.remarked.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
+        self.composition_ancestors.deinit(self.allocator);
         self.paint_members.deinit(self.allocator);
         self.paint_slots.deinit(self.allocator);
         self.segments.deinit(self.allocator);
@@ -909,6 +912,7 @@ pub const Scene = struct {
         try self.marked.ensureTotalCapacity(self.allocator, self.marked.items.len + self.count + 1);
         try self.remarked.ensureTotalCapacity(self.allocator, self.count + 1);
         try self.scratch.ensureTotalCapacity(self.allocator, self.count + 1);
+        try self.composition_ancestors.ensureTotalCapacity(self.allocator, self.count + 1);
     }
 
     pub fn insert(self: *Scene, storage: native.NodeStorage, handle: handles.Handle, kind: u32, num: u32) void {
@@ -1049,12 +1053,13 @@ pub const Scene = struct {
         } else anchor.scene_node.?.anchor_dependents = node.anchor_next;
         if (node.anchor_next) |next| next.scene_node.?.anchor_previous = node.anchor_previous;
         node.position_anchor = null;
+        node.anchor_position_type = null;
         node.anchor_previous = null;
         node.anchor_next = null;
         self.anchor_count -= 1;
     }
 
-    /// Sets the position anchor of a node, updating the anchor's dependent list and counts.
+    /// Sets the position anchor of a node, updating the node's (anchor) dependent list and counts.
     pub fn setPositionAnchor(self: *Scene, value: *native.NativeRenderable, target: ?*native.NativeRenderable) !void {
         const node = value.scene_node.?;
         if (target) |anchor| {
@@ -1062,9 +1067,21 @@ pub const Scene = struct {
         }
         if (node.position_anchor == target) return;
         if (target) |anchor| try self.checkPositionDependency(value, anchor);
+        var position_type = node.anchor_position_type;
+        if (target != null) {
+            if (position_type == null) {
+                var current: u32 = 0;
+                try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, &current));
+                position_type = current;
+            }
+            try yoga.check(yoga.yogaNodeStyleSetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, api.OT_POSITION_ABSOLUTE));
+        } else if (position_type) |original| {
+            try yoga.check(yoga.yogaNodeStyleSetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, original));
+        }
         self.unlinkPositionAnchor(value);
         if (target) |anchor| {
             node.position_anchor = anchor;
+            node.anchor_position_type = position_type;
             node.anchor_next = anchor.scene_node.?.anchor_dependents;
             if (node.anchor_next) |next| next.scene_node.?.anchor_previous = value;
             anchor.scene_node.?.anchor_dependents = value;
@@ -1198,6 +1215,9 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         self.unlinkPositionAnchor(value);
         while (node.anchor_dependents) |dependent| {
+            if (dependent.scene_node.?.anchor_position_type) |original| {
+                _ = yoga.yogaNodeStyleSetEnumChecked(dependent.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, original);
+            }
             self.unlinkPositionAnchor(dependent);
             dependent.scene_node.?.layout_flags.needs_layout = true;
         }
@@ -1271,6 +1291,7 @@ pub const Scene = struct {
         while (cursor) |value| : (cursor = value.scene_node.?.next) {
             yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.scene_node.?.childYoga(value))) catch unreachable;
             value.scene_node.?.position_anchor = null;
+            value.scene_node.?.anchor_position_type = null;
             value.scene_node.?.anchor_dependents = null;
             value.scene_node.?.anchor_previous = null;
             value.scene_node.?.anchor_next = null;
@@ -2048,9 +2069,7 @@ pub const Scene = struct {
                     continue;
                 }
                 if (filter) |bounds| {
-                    var layout = state.layout;
-                    layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
-                    layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
+                    const layout = try positionedLayout(child, .{ .screenX = origin[0], .screenY = origin[1] }, state.layout);
                     self.frame_work.overlap_tests += 1;
                     if (!overlaps(bounds, publicLayout(layout))) {
                         if (!full and state.skip.attention_index != no_slot and onlySubtreeListed(state)) dropAttention(node, state.skip.attention_index);
@@ -3373,7 +3392,7 @@ pub const Scene = struct {
         for (children) |child| {
             self.frame_work.overlap_tests += 1;
             const state = child.scene_node.?;
-            if (state.layout_flags.display_none or state.paint.translateX != 0 or state.paint.translateY != 0) {
+            if (state.layout_flags.display_none or state.position_anchor != null or state.paint.translateX != 0 or state.paint.translateY != 0) {
                 if (index.exceptions.items.len == children.len / 8 + 1) return;
                 index.exceptions.appendAssumeCapacity(child);
                 continue;
@@ -3423,17 +3442,8 @@ pub const Scene = struct {
                 }
                 var layout = node.layout;
                 if (refresh_layout) {
-                    var computed: yoga.ExternalYogaLayout = undefined;
                     self.frame_work.geometry_reads += 1;
-                    try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-                    layout = .{
-                        .left = computed.left,
-                        .top = computed.top,
-                        .right = computed.right,
-                        .bottom = computed.bottom,
-                        .width = computed.width,
-                        .height = computed.height,
-                    };
+                    layout = try localLayout(value, .solved);
                 } else if (mode == .paint) {
                     // Final paint follows settled preparation, but transforms remain live.
                     std.debug.assert(node.prepared_gen == self.candidates_gen);
@@ -3441,8 +3451,7 @@ pub const Scene = struct {
                 if (node.scroll) |state| {
                     if (refresh_layout and visible and state.resolved_epoch != self.layout_epoch) try self.resolveScroll(objects, value, state);
                 }
-                layout.screenX = frame.parent.screenX + @as(f64, layout.left) + node.paint.translateX;
-                layout.screenY = frame.parent.screenY + @as(f64, layout.top) + node.paint.translateY;
+                layout = try positionedLayout(value, frame.parent, layout);
                 if (node.scroll) |state| if (!std.meta.eql(state.screen, .{ layout.screenX, layout.screenY })) {
                     state.screen = .{ layout.screenX, layout.screenY };
                     state.generation += 1;
@@ -3686,13 +3695,21 @@ pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
     return cellLayout(layout);
 }
 
-/// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
+/// Composes a node's local geometry through its parent or anchor: the observed, prepared, or solved
 /// one. A solved node Yoga has not laid out since it was created or moved has no cells.
 fn composedLayout(value: *const native.NativeRenderable, comptime source: enum { observed, prepared, solved }) !Layout {
-    var ancestors: [yoga.depth_max]*const native.NativeRenderable = undefined;
+    var parent_ancestors: [yoga.depth_max]*const native.NativeRenderable = undefined;
+    var ancestors: []*const native.NativeRenderable = &parent_ancestors;
+    var anchored = false;
     var count: usize = 0;
     var cursor: ?*const native.NativeRenderable = value;
-    while (cursor) |node| : (cursor = node.scene_node.?.parent) {
+    while (cursor) |node| : (cursor = node.scene_node.?.position_anchor orelse node.scene_node.?.parent) {
+        if (!anchored and node.scene_node.?.position_anchor != null) {
+            const storage = value.scene_node.?.owner.composition_ancestors.allocatedSlice();
+            @memcpy(storage[0..count], ancestors[0..count]);
+            ancestors = storage;
+            anchored = true;
+        }
         if (count == ancestors.len) return error.YogaDepthLimit;
         ancestors[count] = node;
         count += 1;
@@ -3709,7 +3726,7 @@ fn composedLayout(value: *const native.NativeRenderable, comptime source: enum {
         const layout = try localLayout(ancestors[count], source);
         result.screenX = result.screenX + @as(f64, layout.left) + node.paint.translateX;
         result.screenY = result.screenY + @as(f64, layout.top) + node.paint.translateY;
-        if (count != 0) {
+        if (count != 0 and ancestors[count - 1].scene_node.?.position_anchor == null) {
             const origin = childOrigin(node, .{});
             result.screenX += origin[0];
             result.screenY += origin[1];
@@ -3724,7 +3741,27 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
     if (source == .prepared) return node.layout;
     var computed: yoga.ExternalYogaLayout = undefined;
     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-    return .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    if (node.position_anchor != null) {
+        var offsets: [2]f32 = .{ 0, 0 };
+        for (&offsets, [_]u32{ api.OT_EDGE_LEFT, api.OT_EDGE_TOP }) |*offset, edge| {
+            var encoded: u64 = 0;
+            try yoga.check(yoga.yogaNodeStyleGetValueChecked(value.yoga_node, api.OT_STYLE_VALUE_POSITION, edge, &encoded));
+            if (@as(u32, @truncate(encoded)) == api.OT_UNIT_POINT) offset.* = @bitCast(@as(u32, @truncate(encoded >> 32)));
+        }
+        layout.left = offsets[0];
+        layout.top = offsets[1];
+    }
+    return layout;
+}
+
+fn positionedLayout(value: *const native.NativeRenderable, parent: Layout, layout: Layout) !Layout {
+    const node = value.scene_node.?;
+    const origin = if (node.position_anchor) |anchor| try composedLayout(anchor, .solved) else parent;
+    var result = layout;
+    result.screenX = origin.screenX + @as(f64, layout.left) + node.paint.translateX;
+    result.screenY = origin.screenY + @as(f64, layout.top) + node.paint.translateY;
+    return result;
 }
 
 /// Where a parent's children compose from: its screen position, plus a scroll node's viewport

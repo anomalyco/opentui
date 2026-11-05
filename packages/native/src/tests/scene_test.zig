@@ -35,6 +35,74 @@ fn dimensions(owner: *context.Context, node: context.Handle, width: f32, height:
     try owner.sceneSetStyle(node, 4, 1, 0, 1, height, 1);
 }
 
+test "Scene position anchor resolves numeric offsets outside flex flow" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const anchor_branch = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const popup_branch = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4);
+    const popup = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 5);
+    const child = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 6);
+    const sibling = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 7);
+    try f.owner.sceneSetStyle(f.root, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, 2, 0);
+    for ([_]context.Handle{ anchor_branch, popup_branch }, 0..) |branch, index| {
+        try dimensions(f.owner, branch, 8, 6);
+        try f.owner.sceneMoveNode(branch, f.root, @intCast(index));
+    }
+    for ([_]context.Handle{ anchor, popup, child, sibling }) |node| try dimensions(f.owner, node, 1, 1);
+    try dimensions(f.owner, popup, 3, 1);
+    try f.owner.sceneMoveNode(anchor, anchor_branch, 0);
+    try f.owner.sceneMoveNode(popup, popup_branch, 0);
+    try f.owner.sceneMoveNode(child, popup, 0);
+    try f.owner.sceneMoveNode(sibling, popup_branch, 1);
+    try f.owner.sceneSetPositions(anchor, 3, .{ 1, 1, 0, 0 }, .{ 2, 1, 0, 0 });
+    try f.owner.sceneSetPositions(popup, 3, .{ 1, 1, 0, 0 }, .{ 1, 2, 0, 0 });
+    try f.owner.sceneSetPaint(popup, .{ .background = .{ 200, 0, 0, 255 } });
+    try f.owner.sceneSetPaint(child, .{ .background = .{ 0, 200, 0, 255 } });
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    const layout = try f.owner.sceneGetLayout(popup, false);
+    const child_layout = try f.owner.sceneGetLayout(child, false);
+    try testing.expectEqual([2]f64{ 3, 3 }, [2]f64{ layout.screenX, layout.screenY });
+    try testing.expectEqual([2]f64{ 3, 3 }, [2]f64{ child_layout.screenX, child_layout.screenY });
+    try testing.expectEqual(@as(f64, 0), (try f.owner.sceneGetLayout(sibling, false)).screenY);
+    try testing.expectEqual(ansi.rgbColor(0, 200, 0, 255), f.cli.getNextBuffer().get(3, 3).?.bg);
+    try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(4, 3).?.bg);
+    try testing.expectEqual((try f.owner.raw().getRenderable(child)).scene_node.?.token, f.draftHit(63));
+    try f.owner.sceneSetPositionAnchor(popup, null);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try testing.expectEqual(@as(f64, 1), (try f.owner.sceneGetLayout(sibling, false)).screenY);
+}
+
+test "Scene position anchor chains exceed the Yoga depth bound without frame allocations after warmup" {
+    const chain_length = yoga.depth_max + 2;
+    const f = try Fixture.init(testing.allocator, chain_length + 2, 2, .{ .limits = .{ .object_capacity = chain_length + 16 } });
+    defer f.deinit();
+    var last = f.root;
+    for (0..chain_length) |index| {
+        const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(index + 2));
+        try dimensions(f.owner, node, 1, 1);
+        try f.owner.sceneMoveNode(node, f.root, @intCast(index));
+        try f.owner.sceneSetPositions(node, 3, .{ 1, 1, 0, 0 }, .{ 1, 0, 0, 0 });
+        if (index != 0) try f.owner.sceneSetPositionAnchor(node, last);
+        last = node;
+    }
+    try f.owner.sceneSetPaint(last, .{ .background = .{ 200, 0, 0, 255 } });
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    const expected = [2]f64{ @floatFromInt(chain_length), 0 };
+    const layout = try f.owner.sceneGetLayout(last, false);
+    const paint_layout = try f.owner.sceneGetPaintLayout(last);
+    try testing.expectEqual(expected, [2]f64{ layout.screenX, layout.screenY });
+    try testing.expectEqual(expected, [2]f64{ paint_layout.screenX, paint_layout.screenY });
+    try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(chain_length, 0).?.bg);
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    f.state.allocator = failing.allocator();
+    const painted = repaint(f.owner, f.id, frame_options.background, true, 0);
+    f.state.allocator = f.owner.allocator;
+    try painted;
+    try testing.expect(!failing.has_induced_failure);
+}
+
 test "Scene position anchor rejects cycles without changing accepted state" {
     const f = try Fixture.init(testing.allocator, 8, 2, .{});
     defer f.deinit();

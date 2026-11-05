@@ -192,6 +192,42 @@ describe("Renderable", () => {
 })
 
 describe("Renderable - positionAnchor", () => {
+  test("positions across branches and restores the requested layout mode", async () => {
+    testRenderer.root.flexDirection = "row"
+    const anchorBranch = new BoxRenderable(testRenderer, { width: 8, height: 6 })
+    const popupBranch = new BoxRenderable(testRenderer, { width: 8, height: 6 })
+    const anchor = new BoxRenderable(testRenderer, { width: 1, height: 1, left: 2, top: 1 })
+    const popup = new BoxRenderable(testRenderer, { width: 3, height: 1, left: 1, top: 2, positionAnchor: anchor })
+    const child = new BoxRenderable(testRenderer, { width: 1, height: 1 })
+    const sibling = new BoxRenderable(testRenderer, { width: 1, height: 1 })
+    testRenderer.root.add(anchorBranch)
+    testRenderer.root.add(popupBranch)
+    anchorBranch.add(anchor)
+    popupBranch.add(popup)
+    popupBranch.add(sibling)
+    popup.add(child)
+    await renderOnce()
+    expect([popup.x, popup.y, child.x, child.y, sibling.y]).toEqual([3, 3, 3, 3, 0])
+    expect(popup.parent).toBe(popupBranch)
+    popup.position = "absolute"
+    popup.position = "relative"
+    await renderOnce()
+    expect(popup.getPositionType()).toBe(PositionType.Absolute)
+    expect(sibling.y).toBe(0)
+    popup.positionAnchor = null
+    await renderOnce()
+    expect(popup.getPositionType()).toBe(PositionType.Relative)
+    expect([popup.x, popup.y, sibling.y]).toEqual([9, 2, 1])
+    popup.position = "absolute"
+    popup.positionAnchor = anchor
+    await renderOnce()
+    anchor.destroy()
+    await renderOnce()
+    expect(popup.positionAnchor).toBeNull()
+    expect(popup.getPositionType()).toBe(PositionType.Absolute)
+    expect(sibling.y).toBe(0)
+  })
+
   test("rejects anchor and reparenting cycles without changing relationships", () => {
     const first = new TestRenderable(testRenderer, {})
     const second = new TestRenderable(testRenderer, {})

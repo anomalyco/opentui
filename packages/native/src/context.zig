@@ -2358,14 +2358,16 @@ pub const Context = struct {
         // A scroll node's own padding holds its bar gutters.
         if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
         const target = if (content) scroll.?.content_node else node.yoga_node;
+        const anchored_position = !content and group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_POSITION_TYPE and node.scene_node.?.position_anchor != null;
         try yoga.check(switch (group) {
-            api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, @intFromFloat(value)),
+            api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, if (anchored_position) api.OT_POSITION_ABSOLUTE else @intFromFloat(value)),
             api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(target, kind, value),
             // Finite summed edges and gaps saturate so Yoga's f32 sums stay finite; NaN still unsets.
             api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(target, kind, edge, unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
+        if (anchored_position) node.scene_node.?.anchor_position_type = @intFromFloat(value);
         if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
             node.scene_node.?.owner.visibility_epoch +%= 1;
             // A shown child's refresh prepares its view although its layout did not change.
