@@ -52,6 +52,8 @@ typedef int32_t ot_status;
 #define OT_IMAGE_UNSUPPORTED_FEATURE (-INT32_C(46))
 #define OT_IMAGE_BUSY (-INT32_C(47))
 #define OT_VIDEO_FAILED (-INT32_C(60))
+#define OT_AUDIO_DECODE_FAILED (-INT32_C(61))
+#define OT_AUDIO_DEVICE_FAILED (-INT32_C(62))
 
 /* A context owns its native resources and I/O storage. Only its creating OS
  * thread may call its functions, including error queries and destruction.
@@ -1926,6 +1928,36 @@ ot_status ot_video_get_state(ot_context *, const ot_handle *node, ot_video_state
  * out_count. bytes may be NULL only for zero capacity. No terminating NUL is added. */
 ot_status ot_video_get_error(ot_context *, const ot_handle *node, uint8_t *bytes, uint32_t capacity,
     uint32_t *out_count);
+
+/* An audio engine decodes sounds into Context memory and mixes up to 32 voices at
+ * 48 kHz. ot_audio_create opens no device. ot_audio_start opens the default playback
+ * device, whose thread then mixes; that thread never calls the host, and writes silence
+ * while another call holds the engine. With OT_AUDIO_START_NO_DEVICE, the only accepted
+ * flag, the engine mixes only when ot_audio_mix asks, and nothing opens a device; while
+ * a device plays, it returns OT_INVALID_PHASE, so stop first to change modes.
+ * ot_audio_stop silences the engine and releases its device; ot_audio_start resumes.
+ * ot_audio_destroy and Context destruction stop the device, then free every sound.
+ * ot_audio_load copies and decodes WAV, MP3 or FLAC bytes. Sound IDs are nonzero and
+ * stay valid until the engine is destroyed. Voice IDs are nonzero; a voice ends when
+ * its sound ends or is stopped, and its ID never names a later voice. An ID that names
+ * no sound or playing voice, including 0, returns OT_STALE_HANDLE.
+ * volume is a gain from 0 to 4, 1 unchanged; others return OT_INVALID_ARGUMENT.
+ * More than 32 playing voices return OT_OBJECT_LIMIT. */
+#define OT_AUDIO_START_NO_DEVICE UINT32_C(1)
+ot_status ot_audio_create(ot_context *, ot_handle *out_engine);
+ot_status ot_audio_destroy(ot_context *, const ot_handle *engine);
+ot_status ot_audio_start(ot_context *, const ot_handle *engine, uint32_t flags);
+ot_status ot_audio_stop(ot_context *, const ot_handle *engine);
+ot_status ot_audio_load(ot_context *, const ot_handle *engine, const uint8_t *bytes, uint64_t byte_count,
+    uint32_t *out_sound);
+ot_status ot_audio_play(ot_context *, const ot_handle *engine, uint32_t sound, float volume, uint32_t *out_voice);
+ot_status ot_audio_stop_voice(ot_context *, const ot_handle *engine, uint32_t voice);
+ot_status ot_audio_set_volume(ot_context *, const ot_handle *engine, float volume);
+/* Writes frame_count frames of channels (1 or 2) interleaved samples: the mix after
+ * OT_AUDIO_START_NO_DEVICE, silence while stopped. Returns OT_INVALID_PHASE while a
+ * device plays. */
+ot_status ot_audio_mix(ot_context *, const ot_handle *engine, float *samples, uint32_t frame_count,
+    uint32_t channels);
 
 /* x/y and width/height count terminal cells. pixel_* and source_* count image
  * pixels. Absent source extents and reserved fields must be zero. Exact size and

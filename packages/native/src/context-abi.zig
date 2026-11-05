@@ -17,6 +17,7 @@ const input_transport = @import("context-input-abi.zig");
 const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
 const video_transport = @import("context-video-abi.zig");
+const audio_transport = @import("context-audio-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
 const utils = @import("utils.zig");
 
@@ -4952,6 +4953,7 @@ test "Context typed destroy exports reject other kinds and destroy their own onc
         .{ &ot_session_destroy, try core.createSession(.{}) },
         .{ &unicode_transport.ot_unicode_destroy, try core.createUnicode("a", .unicode) },
         .{ &terminal_transport.ot_embedded_terminal_destroy, try core.createEmbeddedTerminal(2, 1, 0) },
+        .{ &audio_transport.ot_audio_destroy, try core.createAudioEngine(null) },
     };
     const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
     inline for (cases) |case| {
@@ -5128,6 +5130,7 @@ const abi_modules = .{
     output_transport,
     image_transport,
     video_transport,
+    audio_transport,
     clipboard_transport,
 };
 

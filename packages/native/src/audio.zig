@@ -273,6 +273,8 @@ const Voice = struct {
     buffer_ready: bool = false,
     sound: c.ma_sound = undefined,
     sound_ready: bool = false,
+    // Bumped by each play and kept by clearVoice, so an ended voice's ID cannot name the next one.
+    generation: u32 = 0,
 };
 
 const StreamDataSource = extern struct {
@@ -1746,6 +1748,20 @@ fn streamSlotIndex(engine: *const Engine, stream_id: u32) ?usize {
     return slot_index;
 }
 
+// A voice ID is (generation << 6) | slot, with slot 1..max_voices.
+const voice_slot_bits = 6;
+const max_voice_generation: u32 = std.math.maxInt(u32) >> voice_slot_bits;
+comptime {
+    std.debug.assert(max_voices < 1 << voice_slot_bits);
+}
+
+pub fn voiceSlotIndex(engine: *const Engine, voice_id: u32) ?usize {
+    const slot = voice_id & ((1 << voice_slot_bits) - 1);
+    if (slot == 0 or slot > max_voices) return null;
+    if (engine.voices[slot - 1].generation != voice_id >> voice_slot_bits) return null;
+    return slot - 1;
+}
+
 fn getStream(engine: *Engine, stream_id: u32) ?*Stream {
     const slot_index = streamSlotIndex(engine, stream_id) orelse return null;
     return engine.streams[slot_index];
@@ -2263,20 +2279,20 @@ pub fn play(engine: *Engine, sound_id: u32, options_ptr: ?*const VoiceOptions, o
         return Status.err_device;
     }
 
-    out_voice_id.?.* = @intCast(free_index.? + 1);
+    // Generation 0 is never issued, so an all-zero voice ID stays invalid.
+    slot.generation = if (slot.generation == max_voice_generation) 1 else slot.generation + 1;
+    out_voice_id.?.* = (slot.generation << voice_slot_bits) | @as(u32, @intCast(free_index.? + 1));
     e.updateActiveVoiceCount();
     return Status.ok;
 }
 
 pub fn stopVoice(engine: *Engine, voice_id: u32) i32 {
-    if (voice_id == 0) return Status.err_invalid;
     const e = engine;
 
     e.lock.lockUncancelable(io);
     defer e.lock.unlock(io);
 
-    const idx: usize = @intCast(voice_id - 1);
-    if (idx >= e.voices.len) return Status.err_not_found;
+    const idx = voiceSlotIndex(e, voice_id) orelse return Status.err_not_found;
     if (!e.voices[idx].active) return Status.err_not_found;
 
     _ = c.ma_sound_stop(&e.voices[idx].sound);
@@ -2286,15 +2302,14 @@ pub fn stopVoice(engine: *Engine, voice_id: u32) i32 {
 }
 
 pub fn setVoiceGroup(engine: *Engine, voice_id: u32, group_id: u32) i32 {
-    if (voice_id == 0) return Status.err_invalid;
     const e = engine;
 
     e.lock.lockUncancelable(io);
     defer e.lock.unlock(io);
 
-    const voice_index: usize = @intCast(voice_id - 1);
     const group_index: usize = @intCast(group_id);
-    if (voice_index >= e.voices.len or group_index >= e.groups.items.len) return Status.err_invalid;
+    if (group_index >= e.groups.items.len) return Status.err_invalid;
+    const voice_index = voiceSlotIndex(e, voice_id) orelse return Status.err_not_found;
 
     const voice = &e.voices[voice_index];
     if (!voice.active or !voice.sound_ready or !voice.buffer_ready) return Status.err_not_found;
