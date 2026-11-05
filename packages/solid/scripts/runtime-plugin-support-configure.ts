@@ -23,6 +23,8 @@ export interface SolidRuntimePluginSupportOptions {
   core?: RuntimeModuleEntry
   preserve?: RuntimeSpecifierPreserve
   rewrite?: RuntimePluginRewriteOptions
+  /** Directories whose JSX files are transformed even inside node_modules; see `CreateSolidTransformPluginOptions.include`. */
+  include?: string[]
 }
 
 interface RuntimePluginSupportInstall {
@@ -102,10 +104,12 @@ export function ensureRuntimePluginSupport(options: SolidRuntimePluginSupportOpt
   const install = state[runtimePluginSupportInstalledKey]
   if (install) {
     assertCompatibleInstall(install, modules, options)
+    ensureSolidTransformPlugin({ include: options.include })
     return false
   }
 
   ensureSolidTransformPlugin({
+    include: options.include,
     moduleName: runtimeModuleIdForSpecifier("@opentui/solid"),
     resolvePath(specifier) {
       if (!isCoreRuntimeModuleSpecifier(specifier) && !modules[specifier]) {
