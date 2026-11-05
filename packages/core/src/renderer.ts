@@ -59,6 +59,7 @@ import {
 } from "./lib/terminal-palette.js"
 import { calculateRenderGeometry } from "./lib/render-geometry.js"
 import { stringWidth } from "./platform/runtime.js"
+import { measureEditText } from "./edit-buffer.js"
 import {
   isCapabilityResponse,
   isExplicitWidthReport,
@@ -2894,6 +2895,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let rowStart = 0
     let line = ""
     let cells = 0
+    const widthMethod = this.widthMethod
+    const widths = new Map<string, number>()
 
     for (const { segment } of graphemeSegmenter.segment(text)) {
       if (segment === "\r") {
@@ -2917,7 +2920,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // A tab advances to the next stop, as in a terminal, and stops at the last column.
       const tabCells = Math.min(STDOUT_TAB_WIDTH - (column % STDOUT_TAB_WIDTH), Math.max(0, width - 1 - column))
       const grapheme = segment === "\t" ? " ".repeat(tabCells) : segment
-      const graphemeCells = stringWidth(grapheme)
+      // Native lays the row out with the write's width method: one measure per distinct grapheme. Below U+00A0 (ASCII,
+      // and C1 controls that text hides) stringWidth agrees and skips the call, which would count controls as notation.
+      const graphemeCells = /[^\x00-\x9f]/.test(grapheme)
+        ? (widths.get(grapheme) ?? widths.set(grapheme, measureEditText(grapheme, { widthMethod })).get(grapheme)!)
+        : stringWidth(grapheme)
       if (column > 0 && column + graphemeCells > width) {
         // A grapheme that does not fit starts a terminal row; pad a wide one's skipped cell so native counts the row.
         const padding = Math.max(0, width - column)

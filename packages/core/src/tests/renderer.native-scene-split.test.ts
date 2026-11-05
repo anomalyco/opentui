@@ -482,11 +482,20 @@ test.each([
   expect(screen.join("\n").replace(/ +$/gm, "").trimEnd()).toBe((size ? rows : [...rows, "", "FFFFFFFFF"]).join("\n"))
 })
 
-// Each commit is "text:rowColumns", plus "\n" when it ends its line.
-test.each([
+// Each commit is "text:rowColumns", plus "\n" when it ends its line. The last column selects the width method.
+const wcwidth = { environment: { OPENTUI_FORCE_WCWIDTH: "1" } }
+const ghostty = { environment: { TERM_PROGRAM: "ghostty", TERM_PROGRAM_VERSION: "1.3.0" }, remote: false }
+test.each<[string, string | string[], string[], TestRendererOptions?]>([
   ["wraps ASCII at the width", "abcdefghijk\n", ["abcdefghi:9", "jk:2\n"]],
   ["wraps wide characters by display cells", "一二三四五\n", ["一二三四:9", "五:2\n"]],
   ["keeps emoji and grapheme clusters", "ok👍🏽 👩‍🚀 e\u0301\n", ["ok👍🏽 👩‍🚀 e\u0301:9\n"]],
+  ["keeps VS16 on a text base", "#\ufe0f1\ufe0f\u20e3B C\n", ["#\ufe0f1\ufe0f\u20e3B C:7\n"]],
+  ["counts a soft hyphen", "A\u00adB C\n", ["A\u00adB C:5\n"]],
+  ["hides C0 and C1 controls", "a\x07b\u0080\u009fc\n", ["abc:3\n"]],
+  ["counts a ZWJ family by code point under wcwidth", "A👨‍👩‍👧B\n", ["A👨‍👩‍👧B:8\n"], wcwidth],
+  ["counts a modifier and a mark under wcwidth", "A👍🏽e\u0301😀B\n", ["A👍🏽e\u0301😀B:9\n"], wcwidth],
+  ["keeps keycaps and VS16 narrow under wcwidth", "1️⃣1️⃣1️⃣1️⃣❤️一\n", ["1️⃣1️⃣1️⃣1️⃣❤️一:7\n"], wcwidth],
+  ["counts a conjunct as wide under unicode-wide", "A\u0915\u093fB C\n", ["A\u0915\u093fB C:6\n"], ghostty],
   ["expands tabs to 8-cell stops within the row", "a\tb\tc\n", ["a       b:9", "c:1\n"]],
   ["ends a line at CRLF", "one\r\ntwo\r\n", ["one:3\n", "two:3\n"]],
   ["restarts a wrapped line at CR", "0123456789%\r60%\n\n", ["60%:3\n", ":0\n"]],
@@ -496,9 +505,9 @@ test.each([
   ["counts tab stops from the row, not the write", ["a", "bc", "\tX\n"], ["a:1", "bc:2", "     X:6\n"]],
   ["stops a tab at the last column", "\t\tb\n", ["        b:9\n"]],
   ["keeps a wide character that wraps early", ["abc", "defgh一", "x\n"], ["abc:3", "defgh:6", "一:2", "x:1\n"]],
-])("captured stdout %s", async (_name, text, commits) => {
+])("captured stdout %s", async (_name, text, commits, options) => {
   const stdout = createTestStdout(9, 10)
-  const { renderer } = await setup({ width: 9, stdout })
+  const { renderer } = await setup({ width: 9, stdout, ...options })
   const written: string[] = []
   renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, ({ snapshot, rowColumns, trailingNewline }) => {
     expect(snapshot.width).toBe(Math.max(1, rowColumns))
