@@ -1,10 +1,20 @@
-import { Lexer, type MarkedToken } from "marked"
+import { Lexer, Marked, type MarkedOptions, type MarkedToken } from "marked"
 
 export interface ParseState {
   content: string
   tokens: MarkedToken[]
   stableTokenCount?: number
 }
+
+// A lone `~` usually marks an approximation or a numeric range (3~5, ~30%), so only double
+// tildes toggle strikethrough. Returning false keeps the default tokenizer for `~~text~~`,
+// while undefined skips the del rule so single tildes stay literal.
+export const markdownLexerOptions: MarkedOptions = new Marked({
+  gfm: true,
+  tokenizer: {
+    del: (src) => (src.startsWith("~~") ? false : undefined),
+  },
+}).defaults
 
 /**
  * Incrementally parse markdown, reusing unchanged tokens from previous parse.
@@ -24,7 +34,7 @@ export function parseMarkdownIncremental(
     return prevState
   if (!prevState || prevState.tokens.length === 0 || trailingUnstable === 0) {
     try {
-      const tokens = Lexer.lex(newContent, { gfm: true }) as MarkedToken[]
+      const tokens = Lexer.lex(newContent, markdownLexerOptions) as MarkedToken[]
       return {
         content: newContent,
         tokens,
@@ -61,7 +71,7 @@ export function parseMarkdownIncremental(
   const remainingContent = newContent.slice(offset)
 
   try {
-    const newTokens = Lexer.lex(remainingContent, { gfm: true }) as MarkedToken[]
+    const newTokens = Lexer.lex(remainingContent, markdownLexerOptions) as MarkedToken[]
     return {
       content: newContent,
       tokens: [...stableTokens, ...newTokens],
@@ -69,7 +79,7 @@ export function parseMarkdownIncremental(
     }
   } catch {
     try {
-      const fullTokens = Lexer.lex(newContent, { gfm: true }) as MarkedToken[]
+      const fullTokens = Lexer.lex(newContent, markdownLexerOptions) as MarkedToken[]
       return { content: newContent, tokens: fullTokens, stableTokenCount: 0 }
     } catch {
       return { content: newContent, tokens: [], stableTokenCount: 0 }
