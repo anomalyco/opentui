@@ -2351,7 +2351,7 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
  * must be zero. REPLY_SENTINEL ends the startup query packet with DA1 (CSI c),
  * also inside tmux, and sends no other DA1; the host waits for its reply instead
  * of a timer. A DA1 reply then also ends the startup cursor-report probes.
- * Frames are wrapped in synchronized output (DEC mode 2026) unless the terminal
+ * Frames that paint are wrapped in synchronized output (DEC mode 2026) unless the terminal
  * is remote and, once its replies passed the 2026 query (a width-probe report
  * or DA1), either did not report the mode or HOST_MULTIPLEXER is set: the host
  * runs inside tmux, screen or Zellij between the app and the link.
