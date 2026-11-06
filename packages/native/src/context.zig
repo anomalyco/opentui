@@ -2322,7 +2322,7 @@ pub const Context = struct {
         const node = try self.sceneNode(handle);
         const owner = node.scene_node.?.owner;
         for (node.scene_node.?.children.items) |child| try owner.prepareOmitted(&self.objects, child);
-        try owner.clearChildren(node);
+        owner.clearChildren(node);
     }
 
     pub fn sceneSetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32, unit: u32, value: f32, flags: u32) !void {

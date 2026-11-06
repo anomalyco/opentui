@@ -985,7 +985,7 @@ pub const Scene = struct {
             if (index != 0) return error.YogaInvalidArgument;
             if (node.parent) |old| {
                 const slot = childIndex(old.scene_node.?.children.items, value);
-                try yoga.check(yoga.yogaNodeRemoveChildAtChecked(old.scene_node.?.childYoga(old), value.yoga_node, slot));
+                yoga.yogaNodeRemoveChildAt(old.scene_node.?.childYoga(old), value.yoga_node, slot);
                 _ = old.scene_node.?.children.orderedRemove(slot);
                 self.detach(value, old);
             }
@@ -1019,10 +1019,10 @@ pub const Scene = struct {
     /// Detaches every child as `move(child, null, 0)` does, walking the lists once instead of
     /// searching and shifting them for each child. Like `remove`, it leaves a detached child's
     /// queued feedback and stale marks, which only an attached node reads; attaching sets them.
-    pub fn clearChildren(self: *Scene, value: *native.NativeRenderable) !void {
+    pub fn clearChildren(self: *Scene, value: *native.NativeRenderable) void {
         const node = value.scene_node.?;
         if (node.children.items.len == 0) return;
-        try yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node.childYoga(value)));
+        yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node.childYoga(value))) catch unreachable;
         var below: @Vector(3, u32) = @splat(0);
         for (node.children.items) |child| {
             const state = child.scene_node.?;
@@ -1173,7 +1173,7 @@ pub const Scene = struct {
         self.filter_count -= @intFromBool(node.filtersChildren());
         if (node.parent) |parent| {
             const index = childIndex(parent.scene_node.?.children.items, value);
-            yoga.check(yoga.yogaNodeRemoveChildAtChecked(parent.scene_node.?.childYoga(parent), value.yoga_node, index)) catch unreachable;
+            yoga.yogaNodeRemoveChildAt(parent.scene_node.?.childYoga(parent), value.yoga_node, index);
             _ = parent.scene_node.?.children.orderedRemove(index);
             self.detach(value, parent);
         }
