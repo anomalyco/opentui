@@ -2578,9 +2578,10 @@ pub const Context = struct {
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
-        try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         // The same bytes without styles to drop: a replacement would rebuild what is there.
+        // They passed validation when they were set, and scene text keeps its tab width.
         if (text.buffer.internal_highlight_count == 0 and holdsBytes(text, bytes)) return;
+        try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
         node.scene_node.?.paint_epoch = nextPaintEpoch();
         if (try self.replaceTextContent(text, bytes)) textResourceChanged(text) else textResent(node);
         node.scene_node.?.owner.clearPreparation();
@@ -3896,11 +3897,11 @@ pub const Context = struct {
     /// Replacements put the whole text in the `input_mem_id` slot. The rope holds exactly those
     /// bytes when it has no other slot and the byte counts agree. An append adds a slot. A clear
     /// leaves a stale slot and a flatten drops the slot's line breaks; both make the counts
-    /// differ whenever the slot is not the text.
+    /// differ whenever the slot is not the text. The rope counts a CRLF break as one byte.
     fn holdsBytes(text: anytype, bytes: []const u8) bool {
         const registry = &text.buffer.mem_registry;
         const current = registry.get(@as(?u8, text.input_mem_id) orelse return false).?;
-        return registry.buffers.items.len == 1 and text.buffer.getByteSize() == bytes.len and std.mem.eql(u8, current, bytes);
+        return registry.buffers.items.len == 1 and text.buffer.getByteSize() == bytes.len - std.mem.count(u8, bytes, "\r\n") and std.mem.eql(u8, current, bytes);
     }
 
     fn textResourceChanged(text: *Text) void {

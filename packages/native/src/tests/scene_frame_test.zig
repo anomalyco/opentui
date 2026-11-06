@@ -1274,14 +1274,16 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
     try f.owner.sceneSetTextView(node, view);
     try f.owner.sceneMoveNode(node, f.root, 1);
     const red: context.StyledTextChunk = .{ .byte_count = 3, .foreground = .{ 1, 0, 0, 1 } };
-    const Write = enum { none, scene_same, scene_styled_same, same, styled_same, batch_same, batch_new, defaults, highlight, syntax_style, scene_new, styled_new, tab_width, wrap_mode, clear, append, stale_slot };
+    const Write = enum { none, scene_same, scene_styled_same, same, styled_same, batch_same, batch_new, defaults, highlight, syntax_style, scene_new, styled_new, tab_width, wrap_mode, clear, append, stale_slot, scene_crlf, crlf };
     // `batch_new` and `scene_new` keep the byte count, so only the byte comparison sees the change.
     // After a clear or an append, the replacement slot still holds "c\tde" but the text does not.
+    // The rope stores a CRLF or CR break as one byte; equal bytes with them are still equal.
     const rows = [_]struct { Write, u64 }{
         .{ .none, 0 },       .{ .scene_same, 0 }, .{ .scene_styled_same, 0 }, .{ .same, 0 },       .{ .styled_same, 0 },
         .{ .batch_same, 0 }, .{ .batch_new, 1 },  .{ .defaults, 0 },          .{ .highlight, 0 },  .{ .syntax_style, 0 },
         .{ .scene_new, 1 },  .{ .styled_new, 1 }, .{ .tab_width, 1 },         .{ .wrap_mode, 1 },  .{ .clear, 1 },
-        .{ .append, 1 },     .{ .stale_slot, 1 }, .{ .clear, 1 },             .{ .stale_slot, 1 },
+        .{ .append, 1 },     .{ .stale_slot, 1 }, .{ .clear, 1 },             .{ .stale_slot, 1 }, .{ .scene_crlf, 1 },
+        .{ .scene_crlf, 0 }, .{ .crlf, 1 },       .{ .crlf, 0 },
     };
     _ = try presentWork(f, .{});
     var expected: [rows.len]u64 = undefined;
@@ -1308,6 +1310,8 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
             .clear => try f.owner.textBufferClear(text, false),
             .append => try f.owner.textBufferAppend(text, "wxyz"),
             .stale_slot => try f.owner.textBufferSetText(text, "c\tde"),
+            .scene_crlf => try f.owner.sceneSetText(label, "a\r\nb\rc"),
+            .crlf => try f.owner.textBufferSetText(text, "c\r\nd"),
         }
         expected[index] = row[1];
         actual[index] = (try presentWork(f, .{})).yoga_solves;
