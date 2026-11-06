@@ -349,6 +349,8 @@ pub const ANSI = struct {
     pub const decrqmColorScheme = "\x1b[?2031$p";
     pub const csiUQuery = "\x1b[?u";
     pub const xtgettcapMs = "\x1bP+q4d73\x1b\\";
+    // Two requests: xterm answers a combined one with a single 0+r when it lacks one name.
+    pub const xtgettcapTruecolor = "\x1bP+q524742\x1b\\\x1bP+q5463\x1b\\";
     pub const kittyGraphicsQuery = "\x1b_Gi=31337,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
     pub const notificationQueries = "\x1b]99;i=opentui-notifications:p=?;\x1b\\\x1b]1337;Capabilities\x1b\\";
     pub const programStatusQuery = "\x1b]7501;?\x1b\\";

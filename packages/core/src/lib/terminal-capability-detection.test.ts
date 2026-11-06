@@ -34,6 +34,10 @@ describe("capability reply classification", () => {
     ["\x1bP1+r544e=787465726d\x1b\\", false],
     ["\x1bP1+r4d73=abc\x1b\\", true],
     ["\x1bP1+r4d73=zz\x1b\\", true],
+    ["\x1bP1+r524742=382F382F38\x1b\\", true],
+    ["\x1bP1+r5463\x1b\\", true],
+    ["\x1bP0+r524742\x1b\\", true],
+    ["\x1bP0+r5463\x1b\\", true],
     ["\x1b_Gi=1;OK\x1b\\", true],
     ["\x1b_Gi=1;EINVAL:Zero width/height not allowed\x1b\\", true],
     ["\x1b[?62;c", true],
@@ -111,6 +115,8 @@ describe("renderer capabilities event", () => {
   // DA1, and a slow link after the 5 s startup window. Each one is applied, and an event comes only on a change.
   const replies = [
     "\x1b[?62;22c", // DA1 first, as a hop that answers it itself
+    "\x1bP1+r524742=38\x1b\\", // 24-bit color before the terminal's name
+    "\x1bP1+r5463\x1b\\",
     "\x1b[?1016;2$y",
     "\x1b[?2027;0$y",
     "\x1b[?2031;2$y",
@@ -124,7 +130,8 @@ describe("renderer capabilities event", () => {
 
   async function run(experimental_nativeInput: boolean, lateMs: number) {
     const clock = new ManualClock()
-    const { renderer } = await createTestRenderer({ clock, experimental_nativeInput })
+    const environment = { TERM: "xterm-256color" }
+    const { renderer } = await createTestRenderer({ clock, experimental_nativeInput, remote: true, environment })
     const events: string[] = []
     const keys: string[] = []
     let renders = 0
@@ -154,7 +161,7 @@ describe("renderer capabilities event", () => {
     await renderer.suspend()
     await renderer.resume()
     send([])
-    send(["\x1bP>|beta(1)\x1b\\", replies[7]])
+    send(["\x1bP>|beta(1)\x1b\\", replies[9]])
     const caps = renderer.capabilities!
     renderer.destroy()
     return { marks, events, keys, caps }
@@ -175,6 +182,7 @@ describe("renderer capabilities event", () => {
       }
       expect(late.caps).toMatchObject({ kitty_keyboard: true, kitty_graphics: true, sgr_pixels: true, sync: true })
       expect(late.caps.terminal).toEqual({ name: "kitty", version: "0.42.2", from_xtversion: true })
+      expect(JSON.parse(inside.events[0])).toMatchObject({ rgb: true, ansi256: true, terminal: { name: "" } })
       const typed = Array(replies.length * 2 + 2).fill("a")
       expect(inside.keys).toEqual(typed)
       expect(late.keys).toEqual(experimental_nativeInput ? ["\x1b[1;2R", "\x1b[1;5R", ...typed] : typed)

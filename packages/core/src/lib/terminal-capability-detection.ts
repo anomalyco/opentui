@@ -28,9 +28,9 @@ export function isCapabilityResponse(sequence: string): boolean {
     return true
   }
 
-  // XTGETTCAP Ms: consume replies to our query here; native parsing separately
+  // XTGETTCAP Ms, RGB and Tc: consume replies to our queries here; native parsing separately
   // validates whether a positive value is sufficient evidence of support.
-  if (/\x1bP(?:1\+r4d73(?:=[^\x1b]*)?|0\+r(?:4d73)?)\x1b\\/i.test(sequence)) {
+  if (/\x1bP(?:1\+r(?:4d73|524742|5463)(?:=[^\x1b]*)?|0\+r(?:4d73|524742|5463)?)\x1b\\/i.test(sequence)) {
     return true
   }
 
