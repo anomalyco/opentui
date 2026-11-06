@@ -1395,6 +1395,8 @@ const StaleReply = struct {
             return f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
         }
         if (self.destroy) return f.owner.sceneDestroyNode(self.target);
+        // An equal Display leaves the visibility stamps of this frame current.
+        try f.owner.sceneSetStyle(self.target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
         try f.owner.sceneSetTextOptions(self.target, .{ .truncate = self.truncate });
     }
 };
@@ -2401,6 +2403,7 @@ test "Scene frame work counts viewport refresh and culling work" {
                     .first, .unchanged, .hidden_unchanged => blk: {
                         // An equal Display on a shown row changes nothing.
                         if (frame == .hidden_unchanged) try f.owner.sceneSetStyle(rows[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                        if (frame == .hidden_unchanged) try f.owner.sceneSetStyle(rows[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
                         break :blk try presentWork(f, .{});
                     },
                     .scroll => blk: {
