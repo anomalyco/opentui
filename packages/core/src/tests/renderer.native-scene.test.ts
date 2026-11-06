@@ -2,6 +2,7 @@ import { afterEach, test } from "bun:test"
 import assert from "node:assert/strict"
 import { setImmediate } from "node:timers/promises"
 import { BoxRenderable } from "../renderables/Box.js"
+import type { Renderable } from "../Renderable.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderEvents } from "../renderer.js"
@@ -22,6 +23,31 @@ async function setup() {
   setups.push(target)
   return target
 }
+
+/** Asserts that `node` sits at (x, y) and owns the painted "P" and hit at that cell. */
+function assertMark(target: TestRendererSetup, node: Renderable, x: number, y: number) {
+  const [column, row] = [Math.trunc(x), Math.trunc(y)]
+  assert.deepEqual([node.x, node.y], [x, y])
+  assert.equal(target.captureCharFrame().split("\n")[row]![column], "P")
+  assert.equal(target.renderer.hitTest(column, row), node.num)
+}
+
+function assertNoFrameWork(target: TestRendererSetup) {
+  const work = target.renderer.getNativeStats().frameWork
+  assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
+}
+
+test("positionAnchor reports earlier staged failures before assigning", async () => {
+  const target = await setup()
+  const anchor = new BoxRenderable(target.renderer, { width: 1, height: 1 })
+  const popup = new BoxRenderable(target.renderer, { width: 1, height: 1 })
+  target.renderer.root.add(anchor)
+  target.renderer.root.add(popup)
+  target.renderer.nativeScene.flushStaged()
+  target.renderer.nativeScene.setStyle(popup, 9, 0, 0, 0, 0)
+  assert.throws(() => (popup.positionAnchor = anchor), /InvalidArgument after 0 of 1 staged entries/)
+  assert.equal(popup.positionAnchor, null)
+})
 
 test("positionAnchor suppresses hidden and detached anchor chains without clearing them", async () => {
   const target = await setup()
@@ -63,6 +89,7 @@ test("positionAnchor suppresses hidden and detached anchor chains without cleari
 
 test("positionAnchor follows scrolling without inheriting anchor clipping or changing paint order", async () => {
   const target = await setup()
+  let clicks = 0
   const scroll = new ScrollBoxRenderable(target.renderer, {
     position: "absolute",
     left: 3,
@@ -82,6 +109,8 @@ test("positionAnchor follows scrolling without inheriting anchor clipping or cha
     height: 1,
     content: "P",
     zIndex: 3,
+    selectable: false,
+    onMouseUp: () => clicks++,
   })
   const clip = new BoxRenderable(target.renderer, {
     position: "absolute",
@@ -114,14 +143,18 @@ test("positionAnchor follows scrolling without inheriting anchor clipping or cha
     scroll.scrollTo({ x: scrollX, y: scrollY })
     clip.left = clipX
     await target.renderOnce()
-    assert.deepEqual([popup.x, popup.y], [x, y])
-    assert.equal(target.captureCharFrame().split("\n")[y][x], "P")
-    assert.equal(target.renderer.hitTest(x, y), popup.num)
+    assertMark(target, popup, x, y)
     assert.equal(target.captureCharFrame().includes("C"), showClipped)
     assert.equal(target.renderer.hitTest(x, y - 1) === clipped.num, showClipped)
     assert.equal(popup.parent, target.renderer.root)
     assert.equal(clipped.parent, clip)
+    await target.mockMouse.click(x, y)
   }
+  assert.equal(clicks, 3)
+  Object.assign(content, { width: 8, height: 2 })
+  await target.renderOnce()
+  assert.deepEqual([scroll.scrollLeft, scroll.scrollTop], [0, 0])
+  assertMark(target, popup, 6, 3)
 })
 
 test("positionAnchor mutations in layout and paint hooks respect the frame boundary", async () => {
@@ -199,8 +232,7 @@ test("positionAnchor updates geometry, output, and hits in the current frame", a
   ] as const) {
     Object.assign(anchor, { left, translateX, width })
     await target.renderOnce()
-    assert.deepEqual([popup.x, popup.y], [expectedX, 1])
-    assert.equal(target.captureCharFrame().split("\n")[1].trimEnd(), " ".repeat(expectedX) + "P")
+    assertMark(target, popup, expectedX, 1)
     for (const column of [12, 13, 14, 15]) {
       assert.equal(target.renderer.hitTest(column, 1) === popup.num, column === expectedX)
     }
@@ -215,13 +247,10 @@ test("positionAnchor updates geometry, output, and hits in the current frame", a
   ]) {
     Object.assign(anchor, { width, height })
     await target.renderOnce()
-    assert.deepEqual([popup.x, popup.y], [x, y])
-    assert.equal(target.captureCharFrame().split("\n")[y].trimEnd(), " ".repeat(x) + "P")
-    assert.equal(target.renderer.hitTest(x, y), popup.num)
+    assertMark(target, popup, x, y)
     assert.notEqual(target.renderer.hitTest(x - 1, y), popup.num)
   }
-  const work = target.renderer.getNativeStats().frameWork
-  assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
+  assertNoFrameWork(target)
 })
 
 test("positionAnchor percentage insets preserve Yoga sizing and cell placement", async () => {
@@ -246,14 +275,11 @@ test("positionAnchor percentage insets preserve Yoga sizing and cell placement",
     popup.setPosition(insets)
     Object.assign(anchor, { width, height })
     await target.renderOnce()
-    assert.deepEqual([popup.x, popup.y, popup.width, popup.height], [x, y, 4, 1])
-    const [column, row] = [Math.trunc(x), Math.trunc(y)]
-    assert.equal(target.captureCharFrame().split("\n")[row][column], "P")
-    assert.equal(target.renderer.hitTest(column, row), popup.num)
+    assert.deepEqual([popup.width, popup.height], [4, 1])
+    assertMark(target, popup, x, y)
   }
   await target.renderOnce()
-  const work = target.renderer.getNativeStats().frameWork
-  assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
+  assertNoFrameWork(target)
 })
 
 test("anchor centering updates placement, output, and hits without Yoga solves", async () => {
@@ -279,11 +305,9 @@ test("anchor centering updates placement, output, and hits without Yoga solves",
   ).entries()) {
     Object.assign(popup, { anchorCenterX: centerX, anchorCenterY: centerY })
     await target.renderOnce()
-    assert.deepEqual([popup.x, popup.y, popup.anchorCenterY], [x, y, centerY ?? false])
+    assertMark(target, popup, x, y)
+    assert.equal(popup.anchorCenterY, centerY ?? false)
     if (index > 0) assert.equal(target.renderer.getNativeStats().frameWork.yogaSolves, 0)
-    const [column, row] = [Math.trunc(x), Math.trunc(y)]
-    assert.equal(target.captureCharFrame().split("\n")[row][column], "P")
-    assert.equal(target.renderer.hitTest(column, row), popup.num)
   }
   popup.anchorCenterY = true
   popup.top = 1
@@ -297,8 +321,7 @@ test("anchor centering updates placement, output, and hits without Yoga solves",
   await target.renderOnce()
   assert.deepEqual([popup.x, popup.y], [4.5, 1.5])
   await target.renderOnce()
-  const work = target.renderer.getNativeStats().frameWork
-  assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
+  assertNoFrameWork(target)
 })
 
 test("renderOnce completes when an active live frame stops after failure", async () => {

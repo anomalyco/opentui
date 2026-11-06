@@ -238,6 +238,7 @@ export class NativeScene {
   }
 
   setPositionAnchor(renderable: Renderable, anchor: Renderable | null): void {
+    this.flushStaged()
     this.driver.renderLib.sceneSetPositionAnchor(
       this.driver.context,
       renderable._getSceneHandle(this),

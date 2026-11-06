@@ -129,7 +129,7 @@ export interface Position {
 const positionKeys = ["left", "top", "right", "bottom"] as const
 
 function isAnchorInset(value: unknown): value is VerticalAnchorEdge | HorizontalAnchorEdge {
-  return positionKeys.some((key) => key === value)
+  return (positionKeys as readonly unknown[]).includes(value)
 }
 
 export interface BaseRenderableOptions {
@@ -435,7 +435,7 @@ export abstract class Renderable extends BaseRenderable {
       this.publishHooks(hooks)
       this.setDisplay(this._visible ? Display.Flex : Display.None)
       this.setupYogaProperties(options)
-      this.positionAnchor = options.positionAnchor
+      if (options.positionAnchor != null) this.positionAnchor = options.positionAnchor
       if (options.anchorCenterX !== undefined) this.anchorCenterX = options.anchorCenterX
       if (options.anchorCenterY !== undefined) this.anchorCenterY = options.anchorCenterY
       if (this.nativeIntegration.measure) this.setMeasureFunc(this.nativeIntegration.measure.bind(this))
@@ -1378,7 +1378,7 @@ export abstract class Renderable extends BaseRenderable {
           throw new Error("Renderable is destroyed or freed")
         }
         if (positionAnchor.ctx.nativeScene !== this._ctx.nativeScene) {
-          throw new Error("invalid positionAnchor")
+          throw new Error("positionAnchor must belong to the same renderer")
         }
       }
       this._ctx.nativeScene.setPositionAnchor(this, positionAnchor)

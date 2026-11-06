@@ -690,7 +690,9 @@ ot_status ot_scene_create_node(ot_context *, const ot_handle *session, uint32_t 
 ot_status ot_scene_destroy_node(ot_context *, const ot_handle *node);
 ot_status ot_scene_move_node(ot_context *, const ot_handle *node, const ot_handle *parent, uint32_t index);
 /* Same-scene positioning dependency, independent of parentage and paint order.
- * Anchored nodes use absolute Yoga layout and numeric left/top offsets from the target's top-left.
+ * Anchored nodes use absolute Yoga layout; insets resolve against the target's outer box. 
+ * Per axis the leading inset wins, then the trailing inset, then ANCHOR_CENTER_X/Y, then the target's leading edge.
+ * Scene layout offsets of an anchored node are measured from the target's outer box.
  * NULL clears and restores the last requested position type. Cycles reject without changing accepted state.
  * Handle buffers are borrowed only for this call. Destroying a target clears its dependents. */
 ot_status ot_scene_set_position_anchor(ot_context *, const ot_handle *node, const ot_handle *anchor);

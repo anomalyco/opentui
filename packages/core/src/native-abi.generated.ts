@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 9756dd3bcd7db22af182aabf11c3b7f4c4f769df34d049d4579f3626009d0f92
+// ABI audit SHA-256: b0e4e5bd7844f2a66095f267de49a344de6ed77f03bf82e5583095c4269541f3
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1635,6 +1635,8 @@ export const nativeConstants = {
   OT_STYLE_ENUM_OVERFLOW: 8,
   OT_STYLE_ENUM_DISPLAY: 9,
   OT_STYLE_ENUM_BOX_SIZING: 10,
+  OT_STYLE_ENUM_ANCHOR_CENTER_X: 11,
+  OT_STYLE_ENUM_ANCHOR_CENTER_Y: 12,
   OT_STYLE_FLOAT_FLEX: 0,
   OT_STYLE_FLOAT_FLEX_GROW: 1,
   OT_STYLE_FLOAT_FLEX_SHRINK: 2,
@@ -1719,6 +1721,8 @@ export const nativeConstants = {
   OT_STYLE_ENUM_OVERFLOW_MAX: 2,
   OT_STYLE_ENUM_DISPLAY_MAX: 1,
   OT_STYLE_ENUM_BOX_SIZING_MAX: 1,
+  OT_STYLE_ENUM_ANCHOR_CENTER_X_MAX: 1,
+  OT_STYLE_ENUM_ANCHOR_CENTER_Y_MAX: 1,
   OT_MEASURE_UNDEFINED: 0,
   OT_MEASURE_EXACTLY: 1,
   OT_MEASURE_AT_MOST: 2,

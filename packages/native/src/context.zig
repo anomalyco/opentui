@@ -2381,9 +2381,10 @@ pub const Context = struct {
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
-        if (position and edge <= api.OT_EDGE_BOTTOM and node.scene_node.?.anchor_insets[edge] != inset_unit) {
-            node.scene_node.?.anchor_insets[edge] = inset_unit;
-            node.scene_node.?.owner.invalidateGeometry(node);
+        if (position and edge <= api.OT_EDGE_BOTTOM) {
+            var insets = node.scene_node.?.anchor_insets;
+            insets[edge] = inset_unit;
+            node.scene_node.?.owner.setAnchorInsets(node, insets);
         }
         if (anchored_position) node.scene_node.?.anchor_position_type = @intFromFloat(value);
         if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
@@ -2418,6 +2419,12 @@ pub const Context = struct {
             api.OT_STYLE_FLOAT => try yoga.check(yoga.yogaNodeStyleGetFloatChecked(node.yoga_node, kind, &result.value)),
             api.OT_STYLE_VALUE, api.OT_STYLE_DIMENSION => {
                 if (group == api.OT_STYLE_DIMENSION and kind > api.OT_DIMENSION_HEIGHT) return error.InvalidOptions;
+                if (group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_POSITION and edge <= api.OT_EDGE_BOTTOM and
+                    node.scene_node.?.anchor_insets[edge] != 0)
+                {
+                    result.unit = node.scene_node.?.anchor_insets[edge];
+                    return result;
+                }
                 var encoded: u64 = 0;
                 try yoga.check(yoga.yogaNodeStyleGetValueChecked(node.yoga_node, kind, edge, &encoded));
                 result.unit = @truncate(encoded);
@@ -2445,10 +2452,7 @@ pub const Context = struct {
             if (inset.* != 0) yoga_unit.* = api.OT_UNIT_UNDEFINED;
         }
         try yoga.check(yoga.yogaNodeStyleSetPositionsChecked(node.yoga_node, mask, &yoga_units, &values));
-        if (!std.meta.eql(insets, node.scene_node.?.anchor_insets)) {
-            node.scene_node.?.anchor_insets = insets;
-            node.scene_node.?.owner.invalidateGeometry(node);
-        }
+        node.scene_node.?.owner.setAnchorInsets(node, insets);
     }
 
     pub fn sceneSetPaint(self: *Context, handle: Handle, paint: scene.Paint) !void {

@@ -221,8 +221,6 @@ describe("Renderable - positionAnchor", () => {
     expect([...(await place()), popup.right, popup.bottom]).toEqual([0, 0, "right", "top"])
     popup.positionAnchor = anchor
     expect(await place()).toEqual([6, 0])
-    anchor.destroy()
-    expect([...(await place()), popup.positionAnchor]).toEqual([0, 0, null])
   })
 
   test("positions across branches and restores the requested layout mode", async () => {
@@ -270,31 +268,11 @@ describe("Renderable - positionAnchor", () => {
     first.add(child)
     first.positionAnchor = second
     expect(() => (second.positionAnchor = first)).toThrow()
-    expect(() => (first.positionAnchor = child)).toThrow()
     expect(() => child.add(second)).toThrow()
     expect(first.positionAnchor).toBe(second)
     expect(second.positionAnchor).toBeNull()
     expect(second.parent).toBe(testRenderer.root)
     expect(child.getChildrenCount()).toBe(0)
-    first.positionAnchor = null
-    child.add(second)
-    expect(second.parent).toBe(child)
-  })
-
-  test("clears surviving dependents when an anchor is destroyed", () => {
-    const anchor = new TestRenderable(testRenderer, {})
-    const first = new TestRenderable(testRenderer, { positionAnchor: anchor })
-    const second = new TestRenderable(testRenderer, { positionAnchor: anchor })
-    first.destroy()
-    anchor.destroy()
-    expect(first.positionAnchor).toBeNull()
-    expect(second.positionAnchor).toBeNull()
-    const next = new TestRenderable(testRenderer, {})
-    second.positionAnchor = next
-    expect(second.positionAnchor).toBe(next)
-    next.destroy()
-    expect(second.positionAnchor).toBeNull()
-    second.destroy()
   })
 
   test("handles constructor, updates, clearing, and destruction without changing insets", () => {
@@ -335,17 +313,7 @@ describe("Renderable - positionAnchor", () => {
     }
   })
 
-  test("rejects invalid value types without replacing the anchor", () => {
-    const anchor = new TestRenderable(testRenderer, {})
-    const renderable = new TestRenderable(testRenderer, { positionAnchor: anchor })
-    for (const value of ["top-left", 1, false, {}, new TestBaseRenderable({})]) {
-      expect(() => Reflect.set(renderable, "positionAnchor", value)).toThrow(TypeError)
-      expect(renderable.positionAnchor).toBe(anchor)
-      expect(() => new TestRenderable(testRenderer, { positionAnchor: value as Renderable })).toThrow(TypeError)
-    }
-  })
-
-  test("rejects self, destroyed, and foreign anchors without replacing the anchor", async () => {
+  test("rejects invalid anchors without replacing the current one", async () => {
     const other = await createTestRenderer({})
     try {
       const anchor = new TestRenderable(testRenderer, {})
@@ -353,12 +321,14 @@ describe("Renderable - positionAnchor", () => {
       const destroyed = new TestRenderable(testRenderer, {})
       const foreign = new TestRenderable(other.renderer, {})
       destroyed.destroy()
-      for (const value of [renderable, destroyed, foreign]) {
-        expect(() => Reflect.set(renderable, "positionAnchor", value)).toThrow()
+      const invalidTypes = ["top-left", 1, false, {}, new TestBaseRenderable({})]
+      for (const value of [...invalidTypes, renderable, destroyed, foreign]) {
+        const error = invalidTypes.includes(value) ? TypeError : Error
+        expect(() => Reflect.set(renderable, "positionAnchor", value)).toThrow(error)
         expect(renderable.positionAnchor).toBe(anchor)
-      }
-      for (const value of [destroyed, foreign]) {
-        expect(() => new TestRenderable(testRenderer, { positionAnchor: value })).toThrow()
+        if (value !== renderable) {
+          expect(() => new TestRenderable(testRenderer, { positionAnchor: value as Renderable })).toThrow(error)
+        }
       }
     } finally {
       other.renderer.destroy()

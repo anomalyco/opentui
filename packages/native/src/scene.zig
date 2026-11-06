@@ -1051,7 +1051,6 @@ pub const Scene = struct {
     fn unlinkPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
         const node = value.scene_node.?;
         const anchor = node.position_anchor orelse return;
-        node.geometry_epoch = 0;
         if (node.anchor_previous) |previous| {
             previous.scene_node.?.anchor_next = node.anchor_next;
         } else anchor.scene_node.?.anchor_dependents = node.anchor_next;
@@ -1217,13 +1216,8 @@ pub const Scene = struct {
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
         const node = value.scene_node.?;
         self.unlinkPositionAnchor(value);
-        while (node.anchor_dependents) |dependent| {
-            if (dependent.scene_node.?.anchor_position_type) |original| {
-                _ = yoga.yogaNodeStyleSetEnumChecked(dependent.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, original);
-            }
-            self.unlinkPositionAnchor(dependent);
-            self.invalidateGeometry(dependent);
-        }
+        // Restoring a position type read back from Yoga cannot fail.
+        while (node.anchor_dependents) |dependent| self.setPositionAnchor(dependent, null) catch unreachable;
         node.control.deinit(node.kind, self.allocator);
         if (node.culling.index) |index| {
             index.entries.deinit(self.allocator);
@@ -1764,6 +1758,14 @@ pub const Scene = struct {
         self.selection_epoch +%= 1;
         if (node.parent) |parent| staleCull(parent);
         self.invalidateObservation(value);
+    }
+
+    /// Stores validated anchor inset units after Yoga accepted the matching position values.
+    pub fn setAnchorInsets(self: *Scene, value: *native.NativeRenderable, insets: [4]u8) void {
+        const node = value.scene_node.?;
+        if (std.meta.eql(node.anchor_insets, insets)) return;
+        node.anchor_insets = insets;
+        self.invalidateGeometry(value);
     }
 
     pub fn invalidateObservation(self: *Scene, value: *native.NativeRenderable) void {
@@ -3804,6 +3806,7 @@ pub fn anchorInsetUnit(edge: u32, unit: u32) !u8 {
 
 fn anchorInset(value: *const native.NativeRenderable, edge: u32, anchor_size: f32, trailing: bool) !?f32 {
     const unit = value.scene_node.?.anchor_insets[edge];
+    // Anchor units order left, top, right, bottom: right and bottom resolve to the far edge.
     if (unit != 0) return if (unit >= api.OT_UNIT_ANCHOR_RIGHT) anchor_size else 0;
     var encoded: u64 = 0;
     try yoga.check(yoga.yogaNodeStyleGetValueChecked(value.yoga_node, api.OT_STYLE_VALUE_POSITION, edge, &encoded));
@@ -3839,6 +3842,8 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
         }
         layout.left = offsets[0];
         layout.top = offsets[1];
+        layout.right = anchor_layout.width - offsets[0] - layout.width;
+        layout.bottom = anchor_layout.height - offsets[1] - layout.height;
     }
     return layout;
 }
