@@ -2571,11 +2571,14 @@ pub const Context = struct {
     pub fn sceneSetText(self: *Context, handle: Handle, bytes: []const u8) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.scenePaintNode(handle);
+        const node = try self.sceneMutableNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
+        // The same bytes without styles to drop: a replacement would rebuild what is there.
+        if (text.buffer.internal_highlight_count == 0 and holdsBytes(text, bytes)) return;
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
         if (try self.replaceTextContent(text, bytes)) textResourceChanged(text) else textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
