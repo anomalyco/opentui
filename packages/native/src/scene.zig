@@ -3830,15 +3830,19 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
         var anchor_layout: yoga.ExternalYogaLayout = undefined;
         try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(anchor.yoga_node, &anchor_layout));
         var offsets: [2]f32 = .{ 0, 0 };
+        const margin_kind = 0; // otYogaNodeLayoutGetEdge kinds: 0 margin, 1 padding, 2 border.
         for (&offsets, [_]f32{ anchor_layout.width, anchor_layout.height }, [_]f32{ layout.width, layout.height }, 0..) |*offset, anchor_size, size, axis| {
             const edge: u32 = @intCast(axis);
+            var margin: f32 = 0;
+            try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(value.yoga_node, margin_kind, edge, &margin));
             if (try anchorInset(value, edge, anchor_size, false)) |inset| {
-                offset.* = inset;
+                offset.* = inset + margin;
             } else if (try anchorInset(value, edge + 2, anchor_size, true)) |inset| {
-                offset.* = inset - size;
+                try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(value.yoga_node, margin_kind, edge + 2, &margin));
+                offset.* = inset - size - margin;
             } else if (node.anchor_center[axis]) {
-                offset.* = (anchor_size - size) / 2;
-            }
+                offset.* = (anchor_size - size) / 2 + margin;
+            } else offset.* = margin;
         }
         layout.left = offsets[0];
         layout.top = offsets[1];

@@ -92,6 +92,28 @@ test "Scene position anchor resolves numeric offsets outside flex flow" {
     try testing.expectEqual(@as(f64, 1), (try f.owner.sceneGetLayout(sibling, false)).screenY);
 }
 
+test "Scene position anchor applies resolved margins to leading trailing centered and default offsets" {
+    const f = try Fixture.init(testing.allocator, 20, 8, .{});
+    defer f.deinit();
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 6, 3);
+    try dimensions(f.owner, popup, 2, 1);
+    for ([_]f32{ 3, 1, 2, 1 }, 0..) |margin, edge| {
+        try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_MARGIN, @intCast(edge), c.OT_UNIT_POINT, margin, 0);
+    }
+    try f.owner.sceneSetPositions(popup, 15, .{ 1, 1, 0, 0 }, .{ 0, 0, 0, 0 });
+    try expectScreen(f, popup, .{ 5, 2 });
+    try f.owner.sceneSetPositions(popup, 15, .{ 0, 0, 1, 1 }, .{ 0, 0, 1, 0 });
+    try expectScreen(f, popup, .{ 3, 2 });
+    try f.owner.sceneSetPositions(popup, 15, .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 });
+    try expectScreen(f, popup, .{ 5, 2 });
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 1, 0);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_Y, 0, 0, 1, 0);
+    try expectScreen(f, popup, .{ 7, 3 });
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_MARGIN, c.OT_EDGE_LEFT, c.OT_UNIT_PERCENT, 10, 0);
+    try expectScreen(f, popup, .{ 6, 3 });
+}
+
 test "Scene position anchor resolves edge keywords and trailing insets" {
     const f = try Fixture.init(testing.allocator, 20, 6, .{});
     defer f.deinit();

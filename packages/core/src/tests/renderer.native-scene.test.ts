@@ -37,6 +37,27 @@ function assertNoFrameWork(target: TestRendererSetup) {
   assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
 }
 
+test("positionAnchor includes margins in geometry paint and hits", async () => {
+  const target = await setup()
+  const anchor = new BoxRenderable(target.renderer, { position: "absolute", left: 4, top: 1, width: 2, height: 1 })
+  const popup = new TextRenderable(target.renderer, {
+    positionAnchor: anchor,
+    left: 0,
+    top: 0,
+    marginLeft: 3,
+    marginTop: 1,
+    width: 1,
+    height: 1,
+    content: "P",
+  })
+  target.renderer.root.add(anchor)
+  target.renderer.root.add(popup)
+  await target.renderOnce()
+  assertMark(target, popup, 7, 2)
+  await target.renderOnce()
+  assertNoFrameWork(target)
+})
+
 test("positionAnchor reports earlier staged failures before assigning", async () => {
   const target = await setup()
   const anchor = new BoxRenderable(target.renderer, { width: 1, height: 1 })
