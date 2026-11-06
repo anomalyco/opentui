@@ -510,6 +510,7 @@ pub const Node = struct {
     anchor_position_type: ?u32 = null,
     anchor_insets: [4]u8 = .{ 0, 0, 0, 0 },
     anchor_center: [2]bool = .{ false, false },
+    anchor_visibility: ?struct { epoch: u64, visible: bool } = null,
     // Head nodes anchored to this one, linked through anchor_previous/anchor_next.
     anchor_dependents: ?*native.NativeRenderable = null,
     anchor_previous: ?*native.NativeRenderable = null,
@@ -1090,6 +1091,7 @@ pub const Scene = struct {
             anchor.scene_node.?.anchor_dependents = value;
             self.anchor_count += 1;
         }
+        self.visibility_epoch +%= 1;
         self.invalidateGeometry(value);
     }
 
@@ -2295,12 +2297,56 @@ pub const Scene = struct {
         return result;
     }
 
+    fn anchorsVisible(self: *Scene, value: *const native.NativeRenderable) !bool {
+        const stack = self.composition_ancestors.allocatedSlice();
+        stack[0] = value;
+        var count: usize = 1;
+        while (count != 0) {
+            const current = stack[count - 1];
+            const node = current.scene_node.?;
+            if (node.anchor_visibility) |cached| if (cached.epoch == self.visibility_epoch) {
+                count -= 1;
+                continue;
+            };
+            self.frame_work.visibility_steps += 1;
+            var display: u32 = 0;
+            try yoga.check(yoga.yogaNodeStyleGetEnumChecked(current.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
+            var visible = display != api.OT_DISPLAY_NONE and (node.parent != null or current == self.root);
+            var pending: ?*native.NativeRenderable = null;
+            if (visible) for ([_]?*native.NativeRenderable{ node.parent, node.position_anchor }) |dependency| {
+                if (dependency) |target| {
+                    if (target.scene_node.?.anchor_visibility) |cached| {
+                        if (cached.epoch == self.visibility_epoch) {
+                            if (!cached.visible) {
+                                visible = false;
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                    pending = target;
+                    break;
+                }
+            };
+            if (pending) |target| {
+                if (count == stack.len) return error.YogaDepthLimit;
+                stack[count] = target;
+                count += 1;
+            } else {
+                node.anchor_visibility = .{ .epoch = self.visibility_epoch, .visible = visible };
+                count -= 1;
+            }
+        }
+        return value.scene_node.?.anchor_visibility.?.visible;
+    }
+
     fn isVisibleMember(self: *Scene, value: *native.NativeRenderable) !bool {
         const node = value.scene_node.?;
         const active = self.attempt.?;
         // Preparation enters only visible nodes, so its stamp answers until a display or ancestry change.
         if (node.prepared_gen == self.candidates_gen and active.visibility_epoch == self.visibility_epoch and
             !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
+        if (self.anchor_count != 0) return self.anchorsVisible(value);
         var cursor: ?*native.NativeRenderable = value;
         var depth: u32 = 0;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
@@ -3445,6 +3491,10 @@ pub const Scene = struct {
                     node.layout_flags.display_none = display == api.OT_DISPLAY_NONE;
                 }
                 const visible = !node.layout_flags.display_none;
+                if (node.position_anchor) |anchor| if (!try self.anchorsVisible(anchor)) {
+                    depth -= 1;
+                    continue;
+                };
                 const filtered_child = if (node.parent) |parent| parent.scene_node.?.filtersChildren() else false;
                 if (!visible and (mode == .paint or (!node.layout_flags.needs_layout and !filtered_child))) {
                     depth -= 1;

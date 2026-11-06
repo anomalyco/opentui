@@ -2,6 +2,7 @@ import { afterEach, test } from "bun:test"
 import assert from "node:assert/strict"
 import { setImmediate } from "node:timers/promises"
 import { BoxRenderable } from "../renderables/Box.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -21,6 +22,150 @@ async function setup() {
   setups.push(target)
   return target
 }
+
+test("positionAnchor suppresses hidden and detached anchor chains without clearing them", async () => {
+  const target = await setup()
+  const branch = new BoxRenderable(target.renderer, { position: "absolute", left: 2, top: 1, width: 8, height: 2 })
+  const anchor = new BoxRenderable(target.renderer, { width: 1, height: 1 })
+  const middle = new BoxRenderable(target.renderer, { positionAnchor: anchor, left: 1, width: 2, height: 1 })
+  const popup = new TextRenderable(target.renderer, {
+    positionAnchor: middle,
+    left: 1,
+    width: 1,
+    height: 1,
+    content: "P",
+    zIndex: 1,
+  })
+  branch.add(anchor)
+  target.renderer.root.add(popup)
+  target.renderer.root.add(middle)
+  target.renderer.root.add(branch)
+  const attach = (node: BoxRenderable, shown: boolean) =>
+    shown ? target.renderer.root.add(node) : target.renderer.root.remove(node)
+  const toggles = [
+    (shown: boolean) => (branch.visible = shown),
+    (shown: boolean) => attach(branch, shown),
+    (shown: boolean) => (anchor.visible = shown),
+    (shown: boolean) => attach(middle, shown),
+  ]
+  for (const toggle of toggles)
+    for (const shown of [false, true]) {
+      toggle(shown)
+      await target.renderOnce()
+      assert.equal(target.captureCharFrame().includes("P"), shown)
+      assert.equal(target.renderer.hitTest(4, 1) === popup.num, shown)
+      assert.deepEqual(
+        [popup.positionAnchor, middle.positionAnchor, popup.parent],
+        [middle, anchor, target.renderer.root],
+      )
+    }
+})
+
+test("positionAnchor follows scrolling without inheriting anchor clipping or changing paint order", async () => {
+  const target = await setup()
+  const scroll = new ScrollBoxRenderable(target.renderer, {
+    position: "absolute",
+    left: 3,
+    top: 1,
+    width: 8,
+    height: 2,
+    scrollX: true,
+    scrollbarOptions: { visible: false },
+  })
+  const content = new BoxRenderable(target.renderer, { width: 20, height: 10, flexShrink: 0 })
+  const anchor = new BoxRenderable(target.renderer, { position: "absolute", left: 2, top: 1, width: 1, height: 1 })
+  const popup = new TextRenderable(target.renderer, {
+    positionAnchor: anchor,
+    left: "right",
+    top: "bottom",
+    width: 1,
+    height: 1,
+    content: "P",
+    zIndex: 3,
+  })
+  const clip = new BoxRenderable(target.renderer, {
+    position: "absolute",
+    left: 8,
+    top: 1,
+    width: 2,
+    height: 2,
+    overflow: "hidden",
+    zIndex: 2,
+  })
+  const clipped = new TextRenderable(target.renderer, {
+    positionAnchor: anchor,
+    left: "right",
+    top: "top",
+    width: 1,
+    height: 1,
+    content: "C",
+  })
+  content.add(anchor)
+  scroll.add(content)
+  clip.add(clipped)
+  target.renderer.root.add(popup)
+  target.renderer.root.add(scroll)
+  target.renderer.root.add(clip)
+  for (const [scrollX, scrollY, clipX, x, y, showClipped] of [
+    [0, 0, 8, 6, 3, false],
+    [1, 1, 5, 5, 2, true],
+    [3, 2, 5, 3, 1, false],
+  ] as const) {
+    scroll.scrollTo({ x: scrollX, y: scrollY })
+    clip.left = clipX
+    await target.renderOnce()
+    assert.deepEqual([popup.x, popup.y], [x, y])
+    assert.equal(target.captureCharFrame().split("\n")[y][x], "P")
+    assert.equal(target.renderer.hitTest(x, y), popup.num)
+    assert.equal(target.captureCharFrame().includes("C"), showClipped)
+    assert.equal(target.renderer.hitTest(x, y - 1) === clipped.num, showClipped)
+    assert.equal(popup.parent, target.renderer.root)
+    assert.equal(clipped.parent, clip)
+  }
+})
+
+test("positionAnchor mutations in layout and paint hooks respect the frame boundary", async () => {
+  const target = await setup()
+  const first = new BoxRenderable(target.renderer, { position: "absolute", left: 2, top: 1, width: 1, height: 1 })
+  const second = new BoxRenderable(target.renderer, { position: "absolute", left: 8, top: 1, width: 1, height: 1 })
+  const popup = new BoxRenderable(target.renderer, {
+    positionAnchor: first,
+    left: "right",
+    width: 1,
+    height: 1,
+    zIndex: 1,
+    renderBefore() {
+      this.positionAnchor = first
+    },
+  })
+  const mark = new TextRenderable(target.renderer, { content: "P", width: 1, height: 1 })
+  popup.add(mark)
+  let layouts = 0
+  target.renderer.root.on("layout-changed", () => {
+    layouts++
+    popup.positionAnchor = second
+  })
+  target.renderer.root.add(popup)
+  target.renderer.root.add(first)
+  target.renderer.root.add(second)
+  for (const x of [9, 3]) {
+    await target.renderOnce()
+    assert.equal(target.captureCharFrame().split("\n")[1].trimEnd(), " ".repeat(x) + "P")
+    for (const column of [3, 9]) assert.equal(target.renderer.hitTest(column, 1) === mark.num, column === x)
+    assert.equal(popup.positionAnchor?.num, first.num)
+  }
+  assert.equal(layouts, 1)
+  popup.positionAnchor = second
+  popup.renderBefore = () => {
+    second.visible = false
+  }
+  await target.renderOnce()
+  assert.equal(target.captureCharFrame().split("\n")[1][9], "P")
+  assert.equal(target.renderer.hitTest(9, 1), mark.num)
+  await target.renderOnce()
+  assert.equal(target.captureCharFrame().includes("P"), false)
+  assert.notEqual(target.renderer.hitTest(9, 1), mark.num)
+})
 
 test("ordinary renderer defaults to native scene ownership and presentation", async () => {
   const target = await setup()
