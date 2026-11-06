@@ -1314,7 +1314,7 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
 // A reply changes the visibility of a member whose feedback already started. The visibility
 // stamp must give way to the walk: no request may reach a node the reply hid.
 test "Scene feedback visibility follows replies that hide, detach, or move a started member" {
-    for (std.enums.values(enum { hide_parent, detach, into_hidden, hide_root, queued_sibling })) |reply| {
+    for (std.enums.values(enum { hide_parent, detach, into_hidden, hide_root, queued_sibling, clear })) |reply| {
         const f = try Fixture.init(testing.allocator, 8, 4, .{});
         defer f.deinit();
         const hidden = try f.owner.sceneCreateNode(f.id, 1, 9);
@@ -1328,9 +1328,9 @@ test "Scene feedback visibility follows replies that hide, detach, or move a sta
         try f.owner.sceneMoveNode(child, parent, 0);
         try f.owner.sceneSetHooks(parent, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
         try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
-        // A later sibling whose update is queued when the reply moves it drops that update.
+        // A later sibling whose update is queued when the reply moves or clears it drops that update.
         const sibling = try f.owner.sceneCreateNode(f.id, 1, 5);
-        if (reply == .queued_sibling) try f.owner.sceneMoveNode(sibling, holder, 1);
+        if (reply == .queued_sibling or reply == .clear) try f.owner.sceneMoveNode(sibling, holder, 1);
         try f.owner.sceneSetHooks(sibling, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
         var request: scene.FrameRequest = undefined;
         if (reply == .hide_root) {
@@ -1344,6 +1344,7 @@ test "Scene feedback visibility follows replies that hide, detach, or move a sta
             switch (reply) {
                 .hide_parent => try f.owner.sceneSetStyle(holder, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0),
                 .detach => try f.owner.sceneMoveNode(parent, null, 0),
+                .clear => try f.owner.sceneClearChildren(holder),
                 .into_hidden => try f.owner.sceneMoveNode(parent, hidden, 0),
                 .hide_root => unreachable,
                 .queued_sibling => {

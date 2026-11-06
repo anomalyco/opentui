@@ -682,6 +682,9 @@ ot_status ot_scene_create_node(ot_context *, const ot_handle *session, uint32_t 
  * RESET still succeed. */
 ot_status ot_scene_destroy_node(ot_context *, const ot_handle *node);
 ot_status ot_scene_move_node(ot_context *, const ot_handle *node, const ot_handle *parent, uint32_t index);
+/* Detaches every child of node, as moving each to NULL from first to last would, in
+ * time linear in the child count. On error no child is detached. */
+ot_status ot_scene_clear_children(ot_context *, const ot_handle *node);
 /* Synchronous owner-thread measurement on leaves. The callback is borrowed until
  * replacement, unset, node destruction, or Context destruction. NULL clears the
  * single provider slot; it does not restore built-in measurement. Each set or clear

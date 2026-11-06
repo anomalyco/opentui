@@ -79,23 +79,35 @@ test "Scene equal-z siblings paint in attachment order however z reached them" {
     }
 }
 
-test "Scene detaches a first or last child without scanning its siblings" {
-    for ([_]bool{ false, true }) |reverse| {
+test "Scene detaches a first or last child, or all children, without scanning siblings" {
+    var works: [3]@import("../renderer.zig").FrameWork = undefined;
+    for ([_]enum { forward, reverse, clear }{ .forward, .reverse, .clear }, &works) |order, *work| {
         const f = try Fixture.init(testing.allocator, 2, 1, .{});
         defer f.deinit();
+        const holder = try box(f.owner, f.id, 2, 0);
+        try f.owner.sceneMoveNode(holder, f.root, 0);
+        try f.owner.sceneSetHooks(holder, 1, 1, 2, 1);
         var children: [64]context.Handle = undefined;
         for (&children, 0..) |*child, index| {
-            child.* = try box(f.owner, f.id, @intCast(index + 2), 0);
-            try f.owner.sceneMoveNode(child.*, f.root, @intCast(index));
+            child.* = try box(f.owner, f.id, @intCast(index + 3), 0);
+            try f.owner.sceneMoveNode(child.*, holder, @intCast(index));
         }
+        try frame(f, &.{holder});
+        try expectTop(f, children[63]);
         f.state.test_sibling_steps = 0;
-        for (0..children.len) |step| {
-            const child = children[if (reverse) children.len - 1 - step else step];
-            if (step % 2 == 0) try f.owner.sceneMoveNode(child, null, 0) else try f.owner.sceneDestroyNode(child);
+        if (order == .clear) try f.owner.sceneClearChildren(holder) else for (0..children.len) |step| {
+            const child = children[if (order == .reverse) children.len - 1 - step else step];
+            // Reverse order destroys every other child, which detaches it too.
+            if (order == .forward or step % 2 == 0) try f.owner.sceneMoveNode(child, null, 0) else try f.owner.sceneDestroyNode(child);
         }
         // One step in the children and one in the paint children per detached child.
-        try testing.expectEqual(@as(u64, 2 * children.len), f.state.test_sibling_steps);
+        try testing.expectEqual(@as(u64, if (order == .clear) 0 else 2 * children.len), f.state.test_sibling_steps);
+        try frame(f, &.{holder});
+        try expectTop(f, holder);
+        work.* = (try f.owner.sceneGetStats(f.id)).frameWork;
     }
+    // Clearing leaves the next frame the work that moving each child to no parent leaves.
+    try testing.expectEqual(works[0], works[2]);
 }
 
 test "Scene ordered equal-z append skips settled sibling rank and sort work" {

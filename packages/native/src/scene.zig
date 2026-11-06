@@ -1016,6 +1016,33 @@ pub const Scene = struct {
         markObservationStale(value);
     }
 
+    /// Detaches every child as `move(child, null, 0)` does, walking the lists once instead of
+    /// searching and shifting them for each child. Like `remove`, it leaves a detached child's
+    /// queued feedback and stale marks, which only an attached node reads; attaching sets them.
+    pub fn clearChildren(self: *Scene, value: *native.NativeRenderable) !void {
+        const node = value.scene_node.?;
+        if (node.children.items.len == 0) return;
+        try yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node.childYoga(value)));
+        var below: @Vector(3, u32) = @splat(0);
+        for (node.children.items) |child| {
+            const state = child.scene_node.?;
+            below += .{ state.skip.update_below, state.skip.filters_below, state.skip.scrolls_below };
+            state.parent = null;
+            state.placement = 0;
+            state.skip.attention_index = no_slot;
+        }
+        node.children.clearRetainingCapacity();
+        node.paint_children.clearRetainingCapacity();
+        node.skip.attention.clearRetainingCapacity();
+        countBelow(value, below[0], below[1], below[2], false);
+        staleCull(value);
+        self.markSubtree(value);
+        self.visibility_epoch +%= 1;
+        self.selection_epoch +%= 1;
+        self.preparation_dirty = true;
+        self.clearPreparation();
+    }
+
     /// Takes a node out of its parent's paint children, attention, and counts.
     fn detach(self: *Scene, value: *native.NativeRenderable, parent: *native.NativeRenderable) void {
         const node = value.scene_node.?;
