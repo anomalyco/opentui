@@ -2994,11 +2994,8 @@ pub const CliRenderer = struct {
         }
 
         const mousePointer = self.terminal.getMousePointer();
+        // Starting a frame here would hide the cursor after the cursor section has run.
         if (!self.mousePointerStateValid or mousePointer != self.lastMousePointerStyle) {
-            if (!frame_started) {
-                self.beginRenderFrame(writer);
-                frame_started = true;
-            }
             ansi.ANSI.setMousePointerOutput(writer, mousePointer.toName()) catch {};
             self.lastMousePointerStyle = mousePointer;
             self.mousePointerStateValid = true;
