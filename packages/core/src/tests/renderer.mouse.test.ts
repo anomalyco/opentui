@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { createTestRenderer, MouseButtons, type MockMouse, type TestRenderer } from "../testing.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { link, t } from "../lib/styled-text.js"
+import type { StyledText } from "../lib/styled-text.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { TextRenderable } from "../renderables/Text.js"
 import type { MouseEvent } from "../renderer.js"
 import { settleUntil } from "../testing/harness.js"
@@ -139,6 +141,73 @@ describe("renderer getLinkAt", () => {
     renderer.destroy()
     expect(renderer.getLinkIdAt(0, 0)).toBe(0)
     expect(renderer.getLinkAt(0, 0)).toBeNull()
+  })
+
+  describe("with a stationary pointer over scrolling links", () => {
+    const pointer = { x: 1, y: 1 }
+    const firstUrl = "https://example.com/first"
+    const secondUrl = "https://example.com/second"
+
+    async function mountScrollingLinks(content: StyledText) {
+      const scrollBox = new ScrollBoxRenderable(renderer, { id: "links", width: 12, height: 5 })
+      const text = new TextRenderable(renderer, { id: "linked-lines", content, width: 10 })
+      scrollBox.add(text)
+      renderer.root.add(scrollBox)
+      await renderOnce()
+
+      const moves: (string | null)[] = []
+      text.onMouseMove = (event) => moves.push(renderer.getLinkAt(event.x, event.y))
+      await mockMouse.moveTo(pointer.x, pointer.y)
+      await renderOnce()
+      return { scrollBox, moves }
+    }
+
+    async function scrollOneRow() {
+      await mockMouse.scroll(pointer.x, pointer.y, "down")
+      await renderOnce()
+    }
+
+    test("sends a move when a link scrolls out from under the pointer", async () => {
+      const filler = Array.from({ length: 10 }, () => "plain").join("\n")
+      const { scrollBox, moves } = await mountScrollingLinks(t`plain\n${link(firstUrl)("first")}\n${filler}`)
+      expect(moves).toEqual([firstUrl])
+
+      await scrollOneRow()
+
+      expect(scrollBox.scrollTop).toBe(1)
+      expect(moves).toEqual([firstUrl, null])
+    })
+
+    test("sends a move when a different link scrolls under the pointer", async () => {
+      const filler = Array.from({ length: 10 }, () => "plain").join("\n")
+      const { moves } = await mountScrollingLinks(
+        t`plain\n${link(firstUrl)("first")}\n${link(secondUrl)("second")}\n${filler}`,
+      )
+
+      await scrollOneRow()
+
+      expect(moves).toEqual([firstUrl, secondUrl])
+    })
+
+    test("sends no move when the link under the pointer is unchanged", async () => {
+      const filler = Array.from({ length: 10 }, () => "plain").join("\n")
+      const { moves } = await mountScrollingLinks(t`plain\n${link(firstUrl)("first")}\n${filler}`)
+
+      await renderOnce()
+      await renderOnce()
+
+      expect(moves).toEqual([firstUrl])
+    })
+
+    test("sends no move when plain text scrolls under the pointer", async () => {
+      const filler = Array.from({ length: 12 }, () => "plain").join("\n")
+      const { scrollBox, moves } = await mountScrollingLinks(t`${filler}`)
+
+      await scrollOneRow()
+
+      expect(scrollBox.scrollTop).toBe(1)
+      expect(moves).toEqual([null])
+    })
   })
 
   test("resolves linked cells after wrapping and across wide-character cells", async () => {

@@ -1280,6 +1280,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _capabilities: TerminalCapabilities | null = null
   private _latestPointer: { x: number; y: number } = { x: 0, y: 0 }
   private _hasPointer: boolean = false
+  private _pointerLinkId: number = 0
   private _lastPointerModifiers: RawMouseEvent["modifiers"] = {
     shift: false,
     alt: false,
@@ -4002,6 +4003,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     const maybeRenderableId = this.hitTest(mouseEvent.x, mouseEvent.y)
+    this._pointerLinkId = this.getLinkIdAt(mouseEvent.x, mouseEvent.y)
     const sameElement = maybeRenderableId === this.lastOverRenderableNum
     this.lastOverRenderableNum = maybeRenderableId
     const maybeRenderable = Renderable.renderablesByNumber.get(maybeRenderableId)
@@ -4147,12 +4149,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const hitId = this.hitTest(this._latestPointer.x, this._latestPointer.y)
     const hitRenderable = Renderable.renderablesByNumber.get(hitId)
     const lastOver = this.lastOverRenderable
-
-    // No change
-    if (lastOver?.num === hitId) {
-      this.lastOverRenderableNum = hitId
-      return
-    }
+    const linkId = this.getLinkIdAt(this._latestPointer.x, this._latestPointer.y)
+    const linkChanged = linkId !== this._pointerLinkId
+    this._pointerLinkId = linkId
 
     const baseEvent: RawMouseEvent = {
       type: "move",
@@ -4160,6 +4159,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       x: this._latestPointer.x,
       y: this._latestPointer.y,
       modifiers: this._lastPointerModifiers,
+    }
+
+    // Same element, but scrolling can still move a different link under the pointer.
+    if (lastOver?.num === hitId) {
+      this.lastOverRenderableNum = hitId
+      if (linkChanged) this.sendMouseEvent(lastOver, new MouseEvent(lastOver, baseEvent))
+      return
     }
 
     // Fire out on old element
