@@ -1366,6 +1366,9 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   set positionAnchor(positionAnchor: Renderable | null | undefined) {
+    if (positionAnchor != null && !(positionAnchor instanceof Renderable)) {
+      throw new TypeError("positionAnchor must be a Renderable or null")
+    }
     positionAnchor ??= null
     if (this.isFreed() || this.positionAnchor === positionAnchor) return
 

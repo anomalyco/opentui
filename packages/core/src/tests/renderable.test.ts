@@ -321,7 +321,14 @@ describe("Renderable - positionAnchor", () => {
       const destroyed = new TestRenderable(testRenderer, {})
       const foreign = new TestRenderable(other.renderer, {})
       destroyed.destroy()
-      const invalidTypes = ["top-left", 1, false, {}, new TestBaseRenderable({})]
+      const invalidTypes = [
+        "top-left",
+        1,
+        false,
+        {},
+        { isDestroyed: false, isFreed: () => false, ctx: {} },
+        new TestBaseRenderable({}),
+      ]
       for (const value of [...invalidTypes, renderable, destroyed, foreign]) {
         const error = invalidTypes.includes(value) ? TypeError : Error
         expect(() => Reflect.set(renderable, "positionAnchor", value)).toThrow(error)
