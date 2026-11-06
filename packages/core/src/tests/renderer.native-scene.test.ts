@@ -58,6 +58,30 @@ test("positionAnchor includes margins in geometry paint and hits", async () => {
   assertNoFrameWork(target)
 })
 
+test("positionAnchor opposing insets keep content sizing until cleared", async () => {
+  const target = await createTestRenderer({ width: 30, height: 4, clock: new ManualClock() })
+  setups.push(target)
+  const anchor = new BoxRenderable(target.renderer, { position: "absolute", left: 4, top: 1, width: 6, height: 1 })
+  const popup = new TextRenderable(target.renderer, {
+    position: "absolute",
+    positionAnchor: anchor,
+    left: 1,
+    right: 1,
+    top: 0,
+    height: 1,
+    content: "P",
+  })
+  target.renderer.root.add(anchor)
+  target.renderer.root.add(popup)
+  await target.renderOnce()
+  assert.equal(popup.width, 1)
+  assertMark(target, popup, 5, 1)
+  popup.positionAnchor = null
+  await target.renderOnce()
+  assert.equal(popup.width, 28)
+  assertMark(target, popup, 1, 0)
+})
+
 test("positionAnchor reports earlier staged failures before assigning", async () => {
   const target = await setup()
   const anchor = new BoxRenderable(target.renderer, { width: 1, height: 1 })

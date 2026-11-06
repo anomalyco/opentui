@@ -508,7 +508,7 @@ pub const Node = struct {
     parent: ?*native.NativeRenderable = null,
     position_anchor: ?*native.NativeRenderable = null,
     anchor_position_type: ?u32 = null,
-    anchor_insets: [4]u8 = .{ 0, 0, 0, 0 },
+    position_insets: [9]StyleValue = @splat(.{ .unit = api.OT_UNIT_UNDEFINED, .value = std.math.nan(f32) }),
     anchor_center: [2]bool = .{ false, false },
     anchor_visibility: ?struct { epoch: u64, visible: bool } = null,
     // Head nodes anchored to this one, linked through anchor_previous/anchor_next.
@@ -1077,10 +1077,9 @@ pub const Scene = struct {
                 try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, &current));
                 position_type = current;
             }
-            try yoga.check(yoga.yogaNodeStyleSetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, api.OT_POSITION_ABSOLUTE));
-        } else if (position_type) |original| {
-            try yoga.check(yoga.yogaNodeStyleSetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, original));
         }
+        const insets = yogaInsets(node.position_insets);
+        try yoga.setPositionState(value.yoga_node, if (target != null) api.OT_POSITION_ABSOLUTE else position_type.?, &insets.units, &insets.values, target != null);
         self.unlinkPositionAnchor(value);
         if (target) |anchor| {
             node.position_anchor = anchor;
@@ -1090,6 +1089,15 @@ pub const Scene = struct {
             anchor.scene_node.?.anchor_dependents = value;
             self.anchor_count += 1;
         }
+        self.visibility_epoch +%= 1;
+        self.invalidateGeometry(value);
+    }
+
+    fn clearDestroyedPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        const insets = yogaInsets(node.position_insets);
+        yoga.restorePosition(value.yoga_node, node.anchor_position_type.?, &insets.units, &insets.values);
+        self.unlinkPositionAnchor(value);
         self.visibility_epoch +%= 1;
         self.invalidateGeometry(value);
     }
@@ -1216,8 +1224,7 @@ pub const Scene = struct {
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
         const node = value.scene_node.?;
         self.unlinkPositionAnchor(value);
-        // Restoring a position type read back from Yoga cannot fail.
-        while (node.anchor_dependents) |dependent| self.setPositionAnchor(dependent, null) catch unreachable;
+        while (node.anchor_dependents) |dependent| self.clearDestroyedPositionAnchor(dependent);
         node.control.deinit(node.kind, self.allocator);
         if (node.culling.index) |index| {
             index.entries.deinit(self.allocator);
@@ -1760,11 +1767,17 @@ pub const Scene = struct {
         self.invalidateObservation(value);
     }
 
-    /// Stores validated anchor inset units after Yoga accepted the matching position values.
-    pub fn setAnchorInsets(self: *Scene, value: *native.NativeRenderable, insets: [4]u8) void {
+    /// Stores requested insets only after Yoga accepted the complete effective position state.
+    pub fn setPositionInsets(self: *Scene, value: *native.NativeRenderable, insets: [9]StyleValue) !void {
         const node = value.scene_node.?;
-        if (std.meta.eql(node.anchor_insets, insets)) return;
-        node.anchor_insets = insets;
+        // positionInsetValue canonicalizes NaN, so a byte compare detects changes.
+        const changed = !std.mem.eql(u8, std.mem.asBytes(&node.position_insets), std.mem.asBytes(&insets));
+        var position_type: u32 = 0;
+        try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, &position_type));
+        const effective = yogaInsets(insets);
+        try yoga.setPositionState(value.yoga_node, position_type, &effective.units, &effective.values, node.position_anchor != null);
+        if (!changed) return;
+        node.position_insets = insets;
         self.invalidateGeometry(value);
     }
 
@@ -3804,16 +3817,47 @@ pub fn anchorInsetUnit(edge: u32, unit: u32) !u8 {
     return @intCast(unit);
 }
 
+pub fn positionInsetValue(edge: u32, unit: u32, value: f32) !StyleValue {
+    const keyword = try anchorInsetUnit(edge, unit);
+    if (std.math.isInf(value)) return error.YogaInvalidArgument;
+    if (keyword != 0) return .{ .unit = keyword, .value = 0 };
+    if (unit > api.OT_UNIT_AUTO) return error.YogaInvalidArgument;
+    if (unit == api.OT_UNIT_UNDEFINED or (unit != api.OT_UNIT_AUTO and std.math.isNan(value))) return .{ .unit = api.OT_UNIT_UNDEFINED, .value = std.math.nan(f32) };
+    return .{ .unit = unit, .value = if (unit == api.OT_UNIT_AUTO) std.math.nan(f32) else value };
+}
+
+const YogaInsets = struct { units: [9]u32, values: [9]f32 };
+
+fn yogaInsets(insets: [9]StyleValue) YogaInsets {
+    var result: YogaInsets = undefined;
+    for (insets, 0..) |inset, edge| {
+        result.units[edge] = if (inset.unit >= api.OT_UNIT_ANCHOR_LEFT) api.OT_UNIT_UNDEFINED else inset.unit;
+        result.values[edge] = inset.value;
+    }
+    return result;
+}
+
+fn requestedPositionInset(value: *const native.NativeRenderable, edge: u32) !StyleValue {
+    const insets = value.scene_node.?.position_insets;
+    if (edge % 2 == 0) {
+        const rtl = try yoga.layoutDirection(value.yoga_node) == api.OT_DIRECTION_RTL;
+        const logical = if ((edge == api.OT_EDGE_LEFT) != rtl) api.OT_EDGE_START else api.OT_EDGE_END;
+        if (insets[logical].unit != api.OT_UNIT_UNDEFINED) return insets[logical];
+    }
+    if (insets[edge].unit != api.OT_UNIT_UNDEFINED) return insets[edge];
+    const axis = if (edge % 2 == 0) api.OT_EDGE_HORIZONTAL else api.OT_EDGE_VERTICAL;
+    if (insets[axis].unit != api.OT_UNIT_UNDEFINED) return insets[axis];
+    return insets[api.OT_EDGE_ALL];
+}
+
 fn anchorInset(value: *const native.NativeRenderable, edge: u32, anchor_size: f32, trailing: bool) !?f32 {
-    const unit = value.scene_node.?.anchor_insets[edge];
+    const requested = try requestedPositionInset(value, edge);
+    const unit = requested.unit;
     // Anchor units order left, top, right, bottom: right and bottom resolve to the far edge.
-    if (unit != 0) return if (unit >= api.OT_UNIT_ANCHOR_RIGHT) anchor_size else 0;
-    var encoded: u64 = 0;
-    try yoga.check(yoga.yogaNodeStyleGetValueChecked(value.yoga_node, api.OT_STYLE_VALUE_POSITION, edge, &encoded));
-    const requested: f32 = @bitCast(@as(u32, @truncate(encoded >> 32)));
-    const inset: f64 = switch (@as(u32, @truncate(encoded))) {
-        api.OT_UNIT_POINT => requested,
-        api.OT_UNIT_PERCENT => @as(f64, anchor_size) * requested / 100,
+    if (unit >= api.OT_UNIT_ANCHOR_LEFT) return if (unit >= api.OT_UNIT_ANCHOR_RIGHT) anchor_size else 0;
+    const inset: f64 = switch (unit) {
+        api.OT_UNIT_POINT => requested.value,
+        api.OT_UNIT_PERCENT => @as(f64, anchor_size) * requested.value / 100,
         else => return null,
     };
     return @floatCast(std.math.clamp(if (trailing) @as(f64, anchor_size) - inset else inset, -std.math.floatMax(f32), std.math.floatMax(f32)));

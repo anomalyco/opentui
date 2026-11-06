@@ -977,6 +977,20 @@ pub export fn yogaNodeStyleSetPositionsChecked(node: YGNodeRef, edge_mask: u32, 
     return @fromBackingInt(@intCast(c.otYogaNodeStyleSetPositions(node, edge_mask, units.?, values.?)));
 }
 
+pub fn setPositionState(node: YGNodeRef, position_type: u32, units: *const [9]u32, values: *const [9]f32, anchored: bool) Error!void {
+    try check(nodeStatus(node, true, false));
+    try check(@fromBackingInt(@intCast(c.otYogaNodeStyleSetPositionState(node, position_type, units, values, @intFromBool(anchored)))));
+}
+
+pub fn restorePosition(node: YGNodeRef, position_type: u32, units: *const [9]u32, values: *const [9]f32) void {
+    c.otYogaNodeStyleRestorePosition(node, position_type, units, values);
+}
+
+pub fn layoutDirection(node: YGNodeConstRef) Error!u32 {
+    try check(nodeStatus(node, false, false));
+    return @intCast(c.YGNodeLayoutGetDirection(node));
+}
+
 pub export fn yogaNodeStyleGetValue(node: YGNodeConstRef, kind: u32, edge_or_gutter: u32) u64 {
     var out: u64 = @as(u64, @as(u32, @bitCast(std.math.nan(f32)))) << 32;
     _ = yogaNodeStyleGetValueChecked(node, kind, edge_or_gutter, &out);

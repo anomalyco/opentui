@@ -2085,9 +2085,21 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         const node = try self.sceneNode(handle);
-        try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
-        try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
+        try self.prepareSceneTeardown(node);
         self.destroyToken(try self.objects.beginDestroy(handle));
+    }
+
+    fn prepareSceneTeardown(self: *Context, node: *native_renderable.NativeRenderable) !void {
+        try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
+        var dependent = node.scene_node.?.anchor_dependents;
+        while (dependent) |value| : (dependent = value.scene_node.?.anchor_next) {
+            try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
+        }
+        try node.scene_node.?.owner.prepareOmitted(&self.objects, node);
+        dependent = node.scene_node.?.anchor_dependents;
+        while (dependent) |value| : (dependent = value.scene_node.?.anchor_next) {
+            try value.scene_node.?.owner.prepareOmitted(&self.objects, value);
+        }
     }
 
     pub fn sceneSetMeasure(self: *Context, handle: Handle, callback: ?SceneMeasureCallback) !void {
@@ -2371,21 +2383,29 @@ pub const Context = struct {
         const target = if (content) scroll.?.content_node else node.yoga_node;
         const anchored_position = !content and group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_POSITION_TYPE and node.scene_node.?.position_anchor != null;
         const position = !content and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_POSITION;
-        const inset_unit = if (position) try scene.anchorInsetUnit(edge, unit) else 0;
-        if (!position and unit >= api.OT_UNIT_ANCHOR_LEFT) return error.InvalidOptions;
+        // Finite summed edges and gaps saturate so Yoga's f32 sums stay finite; NaN still unsets.
+        const saturated = if (group == api.OT_STYLE_VALUE and kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value;
+        if (position) {
+            if (edge > api.OT_EDGE_ALL) return error.YogaInvalidArgument;
+            var insets = node.scene_node.?.position_insets;
+            // Edge aliases would shadow or leak past physical anchor keywords, which Yoga never sees.
+            if (edge > api.OT_EDGE_BOTTOM) {
+                for (insets[0..4], 0..) |inset, physical| {
+                    const covered = edge == api.OT_EDGE_ALL or (physical % 2 == 0) == (edge != api.OT_EDGE_VERTICAL);
+                    if (covered and inset.unit >= api.OT_UNIT_ANCHOR_LEFT) return error.InvalidOptions;
+                }
+            }
+            insets[edge] = try scene.positionInsetValue(edge, unit, saturated);
+            return node.scene_node.?.owner.setPositionInsets(node, insets);
+        }
+        if (unit >= api.OT_UNIT_ANCHOR_LEFT) return error.InvalidOptions;
         try yoga.check(switch (group) {
             api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, if (anchored_position) api.OT_POSITION_ABSOLUTE else @intFromFloat(value)),
             api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(target, kind, value),
-            // Finite summed edges and gaps saturate so Yoga's f32 sums stay finite; NaN still unsets.
-            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(target, kind, edge, if (inset_unit != 0) api.OT_UNIT_UNDEFINED else unit, if (kind >= api.OT_STYLE_VALUE_MARGIN and std.math.isFinite(value) and @abs(value) > 1e30) std.math.copysign(@as(f32, 1e30), value) else value),
+            api.OT_STYLE_VALUE => yoga.yogaNodeStyleSetValueChecked(target, kind, edge, unit, saturated),
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
-        if (position and edge <= api.OT_EDGE_BOTTOM) {
-            var insets = node.scene_node.?.anchor_insets;
-            insets[edge] = inset_unit;
-            node.scene_node.?.owner.setAnchorInsets(node, insets);
-        }
         if (anchored_position) node.scene_node.?.anchor_position_type = @intFromFloat(value);
         if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
             node.scene_node.?.owner.visibility_epoch +%= 1;
@@ -2419,14 +2439,9 @@ pub const Context = struct {
             api.OT_STYLE_FLOAT => try yoga.check(yoga.yogaNodeStyleGetFloatChecked(node.yoga_node, kind, &result.value)),
             api.OT_STYLE_VALUE, api.OT_STYLE_DIMENSION => {
                 if (group == api.OT_STYLE_DIMENSION and kind > api.OT_DIMENSION_HEIGHT) return error.InvalidOptions;
-                if (group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_POSITION and edge <= api.OT_EDGE_BOTTOM and
-                    node.scene_node.?.anchor_insets[edge] != 0)
-                {
-                    result.unit = node.scene_node.?.anchor_insets[edge];
-                    return result;
-                }
                 var encoded: u64 = 0;
                 try yoga.check(yoga.yogaNodeStyleGetValueChecked(node.yoga_node, kind, edge, &encoded));
+                if (group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_POSITION) return node.scene_node.?.position_insets[edge];
                 result.unit = @truncate(encoded);
                 result.value = @bitCast(@as(u32, @truncate(encoded >> 32)));
             },
@@ -2444,15 +2459,13 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         const node = try self.sceneMutableNode(handle);
-        var yoga_units = units;
-        var insets = node.scene_node.?.anchor_insets;
-        for (&insets, &yoga_units, units, 0..) |*inset, *yoga_unit, unit, edge| {
+        if (mask & ~@as(u32, 15) != 0) return error.YogaInvalidArgument;
+        var insets = node.scene_node.?.position_insets;
+        for (units, values, 0..) |unit, value, edge| {
             if (mask & (@as(u32, 1) << @intCast(edge)) == 0) continue;
-            inset.* = try scene.anchorInsetUnit(@intCast(edge), unit);
-            if (inset.* != 0) yoga_unit.* = api.OT_UNIT_UNDEFINED;
+            insets[edge] = try scene.positionInsetValue(@intCast(edge), unit, value);
         }
-        try yoga.check(yoga.yogaNodeStyleSetPositionsChecked(node.yoga_node, mask, &yoga_units, &values));
-        node.scene_node.?.owner.setAnchorInsets(node, insets);
+        try node.scene_node.?.owner.setPositionInsets(node, insets);
     }
 
     pub fn sceneSetPaint(self: *Context, handle: Handle, paint: scene.Paint) !void {
@@ -2484,6 +2497,8 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         const value = if (anchor_handle == null) try self.sceneNode(handle) else try self.sceneMutableNode(handle);
+        // Framework unmount clears anchors after renderer/session close, like child-first detachment.
+        if (anchor_handle == null) try value.scene_node.?.owner.prepareOmitted(&self.objects, value);
         const anchor = if (anchor_handle) |id| try self.sceneNode(id) else null;
         if (anchor != null) try scene.Scene.checkWritable(value);
         try value.scene_node.?.owner.setPositionAnchor(value, anchor);
@@ -3992,7 +4007,7 @@ pub const Context = struct {
             .session => try checkSessionTeardown(try self.getSession(handle)),
             .native_renderable => {
                 const node = try self.getRenderable(handle);
-                if (node.scene_node != null) try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
+                if (node.scene_node != null) try self.prepareSceneTeardown(node);
             },
             .edit_buffer => try (try self.getEditBuffer(handle)).checkMutable(),
             .clipboard_service => {
