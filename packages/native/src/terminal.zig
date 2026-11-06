@@ -1500,7 +1500,7 @@ fn parseXtgettcap(self: *Terminal, response: []const u8) bool {
         const separator = std.mem.findScalar(u8, result, '=');
         const name = result[0 .. separator orelse result.len];
         const value = if (separator) |index| result[index + 1 ..] else "";
-        if (value.len % 2 != 0) continue;
+        if ((separator != null and value.len == 0) or value.len % 2 != 0) continue;
         for (value) |byte| {
             if (!std.ascii.isHex(byte)) break;
         } else if (std.ascii.eqlIgnoreCase(name, "4d73") and value.len != 0) {
@@ -1937,9 +1937,11 @@ pub fn isInScreen(self: *Terminal) bool {
 }
 
 /// GNU screen, also behind ssh started inside it, where the forwarded TERM names screen but STY is gone.
-fn insideScreen(self: *const Terminal) bool {
+/// A screen TERM inside tmux is tmux; screen swallows XTVERSION, so a tmux reply means tmux is innermost.
+fn insideScreen(self: *Terminal) bool {
+    if (self.isXtversionTmux()) return false;
     const env = self.opts.env_map orelse return false;
-    return env.get("STY") != null or std.mem.startsWith(u8, env.get("TERM") orelse "", "screen");
+    return env.get("STY") != null or (env.get("TMUX") == null and std.mem.startsWith(u8, env.get("TERM") orelse "", "screen"));
 }
 
 pub fn getTerminalInfo(self: *Terminal) TerminalInfo {

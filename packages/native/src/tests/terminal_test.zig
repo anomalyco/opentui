@@ -1311,6 +1311,15 @@ test "processCapabilityResponse - foot applies osc52 heuristic without explicit 
     try testing.expect(!term.caps.explicit_cursor_positioning);
 }
 
+/// Puts space-separated `KEY=VALUE` pairs.
+fn putEnv(env: *std.process.Environ.Map, pairs: []const u8) !void {
+    var it = std.mem.tokenizeScalar(u8, pairs, ' ');
+    while (it.next()) |pair| {
+        const eq = std.mem.findScalar(u8, pair, '=').?;
+        try env.put(pair[0..eq], pair[eq + 1 ..]);
+    }
+}
+
 test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard and color only when positive" {
     // No COLORTERM, as over SSH. Replies are recorded from real terminals where named.
     const Row = struct { env: []const u8 = "", replies: []const []const u8, rgb: bool, osc52: ?bool = null, ms: bool = false };
@@ -1325,7 +1334,8 @@ test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard 
         .{ .replies = &.{ "\x1bP1+r4D73=1B5D35323B25703125733B257032257307\x1b\\", "\x1bP1+r524742=382F382F38\x1b\\" }, .rgb = true, .ms = true }, // WezTerm
         .{ .replies = &.{"\x1bP1+r5463=31\x1b\\"}, .rgb = true }, // WezTerm
         .{ .replies = &.{ "\x1bP0+r524742\x1b\\", "\x1bP0+r5463\x1b\\", "\x1bP0+r\x1b\\" }, .rgb = false },
-        .{ .replies = &.{ "\x1bP1+r524742=zz\x1b\\", "\x1bP1+r524742=3\x1b\\", "\x1bP1+r52474\x1b\\", "\x1bP1+r5463524742\x1b\\", "\x1bP2+r5463\x1b\\" }, .rgb = false },
+        .{ .replies = &.{ "\x1bP1+r524742=zz\x1b\\", "\x1bP1+r524742=3\x1b\\", "\x1bP1+r52474\x1b\\", "\x1bP1+r5463524742\x1b\\", "\x1bP2+r5463\x1b\\", "\x1bP1+r524742=\x1b\\", "\x1bP1+r5463=\x1b\\" }, .rgb = false },
+        .{ .replies = &.{"\x1bP1+r524742\x1b\\"}, .rgb = true }, // boolean form
         .{ .replies = &.{"\x1bP>|alacritty 0.13.0\x1b\\\x1bP1+r5463\x1b\\\x1b[?6c"}, .rgb = true },
         .{ .replies = &.{"\x1bP>|ghostty 1.3.1\x1b\\"}, .rgb = true },
         .{ .replies = &.{"\x1bP>|WezTerm 20260716-195552-76b606ec\x1b\\"}, .rgb = true },
@@ -1341,35 +1351,39 @@ test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard 
         // Inside GNU screen no reply counts, also when ssh forwarded screen's TERM without STY.
         .{ .env = "STY=1234.session", .replies = &.{ "\x1bP1+r524742=38\x1b\\", "\x1bP>|kitty(0.40.1)\x1b\\" }, .rgb = false },
         .{ .env = "TERM=screen.xterm-256color", .replies = &.{ "\x1bP1+r5463\x1b\\", "\x1bP>|ghostty 1.3.1\x1b\\" }, .rgb = false },
+        // A screen TERM in tmux, or behind ssh from tmux once tmux answers XTVERSION (screen swallows the query).
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .replies = &.{"\x1bP1+r5463\x1b\\"}, .rgb = true },
+        .{ .env = "TERM=screen-256color", .replies = &.{"\x1bP>|tmux 3.4\x1b\\"}, .rgb = true },
     };
     for (rows) |row| {
         var env = std.process.Environ.Map.init(testing.allocator);
         defer env.deinit();
-        if (std.mem.findScalar(u8, row.env, '=')) |eq| try env.put(row.env[0..eq], row.env[eq + 1 ..]);
+        try putEnv(&env, row.env);
         var term = Terminal.init(.{ .env_map = &env });
         for (row.replies) |reply| term.processCapabilityResponse(reply);
         try testing.expectEqual(row.rgb, term.caps.rgb);
         if (row.rgb) try testing.expect(term.caps.ansi256);
         if (row.osc52) |osc52| try testing.expectEqual(osc52, term.caps.osc52);
-        try testing.expectEqual(row.ms, term.osc52_support == .supported);
+        try testing.expectEqual(if (row.ms) Terminal.Osc52Support.supported else .unknown, term.osc52_support);
     }
 }
 
 test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it" {
-    const Row = struct { key: []const u8 = "", value: []const u8 = "", asks: bool };
+    const Row = struct { env: []const u8 = "", asks: bool };
     const rows = [_]Row{
         .{ .asks = builtin.os.tag != .windows },
-        .{ .key = "TERM", .value = "xterm-256color", .asks = builtin.os.tag != .windows },
-        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
-        .{ .key = "COLORTERM", .value = "truecolor", .asks = false },
-        .{ .key = "STY", .value = "1234.session", .asks = false },
-        .{ .key = "TERM", .value = "screen.xterm-256color", .asks = false },
-        .{ .key = "TERM", .value = "foot", .asks = false },
+        .{ .env = "TERM=xterm-256color", .asks = builtin.os.tag != .windows },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
+        .{ .env = "COLORTERM=truecolor", .asks = false },
+        .{ .env = "STY=1234.session", .asks = false },
+        .{ .env = "TERM=screen.xterm-256color", .asks = false },
+        .{ .env = "TERM=foot", .asks = false },
     };
     for (rows) |row| for ([_]bool{ false, true }) |sentinel| {
         var env = std.process.Environ.Map.init(testing.allocator);
         defer env.deinit();
-        if (row.key.len != 0) try env.put(row.key, row.value);
+        try putEnv(&env, row.env);
         var term = Terminal.init(.{ .env_map = &env });
         term.reply_sentinel = sentinel;
         var writer = TestWriter.init(testing.allocator);
