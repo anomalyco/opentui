@@ -147,6 +147,8 @@ export interface LayoutOptions extends BaseRenderableOptions, Position {
   flexBasis?: number | "auto" | undefined
   position?: PositionTypeString
   positionAnchor?: Renderable | null
+  anchorCenterX?: boolean
+  anchorCenterY?: boolean
   overflow?: OverflowString
   minWidth?: number | "auto" | `${number}%`
   minHeight?: number | "auto" | `${number}%`
@@ -434,6 +436,8 @@ export abstract class Renderable extends BaseRenderable {
       this.setDisplay(this._visible ? Display.Flex : Display.None)
       this.setupYogaProperties(options)
       this.positionAnchor = options.positionAnchor
+      if (options.anchorCenterX !== undefined) this.anchorCenterX = options.anchorCenterX
+      if (options.anchorCenterY !== undefined) this.anchorCenterY = options.anchorCenterY
       if (this.nativeIntegration.measure) this.setMeasureFunc(this.nativeIntegration.measure.bind(this))
       // Native create already has default z-index, opacity, and translations.
       // Subclasses publish their real paint; keep this write for non-default values.
@@ -1378,6 +1382,51 @@ export abstract class Renderable extends BaseRenderable {
         }
       }
       this._ctx.nativeScene.setPositionAnchor(this, positionAnchor)
+      this.requestRender()
+    })
+  }
+
+  get anchorCenterX(): boolean {
+    return this.getAnchorCenter(0)
+  }
+
+  set anchorCenterX(centered: boolean | null | undefined) {
+    this.setAnchorCenter(0, centered)
+  }
+
+  get anchorCenterY(): boolean {
+    return this.getAnchorCenter(1)
+  }
+
+  set anchorCenterY(centered: boolean | null | undefined) {
+    this.setAnchorCenter(1, centered)
+  }
+
+  private getAnchorCenter(axis: 0 | 1): boolean {
+    if (this.isDestroyed || this.isFreed()) return false
+    return (
+      this._ctx.nativeScene.getStyle(
+        this,
+        nativeConstants.OT_STYLE_ENUM,
+        nativeConstants.OT_STYLE_ENUM_ANCHOR_CENTER_X + axis,
+        NATIVE_EDGE_NONE,
+      ).value !== 0
+    )
+  }
+
+  private setAnchorCenter(axis: 0 | 1, centered: boolean | null | undefined): void {
+    centered ??= false
+    if (typeof centered !== "boolean") throw new TypeError("Anchor centering must be a boolean")
+    if (this.isFreed() || this.getAnchorCenter(axis) === centered) return
+    this.runMutation(() => {
+      this._ctx.nativeScene.setStyle(
+        this,
+        nativeConstants.OT_STYLE_ENUM,
+        nativeConstants.OT_STYLE_ENUM_ANCHOR_CENTER_X + axis,
+        NATIVE_EDGE_NONE,
+        nativeConstants.OT_UNIT_UNDEFINED,
+        Number(centered),
+      )
       this.requestRender()
     })
   }

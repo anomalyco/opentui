@@ -97,6 +97,32 @@ test "Scene position anchor resolves edge keywords and trailing insets" {
     try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, c.OT_EDGE_NONE, c.OT_UNIT_ANCHOR_LEFT, 0, 0));
 }
 
+test "Scene position anchor centers each axis behind explicit insets" {
+    const f = try Fixture.init(testing.allocator, 20, 8, .{});
+    defer f.deinit();
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const popup = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    try f.owner.sceneMoveNode(popup, f.root, 0);
+    try f.owner.sceneMoveNode(anchor, f.root, 1);
+    try f.owner.sceneSetPositions(anchor, 3, .{ 1, 1, 0, 0 }, .{ 2, 1, 0, 0 });
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 1, 0);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_Y, 0, 0, 1, 0);
+    const Case = struct { [2]f32, [2]f32, [2]f64 };
+    for ([_]Case{ .{ .{ 5, 4 }, .{ 2, 1 }, .{ 3.5, 2.5 } }, .{ .{ 6, 5 }, .{ 2, 1 }, .{ 4, 3 } }, .{ .{ 5, 4 }, .{ 3, 2 }, .{ 3, 2 } } }) |case| {
+        try dimensions(f.owner, anchor, case[0][0], case[0][1]);
+        try dimensions(f.owner, popup, case[1][0], case[1][1]);
+        try repaint(f.owner, f.id, frame_options.background, true, 0);
+        const layout = try f.owner.sceneGetLayout(popup, false);
+        try testing.expectEqual(case[2], [2]f64{ layout.screenX, layout.screenY });
+    }
+    try f.owner.sceneSetPositions(popup, 9, .{ 1, 0, 0, 1 }, .{ 0, 0, 0, 1 });
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 2, 0));
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    const positioned = try f.owner.sceneGetLayout(popup, false);
+    try testing.expectEqual([2]f64{ 2, 2 }, [2]f64{ positioned.screenX, positioned.screenY });
+}
+
 test "Scene position anchor cached culling follows relationship and keyword changes with clean Yoga" {
     const f = try Fixture.init(testing.allocator, 20, 6, .{});
     defer f.deinit();

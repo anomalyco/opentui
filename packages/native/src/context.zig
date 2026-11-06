@@ -2355,6 +2355,17 @@ pub const Context = struct {
         const node = try self.sceneMutableNode(handle);
         const scroll = node.scene_node.?.scroll;
         if (content and scroll == null) return error.WrongKind;
+        if (group == api.OT_STYLE_ENUM and kind >= api.OT_STYLE_ENUM_ANCHOR_CENTER_X and kind <= api.OT_STYLE_ENUM_ANCHOR_CENTER_Y) {
+            if (content) return error.InvalidOptions;
+            const state = node.scene_node.?;
+            const axis = kind - api.OT_STYLE_ENUM_ANCHOR_CENTER_X;
+            const centered = value != 0;
+            if (state.anchor_center[axis] != centered) {
+                state.anchor_center[axis] = centered;
+                state.owner.invalidateGeometry(node);
+            }
+            return;
+        }
         // A scroll node's own padding holds its bar gutters.
         if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
         const target = if (content) scroll.?.content_node else node.yoga_node;
@@ -2396,9 +2407,13 @@ pub const Context = struct {
         var result: scene.StyleValue = .{ .unit = api.OT_UNIT_UNDEFINED, .value = 0 };
         switch (group) {
             api.OT_STYLE_ENUM => {
-                var value: u32 = 0;
-                try yoga.check(yoga.yogaNodeStyleGetEnumChecked(node.yoga_node, kind, &value));
-                result.value = @floatFromInt(value);
+                if (kind >= api.OT_STYLE_ENUM_ANCHOR_CENTER_X and kind <= api.OT_STYLE_ENUM_ANCHOR_CENTER_Y) {
+                    result.value = @floatFromInt(@intFromBool(node.scene_node.?.anchor_center[kind - api.OT_STYLE_ENUM_ANCHOR_CENTER_X]));
+                } else {
+                    var value: u32 = 0;
+                    try yoga.check(yoga.yogaNodeStyleGetEnumChecked(node.yoga_node, kind, &value));
+                    result.value = @floatFromInt(value);
+                }
             },
             api.OT_STYLE_FLOAT => try yoga.check(yoga.yogaNodeStyleGetFloatChecked(node.yoga_node, kind, &result.value)),
             api.OT_STYLE_VALUE, api.OT_STYLE_DIMENSION => {

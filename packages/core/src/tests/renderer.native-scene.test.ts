@@ -111,6 +111,51 @@ test("positionAnchor percentage insets preserve Yoga sizing and cell placement",
   assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
 })
 
+test("anchor centering updates placement, output, and hits without Yoga solves", async () => {
+  const target = await setup()
+  const anchor = new BoxRenderable(target.renderer, { position: "absolute", left: 2, width: 6, height: 4 })
+  const popup = new TextRenderable(target.renderer, {
+    content: "P",
+    width: 1,
+    zIndex: 1,
+    positionAnchor: anchor,
+    anchorCenterX: true,
+    anchorCenterY: true,
+  })
+  target.renderer.root.add(popup)
+  target.renderer.root.add(anchor)
+  assert.throws(() => Reflect.set(popup, "anchorCenterX", 1), TypeError)
+  for (const [index, [centerX, centerY, x, y]] of (
+    [
+      [true, true, 4.5, 1.5],
+      [false, true, 2, 1.5],
+      [true, undefined, 4.5, 0],
+    ] as const
+  ).entries()) {
+    Object.assign(popup, { anchorCenterX: centerX, anchorCenterY: centerY })
+    await target.renderOnce()
+    assert.deepEqual([popup.x, popup.y, popup.anchorCenterY], [x, y, centerY ?? false])
+    if (index > 0) assert.equal(target.renderer.getNativeStats().frameWork.yogaSolves, 0)
+    const [column, row] = [Math.trunc(x), Math.trunc(y)]
+    assert.equal(target.captureCharFrame().split("\n")[row][column], "P")
+    assert.equal(target.renderer.hitTest(column, row), popup.num)
+  }
+  popup.anchorCenterY = true
+  popup.top = 1
+  await target.renderOnce()
+  assert.deepEqual([popup.x, popup.y], [4.5, 1])
+  popup.setPosition({ top: undefined })
+  popup.positionAnchor = null
+  await target.renderOnce()
+  assert.deepEqual([popup.x, popup.y, popup.anchorCenterX], [0, 0, true])
+  popup.positionAnchor = anchor
+  await target.renderOnce()
+  assert.deepEqual([popup.x, popup.y], [4.5, 1.5])
+  await target.renderOnce()
+  const work = target.renderer.getNativeStats().frameWork
+  assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
+})
+
 test("renderOnce completes when an active live frame stops after failure", async () => {
   const target = await setup()
   const hold = Promise.withResolvers<void>()

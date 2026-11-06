@@ -509,6 +509,7 @@ pub const Node = struct {
     position_anchor: ?*native.NativeRenderable = null,
     anchor_position_type: ?u32 = null,
     anchor_insets: [4]u8 = .{ 0, 0, 0, 0 },
+    anchor_center: [2]bool = .{ false, false },
     // Head nodes anchored to this one, linked through anchor_previous/anchor_next.
     anchor_dependents: ?*native.NativeRenderable = null,
     anchor_previous: ?*native.NativeRenderable = null,
@@ -3782,6 +3783,8 @@ fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) 
                 offset.* = inset;
             } else if (try anchorInset(value, edge + 2, anchor_size, true)) |inset| {
                 offset.* = inset - size;
+            } else if (node.anchor_center[axis]) {
+                offset.* = (anchor_size - size) / 2;
             }
         }
         layout.left = offsets[0];

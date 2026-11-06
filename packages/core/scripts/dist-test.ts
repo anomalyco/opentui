@@ -100,6 +100,12 @@ try {
   anchored.setPosition({ left: "50%", top: "50%" })
   await scene.renderOnce()
   if (anchored.x !== 3.5 || anchored.y !== 2) throw new Error("Packed native anchor percentage geometry failed")
+  anchored.setPosition({ left: "auto", top: undefined })
+  Object.assign(anchored, { anchorCenterX: true, anchorCenterY: true })
+  await scene.renderOnce()
+  if (anchored.x !== 3 || anchored.y !== 1.5 || !anchored.anchorCenterX || !anchored.anchorCenterY) {
+    throw new Error("Packed native anchor centering failed")
+  }
   anchor.destroy()
   if (anchored.positionAnchor !== null) throw new Error("Packed native anchor cleanup failed")
   anchored.destroy()

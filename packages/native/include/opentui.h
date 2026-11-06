@@ -100,6 +100,7 @@ typedef struct ot_handle {
  * UNDEFINED ignores value. AUTO ignores value and is supported only by width,
  * height, flex basis, margin, and position. NaN clears a numeric value; infinity
  * rejects. ENUM values must be nonnegative integers from the named family.
+ * ANCHOR_CENTER_X/Y are scene-only boolean enums; they do not modify Yoga.
  * Scene layout requires box geometry; Yoga's display:contents is unsupported. */
 #define OT_STYLE_ENUM UINT32_C(0)
 #define OT_STYLE_FLOAT UINT32_C(1)
@@ -121,6 +122,8 @@ typedef struct ot_handle {
 #define OT_STYLE_ENUM_OVERFLOW UINT32_C(8)
 #define OT_STYLE_ENUM_DISPLAY UINT32_C(9)
 #define OT_STYLE_ENUM_BOX_SIZING UINT32_C(10)
+#define OT_STYLE_ENUM_ANCHOR_CENTER_X UINT32_C(11)
+#define OT_STYLE_ENUM_ANCHOR_CENTER_Y UINT32_C(12)
 #define OT_STYLE_FLOAT_FLEX UINT32_C(0)
 #define OT_STYLE_FLOAT_FLEX_GROW UINT32_C(1)
 #define OT_STYLE_FLOAT_FLEX_SHRINK UINT32_C(2)
@@ -206,6 +209,8 @@ typedef struct ot_handle {
 #define OT_STYLE_ENUM_OVERFLOW_MAX OT_OVERFLOW_SCROLL
 #define OT_STYLE_ENUM_DISPLAY_MAX OT_DISPLAY_NONE
 #define OT_STYLE_ENUM_BOX_SIZING_MAX OT_BOX_SIZING_CONTENT_BOX
+#define OT_STYLE_ENUM_ANCHOR_CENTER_X_MAX UINT32_C(1)
+#define OT_STYLE_ENUM_ANCHOR_CENTER_Y_MAX UINT32_C(1)
 #define OT_MEASURE_UNDEFINED UINT32_C(0)
 #define OT_MEASURE_EXACTLY UINT32_C(1)
 #define OT_MEASURE_AT_MOST UINT32_C(2)
