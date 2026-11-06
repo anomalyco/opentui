@@ -2363,6 +2363,9 @@ pub const Context = struct {
         // A scroll node's own padding holds its bar gutters.
         if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
         const target = if (content) scroll.?.content_node else node.yoga_node;
+        const display = group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY;
+        // A read that fails returns 0, and then the write below fails too.
+        const shown = if (display) yoga.yogaNodeStyleGetEnum(target, kind) else 0;
         try yoga.check(switch (group) {
             api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, @intFromFloat(value)),
             api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(target, kind, value),
@@ -2371,7 +2374,7 @@ pub const Context = struct {
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
-        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
+        if (display and shown != @as(u32, @intFromFloat(value))) {
             node.scene_node.?.owner.visibility_epoch +%= 1;
             // A shown child's refresh prepares its view although its layout did not change.
             scene.Scene.markObservationStale(node);

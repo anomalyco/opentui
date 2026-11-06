@@ -2394,7 +2394,11 @@ test "Scene frame work counts viewport refresh and culling work" {
             for (std.enums.values(Frame)) |frame| {
                 const measures = yoga.test_native_measures;
                 const w = switch (frame) {
-                    .first, .unchanged, .hidden_unchanged => try presentWork(f, .{}),
+                    .first, .unchanged, .hidden_unchanged => blk: {
+                        // An equal Display on a shown row changes nothing.
+                        if (frame == .hidden_unchanged) try f.owner.sceneSetStyle(rows[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                        break :blk try presentWork(f, .{});
+                    },
                     .scroll => blk: {
                         try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
                         break :blk try presentWork(f, .{});
