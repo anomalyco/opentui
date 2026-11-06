@@ -1,6 +1,7 @@
 // Copied from https://github.com/enquirer/enquirer/blob/36785f3399a41cd61e9d28d1eb9c2fcd73d69b4c/lib/keypress.js
 import { Buffer } from "node:buffer"
 import { kittyNamedSingleStrokeKeys, parseKittyKeyboard } from "./parse.keypress-kitty.js"
+import { parseWin32Keyboard } from "./parse.keypress-win32.js"
 
 const metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/
 
@@ -168,7 +169,7 @@ export interface ParsedKey {
   number: boolean
   raw: string
   eventType: KeyEventType
-  source: "raw" | "kitty"
+  source: "raw" | "kitty" | "win32"
   code?: string
   super?: boolean
   hyper?: boolean
@@ -306,6 +307,16 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
 
   const ctrlKeyName = s.length === 1 ? getCtrlKeyName(s.charCodeAt(0)) : undefined
   const metaCtrlKeyName = s.length === 2 && s[0] === "\x1b" ? getCtrlKeyName(s.charCodeAt(1)) : undefined
+
+  // Check for win32-input-mode key events. Windows Terminal reports every key
+  // as `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _` when the terminal is in
+  // win32-input-mode (DEC private mode 9001). The `_` terminator is unique to
+  // that protocol, so a match here is final: the legacy decoders below do not
+  // understand the shape and would drop the modifier state.
+  const win32Result = parseWin32Keyboard(s)
+  if (win32Result) {
+    return win32Result
+  }
 
   // Check for Kitty keyboard protocol if enabled
   if (options.useKittyKeyboard) {
