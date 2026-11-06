@@ -172,6 +172,8 @@ static void rendered_output(ot_context *context) {
     assert(delivered > 0);
     uint32_t hit = 0;
     assert(ot_scene_hit_test(context, &session, 0, 0, &hit) == OT_OK && hit == 101);
+    // Clearing detaches the box; clearing the empty root again changes nothing.
+    assert(ot_scene_clear_children(context, &root) == OT_OK && ot_scene_clear_children(context, &root) == OT_OK);
     assert(ot_session_destroy(context, &session) == OT_OK);
     assert(ot_scene_destroy_node(context, &root) == OT_STALE_HANDLE);
 }

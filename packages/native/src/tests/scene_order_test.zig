@@ -105,6 +105,13 @@ test "Scene detaches a first or last child, or all children, without scanning si
         try frame(f, &.{holder});
         try expectTop(f, holder);
         work.* = (try f.owner.sceneGetStats(f.id)).frameWork;
+        if (order != .clear) continue;
+        // Clearing an empty node in a reply asks for no layout round, as moving no child does.
+        var one_round = frame_options;
+        one_round.max_layout_rounds = 1;
+        const request = try f.step(null, one_round, 1, holder);
+        try f.owner.sceneClearChildren(holder);
+        _ = try f.step(request, one_round, 0, null);
     }
     // Clearing leaves the next frame the work that moving each child to no parent leaves.
     try testing.expectEqual(works[0], works[2]);

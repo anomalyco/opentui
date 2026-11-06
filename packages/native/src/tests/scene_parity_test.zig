@@ -1435,6 +1435,7 @@ const Harness = struct {
                 // A clear takes the candidate's counts where the reference's moves take them.
                 const other = (try self.twins[reference].owner.raw().getRenderable(pair[reference])).scene_node.?;
                 try testing.expectEqual(.{ other.skip.update_below, other.skip.filters_below, other.skip.scrolls_below, other.placement }, .{ node.skip.update_below, node.skip.filters_below, node.skip.scrolls_below, node.placement });
+                try testing.expectEqual(try self.twins[reference].owner.sceneGetPaintLayout(pair[reference]), try f.owner.sceneGetPaintLayout(pair[twin]));
             }
             // The reader text is a scene node outside the tree.
             try testing.expectEqual(live + 1, f.state.count);
