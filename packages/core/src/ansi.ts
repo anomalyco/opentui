@@ -10,6 +10,8 @@ export const ANSI = {
   scrollDown: (lines: number) => `\x1b[${lines}T`,
   scrollUp: (lines: number) => `\x1b[${lines}S`,
 
+  scrollIntoHistory: (lines: number, lastRow: number) => `\x1b7\x1b[${lastRow};1H${"\n".repeat(lines)}\x1b8`,
+
   moveCursor: (row: number, col: number) => `\x1b[${row};${col}H`,
   moveCursorAndClear: (row: number, col: number) => `\x1b[${row};${col}H\x1b[J`,
 

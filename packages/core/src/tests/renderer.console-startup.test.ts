@@ -778,7 +778,7 @@ for (const [name, screenMode, change, dimensions, output] of [
     "split-footer",
     (target: TestRenderer) => (target.footerHeight = 6),
     [40, 6],
-    ANSI.scrollUp(2),
+    ANSI.scrollIntoHistory(2, 10),
   ],
   [
     "shrinking footerHeight",
