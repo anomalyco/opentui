@@ -193,3 +193,30 @@ test("double-click then drag onto the next word selects both", async () => {
   await renderOnce()
   expect(text.getSelectedText()).toBe("beta gamma")
 })
+
+test("repeated updateSelection with a still pointer does not widen the container (issue #1757)", async () => {
+  const outer = new BoxRenderable(renderer, { width: 20, height: 2, flexDirection: "column" })
+  const mid = new BoxRenderable(renderer, {})
+  const inner = new BoxRenderable(renderer, {})
+  const text = new TextRenderable(renderer, { content: "hello world", selectable: true })
+  const rule = new TextRenderable(renderer, { content: "────────────", selectable: false })
+  inner.add(text)
+  mid.add(inner)
+  outer.add(mid)
+  outer.add(rule)
+  renderer.root.add(outer)
+  await renderOnce()
+
+  renderer.startSelection(text, text.x, text.y)
+  renderer.updateSelection(text, text.x + text.width, text.y)
+
+  // Pointer now rests on the rule and never moves. 
+  // The first call may widen once, but every later call with the same focus returns the same container.
+  renderer.updateSelection(rule, rule.x + 2, rule.y)
+  const container = renderer.getSelectionContainer()
+
+  for (let call = 0; call < 3; call++) {
+    renderer.updateSelection(rule, rule.x + 2, rule.y)
+    expect(renderer.getSelectionContainer()).toBe(container)
+  }
+})
