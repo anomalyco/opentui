@@ -79,6 +79,25 @@ test "Scene equal-z siblings paint in attachment order however z reached them" {
     }
 }
 
+test "Scene detaches a first or last child without scanning its siblings" {
+    for ([_]bool{ false, true }) |reverse| {
+        const f = try Fixture.init(testing.allocator, 2, 1, .{});
+        defer f.deinit();
+        var children: [64]context.Handle = undefined;
+        for (&children, 0..) |*child, index| {
+            child.* = try box(f.owner, f.id, @intCast(index + 2), 0);
+            try f.owner.sceneMoveNode(child.*, f.root, @intCast(index));
+        }
+        f.state.test_sibling_steps = 0;
+        for (0..children.len) |step| {
+            const child = children[if (reverse) children.len - 1 - step else step];
+            if (step % 2 == 0) try f.owner.sceneMoveNode(child, null, 0) else try f.owner.sceneDestroyNode(child);
+        }
+        // One step in the children and one in the paint children per detached child.
+        try testing.expectEqual(@as(u64, 2 * children.len), f.state.test_sibling_steps);
+    }
+}
+
 test "Scene ordered equal-z append skips settled sibling rank and sort work" {
     for ([_]bool{ false, true }) |hooks| {
         const f = try Fixture.init(testing.allocator, 2, 1, .{});

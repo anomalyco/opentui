@@ -847,6 +847,7 @@ pub const Scene = struct {
     // OT_SCENE_DEBUG_* bits. Every shortcut that skips frame work tests FULL_FRAME.
     debug_flags: u32 = 0,
     test_sort_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    test_sibling_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     test_hit_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     // Editor cursor work: placements tried and releases written.
     test_cursor_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
@@ -983,8 +984,9 @@ pub const Scene = struct {
         } else {
             if (index != 0) return error.YogaInvalidArgument;
             if (node.parent) |old| {
-                try yoga.check(yoga.yogaNodeRemoveChildChecked(old.scene_node.?.childYoga(old), value.yoga_node));
-                removeChild(&old.scene_node.?.children, value);
+                const slot = childIndex(old.scene_node.?.children.items, value);
+                try yoga.check(yoga.yogaNodeRemoveChildAtChecked(old.scene_node.?.childYoga(old), value.yoga_node, slot));
+                _ = old.scene_node.?.children.orderedRemove(slot);
                 self.detach(value, old);
             }
         }
@@ -1143,8 +1145,9 @@ pub const Scene = struct {
         }
         self.filter_count -= @intFromBool(node.filtersChildren());
         if (node.parent) |parent| {
-            yoga.yogaNodeRemoveChild(parent.scene_node.?.childYoga(parent), value.yoga_node);
-            removeChild(&parent.scene_node.?.children, value);
+            const index = childIndex(parent.scene_node.?.children.items, value);
+            yoga.check(yoga.yogaNodeRemoveChildAtChecked(parent.scene_node.?.childYoga(parent), value.yoga_node, index)) catch unreachable;
+            _ = parent.scene_node.?.children.orderedRemove(index);
             self.detach(value, parent);
         }
         if (node.skip.view_queued) {
@@ -3733,11 +3736,18 @@ fn overlaps(filter: Filter, layout: Layout) bool {
 }
 
 fn removeChild(children: *std.ArrayListUnmanaged(*native.NativeRenderable), value: *native.NativeRenderable) void {
-    for (children.items, 0..) |child, index| {
-        if (child == value) {
-            _ = children.orderedRemove(index);
-            return;
-        }
+    _ = children.orderedRemove(childIndex(children.items, value));
+}
+
+/// Hosts remove children in order, from the first or from the last, so the search starts at both ends.
+fn childIndex(children: []const *native.NativeRenderable, value: *native.NativeRenderable) u32 {
+    var low: usize = 0;
+    var high = children.len;
+    while (low < high) : (low += 1) {
+        if (builtin.is_test) value.scene_node.?.owner.test_sibling_steps += 1;
+        high -= 1;
+        if (children[high] == value) return @intCast(high);
+        if (children[low] == value) return @intCast(low);
     }
     unreachable;
 }

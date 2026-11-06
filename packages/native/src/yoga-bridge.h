@@ -40,6 +40,7 @@ uint32_t otYogaNodeInsertChild(YGNodeRef node, YGNodeRef child, uint32_t index) 
 uint32_t otYogaNodeMoveChild(YGNodeRef parent, YGNodeRef child,
                              uint32_t final_index) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeRemoveChild(YGNodeRef node, YGNodeRef child) OT_YOGA_NOEXCEPT;
+uint32_t otYogaNodeRemoveChildAt(YGNodeRef node, YGNodeRef child, uint32_t index) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeRemoveAllChildren(YGNodeRef node) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeCalculateLayout(YGNodeRef node, float width, float height,
                                    uint32_t direction) OT_YOGA_NOEXCEPT;
