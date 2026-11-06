@@ -1364,6 +1364,27 @@ describe("TextRenderable Selection", () => {
       expect(text.width).toBe(longLine.length)
     })
 
+    it("should measure multiline text in a row at its full height when taller than the screen", async () => {
+      const column = new BoxRenderable(currentRenderer, { flexShrink: 0 })
+      const row = new BoxRenderable(currentRenderer, { flexDirection: "row" })
+      const prefix = new TextRenderable(currentRenderer, { content: "* " })
+      const body = new TextRenderable(currentRenderer, {
+        content: Array.from({ length: 8 }, (_, i) => `line ${i}`).join("\n"),
+      })
+      const last = new TextRenderable(currentRenderer, { content: "LAST LINE" })
+      row.add(prefix)
+      row.add(body)
+      column.add(row)
+      column.add(last)
+      currentRenderer.root.add(column)
+
+      await renderOnce()
+
+      expect(body.height).toBe(8)
+      expect(row.height).toBe(8)
+      expect(last.y).toBe(8)
+    })
+
     it("should update height when content changes from single to multiline", async () => {
       const { text } = await createTextRenderable(currentRenderer, {
         content: "Single line",
