@@ -32,6 +32,53 @@ test("ordinary renderer defaults to native scene ownership and presentation", as
   assert.equal(target.renderer.hitTest(1, 0), text.num)
 })
 
+test("positionAnchor updates geometry, output, and hits in the current frame", async () => {
+  const target = await setup()
+  const anchor = new BoxRenderable(target.renderer, { width: 6, height: 1 })
+  const popup = new TextRenderable(target.renderer, {
+    content: "P",
+    width: 1,
+    left: 1,
+    top: 1,
+    positionAnchor: anchor,
+  })
+  target.renderer.root.flexDirection = "row"
+  target.renderer.root.justifyContent = "flex-end"
+  target.renderer.root.add(popup)
+  target.renderer.root.add(anchor)
+  for (const [left, translateX, width, expectedX] of [
+    [0, 0, 6, 15],
+    [-2, 0, 6, 13],
+    [-2, -1, 6, 12],
+    [-2, -1, 4, 14],
+  ] as const) {
+    Object.assign(anchor, { left, translateX, width })
+    await target.renderOnce()
+    assert.deepEqual([popup.x, popup.y], [expectedX, 1])
+    assert.equal(target.captureCharFrame().split("\n")[1].trimEnd(), " ".repeat(expectedX) + "P")
+    for (const column of [12, 13, 14, 15]) {
+      assert.equal(target.renderer.hitTest(column, 1) === popup.num, column === expectedX)
+    }
+  }
+  target.renderer.root.justifyContent = "flex-start"
+  Object.assign(anchor, { left: 2, translateX: 0 })
+  popup.setPosition({ left: "right", top: "bottom" })
+  for (const [width, height, x, y] of [
+    [6, 1, 8, 1],
+    [4, 2, 6, 2],
+    [4, 2, 6, 2],
+  ]) {
+    Object.assign(anchor, { width, height })
+    await target.renderOnce()
+    assert.deepEqual([popup.x, popup.y], [x, y])
+    assert.equal(target.captureCharFrame().split("\n")[y].trimEnd(), " ".repeat(x) + "P")
+    assert.equal(target.renderer.hitTest(x, y), popup.num)
+    assert.notEqual(target.renderer.hitTest(x - 1, y), popup.num)
+  }
+  const work = target.renderer.getNativeStats().frameWork
+  assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
+})
+
 test("renderOnce completes when an active live frame stops after failure", async () => {
   const target = await setup()
   const hold = Promise.withResolvers<void>()
