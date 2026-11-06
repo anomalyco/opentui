@@ -19,6 +19,17 @@ const RETIRED_GENERATION = GEN_MASK + 1;
 
 pub const IdPayload = u32;
 
+/// A link target is written into the OSC 8 hyperlink sequence verbatim by the
+/// renderer, so a control byte in it would end that sequence early and let the
+/// rest of the target run as its own escape (OSC 52 clipboard writes, title
+/// changes, mode switches). Targets carrying one are not written at all.
+pub fn isWritableTarget(url: []const u8) bool {
+    for (url) |byte| {
+        if (byte < 0x20 or (byte >= 0x7f and byte <= 0x9f)) return false;
+    }
+    return true;
+}
+
 const SlotHeader = extern struct {
     len: u32,
     refcount: u32,
