@@ -2209,8 +2209,6 @@ export abstract class Renderable extends BaseRenderable {
   private removeLayoutChildAt(index: number): void {
     const children = this._childrenInLayoutOrder
     if (index === children.length - 1) children.pop()
-    // JSC's shift() drops the first element without moving the rest; splice(0, 1) moves them.
-    else if (index === 0) children.shift()
     else children.splice(index, 1)
   }
 
