@@ -138,6 +138,37 @@ test "Scene position anchor cached culling follows relationship and keyword chan
     }
 }
 
+test "Scene position anchor resolves percentage insets against its outer box" {
+    const f = try Fixture.init(testing.allocator, 20, 12, .{});
+    defer f.deinit();
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const popup = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    try dimensions(f.owner, anchor, 6, 5);
+    try dimensions(f.owner, popup, 2, 1);
+    try f.owner.sceneSetStyle(anchor, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, c.OT_EDGE_ALL, c.OT_UNIT_POINT, 1, 0);
+    try f.owner.sceneMoveNode(popup, f.root, 0);
+    try f.owner.sceneMoveNode(anchor, f.root, 1);
+    try f.owner.sceneSetPositions(anchor, 3, .{ 1, 1, 0, 0 }, .{ 2, 1, 0, 0 });
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    const Case = struct { units: [4]u32, values: [4]f32, point: [2]f64 };
+    for ([_]Case{
+        .{ .units = .{ 2, 2, 2, 2 }, .values = .{ 0, 50, 75, 75 }, .point = .{ 2, 3.5 } },
+        .{ .units = .{ 3, 3, 2, 2 }, .values = .{ 0, 0, 25, 50 }, .point = .{ 4.5, 2.5 } },
+        .{ .units = .{ 2, 2, 0, 0 }, .values = .{ -25, 150, 0, 0 }, .point = .{ 0.5, 8.5 } },
+    }) |case| {
+        try f.owner.sceneSetPositions(popup, 15, case.units, case.values);
+        try repaint(f.owner, f.id, frame_options.background, true, 0);
+        const layout = try f.owner.sceneGetLayout(popup, false);
+        try testing.expectEqual(case.point, [2]f64{ layout.screenX, layout.screenY });
+    }
+    try dimensions(f.owner, anchor, 1e30, 5);
+    for ([_]f32{ std.math.floatMax(f32), -std.math.floatMax(f32) }) |percentage| {
+        try f.owner.sceneSetPositions(popup, 15, .{ 2, 0, 0, 0 }, .{ percentage, 0, 0, 0 });
+        try repaint(f.owner, f.id, frame_options.background, true, 0);
+        try testing.expectEqual(@as(f64, std.math.copysign(std.math.floatMax(f32), percentage)), (try f.owner.sceneGetLayout(popup, false)).screenX);
+    }
+}
+
 test "Scene position anchor chains exceed the Yoga depth bound without frame allocations after warmup" {
     const chain_length = yoga.depth_max + 2;
     const f = try Fixture.init(testing.allocator, chain_length + 2, 2, .{ .limits = .{ .object_capacity = chain_length + 16 } });

@@ -3756,9 +3756,13 @@ fn anchorInset(value: *const native.NativeRenderable, edge: u32, anchor_size: f3
     if (unit != 0) return if (unit >= api.OT_UNIT_ANCHOR_RIGHT) anchor_size else 0;
     var encoded: u64 = 0;
     try yoga.check(yoga.yogaNodeStyleGetValueChecked(value.yoga_node, api.OT_STYLE_VALUE_POSITION, edge, &encoded));
-    if (@as(u32, @truncate(encoded)) != api.OT_UNIT_POINT) return null;
-    const inset: f32 = @bitCast(@as(u32, @truncate(encoded >> 32)));
-    return if (trailing) anchor_size - inset else inset;
+    const requested: f32 = @bitCast(@as(u32, @truncate(encoded >> 32)));
+    const inset: f64 = switch (@as(u32, @truncate(encoded))) {
+        api.OT_UNIT_POINT => requested,
+        api.OT_UNIT_PERCENT => @as(f64, anchor_size) * requested / 100,
+        else => return null,
+    };
+    return @floatCast(std.math.clamp(if (trailing) @as(f64, anchor_size) - inset else inset, -std.math.floatMax(f32), std.math.floatMax(f32)));
 }
 
 fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) !Layout {

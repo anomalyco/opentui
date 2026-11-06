@@ -79,6 +79,38 @@ test("positionAnchor updates geometry, output, and hits in the current frame", a
   assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
 })
 
+test("positionAnchor percentage insets preserve Yoga sizing and cell placement", async () => {
+  const target = await setup()
+  const parent = new BoxRenderable(target.renderer, { width: 8, height: 4, zIndex: 1 })
+  const anchor = new BoxRenderable(target.renderer, { position: "absolute", left: 2, border: true, padding: 1 })
+  const popup = new TextRenderable(target.renderer, {
+    content: "P",
+    width: "50%",
+    height: "25%",
+    positionAnchor: anchor,
+  })
+  parent.add(popup)
+  target.renderer.root.add(parent)
+  target.renderer.root.add(anchor)
+  for (const [insets, width, height, x, y] of [
+    [{ left: "50%", top: "50%" }, 6, 5, 5, 2.5],
+    [{ left: "auto", top: undefined, right: "25%", bottom: "50%" }, 6, 5, 2.5, 1.5],
+    [{ left: "50%", top: "50%" }, 8, 6, 6, 3],
+    [{ left: "-31.25%", top: 0 }, 8, 6, -0.5, 0],
+  ] as const) {
+    popup.setPosition(insets)
+    Object.assign(anchor, { width, height })
+    await target.renderOnce()
+    assert.deepEqual([popup.x, popup.y, popup.width, popup.height], [x, y, 4, 1])
+    const [column, row] = [Math.trunc(x), Math.trunc(y)]
+    assert.equal(target.captureCharFrame().split("\n")[row][column], "P")
+    assert.equal(target.renderer.hitTest(column, row), popup.num)
+  }
+  await target.renderOnce()
+  const work = target.renderer.getNativeStats().frameWork
+  assert.deepEqual([work.candidateVisits, work.yogaSolves], [0, 0])
+})
+
 test("renderOnce completes when an active live frame stops after failure", async () => {
   const target = await setup()
   const hold = Promise.withResolvers<void>()
