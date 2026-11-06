@@ -1,5 +1,5 @@
 import { EventEmitter } from "events"
-import { createDebounce, clearDebounceScope, DebounceController } from "../debounce.js"
+import { createDebounce, DebounceController } from "../debounce.js"
 import { ProcessQueue } from "../queue.js"
 import type {
   TreeSitterClientOptions,
@@ -67,6 +67,8 @@ export function addDefaultParsers(parsers: FiletypeParserOptions[]): void {
   }
 }
 
+let nextDebounceScopeId = 0
+
 const isUrl = (path: string) => path.startsWith("http://") || path.startsWith("https://")
 
 // Parser options now support both URLs and local file paths
@@ -93,7 +95,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
   constructor(options: TreeSitterClientOptions, internalOptions: TreeSitterClientInternalOptions = {}) {
     super()
     this.options = options
-    this.debouncer = createDebounce("tree-sitter-client")
+    this.debouncer = createDebounce(`tree-sitter-client-${nextDebounceScopeId++}`)
     if (internalOptions.autoStartWorker ?? true) {
       this.startWorker()
     }
@@ -738,7 +740,6 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     }
     this.destroyCallbacks.clear()
 
-    clearDebounceScope("tree-sitter-client")
     this.debouncer.clear()
 
     this.editQueues.clear()

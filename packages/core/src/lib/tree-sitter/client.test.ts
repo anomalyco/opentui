@@ -305,6 +305,58 @@ describeClient("TreeSitterClient", () => {
     expect(buffer?.version).toBe(2)
   })
 
+  test("should highlight a reset buffer when another client is destroyed", async () => {
+    const otherClient = new TreeSitterClient({ dataPath })
+    await client.initialize()
+    await otherClient.initialize()
+
+    await client.createBuffer(1, 'const hello = "world";', "javascript")
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const versions: number[] = []
+    client.on("highlights:response", (bufferId, version) => {
+      if (bufferId === 1) versions.push(version)
+    })
+
+    await client.resetBuffer(1, 2, "function test() { return 42; }")
+    await otherClient.destroy()
+
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(versions).toContain(2)
+  })
+
+  test("should highlight reset buffers that share an id across clients", async () => {
+    const otherClient = new TreeSitterClient({ dataPath })
+    try {
+      await client.initialize()
+      await otherClient.initialize()
+
+      await client.createBuffer(1, 'const hello = "world";', "javascript")
+      await otherClient.createBuffer(1, "const foo = 42;", "javascript")
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const versions: number[] = []
+      const otherVersions: number[] = []
+      client.on("highlights:response", (bufferId, version) => {
+        if (bufferId === 1) versions.push(version)
+      })
+      otherClient.on("highlights:response", (bufferId, version) => {
+        if (bufferId === 1) otherVersions.push(version)
+      })
+
+      await client.resetBuffer(1, 2, "function test() { return 42; }")
+      await otherClient.resetBuffer(1, 2, "function foo() { return 1; }")
+
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      expect(versions).toContain(2)
+      expect(otherVersions).toContain(2)
+    } finally {
+      await otherClient.destroy()
+    }
+  })
+
   test("should emit error events for invalid operations", async () => {
     await client.initialize()
 
