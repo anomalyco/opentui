@@ -125,6 +125,9 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   private _scrollSpeed: number = 16
   private _keyboardSelectionActive: boolean = false
 
+  // Latest text killed by Ctrl-K/Ctrl-U or word deletion, yanked with Ctrl+Y.
+  private _lastKilled: string | null = null
+
   public readonly editBuffer: EditBuffer
   public readonly editorView: EditorView
 
@@ -941,6 +944,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const eol = this.editBuffer.getEOL()
 
     if (eol.col > cursor.col) {
+      const killed = this.getTextRangeByCoords(cursor.row, cursor.col, eol.row, eol.col)
+      if (killed) this._lastKilled = killed
       this.editBuffer.deleteRange(cursor.row, cursor.col, eol.row, eol.col)
     }
 
@@ -952,12 +957,20 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const cursor = this.editorView.getCursor()
 
     if (cursor.col > 0) {
+      const killed = this.getTextRangeByCoords(cursor.row, 0, cursor.row, cursor.col)
+      if (killed) this._lastKilled = killed
       this.editBuffer.deleteRange(cursor.row, 0, cursor.row, cursor.col)
     } else if (cursor.row > 0) {
       this.editBuffer.deleteCharBackward()
     }
 
     this.requestRender()
+    return true
+  }
+
+  public yank(): boolean {
+    if (this._lastKilled === null) return false
+    this.insertText(this._lastKilled)
     return true
   }
 
@@ -1007,6 +1020,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const nextWord = this.editBuffer.getNextWordBoundary()
 
     if (nextWord.offset > currentCursor.offset) {
+      const killed = this.getTextRangeByCoords(currentCursor.row, currentCursor.col, nextWord.row, nextWord.col)
+      if (killed) this._lastKilled = killed
       this.editBuffer.deleteRange(currentCursor.row, currentCursor.col, nextWord.row, nextWord.col)
     }
 
@@ -1025,6 +1040,8 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     const prevWord = this.editBuffer.getPrevWordBoundary()
 
     if (prevWord.offset < currentCursor.offset) {
+      const killed = this.getTextRangeByCoords(prevWord.row, prevWord.col, currentCursor.row, currentCursor.col)
+      if (killed) this._lastKilled = killed
       this.editBuffer.deleteRange(prevWord.row, prevWord.col, currentCursor.row, currentCursor.col)
     }
 
