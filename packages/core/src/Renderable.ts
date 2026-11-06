@@ -1765,7 +1765,7 @@ export abstract class Renderable extends BaseRenderable {
     // Membership in _childrenInLayoutOrder proves child is a Renderable with a
     // layout node; anything else (text nodes, children of other parents,
     // already-detached renderables) is a caller bug worth surfacing in dev.
-    const index = this._childrenInLayoutOrder.indexOf(child as Renderable)
+    const index = this.layoutIndexOf(child)
     if (index === -1) {
       if (process.env.NODE_ENV !== "production") {
         console.warn(`Renderable with id ${child.id} is not a child of ${this.id}, skipping remove`)
@@ -2200,9 +2200,17 @@ export abstract class Renderable extends BaseRenderable {
     if (deferred) for (const resume of deferred) run(resume)
   }
 
+  // Hosts remove children in order, from the first or from the last, so the last needs no scan.
+  private layoutIndexOf(child: BaseRenderable): number {
+    const children = this._childrenInLayoutOrder
+    return children.at(-1) === child ? children.length - 1 : children.indexOf(child as Renderable)
+  }
+
   private removeLayoutChildAt(index: number): void {
     const children = this._childrenInLayoutOrder
     if (index === children.length - 1) children.pop()
+    // JSC's shift() drops the first element without moving the rest; splice(0, 1) moves them.
+    else if (index === 0) children.shift()
     else children.splice(index, 1)
   }
 
@@ -2210,7 +2218,7 @@ export abstract class Renderable extends BaseRenderable {
     const parent = this.parent
     if (!parent) return
 
-    const layoutIndex = parent._childrenInLayoutOrder.indexOf(this)
+    const layoutIndex = parent.layoutIndexOf(this)
     if (layoutIndex !== -1) {
       this._ctx.nativeScene.moveNode(this, null, 0)
       parent.removeLayoutChildAt(layoutIndex)
