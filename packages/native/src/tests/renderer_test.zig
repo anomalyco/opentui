@@ -2610,29 +2610,6 @@ test "renderer - transparent rgb backgrounds still emit 49 reset" {
 // GRAPHEME CURSOR POSITIONING TESTS
 // ============================================================================
 
-test "renderer - default cursor style emits reset cursor ANSI" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        80,
-        24,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
-
-    cli_renderer.terminal.setCursorPosition(4, 2, true);
-    _ = test_cli_renderer.render(false);
-
-    const output = test_cli_renderer.lastOutput();
-
-    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.defaultCursorStyle) != null);
-    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.cursorBlock) == null);
-}
-
 test "renderer - explicit_cursor_positioning emits cursor move after wide graphemes" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -3675,7 +3652,7 @@ test "renderer - batched split commits share single sync frame" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncReset));
 }
 
-test "renderer - unchanged frame with unchanged cursor emits no output" {
+test "renderer - frames with unchanged cells and cursor write only the changed pointer" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -3691,13 +3668,21 @@ test "renderer - unchanged frame with unchanged cursor emits no output" {
 
     cli_renderer.terminal.setCursorPosition(3, 2, true);
     _ = test_cli_renderer.render(false);
-
-    _ = test_cli_renderer.render(false);
-    const output = test_cli_renderer.lastOutput();
+    try std.testing.expect(std.mem.find(u8, test_cli_renderer.lastOutput(), ansi.ANSI.defaultCursorStyle) != null);
+    try std.testing.expect(std.mem.find(u8, test_cli_renderer.lastOutput(), ansi.ANSI.cursorBlock) == null);
 
     // No-op frames must be byte-empty; otherwise repeated sync/cursor toggles can
     // produce visible shimmer in terminals that animate cursor or repaint eagerly.
-    try std.testing.expectEqual(@as(usize, 0), output.len);
+    // A pointer change alone must not hide the visible cursor.
+    for ([_]struct { pointer: terminal_mod.MousePointerStyle, output: []const u8 }{
+        .{ .pointer = .default, .output = "" },
+        .{ .pointer = .pointer, .output = "\x1b]22;pointer\x1b\\" },
+        .{ .pointer = .pointer, .output = "" },
+    }) |row| {
+        cli_renderer.terminal.setMousePointerStyle(row.pointer);
+        _ = test_cli_renderer.render(false);
+        try std.testing.expectEqualStrings(row.output, test_cli_renderer.lastOutput());
+    }
 }
 
 // ---- FeedBackend tests ----
