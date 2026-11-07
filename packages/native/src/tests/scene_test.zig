@@ -52,6 +52,23 @@ fn expectScreen(f: Fixture, node: context.Handle, expected: [2]f64) !void {
     try testing.expectEqual(expected, [2]f64{ layout.screenX, layout.screenY });
 }
 
+test "Scene inactive anchor insets preserve unanchored frame reuse" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try dimensions(f.owner, node, 1, 1);
+    try f.owner.sceneMoveNode(node, f.root, 0);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try f.owner.sceneSetStyle(node, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_LEFT, c.OT_UNIT_ANCHOR_RIGHT, 0, 0);
+    const native_node = try f.owner.raw().getRenderable(node);
+    var dirty: u32 = 0;
+    try yoga.check(yoga.yogaNodeIsDirtyChecked(native_node.yoga_node, &dirty));
+    try testing.expectEqual(@as(u32, 0), dirty);
+    try testing.expect(!native_node.scene_node.?.owner.preparation_dirty);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try testing.expectEqual(@as(u64, 0), (try f.owner.sceneGetStats(f.id)).frameWork.candidate_visits);
+}
+
 test "Scene position anchor resolves numeric offsets outside flex flow" {
     const f = try Fixture.init(testing.allocator, 20, 6, .{});
     defer f.deinit();

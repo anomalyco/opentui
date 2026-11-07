@@ -1810,7 +1810,7 @@ pub const Scene = struct {
         const effective = yogaInsets(insets);
         try yoga.setPositionState(value.yoga_node, try yogaPositionType(value), &effective.units, &effective.values, node.position_anchor != null);
         node.position_insets = insets;
-        self.invalidateGeometry(value);
+        if (node.position_anchor != null) self.invalidateGeometry(value);
     }
 
     pub fn setAnchorCenter(self: *Scene, value: *native.NativeRenderable, axis: usize, centered: bool) !void {
