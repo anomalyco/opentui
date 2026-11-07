@@ -2363,6 +2363,9 @@ pub const Context = struct {
         // A scroll node's own padding holds its bar gutters.
         if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
         const target = if (content) scroll.?.content_node else node.yoga_node;
+        const display = group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY;
+        // A read that fails returns 0, and then the write below fails too.
+        const shown = if (display) yoga.yogaNodeStyleGetEnum(target, kind) else 0;
         try yoga.check(switch (group) {
             api.OT_STYLE_ENUM => yoga.yogaNodeStyleSetEnumChecked(target, kind, @intFromFloat(value)),
             api.OT_STYLE_FLOAT => yoga.yogaNodeStyleSetFloatChecked(target, kind, value),
@@ -2371,7 +2374,7 @@ pub const Context = struct {
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(target, kind, unit, value, yoga_flags),
             else => unreachable,
         });
-        if (group == api.OT_STYLE_ENUM and kind == api.OT_STYLE_ENUM_DISPLAY) {
+        if (display and shown != @as(u32, @intFromFloat(value))) {
             node.scene_node.?.owner.visibility_epoch +%= 1;
             // A shown child's refresh prepares its view although its layout did not change.
             scene.Scene.markObservationStale(node);
@@ -2571,11 +2574,15 @@ pub const Context = struct {
     pub fn sceneSetText(self: *Context, handle: Handle, bytes: []const u8) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const node = try self.scenePaintNode(handle);
+        const node = try self.sceneMutableNode(handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         var dirty: u32 = 0;
         try yoga.check(yoga.yogaNodeIsDirtyChecked(node.yoga_node, &dirty));
+        // The same bytes without styles to drop: a replacement would rebuild what is there.
+        // They passed validation when they were set, and scene text keeps its tab width.
+        if (text.buffer.internal_highlight_count == 0 and holdsBytes(text, bytes)) return;
         try validateTextBytes(text.buffer.tabWidth(), bytes, 0);
+        node.scene_node.?.paint_epoch = nextPaintEpoch();
         if (try self.replaceTextContent(text, bytes)) textResourceChanged(text) else textResent(node);
         node.scene_node.?.owner.clearPreparation();
     }
@@ -3890,11 +3897,11 @@ pub const Context = struct {
     /// Replacements put the whole text in the `input_mem_id` slot. The rope holds exactly those
     /// bytes when it has no other slot and the byte counts agree. An append adds a slot. A clear
     /// leaves a stale slot and a flatten drops the slot's line breaks; both make the counts
-    /// differ whenever the slot is not the text.
+    /// differ whenever the slot is not the text. The rope counts a CRLF break as one byte.
     fn holdsBytes(text: anytype, bytes: []const u8) bool {
         const registry = &text.buffer.mem_registry;
         const current = registry.get(@as(?u8, text.input_mem_id) orelse return false).?;
-        return registry.buffers.items.len == 1 and text.buffer.getByteSize() == bytes.len and std.mem.eql(u8, current, bytes);
+        return registry.buffers.items.len == 1 and text.buffer.getByteSize() == bytes.len - std.mem.count(u8, bytes, "\r\n") and std.mem.eql(u8, current, bytes);
     }
 
     fn textResourceChanged(text: *Text) void {

@@ -600,7 +600,7 @@ test "Scene frame work counts each frame kind and publishes only presented scene
     (try f.owner.raw().getSession(f.id)).cancel();
 }
 
-const Retained = enum { unchanged, scroll, scroll_same, scroll_grow, scroll_colors, scroll_arrow, focus, blur, register, destroy_style, unbind, rebind, select, reset, styled_text, text_options, view_paint_off, view_paint_on, box_details, arrow, slider, editor_select, editor_rebind, editor_unbind, z_order, surface_write, resend, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, preserve, recorded, image };
+const Retained = enum { unchanged, scroll, scroll_same, scroll_grow, scroll_colors, scroll_arrow, focus, blur, register, destroy_style, unbind, rebind, select, reset, styled_text, plain_text, text_options, view_paint_off, view_paint_on, box_details, arrow, slider, editor_select, editor_rebind, editor_unbind, z_order, surface_write, resend, same_text, same_width, sub_cell, palette, draft_write, session_draw, lease_next, lease_current, raw_render, skipped_commit, width_method, preserve, recorded, image };
 
 /// A node at a fixed place, painted after its earlier siblings.
 fn placedAt(f: Fixture, parent: context.Handle, kind: u32, num: u32, left: f32, top: f32, width: f32, height: f32) !context.Handle {
@@ -863,6 +863,8 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .select, .damage = 3 },
         .{ .change = .reset, .damage = 3 },
         .{ .change = .styled_text, .damage = 3 },
+        // The same bytes without styles drop the styles.
+        .{ .change = .plain_text, .damage = 3 },
         .{ .change = .text_options, .damage = 3 },
         .{ .change = .view_paint_off, .damage = 3 },
         .{ .change = .view_paint_on, .damage = 3 },
@@ -878,6 +880,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
         .{ .change = .surface_write, .damage = 2 },
         // Equal values and layout-only setters that keep the layout change nothing.
         .{ .change = .resend, .damage = 2 },
+        .{ .change = .same_text, .damage = 2 },
         .{ .change = .same_width, .damage = 2 },
         // Layout compares bit-exact: a sub-cell move repaints its rows although no cell moves.
         .{ .change = .sub_cell, .damage = 5 },
@@ -928,6 +931,7 @@ fn retainedTable(verify: bool, counts: []FrameWork) !void {
             .select => try testing.expect(try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_SET, .focus_x = 3, .background = ansi.rgbColor(0, 0, 255, 255) })),
             .reset => try testing.expect(try f.owner.sceneSetTextSelection(text, .{ .operation = c.OT_SCENE_TEXT_SELECTION_RESET })),
             .styled_text => try f.owner.sceneSetStyledText(text, "hello", &.{.{ .byte_count = 5, .foreground = ansi.rgbColor(0, 255, 255, 255) }}),
+            .plain_text, .same_text => try f.owner.sceneSetText(text, "hello"),
             .text_options => try f.owner.sceneSetTextOptions(text, .{ .attributes = ansi.TextAttributes.BOLD }),
             .view_paint_off, .view_paint_on => try f.owner.sceneSetTextViewPaint(view_node, row.change == .view_paint_on),
             .box_details => try f.owner.sceneSetBoxDetails(box, .{ .title = "t" }),
@@ -1270,14 +1274,16 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
     try f.owner.sceneSetTextView(node, view);
     try f.owner.sceneMoveNode(node, f.root, 1);
     const red: context.StyledTextChunk = .{ .byte_count = 3, .foreground = .{ 1, 0, 0, 1 } };
-    const Write = enum { none, scene_same, scene_styled_same, same, styled_same, batch_same, batch_new, defaults, highlight, syntax_style, scene_new, styled_new, tab_width, wrap_mode, clear, append, stale_slot };
+    const Write = enum { none, scene_same, scene_styled_same, same, styled_same, batch_same, batch_new, defaults, highlight, syntax_style, scene_new, styled_new, tab_width, wrap_mode, clear, append, stale_slot, scene_crlf, crlf };
     // `batch_new` and `scene_new` keep the byte count, so only the byte comparison sees the change.
     // After a clear or an append, the replacement slot still holds "c\tde" but the text does not.
+    // The rope stores a CRLF or CR break as one byte; equal bytes with them are still equal.
     const rows = [_]struct { Write, u64 }{
         .{ .none, 0 },       .{ .scene_same, 0 }, .{ .scene_styled_same, 0 }, .{ .same, 0 },       .{ .styled_same, 0 },
         .{ .batch_same, 0 }, .{ .batch_new, 1 },  .{ .defaults, 0 },          .{ .highlight, 0 },  .{ .syntax_style, 0 },
         .{ .scene_new, 1 },  .{ .styled_new, 1 }, .{ .tab_width, 1 },         .{ .wrap_mode, 1 },  .{ .clear, 1 },
-        .{ .append, 1 },     .{ .stale_slot, 1 }, .{ .clear, 1 },             .{ .stale_slot, 1 },
+        .{ .append, 1 },     .{ .stale_slot, 1 }, .{ .clear, 1 },             .{ .stale_slot, 1 }, .{ .scene_crlf, 1 },
+        .{ .scene_crlf, 0 }, .{ .crlf, 1 },       .{ .crlf, 0 },
     };
     _ = try presentWork(f, .{});
     var expected: [rows.len]u64 = undefined;
@@ -1304,6 +1310,8 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
             .clear => try f.owner.textBufferClear(text, false),
             .append => try f.owner.textBufferAppend(text, "wxyz"),
             .stale_slot => try f.owner.textBufferSetText(text, "c\tde"),
+            .scene_crlf => try f.owner.sceneSetText(label, "a\r\nb\rc"),
+            .crlf => try f.owner.textBufferSetText(text, "c\r\nd"),
         }
         expected[index] = row[1];
         actual[index] = (try presentWork(f, .{})).yoga_solves;
@@ -1387,6 +1395,8 @@ const StaleReply = struct {
             return f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
         }
         if (self.destroy) return f.owner.sceneDestroyNode(self.target);
+        // An equal Display leaves the visibility stamps of this frame current.
+        try f.owner.sceneSetStyle(self.target, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
         try f.owner.sceneSetTextOptions(self.target, .{ .truncate = self.truncate });
     }
 };
@@ -2033,11 +2043,11 @@ test "Scene feedback uses an idle update for the frame of the round that prepare
     }
 }
 
-// Re-sending a scene text's bytes rebuilds its rope, which leaves the view to prepare again
-// although the text is equal. Feedback must still refresh the node, as today's walk refreshed
-// every member: in a reply to the root's UPDATE, or between frames, plain or styled (VERIFY).
+// Re-sending a scene text's bytes with styles rebuilds its rope, which leaves the view to
+// prepare again although the text is equal. Feedback must still refresh the node, as today's
+// walk refreshed every member: in a reply to the root's UPDATE, or between frames (VERIFY).
 test "Scene feedback prepares a text whose equal bytes were sent again" {
-    for ([_]bool{ false, true }) |in_reply| for ([_]bool{ false, true }) |styled| {
+    for ([_]bool{ false, true }) |in_reply| {
         const f = try Fixture.init(testing.allocator, 8, 4, .{});
         defer f.deinit();
         try f.owner.sceneSetDebugFlags(f.id, c.OT_SCENE_DEBUG_VERIFY);
@@ -2045,24 +2055,18 @@ test "Scene feedback prepares a text whose equal bytes were sent again" {
         const label = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_TEXT, 2);
         try f.owner.sceneSetText(label, "ab");
         try f.owner.sceneMoveNode(label, f.root, 0);
-        const resend = struct {
-            fn run(owner: anytype, node: context.Handle, with_style: bool) !void {
-                if (with_style) return owner.sceneSetStyledText(node, "ab", &.{.{ .byte_count = 2 }});
-                try owner.sceneSetText(node, "ab");
-            }
-        }.run;
         for (0..4) |frame| {
-            if (!in_reply and frame == 2) try resend(f.owner, label, styled);
+            if (!in_reply and frame == 2) try f.owner.sceneSetStyledText(label, "ab", &.{.{ .byte_count = 2 }});
             var request = try f.owner.sceneFrameStep(f.id, null, options);
             while (request.kind != c.OT_SCENE_FRAME_DONE) {
-                if (in_reply and frame == 2 and request.kind == c.OT_SCENE_FRAME_UPDATE) try resend(f.owner, label, styled);
+                if (in_reply and frame == 2 and request.kind == c.OT_SCENE_FRAME_UPDATE) try f.owner.sceneSetStyledText(label, "ab", &.{.{ .byte_count = 2 }});
                 request = try f.owner.sceneFrameStep(f.id, request, options);
             }
             _ = try f.owner.sceneFrameCommit(f.id, request, false);
             try drain(f.owner, f.id);
             try testing.expect(!(try f.owner.raw().getRenderable(label)).scene_node.?.text.?.view.needsPrepare());
         }
-    };
+    }
 }
 
 // A node a reply moves into a parent sorts among its siblings in the same frame. H1's reply
@@ -2202,7 +2206,7 @@ test "Scene feedback lists the marks of nodes a reply destroys within its capaci
 // parent selected before it: feedback skipped the clean viewport content, and nothing else
 // reaches it in this frame. X, a row of P inside viewport V, was moved out of view, and its
 // child Y (RESIZE) grew there. H's reply, before or after V, moves X back, and may also send a
-// text's equal bytes (a mark that solves nothing). Y's RESIZE comes in this frame (VERIFY).
+// text's equal styled bytes (a mark that solves nothing). Y's RESIZE comes in this frame (VERIFY).
 test "Scene feedback prepares again when a reply moves a culled row into view" {
     for ([_]bool{ false, true }) |h_first| for ([_]bool{ false, true }) |resend| {
         const twins = [2]Fixture{ try Fixture.init(testing.allocator, 4, 6, .{}), try Fixture.init(testing.allocator, 4, 6, .{}) };
@@ -2236,7 +2240,7 @@ test "Scene feedback prepares again when a reply moves a culled row into view" {
                 if (std.meta.eql(request.node, list[21]) and request.kind == c.OT_SCENE_FRAME_RESIZE) count.* += 1;
                 if (std.meta.eql(request.node, list[0])) {
                     try f.owner.scenePatchPaint(list[5], c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = 0 });
-                    if (resend) try f.owner.sceneSetText(list[22], "t");
+                    if (resend) try f.owner.sceneSetStyledText(list[22], "t", &.{.{ .byte_count = 1 }});
                 }
                 request = try f.owner.sceneFrameStep(f.id, request, options);
             }
@@ -2306,7 +2310,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 1, 0, 4, 0, 1, 0, 9, 7 }, // options_prepare
             .{ 0, 0, 3, 0, 1, 0, 9, 7 }, // options_color
             .{ 1, 0, 4, 0, 1, 0, 9, 7 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 0, 9, 7 }, // measure_same_text
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // measure_same_text
             .{ 1, 0, 1, 0, 1, 0, 0, 0 }, // editor_cursor
             .{ 16, 0, 19, 0, 1, 0, 31, 7 }, // hidden
             .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // hidden_unchanged
@@ -2326,7 +2330,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 1, 0, 4, 0, 1, 0, 13, 7 }, // options_prepare
             .{ 0, 0, 3, 0, 1, 0, 13, 7 }, // options_color
             .{ 1, 0, 4, 0, 1, 0, 13, 7 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 0, 13, 7 }, // measure_same_text
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // measure_same_text
             .{ 1, 0, 1, 0, 1, 0, 0, 0 }, // editor_cursor
             .{ 256, 0, 259, 0, 1, 0, 279, 7 }, // hidden
             .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // hidden_unchanged
@@ -2346,7 +2350,7 @@ test "Scene frame work counts viewport refresh and culling work" {
             .{ 1, 0, 4, 0, 1, 0, 17, 7 }, // options_prepare
             .{ 0, 0, 3, 0, 1, 0, 17, 7 }, // options_color
             .{ 1, 0, 4, 0, 1, 0, 17, 7 }, // measure_text
-            .{ 1, 0, 4, 0, 1, 0, 17, 7 }, // measure_same_text
+            .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // measure_same_text
             .{ 1, 0, 1, 0, 1, 0, 0, 0 }, // editor_cursor
             .{ 4096, 0, 4099, 0, 1, 0, 4127, 7 }, // hidden
             .{ 0, 0, 0, 0, 1, 0, 0, 0 }, // hidden_unchanged
@@ -2396,7 +2400,12 @@ test "Scene frame work counts viewport refresh and culling work" {
             for (std.enums.values(Frame)) |frame| {
                 const measures = yoga.test_native_measures;
                 const w = switch (frame) {
-                    .first, .unchanged, .hidden_unchanged => try presentWork(f, .{}),
+                    .first, .unchanged, .hidden_unchanged => blk: {
+                        // An equal Display on a shown row changes nothing.
+                        if (frame == .hidden_unchanged) try f.owner.sceneSetStyle(rows[1], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_FLEX, 0);
+                        if (frame == .hidden_unchanged) try f.owner.sceneSetStyle(rows[0], c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0);
+                        break :blk try presentWork(f, .{});
+                    },
                     .scroll => blk: {
                         try f.owner.scenePatchPaint(content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = -1 });
                         break :blk try presentWork(f, .{});
@@ -2422,8 +2431,7 @@ test "Scene frame work counts viewport refresh and culling work" {
                         try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
                         break :blk try presentWork(f, .{});
                     },
-                    // The same bytes again: the write keeps the Yoga measure (no solve), and the rebuilt
-                    // rope leaves only that row's view to prepare.
+                    // The same bytes again: no work, not even the row's view.
                     .measure_same_text => blk: {
                         try f.owner.sceneSetText(rows[n / 2 + 1], "zz");
                         const result = try presentWork(f, .{});
@@ -2505,16 +2513,15 @@ test "Scene frame work counts viewport refresh and culling work" {
 // (B5a), so they walk and stamp nothing; the scroll scene's status text is as tall as
 // the screen, so its glyph damages every row. A recorded frame whose recording did not change
 // paints nothing either (B7). A frame with damage clears and paints only the damaged rows'
-// members (B4). A reply that sends the target's text again marks its path: the later pass
-// costs that path.
+// members (B4). A reply that sends the target's text again costs what the reply's hook costs.
 test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const bench = @import("../bench/scene-frame_bench.zig");
     const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [21]u64 }{
         .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 3, 209, 200, 1, 1, 0, 0, 1, 1, 87, 0, 0 } },
         .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4 } },
-        .{ .shape = .ui, .size = 0, .change = .reply_text, .work = .{ 87, 87, 88, 0, 0, 30, 0, 0, 0, 3, 209, 200, 1, 0, 0, 1, 1, 1, 87, 0, 11 } },
-        .{ .shape = .scroll, .size = 100, .change = .reply_text, .work = .{ 104, 55, 5, 0, 0, 20, 0, 0, 58, 53, 10000, 10000, 50, 0, 0, 1, 1, 50, 104, 0, 6 } },
+        .{ .shape = .ui, .size = 0, .change = .reply_text, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 7 } },
+        .{ .shape = .scroll, .size = 100, .change = .reply_text, .work = .{ 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4 } },
         .{ .shape = .ui, .size = 0, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 } },
         .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
         .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 1, 140, 1, 1, 0, 0, 1, 1, 0, 0, 0 } },
