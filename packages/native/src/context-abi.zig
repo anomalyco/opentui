@@ -1615,6 +1615,15 @@ pub fn ot_scene_move_node(context: ?*ContextHandle, node_ptr: ?*const c.ot_handl
     return c.OT_OK;
 }
 
+pub fn ot_scene_clear_children(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    owner.core.sceneClearChildren(handleFromC(id.*)) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn ot_scene_set_measure(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, callback: c.ot_scene_measure_callback) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -3710,6 +3719,7 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
         ot_scene_set_arrow,          ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
         ot_scene_set_text_selection, ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
         ot_scene_set_image,          ot_scene_set_scroll, ot_scene_set_scroll_arrow, ot_scene_set_crop,
+        ot_scene_clear_children,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }

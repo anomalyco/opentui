@@ -275,6 +275,7 @@ export const nativePointerPolicies = {
   ot_scene_create_node: { 0: context, 1: buffer, 4: buffer },
   ot_scene_destroy_node: { 0: context, 1: buffer },
   ot_scene_move_node: { 0: context, 1: buffer, 2: optional },
+  ot_scene_clear_children: { 0: context, 1: buffer },
   ot_scene_set_viewport: { 0: context, 1: buffer, 2: optional },
   ot_scene_set_focus: { 0: context, 1: buffer },
   ot_scene_set_style: { 0: context, 1: buffer },

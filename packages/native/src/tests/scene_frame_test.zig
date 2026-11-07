@@ -1322,7 +1322,7 @@ test "Scene frame work solves Yoga only for text writes that can change the meas
 // A reply changes the visibility of a member whose feedback already started. The visibility
 // stamp must give way to the walk: no request may reach a node the reply hid.
 test "Scene feedback visibility follows replies that hide, detach, or move a started member" {
-    for (std.enums.values(enum { hide_parent, detach, into_hidden, hide_root, queued_sibling })) |reply| {
+    for (std.enums.values(enum { hide_parent, detach, into_hidden, hide_root, queued_sibling, clear })) |reply| {
         const f = try Fixture.init(testing.allocator, 8, 4, .{});
         defer f.deinit();
         const hidden = try f.owner.sceneCreateNode(f.id, 1, 9);
@@ -1336,9 +1336,9 @@ test "Scene feedback visibility follows replies that hide, detach, or move a sta
         try f.owner.sceneMoveNode(child, parent, 0);
         try f.owner.sceneSetHooks(parent, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
         try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
-        // A later sibling whose update is queued when the reply moves it drops that update.
+        // A later sibling whose update is queued when the reply moves or clears it drops that update.
         const sibling = try f.owner.sceneCreateNode(f.id, 1, 5);
-        if (reply == .queued_sibling) try f.owner.sceneMoveNode(sibling, holder, 1);
+        if (reply == .queued_sibling or reply == .clear) try f.owner.sceneMoveNode(sibling, holder, 1);
         try f.owner.sceneSetHooks(sibling, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
         var request: scene.FrameRequest = undefined;
         if (reply == .hide_root) {
@@ -1352,6 +1352,7 @@ test "Scene feedback visibility follows replies that hide, detach, or move a sta
             switch (reply) {
                 .hide_parent => try f.owner.sceneSetStyle(holder, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DISPLAY, 0, 0, c.OT_DISPLAY_NONE, 0),
                 .detach => try f.owner.sceneMoveNode(parent, null, 0),
+                .clear => try f.owner.sceneClearChildren(holder),
                 .into_hidden => try f.owner.sceneMoveNode(parent, hidden, 0),
                 .hide_root => unreachable,
                 .queued_sibling => {
@@ -1363,6 +1364,28 @@ test "Scene feedback visibility follows replies that hide, detach, or move a sta
         const done = try f.step(request, options, c.OT_SCENE_FRAME_DONE, null);
         try f.owner.sceneFrameCancel(f.id, done.frame_id);
     }
+}
+
+// A reply clears a culling parent and destroys a child the parent's cull index held. The later
+// pass this round must not read that index.
+test "Scene clearing a culling parent in a reply drops its cull index" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    // At zero width the parent culls even a short list.
+    const parent = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try f.owner.sceneMoveNode(parent, f.root, 0);
+    try f.owner.sceneSetStyle(parent, 4, 0, 0, 1, 0, 1);
+    try f.owner.sceneSetViewport(parent, parent);
+    for (0..2) |index| try f.owner.sceneMoveNode(try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(3 + index)), parent, @intCast(index));
+    const first = (try f.owner.raw().getRenderable(parent)).scene_node.?.children.items[0].scene_node.?.handle;
+    const updated = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 9);
+    try f.owner.sceneMoveNode(updated, f.root, 1);
+    try f.owner.sceneSetHooks(updated, c.OT_SCENE_HOOK_UPDATE, 1, 0, 0);
+    const request = try f.step(null, options, c.OT_SCENE_FRAME_UPDATE, updated);
+    try f.owner.sceneClearChildren(parent);
+    try f.owner.sceneDestroyNode(first);
+    const done = try f.step(request, options, c.OT_SCENE_FRAME_DONE, null);
+    try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
 /// Drives one frame through every host request, replying with `reply`, then presents it.
@@ -2627,7 +2650,7 @@ test "Scene scroll node frames ask the host nothing and toggle bars a bounded nu
     try testing.expectEqual(@as(u32, 0), idle.damage_rows);
 }
 
-const Culled = enum { scroll_in_reply, bars_in_reply, row_bars_in_reply, created_in_reply, detached_out, destroyed_parent, body_offscreen, cancelled_solve, read_moved, first_frame_read, solve_read, translated_read, translate_in_reply, held_read, body_after_reply, moved_out, idle_update, shown_then_update, hidden_row, stale_viewport };
+const Culled = enum { scroll_in_reply, bars_in_reply, row_bars_in_reply, created_in_reply, detached_out, cleared_out, destroyed_parent, body_offscreen, cancelled_solve, read_moved, first_frame_read, solve_read, translated_read, translate_in_reply, held_read, body_after_reply, moved_out, idle_update, shown_then_update, hidden_row, stale_viewport };
 const always_bars: scene.ScrollOptions = .{ .bars = @splat(.{ .policy = c.OT_SCENE_SCROLL_BAR_ALWAYS }) };
 
 /// H (root child 0), V (`shown` rows tall, clipping), its content with V as the viewport and 16
@@ -2676,8 +2699,8 @@ fn culledFrame(f: Fixture, case: Culled, list: []const context.Handle, log: *std
                 try f.owner.sceneSetHooks(created, c.OT_SCENE_HOOK_UPDATE, 1, 1, 1);
                 try f.owner.sceneMoveNode(created, parent, 0);
             },
-            .detached_out => {
-                try f.owner.sceneMoveNode(list[19], null, 0);
+            .detached_out, .cleared_out => {
+                if (case == .cleared_out) try f.owner.sceneClearChildren(list[18]) else try f.owner.sceneMoveNode(list[19], null, 0);
                 try f.owner.sceneMoveNode(list[19], list[20], 0);
             },
             .destroyed_parent => {
@@ -2750,7 +2773,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                 .body_after_reply => 2,
                 .row_bars_in_reply => 1,
                 .body_offscreen, .cancelled_solve => 3,
-                .moved_out, .held_read, .detached_out, .destroyed_parent => 15,
+                .moved_out, .held_read, .detached_out, .cleared_out, .destroyed_parent => 15,
                 else => 0,
             };
             try culledScene(f, &list, if (case == .solve_read or case == .body_offscreen or case == .cancelled_solve) 4 else 2, row);
@@ -2763,7 +2786,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
                     try f.owner.sceneSetPaint(list[19], .{ .borderSides = c.OT_BORDER_ALL });
                     try f.owner.sceneSetStyle(list[0], 4, 0, 0, 1, 8, 1);
                 },
-                .moved_out, .detached_out, .destroyed_parent => {
+                .moved_out, .detached_out, .cleared_out, .destroyed_parent => {
                     if (case == .destroyed_parent) {
                         try feedbackNode(f, &list, 21, c.OT_SCENE_BOX, list[18], 1);
                         try f.owner.sceneMoveNode(list[19], list[21], 0);
@@ -2800,7 +2823,7 @@ test "Scene culled subtrees follow replies and reads as the full walk does" {
             }
             const g_hooks: u32 = switch (case) {
                 .idle_update, .shown_then_update, .hidden_row => c.OT_SCENE_HOOK_IDLE_UPDATE,
-                .body_after_reply, .moved_out, .detached_out, .destroyed_parent => c.OT_SCENE_HOOK_UPDATE,
+                .body_after_reply, .moved_out, .detached_out, .cleared_out, .destroyed_parent => c.OT_SCENE_HOOK_UPDATE,
                 else => 0,
             };
             if (g_hooks != 0) try feedbackHook(f, list[19], g_hooks);

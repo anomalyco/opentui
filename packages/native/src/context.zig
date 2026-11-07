@@ -2316,6 +2316,15 @@ pub const Context = struct {
         try node.scene_node.?.owner.move(node, parent, index);
     }
 
+    pub fn sceneClearChildren(self: *Context, handle: Handle) !void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        const node = try self.sceneNode(handle);
+        const owner = node.scene_node.?.owner;
+        for (node.scene_node.?.children.items) |child| try owner.prepareOmitted(&self.objects, child);
+        owner.clearChildren(node);
+    }
+
     pub fn sceneSetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32, unit: u32, value: f32, flags: u32) !void {
         try self.beginMutation();
         defer self.mutating = false;
