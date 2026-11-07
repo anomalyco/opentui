@@ -48,9 +48,13 @@ describe("Textarea - Rendering Tests", () => {
       })
 
       const frame = captureSpans()
-      expect(frame.lines[0].spans[0].text).toBe("abc   ")
-      expect(frame.lines[0].spans[0].bg.intent).toBe("indexed")
-      expect(frame.lines[0].spans[0].bg.slot).toBe(254)
+      // Text and trailing spaces have different foreground colors on this light background.
+      const firstRowSpans = frame.lines[0].spans.slice(0, 2)
+      expect(firstRowSpans.map((span) => span.text).join("")).toBe("abc   ")
+      for (const span of firstRowSpans) {
+        expect(span.bg.intent).toBe("indexed")
+        expect(span.bg.slot).toBe(254)
+      }
       expect(frame.lines[1].spans[0].text).toBe("      ")
       expect(frame.lines[1].spans[0].bg.intent).toBe("indexed")
       expect(frame.lines[1].spans[0].bg.slot).toBe(254)
