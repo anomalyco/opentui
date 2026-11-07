@@ -1131,6 +1131,7 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     try testing.expect(std.mem.find(u8, output, "\x1b[?1016$p") != null);
     try testing.expect(std.mem.find(u8, output, "\x1b[?2027$p") != null);
     try testing.expect(std.mem.find(u8, output, "\x1b[?u") != null);
+    try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) != null);
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.programStatusQuery) != null);
@@ -1155,8 +1156,6 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
     const idx_osc_theme_queries = std.mem.find(u8, output, ansi.ANSI.oscThemeQueries).?;
     const idx_xtversion = std.mem.find(u8, output, "\x1b[>0q").?;
 
-    // Should contain xtversion (unwrapped - used for detection)
-    try testing.expect(std.mem.find(u8, output, "\x1b[>0q") != null);
     try testing.expect(idx_osc_theme_queries < idx_xtversion);
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b]10;?") == null);
@@ -1374,6 +1373,7 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
         .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "COLORTERM=truecolor", .asks = false },
         .{ .env = "STY=1234.session", .asks = false, .ms = false },
+        .{ .env = "STY=1234.session TMUX=/tmp/tmux-1000/default,1,0", .asks = false, .ms = false },
         .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .asks = false, .ms = false },
         .{ .env = "TERM=foot", .asks = false },
     };
@@ -1389,6 +1389,7 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
         try term.queryTerminalSend(&writer);
         const output = writer.getWritten();
         try testing.expectEqual(row.ms, std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
+        try testing.expect(std.mem.find(u8, output, ansi.ANSI.xtversion) != null and std.mem.find(u8, output, ansi.ANSI.capabilityQueriesBase) != null);
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q524742\x1b\\") != null);
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q5463\x1b\\") != null);
         if (sentinel) try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
