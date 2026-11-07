@@ -1288,8 +1288,6 @@ test "processCapabilityResponse - wezterm applies osc52 and hyperlink heuristics
     const response = "\x1bP>|wezterm\x1b\\";
     term.processCapabilityResponse(response);
 
-    try testing.expect(!term.caps.rgb);
-    try testing.expect(!term.caps.ansi256);
     try testing.expect(term.caps.osc52);
     try testing.expect(term.caps.hyperlinks);
 }
@@ -1308,42 +1306,94 @@ test "processCapabilityResponse - foot applies osc52 heuristic without explicit 
     const response = "\x1bP>|foot 1.17.2\x1b\\";
     term.processCapabilityResponse(response);
 
-    try testing.expect(!term.caps.rgb);
-    try testing.expect(!term.caps.ansi256);
     try testing.expect(term.caps.osc52);
     try testing.expect(term.caps.hyperlinks);
     try testing.expect(!term.caps.explicit_cursor_positioning);
 }
 
-test "processCapabilityResponse - XTGETTCAP Ms only establishes positive support" {
-    var supported: Terminal = .{};
-    supported.processCapabilityResponse("\x1bP1+r4d73=2570312573\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.supported, supported.osc52_support);
-    try testing.expect(supported.caps.osc52);
+/// Puts space-separated `KEY=VALUE` pairs.
+fn putEnv(env: *std.process.Environ.Map, pairs: []const u8) !void {
+    var it = std.mem.tokenizeScalar(u8, pairs, ' ');
+    while (it.next()) |pair| {
+        const eq = std.mem.findScalar(u8, pair, '=').?;
+        try env.put(pair[0..eq], pair[eq + 1 ..]);
+    }
+}
 
-    var bare_negative: Terminal = .{};
-    bare_negative.processCapabilityResponse("\x1bP>|iTerm2 3.5.0\x1b\\");
-    bare_negative.processCapabilityResponse("\x1bP0+r\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, bare_negative.osc52_support);
-    try testing.expect(bare_negative.caps.osc52);
+test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard and color only when positive" {
+    // No COLORTERM, as over SSH. Replies are recorded from real terminals where named.
+    const Row = struct { env: []const u8 = "", replies: []const []const u8, rgb: bool, osc52: ?bool = null, ms: bool = false };
+    const rows = [_]Row{
+        .{ .replies = &.{"\x1bP1+r4d73=2570312573\x1b\\"}, .rgb = false, .osc52 = true, .ms = true },
+        // A negative reply keeps the name heuristic.
+        .{ .replies = &.{ "\x1bP>|iTerm2 3.5.0\x1b\\", "\x1bP0+r\x1b\\" }, .rgb = true, .osc52 = true },
+        .{ .replies = &.{ "\x1bP>|kitty(0.40.1)\x1b\\", "\x1bP0+r4D73\x1b\\" }, .rgb = true, .osc52 = true },
+        .{ .replies = &.{ "\x1bP1+r4d73\x1b\\", "\x1bP1+r4d73=\x1b\\", "\x1bP1+r4d73=abc\x1b\\", "\x1bP1+r4d73=zz\x1b\\", "\x1bP1+r544e=787465726d\x1b\\" }, .rgb = false },
+        .{ .replies = &.{"\x1bP1+r524742=38\x1b\\"}, .rgb = true }, // ghostty, foot, xterm
+        .{ .replies = &.{"\x1bP1+r5463\x1b\\"}, .rgb = true }, // ghostty, kitty, foot
+        .{ .replies = &.{ "\x1bP1+r4D73=1B5D35323B25703125733B257032257307\x1b\\", "\x1bP1+r524742=382F382F38\x1b\\" }, .rgb = true, .ms = true }, // WezTerm
+        .{ .replies = &.{"\x1bP1+r5463=31\x1b\\"}, .rgb = true }, // WezTerm
+        .{ .replies = &.{ "\x1bP0+r524742\x1b\\", "\x1bP0+r5463\x1b\\", "\x1bP0+r\x1b\\" }, .rgb = false },
+        .{ .replies = &.{ "\x1bP1+r524742=zz\x1b\\", "\x1bP1+r524742=3\x1b\\", "\x1bP1+r52474\x1b\\", "\x1bP1+r5463524742\x1b\\", "\x1bP2+r5463\x1b\\", "\x1bP1+r524742=\x1b\\", "\x1bP1+r5463=\x1b\\" }, .rgb = false },
+        .{ .replies = &.{"\x1bP1+r524742\x1b\\"}, .rgb = true }, // boolean form
+        .{ .replies = &.{"\x1bP>|alacritty 0.13.0\x1b\\\x1bP1+r5463\x1b\\\x1b[?6c"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|ghostty 1.3.1\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|WezTerm 20260716-195552-76b606ec\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|wezterm\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|foot(1.28.0)\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|XTerm(411)\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|tmux 3.8\x1b\\"}, .rgb = true },
+        .{ .replies = &.{"\x1bP>|notkitty(1.0)\x1b\\"}, .rgb = false },
+        .{ .replies = &.{"\x1bP>|libghostty\x1b\\"}, .rgb = false },
+        .{ .replies = &.{"\x1bP>|Zellij(0.44.1)\x1b\\"}, .rgb = false },
+        // Only an XTVERSION reply names the terminal; an inherited TERM_PROGRAM does not.
+        .{ .env = "TERM_PROGRAM=tmux", .replies = &.{"\x1b[?62;22c"}, .rgb = false },
+        // Inside GNU screen no reply counts, also when ssh forwarded screen's TERM without STY.
+        .{ .env = "STY=1234.session", .replies = &.{ "\x1bP1+r524742=38\x1b\\", "\x1bP>|kitty(0.40.1)\x1b\\" }, .rgb = false },
+        .{ .env = "TERM=screen.xterm-256color", .replies = &.{ "\x1bP1+r5463\x1b\\", "\x1bP>|ghostty 1.3.1\x1b\\" }, .rgb = false },
+        // A screen TERM in tmux, or behind ssh from tmux once tmux answers XTVERSION (screen swallows the query).
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .replies = &.{"\x1bP1+r5463\x1b\\"}, .rgb = true },
+        .{ .env = "TERM=screen-256color", .replies = &.{"\x1bP>|tmux 3.4\x1b\\"}, .rgb = true },
+    };
+    for (rows) |row| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .env_map = &env });
+        for (row.replies) |reply| term.processCapabilityResponse(reply);
+        try testing.expectEqual(row.rgb, term.caps.rgb);
+        if (row.rgb) try testing.expect(term.caps.ansi256);
+        if (row.osc52) |osc52| try testing.expectEqual(osc52, term.caps.osc52);
+        try testing.expectEqual(if (row.ms) Terminal.Osc52Support.supported else .unknown, term.osc52_support);
+    }
+}
 
-    var named_negative: Terminal = .{};
-    named_negative.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
-    named_negative.processCapabilityResponse("\x1bP0+r4D73\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, named_negative.osc52_support);
-    try testing.expect(named_negative.caps.osc52);
-
-    var unknown: Terminal = .{};
-    unknown.processCapabilityResponse("\x1bP1+r4d73\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r4d73=\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r4d73=abc\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r4d73=zz\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
-    unknown.processCapabilityResponse("\x1bP1+r544e=787465726d\x1b\\");
-    try testing.expectEqual(Terminal.Osc52Support.unknown, unknown.osc52_support);
+test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it" {
+    const Row = struct { env: []const u8 = "", asks: bool };
+    const rows = [_]Row{
+        .{ .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=xterm-256color", .asks = builtin.os.tag != .windows },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
+        .{ .env = "COLORTERM=truecolor", .asks = false },
+        .{ .env = "STY=1234.session", .asks = false },
+        .{ .env = "TERM=screen.xterm-256color", .asks = false },
+        .{ .env = "TERM=foot", .asks = false },
+    };
+    for (rows) |row| for ([_]bool{ false, true }) |sentinel| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .env_map = &env });
+        term.reply_sentinel = sentinel;
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        const output = writer.getWritten();
+        try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q524742\x1b\\") != null);
+        try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q5463\x1b\\") != null);
+        if (sentinel) try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
+    };
 }
 
 // ============================================================================

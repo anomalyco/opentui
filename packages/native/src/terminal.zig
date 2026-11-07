@@ -387,6 +387,8 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
         try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
     } else {
         try tty.writeAll(ansi.ANSI.capabilityQueries);
+        // Windows always has 24-bit color; screen prints a DCS body as text.
+        if (builtin.os.tag != .windows and !self.caps.rgb and !self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapTruecolor);
     }
 
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
@@ -1324,7 +1326,7 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     self.parseOsc99NotificationQuery(response);
     self.parseItermCapabilities(response);
     self.parseProgramStatusReply(response);
-    self.parseXtgettcapMs(response);
+    const truecolor_reply = self.parseXtgettcap(response);
     self.parseKittyGraphicsResponse(response);
     const device_attributes = self.parseSixelDeviceAttributes(response);
 
@@ -1424,10 +1426,13 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     // complete XTVERSION response determines the direct endpoint.
     if (self.term_info.from_xtversion and std.ascii.eqlIgnoreCase(self.getTerminalName(), "kitty")) {
         self.caps.kitty_keyboard = true;
-        self.caps.rgb = true;
-        self.caps.ansi256 = true;
         self.caps.bracketed_paste = true;
         self.caps.hyperlinks = true;
+    }
+    // Inside screen a reply may describe the terminal outside it, and screen drops 24-bit SGR.
+    if (!self.insideScreen() and (truecolor_reply or (self.term_info.from_xtversion and isTruecolorTerminal(self.getTerminalName())))) {
+        self.caps.rgb = true;
+        self.caps.ansi256 = true;
     }
 
     // Kitty keyboard protocol detection via CSI ? u response
@@ -1480,31 +1485,40 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     }
 }
 
-fn parseXtgettcapMs(self: *Terminal, response: []const u8) void {
-    const prefix = "\x1bP";
+/// Applies a positive Ms reply and returns whether a positive RGB or Tc reply came. Only replies
+/// with a well-formed value count; RGB and Tc may come without one.
+fn parseXtgettcap(self: *Terminal, response: []const u8) bool {
+    const prefix = "\x1bP1+r";
+    var truecolor = false;
     var scan_pos: usize = 0;
     while (std.mem.findPos(u8, response, scan_pos, prefix)) |start| {
         const body_start = start + prefix.len;
-        const end = std.mem.findPos(u8, response, body_start, "\x1b\\") orelse return;
-        const body = response[body_start..end];
+        const end = std.mem.findPos(u8, response, body_start, "\x1b\\") orelse break;
+        const result = response[body_start..end];
         scan_pos = end + 2;
 
-        if (body.len < 6 or body[0] != '1') continue;
-        if (!std.mem.eql(u8, body[1..3], "+r")) continue;
-
-        const result = body[3..];
-        const separator = std.mem.findScalar(u8, result, '=') orelse continue;
-        if (!std.ascii.eqlIgnoreCase(result[0..separator], "4d73")) continue;
-
-        const value = result[separator + 1 ..];
-        if (value.len == 0 or value.len % 2 != 0) continue;
+        const separator = std.mem.findScalar(u8, result, '=');
+        const name = result[0 .. separator orelse result.len];
+        const value = if (separator) |index| result[index + 1 ..] else "";
+        if ((separator != null and value.len == 0) or value.len % 2 != 0) continue;
         for (value) |byte| {
             if (!std.ascii.isHex(byte)) break;
-        } else {
+        } else if (std.ascii.eqlIgnoreCase(name, "4d73") and value.len != 0) {
             self.osc52_support = .supported;
             self.caps.osc52 = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "524742") or std.ascii.eqlIgnoreCase(name, "5463")) {
+            truecolor = true;
         }
     }
+    return truecolor;
+}
+
+/// XTVERSION names of terminals that draw 24-bit color. tmux converts 24-bit colors for its client.
+fn isTruecolorTerminal(name: []const u8) bool {
+    for ([_][]const u8{ "kitty", "ghostty", "WezTerm", "foot", "XTerm", "iTerm2", "tmux" }) |known| {
+        if (std.ascii.eqlIgnoreCase(name, known)) return true;
+    }
+    return false;
 }
 
 fn isOsc52Term(value: []const u8) bool {
@@ -1920,6 +1934,14 @@ pub fn isInZellij(self: *Terminal) bool {
 
 pub fn isInScreen(self: *Terminal) bool {
     return self.multiplexer == .screen;
+}
+
+/// GNU screen, also behind ssh started inside it, where the forwarded TERM names screen but STY is gone.
+/// A screen TERM inside tmux is tmux; screen swallows XTVERSION, so a tmux reply means tmux is innermost.
+fn insideScreen(self: *Terminal) bool {
+    if (self.isXtversionTmux()) return false;
+    const env = self.opts.env_map orelse return false;
+    return env.get("STY") != null or (env.get("TMUX") == null and std.mem.startsWith(u8, env.get("TERM") orelse "", "screen"));
 }
 
 pub fn getTerminalInfo(self: *Terminal) TerminalInfo {
