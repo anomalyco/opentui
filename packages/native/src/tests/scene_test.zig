@@ -35,6 +35,458 @@ fn dimensions(owner: *context.Context, node: context.Handle, width: f32, height:
     try owner.sceneSetStyle(node, 4, 1, 0, 1, height, 1);
 }
 
+/// Anchors a popup, painted first, to an anchor at (2, 1) in the root.
+fn anchoredPair(f: Fixture) ![2]context.Handle {
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const popup = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    try f.owner.sceneMoveNode(popup, f.root, 0);
+    try f.owner.sceneMoveNode(anchor, f.root, 1);
+    try f.owner.sceneSetPositions(anchor, 3, .{ c.OT_UNIT_POINT, c.OT_UNIT_POINT, 0, 0 }, .{ 2, 1, 0, 0 });
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    return .{ anchor, popup };
+}
+
+fn expectScreen(f: Fixture, node: context.Handle, expected: [2]f64) !void {
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    const layout = try f.owner.sceneGetLayout(node, false);
+    try testing.expectEqual(expected, [2]f64{ layout.screenX, layout.screenY });
+}
+
+test "Scene inactive anchor insets preserve unanchored frame reuse" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try dimensions(f.owner, node, 1, 1);
+    try f.owner.sceneMoveNode(node, f.root, 0);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try f.owner.sceneSetStyle(node, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_LEFT, c.OT_UNIT_ANCHOR_RIGHT, 0, 0);
+    const native_node = try f.owner.raw().getRenderable(node);
+    var dirty: u32 = 0;
+    try yoga.check(yoga.yogaNodeIsDirtyChecked(native_node.yoga_node, &dirty));
+    try testing.expectEqual(@as(u32, 0), dirty);
+    try testing.expect(!native_node.scene_node.?.owner.preparation_dirty);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try testing.expectEqual(@as(u64, 0), (try f.owner.sceneGetStats(f.id)).frameWork.candidate_visits);
+}
+
+test "Scene position anchor resolves numeric offsets outside flex flow" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const anchor_branch = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const popup_branch = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4);
+    const popup = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 5);
+    const child = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 6);
+    const sibling = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 7);
+    try f.owner.sceneSetStyle(f.root, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, 2, 0);
+    for ([_]context.Handle{ anchor_branch, popup_branch }, 0..) |branch, index| {
+        try dimensions(f.owner, branch, 8, 6);
+        try f.owner.sceneMoveNode(branch, f.root, @intCast(index));
+    }
+    for ([_]context.Handle{ anchor, popup, child, sibling }) |node| try dimensions(f.owner, node, 1, 1);
+    try dimensions(f.owner, popup, 3, 1);
+    try f.owner.sceneMoveNode(anchor, anchor_branch, 0);
+    try f.owner.sceneMoveNode(popup, popup_branch, 0);
+    try f.owner.sceneMoveNode(child, popup, 0);
+    try f.owner.sceneMoveNode(sibling, popup_branch, 1);
+    try f.owner.sceneSetPositions(anchor, 3, .{ 1, 1, 0, 0 }, .{ 2, 1, 0, 0 });
+    try f.owner.sceneSetPositions(popup, 3, .{ 1, 1, 0, 0 }, .{ 1, 2, 0, 0 });
+    try f.owner.sceneSetPaint(popup, .{ .background = .{ 200, 0, 0, 255 } });
+    try f.owner.sceneSetPaint(child, .{ .background = .{ 0, 200, 0, 255 } });
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    const layout = try f.owner.sceneGetLayout(popup, false);
+    const child_layout = try f.owner.sceneGetLayout(child, false);
+    try testing.expectEqual([2]f64{ 3, 3 }, [2]f64{ layout.screenX, layout.screenY });
+    try testing.expectEqual([2]f32{ -3, -2 }, [2]f32{ layout.right, layout.bottom });
+    try testing.expectEqual([2]f64{ 3, 3 }, [2]f64{ child_layout.screenX, child_layout.screenY });
+    try testing.expectEqual(@as(f64, 0), (try f.owner.sceneGetLayout(sibling, false)).screenY);
+    try testing.expectEqual(ansi.rgbColor(0, 200, 0, 255), f.cli.getNextBuffer().get(3, 3).?.bg);
+    try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(4, 3).?.bg);
+    try testing.expectEqual((try f.owner.raw().getRenderable(child)).scene_node.?.token, f.draftHit(63));
+    try f.owner.sceneSetPositionAnchor(popup, null);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try testing.expectEqual(@as(f64, 1), (try f.owner.sceneGetLayout(sibling, false)).screenY);
+}
+
+test "Scene position anchor applies resolved margins to leading trailing centered and default offsets" {
+    const f = try Fixture.init(testing.allocator, 20, 8, .{});
+    defer f.deinit();
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 6, 3);
+    try dimensions(f.owner, popup, 2, 1);
+    for ([_]f32{ 3, 1, 2, 1 }, 0..) |margin, edge| {
+        try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_MARGIN, @intCast(edge), c.OT_UNIT_POINT, margin, 0);
+    }
+    try f.owner.sceneSetPositions(popup, 15, .{ 1, 1, 0, 0 }, .{ 0, 0, 0, 0 });
+    try expectScreen(f, popup, .{ 5, 2 });
+    try f.owner.sceneSetPositions(popup, 15, .{ 0, 0, 1, 1 }, .{ 0, 0, 1, 0 });
+    try expectScreen(f, popup, .{ 3, 2 });
+    try f.owner.sceneSetPositions(popup, 15, .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 });
+    try expectScreen(f, popup, .{ 5, 2 });
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 1, 0);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_Y, 0, 0, 1, 0);
+    try expectScreen(f, popup, .{ 7, 3 });
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_MARGIN, c.OT_EDGE_LEFT, c.OT_UNIT_PERCENT, 10, 0);
+    try expectScreen(f, popup, .{ 6, 3 });
+}
+
+test "Scene position anchor insets do not size the node and restore on clear" {
+    const f = try Fixture.init(testing.allocator, 30, 8, .{});
+    defer f.deinit();
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 6, 1);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_POINT, 1, 0);
+    try f.owner.sceneSetPositionAnchor(popup, null);
+    try f.owner.sceneSetPositions(popup, 15, .{ 1, 1, 1, 0 }, .{ 1, 0, 1, 0 });
+    try expectScreen(f, popup, .{ 1, 0 });
+    try testing.expectEqual(@as(f32, 28), (try f.owner.sceneGetLayout(popup, false)).width);
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    try expectScreen(f, popup, .{ 3, 1 });
+    try testing.expectEqual(@as(f32, 1), (try f.owner.sceneGetLayout(popup, false)).width);
+    try testing.expectEqual(scene.StyleValue{ .unit = c.OT_UNIT_POINT, .value = 1 }, try f.owner.sceneGetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_RIGHT));
+    try f.owner.sceneSetPositionAnchor(popup, null);
+    try expectScreen(f, popup, .{ 1, 0 });
+    try testing.expectEqual(@as(f32, 28), (try f.owner.sceneGetLayout(popup, false)).width);
+}
+
+test "Scene position anchor rejects aliases conflicting with physical keyword insets in either order" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 6, 3);
+    try dimensions(f.owner, popup, 2, 1);
+    const keywords = [4]u32{ c.OT_UNIT_ANCHOR_RIGHT, c.OT_UNIT_ANCHOR_BOTTOM, 0, 0 };
+    try f.owner.sceneSetPositions(popup, 3, keywords, .{ 0, 0, 0, 0 });
+    for ([_]u32{ c.OT_EDGE_START, c.OT_EDGE_END, c.OT_EDGE_HORIZONTAL, c.OT_EDGE_VERTICAL, c.OT_EDGE_ALL }) |edge| {
+        try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, edge, c.OT_UNIT_POINT, 1, 0));
+        try expectScreen(f, popup, .{ 8, 4 });
+    }
+    try f.owner.sceneSetPositions(popup, 3, .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 });
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_START, c.OT_UNIT_POINT, 1, 0);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositions(popup, 3, keywords, .{ 0, 0, 0, 0 }));
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_START, c.OT_UNIT_UNDEFINED, 0, 0);
+    try f.owner.sceneSetPositions(popup, 3, keywords, .{ 0, 0, 0, 0 });
+    try expectScreen(f, popup, .{ 8, 4 });
+}
+
+test "Scene position anchor resolves edge keywords and trailing insets" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 6, 3);
+    try dimensions(f.owner, popup, 2, 1);
+    const point, const left, const top, const right, const bottom = .{ c.OT_UNIT_POINT, c.OT_UNIT_ANCHOR_LEFT, c.OT_UNIT_ANCHOR_TOP, c.OT_UNIT_ANCHOR_RIGHT, c.OT_UNIT_ANCHOR_BOTTOM };
+    const Case = struct { [4]u32, [4]f32, [2]f64 };
+    for ([_]Case{
+        .{ .{ right, bottom, 0, 0 }, .{ 0, 0, 0, 0 }, .{ 8, 4 } },
+        .{ .{ 0, 0, left, top }, .{ 0, 0, 0, 0 }, .{ 0, 0 } },
+        .{ .{ 0, 0, point, point }, .{ 0, 0, 1, 1 }, .{ 5, 2 } },
+        .{ .{ point, point, right, bottom }, .{ 1, 2, 0, 0 }, .{ 3, 3 } },
+    }) |case| {
+        try f.owner.sceneSetPositions(popup, 15, case[0], case[1]);
+        try expectScreen(f, popup, case[2]);
+    }
+    try testing.expectEqual(c.OT_UNIT_ANCHOR_BOTTOM, (try f.owner.sceneGetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_BOTTOM)).unit);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositions(popup, 3, .{ c.OT_UNIT_ANCHOR_RIGHT, c.OT_UNIT_ANCHOR_LEFT, 0, 0 }, .{ 0, 0, 0, 0 }));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_TOP, c.OT_UNIT_ANCHOR_RIGHT, 0, 0));
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, c.OT_EDGE_NONE, c.OT_UNIT_ANCHOR_LEFT, 0, 0));
+}
+
+test "Scene position anchor centers each axis behind explicit insets" {
+    const f = try Fixture.init(testing.allocator, 20, 8, .{});
+    defer f.deinit();
+    const anchor, const popup = try anchoredPair(f);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 1, 0);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_Y, 0, 0, 1, 0);
+    const Case = struct { [2]f32, [2]f32, [2]f64 };
+    for ([_]Case{ .{ .{ 5, 4 }, .{ 2, 1 }, .{ 3.5, 2.5 } }, .{ .{ 6, 5 }, .{ 2, 1 }, .{ 4, 3 } }, .{ .{ 5, 4 }, .{ 3, 2 }, .{ 3, 2 } } }) |case| {
+        try dimensions(f.owner, anchor, case[0][0], case[0][1]);
+        try dimensions(f.owner, popup, case[1][0], case[1][1]);
+        try expectScreen(f, popup, case[2]);
+    }
+    try f.owner.sceneSetPositions(popup, 9, .{ c.OT_UNIT_POINT, 0, 0, c.OT_UNIT_POINT }, .{ 0, 0, 0, 1 });
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 2, 0));
+    try expectScreen(f, popup, .{ 2, 2 });
+}
+
+test "Scene position anchor cached culling follows relationship and keyword changes with clean Yoga" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const content, const popup = .{ try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2), try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 5) };
+    try dimensions(f.owner, content, 20, 40);
+    try f.owner.sceneSetStyle(content, c.OT_STYLE_FLOAT, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0, 0, 0, 0);
+    try f.owner.sceneMoveNode(content, f.root, 0);
+    try f.owner.sceneSetViewport(content, f.root);
+    var children: [20]context.Handle = undefined;
+    try filterChildren(f.owner, f.id, content, &children);
+    const targets = [2]context.Handle{ try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3), try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4) };
+    for (targets ++ [_]context.Handle{popup}, 0..) |node, index| {
+        try dimensions(f.owner, node, if (index == 2) 2 else 6, if (index == 2) 1 else 3);
+        try f.owner.sceneSetStyle(node, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0, 0, c.OT_POSITION_ABSOLUTE, 0);
+        try f.owner.sceneSetPositions(node, 3, .{ if (index == 2) c.OT_UNIT_ANCHOR_RIGHT else 1, if (index == 2) 0 else 1, 0, 0 }, .{ @floatFromInt(2 + index * 8), if (index == 2) 0 else @as(f32, @floatFromInt(index)) - 38, 0, 0 });
+        try f.owner.sceneMoveNode(node, if (index == 2) content else f.root, if (index == 2) 20 else @intCast(index + 1));
+    }
+    try f.owner.sceneSetPaint(popup, .{ .background = .{ 200, 0, 0, 255 }, .zIndex = 10, .translateY = 40 });
+    for (0..2) |_| try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try testing.expect((try f.owner.raw().getRenderable(content)).scene_node.?.culling.index.?.usable);
+    const Case = struct { enum { assign, keyword, keyword_style, clear, destroy }, [2]f64 };
+    for ([_]Case{ .{ .assign, .{ 8, 2 } }, .{ .keyword, .{ 2, 2 } }, .{ .keyword_style, .{ 8, 2 } }, .{ .clear, .{ 0, 4 } }, .{ .destroy, .{ 0, 4 } } }) |case| {
+        if (case[0] == .clear) try f.owner.sceneSetPaint(content, .{ .translateY = -36 });
+        if (case[0] == .destroy) try f.owner.sceneSetPositionAnchor(popup, targets[1]);
+        switch (case[0]) {
+            .assign => try f.owner.sceneSetPositionAnchor(popup, targets[0]),
+            .keyword => try f.owner.sceneSetPositions(popup, 1, .{ c.OT_UNIT_ANCHOR_LEFT, 0, 0, 0 }, .{ 0, 0, 0, 0 }),
+            .keyword_style => try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_LEFT, c.OT_UNIT_ANCHOR_RIGHT, 0, 0),
+            .clear => try f.owner.sceneSetPositionAnchor(popup, null),
+            .destroy => try f.owner.sceneDestroyNode(targets[1]),
+        }
+        try repaint(f.owner, f.id, frame_options.background, true, 0);
+        if (case[0] != .destroy) try testing.expectEqual(@as(u64, 0), f.state.frame_work.yoga_solves);
+        const layout = try f.owner.sceneGetLayout(popup, false);
+        try testing.expectEqual(case[1], [2]f64{ layout.screenX, layout.screenY });
+        const column, const row = .{ @as(u32, @intFromFloat(case[1][0])), @as(u32, @intFromFloat(case[1][1])) };
+        try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(column, row).?.bg);
+        try testing.expectEqual((try f.owner.raw().getRenderable(popup)).scene_node.?.token, f.draftHit(row * 20 + column));
+    }
+}
+
+test "Scene position anchor resolves percentage insets against its outer box" {
+    const f = try Fixture.init(testing.allocator, 20, 12, .{});
+    defer f.deinit();
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 6, 5);
+    try dimensions(f.owner, popup, 2, 1);
+    try f.owner.sceneSetStyle(anchor, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_PADDING, c.OT_EDGE_ALL, c.OT_UNIT_POINT, 1, 0);
+    const percent, const auto = .{ c.OT_UNIT_PERCENT, c.OT_UNIT_AUTO };
+    const Case = struct { units: [4]u32, values: [4]f32, point: [2]f64 };
+    for ([_]Case{
+        .{ .units = .{ percent, percent, percent, percent }, .values = .{ 0, 50, 75, 75 }, .point = .{ 2, 3.5 } },
+        .{ .units = .{ auto, auto, percent, percent }, .values = .{ 0, 0, 25, 50 }, .point = .{ 4.5, 2.5 } },
+        .{ .units = .{ percent, percent, 0, 0 }, .values = .{ -25, 150, 0, 0 }, .point = .{ 0.5, 8.5 } },
+    }) |case| {
+        try f.owner.sceneSetPositions(popup, 15, case.units, case.values);
+        try expectScreen(f, popup, case.point);
+    }
+    try dimensions(f.owner, anchor, 1e30, 5);
+    for ([_]f32{ std.math.floatMax(f32), -std.math.floatMax(f32) }) |percentage| {
+        try f.owner.sceneSetPositions(popup, 15, .{ percent, 0, 0, 0 }, .{ percentage, 0, 0, 0 });
+        try repaint(f.owner, f.id, frame_options.background, true, 0);
+        try testing.expectEqual(@as(f64, std.math.copysign(std.math.floatMax(f32), percentage)), (try f.owner.sceneGetLayout(popup, false)).screenX);
+    }
+}
+
+test "Scene position anchor chains exceed the Yoga depth bound without frame allocations after warmup" {
+    const chain_length = yoga.depth_max + 2;
+    const f = try Fixture.init(testing.allocator, chain_length + 2, 2, .{ .limits = .{ .object_capacity = chain_length + 16 } });
+    defer f.deinit();
+    var last = f.root;
+    for (0..chain_length) |index| {
+        const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(index + 2));
+        try dimensions(f.owner, node, 1, 1);
+        try f.owner.sceneMoveNode(node, f.root, @intCast(index));
+        try f.owner.sceneSetPositions(node, 3, .{ 1, 1, 0, 0 }, .{ 1, 0, 0, 0 });
+        if (index != 0) try f.owner.sceneSetPositionAnchor(node, last);
+        last = node;
+    }
+    try f.owner.sceneSetPaint(last, .{ .background = .{ 200, 0, 0, 255 } });
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    const expected = [2]f64{ @floatFromInt(chain_length), 0 };
+    const layout = try f.owner.sceneGetLayout(last, false);
+    const paint_layout = try f.owner.sceneGetPaintLayout(last);
+    try testing.expectEqual(expected, [2]f64{ layout.screenX, layout.screenY });
+    try testing.expectEqual(expected, [2]f64{ paint_layout.screenX, paint_layout.screenY });
+    try testing.expectEqual(ansi.rgbColor(200, 0, 0, 255), f.cli.getNextBuffer().get(chain_length, 0).?.bg);
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    f.state.allocator = failing.allocator();
+    const painted = repaint(f.owner, f.id, frame_options.background, true, 0);
+    f.state.allocator = f.owner.allocator;
+    try painted;
+    try testing.expect(!failing.has_induced_failure);
+}
+
+test "Scene position anchor rejects cycles without changing accepted state" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const first = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const second = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    const child = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4);
+    try f.owner.sceneMoveNode(first, f.root, 0);
+    try f.owner.sceneMoveNode(second, f.root, 1);
+    try f.owner.sceneMoveNode(child, first, 0);
+    const second_node = try f.owner.raw().getRenderable(second);
+    const parent = second_node.scene_node.?.parent;
+    try f.owner.sceneSetPositionAnchor(first, second);
+    try f.owner.sceneSetPositionAnchor(first, second);
+    {
+        // Dependency checks reject cycles without allocating.
+        var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+        const allocator = f.state.allocator;
+        f.state.allocator = failing.allocator();
+        defer f.state.allocator = allocator;
+        try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, first));
+        try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, child));
+        try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(second, first));
+        try testing.expectError(error.InvalidOptions, f.owner.sceneMoveNode(second, child, 0));
+        try testing.expect(!failing.has_induced_failure);
+    }
+    try testing.expectEqual(@as(u32, 3), try f.owner.sceneGetPositionAnchor(first));
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(second));
+    try testing.expectEqual(parent, second_node.scene_node.?.parent);
+    try f.owner.sceneSetPositionAnchor(first, null);
+    try f.owner.sceneMoveNode(second, child, 0);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(first));
+}
+
+test "Scene position anchor clear remains available after session cancellation" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    _, const popup = try anchoredPair(f);
+    try f.owner.cancelSession(f.id);
+    try testing.expectError(error.SessionCancelled, f.owner.sceneSetPositionAnchor(popup, f.root));
+    try f.owner.sceneSetPositionAnchor(popup, null);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(popup));
+}
+
+test "Scene position anchor clear prepares omitted descendants before changing geometry" {
+    const f = try Fixture.init(testing.allocator, 20, 6, .{});
+    defer f.deinit();
+    const content = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    try dimensions(f.owner, content, 20, 40);
+    try f.owner.sceneMoveNode(content, f.root, 0);
+    try f.owner.sceneSetViewport(content, f.root);
+    var rows: [20]context.Handle = undefined;
+    try filterChildren(f.owner, f.id, content, &rows);
+    const popup = rows[10];
+    const child = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 40);
+    try dimensions(f.owner, child, 1, 1);
+    try f.owner.sceneMoveNode(child, popup, 0);
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 41);
+    try dimensions(f.owner, anchor, 2, 1);
+    try f.owner.sceneSetPositions(anchor, 3, .{ 1, 1, 0, 0 }, .{ 0, 30, 0, 0 });
+    try f.owner.sceneMoveNode(anchor, f.root, 1);
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_LAYOUT_CHANGED, 1, 0, 0);
+    const request = try f.step(null, frame_options, c.OT_SCENE_FRAME_LAYOUT_CHANGED, null);
+    const node = (try f.owner.raw().getRenderable(child)).scene_node.?;
+    try testing.expect(node.prepared_gen != f.state.candidates_gen);
+    try f.owner.sceneSetPositionAnchor(popup, null);
+    try testing.expectEqual(f.state.candidates_gen, node.prepared_gen);
+    try f.owner.sceneFrameCancel(f.id, request.frame_id);
+}
+
+test "Scene position anchor requested aliases and allocation failures remain atomic" {
+    const f = try Fixture.init(testing.allocator, 30, 8, .{});
+    defer f.deinit();
+    defer yoga.testFailAfter(-1);
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 6, 3);
+    try dimensions(f.owner, popup, 2, 1);
+    try f.owner.sceneSetPositionAnchor(popup, null);
+    for (0..9) |edge| {
+        try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, @intCast(edge), c.OT_UNIT_POINT, @as(f32, @floatFromInt(edge)) + 0.25, 0);
+    }
+    yoga.testFailAfter(0);
+    try testing.expectError(error.OutOfMemory, f.owner.sceneSetPositionAnchor(popup, anchor));
+    yoga.testFailAfter(-1);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(popup));
+    try testing.expectEqual(@as(f32, c.OT_POSITION_RELATIVE), (try f.owner.sceneGetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_POSITION_TYPE, 0)).value);
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    try expectScreen(f, popup, .{ 6.25, 2.25 });
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DIRECTION, 0, 0, c.OT_DIRECTION_RTL, 0);
+    try expectScreen(f, popup, .{ 7.25, 2.25 });
+    yoga.testFailAfter(0);
+    try testing.expectError(error.OutOfMemory, f.owner.sceneSetPositions(popup, 3, .{ 1, 1, 0, 0 }, .{ 12, 13, 0, 0 }));
+    yoga.testFailAfter(-1);
+    try testing.expectEqual(@as(u32, 2), try f.owner.sceneGetPositionAnchor(popup));
+    for (0..9) |edge| {
+        try testing.expectEqual(scene.StyleValue{ .unit = c.OT_UNIT_POINT, .value = @as(f32, @floatFromInt(edge)) + 0.25 }, try f.owner.sceneGetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, @intCast(edge)));
+    }
+    yoga.testFailAfter(0);
+    try f.owner.sceneDestroyNode(anchor);
+    yoga.testFailAfter(-1);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(popup));
+    for (0..9) |edge| {
+        var encoded: u64 = 0;
+        try yoga.check(yoga.yogaNodeStyleGetValueChecked((try f.owner.raw().getRenderable(popup)).yoga_node, c.OT_STYLE_VALUE_POSITION, @intCast(edge), &encoded));
+        try testing.expectEqual(@as(f32, @floatFromInt(edge)) + 0.25, @as(f32, @bitCast(@as(u32, @truncate(encoded >> 32)))));
+    }
+}
+
+test "Scene position anchor destruction rejects a laying-out dependent" {
+    const Probe = struct {
+        owner: *context.Context,
+        anchor: context.Handle,
+        result: ?anyerror = null,
+
+        fn measure(data: ?*anyopaque, _: f32, _: u32, _: f32, _: u32) callconv(.c) yoga.ExternalYogaSize {
+            const probe: *@This() = @ptrCast(@alignCast(data.?));
+            probe.owner.sceneDestroyNode(probe.anchor) catch |err| {
+                probe.result = err;
+            };
+            return .{ .width = 1, .height = 1 };
+        }
+    };
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    // A detached anchor is idle, so only the dependent's layout can reject destruction.
+    const anchor = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const popup = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    try f.owner.sceneMoveNode(popup, f.root, 0);
+    try f.owner.sceneSetPositionAnchor(popup, anchor);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_AUTO, 0, 0);
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_HEIGHT, 0, c.OT_UNIT_AUTO, 0, 0);
+    var probe: Probe = .{ .owner = f.owner, .anchor = anchor };
+    const node = try f.owner.raw().getRenderable(popup);
+    try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, &probe, &Probe.measure, false));
+    defer _ = yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, null, null, false);
+    try yoga.check(yoga.yogaNodeCalculateLayoutChecked((try f.owner.raw().getRenderable(f.root)).yoga_node, 8, 4, c.OT_DIRECTION_LTR));
+    try testing.expectEqual(@as(?anyerror, error.YogaBusy), probe.result);
+    try testing.expectEqual(@as(u32, 1), f.state.anchor_count);
+}
+
+test "Scene position anchor destruction clears poisoned dependents without trapping" {
+    const f = try Fixture.init(testing.allocator, 8, 4, .{});
+    defer f.deinit();
+    defer yoga.testFailAfter(-1);
+    const anchor, const popup = try anchoredPair(f);
+    try dimensions(f.owner, anchor, 2, 1);
+    try dimensions(f.owner, popup, 3, 2);
+    try repaint(f.owner, f.id, frame_options.background, true, 0);
+    try dimensions(f.owner, popup, 4, 2);
+    yoga.testFailAfter(0);
+    try testing.expectError(error.OutOfMemory, repaint(f.owner, f.id, frame_options.background, true, 0));
+    yoga.testFailAfter(-1);
+    try testing.expectError(error.YogaPoisoned, f.owner.sceneGetLayout(popup, true));
+    try testing.expectError(error.YogaPoisoned, f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 1, 0));
+    try f.owner.sceneDestroyNode(anchor);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(popup));
+    try testing.expectEqual(@as(u32, 0), f.state.anchor_count);
+    try f.owner.sceneDestroyNode(popup);
+}
+
+test "Scene position anchor validates scene ownership and clears destroyed targets" {
+    const f = try Fixture.init(testing.allocator, 8, 2, .{});
+    defer f.deinit();
+    const first = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 2);
+    const second = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 3);
+    const target = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, 4);
+    try f.owner.sceneSetPositionAnchor(first, target);
+    try f.owner.sceneSetPositionAnchor(second, target);
+    const other_id = try session(f.owner, 4, 2);
+    const foreign_scene = try f.owner.sceneCreateNode(other_id, c.OT_SCENE_ROOT, 5);
+    try testing.expectError(error.WrongSession, f.owner.sceneSetPositionAnchor(first, foreign_scene));
+    try testing.expectEqual(@as(u32, 4), try f.owner.sceneGetPositionAnchor(first));
+    try f.owner.sceneDestroyNode(first);
+    try testing.expectEqual(@as(u32, 4), try f.owner.sceneGetPositionAnchor(second));
+    try f.owner.sceneDestroyNode(target);
+    try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(second));
+    try testing.expectError(error.StaleHandle, f.owner.sceneSetPositionAnchor(second, target));
+    try f.owner.sceneSetPositionAnchor(second, f.root);
+    try testing.expectEqual(@as(u32, 1), try f.owner.sceneGetPositionAnchor(second));
+}
+
 test "Scene checked measurement rejects busy frames and preserves layout on wrong roots" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

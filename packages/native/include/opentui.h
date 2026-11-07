@@ -102,6 +102,7 @@ typedef struct ot_handle {
  * UNDEFINED ignores value. AUTO ignores value and is supported only by width,
  * height, flex basis, margin, and position. NaN clears a numeric value; infinity
  * rejects. ENUM values must be nonnegative integers from the named family.
+ * ANCHOR_CENTER_X/Y are scene-only boolean enums; they do not modify Yoga.
  * Scene layout requires box geometry; Yoga's display:contents is unsupported. */
 #define OT_STYLE_ENUM UINT32_C(0)
 #define OT_STYLE_FLOAT UINT32_C(1)
@@ -123,6 +124,8 @@ typedef struct ot_handle {
 #define OT_STYLE_ENUM_OVERFLOW UINT32_C(8)
 #define OT_STYLE_ENUM_DISPLAY UINT32_C(9)
 #define OT_STYLE_ENUM_BOX_SIZING UINT32_C(10)
+#define OT_STYLE_ENUM_ANCHOR_CENTER_X UINT32_C(11)
+#define OT_STYLE_ENUM_ANCHOR_CENTER_Y UINT32_C(12)
 #define OT_STYLE_FLOAT_FLEX UINT32_C(0)
 #define OT_STYLE_FLOAT_FLEX_GROW UINT32_C(1)
 #define OT_STYLE_FLOAT_FLEX_SHRINK UINT32_C(2)
@@ -144,6 +147,10 @@ typedef struct ot_handle {
 #define OT_UNIT_POINT UINT32_C(1)
 #define OT_UNIT_PERCENT UINT32_C(2)
 #define OT_UNIT_AUTO UINT32_C(3)
+#define OT_UNIT_ANCHOR_LEFT UINT32_C(4)
+#define OT_UNIT_ANCHOR_TOP UINT32_C(5)
+#define OT_UNIT_ANCHOR_RIGHT UINT32_C(6)
+#define OT_UNIT_ANCHOR_BOTTOM UINT32_C(7)
 #define OT_EDGE_NONE UINT32_C(0)
 #define OT_EDGE_LEFT UINT32_C(0)
 #define OT_EDGE_TOP UINT32_C(1)
@@ -204,6 +211,8 @@ typedef struct ot_handle {
 #define OT_STYLE_ENUM_OVERFLOW_MAX OT_OVERFLOW_SCROLL
 #define OT_STYLE_ENUM_DISPLAY_MAX OT_DISPLAY_NONE
 #define OT_STYLE_ENUM_BOX_SIZING_MAX OT_BOX_SIZING_CONTENT_BOX
+#define OT_STYLE_ENUM_ANCHOR_CENTER_X_MAX UINT32_C(1)
+#define OT_STYLE_ENUM_ANCHOR_CENTER_Y_MAX UINT32_C(1)
 #define OT_MEASURE_UNDEFINED UINT32_C(0)
 #define OT_MEASURE_EXACTLY UINT32_C(1)
 #define OT_MEASURE_AT_MOST UINT32_C(2)
@@ -682,6 +691,16 @@ ot_status ot_scene_create_node(ot_context *, const ot_handle *session, uint32_t 
  * RESET still succeed. */
 ot_status ot_scene_destroy_node(ot_context *, const ot_handle *node);
 ot_status ot_scene_move_node(ot_context *, const ot_handle *node, const ot_handle *parent, uint32_t index);
+/* Same-scene positioning dependency, independent of parentage and paint order.
+ * Anchoring forces absolute Yoga layout; the position-type getter reports absolute until cleared.
+ * Per axis the leading inset wins, then the trailing inset, then ANCHOR_CENTER_X/Y, then the target's leading edge.
+ * Offsets resolve against the target's outer box, including its translate. The node's margins apply.
+ * Insets position but do not size the node. NULL restores the requested position type and insets.
+ * Cycles and position edge aliases conflicting with physical anchor keywords reject without changing state.
+ * Handle buffers are borrowed only for this call. Destroying a target clears its dependents. */
+ot_status ot_scene_set_position_anchor(ot_context *, const ot_handle *node, const ot_handle *anchor);
+/* Returns the target's public number, or zero when unanchored. Output is unchanged on rejection. */
+ot_status ot_scene_get_position_anchor(ot_context *, const ot_handle *node, uint32_t *out_num);
 /* Detaches every child of node, as moving each to NULL from first to last would, in
  * time linear in the child count. On error no child is detached. */
 ot_status ot_scene_clear_children(ot_context *, const ot_handle *node);

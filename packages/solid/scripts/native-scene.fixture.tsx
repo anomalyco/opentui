@@ -52,6 +52,51 @@ export async function refSpreadScene() {
   assert.equal(text.isDestroyed, true)
 }
 
+export async function anchorScene() {
+  const [stage, setStage] = createSignal(0)
+  let first!: BoxRenderable
+  let second!: BoxRenderable
+  let popup!: TextRenderable
+  const props = () =>
+    stage() === 3
+      ? { positionAnchor: null, anchorCenterX: false, anchorCenterY: false }
+      : { positionAnchor: stage() === 2 ? second : first, anchorCenterX: true, anchorCenterY: true }
+  await withScene(
+    () => (
+      <>
+        <Show when={stage() < 5}>
+          <box ref={first} position="absolute" left={2} width={6} height={3} />
+        </Show>
+        <box ref={second} position="absolute" left={10} width={4} height={3} />
+        <Show when={stage() > 0 && stage() < 6}>
+          <text ref={popup} width={2} height={1} {...props()}>
+            P
+          </text>
+        </Show>
+      </>
+    ),
+    async (setup) => {
+      // Stage 3 clears the anchor props; stage 5 unmounts the anchor.
+      for (const [step, x, y] of [
+        [1, 4, 1],
+        [2, 11, 1],
+        [3, 0, 0],
+        [4, 4, 1],
+        [5, 0, 0],
+      ] as const) {
+        setStage(step)
+        await setup.renderOnce()
+        assert.deepEqual([popup.x, popup.y, popup.anchorCenterX], [x, y, step !== 3])
+      }
+      assert.equal(popup.positionAnchor, null)
+      const mounted = popup
+      setStage(6)
+      await setup.renderOnce()
+      assert.equal(mounted.isDestroyed, true)
+    },
+  )
+}
+
 export async function optionalAttributesScene() {
   const [on, setOn] = createSignal(false)
   // A static undefined expression compiles to one `setProp(el, name, undefined)` at creation.
@@ -315,6 +360,7 @@ export async function emptyPlaceholderScene() {
 
 export async function run() {
   await refSpreadScene()
+  await anchorScene()
   await optionalAttributesScene()
   await optionalZIndexScene()
   await inlineScene()

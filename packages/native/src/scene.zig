@@ -506,6 +506,17 @@ pub const Node = struct {
     previous: ?*native.NativeRenderable = null,
     next: ?*native.NativeRenderable = null,
     parent: ?*native.NativeRenderable = null,
+    position_anchor: ?*native.NativeRenderable = null,
+    anchor_position_type: ?u32 = null,
+    position_insets: [9]StyleValue = @splat(.{ .unit = api.OT_UNIT_UNDEFINED, .value = std.math.nan(f32) }),
+    anchor_center: [2]bool = .{ false, false },
+    anchor_visibility: ?struct { epoch: u64, visible: bool } = null,
+    // Scene.dependency_epoch when checkPositionDependency last stacked this node.
+    dependency_visit: u64 = 0,
+    // Head nodes anchored to this one, linked through anchor_previous/anchor_next.
+    anchor_dependents: ?*native.NativeRenderable = null,
+    anchor_previous: ?*native.NativeRenderable = null,
+    anchor_next: ?*native.NativeRenderable = null,
     children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     paint_children: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     // Strictly increasing along paint_children, so a sorted batch of children is in paint order.
@@ -760,6 +771,7 @@ pub const Scene = struct {
     root: ?*native.NativeRenderable = null,
     head: ?*native.NativeRenderable = null,
     count: u32 = 0,
+    anchor_count: u32 = 0,
     hook_count: u32 = 0,
     layout_hook_count: u32 = 0,
     filter_count: u32 = 0,
@@ -829,6 +841,7 @@ pub const Scene = struct {
     visibility_epoch: u64 = 0,
     // Changes with anything that can change which children a filtering parent selects.
     selection_epoch: u64 = 1,
+    dependency_epoch: u64 = 0,
     // Nodes whose view changed outside an attempt; a round that keeps its lists prepares them.
     view_dirty: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     // The nodes host replies marked in the running feedback pass, and those of the pass before,
@@ -836,6 +849,7 @@ pub const Scene = struct {
     marked: std.ArrayListUnmanaged(handles.Handle) = .empty,
     remarked: std.ArrayListUnmanaged(Remark) = .empty,
     scratch: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
+    composition_ancestors: std.ArrayListUnmanaged(*const native.NativeRenderable) = .empty,
     layout_pending: bool = false,
     layout_width: u32 = 0,
     layout_height: u32 = 0,
@@ -868,7 +882,7 @@ pub const Scene = struct {
     }
 
     pub fn deinit(self: *Scene) void {
-        std.debug.assert(self.head == null and self.count == 0 and self.tokens.count() == 0);
+        std.debug.assert(self.head == null and self.count == 0 and self.tokens.count() == 0 and self.anchor_count == 0);
         std.debug.assert(self.hook_count == 0 and self.filter_count == 0 and self.attempt == null);
         std.debug.assert(self.layout_hook_count == 0 and self.scroll_count == 0 and self.layout_callbacks == 0);
         std.debug.assert(self.painted == null);
@@ -882,6 +896,7 @@ pub const Scene = struct {
         self.marked.deinit(self.allocator);
         self.remarked.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
+        self.composition_ancestors.deinit(self.allocator);
         self.paint_members.deinit(self.allocator);
         self.paint_slots.deinit(self.allocator);
         self.segments.deinit(self.allocator);
@@ -904,6 +919,7 @@ pub const Scene = struct {
         try self.marked.ensureTotalCapacity(self.allocator, self.marked.items.len + self.count + 1);
         try self.remarked.ensureTotalCapacity(self.allocator, self.count + 1);
         try self.scratch.ensureTotalCapacity(self.allocator, self.count + 1);
+        try self.composition_ancestors.ensureTotalCapacity(self.allocator, self.count + 1);
     }
 
     pub fn insert(self: *Scene, storage: native.NodeStorage, handle: handles.Handle, kind: u32, num: u32) void {
@@ -956,11 +972,14 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         if (node.kind == api.OT_SCENE_ROOT) return error.YogaInvalidArgument;
         const reparented = node.parent != destination;
+        if (destination) |parent| if (parent.scene_node.?.owner != self) return error.WrongSession;
+        if (reparented and self.anchor_count != 0) {
+            if (destination) |parent| try self.checkPositionDependency(value, parent);
+        }
         const new_placement = destination != null and (reparented or node.placement == 0);
         if (new_placement and self.last_placement == std.math.maxInt(u64)) return error.ObjectLimit;
         if (destination) |parent| {
             const target = parent.scene_node.?;
-            if (target.owner != self) return error.WrongSession;
             if (index > target.children.items.len - @intFromBool(node.parent == parent)) return error.YogaInvalidArgument;
             if (node.parent != parent) {
                 try target.children.ensureUnusedCapacity(self.allocator, 1);
@@ -1014,6 +1033,79 @@ pub const Scene = struct {
         self.preparation_dirty = true;
         self.clearPreparation();
         markObservationStale(value);
+    }
+
+    /// Rejects `target` when it already depends on `value` through parent or anchor edges.
+    fn checkPositionDependency(self: *Scene, value: *const native.NativeRenderable, target: *const native.NativeRenderable) !void {
+        // Each scene node is stacked at most once, within prepareInsert's reserved capacity.
+        self.dependency_epoch +%= 1;
+        const stack = self.composition_ancestors.allocatedSlice();
+        stack[0] = target;
+        target.scene_node.?.dependency_visit = self.dependency_epoch;
+        var count: usize = 1;
+        while (count != 0) {
+            count -= 1;
+            const dependency = stack[count];
+            if (dependency == value) return error.InvalidOptions;
+            const node = dependency.scene_node.?;
+            for ([_]?*native.NativeRenderable{ node.parent, node.position_anchor }) |edge| {
+                const next = edge orelse continue;
+                if (next.scene_node.?.dependency_visit == self.dependency_epoch) continue;
+                next.scene_node.?.dependency_visit = self.dependency_epoch;
+                stack[count] = next;
+                count += 1;
+            }
+        }
+    }
+
+    /// Unlinks the position anchor of a node, updating the anchor's dependent list and counts.
+    fn unlinkPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        const anchor = node.position_anchor orelse return;
+        if (node.anchor_previous) |previous| {
+            previous.scene_node.?.anchor_next = node.anchor_next;
+        } else anchor.scene_node.?.anchor_dependents = node.anchor_next;
+        if (node.anchor_next) |next| next.scene_node.?.anchor_previous = node.anchor_previous;
+        node.position_anchor = null;
+        node.anchor_position_type = null;
+        node.anchor_previous = null;
+        node.anchor_next = null;
+        self.anchor_count -= 1;
+    }
+
+    /// Sets the position anchor of a node, updating the node's (anchor) dependent list and counts.
+    pub fn setPositionAnchor(self: *Scene, value: *native.NativeRenderable, target: ?*native.NativeRenderable) !void {
+        const node = value.scene_node.?;
+        if (target) |anchor| if (anchor.scene_node.?.owner != self) return error.WrongSession;
+        try checkWritable(value);
+        if (node.position_anchor == target) return;
+        const anchor = target orelse return self.clearPositionAnchor(value);
+        try self.checkPositionDependency(value, anchor);
+        var position_type = node.anchor_position_type;
+        if (position_type == null) {
+            position_type = try yogaPositionType(value);
+            const insets = yogaInsets(node.position_insets);
+            try yoga.setPositionState(value.yoga_node, api.OT_POSITION_ABSOLUTE, &insets.units, &insets.values, true);
+        }
+        self.unlinkPositionAnchor(value);
+        node.position_anchor = anchor;
+        node.anchor_position_type = position_type;
+        node.anchor_next = anchor.scene_node.?.anchor_dependents;
+        if (node.anchor_next) |next| next.scene_node.?.anchor_previous = value;
+        anchor.scene_node.?.anchor_dependents = value;
+        self.anchor_count += 1;
+        self.visibility_epoch +%= 1;
+        self.invalidateGeometry(value);
+    }
+
+    /// Anchoring stored every requested inset before suppressing it, so restoring cannot fail.
+    fn clearPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        const insets = yogaInsets(node.position_insets);
+        yoga.restorePosition(value.yoga_node, node.anchor_position_type.?, &insets.units, &insets.values);
+        self.unlinkPositionAnchor(value);
+        self.visibility_epoch +%= 1;
+        self.invalidateGeometry(value);
     }
 
     /// Detaches every child as `move(child, null, 0)` does, walking the lists once instead of
@@ -1164,6 +1256,8 @@ pub const Scene = struct {
 
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
         const node = value.scene_node.?;
+        self.unlinkPositionAnchor(value);
+        while (node.anchor_dependents) |dependent| self.clearPositionAnchor(dependent);
         node.control.deinit(node.kind, self.allocator);
         if (node.culling.index) |index| {
             index.entries.deinit(self.allocator);
@@ -1234,6 +1328,11 @@ pub const Scene = struct {
         var cursor = self.head;
         while (cursor) |value| : (cursor = value.scene_node.?.next) {
             yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(value.scene_node.?.childYoga(value))) catch unreachable;
+            value.scene_node.?.position_anchor = null;
+            value.scene_node.?.anchor_position_type = null;
+            value.scene_node.?.anchor_dependents = null;
+            value.scene_node.?.anchor_previous = null;
+            value.scene_node.?.anchor_next = null;
             value.scene_node.?.parent = null;
             value.scene_node.?.placement = 0;
             value.scene_node.?.children.clearRetainingCapacity();
@@ -1242,6 +1341,7 @@ pub const Scene = struct {
             value.scene_node.?.skip.attention_index = no_slot;
             value.scene_node.?.skip.view_queued = false;
         }
+        self.anchor_count = 0;
         self.view_dirty.clearRetainingCapacity();
     }
 
@@ -1692,6 +1792,35 @@ pub const Scene = struct {
         owner.view_dirty.appendAssumeCapacity(value);
     }
 
+    pub fn invalidateGeometry(self: *Scene, value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        node.geometry_epoch = 0;
+        node.layout_flags.needs_layout = true;
+        self.selection_epoch +%= 1;
+        if (node.parent) |parent| staleCull(parent);
+        self.invalidateObservation(value);
+    }
+
+    /// Stores requested insets only after Yoga accepted the complete effective position state.
+    pub fn setPositionInsets(self: *Scene, value: *native.NativeRenderable, insets: [9]StyleValue) !void {
+        const node = value.scene_node.?;
+        try checkAnchorAliases(insets);
+        // positionInsetValue canonicalizes NaN, so a byte compare detects changes.
+        if (std.mem.eql(u8, std.mem.asBytes(&node.position_insets), std.mem.asBytes(&insets))) return checkWritable(value);
+        const effective = yogaInsets(insets);
+        try yoga.setPositionState(value.yoga_node, try yogaPositionType(value), &effective.units, &effective.values, node.position_anchor != null);
+        node.position_insets = insets;
+        if (node.position_anchor != null) self.invalidateGeometry(value);
+    }
+
+    pub fn setAnchorCenter(self: *Scene, value: *native.NativeRenderable, axis: usize, centered: bool) !void {
+        try checkWritable(value);
+        const node = value.scene_node.?;
+        if (node.anchor_center[axis] == centered) return;
+        node.anchor_center[axis] = centered;
+        self.invalidateGeometry(value);
+    }
+
     pub fn invalidateObservation(self: *Scene, value: *native.NativeRenderable) void {
         self.preparation_dirty = true;
         self.clearPreparation();
@@ -2007,9 +2136,7 @@ pub const Scene = struct {
                     continue;
                 }
                 if (filter) |bounds| {
-                    var layout = state.layout;
-                    layout.screenX = origin[0] + @as(f64, layout.left) + state.paint.translateX;
-                    layout.screenY = origin[1] + @as(f64, layout.top) + state.paint.translateY;
+                    const layout = try positionedLayout(child, .{ .screenX = origin[0], .screenY = origin[1] }, state.layout);
                     self.frame_work.overlap_tests += 1;
                     if (!overlaps(bounds, publicLayout(layout))) {
                         if (!full and state.skip.attention_index != no_slot and onlySubtreeListed(state)) dropAttention(node, state.skip.attention_index);
@@ -2225,12 +2352,56 @@ pub const Scene = struct {
         return result;
     }
 
+    fn anchorsVisible(self: *Scene, value: *const native.NativeRenderable) !bool {
+        const stack = self.composition_ancestors.allocatedSlice();
+        stack[0] = value;
+        var count: usize = 1;
+        while (count != 0) {
+            const current = stack[count - 1];
+            const node = current.scene_node.?;
+            if (node.anchor_visibility) |cached| if (cached.epoch == self.visibility_epoch) {
+                count -= 1;
+                continue;
+            };
+            self.frame_work.visibility_steps += 1;
+            var display: u32 = 0;
+            try yoga.check(yoga.yogaNodeStyleGetEnumChecked(current.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
+            var visible = display != api.OT_DISPLAY_NONE and (node.parent != null or current == self.root);
+            var pending: ?*native.NativeRenderable = null;
+            if (visible) for ([_]?*native.NativeRenderable{ node.parent, node.position_anchor }) |dependency| {
+                if (dependency) |target| {
+                    if (target.scene_node.?.anchor_visibility) |cached| {
+                        if (cached.epoch == self.visibility_epoch) {
+                            if (!cached.visible) {
+                                visible = false;
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                    pending = target;
+                    break;
+                }
+            };
+            if (pending) |target| {
+                if (count == stack.len) return error.YogaDepthLimit;
+                stack[count] = target;
+                count += 1;
+            } else {
+                node.anchor_visibility = .{ .epoch = self.visibility_epoch, .visible = visible };
+                count -= 1;
+            }
+        }
+        return value.scene_node.?.anchor_visibility.?.visible;
+    }
+
     fn isVisibleMember(self: *Scene, value: *native.NativeRenderable) !bool {
         const node = value.scene_node.?;
         const active = self.attempt.?;
         // Preparation enters only visible nodes, so its stamp answers until a display or ancestry change.
         if (node.prepared_gen == self.candidates_gen and active.visibility_epoch == self.visibility_epoch and
             !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
+        if (self.anchor_count != 0) return self.anchorsVisible(value);
         var cursor: ?*native.NativeRenderable = value;
         var depth: u32 = 0;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
@@ -3332,7 +3503,7 @@ pub const Scene = struct {
         for (children) |child| {
             self.frame_work.overlap_tests += 1;
             const state = child.scene_node.?;
-            if (state.layout_flags.display_none or state.paint.translateX != 0 or state.paint.translateY != 0) {
+            if (state.layout_flags.display_none or state.position_anchor != null or state.paint.translateX != 0 or state.paint.translateY != 0) {
                 if (index.exceptions.items.len == children.len / 8 + 1) return;
                 index.exceptions.appendAssumeCapacity(child);
                 continue;
@@ -3375,6 +3546,10 @@ pub const Scene = struct {
                     node.layout_flags.display_none = display == api.OT_DISPLAY_NONE;
                 }
                 const visible = !node.layout_flags.display_none;
+                if (node.position_anchor) |anchor| if (!try self.anchorsVisible(anchor)) {
+                    depth -= 1;
+                    continue;
+                };
                 const filtered_child = if (node.parent) |parent| parent.scene_node.?.filtersChildren() else false;
                 if (!visible and (mode == .paint or (!node.layout_flags.needs_layout and !filtered_child))) {
                     depth -= 1;
@@ -3382,17 +3557,8 @@ pub const Scene = struct {
                 }
                 var layout = node.layout;
                 if (refresh_layout) {
-                    var computed: yoga.ExternalYogaLayout = undefined;
                     self.frame_work.geometry_reads += 1;
-                    try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-                    layout = .{
-                        .left = computed.left,
-                        .top = computed.top,
-                        .right = computed.right,
-                        .bottom = computed.bottom,
-                        .width = computed.width,
-                        .height = computed.height,
-                    };
+                    layout = try localLayout(value, .solved);
                 } else if (mode == .paint) {
                     // Final paint follows settled preparation, but transforms remain live.
                     std.debug.assert(node.prepared_gen == self.candidates_gen);
@@ -3400,8 +3566,7 @@ pub const Scene = struct {
                 if (node.scroll) |state| {
                     if (refresh_layout and visible and state.resolved_epoch != self.layout_epoch) try self.resolveScroll(objects, value, state);
                 }
-                layout.screenX = frame.parent.screenX + @as(f64, layout.left) + node.paint.translateX;
-                layout.screenY = frame.parent.screenY + @as(f64, layout.top) + node.paint.translateY;
+                layout = try positionedLayout(value, frame.parent, layout);
                 if (node.scroll) |state| if (!std.meta.eql(state.screen, .{ layout.screenX, layout.screenY })) {
                     state.screen = .{ layout.screenX, layout.screenY };
                     state.generation += 1;
@@ -3645,13 +3810,21 @@ pub fn getPaintLayout(value: *const native.NativeRenderable) !Layout {
     return cellLayout(layout);
 }
 
-/// Composes a node's local geometry through its ancestors: the observed, prepared, or solved
+/// Composes a node's local geometry through its parent or anchor: the observed, prepared, or solved
 /// one. A solved node Yoga has not laid out since it was created or moved has no cells.
 fn composedLayout(value: *const native.NativeRenderable, comptime source: enum { observed, prepared, solved }) !Layout {
-    var ancestors: [yoga.depth_max]*const native.NativeRenderable = undefined;
+    var parent_ancestors: [yoga.depth_max]*const native.NativeRenderable = undefined;
+    var ancestors: []*const native.NativeRenderable = &parent_ancestors;
+    var anchored = false;
     var count: usize = 0;
     var cursor: ?*const native.NativeRenderable = value;
-    while (cursor) |node| : (cursor = node.scene_node.?.parent) {
+    while (cursor) |node| : (cursor = node.scene_node.?.position_anchor orelse node.scene_node.?.parent) {
+        if (!anchored and node.scene_node.?.position_anchor != null) {
+            const storage = value.scene_node.?.owner.composition_ancestors.allocatedSlice();
+            @memcpy(storage[0..count], ancestors[0..count]);
+            ancestors = storage;
+            anchored = true;
+        }
         if (count == ancestors.len) return error.YogaDepthLimit;
         ancestors[count] = node;
         count += 1;
@@ -3668,7 +3841,7 @@ fn composedLayout(value: *const native.NativeRenderable, comptime source: enum {
         const layout = try localLayout(ancestors[count], source);
         result.screenX = result.screenX + @as(f64, layout.left) + node.paint.translateX;
         result.screenY = result.screenY + @as(f64, layout.top) + node.paint.translateY;
-        if (count != 0) {
+        if (count != 0 and ancestors[count - 1].scene_node.?.position_anchor == null) {
             const origin = childOrigin(node, .{});
             result.screenX += origin[0];
             result.screenY += origin[1];
@@ -3677,13 +3850,116 @@ fn composedLayout(value: *const native.NativeRenderable, comptime source: enum {
     return result;
 }
 
+pub fn anchorInsetUnit(edge: u32, unit: u32) !u8 {
+    if (unit < api.OT_UNIT_ANCHOR_LEFT) return 0;
+    if (edge > api.OT_EDGE_BOTTOM or unit > api.OT_UNIT_ANCHOR_BOTTOM or
+        (edge % 2 != (unit - api.OT_UNIT_ANCHOR_LEFT) % 2)) return error.InvalidOptions;
+    return @intCast(unit);
+}
+
+pub fn positionInsetValue(edge: u32, unit: u32, value: f32) !StyleValue {
+    const keyword = try anchorInsetUnit(edge, unit);
+    if (std.math.isInf(value)) return error.YogaInvalidArgument;
+    if (keyword != 0) return .{ .unit = keyword, .value = 0 };
+    if (unit > api.OT_UNIT_AUTO) return error.YogaInvalidArgument;
+    if (unit == api.OT_UNIT_UNDEFINED or (unit != api.OT_UNIT_AUTO and std.math.isNan(value))) return .{ .unit = api.OT_UNIT_UNDEFINED, .value = std.math.nan(f32) };
+    return .{ .unit = unit, .value = if (unit == api.OT_UNIT_AUTO) std.math.nan(f32) else value };
+}
+
+/// Rejects an alias that a physical keyword inset would shadow, whatever the write order.
+fn checkAnchorAliases(insets: [9]StyleValue) !void {
+    for (insets[0..api.OT_EDGE_START], 0..) |inset, physical| {
+        if (inset.unit < api.OT_UNIT_ANCHOR_LEFT) continue;
+        for (insets[api.OT_EDGE_START..], api.OT_EDGE_START..) |alias, edge| {
+            const covered = edge == api.OT_EDGE_ALL or (physical % 2 == 0) == (edge != api.OT_EDGE_VERTICAL);
+            if (covered and alias.unit != api.OT_UNIT_UNDEFINED) return error.InvalidOptions;
+        }
+    }
+}
+
+fn yogaPositionType(value: *const native.NativeRenderable) !u32 {
+    var position_type: u32 = 0;
+    try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, &position_type));
+    return position_type;
+}
+
+const YogaInsets = struct { units: [9]u32, values: [9]f32 };
+
+fn yogaInsets(insets: [9]StyleValue) YogaInsets {
+    var result: YogaInsets = undefined;
+    for (insets, 0..) |inset, edge| {
+        result.units[edge] = if (inset.unit >= api.OT_UNIT_ANCHOR_LEFT) api.OT_UNIT_UNDEFINED else inset.unit;
+        result.values[edge] = inset.value;
+    }
+    return result;
+}
+
+fn requestedPositionInset(value: *const native.NativeRenderable, edge: u32) !StyleValue {
+    const insets = value.scene_node.?.position_insets;
+    if (edge % 2 == 0) {
+        const rtl = try yoga.layoutDirection(value.yoga_node) == api.OT_DIRECTION_RTL;
+        const logical = if ((edge == api.OT_EDGE_LEFT) != rtl) api.OT_EDGE_START else api.OT_EDGE_END;
+        if (insets[logical].unit != api.OT_UNIT_UNDEFINED) return insets[logical];
+    }
+    if (insets[edge].unit != api.OT_UNIT_UNDEFINED) return insets[edge];
+    const axis = if (edge % 2 == 0) api.OT_EDGE_HORIZONTAL else api.OT_EDGE_VERTICAL;
+    if (insets[axis].unit != api.OT_UNIT_UNDEFINED) return insets[axis];
+    return insets[api.OT_EDGE_ALL];
+}
+
+fn anchorInset(value: *const native.NativeRenderable, edge: u32, anchor_size: f32, trailing: bool) !?f32 {
+    const requested = try requestedPositionInset(value, edge);
+    const unit = requested.unit;
+    // Anchor units order left, top, right, bottom: right and bottom resolve to the far edge.
+    if (unit >= api.OT_UNIT_ANCHOR_LEFT) return if (unit >= api.OT_UNIT_ANCHOR_RIGHT) anchor_size else 0;
+    const inset: f64 = switch (unit) {
+        api.OT_UNIT_POINT => requested.value,
+        api.OT_UNIT_PERCENT => @as(f64, anchor_size) * requested.value / 100,
+        else => return null,
+    };
+    return @floatCast(std.math.clamp(if (trailing) @as(f64, anchor_size) - inset else inset, -std.math.floatMax(f32), std.math.floatMax(f32)));
+}
+
 fn localLayout(value: *const native.NativeRenderable, comptime source: anytype) !Layout {
     const node = value.scene_node.?;
     if (source == .observed) return node.observed_layout;
     if (source == .prepared) return node.layout;
     var computed: yoga.ExternalYogaLayout = undefined;
     try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(value.yoga_node, &computed));
-    return .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    var layout: Layout = .{ .left = computed.left, .top = computed.top, .right = computed.right, .bottom = computed.bottom, .width = computed.width, .height = computed.height };
+    if (node.position_anchor) |anchor| {
+        var anchor_layout: yoga.ExternalYogaLayout = undefined;
+        try yoga.check(yoga.yogaNodeGetComputedLayoutChecked(anchor.yoga_node, &anchor_layout));
+        var offsets: [2]f32 = .{ 0, 0 };
+        const margin_kind = 0; // otYogaNodeLayoutGetEdge kinds: 0 margin, 1 padding, 2 border.
+        for (&offsets, [_]f32{ anchor_layout.width, anchor_layout.height }, [_]f32{ layout.width, layout.height }, 0..) |*offset, anchor_size, size, axis| {
+            const edge: u32 = @intCast(axis);
+            var margin: f32 = 0;
+            try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(value.yoga_node, margin_kind, edge, &margin));
+            if (try anchorInset(value, edge, anchor_size, false)) |inset| {
+                offset.* = inset + margin;
+            } else if (try anchorInset(value, edge + 2, anchor_size, true)) |inset| {
+                try yoga.check(yoga.yogaNodeLayoutGetEdgeChecked(value.yoga_node, margin_kind, edge + 2, &margin));
+                offset.* = inset - size - margin;
+            } else if (node.anchor_center[axis]) {
+                offset.* = (anchor_size - size) / 2 + margin;
+            } else offset.* = margin;
+        }
+        layout.left = offsets[0];
+        layout.top = offsets[1];
+        layout.right = anchor_layout.width - offsets[0] - layout.width;
+        layout.bottom = anchor_layout.height - offsets[1] - layout.height;
+    }
+    return layout;
+}
+
+fn positionedLayout(value: *const native.NativeRenderable, parent: Layout, layout: Layout) !Layout {
+    const node = value.scene_node.?;
+    const origin = if (node.position_anchor) |anchor| try composedLayout(anchor, .solved) else parent;
+    var result = layout;
+    result.screenX = origin.screenX + @as(f64, layout.left) + node.paint.translateX;
+    result.screenY = origin.screenY + @as(f64, layout.top) + node.paint.translateY;
+    return result;
 }
 
 /// Where a parent's children compose from: its screen position, plus a scroll node's viewport

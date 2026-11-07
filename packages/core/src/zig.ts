@@ -3545,6 +3545,7 @@ export class FFIRenderLib {
   private sceneCreateRecord: ReturnType<typeof createSceneNodeRecord> | undefined = createSceneNodeRecord()
   private sceneDestroyHandle: ReturnType<typeof createContextHandleRecord> | undefined = createContextHandleRecord()
   private sceneMoveRecord: ReturnType<typeof createSceneNodeRecord> | undefined = createSceneNodeRecord()
+  private sceneAnchorRecord: ReturnType<typeof createSceneNodeRecord> | undefined = createSceneNodeRecord()
   private sceneHooksRecord: ReturnType<typeof createSceneHooksRecord> | undefined = createSceneHooksRecord()
   private sceneFlushApplied: Uint32Array | undefined = new Uint32Array(1)
   private editorSelectionRecord: ReturnType<typeof createEditorSelectionRecord> | undefined =
@@ -3559,6 +3560,7 @@ export class FFIRenderLib {
   })
   private readonly selectionResetChanged = new Uint32Array(1)
   private readonly hitTestOutput = new Uint32Array(1)
+  private readonly sceneAnchorOutput = new Uint32Array(1)
   private readonly bufferStackInput = new Float32Array(1)
   private readonly bufferStackOutput = new Float32Array(1)
   private readonly drawTextBytes = new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX)
@@ -7413,6 +7415,44 @@ export class FFIRenderLib {
       nativeResult("ot_scene_move_node", status)
     } finally {
       this.sceneMoveRecord ??= scratch
+    }
+  }
+
+  public sceneSetPositionAnchor(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    anchor: SceneNodeHandle | null,
+  ): void {
+    this.getYogaHost().assertMutable()
+    const scratch = this.sceneAnchorRecord ?? createSceneNodeRecord()
+    this.sceneAnchorRecord = undefined
+    try {
+      const handle = encodeContextHandle(context, node, scratch.handle.record, scratch.handle.words)
+      const target =
+        anchor === null ? null : encodeContextHandle(context, anchor, scratch.target.record, scratch.target.words)
+      const pointer = this.nativeContextPointer(context, "ot_scene_set_position_anchor")
+      nativeResult(
+        "ot_scene_set_position_anchor",
+        this.opentui.symbols.ot_scene_set_position_anchor(pointer, handle, target),
+      )
+    } finally {
+      this.sceneAnchorRecord ??= scratch
+    }
+  }
+
+  public sceneGetPositionAnchor(context: NativeContextHandle, node: SceneNodeHandle): number {
+    const scratch = this.sceneAnchorRecord ?? createSceneNodeRecord()
+    this.sceneAnchorRecord = undefined
+    try {
+      const handle = encodeContextHandle(context, node, scratch.handle.record, scratch.handle.words)
+      const pointer = this.nativeContextPointer(context, "ot_scene_get_position_anchor")
+      nativeResult(
+        "ot_scene_get_position_anchor",
+        this.opentui.symbols.ot_scene_get_position_anchor(pointer, handle, this.sceneAnchorOutput),
+      )
+      return this.sceneAnchorOutput[0]
+    } finally {
+      this.sceneAnchorRecord ??= scratch
     }
   }
 

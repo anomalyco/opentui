@@ -10,6 +10,52 @@ afterEach(async () => {
   await setup?.renderer.closed
 })
 
+it("updates anchored JSX props across mount and unmount", async () => {
+  let first!: BoxRenderable
+  let second!: BoxRenderable
+  let popup!: TextRenderable
+  let update!: (stage: number) => void
+  const keep =
+    <T,>(assign: (node: T) => void) =>
+    (node: T | null) => {
+      if (node) assign(node)
+    }
+  function App() {
+    const [stage, setStage] = useState(0)
+    update = setStage
+    const props =
+      stage === 3 ? {} : { positionAnchor: stage === 2 ? second : first, anchorCenterX: true, anchorCenterY: true }
+    return (
+      <>
+        {stage < 5 && <box ref={keep((n) => (first = n))} position="absolute" left={2} width={6} height={3} />}
+        <box ref={keep((n) => (second = n))} position="absolute" left={10} width={4} height={3} />
+        {stage > 0 && stage < 6 && (
+          <text ref={keep((n) => (popup = n))} width={2} height={1} {...props}>
+            P
+          </text>
+        )}
+      </>
+    )
+  }
+  setup = await testRender(<App />, { width: 16, height: 4, clock: new ManualClock() })
+  // Stage 3 drops the spread props; stage 5 unmounts the anchor.
+  for (const [stage, x, y] of [
+    [1, 4, 1],
+    [2, 11, 1],
+    [3, 0, 0],
+    [4, 4, 1],
+    [5, 0, 0],
+  ]) {
+    act(() => update(stage))
+    await setup.renderOnce()
+    expect([popup.x, popup.y, popup.anchorCenterX]).toEqual([x, y, stage !== 3])
+  }
+  expect(popup.positionAnchor).toBeNull()
+  act(() => update(6))
+  await setup.renderOnce()
+  expect(popup.isDestroyed).toBe(true)
+})
+
 it.each([false, true])("preserves keyed identity and cleans up removed children (inline=%s)", async (inline) => {
   let parent!: BoxRenderable | TextRenderable
   let update!: (items: string[]) => void

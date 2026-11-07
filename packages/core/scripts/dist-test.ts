@@ -90,6 +90,25 @@ try {
       scene.renderer.getNativeStats().nativeFrameCount !== frames + 1) {
     throw new Error("Packed native measurement failed to recover")
   }
+  const anchor = new core.BoxRenderable(scene.renderer, { position: "absolute", left: 2, top: 1, width: 3, height: 2 })
+  const anchored = new core.BoxRenderable(scene.renderer, { positionAnchor: anchor, left: "right", top: "bottom", width: 1, height: 1 })
+  scene.renderer.root.add(anchor)
+  scene.renderer.root.add(anchored)
+  await scene.renderOnce()
+  if (anchored.x !== 5 || anchored.y !== 3) throw new Error("Packed native anchor geometry failed")
+  if (anchored.positionAnchor !== anchor) throw new Error("Packed native anchor assignment failed")
+  anchored.setPosition({ left: "50%", top: "50%" })
+  await scene.renderOnce()
+  if (anchored.x !== 3.5 || anchored.y !== 2) throw new Error("Packed native anchor percentage geometry failed")
+  anchored.setPosition({ left: "auto", top: undefined })
+  Object.assign(anchored, { anchorCenterX: true, anchorCenterY: true })
+  await scene.renderOnce()
+  if (anchored.x !== 3 || anchored.y !== 1.5 || !anchored.anchorCenterX || !anchored.anchorCenterY) {
+    throw new Error("Packed native anchor centering failed")
+  }
+  anchor.destroy()
+  if (anchored.positionAnchor !== null) throw new Error("Packed native anchor cleanup failed")
+  anchored.destroy()
 } finally {
   scene.renderer.destroy()
   await scene.renderer.closed

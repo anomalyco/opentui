@@ -64,6 +64,10 @@ uint32_t otYogaNodeStyleSetDimension(YGNodeRef node, uint32_t kind, uint32_t uni
                                      uint32_t disable_flex_shrink) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeStyleSetPositions(YGNodeRef node, uint32_t edge_mask, const uint32_t units[4],
                                      const float values[4]) OT_YOGA_NOEXCEPT;
+uint32_t otYogaNodeStyleSetPositionState(YGNodeRef node, uint32_t position_type,
+  const uint32_t units[9], const float values[9], uint32_t anchored) OT_YOGA_NOEXCEPT;
+void otYogaNodeStyleRestorePosition(YGNodeRef node, uint32_t position_type,
+  const uint32_t units[9], const float values[9]) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeStyleGetValue(YGNodeConstRef node, uint32_t kind, uint32_t edge,
                                  uint64_t* out) OT_YOGA_NOEXCEPT;
 uint32_t otYogaNodeSetFlag(YGNodeRef node, uint32_t kind, uint32_t value) OT_YOGA_NOEXCEPT;

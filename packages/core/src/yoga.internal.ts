@@ -9,6 +9,20 @@ import { Config, Unit, type Dimension, type Value } from "./yoga.js"
 
 export type ValueInput = number | "auto" | `${number}%` | Value | undefined
 
+/** Scene-only position units that resolve against an anchor edge. Yoga never receives them. */
+export enum AnchorUnit {
+  Left = nativeConstants.OT_UNIT_ANCHOR_LEFT,
+  Top = nativeConstants.OT_UNIT_ANCHOR_TOP,
+  Right = nativeConstants.OT_UNIT_ANCHOR_RIGHT,
+  Bottom = nativeConstants.OT_UNIT_ANCHOR_BOTTOM,
+}
+
+/** A scene style read; only position insets can carry an anchor unit. */
+export interface SceneValue {
+  unit: Unit | AnchorUnit
+  value: number
+}
+
 export const YogaEnumKind = {
   Direction: nativeConstants.OT_STYLE_ENUM_DIRECTION,
   FlexDirection: nativeConstants.OT_STYLE_ENUM_FLEX_DIRECTION,
@@ -21,6 +35,8 @@ export const YogaEnumKind = {
   Overflow: nativeConstants.OT_STYLE_ENUM_OVERFLOW,
   Display: nativeConstants.OT_STYLE_ENUM_DISPLAY,
   BoxSizing: nativeConstants.OT_STYLE_ENUM_BOX_SIZING,
+  AnchorCenterX: nativeConstants.OT_STYLE_ENUM_ANCHOR_CENTER_X,
+  AnchorCenterY: nativeConstants.OT_STYLE_ENUM_ANCHOR_CENTER_Y,
 } as const
 
 export const YogaFloatKind = {
@@ -90,8 +106,14 @@ export function sceneSetValue(
   scene.setStyle(node, NativeStyleGroup.Value, kind, edge, value.unit, value.value, flags)
 }
 
-export function sceneGetValue(scene: NativeScene, node: SceneStyleNode, kind: YogaValueKindId, edge: number): Value {
-  return scene.getStyle(node, NativeStyleGroup.Value, kind, edge)
+export function sceneGetValue(
+  scene: NativeScene,
+  node: SceneStyleNode,
+  kind: Exclude<YogaValueKindId, typeof YogaValueKind.Position>,
+  edge: number,
+): Value {
+  // Only position insets carry anchor units.
+  return scene.getStyle(node, NativeStyleGroup.Value, kind, edge) as Value
 }
 
 export function sceneSetDimension(

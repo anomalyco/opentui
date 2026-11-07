@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 8d4a673884edb2addb8772fe3be4d8f9bbee6c3d10507578330ba809ca1d894c
+// ABI audit SHA-256: 6ba5ce06cae192c15e3790e7fff10a36f7a229c77fa14317c2fdf6dad6138b4c
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -14,6 +14,8 @@ export const nativeSymbols = {
   ot_scene_create_node: { args: ["ptr", "buffer", "u32", "u32", "buffer"], returns: "i32" },
   ot_scene_destroy_node: { args: ["ptr", "buffer"], returns: "i32" },
   ot_scene_move_node: { args: ["ptr", "buffer", "ptr", "u32"], returns: "i32" },
+  ot_scene_set_position_anchor: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
+  ot_scene_get_position_anchor: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_clear_children: { args: ["ptr", "buffer"], returns: "i32" },
   ot_scene_set_measure: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_has_measure: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -1658,6 +1660,8 @@ export const nativeConstants = {
   OT_STYLE_ENUM_OVERFLOW: 8,
   OT_STYLE_ENUM_DISPLAY: 9,
   OT_STYLE_ENUM_BOX_SIZING: 10,
+  OT_STYLE_ENUM_ANCHOR_CENTER_X: 11,
+  OT_STYLE_ENUM_ANCHOR_CENTER_Y: 12,
   OT_STYLE_FLOAT_FLEX: 0,
   OT_STYLE_FLOAT_FLEX_GROW: 1,
   OT_STYLE_FLOAT_FLEX_SHRINK: 2,
@@ -1679,6 +1683,10 @@ export const nativeConstants = {
   OT_UNIT_POINT: 1,
   OT_UNIT_PERCENT: 2,
   OT_UNIT_AUTO: 3,
+  OT_UNIT_ANCHOR_LEFT: 4,
+  OT_UNIT_ANCHOR_TOP: 5,
+  OT_UNIT_ANCHOR_RIGHT: 6,
+  OT_UNIT_ANCHOR_BOTTOM: 7,
   OT_EDGE_NONE: 0,
   OT_EDGE_LEFT: 0,
   OT_EDGE_TOP: 1,
@@ -1738,6 +1746,8 @@ export const nativeConstants = {
   OT_STYLE_ENUM_OVERFLOW_MAX: 2,
   OT_STYLE_ENUM_DISPLAY_MAX: 1,
   OT_STYLE_ENUM_BOX_SIZING_MAX: 1,
+  OT_STYLE_ENUM_ANCHOR_CENTER_X_MAX: 1,
+  OT_STYLE_ENUM_ANCHOR_CENTER_Y_MAX: 1,
   OT_MEASURE_UNDEFINED: 0,
   OT_MEASURE_EXACTLY: 1,
   OT_MEASURE_AT_MOST: 2,

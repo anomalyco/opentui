@@ -191,6 +191,158 @@ describe("Renderable", () => {
   })
 })
 
+describe("Renderable - positionAnchor", () => {
+  test("keeps edge keywords across updates and anchor lifecycle", async () => {
+    const anchor = new BoxRenderable(testRenderer, { position: "absolute", left: 2, top: 1, width: 6, height: 3 })
+    const popup = new BoxRenderable(testRenderer, {
+      position: "absolute",
+      width: 2,
+      height: 1,
+      left: "right",
+      top: "bottom",
+      positionAnchor: anchor,
+    })
+    testRenderer.root.add(popup)
+    testRenderer.root.add(anchor)
+    const place = async () => {
+      await renderOnce()
+      return [popup.x, popup.y]
+    }
+    expect(await place()).toEqual([8, 4])
+    expect(() => popup.setPosition({ left: 1, top: "left" } as any)).toThrow(TypeError)
+    expect(() => (popup.top = "left" as any)).toThrow(TypeError)
+    popup.left = "left"
+    expect([popup.left, popup.top, ...(await place())]).toEqual(["left", "bottom", 2, 4])
+    popup.setPosition({ left: 1, top: 2 })
+    expect(await place()).toEqual([3, 3])
+    popup.setPosition({ left: undefined, top: undefined, right: "right", bottom: "top" })
+    expect(await place()).toEqual([6, 0])
+    popup.positionAnchor = null
+    expect([...(await place()), popup.right, popup.bottom]).toEqual([0, 0, "right", "top"])
+    popup.positionAnchor = anchor
+    expect(await place()).toEqual([6, 0])
+  })
+
+  test("positions across branches and restores the requested layout mode", async () => {
+    testRenderer.root.flexDirection = "row"
+    const anchorBranch = new BoxRenderable(testRenderer, { width: 8, height: 6 })
+    const popupBranch = new BoxRenderable(testRenderer, { width: 8, height: 6 })
+    const anchor = new BoxRenderable(testRenderer, { width: 1, height: 1, left: 2, top: 1 })
+    const popup = new BoxRenderable(testRenderer, { width: 3, height: 1, left: 1, top: 2, positionAnchor: anchor })
+    const child = new BoxRenderable(testRenderer, { width: 1, height: 1 })
+    const sibling = new BoxRenderable(testRenderer, { width: 1, height: 1 })
+    testRenderer.root.add(anchorBranch)
+    testRenderer.root.add(popupBranch)
+    anchorBranch.add(anchor)
+    popupBranch.add(popup)
+    popupBranch.add(sibling)
+    popup.add(child)
+    await renderOnce()
+    expect([popup.x, popup.y, child.x, child.y, sibling.y]).toEqual([3, 3, 3, 3, 0])
+    expect(popup.parent).toBe(popupBranch)
+    popup.position = "absolute"
+    popup.position = "relative"
+    await renderOnce()
+    expect(popup.getPositionType()).toBe(PositionType.Absolute)
+    expect(sibling.y).toBe(0)
+    popup.positionAnchor = null
+    await renderOnce()
+    expect(popup.getPositionType()).toBe(PositionType.Relative)
+    expect([popup.x, popup.y, sibling.y]).toEqual([9, 2, 1])
+    popup.position = "absolute"
+    popup.positionAnchor = anchor
+    await renderOnce()
+    anchor.destroy()
+    await renderOnce()
+    expect(popup.positionAnchor).toBeNull()
+    expect(popup.getPositionType()).toBe(PositionType.Absolute)
+    expect(sibling.y).toBe(0)
+  })
+
+  test("rejects anchor and reparenting cycles without changing relationships", () => {
+    const first = new TestRenderable(testRenderer, {})
+    const second = new TestRenderable(testRenderer, {})
+    const child = new TestRenderable(testRenderer, {})
+    testRenderer.root.add(first)
+    testRenderer.root.add(second)
+    first.add(child)
+    first.positionAnchor = second
+    expect(() => (second.positionAnchor = first)).toThrow()
+    expect(() => child.add(second)).toThrow()
+    expect(first.positionAnchor).toBe(second)
+    expect(second.positionAnchor).toBeNull()
+    expect(second.parent).toBe(testRenderer.root)
+    expect(child.getChildrenCount()).toBe(0)
+  })
+
+  test("handles constructor, updates, clearing, and destruction without changing insets", () => {
+    const first = new TestRenderable(testRenderer, {})
+    const second = new TestRenderable(testRenderer, {})
+    const renderable = new TestRenderable(testRenderer, {
+      positionAnchor: first,
+      position: "absolute",
+      top: 2,
+      left: 3,
+    })
+    expect(first.positionAnchor).toBeNull()
+    expect(renderable.positionAnchor).toBe(first)
+    const requestRender = spyOn(renderable, "requestRender")
+    try {
+      for (const [value, requests] of [
+        [first, 0],
+        [second, 1],
+        [null, 2],
+        [first, 3],
+        [undefined, 4],
+        [null, 4],
+      ] as const) {
+        renderable.positionAnchor = value
+        expect(renderable.positionAnchor).toBe(value ?? null)
+        expect(requestRender).toHaveBeenCalledTimes(requests)
+      }
+      expect(renderable.getPositionType()).toBe(PositionType.Absolute)
+      expect(renderable.top).toBe(2)
+      expect(renderable.left).toBe(3)
+      renderable.positionAnchor = first
+      renderable.destroy()
+      expect(renderable.positionAnchor).toBeNull()
+      renderable.positionAnchor = second
+      expect(renderable.positionAnchor).toBeNull()
+    } finally {
+      requestRender.mockRestore()
+    }
+  })
+
+  test("rejects invalid anchors without replacing the current one", async () => {
+    const other = await createTestRenderer({})
+    try {
+      const anchor = new TestRenderable(testRenderer, {})
+      const renderable = new TestRenderable(testRenderer, { positionAnchor: anchor })
+      const destroyed = new TestRenderable(testRenderer, {})
+      const foreign = new TestRenderable(other.renderer, {})
+      destroyed.destroy()
+      const invalidTypes = [
+        "top-left",
+        1,
+        false,
+        {},
+        { isDestroyed: false, isFreed: () => false, ctx: {} },
+        new TestBaseRenderable({}),
+      ]
+      for (const value of [...invalidTypes, renderable, destroyed, foreign]) {
+        const error = invalidTypes.includes(value) ? TypeError : Error
+        expect(() => Reflect.set(renderable, "positionAnchor", value)).toThrow(error)
+        expect(renderable.positionAnchor).toBe(anchor)
+        if (value !== renderable) {
+          expect(() => new TestRenderable(testRenderer, { positionAnchor: value as Renderable })).toThrow(error)
+        }
+      }
+    } finally {
+      other.renderer.destroy()
+    }
+  })
+})
+
 describe("Renderable - layout values beyond the cell range", () => {
   // Issue 202: each value failed every frame. It must paint like the reference values, which fit i32 cells, both
   // natively and from a host renderSelf, after a translate-only change (`then`, by default translateX + 1).
