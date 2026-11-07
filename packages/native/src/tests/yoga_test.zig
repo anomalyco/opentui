@@ -762,8 +762,26 @@ test "Yoga checked recursive teardown preserves first-child dirtied callback ord
     for ([_]yoga.YGNodeRef{ root, first, second }) |node| try yoga.check(yoga.yogaNodeSetDirtiedFuncChecked(node, 1));
     try yoga.check(yoga.yogaNodeCalculateLayoutChecked(root, 20, 10, 1));
     try yoga.check(yoga.yogaNodeFreeRecursiveChecked(root));
-    try std.testing.expectEqualSlices(yoga.YGNodeConstRef, &.{ root, first, second }, &recorder.nodes);
-    try std.testing.expectEqualSlices(usize, &.{ 5, 5, 5 }, &recorder.live_counts);
+    // Yoga dirties a removed child without its callback (facebook/yoga#1868), so only the root
+    // reports, before any node is freed.
+    try std.testing.expectEqualSlices(yoga.YGNodeConstRef, &.{ root, null, null }, &recorder.nodes);
+    try std.testing.expectEqualSlices(usize, &.{ 5, 0, 0 }, &recorder.live_counts);
+}
+
+// Upstream's removal dirties the detached child (facebook/yoga#1868); the scene's index removal must too.
+test "Yoga removal by node and by index both leave the detached child dirty" {
+    for (0..2) |by_index| {
+        const root = yoga.yogaNodeCreate();
+        defer yoga.yogaNodeFree(root);
+        const child = yoga.yogaNodeCreate();
+        defer yoga.yogaNodeFree(child);
+        yoga.yogaNodeInsertChild(root, child, 0);
+        yoga.yogaNodeCalculateLayout(root, 10, 10, @backingInt(yoga.YogaDirection.ltr));
+        if (by_index == 1) yoga.yogaNodeRemoveChildAt(root, child, 0) else yoga.yogaNodeRemoveChild(root, child);
+        var dirty: u32 = 0;
+        try yoga.check(yoga.yogaNodeIsDirtyChecked(child, &dirty));
+        try std.testing.expectEqual(@as(u32, 1), dirty);
+    }
 }
 
 test "Yoga checked host callback fallback remains recoverable and rejects layout mutation" {

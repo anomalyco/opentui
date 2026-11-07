@@ -1,7 +1,8 @@
 diff --git a/yoga/node/Node.cpp b/yoga/node/Node.cpp
+index dc6c664a..5f91cc47 100644
 --- a/yoga/node/Node.cpp
 +++ b/yoga/node/Node.cpp
-@@ -367,7 +367,7 @@
+@@ -411,7 +411,7 @@ Direction Node::resolveDirection(const Direction ownerDirection) {
  
  void Node::clearChildren() {
    children_.clear();
@@ -10,7 +11,7 @@ diff --git a/yoga/node/Node.cpp b/yoga/node/Node.cpp
  }
  
  // Other Methods
-@@ -436,7 +436,10 @@
+@@ -506,7 +506,10 @@ void Node::reset() {
    yoga::assertFatalWithNode(
        this, owner_ == nullptr, "Cannot reset a node still attached to a owner");
  

@@ -1,7 +1,8 @@
 diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
+index 130fe0d3..e62f4067 100644
 --- a/yoga/algorithm/Cache.cpp
 +++ b/yoga/algorithm/Cache.cpp
-@@ -63,7 +63,10 @@
+@@ -63,7 +63,10 @@ bool canUseCachedMeasurement(
  
    const float pointScaleFactor = config->getPointScaleFactor();
  
@@ -14,9 +15,10 @@ diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
    if (lastWidthMode == widthMode) {
      const float effectiveWidth = useRoundedComparison
 diff --git a/yoga/algorithm/PixelGrid.cpp b/yoga/algorithm/PixelGrid.cpp
+index 997e96f6..5d26e790 100644
 --- a/yoga/algorithm/PixelGrid.cpp
 +++ b/yoga/algorithm/PixelGrid.cpp
-@@ -88,12 +88,28 @@
+@@ -111,12 +111,28 @@ void roundLayoutResultsToPixelGrid(
      // size as this could lead to unwanted text truncation.
      const bool textRounding = node->getNodeType() == NodeType::Text;
  
@@ -48,9 +50,10 @@ diff --git a/yoga/algorithm/PixelGrid.cpp b/yoga/algorithm/PixelGrid.cpp
  
      // We multiply dimension by scale factor and if the result is close to the
 diff --git a/yoga/config/Config.h b/yoga/config/Config.h
+index 95f63e87..ed0a5715 100644
 --- a/yoga/config/Config.h
 +++ b/yoga/config/Config.h
-@@ -50,6 +50,15 @@
+@@ -50,6 +50,15 @@ class YG_EXPORT Config : public ::YGConfig {
    void setPointScaleFactor(float pointScaleFactor);
    float getPointScaleFactor() const;
  
@@ -66,7 +69,7 @@ diff --git a/yoga/config/Config.h b/yoga/config/Config.h
    void setContext(void* context);
    void* getContext() const;
  
-@@ -73,6 +82,7 @@
+@@ -84,6 +93,7 @@ class YG_EXPORT Config : public ::YGConfig {
    YGLogger logger_{};
  
    bool useWebDefaults_ : 1 = false;
