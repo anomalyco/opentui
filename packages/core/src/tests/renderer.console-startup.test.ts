@@ -54,6 +54,7 @@ async function createTestRenderer(options: TestRendererOptions & { startupPendin
   writes.length = 0
   return {
     ...result,
+    stdout,
     writes,
     output: () => writes.join(""),
     renderOnce: async () => {
@@ -272,6 +273,192 @@ test("CliRenderer ignores a size-unchanged resize signal without an intermediate
     expect(requestRender).not.toHaveBeenCalled()
   } finally {
     requestRender.mockRestore()
+  }
+})
+
+test("CliRenderer repaints when a terminal resize signal reports the current size", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+  await result.renderOnce()
+
+  const render = spyOn(renderer.nativeScene, "commit")
+  const requestRender = spyOn(renderer, "requestRender")
+  try {
+    const stdout = result.stdout as unknown as { columns?: number; rows?: number }
+    stdout.columns = 80
+    stdout.rows = 24
+    // A signal can arrive after a resize round-trip that ended at the previous size,
+    // e.g. leaving fullscreen on Windows. The terminal has already reflowed its cells.
+    ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+    clock.advance(100)
+
+    expect(requestRender).toHaveBeenCalledTimes(1)
+    await result.renderOnce()
+    expect(render.mock.calls.at(-1)?.[0]).toBe(true)
+    expect([renderer.width, renderer.height]).toEqual([80, 24])
+  } finally {
+    render.mockRestore()
+    requestRender.mockRestore()
+  }
+})
+
+test("CliRenderer re-samples the terminal size after the resize debounce", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+
+  const stdout = result.stdout as unknown as {
+    columns: number
+    rows: number
+    _refreshSize?: () => void
+  }
+  // The signal is delivered before the host applies the new grid, so the cached
+  // size still reports the previous geometry.
+  stdout.columns = 80
+  stdout.rows = 24
+  stdout._refreshSize = () => {
+    stdout.columns = 100
+    stdout.rows = 30
+  }
+
+  try {
+    ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+    clock.advance(100)
+    expect([renderer.width, renderer.height]).toEqual([100, 30])
+  } finally {
+    delete stdout._refreshSize
+  }
+})
+
+for (const method of ["resize", "requestResize"] as const) {
+  test.each([
+    [100, 30],
+    [80, 24],
+  ])(`CliRenderer preserves the latest ${method}(%i, %i) after a terminal signal`, async (width, height) => {
+    const clock = new ManualClock()
+    const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+    renderer = result.renderer
+    await result.renderOnce()
+
+    const stdout = result.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
+    stdout.columns = 80
+    stdout.rows = 24
+    const refreshSize = () => {
+      stdout.columns = 120
+      stdout.rows = 40
+    }
+    stdout._refreshSize = refreshSize
+    const render = spyOn(renderer.nativeScene, "commit")
+    try {
+      ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+      renderer[method](width, height)
+      clock.advance(100)
+      await result.renderOnce()
+
+      expect([renderer.terminalWidth, renderer.terminalHeight]).toEqual([width, height])
+      // Replacing the dimensions must not discard the terminal signal's repaint intent.
+      if (width === 80 && height === 24) expect(render.mock.calls.at(-1)?.[0]).toBe(true)
+    } finally {
+      delete stdout._refreshSize
+      render.mockRestore()
+    }
+  })
+
+  test.each(["alternate-screen", "split-footer"] as const)(
+    `CliRenderer preserves ${method} from a %s terminal size refresh callback`,
+    async (screenMode) => {
+      const clock = new ManualClock()
+      const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode, footerHeight: 6 })
+      renderer = result.renderer
+
+      const stdout = result.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
+      stdout.columns = 80
+      stdout.rows = 24
+      stdout._refreshSize = () => {
+        stdout.columns = 100
+        stdout.rows = 30
+        stdout.emit("resize")
+      }
+      const resizes: number[][] = []
+      renderer.on("resize", (width, height) => resizes.push([width, height]))
+      const onResize = () => renderer![method](90, 25)
+      stdout.on("resize", onResize)
+      try {
+        ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+        clock.advance(200)
+
+        expect([renderer.terminalWidth, renderer.terminalHeight]).toEqual([90, 25])
+        expect(resizes).toEqual([[90, screenMode === "split-footer" ? 6 : 25]])
+      } finally {
+        stdout.off("resize", onResize)
+        delete stdout._refreshSize
+      }
+    },
+  )
+}
+
+test("CliRenderer does not apply a terminal resize after destruction in a size refresh callback", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+  const stdout = result.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
+  stdout.columns = 80
+  stdout.rows = 24
+  stdout._refreshSize = () => {
+    stdout.columns = 100
+    stdout.rows = 30
+    stdout.emit("resize")
+  }
+  const onResize = () => renderer!.destroy()
+  stdout.once("resize", onResize)
+  const resize = spyOn(renderer.nativeScene.driver, "resize")
+  try {
+    ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+    clock.advance(100)
+    await renderer.closed
+
+    expect(renderer.isDestroyed).toBe(true)
+    expect(resize).not.toHaveBeenCalled()
+  } finally {
+    stdout.off("resize", onResize)
+    delete stdout._refreshSize
+    resize.mockRestore()
+  }
+})
+
+test("CliRenderer retains a terminal resize suspended by a size refresh callback until resume", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+  const stdout = result.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
+  stdout.columns = 80
+  stdout.rows = 24
+  stdout._refreshSize = () => {
+    stdout.columns = 100
+    stdout.rows = 30
+    stdout.emit("resize")
+  }
+  let suspended: Promise<void> | undefined
+  const onResize = () => {
+    suspended = renderer!.suspend()
+  }
+  stdout.once("resize", onResize)
+  const resizes: number[][] = []
+  renderer.on("resize", (width, height) => resizes.push([width, height]))
+  try {
+    ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+    clock.advance(100)
+    await suspended
+
+    expect([renderer.terminalWidth, renderer.terminalHeight]).toEqual([80, 24])
+    expect(resizes).toEqual([])
+    await renderer.resume()
+    expect([renderer.terminalWidth, renderer.terminalHeight]).toEqual([100, 30])
+    expect(resizes).toEqual([[100, 30]])
+  } finally {
+    stdout.off("resize", onResize)
+    delete stdout._refreshSize
   }
 })
 
