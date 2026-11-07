@@ -511,6 +511,8 @@ pub const Node = struct {
     position_insets: [9]StyleValue = @splat(.{ .unit = api.OT_UNIT_UNDEFINED, .value = std.math.nan(f32) }),
     anchor_center: [2]bool = .{ false, false },
     anchor_visibility: ?struct { epoch: u64, visible: bool } = null,
+    // Scene.dependency_epoch when checkPositionDependency last stacked this node.
+    dependency_visit: u64 = 0,
     // Head nodes anchored to this one, linked through anchor_previous/anchor_next.
     anchor_dependents: ?*native.NativeRenderable = null,
     anchor_previous: ?*native.NativeRenderable = null,
@@ -839,6 +841,7 @@ pub const Scene = struct {
     visibility_epoch: u64 = 0,
     // Changes with anything that can change which children a filtering parent selects.
     selection_epoch: u64 = 1,
+    dependency_epoch: u64 = 0,
     // Nodes whose view changed outside an attempt; a round that keeps its lists prepares them.
     view_dirty: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty,
     // The nodes host replies marked in the running feedback pass, and those of the pass before,
@@ -968,6 +971,7 @@ pub const Scene = struct {
         const node = value.scene_node.?;
         if (node.kind == api.OT_SCENE_ROOT) return error.YogaInvalidArgument;
         const reparented = node.parent != destination;
+        if (destination) |parent| if (parent.scene_node.?.owner != self) return error.WrongSession;
         if (reparented and self.anchor_count != 0) {
             if (destination) |parent| try self.checkPositionDependency(value, parent);
         }
@@ -975,7 +979,6 @@ pub const Scene = struct {
         if (new_placement and self.last_placement == std.math.maxInt(u64)) return error.ObjectLimit;
         if (destination) |parent| {
             const target = parent.scene_node.?;
-            if (target.owner != self) return error.WrongSession;
             if (index > target.children.items.len - @intFromBool(node.parent == parent)) return error.YogaInvalidArgument;
             if (node.parent != parent) {
                 try target.children.ensureUnusedCapacity(self.allocator, 1);
@@ -1031,19 +1034,25 @@ pub const Scene = struct {
     }
 
     /// Rejects `target` when it already depends on `value` through parent or anchor edges.
-    fn checkPositionDependency(self: *Scene, value: *native.NativeRenderable, target: *native.NativeRenderable) !void {
-        var pending: std.ArrayListUnmanaged(*native.NativeRenderable) = .empty;
-        defer pending.deinit(self.allocator);
-        var visited: std.AutoHashMapUnmanaged(*native.NativeRenderable, void) = .empty;
-        defer visited.deinit(self.allocator);
-        try pending.append(self.allocator, target);
-        while (pending.pop()) |dependency| {
+    fn checkPositionDependency(self: *Scene, value: *const native.NativeRenderable, target: *const native.NativeRenderable) !void {
+        // Each scene node is stacked at most once, within prepareInsert's reserved capacity.
+        self.dependency_epoch +%= 1;
+        const stack = self.composition_ancestors.allocatedSlice();
+        stack[0] = target;
+        target.scene_node.?.dependency_visit = self.dependency_epoch;
+        var count: usize = 1;
+        while (count != 0) {
+            count -= 1;
+            const dependency = stack[count];
             if (dependency == value) return error.InvalidOptions;
-            const entry = try visited.getOrPut(self.allocator, dependency);
-            if (entry.found_existing) continue;
             const node = dependency.scene_node.?;
-            if (node.parent) |parent| try pending.append(self.allocator, parent);
-            if (node.position_anchor) |anchor| try pending.append(self.allocator, anchor);
+            for ([_]?*native.NativeRenderable{ node.parent, node.position_anchor }) |edge| {
+                const next = edge orelse continue;
+                if (next.scene_node.?.dependency_visit == self.dependency_epoch) continue;
+                next.scene_node.?.dependency_visit = self.dependency_epoch;
+                stack[count] = next;
+                count += 1;
+            }
         }
     }
 
@@ -1065,35 +1074,30 @@ pub const Scene = struct {
     /// Sets the position anchor of a node, updating the node's (anchor) dependent list and counts.
     pub fn setPositionAnchor(self: *Scene, value: *native.NativeRenderable, target: ?*native.NativeRenderable) !void {
         const node = value.scene_node.?;
-        if (target) |anchor| {
-            if (anchor.scene_node.?.owner != self) return error.WrongSession;
-        }
+        if (target) |anchor| if (anchor.scene_node.?.owner != self) return error.WrongSession;
+        try checkWritable(value);
         if (node.position_anchor == target) return;
-        if (target) |anchor| try self.checkPositionDependency(value, anchor);
+        const anchor = target orelse return self.clearPositionAnchor(value);
+        try self.checkPositionDependency(value, anchor);
         var position_type = node.anchor_position_type;
-        if (target != null) {
-            if (position_type == null) {
-                var current: u32 = 0;
-                try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, &current));
-                position_type = current;
-            }
+        if (position_type == null) {
+            position_type = try yogaPositionType(value);
+            const insets = yogaInsets(node.position_insets);
+            try yoga.setPositionState(value.yoga_node, api.OT_POSITION_ABSOLUTE, &insets.units, &insets.values, true);
         }
-        const insets = yogaInsets(node.position_insets);
-        try yoga.setPositionState(value.yoga_node, if (target != null) api.OT_POSITION_ABSOLUTE else position_type.?, &insets.units, &insets.values, target != null);
         self.unlinkPositionAnchor(value);
-        if (target) |anchor| {
-            node.position_anchor = anchor;
-            node.anchor_position_type = position_type;
-            node.anchor_next = anchor.scene_node.?.anchor_dependents;
-            if (node.anchor_next) |next| next.scene_node.?.anchor_previous = value;
-            anchor.scene_node.?.anchor_dependents = value;
-            self.anchor_count += 1;
-        }
+        node.position_anchor = anchor;
+        node.anchor_position_type = position_type;
+        node.anchor_next = anchor.scene_node.?.anchor_dependents;
+        if (node.anchor_next) |next| next.scene_node.?.anchor_previous = value;
+        anchor.scene_node.?.anchor_dependents = value;
+        self.anchor_count += 1;
         self.visibility_epoch +%= 1;
         self.invalidateGeometry(value);
     }
 
-    fn clearDestroyedPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
+    /// Anchoring stored every requested inset before suppressing it, so restoring cannot fail.
+    fn clearPositionAnchor(self: *Scene, value: *native.NativeRenderable) void {
         const node = value.scene_node.?;
         const insets = yogaInsets(node.position_insets);
         yoga.restorePosition(value.yoga_node, node.anchor_position_type.?, &insets.units, &insets.values);
@@ -1224,7 +1228,7 @@ pub const Scene = struct {
     pub fn remove(self: *Scene, value: *native.NativeRenderable) native.NodeStorage {
         const node = value.scene_node.?;
         self.unlinkPositionAnchor(value);
-        while (node.anchor_dependents) |dependent| self.clearDestroyedPositionAnchor(dependent);
+        while (node.anchor_dependents) |dependent| self.clearPositionAnchor(dependent);
         node.control.deinit(node.kind, self.allocator);
         if (node.culling.index) |index| {
             index.entries.deinit(self.allocator);
@@ -1770,14 +1774,20 @@ pub const Scene = struct {
     /// Stores requested insets only after Yoga accepted the complete effective position state.
     pub fn setPositionInsets(self: *Scene, value: *native.NativeRenderable, insets: [9]StyleValue) !void {
         const node = value.scene_node.?;
+        try checkAnchorAliases(insets);
         // positionInsetValue canonicalizes NaN, so a byte compare detects changes.
-        const changed = !std.mem.eql(u8, std.mem.asBytes(&node.position_insets), std.mem.asBytes(&insets));
-        var position_type: u32 = 0;
-        try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, &position_type));
+        if (std.mem.eql(u8, std.mem.asBytes(&node.position_insets), std.mem.asBytes(&insets))) return checkWritable(value);
         const effective = yogaInsets(insets);
-        try yoga.setPositionState(value.yoga_node, position_type, &effective.units, &effective.values, node.position_anchor != null);
-        if (!changed) return;
+        try yoga.setPositionState(value.yoga_node, try yogaPositionType(value), &effective.units, &effective.values, node.position_anchor != null);
         node.position_insets = insets;
+        self.invalidateGeometry(value);
+    }
+
+    pub fn setAnchorCenter(self: *Scene, value: *native.NativeRenderable, axis: usize, centered: bool) !void {
+        try checkWritable(value);
+        const node = value.scene_node.?;
+        if (node.anchor_center[axis] == centered) return;
+        node.anchor_center[axis] = centered;
         self.invalidateGeometry(value);
     }
 
@@ -3824,6 +3834,23 @@ pub fn positionInsetValue(edge: u32, unit: u32, value: f32) !StyleValue {
     if (unit > api.OT_UNIT_AUTO) return error.YogaInvalidArgument;
     if (unit == api.OT_UNIT_UNDEFINED or (unit != api.OT_UNIT_AUTO and std.math.isNan(value))) return .{ .unit = api.OT_UNIT_UNDEFINED, .value = std.math.nan(f32) };
     return .{ .unit = unit, .value = if (unit == api.OT_UNIT_AUTO) std.math.nan(f32) else value };
+}
+
+/// Rejects an alias that a physical keyword inset would shadow, whatever the write order.
+fn checkAnchorAliases(insets: [9]StyleValue) !void {
+    for (insets[0..api.OT_EDGE_START], 0..) |inset, physical| {
+        if (inset.unit < api.OT_UNIT_ANCHOR_LEFT) continue;
+        for (insets[api.OT_EDGE_START..], api.OT_EDGE_START..) |alias, edge| {
+            const covered = edge == api.OT_EDGE_ALL or (physical % 2 == 0) == (edge != api.OT_EDGE_VERTICAL);
+            if (covered and alias.unit != api.OT_UNIT_UNDEFINED) return error.InvalidOptions;
+        }
+    }
+}
+
+fn yogaPositionType(value: *const native.NativeRenderable) !u32 {
+    var position_type: u32 = 0;
+    try yoga.check(yoga.yogaNodeStyleGetEnumChecked(value.yoga_node, api.OT_STYLE_ENUM_POSITION_TYPE, &position_type));
+    return position_type;
 }
 
 const YogaInsets = struct { units: [9]u32, values: [9]f32 };

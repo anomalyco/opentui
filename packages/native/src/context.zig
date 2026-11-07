@@ -2369,14 +2369,7 @@ pub const Context = struct {
         if (content and scroll == null) return error.WrongKind;
         if (group == api.OT_STYLE_ENUM and kind >= api.OT_STYLE_ENUM_ANCHOR_CENTER_X and kind <= api.OT_STYLE_ENUM_ANCHOR_CENTER_Y) {
             if (content) return error.InvalidOptions;
-            const state = node.scene_node.?;
-            const axis = kind - api.OT_STYLE_ENUM_ANCHOR_CENTER_X;
-            const centered = value != 0;
-            if (state.anchor_center[axis] != centered) {
-                state.anchor_center[axis] = centered;
-                state.owner.invalidateGeometry(node);
-            }
-            return;
+            return node.scene_node.?.owner.setAnchorCenter(node, kind - api.OT_STYLE_ENUM_ANCHOR_CENTER_X, value != 0);
         }
         // A scroll node's own padding holds its bar gutters.
         if (!content and scroll != null and group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_PADDING) return error.InvalidOptions;
@@ -2388,13 +2381,6 @@ pub const Context = struct {
         if (position) {
             if (edge > api.OT_EDGE_ALL) return error.YogaInvalidArgument;
             var insets = node.scene_node.?.position_insets;
-            // Edge aliases would shadow or leak past physical anchor keywords, which Yoga never sees.
-            if (edge > api.OT_EDGE_BOTTOM) {
-                for (insets[0..4], 0..) |inset, physical| {
-                    const covered = edge == api.OT_EDGE_ALL or (physical % 2 == 0) == (edge != api.OT_EDGE_VERTICAL);
-                    if (covered and inset.unit >= api.OT_UNIT_ANCHOR_LEFT) return error.InvalidOptions;
-                }
-            }
             insets[edge] = try scene.positionInsetValue(edge, unit, saturated);
             return node.scene_node.?.owner.setPositionInsets(node, insets);
         }
@@ -2439,9 +2425,12 @@ pub const Context = struct {
             api.OT_STYLE_FLOAT => try yoga.check(yoga.yogaNodeStyleGetFloatChecked(node.yoga_node, kind, &result.value)),
             api.OT_STYLE_VALUE, api.OT_STYLE_DIMENSION => {
                 if (group == api.OT_STYLE_DIMENSION and kind > api.OT_DIMENSION_HEIGHT) return error.InvalidOptions;
+                if (group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_POSITION) {
+                    if (edge > api.OT_EDGE_ALL) return error.YogaInvalidArgument;
+                    return node.scene_node.?.position_insets[edge];
+                }
                 var encoded: u64 = 0;
                 try yoga.check(yoga.yogaNodeStyleGetValueChecked(node.yoga_node, kind, edge, &encoded));
-                if (group == api.OT_STYLE_VALUE and kind == api.OT_STYLE_VALUE_POSITION) return node.scene_node.?.position_insets[edge];
                 result.unit = @truncate(encoded);
                 result.value = @bitCast(@as(u32, @truncate(encoded >> 32)));
             },
@@ -2500,7 +2489,6 @@ pub const Context = struct {
         // Framework unmount clears anchors after renderer/session close, like child-first detachment.
         if (anchor_handle == null) try value.scene_node.?.owner.prepareOmitted(&self.objects, value);
         const anchor = if (anchor_handle) |id| try self.sceneNode(id) else null;
-        if (anchor != null) try scene.Scene.checkWritable(value);
         try value.scene_node.?.owner.setPositionAnchor(value, anchor);
     }
 

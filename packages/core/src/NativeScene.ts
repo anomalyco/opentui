@@ -8,8 +8,8 @@ import { RendererControlState, type CliRenderer } from "./renderer.js"
 import type { StyledText } from "./lib/styled-text.js"
 import type { RGBA } from "./lib/RGBA.js"
 import type { LocalSelectionBounds } from "./lib/selection.js"
-import { Edge, type Value, type MeasureFunction } from "./yoga.js"
-import { YogaValueKind, type YogaHost } from "./yoga.internal.js"
+import { Edge, type MeasureFunction } from "./yoga.js"
+import { YogaValueKind, type SceneValue, type YogaHost } from "./yoga.internal.js"
 import {
   NativeError,
   NativePaintRecorder,
@@ -334,7 +334,7 @@ export class NativeScene {
     group: number,
     kind: number,
     edge: number,
-  ): Value {
+  ): SceneValue {
     const handle = node._getSceneHandle(this)
     this.flushStaged()
     return this.driver.renderLib.sceneGetStyle(this.driver.context, handle, group, kind, edge)

@@ -134,17 +134,24 @@ test "Scene position anchor insets do not size the node and restore on clear" {
     try testing.expectEqual(@as(f32, 28), (try f.owner.sceneGetLayout(popup, false)).width);
 }
 
-test "Scene position anchor rejects aliases conflicting with physical keyword insets" {
+test "Scene position anchor rejects aliases conflicting with physical keyword insets in either order" {
     const f = try Fixture.init(testing.allocator, 20, 6, .{});
     defer f.deinit();
     const anchor, const popup = try anchoredPair(f);
     try dimensions(f.owner, anchor, 6, 3);
     try dimensions(f.owner, popup, 2, 1);
-    try f.owner.sceneSetPositions(popup, 3, .{ c.OT_UNIT_ANCHOR_RIGHT, c.OT_UNIT_ANCHOR_BOTTOM, 0, 0 }, .{ 0, 0, 0, 0 });
+    const keywords = [4]u32{ c.OT_UNIT_ANCHOR_RIGHT, c.OT_UNIT_ANCHOR_BOTTOM, 0, 0 };
+    try f.owner.sceneSetPositions(popup, 3, keywords, .{ 0, 0, 0, 0 });
     for ([_]u32{ c.OT_EDGE_START, c.OT_EDGE_END, c.OT_EDGE_HORIZONTAL, c.OT_EDGE_VERTICAL, c.OT_EDGE_ALL }) |edge| {
         try testing.expectError(error.InvalidOptions, f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, edge, c.OT_UNIT_POINT, 1, 0));
         try expectScreen(f, popup, .{ 8, 4 });
     }
+    try f.owner.sceneSetPositions(popup, 3, .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 });
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_START, c.OT_UNIT_POINT, 1, 0);
+    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositions(popup, 3, keywords, .{ 0, 0, 0, 0 }));
+    try f.owner.sceneSetStyle(popup, c.OT_STYLE_VALUE, c.OT_STYLE_VALUE_POSITION, c.OT_EDGE_START, c.OT_UNIT_UNDEFINED, 0, 0);
+    try f.owner.sceneSetPositions(popup, 3, keywords, .{ 0, 0, 0, 0 });
+    try expectScreen(f, popup, .{ 8, 4 });
 }
 
 test "Scene position anchor resolves edge keywords and trailing insets" {
@@ -295,17 +302,17 @@ test "Scene position anchor rejects cycles without changing accepted state" {
     const parent = second_node.scene_node.?.parent;
     try f.owner.sceneSetPositionAnchor(first, second);
     try f.owner.sceneSetPositionAnchor(first, second);
-    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, first));
-    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, child));
-    try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(second, first));
-    try testing.expectError(error.InvalidOptions, f.owner.sceneMoveNode(second, child, 0));
     {
+        // Dependency checks reject cycles without allocating.
         var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
         const allocator = f.state.allocator;
         f.state.allocator = failing.allocator();
         defer f.state.allocator = allocator;
-        try testing.expectError(error.OutOfMemory, f.owner.sceneSetPositionAnchor(first, f.root));
-        try testing.expectError(error.OutOfMemory, f.owner.sceneMoveNode(second, first, 0));
+        try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, first));
+        try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(first, child));
+        try testing.expectError(error.InvalidOptions, f.owner.sceneSetPositionAnchor(second, first));
+        try testing.expectError(error.InvalidOptions, f.owner.sceneMoveNode(second, child, 0));
+        try testing.expect(!failing.has_induced_failure);
     }
     try testing.expectEqual(@as(u32, 3), try f.owner.sceneGetPositionAnchor(first));
     try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(second));
@@ -373,7 +380,6 @@ test "Scene position anchor requested aliases and allocation failures remain ato
     try f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_DIRECTION, 0, 0, c.OT_DIRECTION_RTL, 0);
     try expectScreen(f, popup, .{ 7.25, 2.25 });
     yoga.testFailAfter(0);
-    try testing.expectError(error.OutOfMemory, f.owner.sceneSetPositionAnchor(popup, null));
     try testing.expectError(error.OutOfMemory, f.owner.sceneSetPositions(popup, 3, .{ 1, 1, 0, 0 }, .{ 12, 13, 0, 0 }));
     yoga.testFailAfter(-1);
     try testing.expectEqual(@as(u32, 2), try f.owner.sceneGetPositionAnchor(popup));
@@ -436,6 +442,7 @@ test "Scene position anchor destruction clears poisoned dependents without trapp
     try testing.expectError(error.OutOfMemory, repaint(f.owner, f.id, frame_options.background, true, 0));
     yoga.testFailAfter(-1);
     try testing.expectError(error.YogaPoisoned, f.owner.sceneGetLayout(popup, true));
+    try testing.expectError(error.YogaPoisoned, f.owner.sceneSetStyle(popup, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_ANCHOR_CENTER_X, 0, 0, 1, 0));
     try f.owner.sceneDestroyNode(anchor);
     try testing.expectEqual(@as(u32, 0), try f.owner.sceneGetPositionAnchor(popup));
     try testing.expectEqual(@as(u32, 0), f.state.anchor_count);

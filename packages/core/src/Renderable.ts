@@ -14,6 +14,7 @@ import {
   type Value,
 } from "./yoga.js"
 import {
+  AnchorUnit,
   YogaEnumKind,
   YogaFloatKind,
   YogaValueKind,
@@ -1044,7 +1045,7 @@ export abstract class Renderable extends BaseRenderable {
     sceneSetValue(this._ctx.nativeScene, this, kind, edge, valueInput)
   }
 
-  private yogaGetValue(kind: (typeof YogaValueKind)[keyof typeof YogaValueKind], edge: number): Value {
+  private yogaGetValue(kind: Parameters<typeof sceneGetValue>[2], edge: number): Value {
     return this.isFreed() ? UNDEFINED_VALUE : sceneGetValue(this._ctx.nativeScene, this, kind, edge)
   }
 
@@ -1373,63 +1374,38 @@ export abstract class Renderable extends BaseRenderable {
     if (this.isFreed() || this.positionAnchor === positionAnchor) return
 
     this.runMutation(() => {
-      if (positionAnchor !== null) {
-        if (positionAnchor === this) {
-          throw new Error("A renderable cannot anchor to itself")
-        }
-        if (positionAnchor.isDestroyed || positionAnchor.isFreed()) {
-          throw new Error("Renderable is destroyed or freed")
-        }
-        if (positionAnchor.ctx.nativeScene !== this._ctx.nativeScene) {
-          throw new Error("positionAnchor must belong to the same renderer")
-        }
-      }
+      // A destroying anchor keeps its native node until teardown, so native cannot reject it.
+      if (positionAnchor?.isDestroyed) throw new Error("Renderable is destroyed or freed")
       this._ctx.nativeScene.setPositionAnchor(this, positionAnchor)
       this.requestRender()
     })
   }
 
   get anchorCenterX(): boolean {
-    return this.getAnchorCenter(0)
+    return this.yogaGetEnum(YogaEnumKind.AnchorCenterX, 0) !== 0
   }
 
   set anchorCenterX(centered: boolean | null | undefined) {
-    this.setAnchorCenter(0, centered)
+    this.setAnchorCenter(YogaEnumKind.AnchorCenterX, centered)
   }
 
   get anchorCenterY(): boolean {
-    return this.getAnchorCenter(1)
+    return this.yogaGetEnum(YogaEnumKind.AnchorCenterY, 0) !== 0
   }
 
   set anchorCenterY(centered: boolean | null | undefined) {
-    this.setAnchorCenter(1, centered)
+    this.setAnchorCenter(YogaEnumKind.AnchorCenterY, centered)
   }
 
-  private getAnchorCenter(axis: 0 | 1): boolean {
-    if (this.isDestroyed || this.isFreed()) return false
-    return (
-      this._ctx.nativeScene.getStyle(
-        this,
-        nativeConstants.OT_STYLE_ENUM,
-        nativeConstants.OT_STYLE_ENUM_ANCHOR_CENTER_X + axis,
-        NATIVE_EDGE_NONE,
-      ).value !== 0
-    )
-  }
-
-  private setAnchorCenter(axis: 0 | 1, centered: boolean | null | undefined): void {
+  private setAnchorCenter(
+    kind: typeof YogaEnumKind.AnchorCenterX | typeof YogaEnumKind.AnchorCenterY,
+    centered: boolean | null | undefined,
+  ): void {
     centered ??= false
     if (typeof centered !== "boolean") throw new TypeError("Anchor centering must be a boolean")
-    if (this.isFreed() || this.getAnchorCenter(axis) === centered) return
+    if (this.isFreed() || this.yogaGetEnum(kind, 0) === Number(centered)) return
     this.runMutation(() => {
-      this._ctx.nativeScene.setStyle(
-        this,
-        nativeConstants.OT_STYLE_ENUM,
-        nativeConstants.OT_STYLE_ENUM_ANCHOR_CENTER_X + axis,
-        NATIVE_EDGE_NONE,
-        nativeConstants.OT_UNIT_UNDEFINED,
-        Number(centered),
-      )
+      this.yogaSetEnum(kind, Number(centered))
       this.requestRender()
     })
   }
@@ -1471,7 +1447,7 @@ export abstract class Renderable extends BaseRenderable {
         if (edge % 2 !== anchorEdge % 2) {
           throw new TypeError(`Invalid ${key} anchor inset: ${input}`)
         }
-        units[edge] = nativeConstants.OT_UNIT_ANCHOR_LEFT + anchorEdge
+        units[edge] = AnchorUnit.Left + anchorEdge
       } else {
         if (input !== undefined && !isPositionType(input)) continue
         const value = parseYogaValue(input)

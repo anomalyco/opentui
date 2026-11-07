@@ -65,6 +65,25 @@ facebook::yoga::StyleLength styleLength(uint32_t unit, float value) {
   }
 }
 
+// Returns whether the position type or any effective inset changed.
+bool writePositionState(facebook::yoga::Style& style, uint32_t position_type, const uint32_t units[9],
+    const float values[9], bool anchored) {
+  using namespace facebook::yoga;
+  const auto type = static_cast<PositionType>(position_type);
+  bool changed = style.positionType() != type;
+  style.setPositionType(type);
+  for (uint32_t edge = 0; edge < 9; ++edge) {
+    const auto e = static_cast<Edge>(edge);
+    const auto length = styleLength(units[edge], values[edge]);
+    const auto effective = anchored ? StyleLength::undefined() : length;
+    changed |= style.position(e) != effective;
+    // Store the requested length before suppressing it so its pool slot survives for restore.
+    style.setPosition(e, length);
+    if (anchored) style.setPosition(e, effective);
+  }
+  return changed;
+}
+
 }  // namespace
 
 uint32_t otYogaConfigCreate(YGConfigRef* out) noexcept {
@@ -361,18 +380,7 @@ uint32_t otYogaNodeStyleSetPositionState(YGNodeRef ref, uint32_t position_type,
   return checked([&] {
     auto node = resolveRef(ref);
     auto next = node->style();
-    const auto type = static_cast<PositionType>(position_type);
-    bool changed = next.positionType() != type;
-    next.setPositionType(type);
-    for (uint32_t edge = 0; edge < 9; ++edge) {
-      const auto e = static_cast<Edge>(edge);
-      const auto length = styleLength(units[edge], values[edge]);
-      const auto effective = anchored ? StyleLength::undefined() : length;
-      changed |= next.position(e) != effective;
-      // Store the requested length before suppressing it so its pool slot survives for restore.
-      next.setPosition(e, length);
-      if (anchored) next.setPosition(e, effective);
-    }
+    const bool changed = writePositionState(next, position_type, units, values, anchored);
     static_assert(std::is_nothrow_move_assignable_v<Style>);
     node->style() = std::move(next);
     if (changed) node->markDirtyAndPropagate();
@@ -381,20 +389,9 @@ uint32_t otYogaNodeStyleSetPositionState(YGNodeRef ref, uint32_t position_type,
 
 void otYogaNodeStyleRestorePosition(YGNodeRef ref, uint32_t position_type,
     const uint32_t units[9], const float values[9]) noexcept {
-  using namespace facebook::yoga;
-  auto node = resolveRef(ref);
-  auto& style = node->style();
-  const auto type = static_cast<PositionType>(position_type);
-  bool changed = style.positionType() != type;
-  style.setPositionType(type);
+  auto node = facebook::yoga::resolveRef(ref);
   // Suppression retains indexed handles, so restoring accepted lengths cannot allocate.
-  for (uint32_t edge = 0; edge < 9; ++edge) {
-    const auto e = static_cast<Edge>(edge);
-    const auto length = styleLength(units[edge], values[edge]);
-    changed |= style.position(e) != length;
-    style.setPosition(e, length);
-  }
-  if (changed) node->markDirtyAndPropagate();
+  if (writePositionState(node->style(), position_type, units, values, false)) node->markDirtyAndPropagate();
 }
 
 uint32_t otYogaNodeStyleSetValue(YGNodeRef node, uint32_t kind, uint32_t edge, uint32_t unit,
