@@ -40,6 +40,16 @@ export function resolveNodeSolidRuntimeImport(specifier: string): string | null 
   }
 }
 
+export function isSolidJsxSource(path: string): boolean {
+  return jsxPattern.test(stripQueryAndHash(path))
+}
+
+export function useSolidJsxImportSource(code: string, moduleName: string): string {
+  const rewritten = code.replace(/(@jsxImportSource\s+)@opentui\/solid\b/g, `$1${moduleName}`)
+  if (rewritten !== code || /@jsxImportSource\s+/.test(code)) return rewritten
+  return `/** @jsxImportSource ${moduleName} */\n${code}`
+}
+
 export async function transformSolidSource(code: string, options: TransformSolidSourceOptions): Promise<string> {
   const filename = stripQueryAndHash(options.filename)
   const plugins = options.resolvePath
@@ -57,7 +67,7 @@ export async function transformSolidSource(code: string, options: TransformSolid
 
   const presets = []
 
-  if (jsxPattern.test(filename)) {
+  if (isSolidJsxSource(filename)) {
     presets.push([
       solid,
       {
