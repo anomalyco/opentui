@@ -1,0 +1,189 @@
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index ee82e9ea..2b1db32f 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -514,27 +514,23 @@ static void measureNodeWithMeasureFunc(
+       ? availableHeight
+       : yoga::maxOrDefined(0.0f, availableHeight - paddingAndBorderAxisColumn);
+ 
++  // OpenTUI: keep the size before min and max for the cache entry, see
++  // CachedMeasurement::unboundedWidth.
++  const auto setMeasured = [&](FlexDirection axis, float size, float axisSize) {
++    const auto dimension = isRow(axis) ? Dimension::Width : Dimension::Height;
++    layoutMarkerData.unboundedMeasuredDimensions[yoga::to_underlying(
++        dimension)] = yoga::maxOrDefined(
++        size, paddingAndBorderForAxis(node, axis, direction, ownerWidth));
++    node->setLayoutMeasuredDimension(
++        boundAxis(node, axis, direction, size, axisSize, ownerWidth),
++        dimension);
++  };
++
+   if (widthSizingMode == SizingMode::StretchFit &&
+       heightSizingMode == SizingMode::StretchFit) {
+     // Don't bother sizing the text if both dimensions are already defined.
+-    node->setLayoutMeasuredDimension(
+-        boundAxis(
+-            node,
+-            FlexDirection::Row,
+-            direction,
+-            availableWidth,
+-            ownerWidth,
+-            ownerWidth),
+-        Dimension::Width);
+-    node->setLayoutMeasuredDimension(
+-        boundAxis(
+-            node,
+-            FlexDirection::Column,
+-            direction,
+-            availableHeight,
+-            ownerHeight,
+-            ownerWidth),
+-        Dimension::Height);
++    setMeasured(FlexDirection::Row, availableWidth, ownerWidth);
++    setMeasured(FlexDirection::Column, availableHeight, ownerHeight);
+   } else {
+     Event::publish<Event::MeasureCallbackStart>(node);
+ 
+@@ -559,31 +555,20 @@ static void measureNodeWithMeasureFunc(
+          .measuredHeight = measuredSize.height,
+          .reason = reason});
+ 
+-    node->setLayoutMeasuredDimension(
+-        boundAxis(
+-            node,
+-            FlexDirection::Row,
+-            direction,
+-            (widthSizingMode == SizingMode::MaxContent ||
+-             widthSizingMode == SizingMode::FitContent)
+-                ? measuredSize.width + paddingAndBorderAxisRow
+-                : availableWidth,
+-            ownerWidth,
+-            ownerWidth),
+-        Dimension::Width);
+-
+-    node->setLayoutMeasuredDimension(
+-        boundAxis(
+-            node,
+-            FlexDirection::Column,
+-            direction,
+-            (heightSizingMode == SizingMode::MaxContent ||
+-             heightSizingMode == SizingMode::FitContent)
+-                ? measuredSize.height + paddingAndBorderAxisColumn
+-                : availableHeight,
+-            ownerHeight,
+-            ownerWidth),
+-        Dimension::Height);
++    setMeasured(
++        FlexDirection::Row,
++        (widthSizingMode == SizingMode::MaxContent ||
++         widthSizingMode == SizingMode::FitContent)
++            ? measuredSize.width + paddingAndBorderAxisRow
++            : availableWidth,
++        ownerWidth);
++    setMeasured(
++        FlexDirection::Column,
++        (heightSizingMode == SizingMode::MaxContent ||
++         heightSizingMode == SizingMode::FitContent)
++            ? measuredSize.height + paddingAndBorderAxisColumn
++            : availableHeight,
++        ownerHeight);
+   }
+ }
+ 
+@@ -2803,6 +2788,8 @@ bool calculateLayoutInternal(
+     layout->cachedLayout.computedHeight = -1;
+     layout->cachedLayout.ownerWidth = -1;
+     layout->cachedLayout.ownerHeight = -1;
++    layout->cachedLayout.unboundedWidth = -1;
++    layout->cachedLayout.unboundedHeight = -1;
+   }
+ 
+   CachedMeasurement* cachedResults = nullptr;
+@@ -2832,8 +2819,8 @@ bool calculateLayoutInternal(
+             layout->cachedLayout.availableWidth,
+             layout->cachedLayout.heightSizingMode,
+             layout->cachedLayout.availableHeight,
+-            layout->cachedLayout.computedWidth,
+-            layout->cachedLayout.computedHeight,
++            layout->cachedLayout.unboundedWidth,
++            layout->cachedLayout.unboundedHeight,
+             marginAxisRow,
+             marginAxisColumn,
+             node->getConfig()) &&
+@@ -2852,8 +2839,8 @@ bool calculateLayoutInternal(
+                 layout->cachedMeasurements[i].availableWidth,
+                 layout->cachedMeasurements[i].heightSizingMode,
+                 layout->cachedMeasurements[i].availableHeight,
+-                layout->cachedMeasurements[i].computedWidth,
+-                layout->cachedMeasurements[i].computedHeight,
++                layout->cachedMeasurements[i].unboundedWidth,
++                layout->cachedMeasurements[i].unboundedHeight,
+                 marginAxisRow,
+                 marginAxisColumn,
+                 node->getConfig()) &&
+@@ -2924,6 +2911,8 @@ bool calculateLayoutInternal(
+           Dimension::Width, largerHeightCap->computedWidth);
+       layout->setMeasuredDimension(
+           Dimension::Height, largerHeightCap->computedHeight);
++      layoutMarkerData.unboundedMeasuredDimensions = {
++          largerHeightCap->unboundedWidth, largerHeightCap->unboundedHeight};
+     } else {
+       calculateLayoutImpl(
+           node,
+@@ -2975,6 +2964,11 @@ bool calculateLayoutInternal(
+           layout->measuredDimension(Dimension::Height);
+       newCacheEntry->ownerWidth = ownerWidth;
+       newCacheEntry->ownerHeight = ownerHeight;
++      // OpenTUI: read only for nodes with a measure function.
++      newCacheEntry->unboundedWidth =
++          layoutMarkerData.unboundedMeasuredDimensions[0];
++      newCacheEntry->unboundedHeight =
++          layoutMarkerData.unboundedMeasuredDimensions[1];
+     }
+   }
+ 
+diff --git a/yoga/algorithm/SizingMode.h b/yoga/algorithm/SizingMode.h
+index 2b308744..3e92a892 100644
+--- a/yoga/algorithm/SizingMode.h
++++ b/yoga/algorithm/SizingMode.h
+@@ -18,7 +18,7 @@ namespace facebook::yoga {
+  * https://www.w3.org/TR/css-sizing-3/#auto-box-sizes
+  * https://www.w3.org/TR/css-flexbox-1/#min-size-auto
+  */
+-enum class SizingMode {
++enum class SizingMode : uint8_t {
+   /**
+    * The size a box would take if its outer size filled the available space in
+    * the given axis; in other words, the stretch fit into the available space,
+diff --git a/yoga/event/event.h b/yoga/event/event.h
+index 0d032240..8bc05ee4 100644
+--- a/yoga/event/event.h
++++ b/yoga/event/event.h
+@@ -45,6 +45,9 @@ struct LayoutData {
+   int measureCallbacks = 0;
+   std::array<int, static_cast<uint8_t>(LayoutPassReason::COUNT)>
+       measureCallbackReasonsCount;
++  // OpenTUI: the last measured node's CachedMeasurement::unboundedWidth and
++  // unboundedHeight, from its measure to its cache entry.
++  std::array<float, 2> unboundedMeasuredDimensions;
+ };
+ 
+ const char* LayoutPassReasonToString(LayoutPassReason value);
+diff --git a/yoga/node/CachedMeasurement.h b/yoga/node/CachedMeasurement.h
+index 4cee330f..f9c518f1 100644
+--- a/yoga/node/CachedMeasurement.h
++++ b/yoga/node/CachedMeasurement.h
+@@ -28,6 +28,13 @@ struct CachedMeasurement {
+   float ownerWidth{-1};
+   float ownerHeight{-1};
+ 
++  // OpenTUI: a measured node's size before its min and max size, with its
++  // padding and border. The cache rules for nodes with a measure function
++  // compare a new size with this one: a minimum that raised the width kept a
++  // height measured at the narrower width.
++  float unboundedWidth{-1};
++  float unboundedHeight{-1};
++
+   bool operator==(CachedMeasurement measurement) const {
+     bool isEqual = widthSizingMode == measurement.widthSizingMode &&
+         heightSizingMode == measurement.heightSizingMode;

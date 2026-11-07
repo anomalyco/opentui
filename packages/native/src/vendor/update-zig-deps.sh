@@ -124,6 +124,7 @@ git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-absolute-edge-rounding.
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-finite-percent.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-height-cap.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-margin.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-cache-bounds.patch"
 
 find "$DEPS_DIR" -type d -exec chmod 0755 {} +
 find "$DEPS_DIR" -type f -exec chmod 0644 {} +

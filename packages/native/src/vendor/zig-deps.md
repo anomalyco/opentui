@@ -26,7 +26,7 @@ Both ports change only Zig code, and the update script gives both copies the sam
 generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga `main` at commit `41118bd3a` with seven changes, applied in this order:
+The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eight changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation, including the Grid style storage, through
   `yoga/OTAllocator.h`, so a test build can inject allocation failures. It also makes style updates, child
@@ -56,6 +56,9 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with seven changes
   with it, so a measured node that grew by less than its margin kept its old size. Unlike #1965, only a
   positive margin comes off the old size; upstream's rule is already valid for a negative margin. Entries
   for a percent margin match only at the same owner size (facebook/yoga#2042).
+- `yoga-measure-cache-bounds.patch` keeps a measured node's size before its min and max size in each cache
+  entry, and the cache rules compare a new size with it. Upstream compares with the bounded size, so a text
+  that its minimum width widened kept a height measured at the narrower width.
 
 `src/tests/yoga_test.zig` tests each change.
 
