@@ -329,6 +329,7 @@ try {
     TMP: dataDir,
   }
   delete runtimeEnv.OTUI_ASSET_ROOT
+  delete runtimeEnv.OPENTUI_LIB_PATH
   delete runtimeEnv.OTUI_TREE_SITTER_WORKER_PATH
   for (let runIndex = 0; runIndex < 2; runIndex++) {
     const result = run(deployedExecutable, [], workDir, `Node SEA run ${runIndex + 1} failed`, {

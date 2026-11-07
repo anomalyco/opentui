@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: b0e4e5bd7844f2a66095f267de49a344de6ed77f03bf82e5583095c4269541f3
+// ABI audit SHA-256: 6ba5ce06cae192c15e3790e7fff10a36f7a229c77fa14317c2fdf6dad6138b4c
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -16,6 +16,7 @@ export const nativeSymbols = {
   ot_scene_move_node: { args: ["ptr", "buffer", "ptr", "u32"], returns: "i32" },
   ot_scene_set_position_anchor: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_get_position_anchor: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
+  ot_scene_clear_children: { args: ["ptr", "buffer"], returns: "i32" },
   ot_scene_set_measure: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_has_measure: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_mark_dirty: { args: ["ptr", "buffer"], returns: "i32" },
@@ -72,6 +73,7 @@ export const nativeSymbols = {
   ot_embedded_terminal_get_selected_text: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
   ot_embedded_terminal_compose: { args: ["ptr", "buffer", "buffer", "ptr", "i32", "i32"], returns: "i32" },
   ot_embedded_terminal_cursor_get: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
+  ot_embedded_terminal_scrollbar_get: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_embedded_terminal_encode_key: {
     args: ["ptr", "buffer", "buffer", "ptr", "u32", "ptr", "u32", "ptr", "u32", "buffer"],
     returns: "i32",
@@ -160,6 +162,15 @@ export const nativeSymbols = {
   ot_video_set_max_fps: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_video_get_state: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_video_get_error: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
+  ot_audio_create: { args: ["ptr", "buffer"], returns: "i32" },
+  ot_audio_destroy: { args: ["ptr", "buffer"], returns: "i32" },
+  ot_audio_start: { args: ["ptr", "buffer", "u32"], returns: "i32" },
+  ot_audio_stop: { args: ["ptr", "buffer"], returns: "i32" },
+  ot_audio_load: { args: ["ptr", "buffer", "buffer", "u64", "buffer"], returns: "i32" },
+  ot_audio_play: { args: ["ptr", "buffer", "u32", "f32", "buffer"], returns: "i32" },
+  ot_audio_stop_voice: { args: ["ptr", "buffer", "u32"], returns: "i32" },
+  ot_audio_set_volume: { args: ["ptr", "buffer", "f32"], returns: "i32" },
+  ot_audio_mix: { args: ["ptr", "buffer", "buffer", "u32", "u32"], returns: "i32" },
   ot_buffer_draw_image: { args: ["ptr", "buffer", "ptr", "buffer", "buffer", "buffer"], returns: "i32" },
   ot_session_set_image_resolution: { args: ["ptr", "buffer", "u32", "u32", "u32", "u32"], returns: "i32" },
   ot_session_set_kitty_image_transport: { args: ["ptr", "buffer", "u32"], returns: "i32" },
@@ -847,6 +858,18 @@ export const nativeLayouts = {
       color_g: { offset: 44, size: 4, alignment: 4, type: "u32" },
       color_b: { offset: 48, size: 4, alignment: 4, type: "u32" },
       reserved: { offset: 52, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_embedded_terminal_scrollbar: {
+    size: 24,
+    alignment: 4,
+    fields: {
+      struct_size: { offset: 0, size: 4, alignment: 4, type: "u32" },
+      abi_version: { offset: 4, size: 4, alignment: 4, type: "u32" },
+      offset: { offset: 8, size: 4, alignment: 4, type: "u32" },
+      total: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      visible: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      reserved: { offset: 20, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_embedded_terminal_key: {
@@ -1599,6 +1622,8 @@ export const nativeConstants = {
   OT_IMAGE_UNSUPPORTED_FEATURE: -46,
   OT_IMAGE_BUSY: -47,
   OT_VIDEO_FAILED: -60,
+  OT_AUDIO_DECODE_FAILED: -61,
+  OT_AUDIO_DEVICE_FAILED: -62,
   OT_SCENE_ROOT: 0,
   OT_SCENE_BOX: 1,
   OT_SCENE_TEXT: 2,
@@ -1999,6 +2024,7 @@ export const nativeConstants = {
   OT_VIDEO_AUDIO: 8,
   OT_VIDEO_HAS_FRAME: 16,
   OT_VIDEO_ERROR: 32,
+  OT_AUDIO_START_NO_DEVICE: 1,
   OT_TEXT_VIEW_WRAP_WIDTH: 0,
   OT_TEXT_VIEW_WRAP_MODE: 1,
   OT_TEXT_VIEW_FIRST_LINE_OFFSET: 2,

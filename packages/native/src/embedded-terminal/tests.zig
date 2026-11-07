@@ -283,13 +283,35 @@ test "embedded terminal exposes cursor state" {
 }
 
 test "embedded terminal supports lifecycle, resize, and viewport scroll" {
-    const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 80, .rows = 24 });
+    const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 10, .rows = 3 });
     defer terminal.deinit();
 
-    try terminal.write("hello");
+    // Each step, then the viewport's offset above the live screen, the total rows, and the visible rows.
+    const steps = [_]struct { write: []const u8 = "", scroll: i32 = 0, rows: u16 = 0, want: [3]u32 }{
+        .{ .write = "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10", .want = .{ 0, 10, 3 } },
+        .{ .scroll = -2, .want = .{ 2, 10, 3 } },
+        .{ .scroll = -100, .want = .{ 7, 10, 3 } }, // the top of history
+        .{ .scroll = -1, .want = .{ 7, 10, 3 } },
+        .{ .scroll = 1, .want = .{ 6, 10, 3 } },
+        .{ .scroll = 100, .want = .{ 0, 10, 3 } }, // the live screen
+        .{ .scroll = 1, .want = .{ 0, 10, 3 } },
+        .{ .scroll = -2, .want = .{ 2, 10, 3 } },
+        .{ .write = "\r\n11\r\n12", .want = .{ 4, 12, 3 } }, // output keeps the view on its rows
+        .{ .rows = 4, .want = .{ 3, 12, 4 } }, // a resize keeps the view's top row
+        .{ .write = "\x1b[3J", .want = .{ 0, 4, 4 } }, // clearing the scrollback jumps to the live screen
+        .{ .write = "\r\n13\r\n14", .scroll = -2, .want = .{ 2, 6, 4 } },
+        .{ .write = "\x1b[?1049h", .scroll = -5, .want = .{ 0, 4, 4 } }, // the alternate screen has no history
+        .{ .write = "\x1b[?1049l", .want = .{ 2, 6, 4 } },
+    };
+    for (steps, 0..) |step, i| {
+        errdefer std.debug.print("step {d}\n", .{i});
+        try terminal.write(step.write);
+        if (step.rows != 0) try terminal.resize(terminal.cols, step.rows);
+        if (step.scroll != 0) terminal.scroll(step.scroll);
+        const bar = terminal.scrollbar();
+        try std.testing.expectEqual(step.want, [3]u32{ bar.offset, bar.total, bar.visible });
+    }
     try terminal.resize(100, 40);
-    terminal.scroll(-3);
-    terminal.scroll(3);
 
     try std.testing.expectEqual(@as(u16, 100), terminal.cols);
     try std.testing.expectEqual(@as(u16, 40), terminal.rows);

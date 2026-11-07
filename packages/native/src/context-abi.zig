@@ -17,6 +17,7 @@ const input_transport = @import("context-input-abi.zig");
 const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
 const video_transport = @import("context-video-abi.zig");
+const audio_transport = @import("context-audio-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
 const utils = @import("utils.zig");
 
@@ -1611,6 +1612,15 @@ pub fn ot_scene_move_node(context: ?*ContextHandle, node_ptr: ?*const c.ot_handl
     const id = node_ptr orelse return sessionError(owner, error.InvalidOptions);
     const parent = if (parent_ptr) |ptr| handleFromC(ptr.*) else null;
     owner.core.sceneMoveNode(handleFromC(id.*), parent, index) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
+pub fn ot_scene_clear_children(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = node_ptr orelse return sessionError(owner, error.InvalidOptions);
+    owner.core.sceneClearChildren(handleFromC(id.*)) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -3723,13 +3733,13 @@ test "Scene ABI wrappers share admission handle and record rules and keep output
     nodes[3].context_id += 1;
     sessions[3].context_id += 1;
     inline for (.{
-        ot_scene_destroy_node,        ot_scene_move_node,  ot_scene_set_measure,      ot_scene_mark_dirty,
-        ot_scene_set_style,           ot_scene_set_paint,  ot_scene_set_surface,      ot_scene_set_box_details,
-        ot_scene_set_viewport,        ot_scene_set_focus,  ot_scene_set_slider,       ot_scene_get_slider_thumb,
-        ot_scene_set_arrow,           ot_scene_set_text,   ot_scene_set_styled_text,  ot_scene_set_text_options,
-        ot_scene_set_text_selection,  ot_scene_set_hooks,  ot_scene_set_editor_view,  ot_scene_set_editor_options,
-        ot_scene_set_image,           ot_scene_set_scroll, ot_scene_set_scroll_arrow, ot_scene_set_crop,
-        ot_scene_set_position_anchor,
+        ot_scene_destroy_node,        ot_scene_move_node,      ot_scene_set_measure,      ot_scene_mark_dirty,
+        ot_scene_set_style,           ot_scene_set_paint,      ot_scene_set_surface,      ot_scene_set_box_details,
+        ot_scene_set_viewport,        ot_scene_set_focus,      ot_scene_set_slider,       ot_scene_get_slider_thumb,
+        ot_scene_set_arrow,           ot_scene_set_text,       ot_scene_set_styled_text,  ot_scene_set_text_options,
+        ot_scene_set_text_selection,  ot_scene_set_hooks,      ot_scene_set_editor_view,  ot_scene_set_editor_options,
+        ot_scene_set_image,           ot_scene_set_scroll,     ot_scene_set_scroll_arrow, ot_scene_set_crop,
+        ot_scene_set_position_anchor, ot_scene_clear_children,
     }) |wrapper| {
         try expectSceneWrapperRules(wrapper, false, handle, &nodes, 0);
     }
@@ -4974,6 +4984,7 @@ test "Context typed destroy exports reject other kinds and destroy their own onc
         .{ &ot_session_destroy, try core.createSession(.{}) },
         .{ &unicode_transport.ot_unicode_destroy, try core.createUnicode("a", .unicode) },
         .{ &terminal_transport.ot_embedded_terminal_destroy, try core.createEmbeddedTerminal(2, 1, 0) },
+        .{ &audio_transport.ot_audio_destroy, try core.createAudioEngine(null) },
     };
     const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
     inline for (cases) |case| {
@@ -5150,6 +5161,7 @@ const abi_modules = .{
     output_transport,
     image_transport,
     video_transport,
+    audio_transport,
     clipboard_transport,
 };
 

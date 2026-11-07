@@ -98,6 +98,13 @@ registerEnvVar({
   default: "",
 })
 
+registerEnvVar({
+  name: "OPENTUI_LIB_PATH",
+  description: "Load the native library from this file instead of the platform package.",
+  type: "string",
+  default: "",
+})
+
 export type NativeHandle<T extends string> = Pointer & { readonly __nativeHandle: T }
 
 // Public numeric handles never identify a later resource or a different library instance.
@@ -1006,6 +1013,7 @@ export type EmbeddedTerminalMouse = {
 }
 let targetLibPath: string | undefined
 let targetLibError: Error | undefined
+const targetLibSource = process.env.OPENTUI_LIB_PATH ? " (set by OPENTUI_LIB_PATH)" : ""
 
 try {
   targetLibPath = await resolveNativeLibraryPath()
@@ -1016,6 +1024,7 @@ try {
     throw new Error(`OpenTUI native library does not exist at ${JSON.stringify(targetLibPath)}`)
   }
 } catch (error) {
+  targetLibPath = undefined
   targetLibError = error instanceof Error ? error : new Error(String(error))
 }
 
@@ -3221,6 +3230,14 @@ function getOpenTUILib(libPath?: string) {
     },
   })
 
+  const abiVersion = rawSymbols.symbols.ot_context_abi_version()
+  if (abiVersion !== nativeConstants.OT_CONTEXT_ABI_VERSION) {
+    rawSymbols.close()
+    throw new Error(
+      `OpenTUI native library at ${JSON.stringify(resolvedLibPath)} has context ABI version ${abiVersion}, expected ${nativeConstants.OT_CONTEXT_ABI_VERSION}`,
+    )
+  }
+
   if (env.OTUI_DEBUG_FFI || env.OTUI_TRACE_FFI) {
     return {
       ...rawSymbols,
@@ -4166,6 +4183,25 @@ export class FFIRenderLib {
             },
           }
         : {}),
+    }
+  }
+
+  public contextEmbeddedTerminalScrollbar(
+    context: NativeContextHandle,
+    terminal: ContextEmbeddedTerminalHandle,
+  ): { offset: number; total: number; visible: number } {
+    const layout = nativeLayouts.ot_embedded_terminal_scrollbar
+    const handle = encodeContextHandle(context, terminal)
+    const record = createContextRecord(layout)
+    const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_scrollbar_get")
+    nativeResult(
+      "ot_embedded_terminal_scrollbar_get",
+      this.opentui.symbols.ot_embedded_terminal_scrollbar_get(pointer, handle, record),
+    )
+    return {
+      offset: record[layout.fields.offset.offset / 4],
+      total: record[layout.fields.total.offset / 4],
+      visible: record[layout.fields.visible.offset / 4],
     }
   }
 
@@ -9897,8 +9933,9 @@ export function resolveRenderLib(): RenderLib {
     try {
       opentuiLib = new FFIRenderLib(opentuiLibPath)
     } catch (error) {
+      const source = opentuiLibPath ? "" : targetLibSource
       throw new Error(
-        `Failed to initialize OpenTUI render library: ${error instanceof Error ? error.message : "Unknown error"}`,
+        `Failed to initialize OpenTUI render library${source}: ${error instanceof Error ? error.message : "Unknown error"}`,
       )
     }
   }

@@ -1,5 +1,6 @@
 #include "opentui.h"
 #include <assert.h>
+#include <math.h>
 #include <string.h>
 
 /* The ABI generator checks every record layout with the C compiler. */
@@ -171,6 +172,8 @@ static void rendered_output(ot_context *context) {
     assert(delivered > 0);
     uint32_t hit = 0;
     assert(ot_scene_hit_test(context, &session, 0, 0, &hit) == OT_OK && hit == 101);
+    // Clearing detaches the box; clearing the empty root again changes nothing.
+    assert(ot_scene_clear_children(context, &root) == OT_OK && ot_scene_clear_children(context, &root) == OT_OK);
     assert(ot_session_destroy(context, &session) == OT_OK);
     assert(ot_scene_destroy_node(context, &root) == OT_STALE_HANDLE);
 }
@@ -205,6 +208,82 @@ static void input_events(ot_context *context) {
     assert(ot_session_input_expect(context, &session, OT_INPUT_EXPECT_SENTINEL << 1) == OT_INVALID_ARGUMENT);
     assert(ot_session_input_reset(context, &session, 0) == OT_OK);
     assert(ot_session_destroy(context, &session) == OT_OK);
+}
+
+static void terminal_scrollbar(ot_context *context) {
+    const ot_embedded_terminal_options options = {
+        .struct_size = sizeof(options), .abi_version = OT_CONTEXT_ABI_VERSION,
+        .cols = 4, .rows = 2, .max_scrollback = 4096,
+    };
+    ot_handle terminal;
+    const ot_status status = ot_embedded_terminal_create(context, &options, &terminal);
+    if (status == OT_UNSUPPORTED_RESOURCE) return;
+    assert(status == OT_OK);
+    const uint8_t lines[] = "1\r\n2\r\n3\r\n4\r\n5";
+    assert(ot_embedded_terminal_write(context, &terminal, lines, sizeof(lines) - 1) == OT_OK);
+    assert(ot_embedded_terminal_command(context, &terminal, OT_EMBEDDED_TERMINAL_SCROLL, -1) == OT_OK);
+    ot_embedded_terminal_scrollbar bar = {sizeof(bar), OT_CONTEXT_ABI_VERSION, 9, 9, 9, 0};
+    assert(ot_embedded_terminal_scrollbar_get(context, &terminal, &bar) == OT_OK);
+    assert(bar.struct_size == sizeof(bar) && bar.offset == 1 && bar.total == 5 && bar.visible == 2);
+    bar.struct_size--;
+    assert(ot_embedded_terminal_scrollbar_get(context, &terminal, &bar) == OT_INVALID_ARGUMENT);
+    assert(ot_embedded_terminal_destroy(context, &terminal) == OT_OK);
+}
+
+static float audio_peak(ot_context *context, const ot_handle *engine) {
+    float samples[64], peak = 0;
+    assert(ot_audio_mix(context, engine, samples, 32, 2) == OT_OK);
+    for (uint32_t i = 0; i < 64; i++) peak = samples[i] > peak ? samples[i] : peak;
+    return peak;
+}
+
+static void audio(ot_context *context, ot_context *foreign) {
+    /* 480 frames of 16-bit mono WAV at 48 kHz, at half scale. */
+    uint8_t wav[44 + 960] = "RIFF\xe4\x03\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0\x77\x01\0\x02\0\x10\0data\xc0\x03\0\0";
+    for (uint32_t i = 45; i < sizeof(wav); i += 2) wav[i] = 0x40;
+    const ot_handle sentinel = {UINT64_MAX, UINT32_MAX, UINT32_MAX};
+    ot_handle engine = sentinel, other;
+    ot_context_error error = {sizeof(error), OT_CONTEXT_ABI_VERSION, OT_OK, 0};
+    uint32_t sound = UINT32_MAX, voice = UINT32_MAX, extra;
+    float samples[2];
+    assert(ot_audio_create(context, NULL) == OT_INVALID_ARGUMENT);
+    assert(ot_audio_create(context, &engine) == OT_OK && ot_audio_create(context, &other) == OT_OK);
+    assert(ot_audio_start(foreign, &engine, OT_AUDIO_START_NO_DEVICE) == OT_WRONG_CONTEXT);
+    assert(ot_audio_start(context, &engine, OT_AUDIO_START_NO_DEVICE << 1) == OT_INVALID_ARGUMENT);
+    assert(ot_audio_load(context, &engine, wav + 8, 36, &sound) == OT_AUDIO_DECODE_FAILED && sound == UINT32_MAX);
+    assert(ot_context_get_last_error(context, &error) == OT_OK && error.status == OT_AUDIO_DECODE_FAILED);
+    assert(ot_audio_load(context, &engine, wav, sizeof(wav), &sound) == OT_OK && sound != 0);
+    assert(ot_audio_play(context, &engine, sound + 1, 1, &voice) == OT_STALE_HANDLE && voice == UINT32_MAX);
+    assert(ot_audio_play(context, &engine, sound, 4.5f, &voice) == OT_INVALID_ARGUMENT);
+    assert(ot_audio_play(context, &engine, sound, 0.5f, &voice) == OT_OK && voice != 0);
+    assert(audio_peak(context, &engine) == 0);
+    assert(ot_audio_start(context, &engine, OT_AUDIO_START_NO_DEVICE) == OT_OK);
+    assert(audio_peak(context, &engine) == 0.25f);
+    assert(ot_audio_set_volume(context, &engine, -1) == OT_INVALID_ARGUMENT);
+    assert(ot_audio_set_volume(context, &engine, NAN) == OT_INVALID_ARGUMENT);
+    assert(ot_audio_set_volume(context, &engine, 4) == OT_OK);
+    assert(ot_audio_set_volume(context, &engine, 0) == OT_OK && audio_peak(context, &engine) == 0);
+    assert(ot_audio_mix(context, &engine, samples, 1, 1) == OT_OK);
+    assert(ot_audio_mix(context, &engine, samples, 1, 3) == OT_INVALID_ARGUMENT);
+    assert(ot_audio_stop_voice(context, &engine, voice) == OT_OK);
+    assert(ot_audio_stop_voice(context, &engine, voice) == OT_STALE_HANDLE);
+    assert(ot_audio_stop_voice(context, &engine, 0) == OT_STALE_HANDLE);
+    /* A voice that ends and is reaped keeps its ID from naming the slot's next voice. */
+    assert(ot_audio_set_volume(context, &engine, 1) == OT_OK);
+    assert(ot_audio_play(context, &engine, sound, 1, &voice) == OT_OK);
+    for (uint32_t i = 0; i < 17; i++) audio_peak(context, &engine);
+    assert(ot_audio_play(context, &engine, sound, 1, &extra) == OT_OK && extra != voice);
+    assert(ot_audio_stop_voice(context, &engine, voice) == OT_STALE_HANDLE && audio_peak(context, &engine) > 0);
+    assert(ot_audio_stop_voice(context, &engine, extra) == OT_OK);
+    for (uint32_t i = 0; i < 32; i++) assert(ot_audio_play(context, &engine, sound, 1, &extra) == OT_OK);
+    assert(ot_audio_play(context, &engine, sound, 1, &extra) == OT_OBJECT_LIMIT);
+    assert(ot_audio_stop(context, &engine) == OT_OK && audio_peak(context, &engine) == 0);
+    assert(ot_buffer_destroy(context, &engine) == OT_WRONG_KIND);
+    assert(ot_audio_destroy(context, &engine) == OT_OK);
+    assert(ot_audio_destroy(context, &engine) == OT_STALE_HANDLE);
+    assert(ot_audio_play(context, &engine, sound, 1, &voice) == OT_STALE_HANDLE);
+    /* Context destruction releases the other engine. */
+    assert(ot_audio_start(context, &other, OT_AUDIO_START_NO_DEVICE) == OT_OK);
 }
 
 int main(void) {
@@ -248,6 +327,8 @@ int main(void) {
     editor(first);
     rendered_output(first);
     input_events(first);
+    terminal_scrollbar(first);
+    audio(first, second);
     assert(ot_context_destroy(first) == OT_OK);
     assert(ot_context_destroy(second) == OT_OK);
     return 0;

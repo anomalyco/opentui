@@ -52,6 +52,8 @@ typedef int32_t ot_status;
 #define OT_IMAGE_UNSUPPORTED_FEATURE (-INT32_C(46))
 #define OT_IMAGE_BUSY (-INT32_C(47))
 #define OT_VIDEO_FAILED (-INT32_C(60))
+#define OT_AUDIO_DECODE_FAILED (-INT32_C(61))
+#define OT_AUDIO_DEVICE_FAILED (-INT32_C(62))
 
 /* A context owns its native resources and I/O storage. Only its creating OS
  * thread may call its functions, including error queries and destruction.
@@ -699,6 +701,9 @@ ot_status ot_scene_move_node(ot_context *, const ot_handle *node, const ot_handl
 ot_status ot_scene_set_position_anchor(ot_context *, const ot_handle *node, const ot_handle *anchor);
 /* Returns the target's public number, or zero when unanchored. Output is unchanged on rejection. */
 ot_status ot_scene_get_position_anchor(ot_context *, const ot_handle *node, uint32_t *out_num);
+/* Detaches every child of node, as moving each to NULL from first to last would, in
+ * time linear in the child count. On error no child is detached. */
+ot_status ot_scene_clear_children(ot_context *, const ot_handle *node);
 /* Synchronous owner-thread measurement on leaves. The callback is borrowed until
  * replacement, unset, node destruction, or Context destruction. NULL clears the
  * single provider slot; it does not restore built-in measurement. Each set or clear
@@ -1309,6 +1314,19 @@ typedef struct ot_embedded_terminal_cursor {
     uint32_t reserved;
 } ot_embedded_terminal_cursor;
 
+/* The active screen's viewport, in rows. offset is the distance from the live
+ * screen (0 there; total - visible at the top of history). total includes the
+ * visible rows; the alternate screen has no history. Output, resizes, scrollback
+ * clears, and screen switches move the viewport too; read it after each. */
+typedef struct ot_embedded_terminal_scrollbar {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t offset;
+    uint32_t total;
+    uint32_t visible;
+    uint32_t reserved;
+} ot_embedded_terminal_scrollbar;
+
 typedef struct ot_embedded_terminal_key {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1355,6 +1373,7 @@ ot_status ot_embedded_terminal_get_selected_text(ot_context *, const ot_handle *
 ot_status ot_embedded_terminal_compose(ot_context *, const ot_handle *terminal, const ot_handle *target,
     const ot_scene_frame_request *frame, int32_t x, int32_t y);
 ot_status ot_embedded_terminal_cursor_get(ot_context *, const ot_handle *terminal, ot_embedded_terminal_cursor *out_cursor);
+ot_status ot_embedded_terminal_scrollbar_get(ot_context *, const ot_handle *terminal, ot_embedded_terminal_scrollbar *out_scrollbar);
 ot_status ot_embedded_terminal_encode_key(ot_context *, const ot_handle *terminal, const ot_embedded_terminal_key *,
     const uint8_t *key, uint32_t key_count, const uint8_t *text, uint32_t text_count,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
@@ -1932,6 +1951,36 @@ ot_status ot_video_get_state(ot_context *, const ot_handle *node, ot_video_state
 ot_status ot_video_get_error(ot_context *, const ot_handle *node, uint8_t *bytes, uint32_t capacity,
     uint32_t *out_count);
 
+/* An audio engine decodes sounds into Context memory and mixes up to 32 voices at
+ * 48 kHz. ot_audio_create opens no device. ot_audio_start opens the default playback
+ * device, whose thread then mixes; that thread never calls the host, and writes silence
+ * while another call holds the engine. With OT_AUDIO_START_NO_DEVICE, the only accepted
+ * flag, the engine mixes only when ot_audio_mix asks, and nothing opens a device; while
+ * a device plays, it returns OT_INVALID_PHASE, so stop first to change modes.
+ * ot_audio_stop silences the engine and releases its device; ot_audio_start resumes.
+ * ot_audio_destroy and Context destruction stop the device, then free every sound.
+ * ot_audio_load copies and decodes WAV, MP3 or FLAC bytes. Sound IDs are nonzero and
+ * stay valid until the engine is destroyed. Voice IDs are nonzero; a voice ends when
+ * its sound ends or is stopped, and its ID never names a later voice. An ID that names
+ * no sound or playing voice, including 0, returns OT_STALE_HANDLE.
+ * volume is a gain from 0 to 4, 1 unchanged; others return OT_INVALID_ARGUMENT.
+ * More than 32 playing voices return OT_OBJECT_LIMIT. */
+#define OT_AUDIO_START_NO_DEVICE UINT32_C(1)
+ot_status ot_audio_create(ot_context *, ot_handle *out_engine);
+ot_status ot_audio_destroy(ot_context *, const ot_handle *engine);
+ot_status ot_audio_start(ot_context *, const ot_handle *engine, uint32_t flags);
+ot_status ot_audio_stop(ot_context *, const ot_handle *engine);
+ot_status ot_audio_load(ot_context *, const ot_handle *engine, const uint8_t *bytes, uint64_t byte_count,
+    uint32_t *out_sound);
+ot_status ot_audio_play(ot_context *, const ot_handle *engine, uint32_t sound, float volume, uint32_t *out_voice);
+ot_status ot_audio_stop_voice(ot_context *, const ot_handle *engine, uint32_t voice);
+ot_status ot_audio_set_volume(ot_context *, const ot_handle *engine, float volume);
+/* Writes frame_count frames of channels (1 or 2) interleaved samples: the mix after
+ * OT_AUDIO_START_NO_DEVICE, silence while stopped. Returns OT_INVALID_PHASE while a
+ * device plays. */
+ot_status ot_audio_mix(ot_context *, const ot_handle *engine, float *samples, uint32_t frame_count,
+    uint32_t channels);
+
 /* x/y and width/height count terminal cells. pixel_* and source_* count image
  * pixels. Absent source extents and reserved fields must be zero. Exact size and
  * version are required. Only the two SOURCE_* flags are accepted. */
@@ -2324,7 +2373,7 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
  * must be zero. REPLY_SENTINEL ends the startup query packet with DA1 (CSI c),
  * also inside tmux, and sends no other DA1; the host waits for its reply instead
  * of a timer. A DA1 reply then also ends the startup cursor-report probes.
- * Frames are wrapped in synchronized output (DEC mode 2026) unless the terminal
+ * Frames that paint are wrapped in synchronized output (DEC mode 2026) unless the terminal
  * is remote and, once its replies passed the 2026 query (a width-probe report
  * or DA1), either did not report the mode or HOST_MULTIPLEXER is set: the host
  * runs inside tmux, screen or Zellij between the app and the link.

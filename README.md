@@ -15,7 +15,7 @@ OpenTUI is a library to build terminal user interfaces.
 - You write TypeScript directly or through React and Solid.
 - You arrange boxes and text with flexbox.
 - You add selects, inputs, and scroll boxes with keyboard and mouse controls.
-- You can play sounds, show images, and render 3D graphics.
+- You can play sounds, show images, play videos, and render 3D graphics.
 
 OpenCode uses OpenTUI in production for millions of users.
 

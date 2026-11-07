@@ -185,6 +185,19 @@ uint32_t otYogaNodeRemoveChild(YGNodeRef node, YGNodeRef child) noexcept {
   return checked([&] { YGNodeRemoveChild(node, child); });
 }
 
+// YGNodeRemoveChild without its search from the front. Erasing a pointer cannot
+// allocate, and managed dirtied callbacks contain host errors before returning here.
+void otYogaNodeRemoveChildAt(YGNodeRef node_ref, YGNodeRef child_ref, uint32_t index) noexcept {
+  auto node = facebook::yoga::resolveRef(node_ref);
+  auto child = facebook::yoga::resolveRef(child_ref);
+  node->removeChild(index);
+  if (child->getOwner() == node) {
+    child->setLayout({});
+    child->setOwner(nullptr);
+  }
+  node->markDirtyAndPropagate();
+}
+
 uint32_t otYogaNodeRemoveAllChildren(YGNodeRef node) noexcept {
   if (!node) return OT_YOGA_INVALID_ARGUMENT;
   return checked([&] { YGNodeRemoveAllChildren(node); });

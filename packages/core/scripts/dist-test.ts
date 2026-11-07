@@ -178,8 +178,13 @@ function ensureBuildArtifacts(): void {
   if (!existsSync(join(nativePackageDir, "LICENSE-GHOSTTY"))) {
     throw new Error("Native package is missing the Ghostty and Unicode license notices")
   }
+  // C and Rust hosts compile against the header and link the DLL through its import library, opentui.lib.
+  const missingCFiles = (process.platform === "win32" ? ["opentui.h", "opentui.lib"] : ["opentui.h"]).filter(
+    (name) => !existsSync(join(nativePackageDir, name)),
+  )
+  if (missingCFiles.length > 0) throw new Error(`Native package is missing ${missingCFiles.join(", ")}`)
   const leakedGhosttyFiles = readdirSync(nativePackageDir).filter(
-    (name) => name.includes("ghostty-vt") || name.endsWith(".a") || name.endsWith(".lib"),
+    (name) => name.includes("ghostty-vt") || name.endsWith(".a") || (name.endsWith(".lib") && name !== "opentui.lib"),
   )
   if (leakedGhosttyFiles.length > 0) {
     throw new Error(`Native package contains unbundled Ghostty artifacts: ${leakedGhosttyFiles.join(", ")}`)

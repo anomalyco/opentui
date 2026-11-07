@@ -861,6 +861,7 @@ pub const Scene = struct {
     // OT_SCENE_DEBUG_* bits. Every shortcut that skips frame work tests FULL_FRAME.
     debug_flags: u32 = 0,
     test_sort_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
+    test_sibling_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     test_hit_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     // Editor cursor work: placements tried and releases written.
     test_cursor_steps: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
@@ -1002,8 +1003,9 @@ pub const Scene = struct {
         } else {
             if (index != 0) return error.YogaInvalidArgument;
             if (node.parent) |old| {
-                try yoga.check(yoga.yogaNodeRemoveChildChecked(old.scene_node.?.childYoga(old), value.yoga_node));
-                removeChild(&old.scene_node.?.children, value);
+                const slot = childIndex(old.scene_node.?.children.items, value);
+                yoga.yogaNodeRemoveChildAt(old.scene_node.?.childYoga(old), value.yoga_node, slot);
+                _ = old.scene_node.?.children.orderedRemove(slot);
                 self.detach(value, old);
             }
         }
@@ -1104,6 +1106,33 @@ pub const Scene = struct {
         self.unlinkPositionAnchor(value);
         self.visibility_epoch +%= 1;
         self.invalidateGeometry(value);
+    }
+
+    /// Detaches every child as `move(child, null, 0)` does, walking the lists once instead of
+    /// searching and shifting them for each child. Like `remove`, it leaves a detached child's
+    /// queued feedback and stale marks, which only an attached node reads; attaching sets them.
+    pub fn clearChildren(self: *Scene, value: *native.NativeRenderable) void {
+        const node = value.scene_node.?;
+        if (node.children.items.len == 0) return;
+        yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node.childYoga(value))) catch unreachable;
+        var below: @Vector(3, u32) = @splat(0);
+        for (node.children.items) |child| {
+            const state = child.scene_node.?;
+            below += .{ state.skip.update_below, state.skip.filters_below, state.skip.scrolls_below };
+            state.parent = null;
+            state.placement = 0;
+            state.skip.attention_index = no_slot;
+        }
+        node.children.clearRetainingCapacity();
+        node.paint_children.clearRetainingCapacity();
+        node.skip.attention.clearRetainingCapacity();
+        countBelow(value, below[0], below[1], below[2], false);
+        staleCull(value);
+        self.markSubtree(value);
+        self.visibility_epoch +%= 1;
+        self.selection_epoch +%= 1;
+        self.preparation_dirty = true;
+        self.clearPreparation();
     }
 
     /// Takes a node out of its parent's paint children, attention, and counts.
@@ -1237,8 +1266,9 @@ pub const Scene = struct {
         }
         self.filter_count -= @intFromBool(node.filtersChildren());
         if (node.parent) |parent| {
-            yoga.yogaNodeRemoveChild(parent.scene_node.?.childYoga(parent), value.yoga_node);
-            removeChild(&parent.scene_node.?.children, value);
+            const index = childIndex(parent.scene_node.?.children.items, value);
+            yoga.yogaNodeRemoveChildAt(parent.scene_node.?.childYoga(parent), value.yoga_node, index);
+            _ = parent.scene_node.?.children.orderedRemove(index);
             self.detach(value, parent);
         }
         if (node.skip.view_queued) {
@@ -4009,11 +4039,18 @@ fn overlaps(filter: Filter, layout: Layout) bool {
 }
 
 fn removeChild(children: *std.ArrayListUnmanaged(*native.NativeRenderable), value: *native.NativeRenderable) void {
-    for (children.items, 0..) |child, index| {
-        if (child == value) {
-            _ = children.orderedRemove(index);
-            return;
-        }
+    _ = children.orderedRemove(childIndex(children.items, value));
+}
+
+/// Hosts remove children in order, from the first or from the last, so the search starts at both ends.
+fn childIndex(children: []const *native.NativeRenderable, value: *native.NativeRenderable) u32 {
+    var low: usize = 0;
+    var high = children.len;
+    while (low < high) : (low += 1) {
+        if (builtin.is_test) value.scene_node.?.owner.test_sibling_steps += 1;
+        high -= 1;
+        if (children[high] == value) return @intCast(high);
+        if (children[low] == value) return @intCast(low);
     }
     unreachable;
 }
