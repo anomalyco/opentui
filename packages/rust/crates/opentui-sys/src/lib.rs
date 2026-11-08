@@ -1,7 +1,7 @@
 //! Raw declarations for OpenTUI's checked C ABI (`opentui.h`).
 //!
-//! Everything here is generated from the header by `scripts/generate-ffi.ts`. The declarations follow the header
-//! exactly: callers must uphold its pointer, ownership, owner-thread, and phase contracts. Record `Default`
+//! Everything here is generated from the header by `bun run generate:abi` in `packages/core`. The declarations follow
+//! the header exactly: callers must uphold its pointer, ownership, owner-thread, and phase contracts. Record `Default`
 //! implementations zero every field and fill in `struct_size` and `abi_version` where the record has them. They set
 //! ABI metadata only, not application limits or paint defaults.
 //!

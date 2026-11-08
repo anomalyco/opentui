@@ -4,16 +4,12 @@
 // Math.random is replaced by the SplitMix64 generator the Rust port seeds its effects with, so noise, clouds, and
 // distortion draw the same numbers in both.
 //
-// Usage: OPENTUI_ROOT=/path/to/opentui bun scripts/post-reference.ts
+// Usage: bun scripts/post-reference.ts
 
 import { writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-const root = process.env.OPENTUI_ROOT
-if (root === undefined || root.trim() === "") {
-  throw new Error("set OPENTUI_ROOT to an OpenTUI checkout")
-}
-const core = resolve(root, "packages/core/src")
+const core = resolve(import.meta.dir, "../../core/src")
 const { OptimizedBuffer, ResourceContext } = await import(`${core}/buffer.ts`)
 const { RGBA } = await import(`${core}/lib/RGBA.ts`)
 const Matrices = await import(`${core}/post/matrices.ts`)

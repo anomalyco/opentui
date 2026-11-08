@@ -27,16 +27,12 @@ if [ "$platform" = x86_64-windows ]; then
     fi
     modes=shared
 fi
-if [ -z "${OPENTUI_LIB_DIR:-}" ] && [ -n "${OPENTUI_ROOT:-}" ]; then
-    OPENTUI_LIB_DIR=$OPENTUI_ROOT/packages/native/lib/$platform
+# Without OPENTUI_LIB_DIR, the crates link this checkout's packages/native/lib/$platform.
+if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
+    # Cargo on Windows needs a Windows path, which MSYS's `pwd -W` prints.
+    OPENTUI_LIB_DIR=$(CDPATH='' cd -- "$OPENTUI_LIB_DIR" && if [ "$platform" = x86_64-windows ]; then pwd -W; else pwd; fi)
+    export OPENTUI_LIB_DIR
 fi
-if [ -z "${OPENTUI_LIB_DIR:-}" ]; then
-    printf '%s\n' "Set OPENTUI_LIB_DIR to packages/native/lib/$platform, or OPENTUI_ROOT to an OpenTUI checkout." >&2
-    exit 2
-fi
-# Cargo on Windows needs a Windows path, which MSYS's `pwd -W` prints.
-OPENTUI_LIB_DIR=$(CDPATH='' cd -- "$OPENTUI_LIB_DIR" && if [ "$platform" = x86_64-windows ]; then pwd -W; else pwd; fi)
-export OPENTUI_LIB_DIR
 cargo=${CARGO:-cargo}
 manifest=$here/Cargo.toml
 
@@ -49,15 +45,15 @@ for linkage in $modes; do
     export CARGO_TARGET_DIR="$here/target/test-$linkage"
     # Without optional features, highlighting falls back to plain text.
     if [ "$linkage" = shared ]; then
-        "$cargo" clippy --offline --manifest-path "$manifest" -p opentui --all-targets -- -D warnings
-        "$cargo" test --offline --manifest-path "$manifest" -p opentui
+        "$cargo" clippy --locked --manifest-path "$manifest" -p opentui --all-targets -- -D warnings
+        "$cargo" test --locked --manifest-path "$manifest" -p opentui
     fi
-    "$cargo" clippy --offline --manifest-path "$manifest" --workspace --all-targets ${features:+--features "$features"} \
+    "$cargo" clippy --locked --manifest-path "$manifest" --workspace --all-targets ${features:+--features "$features"} \
         -- -D warnings
-    "$cargo" test --offline --manifest-path "$manifest" --workspace ${features:+--features "$features"}
-    "$cargo" build --offline --manifest-path "$manifest" -p opentui -p opentui-ssh --examples \
+    "$cargo" test --locked --manifest-path "$manifest" --workspace ${features:+--features "$features"}
+    "$cargo" build --locked --manifest-path "$manifest" -p opentui -p opentui-ssh --examples \
         ${features:+--features "$features"}
-    RUSTDOCFLAGS='-D warnings' "$cargo" doc --offline --manifest-path "$manifest" -p opentui -p opentui-ssh --no-deps \
+    RUSTDOCFLAGS='-D warnings' "$cargo" doc --locked --manifest-path "$manifest" -p opentui -p opentui-ssh --no-deps \
         ${features:+--features "$features"}
     # More lifecycle checks, with signals and job control, under a pseudo-terminal from Python's standard library.
     # Windows has neither, and tests/lifecycle.rs covers the exit paths it has.

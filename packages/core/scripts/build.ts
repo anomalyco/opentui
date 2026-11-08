@@ -6,6 +6,7 @@ import { fileURLToPath } from "url"
 import process from "process"
 import path from "path"
 import { variants, type Variant } from "./variants"
+import { fnv1a64 } from "./native-abi-rust"
 import { separateNativeSymbols } from "./native-symbols"
 
 interface PackageJson {
@@ -186,13 +187,6 @@ function checkStaticArchive(path: string): void {
   const members = execFileSync("zig", ["ar", "t", path], { cwd: nativeRoot, encoding: "utf8" }).split(/\r?\n/)
   const nested = members.filter((member) => /\.(a|lib)$/.test(member))
   if (nested.length > 0) throw new Error(`${path} contains nested archives: ${nested.join(", ")}`)
-}
-
-// The header hash that opentui-rust's opentui-sys build checks.
-function fnv1a64(bytes: Uint8Array): string {
-  let hash = 0xcbf29ce484222325n
-  for (const byte of bytes) hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn
-  return `0x${hash.toString(16).padStart(16, "0")}`
 }
 
 if (buildNative) {

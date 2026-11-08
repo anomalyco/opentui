@@ -2,7 +2,7 @@
 //! widgets and the screen.
 //!
 //! `post_reference.txt` holds the cells Core's post-processing produces on [`pattern`]; regenerate it with
-//! `OPENTUI_ROOT=... bun scripts/post-reference.ts`.
+//! `bun scripts/post-reference.ts`.
 
 use opentui::native::Capture;
 use opentui::post::{

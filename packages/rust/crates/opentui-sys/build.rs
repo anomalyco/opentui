@@ -11,17 +11,15 @@ fn platform(target: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// `OPENTUI_LIB_DIR`, else the native build of this checkout, `packages/native/lib/<platform>`.
 fn native_lib_dir(platform: &str) -> PathBuf {
     if let Some(dir) = env::var_os("OPENTUI_LIB_DIR") {
         return PathBuf::from(dir);
     }
-    if let Some(root) = env::var_os("OPENTUI_ROOT") {
-        return PathBuf::from(root).join("packages/native/lib").join(platform);
-    }
-    panic!("set OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}, or OPENTUI_ROOT to an OpenTUI checkout");
+    PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../../../native/lib").join(platform)
 }
 
-// Must match fnv1a64 in scripts/generate-ffi.ts.
+// Must match fnv1a64 in packages/core/scripts/native-abi-rust.ts.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
@@ -43,12 +41,9 @@ fn main() {
     };
     let windows = target.contains("-windows-");
     println!("cargo:rerun-if-env-changed=OPENTUI_LIB_DIR");
-    println!("cargo:rerun-if-env-changed=OPENTUI_ROOT");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated.rs");
-    let library = native_lib_dir(platform)
-        .canonicalize()
-        .expect("set OPENTUI_LIB_DIR or OPENTUI_ROOT to existing OpenTUI native artifacts");
+    let dir = native_lib_dir(platform);
     let static_link = env::var_os("CARGO_FEATURE_STATIC").is_some();
     // OpenTUI's Windows archive is built for MinGW with libc++, which neither Rust Windows toolchain links.
     assert!(!(windows && static_link), "the static feature is not supported on Windows; link opentui.dll instead");
@@ -61,10 +56,17 @@ fn main() {
         &["opentui.h", shared_library]
     };
     for file in files {
-        let path = library.join(file);
-        assert!(path.is_file(), "missing native artifact: {}", path.display());
+        let path = dir.join(file);
+        // Watch the path as given: a canonical path follows a symlink and would keep watching its old target.
         println!("cargo:rerun-if-changed={}", path.display());
+        assert!(
+            path.is_file(),
+            "missing native artifact {}: run `bun run build` at the repository root or `bun run build:native` in \
+             packages/core, or set OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}",
+            path.display()
+        );
     }
+    let library = dir.canonicalize().expect("canonicalize the native artifact directory");
 
     // The declarations are only valid for the exact header they were generated from.
     let header = fs::read(library.join("opentui.h")).expect("read opentui.h");
@@ -74,8 +76,8 @@ fn main() {
         actual,
         expected,
         "{} differs from the header src/generated.rs was generated from \
-         (hash {actual:#018x}, expected {expected:#018x}). Rebuild OpenTUI or regenerate with \
-         `OPENTUI_ROOT=/path/to/opentui bun scripts/generate-ffi.ts`.",
+         (hash {actual:#018x}, expected {expected:#018x}). Rebuild OpenTUI's native library, or regenerate with \
+         `bun run generate:abi` in packages/core.",
         library.join("opentui.h").display()
     );
 
