@@ -2212,6 +2212,7 @@ async function createBatchRenderer(experimental_nativeInput: boolean, kittyKeybo
     renderer,
     renderOnce,
     written,
+    stdout,
     r,
     clock,
     sentinels,
@@ -2331,7 +2332,7 @@ test("a batch whose DA1 reply never comes ends at its backstop; only an unexcuse
   const t = await createBatchRenderer(true, true)
   try {
     t.renderer.on("error", () => {})
-    t.renderer.stdout.emit("error", new Error("terminal gone"))
+    t.stdout.emit("error", new Error("terminal gone"))
     t.clock.advance(5000)
     expect(t.batches()).toEqual([])
   } finally {
