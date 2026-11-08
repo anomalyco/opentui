@@ -1,0 +1,81 @@
+[package]
+name = "opentui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "A terminal UI framework for Rust built on OpenTUI's native renderer"
+autoexamples = false
+
+[features]
+# Link libopentui.a instead of libopentui.so.
+static = ["opentui-sys/static"]
+# App::spawn: run futures on a Tokio runtime and finish them on the UI thread.
+tokio = ["dep:tokio"]
+# console::init_logger: show the log crate's records in the debug console.
+log = ["dep:log"]
+# Highlight Code, Diff, and Markdown code blocks with tree-sitter. Bundles Core's grammars (JavaScript, TypeScript,
+# Markdown, Zig) and Rust; syntax::register adds others.
+tree-sitter = [
+  "dep:tree-sitter",
+  "dep:tree-sitter-javascript",
+  "dep:tree-sitter-md",
+  "dep:tree-sitter-rust",
+  "dep:tree-sitter-typescript",
+  "dep:tree-sitter-zig",
+]
+
+[dependencies]
+opentui-sys = { path = "../opentui-sys" }
+libc = "0.2"
+log = { version = "0.4", optional = true, default-features = false, features = ["std"] }
+tokio = { version = "1.53", optional = true, default-features = false, features = ["rt-multi-thread", "time"] }
+tree-sitter = { version = "0.27", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-md = { version = "0.5", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-zig = { version = "1.1", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
+
+[[example]]
+name = "hello"
+
+[[example]]
+name = "tasks"
+test = true
+
+[[example]]
+name = "workbench"
+test = true
+
+[[example]]
+name = "lifecycle"
+
+[[example]]
+name = "native"
+
+[[example]]
+name = "showcase"
+
+[[example]]
+name = "effects"
+
+[[example]]
+name = "terminal"
+
+[[example]]
+name = "split"
+
+[[example]]
+name = "bench"
