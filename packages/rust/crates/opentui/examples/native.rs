@@ -62,23 +62,10 @@ fn run(host: &mut Host) -> opentui::Result<()> {
     let mut dirty = true;
     let mut events = Vec::new();
     loop {
-        if dirty && host.can_render()? {
-            let (width, height) = host.size();
-            label.set_spans(&[
-                "Hello from a native scene.\n\n".bold(),
-                "last event  ".fg(MUTED),
-                last_event.as_str().fg(ACCENT),
-                "\nunder mouse ".fg(MUTED),
-                hovered.fg(ACCENT),
-                format!("\nterminal    {width}x{height}").fg(MUTED),
-            ])?;
-            host.present(session.paint(Color::TRANSPARENT, true, 0)?)?;
-            dirty = false;
-        }
-        host.poll(dirty.then(|| Instant::now() + Duration::from_millis(2)), &mut events)?;
         let mut suspend = false;
         for event in events.drain(..) {
             match &event {
+                Event::Key(_) | Event::Mouse(_) | Event::Paste(_) if suspend => continue,
                 Event::Key(key) if key.matches("q") || key.matches("ctrl+c") => return Ok(()),
                 Event::Key(key) if key.matches("ctrl+z") => suspend = true,
                 Event::Terminate => return Ok(()),
@@ -102,6 +89,21 @@ fn run(host: &mut Host) -> opentui::Result<()> {
         }
         if suspend {
             host.suspend(&mut events)?;
+            continue;
         }
+        if dirty && host.can_render()? {
+            let (width, height) = host.size();
+            label.set_spans(&[
+                "Hello from a native scene.\n\n".bold(),
+                "last event  ".fg(MUTED),
+                last_event.as_str().fg(ACCENT),
+                "\nunder mouse ".fg(MUTED),
+                hovered.fg(ACCENT),
+                format!("\nterminal    {width}x{height}").fg(MUTED),
+            ])?;
+            host.present(session.paint(Color::TRANSPARENT, true, 0)?)?;
+            dirty = false;
+        }
+        host.poll(dirty.then(|| Instant::now() + Duration::from_millis(2)), &mut events)?;
     }
 }

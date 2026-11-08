@@ -1537,10 +1537,12 @@ impl App {
         let mut presenting = false;
         let mut events = Vec::new();
         loop {
-            // Events from the last poll, or read at a resume: a suspend or a release starts a new turn.
+            // Events from the last poll, or read at a resume. As in Core, a suspend or release drops the rest of the
+            // read's input; signals and resizes after it still count.
             for event in events.drain(..) {
-                if self.0.quit.get() {
-                    break;
+                let held = self.0.suspend.get() || self.0.release.borrow().is_some();
+                if self.0.quit.get() || held && !matches!(event, Event::Resize { .. } | Event::Terminate) {
+                    continue;
                 }
                 self.dispatch(event);
             }
