@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 8d4a673884edb2addb8772fe3be4d8f9bbee6c3d10507578330ba809ca1d894c
+// ABI audit SHA-256: 04d0c4e167cef2e5faa3c181313afcc524d70e24d50bf4a7e8850d4db5d19517
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -52,6 +52,10 @@ export const nativeSymbols = {
   ot_scene_frame_copy_buffer: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
   ot_scene_measure_layout: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_session_render_split: { args: ["ptr", "buffer", "ptr", "ptr", "u32", "u32", "u32", "buffer"], returns: "i32" },
+  ot_session_render_split_entries: {
+    args: ["ptr", "buffer", "ptr", "ptr", "u32", "ptr", "u32", "u32", "u32", "buffer"],
+    returns: "i32",
+  },
   ot_session_split_control: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
   ot_session_set_screen: { args: ["ptr", "buffer", "u32", "u32", "u32", "buffer", "u32"], returns: "i32" },
   ot_session_sync_detached: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -779,6 +783,17 @@ export const nativeLayouts = {
       buffer: { offset: 0, size: 16, alignment: 8, type: "ot_handle" },
       row_columns: { offset: 16, size: 4, alignment: 4, type: "u32" },
       flags: { offset: 20, size: 4, alignment: 4, type: "u32" },
+    },
+  },
+  ot_split_entry: {
+    size: 32,
+    alignment: 8,
+    fields: {
+      buffer: { offset: 0, size: 16, alignment: 8, type: "ot_handle" },
+      row_columns: { offset: 16, size: 4, alignment: 4, type: "u32" },
+      flags: { offset: 20, size: 4, alignment: 4, type: "u32" },
+      sequence_offset: { offset: 24, size: 4, alignment: 4, type: "u32" },
+      sequence_length: { offset: 28, size: 4, alignment: 4, type: "u32" },
     },
   },
   ot_split_control: {

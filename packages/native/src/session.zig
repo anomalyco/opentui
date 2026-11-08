@@ -464,10 +464,19 @@ pub const Session = struct {
         } else try self.checkFrameIdle();
         var copies: [split_snapshots_max]renderer.SplitSnapshot = undefined;
         var count: usize = 0;
-        defer for (copies[0..count]) |copy| copy.snapshot.deinit();
+        defer for (copies[0..count]) |copy| {
+            if (copy.snapshot) |snapshot| snapshot.deinit();
+        };
         var remaining = self.output.options.max_bytes;
         for (snapshots) |commit| {
-            const source = commit.snapshot;
+            const source = commit.snapshot orelse {
+                if (commit.sequence.len == 0 or commit.sequence.len > 4096 or commit.sequence.len > remaining) return error.InvalidOptions;
+                remaining -= commit.sequence.len;
+                copies[count] = commit;
+                count += 1;
+                continue;
+            };
+            if (commit.sequence.len != 0) return error.InvalidOptions;
             const cells = @as(u64, source.width) * source.height;
             const bytes = std.math.mul(u64, cells, 24) catch return error.InvalidOptions;
             if (bytes > remaining or commit.row_columns > source.width) return error.InvalidOptions;

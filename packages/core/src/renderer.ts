@@ -443,6 +443,18 @@ type ExternalOutputCommit = {
   endsRow?: boolean
 }
 
+type SplitSequenceCommit = {
+  snapshot: null
+  nativeSnapshot?: null
+  sequence: Uint8Array
+  rowColumns: 0
+  startOnNewLine: false
+  trailingNewline: false
+  endsRow?: never
+}
+
+type SplitOutputCommit = ExternalOutputCommit | SplitSequenceCommit
+
 // One captured stdout row of `cells` terminal cells.
 type StdoutRow = { line: string; cells: number; trailingNewline: boolean; endsRow: boolean }
 
@@ -478,7 +490,7 @@ function snapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): numbe
 }
 
 // `bytes` estimates the memory of a captured stdout row, 0 for writer commits; `dropped` counts a marker's rows.
-type QueuedCommit = ExternalOutputCommit & {
+type QueuedCommit = SplitOutputCommit & {
   cells: number
   rowWidths: readonly number[]
   bytes: number
@@ -525,9 +537,16 @@ class ExternalOutputQueue {
     return this.commits.length
   }
 
-  writeSnapshots(commits: readonly ExternalOutputCommit[], captured: boolean): readonly QueuedCommit[] {
+  writeSnapshots(commits: readonly SplitOutputCommit[], captured: boolean): readonly QueuedCommit[] {
     // Every frame renders the queue head, so one invalid entry would fail every later frame and the close flush.
-    for (const { rowColumns, snapshot } of commits) {
+    for (const commit of commits) {
+      const { rowColumns, snapshot } = commit
+      if (snapshot === null) {
+        if (Math.max(1, Math.ceil(commit.sequence.byteLength / 24)) > this.maxCells) {
+          throw new Error("Scrollback sequence exceeds the Session output capacity")
+        }
+        continue
+      }
       if (!Number.isInteger(rowColumns) || rowColumns < 0 || rowColumns > snapshot.width) {
         throw new RangeError("Scrollback commit rowColumns must be an integer from 0 to the snapshot width")
       }
@@ -543,11 +562,13 @@ class ExternalOutputQueue {
     return entries
   }
 
-  private entry(commit: ExternalOutputCommit, captured: boolean, dropped: number): QueuedCommit {
-    const cells = commit.snapshot.width * commit.snapshot.height
+  private entry(commit: SplitOutputCommit, captured: boolean, dropped: number): QueuedCommit {
+    const cells = commit.snapshot
+      ? commit.snapshot.width * commit.snapshot.height
+      : Math.max(1, Math.ceil(commit.sequence.byteLength / 24))
     // Queued snapshots never change, so tail-column predictions read each one once, here.
-    const rowWidths = snapshotRowWidths(commit.snapshot, commit.rowColumns)
-    return { ...commit, cells, rowWidths, bytes: captured ? capturedRowBytes(cells) : 0, dropped }
+    const rowWidths = commit.snapshot ? snapshotRowWidths(commit.snapshot, commit.rowColumns) : []
+    return { ...commit, cells, rowWidths, bytes: captured && commit.snapshot ? capturedRowBytes(cells) : 0, dropped }
   }
 
   /** False from the high-water mark on, until frames take the captured bytes below it again. */
@@ -612,7 +633,7 @@ class ExternalOutputQueue {
       open = true
       partial = !commit.endsRow
       runs.at(-1)!.rows += commit.dropped || (commit.endsRow ? 1 : 0)
-      removed.add(commit.snapshot)
+      if (commit.snapshot) removed.add(commit.snapshot)
       bytes -= commit.bytes
     }
     close()
@@ -623,7 +644,7 @@ class ExternalOutputQueue {
       kept.splice(runs[run]!.index, 0, entry)
       this.capturedBytes += entry.bytes
     }
-    const gone = this.commits.filter((commit) => removed.has(commit.snapshot))
+    const gone = this.commits.filter((commit) => commit.snapshot && removed.has(commit.snapshot))
     this.commits = kept
     // The write that overflowed is refused, and no drain follows until frames take rows.
     this.drainPending = true
@@ -649,7 +670,7 @@ class ExternalOutputQueue {
     return this.commits.slice(0, limit)
   }
 
-  claim(): ExternalOutputCommit[] {
+  claim(): SplitOutputCommit[] {
     const output = this.commits
     this.commits = []
     return output
@@ -662,7 +683,7 @@ class ExternalOutputQueue {
   private release(removed: readonly QueuedCommit[], drain = true): void {
     for (const commit of removed) {
       this.capturedBytes -= commit.bytes
-      commit.snapshot.destroy()
+      commit.snapshot?.destroy()
     }
     if (drain && this.drainPending && this.capturedBytes < CAPTURED_STDOUT_HIGH_WATER_BYTES) this.onDrain()
   }
@@ -1330,8 +1351,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     let capturedExternalOutput = ""
     for (const commit of capturedExternalOutputCommits) {
-      capturedExternalOutput += `[snapshot ${commit.snapshot.width}x${commit.snapshot.height}]\n`
-      commit.snapshot.destroy()
+      if (commit.snapshot) {
+        capturedExternalOutput += `[snapshot ${commit.snapshot.width}x${commit.snapshot.height}]\n`
+        commit.snapshot.destroy()
+      }
     }
 
     if (capturedConsoleOutput.length > 0 || capturedExternalOutput.length > 0 || cachedLogs.length > 0) {
@@ -2620,6 +2643,26 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
+  /**
+   * Queue a nonprinting terminal sequence at the split-output cursor, ordered with
+   * scrollback snapshots. The sequence must not move the cursor or change terminal
+   * layout (for example, OSC 133). UTF-8 payloads are limited to 4096 bytes.
+   */
+  public writeScrollbackSequence(sequence: string): void {
+    if (this._isDestroyed) throw new Error("Renderer is destroyed")
+    if (this.screenMode !== "split-footer" || this.externalOutputMode !== "capture-stdout") {
+      throw new Error(
+        'writeScrollbackSequence requires screenMode "split-footer" and externalOutputMode "capture-stdout"',
+      )
+    }
+    const bytes = new TextEncoder().encode(sequence)
+    if (bytes.byteLength > 4096) throw new RangeError("Scrollback sequences are limited to 4096 bytes")
+    if (bytes.byteLength === 0) return
+    this.enqueueSplitCommits([
+      { snapshot: null, sequence: bytes, rowColumns: 0, startOnNewLine: false, trailingNewline: false },
+    ])
+  }
+
   // writeToScrollback is a "render to scrollback commit" API, not a direct stdout
   // write. The callback returns a renderable tree, we render that tree into an
   // off-screen OptimizedBuffer, then enqueue the result as one ExternalOutputCommit.
@@ -2858,8 +2901,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     ])
   }
 
-  private enqueueSplitCommits(commits: readonly ExternalOutputCommit[], captured = false): void {
-    for (const commit of commits) commit.nativeSnapshot = commit.snapshot._getSceneHandle(this.nativeScene)
+  private enqueueSplitCommits(commits: readonly SplitOutputCommit[], captured = false): void {
+    for (const commit of commits) {
+      if (commit.snapshot) commit.nativeSnapshot = commit.snapshot._getSceneHandle(this.nativeScene)
+    }
     const width = Math.max(this.width, 1)
     let column = this.getPendingSplitTailColumn()
     for (const entry of this.externalOutputQueue.writeSnapshots(commits, captured)) {
@@ -2867,7 +2912,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     this.queuedSplitTail = { column, width }
     this.requestRender()
-    if (!captured) this.emitExternalOutput(commits)
+    if (!captured)
+      this.emitExternalOutput(commits.filter((commit): commit is ExternalOutputCommit => commit.snapshot !== null))
   }
 
   private emitExternalOutput(commits: readonly ExternalOutputCommit[]): void {
@@ -5520,7 +5566,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       commits === null
         ? null
         : this.nativeScene.commitSplit(
-            commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
+            commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot ?? null })),
             this.getSplitPinnedRenderOffset(),
             this.forceFullRepaintRequested,
           )
@@ -5603,7 +5649,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
       const result = driver.renderSplit(
         null,
-        commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
+        commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot ?? null })),
         this.getSplitPinnedRenderOffset(),
         false,
       )

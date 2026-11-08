@@ -94,6 +94,66 @@ const writeRow = ({ renderer }: Terminal, row: string) =>
   }))
 
 test.each([
+  ["frames", 40, 10],
+  ["destroy", 40, 10],
+  ["frames", 7, 4],
+  ["destroy", 7, 4],
+] as const)(
+  "scrollback sequences stay at the transcript cursor through %s at %s x %s",
+  async (drain, columns, height) => {
+    const terminal = await setupTerminal({ columns, height })
+    terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "footer" }))
+    writeRow(terminal, "prompt")
+    terminal.renderer.writeScrollbackSequence("\x1b]133;C\x07")
+    writeRow(terminal, "answer")
+    terminal.renderer.writeToScrollback(({ renderContext }) => ({
+      root: new TextRenderable(renderContext, { content: "summary", width: 7, height: 1 }),
+      trailingNewline: false,
+    }))
+    terminal.renderer.writeScrollbackSequence("\x1b]133;D\x07")
+    if (drain === "destroy") {
+      terminal.renderer.destroy()
+      await terminal.renderer.closed
+    } else await terminal.drainUntil("\x1b]133;D\x07")
+    const bytes = terminal.stdout.text()
+    const view = await createTestRenderer({ width: columns, height })
+    renderers.push(view.renderer)
+    const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: columns, rows: height })
+    view.renderer.root.add(vt)
+    try {
+      let offset = 0
+      const markers = []
+      for (const match of bytes.matchAll(/\x1b\]133;([CD])\x07/g)) {
+        vt.write(bytes.slice(offset, match.index))
+        offset = match.index! + match[0].length
+        await view.renderOnce()
+        markers.push({ marker: match[1], screen: vt.screen() })
+      }
+      expect(markers.map(({ marker }) => marker)).toEqual(["C", "D"])
+      const end = markers[1]!.screen
+      expect(end.lines[end.cursor.y]).toBe("summary")
+      expect(end.cursor.x).toBe(Math.min(7, columns - 1))
+      expect(bytes).not.toContain("\x1b7")
+      expect(bytes).not.toContain("\x1b8")
+      vt.write(bytes.slice(offset))
+      await view.renderOnce()
+      expect(vt.screen().lines.join("\n")).toContain("summary")
+    } finally {
+      vt.destroy()
+    }
+  },
+)
+
+test("scrollback sequence rejection leaves the output queue usable", async () => {
+  const terminal = await setupTerminal()
+  expect(() => terminal.renderer.writeScrollbackSequence("\x1b]0;" + "x".repeat(4096) + "\x07")).toThrow("4096 bytes")
+  terminal.renderer.writeScrollbackSequence("")
+  writeRow(terminal, "after")
+  await terminal.drainUntil("after")
+  expect(terminal.externalOutput.takeText()).toBe("after")
+})
+
+test.each([
   ["one stdout write", (terminal: Terminal, rows: string[]) => terminal.stdout.write(rows.join("\n") + "\n")],
   ["stdout writes", (terminal: Terminal, rows: string[]) => rows.forEach((row) => terminal.stdout.write(row + "\n"))],
   ["writeToScrollback calls", (terminal: Terminal, rows: string[]) => rows.forEach((row) => writeRow(terminal, row))],

@@ -32,7 +32,8 @@ pub const RenderStatus = enum(u8) {
 pub const PresentationOutcome = enum { presented, failed };
 
 pub const SplitSnapshot = struct {
-    snapshot: *OptimizedBuffer,
+    snapshot: ?*OptimizedBuffer,
+    sequence: []const u8 = &.{},
     row_columns: u32,
     start_on_new_line: bool = false,
     trailing_newline: bool = true,
@@ -88,10 +89,10 @@ fn frameContentHash(frame: *const OptimizedBuffer) u64 {
     hasher.update(std.mem.asBytes(&[2]u32{ frame.width, frame.height }));
     for (frame.image_placements.items) |placement| {
         const fields = [_]u32{
-            placement.image_handle,           @bitCast(placement.x),   @bitCast(placement.y),
-            placement.width,                  placement.height,        placement.pixel_width,
-            placement.pixel_height,           placement.source_x,      placement.source_y,
-            placement.source_width,           placement.source_height, placement.opacity,
+            placement.image_handle,          @bitCast(placement.x),   @bitCast(placement.y),
+            placement.width,                 placement.height,        placement.pixel_width,
+            placement.pixel_height,          placement.source_x,      placement.source_y,
+            placement.source_width,          placement.source_height, placement.opacity,
             @backingInt(placement.protocol),
         };
         hasher.update(std.mem.asBytes(&fields));
@@ -1038,7 +1039,12 @@ pub const CliRenderer = struct {
                 frame_started = true;
                 if (!options.suspended) self.applyPendingSplitFooterTransition(writer, &frame_started);
                 for (options.snapshots) |commit| {
-                    const redraw = self.appendSplitFooterSnapshotCommit(writer, commit.snapshot, commit.row_columns, commit.start_on_new_line, commit.trailing_newline, options.pinned_render_offset, force) catch blk: {
+                    const snapshot = commit.snapshot orelse {
+                        moveToSplitOutputCursor(writer, self.splitOutputOffset(self.renderOffset), self.splitScrollback.tail_column, self.width);
+                        writer.writeAll(commit.sequence) catch b.failFrame();
+                        continue;
+                    };
+                    const redraw = self.appendSplitFooterSnapshotCommit(writer, snapshot, commit.row_columns, commit.start_on_new_line, commit.trailing_newline, options.pinned_render_offset, force) catch blk: {
                         self.imageRenderFailed = true;
                         b.failFrame();
                         break :blk false;
@@ -1052,8 +1058,11 @@ pub const CliRenderer = struct {
             self.prepareRenderFrameWithWriter(writer, redraw_footer, frame_started) catch b.failFrame();
         } else {
             if (frame_started) {
-                if (split.?.suspended) {
+                const options = split.?;
+                if (options.suspended or (options.snapshots.len != 0 and options.snapshots[options.snapshots.len - 1].snapshot == null)) {
                     ansi.ANSI.moveToOutput(writer, 1, self.renderOffset + 1) catch b.failFrame();
+                }
+                if (options.suspended) {
                     writer.writeAll(ansi.ANSI.showCursor) catch b.failFrame();
                 }
                 if (self.terminal.synchronizedOutput()) writer.writeAll(ansi.ANSI.syncReset) catch b.failFrame();

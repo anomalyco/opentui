@@ -1164,6 +1164,18 @@ typedef struct ot_split_snapshot {
     uint32_t flags; /* 1 = start on new line, 2 = trailing newline. */
 } ot_split_snapshot;
 
+/* A snapshot (sequence_length == 0), or an opaque nonprinting sequence
+ * (zero buffer, row_columns and flags). Sequences must not move the cursor or
+ * change terminal layout. Offsets address the call's borrowed payload span.
+ * Each sequence is limited to 4096 bytes; neither span is retained after return. */
+typedef struct ot_split_entry {
+    ot_handle buffer;
+    uint32_t row_columns;
+    uint32_t flags;
+    uint32_t sequence_offset;
+    uint32_t sequence_length;
+} ot_split_entry;
+
 /* command: reset=0, sync=1, output-offset=2, render-offset=3, transition=4,
  * clear-transition=5. Reset uses seed rows/pinned offset; sync and offset commands
  * use argument 0. Transition uses mode (viewport-scroll=1, clear=2), source top,
@@ -1196,6 +1208,10 @@ ot_status ot_scene_measure_layout(ot_context *, const ot_handle *session, const 
 ot_status ot_session_render_split(ot_context *, const ot_handle *session, const ot_scene_frame_request *,
     const ot_split_snapshot *, uint32_t count, uint32_t pinned_render_offset, uint32_t force,
     uint32_t *out_status);
+/* Same admission and frame semantics, with sequences interleaved at the output cursor. */
+ot_status ot_session_render_split_entries(ot_context *, const ot_handle *session, const ot_scene_frame_request *,
+    const ot_split_entry *, uint32_t count, const uint8_t *sequences, uint32_t byte_count,
+    uint32_t pinned_render_offset, uint32_t force, uint32_t *out_status);
 ot_status ot_session_split_control(ot_context *, const ot_handle *session, const ot_split_control *, uint32_t *out_offset);
 /* Screen mode, dimensions, and copied trailing output are admitted together.
  * The screen packet plus trailing output must fit within 4096 bytes. */

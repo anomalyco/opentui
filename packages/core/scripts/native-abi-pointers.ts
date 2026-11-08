@@ -206,6 +206,7 @@ export const nativePointerPolicies = {
   ot_scene_frame_copy_buffer: { 0: context, 1: buffer, 2: buffer, 3: buffer },
   ot_scene_measure_layout: { 0: context, 1: buffer, 2: buffer },
   ot_session_render_split: { 0: context, 1: buffer, 2: optional, 3: empty, 7: buffer },
+  ot_session_render_split_entries: { 0: context, 1: buffer, 2: optional, 3: empty, 5: empty, 9: buffer },
   ot_session_split_control: { 0: context, 1: buffer, 2: buffer, 3: buffer },
   ot_session_set_screen: { 0: context, 1: buffer, 5: buffer },
   ot_session_sync_detached: { 0: context, 1: buffer, 2: buffer },

@@ -8,6 +8,43 @@ const ansi = @import("../ansi.zig");
 const image = @import("../image.zig");
 const gp = @import("../grapheme.zig");
 
+test "Session split sequences survive backpressure and borrow payloads only during admission" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const handle = try owner.createSession(.{ .chunk_size = 4096, .chunk_count = 2, .span_capacity = 2 });
+    defer owner.cancelSession(handle) catch unreachable;
+    try owner.attachSessionRenderer(handle, 8, 2, .{ .remote_mode = .remote, .forwarded_env = &.{} });
+    const value = try owner.raw().getSession(handle);
+    const snapshot = try owner.raw().getBuffer(try owner.createBuffer(8, 1, .{}));
+    try snapshot.drawTextChecked("summary", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+    var end = "\x1b]133;D\x07".*;
+    const commits = [_]renderer.SplitSnapshot{
+        .{ .snapshot = null, .row_columns = 0, .sequence = "\x1b]133;C\x07" },
+        .{ .snapshot = snapshot, .row_columns = 7, .trailing_newline = false },
+        .{ .snapshot = null, .row_columns = 0, .sequence = &end },
+    };
+    try value.write(&@as([8192]u8, @splat('x')));
+    try testing.expectEqual(session.RenderStatus.skipped, try value.renderSplit(null, &commits, 5, true));
+    try testing.expectEqual(@as(u32, 0), value.renderer.?.splitScrollback.published_rows);
+    var out: [8192]u8 = undefined;
+    while (try owner.readOutput(handle, &out)) |ticket| try owner.completeOutput(handle, ticket, .written);
+    try testing.expectEqual(session.RenderStatus.pending, try value.renderSplit(null, &commits, 5, true));
+    end[6] = 'X';
+    var len: usize = 0;
+    while (try owner.readOutput(handle, out[len..])) |ticket| {
+        len += ticket.len;
+        try owner.completeOutput(handle, ticket, .written);
+    }
+    try testing.expectEqual(@as(u32, 1), value.renderer.?.splitScrollback.published_rows);
+    try testing.expectEqual(@as(u32, 7), value.renderer.?.splitScrollback.tail_column);
+    const bytes = out[0..len];
+    const start = std.mem.find(u8, bytes, "\x1b]133;C\x07").?;
+    const text = std.mem.find(u8, bytes, "summary").?;
+    const finish = std.mem.find(u8, bytes, "\x1b]133;D\x07").?;
+    try testing.expect(start < text and text < finish);
+    try testing.expect(std.mem.find(u8, bytes, "\x1b]133;X\x07") == null);
+}
+
 test "Session painted snapshot copy replaces transparent cells and retains references" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

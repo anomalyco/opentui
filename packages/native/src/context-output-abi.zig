@@ -46,6 +46,37 @@ pub fn ot_session_render_split(context: ?*abi.ContextHandle, id: ?*const c.ot_ha
     return c.OT_OK;
 }
 
+pub fn ot_session_render_split_entries(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, entries_ptr: ?[*]const c.ot_split_entry, count: u32, sequences_ptr: ?[*]const u8, byte_count: u32, pinned_render_offset: u32, force: u32, out_status: ?*u32) callconv(.c) c.ot_status {
+    const owner = transport.beginMutation(context) catch |err| return fail(context, err);
+    defer owner.core.mutating = false;
+    if (id == null or out_status == null or force > 1 or count > session.split_snapshots_max or
+        (count != 0 and entries_ptr == null) or (byte_count != 0 and sequences_ptr == null) or
+        byte_count > session.split_snapshots_max * 4096) return fail(context, error.InvalidOptions);
+    const value = owner.core.raw().getSession(abi.handleFromC(id.?.*)) catch |err| return fail(context, err);
+    const frame = if (frame_ptr) |record| abi.frameRequestFromC(record.*) catch |err| return fail(context, err) else null;
+    var entries: [session.split_snapshots_max]renderer.SplitSnapshot = undefined;
+    for (entries[0..count], 0..) |*entry, index| {
+        const record = entries_ptr.?[index];
+        if (record.sequence_length != 0) {
+            const end = std.math.add(u32, record.sequence_offset, record.sequence_length) catch return fail(context, error.InvalidOptions);
+            if (record.sequence_length > 4096 or end > byte_count or record.row_columns != 0 or
+                record.flags != 0 or !std.meta.eql(record.buffer, std.mem.zeroes(c.ot_handle))) return fail(context, error.InvalidOptions);
+            entry.* = .{ .snapshot = null, .row_columns = 0, .sequence = sequences_ptr.?[record.sequence_offset..end] };
+        } else {
+            if (record.sequence_offset != 0 or record.flags & ~@as(u32, 3) != 0) return fail(context, error.InvalidOptions);
+            entry.* = .{
+                .snapshot = owner.core.raw().getBuffer(abi.handleFromC(record.buffer)) catch |err| return fail(context, err),
+                .row_columns = record.row_columns,
+                .start_on_new_line = record.flags & 1 != 0,
+                .trailing_newline = record.flags & 2 != 0,
+            };
+        }
+    }
+    const result = value.renderSplit(frame, entries[0..count], pinned_render_offset, force == 1) catch |err| return fail(context, err);
+    out_status.?.* = abi.renderStatusToC(result);
+    return c.OT_OK;
+}
+
 pub fn ot_session_split_control(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, options: ?*const c.ot_split_control, out: ?*u32) callconv(.c) c.ot_status {
     const owner = transport.beginMutation(context) catch |err| return fail(context, err);
     defer owner.core.mutating = false;
@@ -206,6 +237,36 @@ test "Context output ABI rejects malformed snapshot tables and controls without 
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_set_screen(context, &id, 0, 4, 2, null, 1));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_set_screen(context, &id, 0, 4, 2, "x", session.control_packet_bytes_max + 1));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_sync_detached(context, &id, &id));
+}
+
+test "Context split entries reject malformed sequence spans before changing output" {
+    const context: ?*abi.ContextHandle = try abi.createTestContext(.{ .object_capacity = 16, .render_cells_max = 64 });
+    defer std.testing.expectEqual(c.OT_OK, abi.ot_context_destroy(context)) catch unreachable;
+    const core = context.?.core;
+    const native_id = try core.createSession(.{});
+    defer core.cancelSession(native_id) catch unreachable;
+    const id = abi.handleToC(native_id);
+    try core.attachSessionRenderer(native_id, 8, 4, .{ .remote_mode = .remote });
+    var record = std.mem.zeroes(c.ot_split_entry);
+    record.sequence_length = 8;
+    const marker = "\x1b]133;D\x07";
+    var out: u32 = 99;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split_entries(context, &id, null, @ptrCast(&record), 1, null, 8, 3, 0, &out));
+    record.sequence_offset = 1;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split_entries(context, &id, null, @ptrCast(&record), 1, marker, 8, 3, 0, &out));
+    record.sequence_offset = std.math.maxInt(u32);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split_entries(context, &id, null, @ptrCast(&record), 1, marker, 8, 3, 0, &out));
+    record.sequence_offset = 0;
+    record.sequence_length = 4097;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split_entries(context, &id, null, @ptrCast(&record), 1, marker, 8, 3, 0, &out));
+    record.sequence_length = 8;
+    record.buffer = abi.handleToC(try core.createBuffer(8, 1, .{}));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split_entries(context, &id, null, @ptrCast(&record), 1, marker, 8, 3, 0, &out));
+    try std.testing.expectEqual(@as(u32, 99), out);
+    record.buffer = std.mem.zeroes(c.ot_handle);
+    try std.testing.expectEqual(c.OT_OK, ot_session_render_split_entries(context, &id, null, @ptrCast(&record), 1, marker, 8, 3, 0, &out));
+    try std.testing.expectEqual(c.OT_RENDER_PENDING, out);
+    try std.testing.expectEqual(@as(u32, 0), (try core.raw().getSession(native_id)).renderer.?.splitScrollback.published_rows);
 }
 
 test "Context split control decodes every command and rejects out-of-range arguments" {

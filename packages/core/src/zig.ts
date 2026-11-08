@@ -454,7 +454,8 @@ export interface NativeSceneFrameRequest {
 }
 
 export interface NativeSplitSnapshot {
-  snapshot: ContextBufferHandle
+  snapshot: ContextBufferHandle | null
+  sequence?: Uint8Array
   rowColumns: number
   startOnNewLine: boolean
   trailingNewline: boolean
@@ -3776,7 +3777,8 @@ export class FFIRenderLib {
     pinnedRenderOffset: number,
     force: boolean,
   ): { status: NativeSessionRenderStatus } {
-    const layout = nativeLayouts.ot_split_snapshot
+    const withSequences = snapshots.some((snapshot) => snapshot.snapshot === null)
+    const layout = withSequences ? nativeLayouts.ot_split_entry : nativeLayouts.ot_split_snapshot
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, session)
     const ticket = frame ? encodeSceneFrameRequest(context, frame) : null
@@ -3784,14 +3786,30 @@ export class FFIRenderLib {
     if (count > 64) throw new RangeError("At most 64 split snapshots can be submitted together")
     const records = new BigUint64Array(count * (layout.size / 8))
     const fields = new Uint32Array(records.buffer)
+    const sequenceBytes = new Uint8Array(
+      snapshots.reduce((size, snapshot) => size + (snapshot.sequence?.byteLength ?? 0), 0),
+    )
+    let sequenceOffset = 0
     for (let index = 0; index < count; index++) {
       const snapshot = snapshots[index]
       const offset = index * layout.size
-      encodeContextHandle(
-        context,
-        snapshot.snapshot,
-        new BigUint64Array(records.buffer, offset + layout.fields.buffer.offset, nativeLayouts.ot_handle.size / 8),
-      )
+      if (snapshot.snapshot !== null) {
+        encodeContextHandle(
+          context,
+          snapshot.snapshot,
+          new BigUint64Array(records.buffer, offset + layout.fields.buffer.offset, nativeLayouts.ot_handle.size / 8),
+        )
+      } else {
+        const sequence = snapshot.sequence
+        if (!sequence || sequence.byteLength === 0 || sequence.byteLength > 4096) {
+          throw new RangeError("Split sequences must contain between 1 and 4096 bytes")
+        }
+        const entry = nativeLayouts.ot_split_entry
+        fields[(offset + entry.fields.sequence_offset.offset) / 4] = sequenceOffset
+        fields[(offset + entry.fields.sequence_length.offset) / 4] = sequence.byteLength
+        sequenceBytes.set(sequence, sequenceOffset)
+        sequenceOffset += sequence.byteLength
+      }
       fields[(offset + layout.fields.row_columns.offset) / 4] = toSafeFFIU32Length(
         snapshot.rowColumns,
         "Split snapshot row columns",
@@ -3804,19 +3822,30 @@ export class FFIRenderLib {
     const forced = toFFIBool(force, "Split force render")
     const output = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_session_render_split")
-    nativeResult(
-      "ot_session_render_split",
-      this.opentui.symbols.ot_session_render_split(
-        pointer,
-        handle,
-        ticket,
-        count ? records : null,
-        count,
-        offset,
-        forced,
-        output,
-      ),
-    )
+    const result = withSequences
+      ? this.opentui.symbols.ot_session_render_split_entries(
+          pointer,
+          handle,
+          ticket,
+          records,
+          count,
+          sequenceBytes,
+          sequenceBytes.byteLength,
+          offset,
+          forced,
+          output,
+        )
+      : this.opentui.symbols.ot_session_render_split(
+          pointer,
+          handle,
+          ticket,
+          count ? records : null,
+          count,
+          offset,
+          forced,
+          output,
+        )
+    nativeResult(withSequences ? "ot_session_render_split_entries" : "ot_session_render_split", result)
     return { status: output[0] }
   }
 
