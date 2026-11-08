@@ -53,7 +53,7 @@ index f8857eaf..91b6714c 100644
 +
  } // namespace facebook::yoga
 diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
-index 30ec5db6..ee82e9ea 100644
+index 9762ca4b..b344e9ab 100644
 --- a/yoga/algorithm/CalculateLayout.cpp
 +++ b/yoga/algorithm/CalculateLayout.cpp
 @@ -458,6 +458,23 @@ static void computeFlexBasisForChild(
@@ -80,7 +80,7 @@ index 30ec5db6..ee82e9ea 100644
  static void measureNodeWithMeasureFunc(
      yoga::Node* const node,
      const Direction direction,
-@@ -2789,6 +2806,7 @@ bool calculateLayoutInternal(
+@@ -2803,6 +2820,7 @@ bool calculateLayoutInternal(
    }
  
    CachedMeasurement* cachedResults = nullptr;
@@ -88,7 +88,7 @@ index 30ec5db6..ee82e9ea 100644
  
    // Determine whether the results are already cached. We maintain a separate
    // cache for layouts and measurements. A layout operation modifies the
-@@ -2846,6 +2864,25 @@ bool calculateLayoutInternal(
+@@ -2860,6 +2878,25 @@ bool calculateLayoutInternal(
          }
        }
      }
@@ -112,9 +112,9 @@ index 30ec5db6..ee82e9ea 100644
 +      }
 +    }
    } else if (performLayout) {
-     if (yoga::inexactEquals(
-             layout->cachedLayout.availableWidth, availableWidth) &&
-@@ -2882,20 +2919,27 @@ bool calculateLayoutInternal(
+     if (hasSameAvailableSize(
+             node, layout->cachedLayout.availableWidth, availableWidth) &&
+@@ -2898,20 +2935,27 @@ bool calculateLayoutInternal(
      (performLayout ? layoutMarkerData.cachedLayouts
                     : layoutMarkerData.cachedMeasures) += 1;
    } else {

@@ -26,7 +26,7 @@ Both ports change only Zig code, and the update script gives both copies the sam
 generated tables do not change.
 The Yoga archive contains only the `yoga` source directory.
 
-The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eight changes, applied in this order:
+The Yoga source is upstream Yoga `main` at commit `41118bd3a` with nine changes, applied in this order:
 
 - `yoga-error-boundary.patch` routes every Yoga allocation, including the Grid style storage, through
   `yoga/OTAllocator.h`, so a test build can inject allocation failures. It also makes style updates, child
@@ -40,8 +40,11 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eight changes
   absolute edges that Yoga already uses for its size. Upstream rounds the relative position on its own,
   so a child nested under fractional offsets can end one cell outside its parent. With the option, the
   layout cache also compares available sizes exactly, because a subtree laid out for one fractional size
-  rounds differently at another size that rounds to the same cell. Only the scene's config in
-  `src/context.zig` sets the option; other configs keep upstream rounding and caching.
+  rounds differently at another size, even one within Yoga's 1e-4 tolerance. Each layout also keeps its
+  unrounded left and top position beside the rounded one, as upstream keeps unrounded sizes, and rounding
+  starts from the unrounded position and size: a subtree that a cache hit skips then rounds as a fresh one.
+  Only the scene's config in `src/context.zig` sets the option; other configs keep upstream rounding and
+  caching.
 - `yoga-finite-percent.patch` clamps a resolved percentage to ±1e30 in each of Yoga's three percent
   resolve paths, so a deep percentage chain cannot overflow f32 and stop layout on an indefinite available
   size.
@@ -59,6 +62,11 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with eight changes
 - `yoga-measure-cache-bounds.patch` keeps a measured node's size before its min and max size in each cache
   entry, and the cache rules compare a new size with it. Upstream compares with the bounded size, so a text
   that its minimum width widened kept a height measured at the narrower width.
+- `yoga-cache-owner-size.patch` keys a node's cached results on its owner size also when a layout child
+  (`display: contents` flattened) has a percent minimum or maximum size, or content-box sizing with a
+  percent padding. Yoga's flex steps resolve those against the parent's owner size, so the parent's layout
+  depends on it. It checks only the axes whose owner size changed, and a hit at another owner size moves
+  the entry to that size, so the next frame does not check again.
 
 `src/tests/yoga_test.zig` tests each change.
 

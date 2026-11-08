@@ -1,3 +1,28 @@
+diff --git a/yoga/algorithm/AbsoluteLayout.cpp b/yoga/algorithm/AbsoluteLayout.cpp
+index 8b0873a5..38d17ea6 100644
+--- a/yoga/algorithm/AbsoluteLayout.cpp
++++ b/yoga/algorithm/AbsoluteLayout.cpp
+@@ -562,12 +562,18 @@ bool layoutAbsoluteDescendants(
+           child->resolveDirection(currentNodeDirection);
+       // By now all descendants of the containing block that are not absolute
+       // will have their positions set for left and top.
++      // OpenTUI: a child that a cache hit skipped holds a rounded position;
++      // opted-in configs round from the unrounded one (see PixelGrid.cpp).
++      const auto& childLayout = child->getLayout();
++      const bool raw = child->getConfig()->roundsPositionsFromAbsoluteEdges();
+       const float childLeftOffsetFromContainingBlock =
+           currentNodeLeftOffsetFromContainingBlock +
+-          child->getLayout().position(PhysicalEdge::Left);
++          (raw ? childLayout.rawPosition(PhysicalEdge::Left)
++               : childLayout.position(PhysicalEdge::Left));
+       const float childTopOffsetFromContainingBlock =
+           currentNodeTopOffsetFromContainingBlock +
+-          child->getLayout().position(PhysicalEdge::Top);
++          (raw ? childLayout.rawPosition(PhysicalEdge::Top)
++               : childLayout.position(PhysicalEdge::Top));
+ 
+       hasNewLayout = layoutAbsoluteDescendants(
+                          containingNode,
 diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
 index 130fe0d3..e62f4067 100644
 --- a/yoga/algorithm/Cache.cpp
@@ -14,41 +39,128 @@ index 130fe0d3..e62f4067 100644
    bool hasSameWidthSpec = false;
    if (lastWidthMode == widthMode) {
      const float effectiveWidth = useRoundedComparison
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index 30ec5db6..9762ca4b 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -2752,6 +2752,20 @@ static bool isCachedForOwnerSize(
+        yoga::inexactEquals(cachedMeasurement.ownerHeight, ownerHeight));
+ }
+ 
++// OpenTUI: with absolute-edge rounding, a subtree laid out for one size can
++// round differently at a size within 1e-4 of it, so the cache of nodes without
++// a measure function compares exactly.
++static bool hasSameAvailableSize(
++    const yoga::Node* const node,
++    const float cachedSize,
++    const float availableSize) {
++  if (!node->getConfig()->roundsPositionsFromAbsoluteEdges()) {
++    return yoga::inexactEquals(cachedSize, availableSize);
++  }
++  return cachedSize == availableSize ||
++      (yoga::isUndefined(cachedSize) && yoga::isUndefined(availableSize));
++}
++
+ bool calculateLayoutInternal(
+     yoga::Node* const node,
+     const float availableWidth,
+@@ -2847,10 +2861,10 @@ bool calculateLayoutInternal(
+       }
+     }
+   } else if (performLayout) {
+-    if (yoga::inexactEquals(
+-            layout->cachedLayout.availableWidth, availableWidth) &&
+-        yoga::inexactEquals(
+-            layout->cachedLayout.availableHeight, availableHeight) &&
++    if (hasSameAvailableSize(
++            node, layout->cachedLayout.availableWidth, availableWidth) &&
++        hasSameAvailableSize(
++            node, layout->cachedLayout.availableHeight, availableHeight) &&
+         layout->cachedLayout.widthSizingMode == widthSizingMode &&
+         layout->cachedLayout.heightSizingMode == heightSizingMode &&
+         isCachedForOwnerSize(
+@@ -2859,10 +2873,12 @@ bool calculateLayoutInternal(
+     }
+   } else {
+     for (uint32_t i = 0; i < layout->nextCachedMeasurementsIndex; i++) {
+-      if (yoga::inexactEquals(
+-              layout->cachedMeasurements[i].availableWidth, availableWidth) &&
+-          yoga::inexactEquals(
+-              layout->cachedMeasurements[i].availableHeight, availableHeight) &&
++      if (hasSameAvailableSize(
++              node, layout->cachedMeasurements[i].availableWidth, availableWidth) &&
++          hasSameAvailableSize(
++              node,
++              layout->cachedMeasurements[i].availableHeight,
++              availableHeight) &&
+           layout->cachedMeasurements[i].widthSizingMode == widthSizingMode &&
+           layout->cachedMeasurements[i].heightSizingMode == heightSizingMode &&
+           isCachedForOwnerSize(
 diff --git a/yoga/algorithm/PixelGrid.cpp b/yoga/algorithm/PixelGrid.cpp
-index 997e96f6..5d26e790 100644
+index 997e96f6..9517b461 100644
 --- a/yoga/algorithm/PixelGrid.cpp
 +++ b/yoga/algorithm/PixelGrid.cpp
-@@ -111,12 +111,28 @@ void roundLayoutResultsToPixelGrid(
+@@ -94,11 +94,22 @@ void roundLayoutResultsToPixelGrid(
+   const auto pointScaleFactor =
+       static_cast<double>(node->getConfig()->getPointScaleFactor());
+ 
+-  const double nodeLeft = node->getLayout().position(PhysicalEdge::Left);
+-  const double nodeTop = node->getLayout().position(PhysicalEdge::Top);
++  // OpenTUI: opted-in configs round from the unrounded layout, which a subtree
++  // skipped by a cache hit still holds.
++  const auto& layout = node->getLayout();
++  const bool absoluteEdges =
++      node->getConfig()->roundsPositionsFromAbsoluteEdges();
++  const double nodeLeft = absoluteEdges
++      ? layout.rawPosition(PhysicalEdge::Left)
++      : layout.position(PhysicalEdge::Left);
++  const double nodeTop = absoluteEdges ? layout.rawPosition(PhysicalEdge::Top)
++                                       : layout.position(PhysicalEdge::Top);
+ 
+-  const double nodeWidth = node->getLayout().dimension(Dimension::Width);
+-  const double nodeHeight = node->getLayout().dimension(Dimension::Height);
++  const double nodeWidth = absoluteEdges ? layout.rawDimension(Dimension::Width)
++                                         : layout.dimension(Dimension::Width);
++  const double nodeHeight = absoluteEdges
++      ? layout.rawDimension(Dimension::Height)
++      : layout.dimension(Dimension::Height);
+ 
+   const double absoluteNodeLeft = absoluteLeft + nodeLeft;
+   const double absoluteNodeTop = absoluteTop + nodeTop;
+@@ -111,13 +122,27 @@ void roundLayoutResultsToPixelGrid(
      // size as this could lead to unwanted text truncation.
      const bool textRounding = node->getNodeType() == NodeType::Text;
  
+-    node->setLayoutPosition(
+-        roundValueToPixelGrid(nodeLeft, pointScaleFactor, false, textRounding),
+-        PhysicalEdge::Left);
 +    // OpenTUI: rounding the relative position on its own can put a child's
 +    // rounded edge one point outside its parent's, because the width below is
 +    // rounded from absolute edges. Opted-in configs take both from those edges.
-+    const bool absoluteEdges =
-+        node->getConfig()->roundsPositionsFromAbsoluteEdges();
-     node->setLayoutPosition(
--        roundValueToPixelGrid(nodeLeft, pointScaleFactor, false, textRounding),
++    node->getLayout().setPosition(
++        PhysicalEdge::Left,
 +        absoluteEdges
 +            ? roundValueToPixelGrid(
 +                  absoluteNodeLeft, pointScaleFactor, false, textRounding) -
 +                roundValueToPixelGrid(
 +                    absoluteLeft, pointScaleFactor, false, false)
 +            : roundValueToPixelGrid(
-+                  nodeLeft, pointScaleFactor, false, textRounding),
-         PhysicalEdge::Left);
++                  nodeLeft, pointScaleFactor, false, textRounding));
  
-     node->setLayoutPosition(
+-    node->setLayoutPosition(
 -        roundValueToPixelGrid(nodeTop, pointScaleFactor, false, textRounding),
+-        PhysicalEdge::Top);
++    node->getLayout().setPosition(
++        PhysicalEdge::Top,
 +        absoluteEdges
 +            ? roundValueToPixelGrid(
 +                  absoluteNodeTop, pointScaleFactor, false, textRounding) -
 +                roundValueToPixelGrid(absoluteTop, pointScaleFactor, false, false)
 +            : roundValueToPixelGrid(
-+                  nodeTop, pointScaleFactor, false, textRounding),
-         PhysicalEdge::Top);
++                  nodeTop, pointScaleFactor, false, textRounding));
  
      // We multiply dimension by scale factor and if the result is close to the
+     // whole number, we don't have any fraction To verify if the result is close
 diff --git a/yoga/config/Config.h b/yoga/config/Config.h
 index 95f63e87..ed0a5715 100644
 --- a/yoga/config/Config.h
@@ -77,3 +189,47 @@ index 95f63e87..ed0a5715 100644
  
    uint32_t version_ = 0;
    ExperimentalFeatureSet experimentalFeatures_{};
+diff --git a/yoga/node/LayoutResults.h b/yoga/node/LayoutResults.h
+index 5a0111eb..7ce3ecdc 100644
+--- a/yoga/node/LayoutResults.h
++++ b/yoga/node/LayoutResults.h
+@@ -103,6 +103,19 @@ struct LayoutResults {
+     position_[yoga::to_underlying(physicalEdge)] = dimension;
+   }
+ 
++  // OpenTUI: the left or top position before pixel-grid rounding, which
++  // writes only position_. A subtree that a cache hit skips rounds again from
++  // it, as a fresh layout does.
++  float rawPosition(PhysicalEdge physicalEdge) const {
++    return rawPosition_[yoga::to_underlying(physicalEdge)];
++  }
++
++  void setRawPosition(PhysicalEdge physicalEdge, float dimension) {
++    if (yoga::to_underlying(physicalEdge) < rawPosition_.size()) {
++      rawPosition_[yoga::to_underlying(physicalEdge)] = dimension;
++    }
++  }
++
+   float margin(PhysicalEdge physicalEdge) const {
+     return margin_[yoga::to_underlying(physicalEdge)];
+   }
+@@ -137,6 +150,7 @@ struct LayoutResults {
+   std::array<float, 2> measuredDimensions_ = {{YGUndefined, YGUndefined}};
+   std::array<float, 2> rawDimensions_ = {{YGUndefined, YGUndefined}};
+   std::array<float, 4> position_ = {};
++  std::array<float, 2> rawPosition_ = {};
+   std::array<float, 4> margin_ = {};
+   std::array<float, 4> border_ = {};
+   std::array<float, 4> padding_ = {};
+diff --git a/yoga/node/Node.cpp b/yoga/node/Node.cpp
+index 5f91cc47..5159ff8d 100644
+--- a/yoga/node/Node.cpp
++++ b/yoga/node/Node.cpp
+@@ -270,6 +270,7 @@ void Node::setLayoutComputedFlexBasis(const FloatOptional computedFlexBasis) {
+ 
+ void Node::setLayoutPosition(float position, PhysicalEdge edge) {
+   layout_.setPosition(edge, position);
++  layout_.setRawPosition(edge, position);
+ }
+ 
+ void Node::setLayoutComputedFlexBasisGeneration(

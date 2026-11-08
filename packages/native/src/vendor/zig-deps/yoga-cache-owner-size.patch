@@ -1,0 +1,50 @@
+diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
+index 64bfd1fd..e15eb688 100644
+--- a/yoga/algorithm/CalculateLayout.cpp
++++ b/yoga/algorithm/CalculateLayout.cpp
+@@ -2745,13 +2745,40 @@ static void calculateLayoutImpl(
+ // the node's style resolves a percentage against that size.
+ static bool isCachedForOwnerSize(
+     const yoga::Node* const node,
+-    const CachedMeasurement& cachedMeasurement,
++    CachedMeasurement& cachedMeasurement,
+     const float ownerWidth,
+     const float ownerHeight) {
+-  return (!node->style().resolvesAgainstOwnerWidth() ||
+-          yoga::inexactEquals(cachedMeasurement.ownerWidth, ownerWidth)) &&
+-      (!node->style().resolvesAgainstOwnerHeight() ||
+-       yoga::inexactEquals(cachedMeasurement.ownerHeight, ownerHeight));
++  const bool sameWidth =
++      yoga::inexactEquals(cachedMeasurement.ownerWidth, ownerWidth);
++  const bool sameHeight =
++      yoga::inexactEquals(cachedMeasurement.ownerHeight, ownerHeight);
++  if (sameWidth && sameHeight) {
++    return true;
++  }
++  if ((!sameWidth && node->style().resolvesAgainstOwnerWidth()) ||
++      (!sameHeight && node->style().resolvesAgainstOwnerHeight())) {
++    return false;
++  }
++  // OpenTUI: the flex steps resolve a layout child's percent min and max
++  // sizes, and with content-box sizing its percent padding, against this
++  // node's owner size too (calculateFlexLine, distributeFreeSpace*).
++  for (const auto child : node->getLayoutChildren()) {
++    const auto& style = child->style();
++    if ((!sameWidth &&
++         (style.minDimension(Dimension::Width).isPercent() ||
++          style.maxDimension(Dimension::Width).isPercent() ||
++          (style.boxSizing() == BoxSizing::ContentBox &&
++           style.resolvesAgainstOwnerWidth()))) ||
++        (!sameHeight &&
++         (style.minDimension(Dimension::Height).isPercent() ||
++          style.maxDimension(Dimension::Height).isPercent()))) {
++      return false;
++    }
++  }
++  // The results hold at this owner size too; key them on it.
++  cachedMeasurement.ownerWidth = ownerWidth;
++  cachedMeasurement.ownerHeight = ownerHeight;
++  return true;
+ }
+ 
+ // OpenTUI: with absolute-edge rounding, a subtree laid out for one size can

@@ -1,5 +1,5 @@
 diff --git a/yoga/algorithm/CalculateLayout.cpp b/yoga/algorithm/CalculateLayout.cpp
-index ee82e9ea..2b1db32f 100644
+index b344e9ab..64bfd1fd 100644
 --- a/yoga/algorithm/CalculateLayout.cpp
 +++ b/yoga/algorithm/CalculateLayout.cpp
 @@ -514,27 +514,23 @@ static void measureNodeWithMeasureFunc(
@@ -90,7 +90,7 @@ index ee82e9ea..2b1db32f 100644
    }
  }
  
-@@ -2803,6 +2788,8 @@ bool calculateLayoutInternal(
+@@ -2817,6 +2802,8 @@ bool calculateLayoutInternal(
      layout->cachedLayout.computedHeight = -1;
      layout->cachedLayout.ownerWidth = -1;
      layout->cachedLayout.ownerHeight = -1;
@@ -99,7 +99,7 @@ index ee82e9ea..2b1db32f 100644
    }
  
    CachedMeasurement* cachedResults = nullptr;
-@@ -2832,8 +2819,8 @@ bool calculateLayoutInternal(
+@@ -2846,8 +2833,8 @@ bool calculateLayoutInternal(
              layout->cachedLayout.availableWidth,
              layout->cachedLayout.heightSizingMode,
              layout->cachedLayout.availableHeight,
@@ -110,7 +110,7 @@ index ee82e9ea..2b1db32f 100644
              marginAxisRow,
              marginAxisColumn,
              node->getConfig()) &&
-@@ -2852,8 +2839,8 @@ bool calculateLayoutInternal(
+@@ -2866,8 +2853,8 @@ bool calculateLayoutInternal(
                  layout->cachedMeasurements[i].availableWidth,
                  layout->cachedMeasurements[i].heightSizingMode,
                  layout->cachedMeasurements[i].availableHeight,
@@ -121,7 +121,7 @@ index ee82e9ea..2b1db32f 100644
                  marginAxisRow,
                  marginAxisColumn,
                  node->getConfig()) &&
-@@ -2924,6 +2911,8 @@ bool calculateLayoutInternal(
+@@ -2940,6 +2927,8 @@ bool calculateLayoutInternal(
            Dimension::Width, largerHeightCap->computedWidth);
        layout->setMeasuredDimension(
            Dimension::Height, largerHeightCap->computedHeight);
@@ -130,7 +130,7 @@ index ee82e9ea..2b1db32f 100644
      } else {
        calculateLayoutImpl(
            node,
-@@ -2975,6 +2964,11 @@ bool calculateLayoutInternal(
+@@ -2991,6 +2980,11 @@ bool calculateLayoutInternal(
            layout->measuredDimension(Dimension::Height);
        newCacheEntry->ownerWidth = ownerWidth;
        newCacheEntry->ownerHeight = ownerHeight;

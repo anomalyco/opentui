@@ -108,6 +108,38 @@ describe("native Yoga API coverage", () => {
     },
   )
 
+  // Yoga resolves a layout child's percent minimum, and with content-box sizing its percent padding, against
+  // the box's owner size, so a fixed box laid out at owner width 20 is not reused at 40.
+  test.each([
+    ["a percent minimum under display: contents", 20],
+    ["a content-box percent padding", 6],
+  ] as const)("a fixed box relays out at a new owner size for %s", (kind, expected) => {
+    const widths = [20, 40].map((first) => {
+      const root = Yoga.Node.create()
+      root.setFlexDirection(FlexDirection.Row)
+      root.setWidth(8)
+      root.setHeight(4)
+      const child = Yoga.Node.create()
+      if (kind === "a content-box percent padding") {
+        child.setBoxSizing(BoxSizing.ContentBox)
+        child.setPadding(Edge.Left, "10%")
+        child.setMinWidth(2)
+        root.insertChild(child, 0)
+      } else {
+        const wrapper = Yoga.Node.create()
+        wrapper.setDisplay(Display.Contents)
+        child.setMinWidth("50%")
+        wrapper.insertChild(child, 0)
+        root.insertChild(wrapper, 0)
+      }
+      for (const width of [first, 40]) root.calculateLayout(width, 10, Direction.LTR)
+      const width = child.getComputedWidth()
+      root.freeRecursive()
+      return width
+    })
+    expect(widths).toEqual([expected, expected])
+  })
+
   test("the generated tests' teardown frees what a test created and keeps older configs", () => {
     const configs = resolveRenderLib().getYogaHost().configs
     const fixture = Yoga.Config.create()

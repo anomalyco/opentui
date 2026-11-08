@@ -1236,13 +1236,17 @@ test "Yoga larger-height-cap reuse keeps every layout of random trees, texts, an
 
 // Yoga's "stricter size" cache rule compared a new size without the margin with an old size
 // with it, so a leaf that grew by less than its margin kept its old size, and its rules compared
-// the size after min and max, so a leaf widened by its minimum kept a narrower text's height.
-// Random measured and empty leaves under a root whose size walks by up to 3 cells a solve; after
-// each solve a fresh copy of the tree, solved once, must give every node the same layout.
+// the size after min and max, so a leaf widened by its minimum kept a narrower text's height. A
+// subtree that a layout-cache hit skipped rounded again from rounded positions, and a box with
+// percent-bounded children kept a layout for another owner size. Random nested measured leaves
+// and static or relative boxes, with point or percent bounds, under a root whose size walks by
+// up to 3 cells a solve; after each solve a fresh copy of the tree, solved once, must give every
+// node the same layout.
 test "Yoga incremental solves of measured leaves with margins equal fresh solves" {
     const api = @import("context_abi_c");
     const ltr = @backingInt(yoga.YogaDirection.ltr);
     const point = @backingInt(yoga.YogaUnit.point);
+    const percent = @backingInt(yoga.YogaUnit.percent);
     const config = yoga.yogaConfigCreate();
     defer std.debug.assert(yoga.yogaConfigFree(config));
     yoga.configSetRoundsPositionsFromAbsoluteEdges(config, 1);
@@ -1260,12 +1264,38 @@ test "Yoga incremental solves of measured leaves with margins equal fresh solves
         yoga.yogaNodeGetComputedLayout(root, layout);
     }
     try std.testing.expectEqual(root_layouts[1], root_layouts[0]);
-    var prng = std.Random.DefaultPrng.init(0x374);
-    const random = prng.random();
-    for (0..300) |_| {
+    // Static boxes centered on both axes over an absolute child at left 0, top 0, as the root grows by a cell.
+    var chain_layouts: [2][4]yoga.ExternalYogaLayout = undefined;
+    for (&chain_layouts, [_]f32{ 10, 11 }) |*layouts, first| {
+        var chain: [4]yoga.YGNodeRef = undefined;
+        for (&chain, 0..) |*node, i| {
+            node.* = yoga.yogaNodeCreateWithConfig(config);
+            if (i > 0) yoga.yogaNodeInsertChild(chain[i - 1], node.*, 0);
+            for ([_]yoga.YogaValueKind{ .width, .height }) |kind| yoga.yogaNodeStyleSetValue(node.*, @backingInt(kind), 0, point, ([_]f32{ 10, 5, 4, 1 })[i]);
+        }
+        defer yoga.yogaNodeFreeRecursive(chain[0]);
+        for (chain[0..2]) |node| {
+            yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.justify_content), api.OT_JUSTIFY_CENTER);
+            yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.align_items), api.OT_ALIGN_CENTER);
+        }
+        for (chain[1..3]) |node| yoga.yogaNodeStyleSetEnum(node, @backingInt(yoga.YogaEnumKind.position_type), api.OT_POSITION_STATIC);
+        yoga.yogaNodeStyleSetEnum(chain[3], @backingInt(yoga.YogaEnumKind.position_type), api.OT_POSITION_ABSOLUTE);
+        for ([_]u32{ api.OT_EDGE_LEFT, api.OT_EDGE_TOP }) |edge| yoga.yogaNodeStyleSetValue(chain[3], @backingInt(yoga.YogaValueKind.position), edge, point, 0);
+        for ([_]f32{ first, 11 }) |size| {
+            for ([_]yoga.YogaValueKind{ .width, .height }) |kind| yoga.yogaNodeStyleSetValue(chain[0], @backingInt(kind), 0, point, size);
+            yoga.yogaNodeCalculateLayout(chain[0], std.math.nan(f32), std.math.nan(f32), ltr);
+        }
+        for (chain, layouts) |node, *layout| yoga.yogaNodeGetComputedLayout(node, layout);
+    }
+    try std.testing.expectEqual(chain_layouts[1], chain_layouts[0]);
+    for (0..300) |tree| {
+        var prng = std.Random.DefaultPrng.init(0x374000 + tree);
+        const random = prng.random();
         var nodes: [40]yoga.YGNodeRef = undefined;
         var leaves: [40]Leaf = @splat(.{});
         var measured: [40]bool = @splat(false);
+        var parents: [40]usize = @splat(0);
+        var kids: [40]u32 = @splat(0);
         var count: usize = 1;
         nodes[0] = yoga.yogaNodeCreateWithConfig(config);
         defer yoga.yogaNodeFreeRecursive(nodes[0]);
@@ -1275,16 +1305,24 @@ test "Yoga incremental solves of measured leaves with margins equal fresh solves
         for (0..40) |_| {
             const index = random.uintLessThan(usize, count);
             switch (if (count < 6) 0 else random.uintLessThan(u32, 3)) {
+                // A measured leaf or a box, nested in a random box, static or relative.
                 0 => if (count < nodes.len) {
                     const added = yoga.yogaNodeCreateWithConfig(config);
-                    yoga.yogaNodeInsertChild(nodes[0], added, @intCast(count - 1));
+                    var parent = random.uintLessThan(usize, count);
+                    while (measured[parent]) parent = random.uintLessThan(usize, count);
+                    parents[count] = parent;
+                    yoga.yogaNodeInsertChild(nodes[parent], added, kids[parent]);
+                    kids[parent] += 1;
+                    yoga.yogaNodeStyleSetEnum(added, @backingInt(yoga.YogaEnumKind.position_type), random.intRangeAtMost(u32, api.OT_POSITION_STATIC, api.OT_POSITION_RELATIVE));
+                    yoga.yogaNodeStyleSetEnum(added, @backingInt(yoga.YogaEnumKind.justify_content), random.uintAtMost(u32, api.OT_JUSTIFY_FLEX_END));
+                    if (random.boolean()) yoga.yogaNodeStyleSetEnum(added, @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
                     leaves[count].len = random.uintAtMost(u32, 120);
                     measured[count] = random.uintLessThan(u32, 3) != 0;
                     if (measured[count]) try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(added, &leaves[count], &Leaf.measure, true));
                     yoga.yogaNodeStyleSetFloat(added, @backingInt(yoga.YogaFloatKind.flex_shrink), @floatFromInt(random.uintLessThan(u32, 2)));
                     if (random.uintLessThan(u32, 4) == 0) yoga.yogaNodeStyleSetFloat(added, @backingInt(yoga.YogaFloatKind.flex_grow), 1);
                     if (random.uintLessThan(u32, 6) == 0) yoga.yogaNodeStyleSetValue(added, @backingInt(yoga.YogaValueKind.width), 0, point, @floatFromInt(random.intRangeAtMost(u32, 5, 30)));
-                    if (random.uintLessThan(u32, 4) == 0) yoga.yogaNodeStyleSetValue(added, @backingInt(bounds[random.uintLessThan(usize, bounds.len)]), 0, point, @floatFromInt(random.intRangeAtMost(u32, 1, 30)));
+                    if (random.uintLessThan(u32, 4) == 0) yoga.yogaNodeStyleSetValue(added, @backingInt(bounds[random.uintLessThan(usize, bounds.len)]), 0, if (random.boolean()) point else percent, @floatFromInt(random.intRangeAtMost(u32, 1, 100)));
                     if (random.boolean()) yoga.yogaNodeStyleSetEnum(added, @backingInt(yoga.YogaEnumKind.align_self), random.intRangeAtMost(u32, api.OT_ALIGN_FLEX_START, api.OT_ALIGN_STRETCH));
                     nodes[count] = added;
                     count += 1;
@@ -1300,9 +1338,13 @@ test "Yoga incremental solves of measured leaves with margins equal fresh solves
             yoga.yogaNodeCalculateLayout(nodes[0], width, height, ltr);
             var fresh: [40]yoga.YGNodeRef = undefined;
             var fresh_leaves = leaves;
-            for (nodes[0..count], 0..) |node, i| {
+            var fresh_kids: [40]u32 = @splat(0);
+            for (nodes[0..count], parents[0..count], 0..) |node, parent, i| {
                 fresh[i] = yoga.yogaNodeCreateWithConfig(config);
-                if (i > 0) yoga.yogaNodeInsertChild(fresh[0], fresh[i], @intCast(i - 1));
+                if (i > 0) {
+                    yoga.yogaNodeInsertChild(fresh[parent], fresh[i], fresh_kids[parent]);
+                    fresh_kids[parent] += 1;
+                }
                 try yoga.check(yoga.yogaNodeCopyStyleChecked(fresh[i], node));
                 if (measured[i]) try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(fresh[i], &fresh_leaves[i], &Leaf.measure, true));
             }
