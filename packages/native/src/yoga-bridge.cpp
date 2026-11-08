@@ -16,6 +16,7 @@
 #include <yoga/algorithm/PixelGrid.h>
 #include <yoga/debug/Log.h>
 #include <yoga/numeric/Comparison.h>
+#include <utility>
 #endif
 
 namespace {
@@ -517,6 +518,9 @@ uint32_t otYogaTestContentsChildCount(YGNodeConstRef node) noexcept {
 void otYogaTestLogMessage(YGConfigConstRef config, const char* message) noexcept {
   facebook::yoga::log(facebook::yoga::resolveRef(config), facebook::yoga::LogLevel::Warn, "%s",
                       message);
+}
+uint32_t otYogaTestTakeRoundedNodes() noexcept {
+  return std::exchange(facebook::yoga::testPixelGridNodeCount, 0);
 }
 
 // Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate, with the margin

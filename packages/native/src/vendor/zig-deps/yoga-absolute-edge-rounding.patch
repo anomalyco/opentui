@@ -97,7 +97,7 @@ index 30ec5db6..9762ca4b 100644
            layout->cachedMeasurements[i].heightSizingMode == heightSizingMode &&
            isCachedForOwnerSize(
 diff --git a/yoga/algorithm/PixelGrid.cpp b/yoga/algorithm/PixelGrid.cpp
-index 997e96f6..9517b461 100644
+index 997e96f6..d2566c45 100644
 --- a/yoga/algorithm/PixelGrid.cpp
 +++ b/yoga/algorithm/PixelGrid.cpp
 @@ -94,11 +94,22 @@ void roundLayoutResultsToPixelGrid(
@@ -161,6 +161,31 @@ index 997e96f6..9517b461 100644
  
      // We multiply dimension by scale factor and if the result is close to the
      // whole number, we don't have any fraction To verify if the result is close
+@@ -161,6 +186,11 @@ void roundLayoutResultsToPixelGrid(
+                       absoluteNodeTop, pointScaleFactor, false, textRounding)));
+   }
+ 
++#ifdef OT_YOGA_TEST_ALLOCATOR
++  if (absoluteEdges) {
++    ++testPixelGridNodeCount;
++  }
++#endif
+   for (yoga::Node* child : node->getChildren()) {
+     if (child->getOwner() != node) {
+       continue;
+diff --git a/yoga/algorithm/PixelGrid.h b/yoga/algorithm/PixelGrid.h
+index 1baa1b3a..9fee0ab1 100644
+--- a/yoga/algorithm/PixelGrid.h
++++ b/yoga/algorithm/PixelGrid.h
+@@ -14,6 +14,8 @@ namespace facebook::yoga {
+ 
+ #ifdef OT_YOGA_TEST_ALLOCATOR
+ inline thread_local uint32_t testPixelGridRoundCount = 0;
++// OpenTUI: nodes that absolute-edge rounding visited.
++inline thread_local uint32_t testPixelGridNodeCount = 0;
+ #endif
+ 
+ // Round a point value to the nearest physical pixel based on DPI
 diff --git a/yoga/config/Config.h b/yoga/config/Config.h
 index 95f63e87..ed0a5715 100644
 --- a/yoga/config/Config.h
