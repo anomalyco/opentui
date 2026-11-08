@@ -2541,7 +2541,7 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
     const bench = @import("../bench/scene-frame_bench.zig");
     const rows = [_]struct { shape: bench.Shape, size: u32, change: bench.Change, work: [22]u64 }{
         .{ .shape = .ui, .size = 0, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 } },
-        .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 3, 209, 200, 1, 1, 0, 0, 1, 1, 87, 0, 0, 87 } },
+        .{ .shape = .ui, .size = 0, .change = .glyph, .work = .{ 87, 0, 87, 87, 1, 0, 0, 0, 0, 3, 209, 200, 1, 1, 0, 0, 1, 1, 87, 0, 0, 6 } },
         .{ .shape = .ui, .size = 0, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4, 0 } },
         .{ .shape = .ui, .size = 0, .change = .reply_text, .work = .{ 0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 7, 0 } },
         .{ .shape = .scroll, .size = 100, .change = .reply_text, .work = .{ 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4, 0 } },
@@ -2549,7 +2549,7 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         .{ .shape = .boxes, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 } },
         .{ .shape = .boxes, .size = 100, .change = .background, .work = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 1, 140, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0 } },
         .{ .shape = .scroll, .size = 100, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 } },
-        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 55, 5, 104, 1, 21, 0, 0, 216, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104, 0, 57, 104 } },
+        .{ .shape = .scroll, .size = 100, .change = .glyph, .work = .{ 104, 55, 5, 104, 1, 21, 0, 0, 216, 53, 10000, 10000, 50, 1, 0, 0, 1, 50, 104, 0, 57, 3 } },
         .{ .shape = .scroll, .size = 100, .change = .scroll, .work = .{ 0, 56, 0, 0, 0, 21, 0, 0, 118, 53, 10000, 10000, 50, 50, 0, 0, 1, 50, 0, 53, 107, 0 } },
         .{ .shape = .scroll, .size = 100, .change = .append, .work = .{ 106, 55, 6, 106, 1, 18, 0, 0, 218, 53, 10000, 10000, 50, 0, 0, 0, 1, 50, 106, 0, 59, 106 } },
         .{ .shape = .wrapped_scroll, .size = 20, .change = .unchanged, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 } },
@@ -2567,8 +2567,9 @@ test "Scene frame bench scenes pin each frame kind's work at small sizes" {
         .{ .shape = .boxes, .size = 100, .change = .update_hook, .work = .{ 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 2, 0 } },
         .{ .shape = .scroll, .size = 100, .change = .paint_hook, .work = .{ 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0 } },
         // A select list whose eleventh title changes. The last column counts the Yoga nodes
-        // that pixel-grid rounding visits.
-        .{ .shape = .select, .size = 100, .change = .row_text, .work = .{ 203, 154, 4, 203, 1, 26, 0, 0, 216, 5, 200, 200, 1, 1, 0, 0, 1, 1, 203, 0, 59, 303 } },
+        // that pixel-grid rounding visits: those the solve laid out (here the path, every row,
+        // and the changed row's two texts), not the whole tree.
+        .{ .shape = .select, .size = 100, .change = .row_text, .work = .{ 203, 154, 4, 203, 1, 26, 0, 0, 216, 5, 200, 200, 1, 1, 0, 0, 1, 1, 203, 0, 59, 105 } },
     };
     for (rows) |row| {
         var target = try bench.Scene.init(testing.allocator, testing.io, row.shape, row.size);

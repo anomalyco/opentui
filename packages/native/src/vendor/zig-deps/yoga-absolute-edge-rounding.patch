@@ -97,10 +97,91 @@ index 30ec5db6..9762ca4b 100644
            layout->cachedMeasurements[i].heightSizingMode == heightSizingMode &&
            isCachedForOwnerSize(
 diff --git a/yoga/algorithm/PixelGrid.cpp b/yoga/algorithm/PixelGrid.cpp
-index 997e96f6..d2566c45 100644
+index 997e96f6..2fc03bd1 100644
 --- a/yoga/algorithm/PixelGrid.cpp
 +++ b/yoga/algorithm/PixelGrid.cpp
-@@ -94,11 +94,22 @@ void roundLayoutResultsToPixelGrid(
+@@ -11,6 +11,12 @@
+ #include <yoga/numeric/Comparison.h>
+ 
+ #include <cmath>
++#ifdef OT_YOGA_TEST_ALLOCATOR
++#include <cstdio>
++#include <cstdlib>
++#include <tuple>
++#include <vector>
++#endif
+ 
+ namespace facebook::yoga {
+ 
+@@ -76,6 +82,67 @@ double roundValueToPixelGridDouble(
+       : scaledValue / pointScaleFactor;
+ }
+ 
++#ifdef OT_YOGA_TEST_ALLOCATOR
++// OpenTUI: makes the next pass round every node, for the check below.
++thread_local bool testRoundAll = false;
++
++void saveSubtree(
++    yoga::Node* node,
++    std::vector<std::tuple<yoga::Node*, LayoutResults, bool>>& saved) {
++  saved.emplace_back(node, node->getLayout(), node->getHasNewLayout());
++  for (yoga::Node* child : node->getChildren()) {
++    if (child->getOwner() == node) {
++      saveSubtree(child, saved);
++    }
++  }
++}
++
++bool sameValue(float a, float b) {
++  return a == b || (std::isnan(a) && std::isnan(b));
++}
++
++// OpenTUI: aborts unless a full pass over a skipped subtree writes back the
++// values it holds, then restores the subtree as the full pass found it. A
++// display: contents node's own box is not checked: a measure-only pass zeroes
++// it without a flag, and only a non-finite origin rounds zeros to other values.
++// The scene has no display: contents nodes.
++void checkSkippedSubtree(
++    yoga::Node* node,
++    double absoluteLeft,
++    double absoluteTop) {
++  std::vector<std::tuple<yoga::Node*, LayoutResults, bool>> saved;
++  saveSubtree(node, saved);
++  const uint32_t rounds = testPixelGridRoundCount;
++  const uint32_t nodes = testPixelGridNodeCount;
++  testRoundAll = true;
++  roundLayoutResultsToPixelGrid(node, absoluteLeft, absoluteTop);
++  testRoundAll = false;
++  testPixelGridRoundCount = rounds;
++  testPixelGridNodeCount = nodes;
++  for (auto& [savedNode, layout, hasNewLayout] : saved) {
++    const auto& rounded = savedNode->getLayout();
++    if (savedNode->style().display() != Display::Contents &&
++        !(sameValue(
++              rounded.position(PhysicalEdge::Left),
++              layout.position(PhysicalEdge::Left)) &&
++          sameValue(
++              rounded.position(PhysicalEdge::Top),
++              layout.position(PhysicalEdge::Top)) &&
++          sameValue(
++              rounded.dimension(Dimension::Width),
++              layout.dimension(Dimension::Width)) &&
++          sameValue(
++              rounded.dimension(Dimension::Height),
++              layout.dimension(Dimension::Height)))) {
++      std::fprintf(stderr, "Yoga: a skipped subtree rounds differently\n");
++      std::abort();
++    }
++    savedNode->setLayout(layout);
++    savedNode->setHasNewLayout(hasNewLayout);
++  }
++}
++#endif
++
+ } // namespace
+ 
+ float roundValueToPixelGrid(
+@@ -94,11 +161,22 @@ void roundLayoutResultsToPixelGrid(
    const auto pointScaleFactor =
        static_cast<double>(node->getConfig()->getPointScaleFactor());
  
@@ -127,7 +208,7 @@ index 997e96f6..d2566c45 100644
  
    const double absoluteNodeLeft = absoluteLeft + nodeLeft;
    const double absoluteNodeTop = absoluteTop + nodeTop;
-@@ -111,13 +122,27 @@ void roundLayoutResultsToPixelGrid(
+@@ -111,13 +189,27 @@ void roundLayoutResultsToPixelGrid(
      // size as this could lead to unwanted text truncation.
      const bool textRounding = node->getNodeType() == NodeType::Text;
  
@@ -161,18 +242,41 @@ index 997e96f6..d2566c45 100644
  
      // We multiply dimension by scale factor and if the result is close to the
      // whole number, we don't have any fraction To verify if the result is close
-@@ -161,6 +186,11 @@ void roundLayoutResultsToPixelGrid(
+@@ -161,10 +253,34 @@ void roundLayoutResultsToPixelGrid(
                        absoluteNodeTop, pointScaleFactor, false, textRounding)));
    }
  
-+#ifdef OT_YOGA_TEST_ALLOCATOR
++  // OpenTUI: opted-in configs clear the flag of each node they round, and round
++  // a child again only if the solve laid it out or this node's unrounded origin
++  // moved. Rounding is a function of the two, so a skipped subtree already
++  // holds what this pass would write; test builds check that. Clearing flags
++  // turns off upstream's zero-out skip for display: none subtrees (see
++  // zeroOutLayoutRecursively): each layout of their parent zeroes and rounds
++  // them again, which costs less than the skip's compare.
++  bool roundAll = true;
 +  if (absoluteEdges) {
++    node->setHasNewLayout(false);
++    auto& origin = node->getLayout().roundedOrigin;
++    roundAll = origin[0] != absoluteNodeLeft || origin[1] != absoluteNodeTop;
++    origin = {{absoluteNodeLeft, absoluteNodeTop}};
++#ifdef OT_YOGA_TEST_ALLOCATOR
 +    ++testPixelGridNodeCount;
-+  }
++    roundAll = roundAll || testRoundAll;
 +#endif
++  }
    for (yoga::Node* child : node->getChildren()) {
      if (child->getOwner() != node) {
        continue;
+     }
++    if (!roundAll && !child->getHasNewLayout()) {
++#ifdef OT_YOGA_TEST_ALLOCATOR
++      checkSkippedSubtree(child, absoluteNodeLeft, absoluteNodeTop);
++#endif
++      continue;
++    }
+     roundLayoutResultsToPixelGrid(child, absoluteNodeLeft, absoluteNodeTop);
+   }
+ }
 diff --git a/yoga/algorithm/PixelGrid.h b/yoga/algorithm/PixelGrid.h
 index 1baa1b3a..9fee0ab1 100644
 --- a/yoga/algorithm/PixelGrid.h
@@ -215,10 +319,21 @@ index 95f63e87..ed0a5715 100644
    uint32_t version_ = 0;
    ExperimentalFeatureSet experimentalFeatures_{};
 diff --git a/yoga/node/LayoutResults.h b/yoga/node/LayoutResults.h
-index 5a0111eb..7ce3ecdc 100644
+index 5a0111eb..9dab7278 100644
 --- a/yoga/node/LayoutResults.h
 +++ b/yoga/node/LayoutResults.h
-@@ -103,6 +103,19 @@ struct LayoutResults {
+@@ -55,6 +55,10 @@ struct LayoutResults {
+ 
+   CachedMeasurement cachedLayout{};
+ 
++  // OpenTUI: the unrounded absolute origin that pixel-grid rounding last passed
++  // to this node's children; NaN before the first pass and after a reset.
++  std::array<double, 2> roundedOrigin = {{YGUndefined, YGUndefined}};
++
+   Direction direction() const {
+     return direction_;
+   }
+@@ -103,6 +107,19 @@ struct LayoutResults {
      position_[yoga::to_underlying(physicalEdge)] = dimension;
    }
  
@@ -238,7 +353,7 @@ index 5a0111eb..7ce3ecdc 100644
    float margin(PhysicalEdge physicalEdge) const {
      return margin_[yoga::to_underlying(physicalEdge)];
    }
-@@ -137,6 +150,7 @@ struct LayoutResults {
+@@ -137,6 +154,7 @@ struct LayoutResults {
    std::array<float, 2> measuredDimensions_ = {{YGUndefined, YGUndefined}};
    std::array<float, 2> rawDimensions_ = {{YGUndefined, YGUndefined}};
    std::array<float, 4> position_ = {};
