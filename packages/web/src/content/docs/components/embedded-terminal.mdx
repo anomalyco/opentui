@@ -147,6 +147,8 @@ When the child enables a cell-based mouse protocol, the renderable encodes point
 
 When the child does not encode a wheel event, the renderable scrolls its own viewport by 3 rows and stops the event. Your `onMouseDown` and related handlers still run after this forwarding.
 
+`getScroll()` reads the viewport: `offset` rows above the live screen (`0` there, `total - visible` at the top of history), `total` rows including the visible ones, and `visible` rows. Output, resizes, clearing the scrollback, and the alternate screen move the viewport too, so read it when you need it instead of counting scroll steps. The alternate screen has no history.
+
 ## Selection
 
 `selectable` defaults to `true`. The renderable joins the renderer selection and clamps drag endpoints to the visible grid. Selected cells invert on paint. `getSelectedText()` returns the emulator selection, and the renderer selection uses that same text.
@@ -221,6 +223,7 @@ Use `encodeKey()` and `encodePaste()` to assert mode-aware sequences without a c
 | `handlePaste(event)`    | `(event: PasteEvent) => void`                                    | Encode a paste and send nonempty bytes as `"input"`.                                            |
 | `focus()` / `blur()`    | `() => void`                                                     | Move focus and send focus sequences when the child enabled them.                                |
 | `screen()`              | `() => EmbeddedTerminalScreen`                                   | Painted text and native cursor. `columns` and `rows` are the layout size.                       |
+| `getScroll()`           | `() => { offset: number; total: number; visible: number }`       | Viewport rows above the live screen, total rows, and visible rows.                              |
 | `hasSelection()`        | `() => boolean`                                                  | Whether this renderable currently has an active selection.                                      |
 | `getSelectedText()`     | `() => string`                                                   | Selected emulator text, or `""`.                                                                |
 | `invalidate()`          | `() => void`                                                     | Force a full redraw on the next compose.                                                        |

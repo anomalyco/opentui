@@ -96,11 +96,12 @@ The renderer option `experimental_nativeInput` takes precedence over `OTUI_NATIV
 
 ## Build-time and startup values
 
-| Variable                       | Type     | Default      | Required timing                            | Purpose                           |
-| ------------------------------ | -------- | ------------ | ------------------------------------------ | --------------------------------- |
-| `OPENTUI_LIBC`                 | `string` | unset, glibc | Before the first Core import               | Select `glibc` or `musl` on Linux |
-| `OTUI_ASSET_ROOT`              | `string` | `""`         | Before bundled Core code executes          | Relocate OpenTUI runtime assets   |
-| `OTUI_TREE_SITTER_WORKER_PATH` | `string` | `""`         | Before the first Tree-sitter worker starts | Override the parser worker entry  |
+| Variable                       | Type     | Default      | Required timing                            | Purpose                             |
+| ------------------------------ | -------- | ------------ | ------------------------------------------ | ----------------------------------- |
+| `OPENTUI_LIBC`                 | `string` | unset, glibc | Before the first Core import               | Select `glibc` or `musl` on Linux   |
+| `OPENTUI_LIB_PATH`             | `string` | `""`         | Before the first Core import               | Load the native library from a file |
+| `OTUI_ASSET_ROOT`              | `string` | `""`         | Before bundled Core code executes          | Relocate OpenTUI runtime assets     |
+| `OTUI_TREE_SITTER_WORKER_PATH` | `string` | `""`         | Before the first Tree-sitter worker starts | Override the parser worker entry    |
 
 ### `OPENTUI_LIBC`
 
@@ -109,6 +110,13 @@ package. Any other nonempty value throws. Set the value before the first Core im
 `process.env.OPENTUI_LIBC` at build time so tree shaking keeps only the target branch. See
 [Runtime and platform support](/docs/getting-started/runtime-support) and
 [Standalone executables](/docs/reference/standalone-executables#linux-libc).
+
+### `OPENTUI_LIB_PATH`
+
+`OPENTUI_LIB_PATH` names a native library file, for example a local build, that Core loads instead of the platform
+package or the `OTUI_ASSET_ROOT` copy. A relative path resolves against the working directory. An empty value is unset. `setRenderLibPath()` takes precedence over this
+variable. A missing file, or a file that cannot be loaded on this platform, makes `resolveRenderLib()` throw an error
+that names the variable. A library built for a different context ABI version also throws.
 
 ### `OTUI_ASSET_ROOT`
 

@@ -770,10 +770,10 @@ test "audio - unload stops active voices for sound" {
     try expectStatusOk(audio.startMixer(engine));
 
     const voice_id = try playLoop(engine, sound_id, 0, 0);
-    try testing.expect(engine.voices[voice_id - 1].active);
+    try testing.expect(engine.voices[audio.voiceSlotIndex(engine, voice_id).?].active);
 
     try expectStatusOk(audio.unload(engine, sound_id));
-    try testing.expect(!engine.voices[voice_id - 1].active);
+    try testing.expect(!engine.voices[audio.voiceSlotIndex(engine, voice_id).?].active);
 
     var stats: audio.Stats = undefined;
     try expectStatusOk(audio.getStats(engine, &stats));
@@ -823,7 +823,7 @@ test "audio - play valid sound returns voice id" {
     const options = audio.VoiceOptions{ .volume = 1, .pan = 0, .loop = true, .group_id = 0 };
     try expectStatusOk(audio.play(engine, sound_id, &options, &voice_id));
     try testing.expect(voice_id > 0);
-    try testing.expect(engine.voices[voice_id - 1].active);
+    try testing.expect(engine.voices[audio.voiceSlotIndex(engine, voice_id).?].active);
 }
 
 test "audio - stopVoice stops active voice" {
@@ -836,7 +836,7 @@ test "audio - stopVoice stops active voice" {
 
     const voice_id = try playLoop(engine, sound_id, 0, 0);
     try expectStatusOk(audio.stopVoice(engine, voice_id));
-    try testing.expect(!engine.voices[voice_id - 1].active);
+    try testing.expect(!engine.voices[audio.voiceSlotIndex(engine, voice_id).?].active);
 }
 
 test "audio - setVoiceGroup moves voice between groups" {
@@ -851,7 +851,7 @@ test "audio - setVoiceGroup moves voice between groups" {
 
     const voice_id = try playLoop(engine, sound_id, group_a, 0);
     try expectStatusOk(audio.setVoiceGroup(engine, voice_id, group_b));
-    try testing.expectEqual(group_b, engine.voices[voice_id - 1].group_id);
+    try testing.expectEqual(group_b, engine.voices[audio.voiceSlotIndex(engine, voice_id).?].group_id);
 }
 
 test "audio - setGroupVolume applies clamped volume" {

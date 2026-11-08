@@ -391,8 +391,11 @@ describe("EmbeddedTerminalRenderable", () => {
       onTerminalResize: (cols, rows) => sizes.push([cols, rows]),
     })
     setup.renderer.root.add(terminal)
-    terminal.write("abcdefghij")
+    terminal.write("abcdefghij\r\n1\r\n2\r\n3\r\n4\r\n5")
     await setup.renderOnce()
+    // An unencoded wheel step scrolls the viewport 3 rows into the history.
+    setup.renderer.stdin.emit("data", Buffer.from("\x1b[<64;1;1M"))
+    expect(terminal.getScroll()).toEqual({ offset: 3, total: 6, visible: 2 })
 
     terminal.width = 5
     terminal.height = 3
@@ -400,10 +403,12 @@ describe("EmbeddedTerminalRenderable", () => {
     expect(terminal.width).toBe(5)
     expect(terminal.height).toBe(3)
     expect(sizes.some(([cols, rows]) => cols === 5 && rows === 3)).toBe(true)
+    expect(terminal.getScroll()).toEqual({ offset: 3, total: 8, visible: 3 })
 
     terminal.destroy()
     terminal.destroy()
     expect(terminal.isDestroyed).toBe(true)
+    expect(terminal.getScroll()).toEqual({ offset: 0, total: 0, visible: 0 })
   })
 
   test("rejects dimensions that cannot cross the native ABI", () => {

@@ -708,6 +708,13 @@ pub export fn yogaNodeRemoveChildChecked(node: YGNodeRef, child: YGNodeRef) Stat
     return @fromBackingInt(@intCast(c.otYogaNodeRemoveChild(node, child)));
 }
 
+/// Removes the child at `index`, which the caller found, so Yoga does not search for it.
+pub fn yogaNodeRemoveChildAt(node: YGNodeRef, child: YGNodeRef, index: u32) void {
+    std.debug.assert(nodeStatus(node, true, true) == .ok and nodeStatus(child, true, true) == .ok);
+    std.debug.assert(c.YGNodeGetChild(node, index) == child);
+    c.otYogaNodeRemoveChildAt(node, child, index);
+}
+
 export fn yogaNodeRemoveAllChildren(node: YGNodeRef) void {
     _ = yogaNodeRemoveAllChildrenChecked(node);
 }

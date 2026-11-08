@@ -57,6 +57,8 @@ const Kind = enum { box, text, slider, editor, text_view, scroll, arrow };
 const Op = union(enum) {
     create: struct { slot: usize, kind: Kind },
     move: struct { slot: usize, parent: ?usize, index: u32 },
+    /// Detaches every child: the candidate in one call, the reference one move at a time.
+    clear: usize,
     destroy: usize,
     paint: struct { slot: usize, fields: u32, paint: scene.Paint },
     style: struct { slot: usize, group: u32, kind: u32, unit: u32, value: f32, flags: u32 },
@@ -235,6 +237,8 @@ const Stats = struct {
     record_replies: u32 = 0,
     /// Nodes a reply created, attached, and destroyed again, as a list remount does.
     remounts: u32 = 0,
+    /// Nodes whose children all left in one call, between frames or in a reply.
+    clears: u32 = 0,
     /// RESIZE requests from children of the viewport content.
     content_resizes: u32 = 0,
     /// Replies to those requests that changed text on a content child, mid-batch.
@@ -424,6 +428,7 @@ const Harness = struct {
                 }
             },
             .move => |value| try self.model.move(value.slot, value.parent, value.index),
+            .clear => |slot| while (self.model.children[slot].items.len != 0) try self.model.move(self.model.children[slot].items[0], null, 0),
             .resize => |value| {
                 self.terminal.deinit(testing.allocator);
                 self.terminal = try vt_decode.newTerminal(value.width, value.height);
@@ -531,6 +536,9 @@ const Harness = struct {
                 },
             },
             .move => |value| try f.owner.sceneMoveNode(self.handle(twin, value.slot), if (value.parent) |parent| self.handle(twin, parent) else null, value.index),
+            .clear => |slot| if (twin == candidate) try f.owner.sceneClearChildren(self.handle(twin, slot)) else for (self.model.children[slot].items) |child| {
+                try f.owner.sceneMoveNode(self.handle(twin, child), null, 0);
+            },
             .destroy => |slot| try f.owner.sceneDestroyNode(self.handle(twin, slot)),
             .paint => |value| try f.owner.scenePatchPaint(self.handle(twin, value.slot), value.fields, value.paint),
             .style => |value| try f.owner.sceneSetStyle(self.handle(twin, value.slot), value.group, value.kind, 0, value.unit, value.value, value.flags),
@@ -940,7 +948,10 @@ const Harness = struct {
                     // Detaching it instead makes the walk meet a node whose ancestry moved.
                     if (self.model.parent[requester]) |parent| if (parent != root_slot and self.random.uintLessThan(u32, 4) == 0) {
                         if (requester >= scaffold_slots and self.random.boolean()) {
-                            try self.apply(.{ .move = .{ .slot = requester, .parent = null, .index = 0 } });
+                            // Or with all its siblings, as a list unmount does. No draw, so the script's mix stays.
+                            const clear = parent >= scaffold_slots and requester % 2 == 0;
+                            self.stats.clears += @intFromBool(clear);
+                            try self.apply(if (clear) .{ .clear = parent } else .{ .move = .{ .slot = requester, .parent = null, .index = 0 } });
                             self.stats.reply_detaches += 1;
                         } else {
                             try self.apply(.{ .style = .{ .slot = parent, .group = c.OT_STYLE_ENUM, .kind = c.OT_STYLE_ENUM_DISPLAY, .unit = 0, .value = 1, .flags = 0 } });
@@ -1421,6 +1432,10 @@ const Harness = struct {
                     try testing.expectEqual(self.handle(twin, child), actual.scene_node.?.handle);
                 }
                 try testing.expectEqual(self.model.paint[index].items.len, node.paint_children.items.len);
+                // A clear takes the candidate's counts where the reference's moves take them.
+                const other = (try self.twins[reference].owner.raw().getRenderable(pair[reference])).scene_node.?;
+                try testing.expectEqual(.{ other.skip.update_below, other.skip.filters_below, other.skip.scrolls_below, other.placement }, .{ node.skip.update_below, node.skip.filters_below, node.skip.scrolls_below, node.placement });
+                try testing.expectEqual(try self.twins[reference].owner.sceneGetPaintLayout(pair[reference]), try f.owner.sceneGetPaintLayout(pair[twin]));
             }
             // The reader text is a scene node outside the tree.
             try testing.expectEqual(live + 1, f.state.count);
@@ -1431,7 +1446,11 @@ const Harness = struct {
     fn step(self: *Harness) !void {
         const op = self.generate() orelse return;
         switch (op) {
-            .move => try self.expectMove(op),
+            // Some detaches take all their siblings along, as a list unmount does.
+            .move => |value| if (value.parent == null and value.index == 0 and value.slot % 4 == 0 and (self.model.parent[value.slot] orelse 0) >= content_slot) {
+                self.stats.clears += 1;
+                try self.apply(.{ .clear = self.model.parent[value.slot].? });
+            } else try self.expectMove(op),
             else => try self.apply(op),
         }
         try self.expectTree();
@@ -1505,7 +1524,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
     // request 353, kept lists in such a frame 35, culled paint lists checked 15,420, hooked under
     // a hidden ancestor 6,273, reply hid the requester's parent 44, reply detached the requester
     // 45, reply destroyed a node 412, a RECORD reply changed the scene 161, nodes remounted in a
-    // reply 6,192, content-child RESIZE 66, a truncation change in its reply 65, a sibling marked
+    // reply 6,192, children cleared in one call 22, content-child RESIZE 66, a truncation change in its reply 65, a sibling marked
     // mid-batch 130, unmeasured content text replaced 17, UPDATE 3,350, RESIZE 116,
     // LAYOUT_CHANGED 1,661, recordings 723, box bodies 92, decoded 11,119, an editor's cursor
     // 1,833, a host cursor 8,412, skipped paint 8,432, partly diffed 1,332, band frames 1,170,
@@ -1530,6 +1549,7 @@ test "Scene twin Sessions match a forced full-frame reference on every frame" {
         .reply_destroys = 95,
         .record_replies = 39,
         .remounts = 1500,
+        .clears = 5,
         .content_resizes = 17,
         .content_reply_texts = 17,
         .sibling_marks = 32,

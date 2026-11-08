@@ -9,6 +9,7 @@ test("native terminal environment registrations match native string semantics", 
     expect(envRegistry[name]?.default).toBeUndefined()
     expect(envRegistry[name]?.required).toBe(false)
   }
+  expect(envRegistry.OPENTUI_LIB_PATH).toMatchObject({ type: "string", default: "" })
 
   const generated = generateEnvMarkdown()
   expect(generated).toContain("## OPENTUI_FORCE_WCWIDTH")

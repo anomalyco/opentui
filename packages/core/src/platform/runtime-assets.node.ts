@@ -1,3 +1,5 @@
+import { resolve } from "node:path"
+
 import { getCurrentNodeAssetTarget, getNativeAssetDescriptor } from "../node-asset-target.js"
 import { resolveAssetPath, resolveAssetRootPath } from "./assets.js"
 
@@ -25,6 +27,10 @@ export function resolveTreeSitterWasm(): Promise<string> {
 
 export async function resolveNativeLibraryPath(): Promise<string> {
   const asset = getNativeAssetDescriptor(getCurrentNodeAssetTarget())
+  if (process.env.OPENTUI_LIB_PATH) {
+    return resolve(process.env.OPENTUI_LIB_PATH)
+  }
+
   const configuredPath = resolveAssetRootPath(asset.key)
   if (configuredPath !== undefined) {
     return configuredPath

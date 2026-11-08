@@ -91,6 +91,16 @@ pub fn ot_embedded_terminal_cursor_get(context: ?*abi.ContextHandle, id: ?*const
     return c.OT_OK;
 }
 
+pub fn ot_embedded_terminal_scrollbar_get(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, out: ?*c.ot_embedded_terminal_scrollbar) callconv(.c) c.ot_status {
+    const status = abi.sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const record = transport.record(c.ot_embedded_terminal_scrollbar, out) catch |err| return fail(context, err);
+    if (id == null or record.reserved != 0) return fail(context, error.InvalidOptions);
+    const bar = context.?.core.embeddedTerminalScrollbar(abi.handleFromC(id.?.*)) catch |err| return fail(context, err);
+    out.?.* = .{ .struct_size = @sizeOf(c.ot_embedded_terminal_scrollbar), .abi_version = c.OT_CONTEXT_ABI_VERSION, .offset = bar.offset, .total = bar.total, .visible = bar.visible, .reserved = 0 };
+    return c.OT_OK;
+}
+
 pub fn ot_embedded_terminal_encode_key(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, options: ?*const c.ot_embedded_terminal_key, key: ?[*]const u8, key_count: u32, text: ?[*]const u8, text_count: u32, bytes: ?[*]u8, capacity: u32, out: ?*u32) callconv(.c) c.ot_status {
     const status = abi.sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -234,6 +244,11 @@ test "Context terminal ABI copies controller output and rejects stale handles" {
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_command(context, &id, c.OT_EMBEDDED_TERMINAL_CLEAR_SELECTION, 0));
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_command(context, &id, c.OT_EMBEDDED_TERMINAL_INVALIDATE, 0));
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_command(context, &id, c.OT_EMBEDDED_TERMINAL_SCROLL, 1));
+    var bar: c.ot_embedded_terminal_scrollbar = .{ .struct_size = 24, .abi_version = c.OT_CONTEXT_ABI_VERSION, .offset = 9, .total = 9, .visible = 9, .reserved = 1 };
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_embedded_terminal_scrollbar_get(context, &id, &bar));
+    bar.reserved = 0;
+    try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_scrollbar_get(context, &id, &bar));
+    try std.testing.expectEqual([3]u32{ 0, 2, 2 }, [3]u32{ bar.offset, bar.total, bar.visible });
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_embedded_terminal_command(context, &id, c.OT_EMBEDDED_TERMINAL_INVALIDATE, 1));
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_resize(context, &id, 2, 2));
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_destroy(context, &id));

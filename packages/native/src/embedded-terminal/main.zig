@@ -21,6 +21,9 @@ pub const Cursor = struct {
     color: ?struct { r: u8, g: u8, b: u8 } = null,
 };
 
+/// `offset` counts rows from the viewport's bottom up to the live screen's bottom.
+pub const Scrollbar = struct { offset: u32 = 0, total: u32 = 0, visible: u32 = 0 };
+
 pub const Options = struct {
     cols: u16,
     rows: u16,
@@ -127,6 +130,12 @@ pub const EmbeddedTerminal = struct {
 
     pub fn scroll(self: *EmbeddedTerminal, delta: i32) void {
         self.terminal.scrollViewport(.{ .delta = delta });
+    }
+
+    /// The active screen's viewport. Output, resizes, and screen switches move it too.
+    pub fn scrollbar(self: *EmbeddedTerminal) Scrollbar {
+        const bar = self.terminal.screens.active.pages.scrollbar();
+        return .{ .offset = @intCast(bar.total - bar.offset - bar.len), .total = @intCast(bar.total), .visible = @intCast(bar.len) };
     }
 
     pub fn setSelection(self: *EmbeddedTerminal, start: ghostty.Coordinate, end: ghostty.Coordinate) Error!void {

@@ -131,8 +131,10 @@ if (realpathSync(baselineRoot) === realpathSync(candidateRoot)) {
 if (candidateRoot !== orchestratorRoot) {
   throw new Error(`paired benchmark must run from the candidate root (${orchestratorRoot})`)
 }
-if (process.env.OTUI_ASSET_ROOT) {
-  throw new Error("unset OTUI_ASSET_ROOT so paired provenance matches the native packages being hashed")
+if (process.env.OTUI_ASSET_ROOT || process.env.OPENTUI_LIB_PATH) {
+  throw new Error(
+    "unset OTUI_ASSET_ROOT and OPENTUI_LIB_PATH so paired provenance matches the native packages being hashed",
+  )
 }
 const nodeRuntime = readNodeRuntime()
 if (!isSupportedNode26Version(nodeRuntime.version)) {
