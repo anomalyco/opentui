@@ -68,6 +68,7 @@ console.log(
 for (const workspacePackage of lockstepPackages) {
   updateWorkspacePackage(workspacePackage, version, dryRun)
 }
+updateRustCrates(version, dryRun)
 
 if (dryRun) {
   console.log("\nDry run: skipped writing package.json files and bun install")
@@ -279,6 +280,25 @@ function updateWorkspacePackage(workspacePackage: WorkspacePackage, version: str
   if (!dryRun) {
     writeJson(workspacePackage.packageJsonPath, workspacePackage.packageJson)
   }
+}
+
+// The unpublished crates in packages/rust carry core's version: the workspace version and the members' entries in
+// Cargo.lock, which `cargo --locked` checks. Rewritten as text because snapshot builds run without Rust.
+function updateRustCrates(version: string, dryRun: boolean): void {
+  for (const [file, pattern, count] of [
+    ["Cargo.toml", /^(\[workspace\.package\]\nversion = )"[^"\n]*"/gm, 1],
+    ["Cargo.lock", /^(name = "opentui(?:-ssh|-sys)?"\nversion = )"[^"\n]*"/gm, 3],
+  ] as const) {
+    const path = join(rootDir, "packages/rust", file)
+    const text = readFileSync(path, "utf8")
+    const found = text.match(pattern)?.length ?? 0
+    if (found !== count) {
+      console.error(`Error: packages/rust/${file} has ${found} versions matching ${pattern}, expected ${count}`)
+      process.exit(1)
+    }
+    if (!dryRun) writeFileSync(path, text.replace(pattern, `$1"${version}"`))
+  }
+  console.log(`Updating the Rust crates (opentui, opentui-ssh, opentui-sys) to ${version}`)
 }
 
 function updateCoreOptionalDependencies(packageJson: PackageJson, version: string): string[] {
