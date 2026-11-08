@@ -1,0 +1,12 @@
+[package]
+name = "opentui-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+links = "opentui"
+description = "Raw FFI declarations for OpenTUI's checked C ABI"
+
+[features]
+# Link libopentui.a instead of libopentui.so.
+static = []
