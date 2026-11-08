@@ -466,16 +466,22 @@ export fn yogaConfigSetErrata(config: YGConfigRef, errata: u32) void {
     _ = yogaConfigSetErrataChecked(config, errata);
 }
 
+// Upstream gates two layout changes behind errata that a new config sets. They stay set and hidden, so
+// every errata value keeps Yoga 3.2.1's layouts.
+const errata_hidden: u32 = c.YGErrataMinSizeUndefinedInsteadOfAuto | c.YGErrataFlexFirstPassUsesRunningTotals;
+
 pub export fn yogaConfigSetErrataChecked(config: YGConfigRef, errata: u32) Status {
     const status = configStatus(config);
     if (status != .ok) return status;
     if (errata > 7 and errata != c.YGErrataAll and errata != c.YGErrataClassic) return .invalid_argument;
-    c.YGConfigSetErrata(config, @intCast(errata));
+    c.YGConfigSetErrata(config, @intCast(errata | errata_hidden));
     return .ok;
 }
 
 export fn yogaConfigGetErrata(config: YGConfigConstRef) u32 {
-    return enumValue(c.YGConfigGetErrata(config));
+    const errata = enumValue(c.YGConfigGetErrata(config));
+    if (errata == c.YGErrataAll or errata == c.YGErrataClassic) return errata;
+    return errata & ~errata_hidden;
 }
 
 export fn yogaConfigSetExperimentalFeatureEnabled(config: YGConfigRef, feature: u32, enabled: bool) void {

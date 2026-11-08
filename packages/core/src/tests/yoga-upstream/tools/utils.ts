@@ -5,17 +5,41 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { MeasureMode } from "../../../yoga.js"
+import { FlexDirection, MeasureMode } from "../../../yoga.js"
+import { resolveRenderLib } from "../../../zig.js"
 
-export function instrinsicSizeMeasureFunc(
-  this: string,
+// OpenTUI: upstream's generated tests leave freeing to a FinalizationRegistry (facebook/yoga#1889), which
+// OpenTUI's bindings do not have. Each generated file keeps the live configs before each test and frees the
+// nodes and configs the test created after it. Bun loads this module once for all files, so the hooks are
+// registered per file.
+const host = resolveRenderLib().getYogaHost()
+let kept = new Set(host.configs.values())
+export function keepTestYoga(): void {
+  kept = new Set(host.configs.values())
+}
+export function freeTestYoga(): void {
+  for (const config of host.configs.values()) {
+    if (kept.has(config)) continue
+    for (const node of config.nodes.values()) if (!node.getParent()) node.freeRecursive()
+    config.free()
+  }
+}
+
+type MeasureContext = {
+  text: string
+  flexDirection: FlexDirection
+}
+
+export function intrinsicSizeMeasureFunc(
+  this: MeasureContext,
   width: number,
   widthMode: MeasureMode,
   height: number,
   heightMode: MeasureMode,
 ): { width: number; height: number } {
-  const textLength = this.length
-  const words = this.split(" ")
+  const textLength = this.text.length
+  const words = this.text.split(" ")
+  const flexDirection = this.flexDirection
   const widthPerChar = 10
   const heightPerChar = 10
 
@@ -53,7 +77,8 @@ export function instrinsicSizeMeasureFunc(
       return heightPerChar
     }
 
-    const maxLineWidth = Math.max(longestWordWidth(), measuredWidth)
+    const maxLineWidth =
+      flexDirection == FlexDirection.Column ? measuredWidth : Math.max(longestWordWidth(), measuredWidth)
 
     //if fixed width < width of widest word, take width of widest word
 

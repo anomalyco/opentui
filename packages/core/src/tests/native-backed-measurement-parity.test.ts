@@ -278,6 +278,128 @@ describe("measured text stays inside its parent's rounded content box", () => {
     },
   )
 
+  // Reduced random trees that differed from a fresh layout when a box's cached measurement or layout took
+  // a height or a width within 1e-4 of the one it was computed for, or when rounding started from a rounded
+  // width. Nodes are [parent, text length or box direction, options]; steps are [node or -1 for the holder,
+  // options].
+  type Spec = [number, number | "row" | "column", BoxOptions & TextOptions][]
+  test.each<[string, BoxOptions, Spec, [number, BoxOptions & TextOptions][]]>([
+    [
+      "a cached measurement at a height within 1e-4",
+      { width: 30, height: 27 },
+      [
+        [-1, 63, { flexShrink: 0 }],
+        [-1, "column", {}],
+        [1, "row", { flexShrink: 0, padding: 2 }],
+        [2, "row", {}],
+        [3, "column", { gap: 2 }],
+        [4, 107, { maxHeight: "15%" }],
+        [4, 8, {}],
+        [2, 19, { minHeight: "38%" }],
+        [-1, "column", { flexShrink: 0, padding: 2 }],
+        [8, 40, {}],
+        [8, "column", {}],
+        [10, "column", {}],
+        [11, "column", {}],
+        [12, 95, { width: 7 }],
+      ],
+      [[12, { padding: 1 }]],
+    ],
+    [
+      "a cached layout at a height within 1e-4",
+      { width: 2, height: 25 },
+      [
+        [-1, 112, { width: 9 }],
+        [-1, "column", { flexShrink: 1, width: 7 }],
+        [1, 72, {}],
+        [1, "column", { flexShrink: 0 }],
+        [3, "column", { gap: 1 }],
+        [4, 22, {}],
+        [4, "column", {}],
+        [6, 49, {}],
+        [4, "column", { flexShrink: 0 }],
+        [8, 23, {}],
+        [4, "row", { maxHeight: "55%" }],
+        [10, 83, {}],
+        [3, "row", { width: 12, border: true }],
+        [12, 72, { maxHeight: "32%" }],
+        [1, "column", { padding: 2 }],
+      ],
+      [
+        [11, { content: "a".repeat(39) }],
+        [-1, { width: 25, height: 19 }],
+        [0, { content: "a".repeat(55) }],
+        [4, { maxWidth: "72%" }],
+        [13, { minHeight: "100%" }],
+        [9, { minHeight: "83%" }],
+        [14, { maxHeight: "8%" }],
+      ],
+    ],
+    [
+      "rounding from a rounded width",
+      { width: 22, height: 17 },
+      [
+        [-1, 51, { flexShrink: 0 }],
+        [-1, "row", {}],
+        [1, "column", {}],
+        [2, "row", {}],
+        [3, "row", {}],
+        [4, 45, {}],
+        [4, 111, {}],
+        [4, 57, {}],
+        [3, "row", { width: 11 }],
+        [8, 69, {}],
+        [8, 30, {}],
+        [3, 114, {}],
+      ],
+      [
+        [0, { content: "a".repeat(87) }],
+        [-1, { width: 38, height: 2 }],
+        [-1, { width: 20, height: 5 }],
+      ],
+    ],
+    [
+      "a cached box at a width within 1e-4",
+      { width: 22, height: 21 },
+      [
+        [-1, "row", {}],
+        [0, 100, { flexShrink: 0 }],
+        [0, "row", {}],
+        [2, "row", { flexShrink: 0 }],
+        [3, "row", { border: true }],
+        [0, "column", { maxWidth: "1%" }],
+        [5, 15, {}],
+      ],
+      [[5, { padding: 2 }]],
+    ],
+  ])("a reduced random tree lays out as a fresh one: %s", async (_, size, spec, steps) => {
+    const build = () => {
+      const holder = box({ ...size, flexShrink: 0 })
+      const all: Renderable[] = []
+      for (const [parent, kind, options] of spec) {
+        const node =
+          typeof kind === "number" ? text("a".repeat(kind), options) : box({ flexDirection: kind, ...options })
+        ;(parent < 0 ? holder : all[parent]!).add(node)
+        all.push(node)
+      }
+      renderer.root.add(holder)
+      return { holder, all }
+    }
+    const layouts = ({ holder, all }: ReturnType<typeof build>) =>
+      all.map((node) => [node.x - holder.x, node.y - holder.y, node.width, node.height])
+    const tree = build()
+    await renderOnce()
+    for (const [index, options] of steps) {
+      Object.assign(index < 0 ? size : spec[index]![2], options)
+      Object.assign(index < 0 ? tree.holder : tree.all[index]!, options)
+      await renderOnce()
+      const fresh = build()
+      await renderOnce()
+      expect(layouts(tree)).toEqual(layouts(fresh))
+      fresh.holder.destroyRecursively()
+    }
+  })
+
   test("fractional padding keeps whole-cell widths for a buffered renderable", async () => {
     const node = text("x".repeat(40), { flexGrow: 1, buffered: true })
     // 10% of the 35-wide containing block is 3.5 cells of padding on each side.
