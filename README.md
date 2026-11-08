@@ -36,6 +36,7 @@ OpenCode uses OpenTUI in production for millions of users.
 - [`@opentui/native`](packages/native) - Private workspace with the Zig implementation, native tests, and benchmarks.
 - [`@opentui/examples`](packages/examples) - Private workspace with example applications and a standalone examples executable.
 - [`@opentui/web`](packages/web) - Private workspace with the documentation website and the AI agent skill.
+- [`packages/rust`](packages/rust) - Unpublished Rust bindings for the native C ABI and a framework built on them.
 
 ## AI agent skill
 

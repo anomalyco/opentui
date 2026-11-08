@@ -1,0 +1,37 @@
+---
+title: Rust
+description: Build the experimental Rust crates from source against the native library
+---
+
+# Rust
+
+The Rust crates drive the native renderer from Rust, without JavaScript.
+They are experimental and not published: build them from a checkout of the repository.
+The crates are in [packages/rust](https://github.com/anomalyco/opentui/tree/main/packages/rust):
+
+- `opentui-sys` declares the C ABI of `opentui.h`. It is generated from the header.
+- `opentui` wraps the ABI safely and adds widgets, an event loop, focus, input, and headless tests.
+- `opentui-ssh` serves apps over SSH, one app per session.
+
+## Build and test
+
+The crates link the native library of the same checkout. Build it first, then run Cargo from the repository root:
+
+```sh
+bun install
+bun run build
+cargo test --manifest-path packages/rust/Cargo.toml
+```
+
+`bun run build:native` in the core package also builds the native library.
+To link other artifacts, such as the directory of an npm platform package, set `OPENTUI_LIB_DIR` to that directory.
+It wins over the checkout's build.
+Give an absolute path: Cargo reads a relative one from the `opentui-sys` crate's directory.
+
+The bindings match one exact `opentui.h`.
+The build fails when the library's header differs from the one the bindings were generated from.
+After a header change, run `bun run generate:abi` in the core package.
+
+The crates link the shared library by default.
+The `static` feature links the static library on Linux and macOS.
+See [C](/docs/native/c) for the native artifacts and the targets they support.
