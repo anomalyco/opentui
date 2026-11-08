@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { format } from "oxfmt"
 import {
@@ -10,11 +10,13 @@ import {
   type AddressFields,
   type PointerPolicies,
 } from "./native-abi-pointers.js"
+import { generateRustABI } from "./native-abi-rust.js"
 import { variants } from "./variants.js"
 
 const scriptRoot = dirname(fileURLToPath(import.meta.url))
 const nativeRoot = resolve(scriptRoot, "../../native")
-const outputPath = resolve(scriptRoot, "../src/native-abi.generated.ts")
+export const outputPath = resolve(scriptRoot, "../src/native-abi.generated.ts")
+export const rustOutputPath = resolve(scriptRoot, "../../rust/crates/opentui-sys/src/generated.rs")
 const archNames: Record<string, string> = { x64: "x86_64", arm64: "aarch64" }
 const osNames: Record<string, string> = { linux: "linux-musl", darwin: "macos", win32: "windows-gnu" }
 
@@ -292,10 +294,15 @@ export async function generateNativeABI(
   return formatted.code
 }
 
-export function verifyNativeABI(generated: string): void {
-  if (readFileSync(outputPath, "utf8") !== generated) {
+export function verifyNativeABI(typescript: string, rust: string): void {
+  const outputs: [string, string][] = [
+    [outputPath, typescript],
+    [rustOutputPath, rust],
+  ]
+  const stale = outputs.filter(([path, generated]) => readFileSync(path, "utf8") !== generated)
+  if (stale.length > 0) {
     throw new Error(
-      "native-abi.generated.ts is stale; run bun run generate:abi in packages/core.\n" +
+      `Stale generated ABI: ${stale.map(([path]) => basename(path)).join(", ")}; run bun run generate:abi in packages/core.\n` +
         "Review ../native/include/opentui.h and scripts/native-abi-pointers.ts changes; " +
         "inspect compiler ABI and ownership with bun scripts/native-abi.ts --audit.",
     )
@@ -308,8 +315,12 @@ if (import.meta.main) {
     throw new Error("Expected --check, --all-targets and/or --audit")
   const abi = compileHeader({ allTargets: args.includes("--all-targets") })
   const generated = await generateNativeABI(abi)
-  if (args.includes("--check")) verifyNativeABI(generated)
-  else if (!args.includes("--audit")) writeFileSync(outputPath, generated)
+  const rust = generateRustABI(abi, readFileSync(join(nativeRoot, "include/opentui.h")))
+  if (args.includes("--check")) verifyNativeABI(generated, rust)
+  else if (!args.includes("--audit")) {
+    writeFileSync(outputPath, generated)
+    writeFileSync(rustOutputPath, rust)
+  }
   if (args.includes("--audit")) process.stdout.write(serializeNativeABIAudit(abi))
   else
     console.log(`Checked ABI: ${Object.keys(abi.symbols).length} symbols, ${Object.keys(abi.layouts).length} records`)

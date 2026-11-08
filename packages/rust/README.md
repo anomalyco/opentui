@@ -42,17 +42,23 @@ The work follows [PLAN.md](PLAN.md).
 
 ## Build
 
-The crate links against OpenTUI's native artifacts. It does not build them.
-Build OpenTUI first, then point this workspace at the artifacts:
+The crates link the native library of this checkout,
+`packages/native/lib/<artifact directory>`. They do not build it. Build it
+first, then run Cargo:
 
 ```sh
-export OPENTUI_ROOT=/path/to/opentui
-# or the artifact directory for your platform:
-export OPENTUI_LIB_DIR=/path/to/opentui/packages/native/lib/x86_64-linux
+bun install
+bun run build   # at the repository root, or `bun run build:native` in packages/core
+cargo test --manifest-path packages/rust/Cargo.toml
 ```
 
-The bindings match the header on OpenTUI's `main` branch at commit
-`ec4742c4c`. These platforms are supported:
+To link other artifacts, such as an npm platform package or a native archive
+of a release, set `OPENTUI_LIB_DIR` to their directory. It wins over the
+checkout's build. Give an absolute path: Cargo reads a relative one from
+`crates/opentui-sys`. A Cargo `git` dependency on this repository has no native
+build, so it needs `OPENTUI_LIB_DIR`.
+
+These platforms are supported:
 
 | Platform                       | Rust target                                       | Artifact directory |
 | ------------------------------ | ------------------------------------------------- | ------------------ |
@@ -61,21 +67,19 @@ The bindings match the header on OpenTUI's `main` branch at commit
 | macOS 13 or later, Intel chips | `x86_64-apple-darwin`                             | `x86_64-macos`     |
 | Windows 10 1809 or later       | `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu` | `x86_64-windows`   |
 
-With `OPENTUI_ROOT`, the build picks the directory for the target it builds.
+The build picks the directory for the target it builds.
 OpenTUI's macOS build needs the macOS SDK, which comes with the Xcode Command
-Line Tools (`xcode-select --install`). On a Mac, `bun run build` in OpenTUI's
+Line Tools (`xcode-select --install`). On a Mac, `bun run build` in
 `packages/native` builds the Mac's own architecture; add the other one with
 `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-macos.13.0` (or
 `aarch64-macos.13.0`). The Windows build needs no SDK, so Zig makes it on any
 system: `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-windows-gnu`.
 
-The bindings are valid only for the exact header they were generated from, and
-the build fails if the artifacts' header differs. After an OpenTUI header
-change, regenerate with Bun and Zig:
-
-```sh
-OPENTUI_ROOT=/path/to/opentui bun scripts/generate-ffi.ts
-```
+`crates/opentui-sys/src/generated.rs` is generated from
+`packages/native/include/opentui.h`: `bun run generate:abi` in `packages/core`
+writes it, and `bun run check:abi` fails when it is stale. Do not edit it. The
+bindings are valid only for the exact header they were generated from, and the
+build fails if the artifacts' header differs.
 
 By default the crate links the shared library: `libopentui.so` on Linux,
 `libopentui.dylib` on macOS, and `opentui.dll` on Windows, through its import
@@ -576,8 +580,8 @@ The `native` example shows a scene driven by the host alone.
 `cargo run --release --example bench` times whole frames (event handling,
 layout, painting, encoding, and output) without a terminal.
 `scripts/core-bench.ts` runs the same scenes on Core's test renderer under Bun
-(`OPENTUI_ROOT=... bun scripts/core-bench.ts`). Both load the library built
-in `OPENTUI_ROOT`, so most scenes cost about the same; widgets the host paints
+(`bun scripts/core-bench.ts`). Both load the library built in this checkout,
+so most scenes cost about the same; widgets the host paints
 itself are faster from Rust. On one Linux x86_64 machine:
 
 | Scene                                      | Rust   | Core       |
@@ -613,14 +617,16 @@ and delivering the output to memory.
 ```sh
 sh test.sh           # format, clippy, tests, and lifecycle checks, with shared and static linking
 sh test.sh shared
-cargo test --offline --workspace --features opentui/tokio,opentui/tree-sitter
+cargo test --locked --workspace --features opentui/tokio,opentui/tree-sitter
 sh scripts/check-macos.sh     # from another system: clippy for both macOS targets
 sh scripts/check-windows.sh   # from another system: clippy for Windows
 ```
 
 On Windows, run `sh test.sh` from Git Bash; it checks the shared linkage only.
-`cargo test` also works from any shell once `OPENTUI_LIB_DIR` or
-`OPENTUI_ROOT` is set.
+`cargo test` also works from any shell.
+
+After a change to `opentui.h`, run `bun run generate:abi` in `packages/core`,
+then `sh test.sh shared`, and fix the crates in the same change.
 
 `scripts/check-macos.sh` and `scripts/check-windows.sh` keep that code
 compiling while you work elsewhere. They need the standard library's source

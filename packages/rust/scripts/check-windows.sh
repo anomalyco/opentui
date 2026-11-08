@@ -8,20 +8,12 @@
 # -Zbuild-std compiles for the target. RUSTC_BOOTSTRAP lets a stable toolchain take that flag. The first run
 # downloads the standard library's dependencies.
 #
-# Usage: OPENTUI_ROOT=/path/to/opentui sh scripts/check-windows.sh
+# Usage: sh scripts/check-windows.sh
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-# The bindings match the header of built artifacts, which every platform's build shares.
-if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
-    header=$OPENTUI_LIB_DIR/opentui.h
-elif [ -n "${OPENTUI_ROOT:-}" ]; then
-    header=$(ls "$OPENTUI_ROOT"/packages/native/lib/*/opentui.h 2>/dev/null | head -n 1)
-fi
-if [ ! -f "${header:-}" ]; then
-    printf '%s\n' 'Set OPENTUI_ROOT to an OpenTUI checkout with built artifacts, or OPENTUI_LIB_DIR to one of them.' >&2
-    exit 2
-fi
+# The bindings match this checkout's header, or OPENTUI_LIB_DIR's, which every platform's build shares.
+header=${OPENTUI_LIB_DIR:-$here/../native/include}/opentui.h
 
 export CARGO_TARGET_DIR="$here/target/check-windows"
 # build.rs only checks that the artifacts exist and that the header matches the bindings.

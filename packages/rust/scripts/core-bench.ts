@@ -1,10 +1,9 @@
 // The Rust crate's `bench` example, written against OpenTUI Core's headless test renderer, for comparing the two
 // over the same native library.
 //
-// Run: OPENTUI_ROOT=/path/to/opentui bun scripts/core-bench.ts
+// Run: bun scripts/core-bench.ts
 // Then: cargo run --release --example bench
-const root = process.env.OPENTUI_ROOT
-if (!root) throw new Error("Set OPENTUI_ROOT to an OpenTUI checkout.")
+const root = `${import.meta.dir}/../../..`
 // Core loads its npm prebuilt by default. Load the library the Rust crate links, found as test.sh finds it.
 const { suffix } = await import("bun:ffi")
 const os = { so: "linux", dylib: "macos", dll: "windows" }[suffix]

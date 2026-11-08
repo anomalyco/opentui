@@ -212,6 +212,15 @@ jobs:
             fi
           done
 
+          # The Rust crates are not published, but prepare-release gives them the same version.
+          RUST_VERSIONS=$(sed -n 's/^version = "\(.*\)"$/\1/p' packages/rust/Cargo.toml; grep -A1 -E '^name = "opentui(-ssh|-sys)?"$' packages/rust/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          if [ "$(echo $RUST_VERSIONS)" != "$TAG_VERSION $TAG_VERSION $TAG_VERSION $TAG_VERSION" ]; then
+            echo "❌ packages/rust versions ($(echo $RUST_VERSIONS)) do not match tag version ($TAG_VERSION)"
+            FAILED=true
+          else
+            echo "✅ packages/rust versions match: $TAG_VERSION"
+          fi
+
           if [ "$FAILED" = true ]; then
             echo ""
             echo "Version validation FAILED!"

@@ -38,7 +38,7 @@ describe("documentation index", () => {
 
   test("teaches native concepts before separate language guides", () => {
     const concepts = ["native/overview", "native/resources", "native/frames", "native/host-io-time", "native/core"]
-    const languages = ["native/c", "native/zig"]
+    const languages = ["native/c", "native/zig", "bindings/rust"]
     const native = index.sections.find((section) => section.id === "native")
 
     expect(native?.pages.map((page) => page.slug)).toEqual([...concepts, ...languages])

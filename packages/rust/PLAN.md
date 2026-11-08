@@ -73,7 +73,6 @@ crates/opentui/
   app.rs      App, run loop, timers, cross-thread proxy
   style.rs, layout.rs, widget/, testing.rs
 crates/opentui-ssh/   serve apps over SSH with russh, one App per session thread
-scripts/generate-ffi.ts
 ```
 
 ## Phases
@@ -647,9 +646,10 @@ Milestone 1:
 ## Risks and open questions
 
 - The C ABI is experimental and needs a header and library from the same
-  revision. Pin to a revision of OpenTUI's `main` and regenerate when its
-  header changes.
+  revision. `bun run generate:abi` regenerates the bindings with the header,
+  and `check:abi` fails when they are stale.
 - Publishing on crates.io would need `build.rs` to build the Zig library or
-  download prebuilt files. Linking stays based on `OPENTUI_ROOT` for now.
+  download prebuilt files. The crates link the checkout's native build, or
+  `OPENTUI_LIB_DIR`.
 - Linux x86_64, macOS, and Windows x86_64. OpenTUI also builds aarch64 Linux
   and Windows, which `build.rs` does not know yet.

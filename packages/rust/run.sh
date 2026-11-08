@@ -31,15 +31,11 @@ if [ "$platform" = x86_64-windows ] && [ "${1:-shared}" = static ]; then
     printf '%s\n' 'Static linking is not supported on Windows.' >&2
     exit 2
 fi
-if [ -z "${OPENTUI_LIB_DIR:-}" ] && [ -n "${OPENTUI_ROOT:-}" ]; then
-    OPENTUI_LIB_DIR=$OPENTUI_ROOT/packages/native/lib/$platform
+# Without OPENTUI_LIB_DIR, the crates link this checkout's packages/native/lib/$platform.
+if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
+    # Cargo on Windows needs a Windows path, which MSYS's `pwd -W` prints.
+    OPENTUI_LIB_DIR=$(CDPATH='' cd -- "$OPENTUI_LIB_DIR" && if [ "$platform" = x86_64-windows ]; then pwd -W; else pwd; fi)
+    export OPENTUI_LIB_DIR
 fi
-if [ -z "${OPENTUI_LIB_DIR:-}" ]; then
-    printf '%s\n' "Set OPENTUI_LIB_DIR to packages/native/lib/$platform, or OPENTUI_ROOT to an OpenTUI checkout." >&2
-    exit 2
-fi
-# Cargo on Windows needs a Windows path, which MSYS's `pwd -W` prints.
-OPENTUI_LIB_DIR=$(CDPATH='' cd -- "$OPENTUI_LIB_DIR" && if [ "$platform" = x86_64-windows ]; then pwd -W; else pwd; fi)
-export OPENTUI_LIB_DIR
-exec "${CARGO:-cargo}" run --offline --manifest-path "$here/Cargo.toml" -p "$package" --example "$example" \
+exec "${CARGO:-cargo}" run --locked --manifest-path "$here/Cargo.toml" -p "$package" --example "$example" \
     ${features:+--features "$features"}
