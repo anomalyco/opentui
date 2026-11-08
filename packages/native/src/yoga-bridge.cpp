@@ -55,15 +55,18 @@ bool acceptsAuto(uint32_t kind) {
       kind == OT_STYLE_VALUE_POSITION;
 }
 
-facebook::yoga::StyleLength styleLength(uint32_t unit, float value) {
-  using facebook::yoga::StyleLength;
+template <typename Length>
+Length styleLength(uint32_t unit, float value) {
   switch (unit) {
-    case YGUnitPoint: return StyleLength::points(value);
-    case YGUnitPercent: return StyleLength::percent(value);
-    case YGUnitAuto: return StyleLength::ofAuto();
-    default: return StyleLength::undefined();
+    case YGUnitPoint: return Length::points(value);
+    case YGUnitPercent: return Length::percent(value);
+    case YGUnitAuto: return Length::ofAuto();
+    default: return Length::undefined();
   }
 }
+
+// Yoga's YGJustify starts with YGJustifyAuto, which OT_JUSTIFY_* leaves out.
+constexpr uint32_t kJustifyOffset = YGJustifyFlexStart - OT_JUSTIFY_FLEX_START;
 
 }  // namespace
 
@@ -175,6 +178,10 @@ void otYogaNodeRemoveChildAt(YGNodeRef node_ref, YGNodeRef child_ref, uint32_t i
   if (child->getOwner() == node) {
     child->setLayout({});
     child->setOwner(nullptr);
+    auto dirtied = child->getDirtiedFunc();
+    child->setDirtiedFunc(nullptr);
+    child->setDirty(true);
+    child->setDirtiedFunc(dirtied);
   }
   node->markDirtyAndPropagate();
 }
@@ -251,7 +258,11 @@ uint32_t otYogaNodeStyleSetEnum(YGNodeRef node, uint32_t kind, uint32_t value) n
   switch (kind) {
     case OT_STYLE_ENUM_DIRECTION: return set(YGNodeStyleSetDirection, YGDirectionRTL);
     case OT_STYLE_ENUM_FLEX_DIRECTION: return set(YGNodeStyleSetFlexDirection, YGFlexDirectionRowReverse);
-    case OT_STYLE_ENUM_JUSTIFY_CONTENT: return set(YGNodeStyleSetJustifyContent, YGJustifySpaceEvenly);
+    case OT_STYLE_ENUM_JUSTIFY_CONTENT:
+      if (value > OT_JUSTIFY_SPACE_EVENLY) return OT_YOGA_INVALID_ARGUMENT;
+      return checked([&] {
+        YGNodeStyleSetJustifyContent(node, static_cast<YGJustify>(value + kJustifyOffset));
+      });
     case OT_STYLE_ENUM_ALIGN_CONTENT: return set(YGNodeStyleSetAlignContent, YGAlignSpaceEvenly);
     case OT_STYLE_ENUM_ALIGN_ITEMS: return set(YGNodeStyleSetAlignItems, YGAlignSpaceEvenly);
     case OT_STYLE_ENUM_ALIGN_SELF: return set(YGNodeStyleSetAlignSelf, YGAlignSpaceEvenly);
@@ -270,7 +281,8 @@ uint32_t otYogaNodeStyleGetEnum(YGNodeConstRef node, uint32_t kind, uint32_t* ou
   switch (kind) {
     case OT_STYLE_ENUM_DIRECTION: return get(YGNodeStyleGetDirection);
     case OT_STYLE_ENUM_FLEX_DIRECTION: return get(YGNodeStyleGetFlexDirection);
-    case OT_STYLE_ENUM_JUSTIFY_CONTENT: return get(YGNodeStyleGetJustifyContent);
+    case OT_STYLE_ENUM_JUSTIFY_CONTENT:
+      return checked([&] { *out = YGNodeStyleGetJustifyContent(node) - kJustifyOffset; });
     case OT_STYLE_ENUM_ALIGN_CONTENT: return get(YGNodeStyleGetAlignContent);
     case OT_STYLE_ENUM_ALIGN_ITEMS: return get(YGNodeStyleGetAlignItems);
     case OT_STYLE_ENUM_ALIGN_SELF: return get(YGNodeStyleGetAlignSelf);
@@ -326,7 +338,7 @@ uint32_t otYogaNodeStyleSetDimension(YGNodeRef ref, uint32_t kind, uint32_t unit
   return checked([&] {
     auto node = resolveRef(ref);
     const auto dimension = static_cast<Dimension>(kind);
-    const auto length = styleLength(unit, value);
+    const auto length = styleLength<StyleSizeLength>(unit, value);
     if (node->style().dimension(dimension) == length &&
         (!disable_flex_shrink || node->style().flexShrink() == FloatOptional{0}))
       return;
@@ -351,7 +363,7 @@ uint32_t otYogaNodeStyleSetPositions(YGNodeRef ref, uint32_t edge_mask, const ui
     bool changed = false;
     for (uint32_t edge = 0; edge < 4; ++edge) {
       if (!(edge_mask & (1u << edge))) continue;
-      lengths[edge] = styleLength(units[edge], values[edge]);
+      lengths[edge] = styleLength<StyleLength>(units[edge], values[edge]);
       changed |= node->style().position(static_cast<Edge>(edge)) != lengths[edge];
     }
     if (!changed) return;

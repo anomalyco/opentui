@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import type { AddressFields, PointerPolicies } from "./native-abi-pointers.js"
-import { compileHeader, generateNativeABI, verifyNativeABI, type HeaderABI } from "./native-abi.js"
+import {
+  compileHeader,
+  generateNativeABI,
+  outputPath,
+  rustOutputPath,
+  verifyNativeABI,
+  type HeaderABI,
+} from "./native-abi.js"
 
 // `bun run check:abi` checks the committed output for the real header before `bun test` runs.
 const buffer = { ffi: "buffer", nullable: "never", retention: "call", source: "view" } as const
@@ -31,7 +39,9 @@ describe("checked native ABI generation", () => {
     expect(await generateNativeABI(abi, policies, addresses)).toContain(
       'ot_f: { args: ["buffer", "ptr", "u32"], returns: "i32" }',
     )
-    expect(() => verifyNativeABI("stale")).toThrow("native-abi.generated.ts is stale")
+    const [typescript, rust] = [outputPath, rustOutputPath].map((path) => readFileSync(path, "utf8"))
+    expect(() => verifyNativeABI("stale", rust!)).toThrow("Stale generated ABI: native-abi.generated.ts;")
+    expect(() => verifyNativeABI(typescript!, "stale")).toThrow("Stale generated ABI: generated.rs;")
   })
 
   test.each<[string, Mutation]>([

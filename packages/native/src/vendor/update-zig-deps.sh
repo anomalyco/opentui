@@ -14,8 +14,8 @@ UUCODE_GHOSTTY_COMMIT=ea62149739404a73c202b48a33bf6dd2af4bd9b0
 UUCODE_GHOSTTY_SHA256=f37c4071a217853450d084cb9c12b6d4b68f887eb9cb42fe77a84f86056eacbf
 UUCODE_OPENTUI_COMMIT=d500967026220f5e283088dc69e95aa79cdaa5a0
 UUCODE_OPENTUI_SHA256=94e85a3754410df19d08344e3ed562a6a4cd7b6e0c5fbce7de55b54b6e9eca66
-YOGA_VERSION=3.2.1
-YOGA_SHA256=86b399ac31fd820d8ffa823c3fae31bb690b6fc45301b2a8a966c09b5a088b55
+YOGA_COMMIT=41118bd3a86c637fdb43a90fd596e78375137d0f
+YOGA_SHA256=afddb3b7c273642223d4237f82a41a5bfe1ad865fff1317ef6c38eaf7c9026a4
 
 if command -v sha256sum >/dev/null 2>&1; then
   sha256_file() { sha256sum "$1" | cut -d ' ' -f 1; }
@@ -87,7 +87,7 @@ DEPS_DIR="$TMP_DIR/zig-deps"
 download "https://github.com/ghostty-org/ghostty/archive/$GHOSTTY_COMMIT.tar.gz" "$TMP_DIR/ghostty.tar.gz" "$GHOSTTY_SHA256"
 download "https://github.com/jacobsandlund/uucode/archive/$UUCODE_GHOSTTY_COMMIT.tar.gz" "$TMP_DIR/uucode-ghostty.tar.gz" "$UUCODE_GHOSTTY_SHA256"
 download "https://github.com/jacobsandlund/uucode/archive/$UUCODE_OPENTUI_COMMIT.tar.gz" "$TMP_DIR/uucode-opentui.tar.gz" "$UUCODE_OPENTUI_SHA256"
-download "https://github.com/facebook/yoga/archive/refs/tags/v$YOGA_VERSION.tar.gz" "$TMP_DIR/yoga.tar.gz" "$YOGA_SHA256"
+download "https://github.com/facebook/yoga/archive/$YOGA_COMMIT.tar.gz" "$TMP_DIR/yoga.tar.gz" "$YOGA_SHA256"
 
 extract "$TMP_DIR/ghostty.tar.gz" "$SOURCE_DIR/ghostty"
 mkdir -p "$DEPS_DIR/ghostty/pkg"
@@ -124,7 +124,8 @@ git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-absolute-edge-rounding.
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-finite-percent.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-height-cap.patch"
 git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-margin.patch"
-git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-flex-shrink-residue.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-measure-cache-bounds.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-owner-size.patch"
 
 find "$DEPS_DIR" -type d -exec chmod 0755 {} +
 find "$DEPS_DIR" -type f -exec chmod 0644 {} +

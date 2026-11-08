@@ -381,7 +381,7 @@ Static consumers also need the platform and C++ runtime libraries.
 The npm platform packages, such as `@opentui/core-linux-x64`, ship the shared library with the `opentui.h` it was built from, and `opentui.lib` on Windows.
 They do not ship the static libraries, which are four to seven times the size of the shared ones; the native archives of each GitHub release include them.
 To link the shared library from npm, add the package directory, such as `node_modules/@opentui/core-linux-x64`, to the include and library search paths.
-For opentui-rust, set `OPENTUI_LIB_DIR` to that directory.
+The [Rust](/docs/bindings/rust) crates link it when `OPENTUI_LIB_DIR` names that directory.
 
 To run the C acceptance test against the host's shared and static libraries, run this from the native workspace:
 

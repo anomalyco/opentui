@@ -800,6 +800,14 @@ export const DOC_MANIFEST = {
     searchSymbols: ["Zig", "Context.init", "Context.raw", "sceneCreateNode", "scenePaint", "commitSceneFrame"],
     related: ["native/resources", "native/frames", "native/host-io-time", "native/c"],
   }),
+  "bindings/rust": page("native", 8, "Rust", "integration", {
+    status: "Experimental, build from source",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["Rust", "Cargo", "opentui-sys", "OPENTUI_LIB_DIR"],
+    related: ["native/c", "native/overview"],
+  }),
 
   "reference/standalone-executables": page("ship", 2, "Standalone executables", "task-guide", {
     packages: ["@opentui/core", "@opentui/react", "@opentui/solid"],

@@ -175,7 +175,7 @@ An undefined size constraint reaches the callback as `NaN` with `MeasureMode.Und
 
 A node has one measure function, and a new one replaces the old one. Standalone nodes measure only through JavaScript measure functions.
 
-`setDirtiedFunc(callback)` registers a `DirtiedFunction`. Yoga calls it with the matching `Node` when clean state changes to dirty state. Use `unsetDirtiedFunc()` or pass `null` to remove it.
+`setDirtiedFunc(callback)` registers a `DirtiedFunction`. Yoga calls it with the matching `Node` when clean state changes to dirty state. One exception: `removeChild()`, `removeAllChildren()` and `freeRecursive()` mark each removed child dirty without calling that child's callback; the parent's callback still runs. Use `unsetDirtiedFunc()` or pass `null` to remove it.
 
 Yoga calls both callbacks synchronously on the JavaScript thread. A callback must not return a `Promise`. A `Promise` result throws `TypeError`. A callback must not change any Yoga node. A change throws. If a callback throws, the Yoga call that ran it, such as `calculateLayout()`, throws the same error after Yoga returns.
 
