@@ -150,7 +150,16 @@ fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let read = run.text().find("lifecycle read hello").unwrap();
     let seen = run.app.wait_until(Duration::from_secs(10), || run.text()[read..].contains(ENTER_ALT));
     assert!(seen, "the app never took the terminal back: {:?}", run.text());
-    run.press("q");
+    let released = |count| {
+        run.app.wait_until(Duration::from_secs(10), || run.text().matches("lifecycle released").count() == count)
+    };
+    run.press("r");
+    assert!(released(2), "{:?}", run.text());
+    // Keys typed after the line are read at resume and dispatched before the app waits again: the r releases once
+    // more. A quit in the release comes first: the p after it never runs.
+    run.press("next\rr");
+    assert!(released(3), "{:?}", run.text());
+    run.press("quit\rp");
     assert_eq!(run.code(), Some(0));
     run.after_leaving();
 }

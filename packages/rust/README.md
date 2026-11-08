@@ -38,8 +38,7 @@ fn main() -> opentui::Result<()> {
 }
 ```
 
-The work follows [PLAN.md](PLAN.md). Bugs found in OpenTUI along the way are
-in [OPENTUI_BUGS.md](OPENTUI_BUGS.md).
+The work follows [PLAN.md](PLAN.md).
 
 ## Build
 

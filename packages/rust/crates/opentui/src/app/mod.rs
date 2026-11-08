@@ -1537,6 +1537,13 @@ impl App {
         let mut presenting = false;
         let mut events = Vec::new();
         loop {
+            // Events from the last poll, or read at a resume: a suspend or a release starts a new turn.
+            for event in events.drain(..) {
+                if self.0.quit.get() {
+                    break;
+                }
+                self.dispatch(event);
+            }
             self.drain_proxy();
             self.fire_timers();
             let clipboard = self.pump_clipboard();
@@ -1546,11 +1553,13 @@ impl App {
             }
             if self.0.suspend.take() {
                 host.suspend(&mut events)?;
+                continue;
             }
             let release = self.0.release.borrow_mut().take();
             if let Some(task) = release {
                 host.release(&mut events, || task(&mut Cx::new(self)))?;
                 self.drain_deferred();
+                continue;
             }
             let now = Instant::now();
             let mut deadline = match (self.next_timer(), clipboard) {
@@ -1589,12 +1598,6 @@ impl App {
                 }
             }
             host.poll(deadline, &mut events)?;
-            for event in events.drain(..) {
-                self.dispatch(event);
-                if self.0.quit.get() {
-                    break;
-                }
-            }
         }
     }
 

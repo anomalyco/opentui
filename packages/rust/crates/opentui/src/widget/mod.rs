@@ -332,7 +332,7 @@ impl Element {
         self.num
     }
 
-    /// Whether the widget edits text ([`Input`](super::Input) or [`Textarea`](super::Textarea)), as Core's
+    /// Whether the widget edits text ([`Input`] or [`Textarea`]), as Core's
     /// `currentFocusedEditor` counts them.
     pub fn is_editor(&self) -> bool {
         self.node.as_ref().is_some_and(|node| node.kind() == NodeKind::Editor)

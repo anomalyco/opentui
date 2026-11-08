@@ -236,7 +236,7 @@ Milestone 3 closed the gaps between the Rust widgets and Core's:
 - Animation: `Timeline`, `Tween`, and `Easing` port Core's `Timeline` (all 16
   easings, positions, loops with delays and alternation, synced child
   timelines, `once`, pause, play, and restart) and add `seek`. Timelines run
-  on `App::animate`. Five Core timeline bugs are in `OPENTUI_BUGS.md`.
+  on `App::animate`.
 - Post-processing: the `post` module ports Core's 14 color matrices, its
   filters, and its effects as `Filter`s that `Widget::filter` attaches to a
   widget's painted area or the root's whole screen. They run on the painted
@@ -244,8 +244,7 @@ Milestone 3 closed the gaps between the Rust widgets and Core's:
   `ot_buffer_color_matrix`, cell work through a frame lease, ASCII art through
   native packed cells; a filter's paint hook reports the widget's clipped
   area. `Painter::color_matrix` records one in paint order. All of Core's
-  filters and effects are ported and match its output (`tests/post.rs`); four
-  Core bugs are in `OPENTUI_BUGS.md`.
+  filters and effects are ported and match its output (`tests/post.rs`).
 
 - Benchmarks against Core: `scripts/core-bench.ts` runs the `bench` example's
   scenes on Core's test renderer. Scenes dominated by native work cost about
@@ -262,8 +261,7 @@ cursor), with `pty::Pty` running programs on pseudo-terminals from a
 background thread, and offscreen `native::Buffer`s that paint hooks draw with
 `Painter::draw_buffer`. A focused terminal sends mouse presses to a program
 that tracks the mouse instead of starting a selection, which Core does not.
-Five bugs found on the way went to `OPENTUI_BUGS.md`; OpenTUI has fixed four
-of them since.
+Five OpenTUI bugs turned up on the way; OpenTUI has fixed four of them since.
 
 A review of milestone 3 found 16 bugs, now fixed with tests in
 `tests/regressions.rs` and the `term` and `host` unit tests. The notable
@@ -468,11 +466,11 @@ A second round settled the design questions the review left open:
   styles. A highlight costs time in proportion to the text: about 9 ms per
   keystroke for 17 KiB of Rust, half of it in tree-sitter and half in about
   2,300 native highlight calls. Incremental parsing, highlighting only the
-  visible rows, and the batched native call in `OPENTUI_BUGS.md` would make
+  visible rows, and a batched native highlight call would make
   large textareas usable.
 - `TerminalView`: a wheel step down at the live screen goes on to a
-  surrounding `ScrollBox`. Native code gives no scroll feedback (see
-  `OPENTUI_BUGS.md`), so the widget passes a step on only when it is sure the
+  surrounding `ScrollBox`. Native code gives no scroll feedback, so the
+  widget passes a step on only when it is sure the
   view is at the live screen.
 - Native types: `WidthMethod`, `Multiplexer`, `ImageProtocol` in
   `Capabilities`, `ClipboardSelection` for OSC 52, and `Corner`, which moved
@@ -593,7 +591,7 @@ Milestone 2:
 - Phase 3: the parser covers every key and mouse form Core supports, including
   X10 mouse, rxvt and Linux-console keys, and lost-Escape mouse reports. 1,124
   of Core's test vectors run in `input/core_tests.rs`; 88 were skipped because
-  they test Core internals. Six Core parser bugs are in `OPENTUI_BUGS.md`.
+  they test Core internals.
 - Phase 4: `App` (event loop, dispatch, focus, hover, pointer capture, timers,
   animation, `AppProxy`, sticky errors), the `Widget` and `Container` traits,
   `Element`, `Component`/`Custom` with optional measurement through a

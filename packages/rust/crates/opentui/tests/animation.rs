@@ -199,7 +199,7 @@ fn tweens_loop_with_delays_and_alternate() {
 #[test]
 fn the_last_run_completes_without_waiting_out_its_delay() {
     // Core keeps the last run going through its loop delay, calling update handlers after completion, and it
-    // completes later when the tween has no completion handler. See OPENTUI_BUGS.md.
+    // completes later when the tween has no completion handler.
     for with_handler in [false, true] {
         let app = TestApp::new(10, 1);
         let updates = Rc::new(RefCell::new(Vec::new()));
@@ -471,8 +471,7 @@ fn looping_parents_restart_their_children() {
 
 #[test]
 fn paused_parents_do_not_start_children() {
-    // Core starts a synced child when the paused parent's time plus the frame's delta reaches it. See
-    // OPENTUI_BUGS.md.
+    // Core starts a synced child when the paused parent's time plus the frame's delta reaches it.
     let app = TestApp::new(10, 1);
     let value = probe();
     let main = Timeline::new(&app).autoplay(false);
