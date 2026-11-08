@@ -140,7 +140,8 @@ fn captured_stderr_stays_off_the_screen() {
 fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let run = Run::fixture(&["--app"]);
     run.wait_for("lifecycle frame 1");
-    run.press("r");
+    // As in Core, the release ends the batch it came in: the q after it never quits.
+    run.press("rq");
     run.wait_for("lifecycle released");
     let text = run.text();
     let released = text.find("lifecycle released").unwrap();

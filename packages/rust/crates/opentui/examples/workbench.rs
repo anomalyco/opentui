@@ -951,6 +951,34 @@ fn run(host: &mut Host) -> Result<()> {
     let mut previous = Instant::now();
     let mut next_frame = previous;
     loop {
+        let mut suspend = false;
+        for event in events.drain(..) {
+            match event {
+                input::Event::Key(_) if suspend => {}
+                input::Event::Key(key) if key.matches("ctrl+z") => suspend = true,
+                input::Event::Key(key) => {
+                    let Some(key) = Key::from_event(key) else { continue };
+                    let had_work = model.has_work();
+                    if !model.key(key, clock.elapsed(), view.rows) {
+                        return Ok(());
+                    }
+                    if !had_work && model.has_work() {
+                        previous = Instant::now();
+                    }
+                }
+                input::Event::Resize { width, height } => {
+                    dimensions = (u32::from(width), u32::from(height));
+                    model.log(clock.elapsed(), "INFO", format!("Viewport resized to {width}x{height}"));
+                }
+                input::Event::Resumed => model.dirty = true,
+                input::Event::Terminate => return Ok(()),
+                _ => {}
+            }
+        }
+        if suspend {
+            host.suspend(&mut events)?;
+            continue;
+        }
         let now = Instant::now();
         if now >= next_frame {
             model.tick(now.saturating_duration_since(previous), clock.elapsed());
@@ -993,32 +1021,6 @@ fn run(host: &mut Host) -> Result<()> {
         // Idle waits need no timer: input, resizes, and signals wake the host.
         let deadline = (model.dirty || model.has_work()).then_some(next_frame);
         host.poll(deadline, &mut events)?;
-        let mut suspend = false;
-        for event in events.drain(..) {
-            match event {
-                input::Event::Key(key) if key.matches("ctrl+z") => suspend = true,
-                input::Event::Key(key) => {
-                    let Some(key) = Key::from_event(key) else { continue };
-                    let had_work = model.has_work();
-                    if !model.key(key, clock.elapsed(), view.rows) {
-                        return Ok(());
-                    }
-                    if !had_work && model.has_work() {
-                        previous = Instant::now();
-                    }
-                }
-                input::Event::Resize { width, height } => {
-                    dimensions = (u32::from(width), u32::from(height));
-                    model.log(clock.elapsed(), "INFO", format!("Viewport resized to {width}x{height}"));
-                }
-                input::Event::Resumed => model.dirty = true,
-                input::Event::Terminate => return Ok(()),
-                _ => {}
-            }
-        }
-        if suspend {
-            host.suspend(&mut events)?;
-        }
     }
 }
 
