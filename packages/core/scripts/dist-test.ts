@@ -94,6 +94,40 @@ try {
   scene.renderer.destroy()
   await scene.renderer.closed
 }
+
+const { Writable } = await import("node:stream")
+const splitOutput = []
+const split = await testing.createTestRenderer({
+  width: 16, height: 6, footerHeight: 2, consoleMode: "disabled",
+  screenMode: "split-footer", externalOutputMode: "capture-stdout", bufferedOutput: "stdout",
+  stdout: new Writable({
+    write(chunk, encoding, callback) {
+      splitOutput.push(chunk.toString())
+      callback()
+    },
+  }),
+})
+try {
+  await split.renderer.setupTerminal()
+  await split.mockInput.pressKeys(["\\x1b[1;1R"])
+  split.renderer.writeScrollbackSequence("\\x1b]133;C\\x07")
+  split.renderer.writeToScrollback(({ renderContext }) => ({
+    root: new core.TextRenderable(renderContext, { content: "summary", width: 7, height: 1 }),
+    trailingNewline: false,
+  }))
+  split.renderer.writeScrollbackSequence("\\x1b]133;D\\x07")
+  await split.renderOnce()
+  await split.renderer.nativeScene.driver.idle()
+  const output = splitOutput.join("")
+  if (output.indexOf("\\x1b]133;C\\x07") < 0 ||
+      output.indexOf("\\x1b]133;C\\x07") > output.indexOf("summary") ||
+      !output.includes("\\x1b[1;8H\\x1b]133;D\\x07")) {
+    throw new Error("Packed split sequences lost native ordering or transcript cursor placement")
+  }
+} finally {
+  split.renderer.destroy()
+  await split.renderer.closed
+}
 `
 
 const declarationPaths = ["index.d.ts", "node-assets.d.ts", "testing.d.ts", "lib/tree-sitter/parser.worker.d.ts"]
