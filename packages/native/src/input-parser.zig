@@ -270,8 +270,14 @@ pub const InputParser = struct {
 
     /// When the host should call feed with zero bytes, or null.
     pub fn deadlineNs(self: *const InputParser) ?u64 {
-        // A raw ESC ends at the read boundary, and the terminal sends Escape and Alt keys as sequences.
-        if (self.expect.escape_prefix) return null;
+        // A raw ESC ends at the read boundary, and the terminal sends Escape and Alt keys as sequences. Due at once:
+        // an ESC that ended a read before the flag was set, and a recovered unit once no sentinel holds it.
+        if (self.expect.escape_prefix) return if (switch (self.state) {
+            .escape => self.batch_left == 0,
+            .csi => |csi| csi.held and csi.recovered and !self.expect.sentinel,
+            .string => |string| string.recovered and !self.expect.sentinel,
+            else => false,
+        }) self.since_ns else null;
         const waits = switch (self.state) {
             // A UTF-8 lead byte's continuation bytes must follow, so no pause cuts a scalar short.
             // Opt-in 8-bit Meta (urxvt meta8, rxvt --meta8, Eterm -8, iTerm2 Option as Meta) is read
@@ -378,7 +384,10 @@ pub const InputParser = struct {
                 .expired => if (self.expect.escape_prefix and self.batch_left > 0 and std.mem.indexOfScalar(u8, "[O]P_", b) != null) {
                     _ = self.escapeByte(b, false, sink);
                     if (b == '[') self.state.csi.recovered = true;
-                } else if ((b == '[' and !self.expect.escape_prefix) or (self.expect.sentinel and std.mem.indexOfScalar(u8, "[]P_", b) != null)) {
+                } else if (self.expect.sentinel and std.mem.indexOfScalar(u8, "[]P_", b) != null) {
+                    // With `escape_prefix` the read end was the timeout, so recovery goes on at once.
+                    if (self.expect.escape_prefix) self.begin(heldUnit(b), b) else self.state = .{ .recover = b };
+                } else if (b == '[' and !self.expect.escape_prefix) {
                     self.state = .{ .recover = b };
                 } else {
                     self.state = .ground;
@@ -741,7 +750,7 @@ pub const InputParser = struct {
         }
         var cursor_report = false;
         const decoded: ?Key = decoded: {
-            if (params.len > 0 and params[0] == '[') break :decoded bracketKey(params[1..], final);
+            if (params.len > 0 and params[0] == '[') break :decoded if (reply_only) null else bracketKey(params[1..], final);
             // Private-prefixed and intermediate-bearing sequences are never keys.
             const fields = Fields.parse(params) orelse break :decoded null;
             cursor_report = final == 'R' and fields.count == 2 and fields.single(0) != null and fields.single(1) != null;

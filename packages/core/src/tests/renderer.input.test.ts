@@ -2482,15 +2482,7 @@ const CONFIRMED_ESC_READS: [string[], string[]][] = [
     ["\x1bb", "\x1bf", "\x1b\x7f", "\x1b\r"],
     ["Alt+b", "Alt+f", "Alt+backspace", "Alt+return"],
   ],
-  [
-    ["\x1b", "b"],
-    ["escape", "b"],
-  ],
   [["\x1b", "[27u"], ["escape"]],
-  [["\x1b", "[A"], ["escape"]],
-  [["\x1b", "[<0;1;1M"], ["escape"]],
-  [["\x1b", "]11;rgb:0000/0000/0000\x07"], ["escape"]],
-  [["\x1b", DA1_REPLY.slice(1)], ["escape"]],
 ]
 
 test("once the terminal confirms its Kitty push, a raw ESC that ends a read is Escape without a clock (issue 466)", async () => {

@@ -3340,7 +3340,8 @@ ot_status ot_session_input_feed(
  * ESCAPE_PREFIX, which implies KITTY_KEYBOARD, means the terminal confirmed
  * Kitty disambiguate or report-all keys, so no unit has a deadline. A raw ESC and the byte after it in the same
  * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once, and a
- * sequence that begins the next feed is kept whole (a CSI then is never a key).
+ * sequence that begins the next feed is kept whole (a CSI then is never a key). With SENTINEL, a lone
+ * introducer after that Escape waits as after a timeout, and is typed once SENTINEL is cleared.
  * A session with a renderer sets it itself once the terminal answers the CSI ? u
  * query that follows its current push (only with OT_TERMINAL_REPLY_SENTINEL).
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
