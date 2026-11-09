@@ -23,6 +23,20 @@ index 8b0873a5..38d17ea6 100644
  
        hasNewLayout = layoutAbsoluteDescendants(
                           containingNode,
+diff --git a/yoga/algorithm/Baseline.cpp b/yoga/algorithm/Baseline.cpp
+index b3002012..999abde7 100644
+--- a/yoga/algorithm/Baseline.cpp
++++ b/yoga/algorithm/Baseline.cpp
+@@ -55,7 +55,8 @@ float calculateBaseline(const yoga::Node* node) {
+   }
+ 
+   const float baseline = calculateBaseline(baselineChild);
+-  return baseline + baselineChild->getLayout().position(PhysicalEdge::Top);
++  // OpenTUI: a cached child holds a rounded top; add the unrounded one.
++  return baseline + baselineChild->getLayout().rawPosition(PhysicalEdge::Top);
+ }
+ 
+ bool isBaselineLayout(const yoga::Node* node) {
 diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
 index 130fe0d3..e62f4067 100644
 --- a/yoga/algorithm/Cache.cpp
