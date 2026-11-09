@@ -382,6 +382,16 @@ pub enum ImageFit {
     Fill,
 }
 
+impl ImageFit {
+    pub(crate) const fn raw(self) -> u32 {
+        match self {
+            Self::Contain => sys::OT_IMAGE_FIT,
+            Self::Cover => sys::OT_IMAGE_COVER,
+            Self::Fill => sys::OT_IMAGE_FILL,
+        }
+    }
+}
+
 /// How a terminal shows an image.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ImageProtocol {
@@ -461,11 +471,6 @@ impl Node {
     /// Shows an image in an [`NodeKind::Image`](super::NodeKind::Image) node, or clears it with `None`.
     pub fn set_image(&self, image: Option<&Image>, fit: ImageFit, protocol: ImageProtocol) -> Result<()> {
         let image = image.map(Image::handle);
-        let fit = match fit {
-            ImageFit::Contain => sys::OT_IMAGE_FIT,
-            ImageFit::Cover => sys::OT_IMAGE_COVER,
-            ImageFit::Fill => sys::OT_IMAGE_FILL,
-        };
         let protocol = match protocol {
             ImageProtocol::Auto => sys::OT_IMAGE_PROTOCOL_AUTO,
             ImageProtocol::Kitty => sys::OT_IMAGE_PROTOCOL_KITTY,
@@ -477,7 +482,7 @@ impl Node {
                 self.context_raw(),
                 &self.handle(),
                 image.as_ref().map_or(std::ptr::null(), |i| i),
-                fit,
+                fit.raw(),
                 protocol,
                 std::ptr::null(),
             )

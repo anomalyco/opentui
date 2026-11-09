@@ -78,4 +78,7 @@ name = "terminal"
 name = "split"
 
 [[example]]
+name = "video"
+
+[[example]]
 name = "bench"

@@ -3,7 +3,7 @@ set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 usage() {
-    printf '%s\n' "usage: sh $0 [hello|showcase|effects|tasks|native|workbench|lifecycle|terminal|split|chat] [shared|static]" >&2
+    printf '%s\n' "usage: sh $0 [hello|showcase|effects|tasks|native|workbench|lifecycle|terminal|split|video|chat] [shared|static]" >&2
     exit 2
 }
 case $(uname -s)/$(uname -m) in
@@ -17,7 +17,7 @@ esac
 example=hello
 package=opentui
 case ${1:-} in
-    hello|showcase|effects|tasks|native|workbench|lifecycle|terminal|split) example=$1; shift ;;
+    hello|showcase|effects|tasks|native|workbench|lifecycle|terminal|split|video) example=$1; shift ;;
     # An SSH chat server on 127.0.0.1:2222; connect with `ssh -p 2222 localhost`.
     chat) example=chat; package=opentui-ssh; shift ;;
 esac

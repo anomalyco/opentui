@@ -30,6 +30,7 @@ mod resource;
 mod session;
 mod terminal;
 mod text;
+mod video;
 
 pub use buffer::Buffer;
 pub use clipboard::{ClipboardOperation, ClipboardOptions, ClipboardOutcome, ClipboardSelection, ClipboardService};
@@ -61,6 +62,8 @@ pub use terminal::{
 pub use text::{
     Image, ImageFit, ImageInfo, ImageProtocol, TextBuffer, TextBufferInfo, TextMeasure, TextView, VisualLine,
 };
+pub(crate) use video::video_path;
+pub use video::{VideoInfo, VideoState};
 
 /// Debug output for handles whose state lives in native code: only the type's name.
 macro_rules! opaque_debug {

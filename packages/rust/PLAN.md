@@ -559,6 +559,20 @@ Decisions made for the native parser:
     Session with a renderer uses the Kitty keyboard state its terminal
     negotiated.
 
+`VideoView` wraps the native video node, as Core's `VideoRenderable` does:
+`open` returns the file's metadata, and the player keeps `looping`, `muted`,
+`volume`, `av_sync_offset`, and `max_fps`; `audio(false)` opens no audio
+device. While it plays, an interval at `max_fps` reads the native state, which
+advances the clock, and requests a frame, which draws the next video frame; a
+paused or ended video costs nothing. `on_event` reports play, pause, seek,
+position, the end, and failures with native code's detail. A failed play,
+seek, or decode is an event, not an error that ends the app. An option change
+sends only that option, as in Core: a new A/V offset drops the frames decoded
+ahead. As in Core, a remote app's video plays its audio on the server.
+Unlike Core, invalid numbers are ignored or clamped, and `open` is synchronous,
+so nothing waits for a microtask. `tests/video.rs` plays Core's video
+fixtures, and skips where the native library was built without FFmpeg.
+
 Still to do, in priority order:
 
 1. Build `ScrollBox` on the native scroll control and its scrollbars, as
@@ -569,8 +583,7 @@ Still to do, in priority order:
 3. Run `sh test.sh` on a Mac, with a macOS build of the native library from
    the same revision. The macOS port compiles and links but has not run.
 4. Inline mode: draw below the shell prompt instead of on the alternate screen.
-5. Wrap the video node (`ot_video_*`, `OT_SCENE_VIDEO`) and image crops
-   (`ot_scene_set_crop`).
+5. Wrap image and video crops (`ot_scene_set_crop`).
 
 Waiting on native work:
 
