@@ -38,7 +38,12 @@ fn label(app: &App) -> String {
     format!("size {width}x{height}")
 }
 
-/// Shows who connected and the terminal size; `q` quits, `e` fails, `p` panics. Denies the user `banned`.
+/// What the greeter shows after `typed` other keys. Every cell changes with each key, so the frame diff sends all of it.
+fn mark(typed: usize) -> String {
+    char::from(b'a' + (typed % 26) as u8).to_string().repeat(4)
+}
+
+/// Shows who connected, the terminal size, and a [`mark`] per key; `q` quits, `e` fails, `p` panics. Denies `banned`.
 fn greeter(session: Session) -> opentui::Result<()> {
     if session.user() == "banned" {
         return session.deny("No entry.\nGoodbye.");
@@ -54,16 +59,21 @@ fn greeter(session: Session) -> opentui::Result<()> {
     app.root().add(&Text::new(&app, format!("user {} via {via}", session.user())));
     app.root().add(&Text::new(&app, about));
     app.root().add(&size);
+    let (keys, mut typed) = (Text::new(&app, ""), 0);
+    app.root().add(&keys);
     app.on_resize(move |cx, _, _| {
         size.set_text(label(cx.app()));
     });
-    app.on_key(|cx, key| {
+    app.on_key(move |cx, key| {
         if key.matches("q") {
             cx.quit();
         } else if key.matches("e") {
             cx.fail(opentui::Error::Usage("the session failed"));
         } else if key.matches("p") {
             panic!("the session panicked");
+        } else {
+            typed += 1;
+            keys.set_text(mark(typed));
         }
     });
     app.run()
@@ -150,16 +160,6 @@ impl Shell {
         let message =
             message.unwrap_or_else(|_| panic!("nothing arrived for ten seconds; output so far: {:?}", self.text()));
         self.handle(message);
-    }
-
-    /// Handles the messages that have arrived, without waiting for more.
-    async fn drain(&mut self) {
-        while !self.closed {
-            match tokio::time::timeout(Duration::from_millis(1), self.channel.wait()).await {
-                Ok(message) => self.handle(message),
-                Err(_) => return,
-            }
-        }
     }
 
     /// Whether the server accepted every request so far: `count` of them.
@@ -392,25 +392,24 @@ fn session_limits_refuse_extra_shells() {
 
 #[test]
 fn idle_sessions_end_but_typing_keeps_them_open() {
-    let config = ServerConfig::new().idle_timeout(Duration::from_millis(500));
-    let (server, _) = start(config, greeter);
+    let timeout = Duration::from_secs(2);
+    let (server, _) = start(ServerConfig::new().idle_timeout(timeout), greeter);
     runtime().block_on(async {
         let handle = connect_as(&server, "alice").await;
         let mut shell = Shell::open(&handle, Some(("xterm", 80, 24)), &[]).await;
-        shell.wait_for("user alice").await;
-        // Typing every 150 ms for a second and a half outlasts the timeout several times over.
-        let typing = Instant::now();
-        let mut last_key = typing;
-        while typing.elapsed() < Duration::from_millis(1500) {
-            shell.send(b"x").await;
+        // Each key waits for the app to show the one before. The ten pauses after the first span a whole timeout, which
+        // the session outlasts only because the keys keep it open.
+        let mut last_key = Instant::now();
+        for typed in 1..=11 {
+            tokio::time::sleep(timeout / 10).await;
             last_key = Instant::now();
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            shell.drain().await;
-            assert!(!shell.closed, "the session ended while the client typed");
+            shell.send(b"x").await;
+            shell.wait_for(&mark(typed)).await;
         }
         assert_eq!(shell.finish().await, Some(0));
+        // The server took the last key after it was sent, so silence ends the session no sooner than a timeout later.
         let idle = last_key.elapsed();
-        assert!(idle >= Duration::from_millis(450), "ended {idle:?} after the last key");
+        assert!(idle >= timeout, "ended {idle:?} after the last key");
         shell.restored();
     });
 }
