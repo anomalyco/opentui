@@ -9,6 +9,7 @@ Usage: python3 scripts/pty-smoke.py target/debug/examples/lifecycle
 import fcntl
 import os
 import select
+import shlex
 import signal
 import struct
 import subprocess
@@ -21,15 +22,19 @@ LEAVE_ALT = b"\x1b[?1049l"
 
 
 class Pty:
-    def __init__(self, command, columns=80, rows=24):
+    def __init__(self, command, columns=80, rows=24, shell=False):
         self.master, self.slave = os.openpty()
         self.resize(columns, rows)
         self.before = termios.tcgetattr(self.slave)
         # Its own open file description keeps stdin blocking while stdout is not, as with `app < /dev/tty`.
         self.stdin = os.open(os.ttyname(self.slave), os.O_RDWR | os.O_NOCTTY)
         env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor")
+        # The child leads a new session, so its process group is orphaned and the kernel discards its stops. A shell
+        # takes the terminal as its controlling terminal, so that its jobs can stop.
+        controlling = (lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0)) if shell else None
         self.process = subprocess.Popen(
-            command, stdin=self.stdin, stdout=self.slave, stderr=self.slave, env=env, start_new_session=True
+            command, stdin=self.stdin, stdout=self.slave, stderr=self.slave, env=env, start_new_session=True,
+            preexec_fn=controlling,
         )
         self.output = bytearray()
 
@@ -76,8 +81,8 @@ class Pty:
         os.close(self.stdin)
 
 
-def scenario(name, command, action, expected_code, expect_text=None):
-    pty = Pty(command)
+def scenario(name, command, action, expected_code, expect_text=None, shell=False):
+    pty = Pty(command, shell=shell)
     failures = []
     try:
         if not pty.read(3, until=b"lifecycle frame 1"):
@@ -98,7 +103,7 @@ def scenario(name, command, action, expected_code, expect_text=None):
                 failures.append(f"{expect_text!r} was written before restoration or not after it")
     finally:
         pty.close()
-    mode = "app" if "--app" in command else "host"
+    mode = "app" if "--app" in " ".join(command) else "host"
     print(f"{'PASS' if not failures else 'FAIL'}: {name} ({mode})" + "".join(f"\n  - {failure}" for failure in failures))
     return not failures
 
@@ -142,6 +147,23 @@ def resize_then_quit(pty):
     if not pty.read(3, until=b"size 100x30"):
         raise SystemExit("FAIL: resize was not drawn")
     pty.send(b"q")
+
+
+def job_control(pty):
+    # The shell's job is a wrapper: it stops with the app, so the shell's fg names the job and continues it.
+    pty.send(b"\x1a")
+    if not pty.read(3, until=b"bash -c") or not pty.read(3, until=b"lifecycle frame 2"):
+        raise SystemExit("FAIL: the job did not stop, or no frame after fg")
+    # Not before: an app that runs on while its job is stopped draws over the shell.
+    if pty.output.rindex(ENTER_ALT) < pty.output.index(b"bash -c"):
+        raise SystemExit("FAIL: the app was set up again before its job continued")
+    pty.send(b"q")
+
+
+def in_shell(command):
+    """An interactive shell that runs the command through a wrapper, then fg once it stops."""
+    wrapper = shlex.join(["bash", "-c", f"{shlex.join(command)}; :"])
+    return ["bash", "--norc", "--noprofile", "-ic", f"{wrapper}; fg"]
 
 
 def theme_detection(binary):
@@ -191,6 +213,7 @@ def main():
             scenario("SIGHUP", command, lambda pty: os.kill(pty.process.pid, signal.SIGHUP), 0),
             scenario("SIGINT", command, lambda pty: os.kill(pty.process.pid, signal.SIGINT), 0),
             scenario("Ctrl+Z and SIGTSTP, then continue", command, suspend_and_continue, 0),
+            scenario("Ctrl+Z through a wrapper in a shell, then fg", in_shell(command), job_control, 0, shell=True),
             scenario("returned error", command, lambda pty: pty.send(b"e"), 1, b"lifecycle fixture error"),
             scenario("panic", command, lambda pty: pty.send(b"p"), 101, b"lifecycle fixture panic"),
         ]

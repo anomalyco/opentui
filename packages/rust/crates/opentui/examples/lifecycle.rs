@@ -119,7 +119,8 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
     let result = if std::env::args().any(|argument| argument == "--app") {
-        run_app()
+        // Off the main thread, which a process-directed signal reaches first, as in apps that run their UI elsewhere.
+        std::thread::spawn(run_app).join().unwrap_or_else(|_| std::process::exit(101))
     } else {
         Host::start(HostOptions::default()).and_then(|mut host| {
             let result = run(&mut host);
