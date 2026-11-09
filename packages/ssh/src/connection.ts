@@ -18,7 +18,7 @@ export interface ConnectionDependencies {
 }
 
 // Client `env` requests that describe its terminal.
-const CLIENT_ENV_KEYS = new Set(["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"])
+const CLIENT_ENV_KEYS = new Set(["COLORTERM", "OPENTUI_FORCE_TRUECOLOR", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"])
 
 const normalizeAddress = (address: string | undefined): string => {
   if (!address) return "unknown"

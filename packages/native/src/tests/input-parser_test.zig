@@ -728,11 +728,17 @@ test "input parser Kitty keys report modifiers, events, and text" {
         Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = "中文中文中文中文" },
     });
     try check("\x1b[0;;20013:25991:20013:25991:20013:25991:20013:25991:20013u", &.{
-        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty | ip.flags.key_text_truncated, .text = "中文中文中文中文" },
+        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = "中文中文中文中文中" },
     });
     try check("\x1b[0;;128512:128512:128512:128512:128512:128512:128512:128512:128512u", &.{
-        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty | ip.flags.key_text_truncated, .text = utils.repeat(u8, "😀", 8) },
+        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = utils.repeat(u8, "😀", 9) },
     });
+    try check("\x1b[0;;26412:26085:12399:26228:22825:12394:12426:12391:12377:12397u", &.{kt(0, NONE, "本日は晴天なりですね")});
+    // Text arrives whole up to sequence_bytes_max bytes before the final; a longer CSI is discarded.
+    try check("\x1b[0;;977" ++ utils.repeat(u8, ":977", 62) ++ "u", &.{
+        Expect{ .kind = .key, .action = 1, .code = 0, .flags = kitty, .text = utils.repeat(u8, "ϑ", 63) },
+    });
+    try check("\x1b[0;;0977" ++ utils.repeat(u8, ":977", 62) ++ "u", &.{});
     // Base-layout keys are reported as sent; key bindings decide policy (issue 050).
     try check("\x1b[97:65:113u", &.{Expect{ .kind = .key, .action = 1, .code = 'a', .base = 'q' }});
     try check("\x1b[12618::99;5u", &.{Expect{ .kind = .key, .action = 1, .code = 12618, .mods = CTRL, .base = 'c' }});

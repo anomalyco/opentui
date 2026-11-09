@@ -32,8 +32,8 @@
 //! the app first restores the client's terminal.
 //!
 //! The app picks its light or dark theme from the client's terminal colors, as a local app does, and native code
-//! learns the client's terminal from the `TERM` its SSH client sends, plus `COLORTERM`, `TERM_PROGRAM`, and
-//! `TERM_PROGRAM_VERSION` when the client sends them. A remote app never suspends on Ctrl+Z, never uses the
+//! learns the client's terminal from the `TERM` its SSH client sends, plus `COLORTERM`, `OPENTUI_FORCE_TRUECOLOR`,
+//! `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION` when the client sends them. A remote app never suspends on Ctrl+Z, never uses the
 //! server's system clipboard, and copies to the client's clipboard through its terminal.
 //!
 //! # Differences from Core

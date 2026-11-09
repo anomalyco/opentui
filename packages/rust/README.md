@@ -38,8 +38,6 @@ fn main() -> opentui::Result<()> {
 }
 ```
 
-The work follows [PLAN.md](PLAN.md).
-
 ## Build
 
 The crates link the native library of this checkout,

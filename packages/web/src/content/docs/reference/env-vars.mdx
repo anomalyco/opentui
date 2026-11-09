@@ -32,6 +32,7 @@ not OpenTUI configuration keys. Read [Terminal capabilities](/docs/reference/ter
 | `OPENTUI_GRAPHICS`              | `string`  | unset, automatic | Renderer creation           | Control Kitty and Sixel detection                    |
 | `OPENTUI_IMAGE_PROTOCOL`        | `string`  | `"auto"`         | Renderer creation           | Select `auto`, `kitty`, `sixel`, or `blocks`         |
 | `OPENTUI_FORCE_EXPLICIT_WIDTH`  | `string`  | unset            | Renderer creation           | Force or disable explicit-width detection            |
+| `OPENTUI_FORCE_TRUECOLOR`       | `string`  | unset            | Renderer creation           | `1` or `true` forces 24-bit color output             |
 | `OPENTUI_NOTIFICATION_PROTOCOL` | `string`  | unset, automatic | Renderer creation           | Override the terminal notification protocol          |
 | `OPENTUI_NOTIFICATIONS`         | `string`  | unset, enabled   | Renderer creation           | Disable terminal notification detection              |
 | `OTUI_USE_CONSOLE`              | `boolean` | `true`           | Renderer console activation | Enable global `console.*` capture                    |
@@ -49,6 +50,9 @@ case-insensitive. Invalid values keep `auto`. Forcing an unsupported protocol ca
 
 `OPENTUI_FORCE_EXPLICIT_WIDTH=true` or `1` forces explicit-width support. `false` or `0` disables it and skips the OSC
 66 query, for example on older terminals. Other values keep automatic detection.
+
+`OPENTUI_FORCE_TRUECOLOR=1` or `true` forces 24-bit color, also inside GNU Screen, which gets 256 colors otherwise.
+Use it when Screen's `truecolor` setting is on. Other values keep automatic detection.
 
 `OPENTUI_NOTIFICATION_PROTOCOL` accepts `osc9`, `osc777`, `osc99`, and `none` without case sensitivity. `0`, `false`,
 and `off` also disable notifications. `1`, `true`, and `on` keep automatic detection. Use an override only when terminal
