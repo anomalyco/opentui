@@ -2604,11 +2604,17 @@ test "Scene scroll node frames ask the host nothing and toggle bars a bounded nu
         var target = try bench.Scene.init(testing.allocator, testing.io, .scroll_node, size);
         defer target.deinit();
         _ = try target.frame(change);
-        const w = try target.frame(change);
-        try testing.expectEqual(@as(u32, 0), w.host_requests);
-        try testing.expectEqual(@as(u32, 1), w.layout_rounds);
-        try testing.expectEqual(@as(u64, @intFromBool(change == .append)), w.yoga_solves);
-        try testing.expectEqual(if (change == .append) size + 7 else 0, w.geometry_reads);
+        // Rows keep each of their three measured widths in Yoga's cache, so an append measures
+        // only the new row, frame after frame.
+        for (0..8) |frame| {
+            const measures = yoga.test_native_measures;
+            const w = try target.frame(change);
+            try testing.expectEqual(@as(u32, 0), w.host_requests);
+            try testing.expectEqual(@as(u32, 1), w.layout_rounds);
+            try testing.expectEqual(@as(u64, @intFromBool(change == .append)), w.yoga_solves);
+            try testing.expectEqual(if (change == .append) size + 7 + frame else 0, w.geometry_reads);
+            try testing.expectEqual(@as(u64, if (change == .append) 3 else 0), yoga.test_native_measures - measures);
+        }
     };
     // A 4x3 scroll node whose child is as tall as it is wide: the bar narrows the child until it
     // fits, which hides the bar. The third toggle shows it again, and it may not hide after that.
