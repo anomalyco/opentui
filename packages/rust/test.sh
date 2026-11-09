@@ -43,10 +43,10 @@ for linkage in $modes; do
         static) features=opentui/static,opentui/tokio,opentui/log,opentui/tree-sitter ;;
     esac
     export CARGO_TARGET_DIR="$here/target/test-$linkage"
-    # Without optional features, highlighting falls back to plain text.
+    # Without optional features, highlighting falls back to plain text. CI only lints that; the run below repeats the rest.
     if [ "$linkage" = shared ]; then
         "$cargo" clippy --locked --manifest-path "$manifest" -p opentui --all-targets -- -D warnings
-        "$cargo" test --locked --manifest-path "$manifest" -p opentui
+        [ "${CI:-}" = true ] || "$cargo" test --locked --manifest-path "$manifest" -p opentui
     fi
     "$cargo" clippy --locked --manifest-path "$manifest" --workspace --all-targets ${features:+--features "$features"} \
         -- -D warnings

@@ -1,0 +1,37 @@
+name: Changes
+
+# Decides which jobs a run of Build Core, Solid or React needs. Their gates must fail when this did not succeed.
+on:
+  workflow_call:
+    outputs:
+      rust:
+        description: true on a push, or when a pull request changes the Rust crates, native code, the ABI generator or the CI that tests them
+        value: ${{ jobs.changes.outputs.rust }}
+      rust_only:
+        description: true when a pull request changes files only under packages/rust/
+        value: ${{ jobs.changes.outputs.rust_only }}
+
+jobs:
+  changes:
+    name: Changes
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      rust: ${{ steps.changes.outputs.rust }}
+      rust_only: ${{ steps.changes.outputs.rust_only }}
+    steps:
+      # The pull request's merge commit and its parents, without file contents outside scripts/.
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          filter: blob:none
+          sparse-checkout: scripts
+
+      # The merge commit's first parent is the base branch as GitHub merged it. bash, not the default bash -e,
+      # so that pipefail fails the job when the script fails.
+      - name: Find changed paths
+        id: changes
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: sh scripts/ci-changes.sh "$EVENT" HEAD^1 HEAD | tee -a "$GITHUB_OUTPUT"
