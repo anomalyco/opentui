@@ -1124,8 +1124,6 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     const idx_osc_theme_queries = std.mem.find(u8, output, ansi.ANSI.oscThemeQueries).?;
     const idx_xtversion = std.mem.find(u8, output, "\x1b[>0q").?;
 
-    // Should contain xtversion
-    try testing.expect(std.mem.find(u8, output, "\x1b[>0q") != null);
     try testing.expect(idx_osc_theme_queries < idx_xtversion);
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
 
@@ -1158,14 +1156,11 @@ test "queryTerminalSend - keeps response-generating queries inside tmux" {
     const idx_osc_theme_queries = std.mem.find(u8, output, ansi.ANSI.oscThemeQueries).?;
     const idx_xtversion = std.mem.find(u8, output, "\x1b[>0q").?;
 
-    // Should contain xtversion (unwrapped - used for detection)
-    try testing.expect(std.mem.find(u8, output, "\x1b[>0q") != null);
     try testing.expect(idx_osc_theme_queries < idx_xtversion);
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b]10;?") == null);
 
     // tmux answers the queries it implements through the originating pane's PTY.
-    try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
     try testing.expect(std.mem.find(u8, output, "\x1b[?1016$p") != null);
 
     // Passthrough replies have no pane ownership and may reach another pane.
@@ -1368,28 +1363,33 @@ test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard 
     }
 }
 
-test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it" {
-    const Row = struct { env: []const u8 = "", asks: bool };
+test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it, and never screen" {
+    // `ms`: the XTGETTCAP Ms query, which screen prints as text (ssh from screen forwards only its TERM).
+    const Row = struct { env: []const u8 = "", asks: bool, ms: bool = true };
     const rows = [_]Row{
         .{ .asks = builtin.os.tag != .windows },
         .{ .env = "TERM=xterm-256color", .asks = builtin.os.tag != .windows },
         .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "COLORTERM=truecolor", .asks = false },
-        .{ .env = "STY=1234.session", .asks = false },
-        .{ .env = "TERM=screen.xterm-256color", .asks = false },
+        .{ .env = "STY=1234.session", .asks = false, .ms = false },
+        .{ .env = "STY=1234.session TMUX=/tmp/tmux-1000/default,1,0", .asks = false, .ms = false },
+        .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .asks = false, .ms = false },
         .{ .env = "TERM=foot", .asks = false },
     };
     for (rows) |row| for ([_]bool{ false, true }) |sentinel| {
         var env = std.process.Environ.Map.init(testing.allocator);
-        defer env.deinit();
         try putEnv(&env, row.env);
-        var term = Terminal.init(.{ .env_map = &env });
+        var term = Terminal.init(.{ .remote_mode = .auto });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
         term.reply_sentinel = sentinel;
         var writer = TestWriter.init(testing.allocator);
         defer writer.deinit();
         try term.queryTerminalSend(&writer);
         const output = writer.getWritten();
+        try testing.expectEqual(row.ms, std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
+        try testing.expect(std.mem.find(u8, output, ansi.ANSI.xtversion) != null and std.mem.find(u8, output, ansi.ANSI.capabilityQueriesBase) != null);
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q524742\x1b\\") != null);
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q5463\x1b\\") != null);
         if (sentinel) try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));

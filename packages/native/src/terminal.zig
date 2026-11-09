@@ -380,14 +380,15 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     // Capture the current cursor position before temporary home-position queries.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
 
-    // Probes are never DCS wrapped. tmux answers the probes it implements and
-    // drops the rest; passthrough replies are not routed back to the pane that
-    // asked.
+    // Probes are never DCS wrapped, and screen prints a DCS body as text. tmux
+    // answers the probes it implements and drops the rest; passthrough replies
+    // are not routed back to the pane that asked.
+    if (!self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapMs);
     if (self.is_foot) {
         try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
     } else {
         try tty.writeAll(ansi.ANSI.capabilityQueries);
-        // Windows always has 24-bit color; screen prints a DCS body as text.
+        // Windows always has 24-bit color.
         if (builtin.os.tag != .windows and !self.caps.rgb and !self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapTruecolor);
     }
 

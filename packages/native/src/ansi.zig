@@ -355,8 +355,7 @@ pub const ANSI = struct {
     pub const notificationQueries = "\x1b]99;i=opentui-notifications:p=?;\x1b\\\x1b]1337;Capabilities\x1b\\";
     pub const programStatusQuery = "\x1b]7501;?\x1b\\";
 
-    pub const capabilityQueriesBase = xtgettcapMs ++
-        decrqmSgrPixels ++
+    pub const capabilityQueriesBase = decrqmSgrPixels ++
         decrqmUnicode ++
         decrqmColorScheme ++
         decrqmFocus ++
