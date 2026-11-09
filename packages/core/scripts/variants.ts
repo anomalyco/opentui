@@ -14,4 +14,3 @@ export const variants: Variant[] = [
   { platform: "win32", arch: "x64" },
   { platform: "win32", arch: "arm64" },
 ]
-export const __probe = 1;
