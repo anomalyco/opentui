@@ -378,6 +378,14 @@ describe("native stdin parser: adapter", () => {
     expect(bom).toMatchObject({ raw: "\ufeff", key: { name: "\ufeff", sequence: "\ufeff", raw: "\ufeff" } })
     expect(kittyBom[0]).toMatchObject({ key: { name: "\ufeff", sequence: "\ufeff", raw: "\x1b[65279u" } })
     expect(parse(legacy, ["\x1b[65279u\x1b[65279;1;65279u"])).toEqual(kittyBom)
+    // A reportText commit arrives whole, as from the legacy parser (issue 467): 10 scalars, and 42 in the 256 bytes
+    // a sequence may hold before its final byte.
+    for (const text of ["本日は晴天なりですね", "漢".repeat(42)]) {
+      const commit = `\x1b[0;;${[...text].map((char) => char.codePointAt(0)).join(":")}u`
+      const got = parse(native, [commit])
+      expect(got).toEqual(parse(legacy, [commit]))
+      expect(got[0]).toMatchObject({ key: { name: text, sequence: text } })
+    }
   })
 
   test("suspension stops input time so a reply split across it still completes", () => {
