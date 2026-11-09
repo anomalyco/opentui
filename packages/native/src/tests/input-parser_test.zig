@@ -723,6 +723,7 @@ test "input parser Kitty keys report modifiers, events, and text" {
         .{ "\x1b[1114112u", reply("\x1b[1114112u") },
         .{ "\x1b[55296u", reply("\x1b[55296u") },
         .{ "\x1b[3;5u", reply("\x1b[3;5u") },
+        .{ "\x1b[128::99;5u", reply("\x1b[128::99;5u") },
         .{ "\x1b[0u", reply("\x1b[0u") },
         .{ "\x1b[u", reply("\x1b[u") },
     });

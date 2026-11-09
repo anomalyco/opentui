@@ -1605,7 +1605,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       process.on("uncaughtException", this.handleError)
       process.on("unhandledRejection", this.handleError)
-      const useKittyForParsing = kittyConfig !== null
       this._keyHandler = new InternalKeyHandler()
       this._keyHandler.on("keypress", (event) => {
         // Use the shared matcher here too. Kitty can report a non-Latin
@@ -1620,8 +1619,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       this.stdinParser = new NativeStdinParser({
         armTimeouts: true,
+        // The Session sets the Kitty expectation from the terminal's state on each feed.
         onTimeoutFlush: () => this.drainStdinParser(),
-        protocolContext: { kittyKeyboardEnabled: useKittyForParsing },
         clock: this.clock,
         session: { lib: this.lib, context: this.nativeSession.context, session: this.nativeSession.session },
       })
@@ -2720,7 +2719,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     )
     if (!this.nativeSession.write(bytes))
       throw new NativeError("Native terminal output", NativeStatus.OutputBackpressure)
-    this.abortSplitStartupCursorSeed()
+    this.clearSplitStartupCursorSeed()
     this.clearPendingSplitFooterTransition()
     this.resetSplitScrollback()
     this.pendingNativeReplay = null
@@ -3071,12 +3070,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private abortSplitStartupCursorSeed(): void {
-    this.clearSplitStartupCursorSeed()
-    // The parser reports a stale CPR as a reply that processCapabilitySequence ignores.
-    this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
-  }
-
   private resetSplitScrollback(seedRows: number = 0): void {
     this.renderOffset = this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
       kind: "reset",
@@ -3189,7 +3182,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("Cannot change native scene screen mode during a terminal transition")
     }
     if (this._screenMode === "split-footer" && screenMode !== "split-footer") {
-      this.abortSplitStartupCursorSeed()
+      this.clearSplitStartupCursorSeed()
     }
     if (
       this.rendering ||
@@ -3421,7 +3414,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new RangeError("Native scene Kitty flags must be in 0..31")
     if (this._terminalIsSetup) this.nativeSession.control({ kind: "kitty-keyboard-flags", flags })
     this.nativeKittyKeyboardFlags = flags
-    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: flags !== 0 })
   }
 
   public disableKittyKeyboard(): void {
@@ -3430,7 +3422,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     if (this._terminalIsSetup) this.nativeSession.control({ kind: "kitty-keyboard-flags", flags: 0 })
     this.nativeKittyKeyboardFlags = 0
-    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true)
+    // The Session reads the terminal's Kitty state on each feed; a zero-byte feed applies the pop to pending input.
+    this.stdinParser?.flushTimeout()
+    this.drainStdinParser()
   }
 
   // TODO: All input management may move to native when zig finally has async io support again,
@@ -3439,9 +3433,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._terminalIsSetup) return
     if (this.nativeTerminalTransition) return this.nativeTerminalTransition
 
-    const startupCursorCprActive = this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
-    this.pendingSplitStartupCursorSeed = startupCursorCprActive
-    this.updateStdinParserProtocolContext({ startupCursorCprActive })
+    this.pendingSplitStartupCursorSeed =
+      this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
     // The startup batch asks OSC 11; after its DA1 reply a theme wait has its answer.
     const startup = this.admitReplyBatch("startup", () => this.replySentinel && this.themeModeState.resolveWaiters())
     try {
@@ -3466,7 +3459,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         },
       )
     } catch (error) {
-      this.abortSplitStartupCursorSeed()
+      this.clearSplitStartupCursorSeed()
       this.endReplyBatch(startup)
       throw error
     }
@@ -3494,8 +3487,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         if (!this.pendingSplitStartupCursorSeed) {
           return
         }
-
-        this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
 
         if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
           this.requestRender()
@@ -3570,7 +3561,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       {
         privateCapabilityRepliesActive: startup,
         explicitWidthCprActive: startup,
-        ...(startup ? {} : { startupCursorCprActive: false }),
         pixelResolutionQueryActive: this.waitingForPixelResolution,
         replySentinelActive: this.replySentinel && this.replyBatches.length > 0,
       },
@@ -3679,7 +3669,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resetSplitScrollback(this.getSplitCursorSeedRows())
       this.clearPendingSplitFooterTransition()
       this.clearSplitStartupCursorSeed()
-      this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
 
       this.requestRender()
     }
@@ -4825,12 +4814,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (batch.backstop !== null) this.clock.clearTimeout(batch.backstop)
       batch.backstop = null
       batch.excused = true
-      // Clock mode keeps main's suspension, which ends the startup window.
-      if (!this.replySentinel && batch.kind === "startup") this.endReplyBatch(batch)
     }
-    // Drained while suspended: what this update resolves is stale and must not wait for resume.
-    this.updateStdinParserProtocolContext({ startupCursorCprActive: false }, true)
-    this.pauseStdinParsers(false)
+    this.pauseStdinParser(false)
     this.stdin.removeListener("data", this.stdinListener)
     this.stopTerminalKeepAlive()
 
@@ -4880,7 +4865,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   // The parser stops input time, so stale bytes drained on resume can complete a unit (docs §11.5).
-  private pauseStdinParsers(resuming: boolean): void {
+  private pauseStdinParser(resuming: boolean): void {
     if (resuming) this.stdinParser?.resume()
     else this.stdinParser?.suspend()
   }
@@ -4898,7 +4883,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       },
       true,
     )
-    this.pauseStdinParsers(true)
+    this.pauseStdinParser(true)
     this.stdin.on("data", this.stdinListener)
     this.stdin.resume()
     this.startTerminalKeepAlive()

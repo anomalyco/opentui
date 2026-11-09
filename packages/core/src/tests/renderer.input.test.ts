@@ -2321,7 +2321,6 @@ test("reply batches follow an independent model under random replies, pastes, re
           await t.renderer.suspend()
           await t.renderer.resume()
           for (const batch of batches) Object.assign(batch, { deadline: m.now + 5000, excused: true })
-          if (!m.sentinel) batches.filter((batch) => batch.kind === "startup").forEach(end)
           if (m.requery) query()
         }
         await t.drained()

@@ -132,7 +132,7 @@ const ROWS: Array<[label: string, chunks: Chunk[], expected: unknown[], options?
     ["\x1b[<3;10;5M\x1b[<0;0;0M"],
     [reply("\x1b[<3;10;5M"), mouse("down", 0, 0)],
   ],
-  ["a typed byte order mark is a character (issue 368)", [bytes("\xef\xbb\xbf")], [key("﻿")]],
+  ["a typed byte order mark is a character (issue 368)", [bytes("\xef\xbb\xbf")], [key("\ufeff")]],
   [
     "URxvt motion after a wheel tick drags the held button, not the wheel's (issue 426)",
     ["\x1b[<0;1;1M\x1b[<65;1;1M\x1b[<97;2;1M\x1b[<99;3;1M"],
@@ -268,7 +268,7 @@ describe("native stdin parser: adapter", () => {
     const [bom, ...kittyBom] = parse([bytes("\xef\xbb\xbf\x1b[65279u\x1b[65279;1;65279u")])
     expect(bom).toMatchObject({ raw: "\ufeff", key: { name: "\ufeff", sequence: "\ufeff", raw: "\ufeff" } })
     expect(kittyBom[0]).toMatchObject({ key: { name: "\ufeff", sequence: "\ufeff", raw: "\x1b[65279u" } })
-    expect(kittyBom[1]).toMatchObject({ key: { name: "﻿", sequence: "﻿", raw: "\x1b[65279;1;65279u" } })
+    expect(kittyBom[1]).toMatchObject({ key: { name: "\ufeff", sequence: "\ufeff", raw: "\x1b[65279;1;65279u" } })
     expect(kittyBom).toHaveLength(2)
     // A reportText commit arrives whole (issue 467): 10 scalars, and 42 in the 256 bytes a sequence may hold
     // before its final byte.
