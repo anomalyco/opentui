@@ -1870,79 +1870,45 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
     try testing.expectEqual(try term.clipboardSequenceSize(payload_two_chunks.len), writer.getWritten().len);
 }
 
-test "writeClipboard - wraps in DCS passthrough for tmux" {
+// The environment is adopted as an app forwards it, so SSH_CONNECTION makes it a remote client's. GNU screen
+// answers no query, so its TERM (forwarded by ssh) or STY names it there too; a tmux XTVERSION reply wins.
+test "multiplexer sets clipboard framing, OSC 52, widths and the graphics query, also behind ssh" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.osc52 = true;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.writeClipboard(&writer, .clipboard, "test");
-
-    const output = writer.getWritten();
-    // Should start with tmux DCS wrapper
-    try testing.expect(std.mem.startsWith(u8, output, "\x1bPtmux;"));
-    // Should end with DCS terminator
-    try testing.expect(std.mem.endsWith(u8, output, "\x1b\\"));
-    // Should have doubled ESC characters inside
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b") != null);
-}
-
-test "writeClipboard - wraps in DCS passthrough for GNU Screen" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("STY", "12345.pts-0.hostname");
-
-    var term = Terminal.init(.{ .env_map = &env });
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.writeClipboard(&writer, .clipboard, "test");
-
-    try testing.expectEqualStrings("\x1bP\x1b]52;c;dGVzdA==\x07\x1b\\", writer.getWritten());
-}
-
-test "writeClipboard - handles tmux sessions" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
-
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.osc52 = true;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    try term.writeClipboard(&writer, .clipboard, "test");
-
-    const output = writer.getWritten();
-    // Should have tmux DCS wrapper
-    try testing.expect(std.mem.startsWith(u8, output, "\x1bPtmux;"));
-    // Should end with DCS terminator
-    try testing.expect(std.mem.endsWith(u8, output, "\x1b\\"));
-    // Should have doubled ESC characters
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b") != null);
-}
-
-test "caps.osc52 - clipboard capability flag" {
-    var term = Terminal.init(.{});
-
-    term.caps.osc52 = false;
-    try testing.expect(!term.caps.osc52);
-
-    term.caps.osc52 = true;
-    try testing.expect(term.caps.osc52);
+    const screen = "\x1bP\x1b]52;c;dGVzdA==\x07\x1b\\";
+    const tmux = "\x1bPtmux;\x1b\x1b]52;c;dGVzdA==\x1b\x1b\\\x1b\\";
+    const plain = "\x1b]52;c;dGVzdA==\x1b\\";
+    const Row = struct { env: []const u8, reply: []const u8 = "", mux: Terminal.Multiplexer, osc52: bool, width: utf8.WidthMethod, graphics: bool, clipboard: []const u8 };
+    const rows = [_]Row{
+        .{ .env = "STY=1.pts-0.box", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "TERM=screen", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .mux = .tmux, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = tmux },
+        .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "STY=1.pts-0.box TERM=screen SSH_CONNECTION=1", .mux = .screen, .osc52 = true, .width = .wcwidth, .graphics = false, .clipboard = screen },
+        .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TERM=screen-256color SSH_CONNECTION=1", .reply = "\x1bP>|tmux 3.8\x1b\\", .mux = .tmux, .osc52 = true, .width = .unicode, .graphics = false, .clipboard = tmux },
+        .{ .env = "ZELLIJ=0 SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+        .{ .env = "TERM=tmux-256color SSH_CONNECTION=1", .mux = .none, .osc52 = false, .width = .unicode, .graphics = true, .clipboard = plain },
+    };
+    for (rows, 0..) |row, index| {
+        errdefer std.debug.print("multiplexer row {d}\n", .{index});
+        var env = std.process.Environ.Map.init(testing.allocator);
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .remote_mode = .auto });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try term.queryTerminalSend(&writer);
+        try testing.expectEqual(row.graphics, std.mem.find(u8, writer.getWritten(), ansi.ANSI.kittyGraphicsQuery) != null);
+        if (row.reply.len > 0) term.processCapabilityResponse(row.reply);
+        try testing.expectEqual(row.mux, term.multiplexer);
+        try testing.expectEqual(row.osc52, term.caps.osc52);
+        try testing.expectEqual(row.mux != .none, term.caps.explicit_cursor_positioning);
+        try testing.expectEqual(row.width, term.caps.unicode);
+        writer.reset();
+        try term.writeClipboard(&writer, .clipboard, "test");
+        try testing.expectEqualStrings(row.clipboard, writer.getWritten());
+    }
 }
 
 fn countSubstring(haystack: []const u8, needle: []const u8) usize {
