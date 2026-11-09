@@ -23,8 +23,11 @@ jobs:
   changes:
     uses: ./.github/workflows/changes.yml
 
+  # A pull request that changes only packages/rust skips the TypeScript jobs; the gate accepts that.
   build:
     name: Build Native Libraries
+    needs: changes
+    if: needs.changes.outputs.rust_only != 'true'
     runs-on: blacksmith-12vcpu-macos-15
     steps:
       - name: Checkout code
@@ -112,6 +115,8 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust_only != 'true'
     permissions:
       contents: read
       actions: read
@@ -379,6 +384,8 @@ jobs:
   # the packages share this job. Their own workflows test them on Linux and macOS.
   packages-windows:
     name: Test packages (Windows)
+    needs: changes
+    if: needs.changes.outputs.rust_only != 'true'
     permissions:
       contents: read
       actions: read
@@ -582,14 +589,19 @@ jobs:
   # Gate job for branch protection
   build-complete:
     name: Core - Build and Test
-    needs: [build, test, packages-windows, bun-1-compat]
+    needs: [changes, build, test, packages-windows, bun-1-compat]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
+      # Without the changes job no skip is known to be safe. A TypeScript job may skip only on a Rust-only pull request.
       - name: Check test results
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST_ONLY: ${{ needs.changes.outputs.rust_only }}
+          TYPESCRIPT: ${{ needs.build.result }} ${{ needs.test.result }} ${{ needs['packages-windows'].result }} ${{ needs['bun-1-compat'].result }}
         run: |
-          if [ "${{ needs.build.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs['packages-windows'].result }}" != "success" ] || [ "${{ needs['bun-1-compat'].result }}" != "success" ]; then
-            echo "Tests failed"
-            exit 1
-          fi
+          [ "$CHANGES" = success ] || { echo "Change detection: $CHANGES"; exit 1; }
+          for result in $TYPESCRIPT; do
+            [ "$result" = success ] || [ "$result-$RUST_ONLY" = skipped-true ] || { echo "Tests failed"; exit 1; }
+          done
           echo "All tests passed"
