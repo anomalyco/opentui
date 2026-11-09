@@ -629,10 +629,15 @@ test "remote detection - auto mode ignores forwarded terminal identity after SSH
 }
 
 test "remote detection - TERM and COLORTERM set color depth in every remote mode" {
-    const cases = [_]struct { term: []const u8, colorterm: ?[]const u8 = null, ansi256: bool, rgb: bool }{
+    const cases = [_]struct { term: []const u8, colorterm: ?[]const u8 = null, force: ?[]const u8 = null, tmux: bool = false, ansi256: bool, rgb: bool }{
+        // GNU screen drops 24-bit colors by default, and an inherited COLORTERM describes the terminal outside it.
         .{ .term = "screen-256color", .ansi256 = true, .rgb = false },
-        .{ .term = "screen", .colorterm = "truecolor", .ansi256 = true, .rgb = true },
-        .{ .term = "screen", .colorterm = "24bit", .ansi256 = true, .rgb = true },
+        .{ .term = "screen", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .colorterm = "truecolor", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .colorterm = "24bit", .ansi256 = true, .rgb = false },
+        .{ .term = "screen", .colorterm = "truecolor", .force = "1", .ansi256 = true, .rgb = true },
+        .{ .term = "screen-256color", .colorterm = "truecolor", .tmux = true, .ansi256 = true, .rgb = true },
+        .{ .term = "xterm", .force = "true", .ansi256 = false, .rgb = false },
         .{ .term = "xterm-256color-italic", .colorterm = "yes", .ansi256 = true, .rgb = false },
         .{ .term = "dumb", .colorterm = "256", .ansi256 = false, .rgb = false },
         .{ .term = "", .colorterm = "", .ansi256 = false, .rgb = false },
@@ -645,6 +650,8 @@ test "remote detection - TERM and COLORTERM set color depth in every remote mode
             try env.put("SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
             try env.put("TERM", case.term);
             if (case.colorterm) |colorterm| try env.put("COLORTERM", colorterm);
+            if (case.force) |force| try env.put("OPENTUI_FORCE_TRUECOLOR", force);
+            if (case.tmux) try env.put("TMUX", "/tmp/tmux-1000/default,1,0");
 
             var term = Terminal.init(.{ .remote_mode = mode, .env_map = if (forwarded) null else &env });
             defer term.deinit();
@@ -944,6 +951,7 @@ test "environment overrides - rgb does not imply hyperlinks after recheck for in
     try testing.expect(term.caps.rgb);
     try testing.expect(!term.caps.hyperlinks);
 
+    try term.setHostEnvVar(testing.allocator, "WT_SESSION", "test-session");
     try term.setHostEnvVar(testing.allocator, "TERM", "screen");
 
     try testing.expect(term.caps.rgb);
@@ -1441,7 +1449,7 @@ test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard 
 
 test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it, and never screen" {
     // `ms`: the XTGETTCAP Ms query, which screen prints as text (ssh from screen forwards only its TERM).
-    // `rgb`: after setup, without replies. ConPTY draws 24-bit color, also for Windows sshd's sessions.
+    // `rgb`: after setup, without replies. ConPTY draws 24-bit color, also for Windows sshd's sessions, but not inside screen.
     const Row = struct { env: []const u8 = "", asks: bool, ms: bool = true, mode: Terminal.RemoteMode = .auto, rgb: bool = builtin.os.tag == .windows };
     const rows = [_]Row{
         .{ .asks = builtin.os.tag != .windows },
@@ -1451,9 +1459,9 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
         .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "COLORTERM=truecolor", .asks = false, .rgb = true },
-        .{ .env = "STY=1234.session", .asks = false, .ms = false },
-        .{ .env = "STY=1234.session TMUX=/tmp/tmux-1000/default,1,0", .asks = false, .ms = false },
-        .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .asks = false, .ms = false },
+        .{ .env = "STY=1234.session", .asks = false, .ms = false, .rgb = false },
+        .{ .env = "STY=1234.session TMUX=/tmp/tmux-1000/default,1,0", .asks = false, .ms = false, .rgb = false },
+        .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .asks = false, .ms = false, .rgb = false },
         .{ .env = "TERM=foot", .asks = false },
     };
     for (rows) |row| for ([_]bool{ false, true }) |sentinel| {
@@ -1474,7 +1482,7 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
         if (sentinel) try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
         try term.enableDetectedFeatures(&writer, false);
         try testing.expectEqual(row.rgb, term.caps.rgb);
-        try testing.expectEqual(row.rgb or std.mem.find(u8, row.env, "256color") != null, term.caps.ansi256);
+        try testing.expectEqual(row.rgb or !row.ms or std.mem.find(u8, row.env, "256color") != null, term.caps.ansi256);
     };
 }
 
