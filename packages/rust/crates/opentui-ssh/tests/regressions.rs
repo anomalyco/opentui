@@ -5,22 +5,24 @@ use opentui::prelude::*;
 use opentui_ssh::{Server, ServerConfig, Session};
 use russh::keys::PublicKeyOrCertificate;
 use russh::{ChannelMsg, client};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 struct Client {
     fingerprint: String,
     reading: Reading,
+    /// How long the output read since a paced client's start takes it.
+    paced: Duration,
 }
 
 /// How a client reads the connection.
-#[derive(Clone, Copy)]
 enum Reading {
     Normal,
     /// Stops reading at the first output, as a frozen client does.
     Stall,
-    /// Waits this long after each message, as a client on a slow link does.
-    Paced(Duration),
+    /// Takes this long for each 4 KiB once its start is set, as a client on a slow link does. It keeps to the clock,
+    /// so a client the scheduler held back catches up instead of falling further behind.
+    Paced(Duration, Arc<OnceLock<tokio::time::Instant>>),
 }
 
 impl client::Handler for Client {
@@ -34,13 +36,18 @@ impl client::Handler for Client {
     async fn data(
         &mut self,
         _channel: russh::ChannelId,
-        _data: &[u8],
+        data: &[u8],
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        match self.reading {
+        match &self.reading {
             Reading::Normal => {}
             Reading::Stall => std::future::pending::<()>().await,
-            Reading::Paced(pause) => tokio::time::sleep(pause).await,
+            Reading::Paced(pause, since) => {
+                if let Some(&since) = since.get() {
+                    self.paced += pause.mul_f64(data.len() as f64 / 4096.0);
+                    tokio::time::sleep_until(since + self.paced).await;
+                }
+            }
         }
         Ok(())
     }
@@ -65,7 +72,7 @@ async fn connect_as(server: &Server, user: &str) -> client::Handle<Client> {
 }
 
 async fn connect_with(server: &Server, user: &str, config: client::Config, reading: Reading) -> client::Handle<Client> {
-    let handler = Client { fingerprint: server.fingerprints()[0].clone(), reading };
+    let handler = Client { fingerprint: server.fingerprints()[0].clone(), reading, paced: Duration::ZERO };
     let mut handle = client::connect(Arc::new(config), server.local_addr(), handler).await.expect("connect");
     assert!(handle.authenticate_none(user).await.unwrap().success());
     handle
@@ -304,36 +311,27 @@ fn a_slow_client_loses_its_terminal_when_the_close_outlasts_the_session_end() {
     assert!(restored, "the channel closed before the client's terminal was restored");
 }
 
-/// An app whose close runs to its six-second cap for a slow client: a 600 ms close timeout, and frames of cells that
-/// each change both colors, more than the client reads in that time.
+/// An app whose close runs to its ten-second cap for a slow client: one frame of cells that each get their own
+/// colors, more than the client reads in that time.
 fn slow_closing_app(session: Session) -> opentui::Result<()> {
-    let mut options = AppOptions::default().with_theme(Theme::dark());
-    options.host.close_timeout = Duration::from_millis(600);
-    let app = session.app(options)?;
-    let filler = Text::new(&app, "").grow(1.0);
-    app.root().add(&filler);
-    let mut frame = 0u32;
-    app.animate(move |_cx, _| {
-        frame += 1;
-        let cells = (0..48_000u32).map(|cell| {
-            let [r, g, b, _] = (cell.wrapping_mul(2_654_435_761) ^ frame).to_le_bytes();
-            Span::styled("x", Style::new().fg(Color::rgb(r, g, b)).bg(Color::rgb(b, r, g)))
-        });
-        filler.set_text(cells.collect::<Vec<_>>());
-        true
-    });
+    let app = session.app(AppOptions::default().with_theme(Theme::dark()))?;
+    app.root().add(&Text::new(&app, "Z".repeat(48_000)).grow(1.0));
+    app.root().add_filter(opentui::post::Noise::new(0.5).seed(1));
     app.run()
 }
 
 /// Opens a 400x120 shell for a client that reads about 130 KB/s: output keeps moving, so a close never goes a
-/// timeout without progress, but slowly. Returns once the app has taken over the terminal.
+/// timeout without progress, but slowly. Returns once the app's frame has started to arrive, and paces from then.
 async fn slow_shell(server: &Server) -> (client::Handle<Client>, russh::Channel<client::Msg>) {
     let config = client::Config { window_size: 64 * 1024, maximum_packet_size: 4096, ..client::Config::default() };
-    let handle = connect_with(server, "alice", config, Reading::Paced(Duration::from_millis(30))).await;
+    let since = Arc::new(OnceLock::new());
+    let reading = Reading::Paced(Duration::from_millis(30), Arc::clone(&since));
+    let handle = connect_with(server, "alice", config, reading).await;
     let mut channel = handle.channel_open_session().await.expect("open a channel");
     channel.request_pty(false, "xterm", 400, 120, 0, 0, &[]).await.unwrap();
     channel.request_shell(false).await.unwrap();
-    wait_for(&mut channel, "\x1b[?1049h").await;
+    wait_for(&mut channel, "Z").await;
+    since.set(tokio::time::Instant::now()).unwrap();
     (handle, channel)
 }
 
@@ -398,7 +396,7 @@ fn a_close_timeout_ends_the_shutdown_and_drops_a_slow_client() {
     runtime().block_on(async {
         let (_handle, mut channel) = slow_shell(&server).await;
         let closing = close_in_background(&server);
-        // The app's close takes six seconds, so the client goes without its restoration.
+        // The app's close takes ten seconds, so the client goes without its restoration.
         assert!(!until_restored(&mut channel).await, "the app restored the terminal within two seconds");
         let took = tokio::task::spawn_blocking(move || closing.join().unwrap()).await.unwrap();
         assert!(took >= Duration::from_secs(2) && took < Duration::from_secs(4), "the close took {took:?}");
