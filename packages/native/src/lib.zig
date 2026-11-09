@@ -9,3 +9,4 @@ comptime {
     _ = @import("runtime-abi.zig");
     _ = @import("yoga.zig");
 }
+// probe: native-only run
