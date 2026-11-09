@@ -43,6 +43,8 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with ten changes, 
   rounds differently at another size, even one within Yoga's 1e-4 tolerance. Each layout also keeps its
   unrounded left and top position beside the rounded one, as upstream keeps unrounded sizes, and rounding
   starts from the unrounded position and size: a subtree that a cache hit skips then rounds as a fresh one.
+  A baseline adds its child's unrounded top on every config, so a box that a cache hit skips aligns as a
+  fresh one.
   Rounding then visits only the nodes that the solve laid out, and the subtrees whose parent's unrounded
   absolute origin moved; it clears the new-layout flag of each node it visits. A move in
   `src/yoga-bridge.cpp` flags the child's new path, because under `display: none` the moved subtree gets no

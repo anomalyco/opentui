@@ -1290,6 +1290,33 @@ test "Yoga incremental solves of measured leaves with margins equal fresh solves
         for (chain, layouts) |node, *layout| yoga.yogaNodeGetComputedLayout(node, layout);
     }
     try std.testing.expectEqual(chain_layouts[1], chain_layouts[0]);
+    // A cached column in a baseline row, its child centered 1.5 cells down, as a sibling grows from 2
+    // to 6, on both configs: the row's baseline adds the child's unrounded top.
+    for ([_]u32{ 0, 1 }) |enabled| {
+        yoga.configSetRoundsPositionsFromAbsoluteEdges(config, enabled);
+        var baseline_layouts: [2][4]yoga.ExternalYogaLayout = undefined;
+        for (&baseline_layouts, [_]f32{ 2, 6 }) |*layouts, first| {
+            var nodes: [4]yoga.YGNodeRef = undefined;
+            for (&nodes, 0..) |*node, i| {
+                node.* = yoga.yogaNodeCreateWithConfig(config);
+                if (i == 0) continue;
+                yoga.yogaNodeInsertChild(nodes[if (i < 3) 0 else 2], node.*, if (i == 2) 1 else 0);
+                yoga.yogaNodeStyleSetValue(node.*, @backingInt(yoga.YogaValueKind.width), 0, point, 2);
+                yoga.yogaNodeStyleSetValue(node.*, @backingInt(yoga.YogaValueKind.height), 0, point, ([_]f32{ first, 5, 2 })[i - 1]);
+            }
+            defer yoga.yogaNodeFreeRecursive(nodes[0]);
+            yoga.yogaNodeStyleSetEnum(nodes[0], @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+            yoga.yogaNodeStyleSetEnum(nodes[0], @backingInt(yoga.YogaEnumKind.align_items), api.OT_ALIGN_BASELINE);
+            yoga.yogaNodeStyleSetEnum(nodes[2], @backingInt(yoga.YogaEnumKind.justify_content), api.OT_JUSTIFY_CENTER);
+            for ([_]f32{ first, 6 }) |height| {
+                yoga.yogaNodeStyleSetValue(nodes[1], @backingInt(yoga.YogaValueKind.height), 0, point, height);
+                yoga.yogaNodeCalculateLayout(nodes[0], 10, 10, ltr);
+            }
+            for (nodes, layouts) |node, *layout| yoga.yogaNodeGetComputedLayout(node, layout);
+        }
+        try std.testing.expectEqual(baseline_layouts[1], baseline_layouts[0]);
+        try std.testing.expectEqual(3, baseline_layouts[0][2].top);
+    }
     // A cached box 64 cells past a spacer that grows from 0.499899 to 0.499901, on each axis: the two
     // unrounded origins round to different cells but are the same float, so rounding must compare them
     // as doubles.

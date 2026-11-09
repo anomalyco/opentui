@@ -2448,7 +2448,15 @@ test("a startup reply split by a pause types nothing while its DA1 reply is out 
   }
 })
 
-test("once the terminal confirms its Kitty push, a lone ESC waits for the next byte without a clock", async () => {
+const CONFIRMED_ESC_READS: [string[], string[]][] = [
+  [
+    ["\x1bb", "\x1bf", "\x1b\x7f", "\x1b\r"],
+    ["Alt+b", "Alt+f", "Alt+backspace", "Alt+return"],
+  ],
+  [["\x1b", "[27u"], ["escape"]],
+]
+
+test("once the terminal confirms its Kitty push, a raw ESC that ends a read is Escape without a clock (issue 466)", async () => {
   for (const [native, confirm] of [
     [false, true],
     [true, false],
@@ -2462,15 +2470,24 @@ test("once the terminal confirms its Kitty push, a lone ESC waits for the next b
       t.clock.advance(5000)
       if (confirm) t.send("\x1b[?5u")
       t.send("\x1b")
-      t.clock.advance(60_000)
       const held = [...t.keys]
+      t.clock.advance(60_000)
       t.send("\x1b[A")
       expect({ native, confirm, held, keys: t.keys }).toEqual({
         native,
         confirm,
-        held: native && confirm ? [] : ["escape"],
+        held: native && confirm ? ["escape"] : [],
         keys: ["escape", "up"],
       })
+      // One read each, no clock: in a read a raw ESC is Alt and the next key; a unit cut after its ESC types nothing.
+      for (const [reads, keys] of native && confirm ? CONFIRMED_ESC_READS : []) {
+        const got: string[] = []
+        const onKey = (key: KeyEvent) => got.push(`${key.meta ? "Alt+" : ""}${key.name}`)
+        t.renderer.keyInput.on("keypress", onKey)
+        for (const read of reads) t.send(read)
+        t.renderer.keyInput.off("keypress", onKey)
+        expect({ reads, got }).toEqual({ reads, got: keys })
+      }
       // A focus restore pushes again; its confirming reply changes no capability, so the next frame writes nothing.
       await t.renderOnce()
       await t.written()
@@ -2485,11 +2502,10 @@ test("once the terminal confirms its Kitty push, a lone ESC waits for the next b
       await t.renderer.resume()
       t.keys.length = 0
       t.send("\x1b")
-      t.clock.advance(60_000)
       expect({ native, confirm, resumed: [...t.keys] }).toEqual({
         native,
         confirm,
-        resumed: native && confirm ? [] : ["escape"],
+        resumed: native && confirm ? ["escape"] : [],
       })
     } finally {
       t.renderer.destroy()
@@ -2516,13 +2532,12 @@ test("a push's CSI ? u reply split by a pause is not typed, at startup and after
           t.send(reply.slice(cut) + "j")
           t.clock.advance(25)
           const keys = [...t.keys]
-          // Confirmed: a lone ESC then has no timeout.
+          // Confirmed: a lone ESC is then the Escape key with no timeout.
           t.keys.length = 0
           t.send("\x1b")
-          t.clock.advance(25)
           // Cut 1 after a pause: the Escape already went out at 20 ms (decision Q3).
           const escape = cut === 1 && pause > 0 ? ["escape"] : []
-          expect({ focus, pause, cut, keys, confirmed: t.keys.length === 0 }).toEqual({
+          expect({ focus, pause, cut, keys, confirmed: t.keys.length === 1 }).toEqual({
             focus,
             pause,
             cut,
