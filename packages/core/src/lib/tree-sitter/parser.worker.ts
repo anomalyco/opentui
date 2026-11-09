@@ -598,6 +598,7 @@ class ParserWorker {
     }
 
     const changedRanges = parserState.tree.getChangedRanges(newTree)
+    parserState.tree.delete()
     parserState.tree = newTree
 
     const startQuery = performance.now()
@@ -811,6 +812,7 @@ class ParserWorker {
       return { error: "Failed to parse buffer during reset" }
     }
 
+    parserState.tree.delete()
     parserState.tree = newTree
     const matches = parserState.queries.highlights.captures(parserState.tree.rootNode)
 
