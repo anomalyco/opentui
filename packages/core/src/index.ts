@@ -159,3 +159,4 @@ export type {
 export * from "./console.js"
 export { resolveBundledFilePath } from "./platform/runtime.js"
 export * as Yoga from "./yoga.js"
+// probe: TypeScript-only run
