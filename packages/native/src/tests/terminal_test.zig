@@ -1441,10 +1441,11 @@ test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard 
 
 test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it, and never screen" {
     // `ms`: the XTGETTCAP Ms query, which screen prints as text (ssh from screen forwards only its TERM).
-    const Row = struct { env: []const u8 = "", asks: bool, ms: bool = true };
+    const Row = struct { env: []const u8 = "", asks: bool, ms: bool = true, mode: Terminal.RemoteMode = .auto };
     const rows = [_]Row{
         .{ .asks = builtin.os.tag != .windows },
         .{ .env = "TERM=xterm-256color", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=xterm-256color", .asks = true, .mode = .remote },
         .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "COLORTERM=truecolor", .asks = false },
@@ -1456,7 +1457,7 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
     for (rows) |row| for ([_]bool{ false, true }) |sentinel| {
         var env = std.process.Environ.Map.init(testing.allocator);
         try putEnv(&env, row.env);
-        var term = Terminal.init(.{ .remote_mode = .auto });
+        var term = Terminal.init(.{ .remote_mode = row.mode });
         term.adoptHostEnvironment(env);
         defer term.deinit();
         term.reply_sentinel = sentinel;

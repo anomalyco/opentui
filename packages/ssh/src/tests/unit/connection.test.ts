@@ -213,8 +213,6 @@ test("per-connection and global limits reject before accepting a shell", async (
 })
 
 const wide = "é".repeat(CLIENT_ENV_VALUE_BYTES_MAX / 2)
-// Native setup on Windows assumes ConPTY truecolor, so rgb and ansi256 do not depend on the client there.
-const clientColors = (caps: string) => (process.platform === "win32" ? caps.replace(/ rgb| ansi256/g, "") : caps)
 
 test.each([
   ["a PTY sends its TERM", "pty=xterm-256color shell", "2/0", "none unicode ansi256"],
@@ -245,7 +243,7 @@ test.each([
     const enabled = Object.entries({ rgb, ansi256, hyperlinks }).filter(([, on]) => on)
     const program = terminal.name ? [`${terminal.name}/${terminal.version}`] : []
     const received = [multiplexer, unicode, ...enabled.map(([name]) => name), ...program].join(" ")
-    expect(clientColors(received)).toBe(clientColors(expected))
+    expect(received).toBe(expected)
   } finally {
     await handler.closeAll()
   }
