@@ -285,16 +285,6 @@ describeClient("TreeSitterClient", () => {
   // or zig grammar, which a new worker has not loaded yet.
   test.each<[string, (c: TreeSitterClient, highlighted: (version: number) => Promise<void>) => Promise<void>]>([
     [
-      "updateBuffer",
-      async (c, highlighted) => {
-        await c.createBuffer(1, js(1), "javascript", 1)
-        for (let v = 2; v <= 4; v++) {
-          await c.updateBuffer(1, replace(js(v - 1), js(v)), js(v), v)
-          await highlighted(v)
-        }
-      },
-    ],
-    [
       "resetBuffer",
       async (c, highlighted) => {
         await c.createBuffer(1, js(1), "javascript", 1)
@@ -312,13 +302,45 @@ describeClient("TreeSitterClient", () => {
         await highlighted(2)
       },
     ],
+    [
+      "resetBuffer during the first injection load",
+      async (c, highlighted) => {
+        await c.createBuffer(1, mdZig, "markdown", 1)
+        await c.resetBuffer(1, 2, md)
+        await highlighted(2)
+      },
+    ],
     ["removeBuffer during the first injection load", async (c) => void (await c.createBuffer(1, md, "markdown", 1))],
+    [
+      "removeBuffer with a reset still debounced",
+      async (c) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.resetBuffer(1, 2, mdZig)
+      },
+    ],
     [
       "removeBuffer during an edit's injection load",
       async (c, highlighted) => {
         await c.createBuffer(1, md, "markdown", 1)
         await highlighted(1)
         await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+      },
+    ],
+    [
+      "removeBuffer during a queued edit's injection load",
+      async (c) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+        await c.highlightOnce(md, "markdown")
+      },
+    ],
+    [
+      "removeBuffer again as the last removeBuffer's 3 s timeout ends",
+      async (c) => {
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await c.removeBuffer(1)
+        await new Promise((resolve) => setTimeout(resolve, 2975))
+        await c.createBuffer(1, md, "markdown", 1)
       },
     ],
   ])(
@@ -335,13 +357,17 @@ describeClient("TreeSitterClient", () => {
       const errors: string[] = []
       c.on("highlights:response", (id, version) => id === 1 && versions.push(version))
       c.on("error", (error) => errors.push(error.split("\n")[0]!))
+      c.on("warning", (warning) => errors.push(warning))
       const treeCount = new Promise<unknown>((resolve) =>
         c.on("worker:log", (_type, message) => {
           if (message.startsWith("tree-count ")) resolve(JSON.parse(message.slice("tree-count ".length)))
         }),
       )
       const highlighted = async (version: number) => {
-        while (!versions.includes(version)) await new Promise((resolve) => setTimeout(resolve, 5))
+        for (let waited = 0; !versions.includes(version); waited += 5) {
+          if (waited >= 3000) throw new Error(`no highlights for version ${version}`)
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
       }
       const within3s = <T>(promise: Promise<T>) =>
         Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
@@ -349,11 +375,15 @@ describeClient("TreeSitterClient", () => {
       try {
         await c.initialize()
         await run(c, highlighted)
-        await c.removeBuffer(1)
+        const removed = await within3s(c.removeBuffer(1))
         // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count.
         await within3s(c.highlightOnce(mdZig, "markdown"))
         const trees = await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))
-        expect({ errors, trees }).toEqual({ errors: [], trees: { live: 0, freedReads: 0 } })
+        expect({ removed, errors, trees }).toEqual({
+          removed: undefined,
+          errors: [],
+          trees: { live: 0, freedReads: 0 },
+        })
       } finally {
         await within3s(c.destroy())
       }

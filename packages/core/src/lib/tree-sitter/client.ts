@@ -679,11 +679,13 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
       this.editQueues.get(bufferId)?.clear()
       this.editQueues.delete(bufferId)
     }
+    this.debouncer.clearDebounce(`reset-${bufferId}`)
 
     if (this.worker) {
       await new Promise<boolean>((resolve, reject) => {
         const messageId = `dispose_${bufferId}`
-        this.messageCallbacks.set(messageId, { resolve, reject })
+        const callback = { resolve, reject }
+        this.messageCallbacks.set(messageId, callback)
         try {
           this.sendWorkerMessage({
             type: "DISPOSE_BUFFER",
@@ -695,9 +697,9 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
           resolve(false)
         }
 
-        // Add a timeout in case the worker doesn't respond
+        // Add a timeout in case the worker doesn't respond; a later removeBuffer of this id reuses messageId
         setTimeout(() => {
-          if (this.messageCallbacks.has(messageId)) {
+          if (this.messageCallbacks.get(messageId) === callback) {
             this.messageCallbacks.delete(messageId)
             console.warn({ bufferId }, "Timed out waiting for buffer to be disposed")
             resolve(false)
@@ -705,8 +707,6 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
         }, 3000)
       })
     }
-
-    this.debouncer.clearDebounce(`reset-${bufferId}`)
   }
 
   public destroy(): Promise<void> {
