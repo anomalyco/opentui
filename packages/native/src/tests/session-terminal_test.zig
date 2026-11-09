@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const context = @import("../context.zig");
 const session = @import("../session.zig");
@@ -380,7 +381,9 @@ test "Session terminal close interrupts setup frames and suspension without clos
 
 test "Session terminal close clears the main screen only after setup or resume claimed it" {
     // Setup publishes query, screen, rows, then enable; resume starts at the screen packet.
-    const cases = [_]struct { packets: ?u32, resumed: bool = false, render_offset: u32 = 0, clears: bool }{
+    // A remote client is not ConPTY, so it gets no Windows row teardown; auto mode may run under Windows sshd (issue 454).
+    const Mode = @FieldType(session.RendererOptions, "remote_mode");
+    const cases = [_]struct { packets: ?u32, resumed: bool = false, render_offset: u32 = 0, mode: Mode = .local, clears: bool }{
         .{ .packets = 0, .clears = false },
         .{ .packets = 1, .clears = false },
         .{ .packets = 3, .clears = false },
@@ -389,12 +392,15 @@ test "Session terminal close clears the main screen only after setup or resume c
         .{ .packets = null, .clears = true },
         .{ .packets = null, .render_offset = 2, .clears = true },
         .{ .packets = null, .resumed = true, .clears = true },
+        .{ .packets = null, .mode = .auto, .clears = true },
+        .{ .packets = null, .mode = .remote, .clears = true },
     };
     for (cases) |case| {
         const f = try Fixture.init(testing.allocator, testing.io, 4, 3);
         defer f.deinit();
         var now_ns: u64 = 0;
         var bytes: [16 * 1024]u8 = undefined;
+        f.cli.terminal.opts.remote_mode = case.mode;
         _ = try f.value.splitControl(.{ .render_offset = case.render_offset });
         try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false });
         if (case.resumed) {
@@ -408,10 +414,15 @@ test "Session terminal close clears the main screen only after setup or resume c
                 try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
                 _ = try f.drain(&bytes);
             }
-        } else try f.drive(&now_ns, .active);
+        } else {
+            try f.drive(&now_ns, .active);
+            try f.value.control(.{ .capability_response = "\x1b[3;1R" });
+        }
         try f.owner.beginSessionClose(f.id);
         const restoration = try f.driveOutput(&now_ns, .restored, &bytes, 32);
         try testing.expectEqual(case.clears, std.mem.find(u8, restoration, ansi.ANSI.eraseBelowCursor) != null);
+        const conpty = builtin.os.tag == .windows and case.mode != .remote and case.clears and case.render_offset == 0;
+        try testing.expectEqual(@as(usize, if (conpty) 2 else 0), std.mem.count(u8, restoration, ansi.ANSI.reverseIndex));
         try testing.expect(std.mem.endsWith(u8, restoration, ansi.ANSI.showCursor));
     }
 }
