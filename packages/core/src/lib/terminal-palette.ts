@@ -79,6 +79,45 @@ function toHex(r?: string, g?: string, b?: string, hex6?: string): string {
   return "#000000"
 }
 
+const SPECIAL_COLORS = {
+  10: "defaultForeground",
+  11: "defaultBackground",
+  12: "cursorColor",
+  13: "mouseForeground",
+  14: "mouseBackground",
+  15: "tekForeground",
+  16: "tekBackground",
+  17: "highlightBackground",
+  19: "highlightForeground",
+} as const satisfies Record<number, Exclude<keyof TerminalColors, "palette">>
+
+export function emptyTerminalColors(size: number): TerminalColors {
+  const colors = { palette: Array(size).fill(null) } as TerminalColors
+  for (const key of Object.values(SPECIAL_COLORS)) colors[key] = null
+  return colors
+}
+
+/** Copies the OSC 4 and OSC 10-19 color replies in `sequence` into `colors`; returns false when it holds none. */
+export function applyPaletteReplies(colors: TerminalColors, sequence: string): boolean {
+  let applied = false
+  let m: RegExpExecArray | null
+  OSC4_RESPONSE.lastIndex = 0
+  while ((m = OSC4_RESPONSE.exec(sequence))) {
+    const index = parseInt(m[1], 10)
+    if (index >= colors.palette.length) continue
+    colors.palette[index] = toHex(m[2], m[3], m[4], m[5])
+    applied = true
+  }
+  OSC_SPECIAL_RESPONSE.lastIndex = 0
+  while ((m = OSC_SPECIAL_RESPONSE.exec(sequence))) {
+    const key = SPECIAL_COLORS[parseInt(m[1], 10) as keyof typeof SPECIAL_COLORS]
+    if (!key) continue
+    colors[key] = toHex(m[2], m[3], m[4], m[5])
+    applied = true
+  }
+  return applied
+}
+
 /**
  * Wrap OSC sequence for tmux passthrough
  * tmux requires DCS sequences to pass OSC to the underlying terminal
@@ -355,20 +394,7 @@ export class TerminalPalette implements TerminalPaletteDetector {
     const { timeout = 5000, size = 16 } = options || {}
     const supported = await this.detectOSCSupport()
 
-    if (!supported) {
-      return {
-        palette: Array(size).fill(null),
-        defaultForeground: null,
-        defaultBackground: null,
-        cursorColor: null,
-        mouseForeground: null,
-        mouseBackground: null,
-        tekForeground: null,
-        tekBackground: null,
-        highlightBackground: null,
-        highlightForeground: null,
-      }
-    }
+    if (!supported) return emptyTerminalColors(size)
 
     const indicesToQuery = [...Array(size).keys()]
     const idleTimeout = env.OTUI_PALETTE_IDLE_TIMEOUT_MS

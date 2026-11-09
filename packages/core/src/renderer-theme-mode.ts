@@ -32,7 +32,8 @@ function inferThemeModeFromBackgroundColor(color: string): ThemeMode {
 }
 
 export interface RendererThemeModeHost {
-  queryThemeColors(): void
+  /** Returns true when the query ends with a DA1 sentinel; the host then calls `cancelRefresh` at its reply. */
+  queryThemeColors(): boolean
 }
 
 type ThemeWaiter = {
@@ -44,6 +45,7 @@ export class RendererThemeMode {
   private static readonly QUERY_TIMEOUT_MS = 250
 
   private _themeMode: ThemeMode | null = null
+  private refreshPending = false
   private themeRefreshTimeoutId: TimerHandle | null = null
   private waiters = new Set<ThemeWaiter>()
 
@@ -81,7 +83,11 @@ export class RendererThemeMode {
 
   public dispose(): void {
     this.cancelRefresh()
+    this.resolveWaiters()
+  }
 
+  /** Resolves every wait with the current mode, also when no mode is known. */
+  public resolveWaiters(): void {
     for (const waiter of this.waiters) {
       if (waiter.timeoutHandle !== null) {
         this.clock.clearTimeout(waiter.timeoutHandle)
@@ -119,6 +125,7 @@ export class RendererThemeMode {
   }
 
   public cancelRefresh(): void {
+    this.refreshPending = false
     if (this.themeRefreshTimeoutId === null) {
       return
     }
@@ -130,14 +137,18 @@ export class RendererThemeMode {
   private requestThemeOscColors(): void {
     // Ignore repeated ?997 notifications while the current OSC refresh is
     // still in flight.
-    if (this.themeRefreshTimeoutId !== null) {
+    if (this.refreshPending) {
       return
     }
 
-    this.host.queryThemeColors()
+    const batched = this.host.queryThemeColors()
+    this.refreshPending = true
+    // Without a sentinel, a timer ends the refresh.
+    if (batched) return
 
     this.themeRefreshTimeoutId = this.clock.setTimeout(() => {
       this.themeRefreshTimeoutId = null
+      this.refreshPending = false
     }, RendererThemeMode.QUERY_TIMEOUT_MS)
   }
 
@@ -149,14 +160,7 @@ export class RendererThemeMode {
       return null
     }
 
-    for (const waiter of this.waiters) {
-      if (waiter.timeoutHandle !== null) {
-        this.clock.clearTimeout(waiter.timeoutHandle)
-      }
-      waiter.resolve(mode)
-    }
-
-    this.waiters.clear()
+    this.resolveWaiters()
     return mode
   }
 }

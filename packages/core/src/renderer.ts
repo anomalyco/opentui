@@ -50,8 +50,10 @@ import { isEditBufferRenderable, type EditBufferRenderable } from "./renderables
 import { env, registerEnvVar } from "./lib/env.js"
 import { destroyTreeSitterClient } from "./lib/tree-sitter/index.js"
 import {
+  applyPaletteReplies,
   buildTerminalPaletteSignature,
   createTerminalPalette,
+  emptyTerminalColors,
   normalizeTerminalPalette,
   type TerminalPaletteDetector,
   type TerminalColors,
@@ -887,10 +889,11 @@ const KITTY_KEYBOARD_REPLY = /^\x1b\[\?\d+u$/
  * the DA1 reply ends the batch. A batch whose reply never comes ends at its backstop.
  */
 interface ReplyBatch {
-  kind: "startup" | "pixel"
+  kind: "startup" | "pixel" | "theme" | "palette"
   backstop: TimerHandle | null
   // A suspension or a paste may have taken its DA1 reply, so its backstop is no miss.
   excused: boolean
+  end?: () => void
 }
 
 /**
@@ -1302,6 +1305,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _nativePaletteSignature: string | null = null
   private _emittedPaletteSignature: string | null = null
   private _palettePublishGeneration = 0
+  // The newest palette batch's result and the publish generation it began in.
+  private paletteReplies: { colors: TerminalColors; generation: number } | null = null
   private _onDestroy?: () => void
   private themeModeState: RendererThemeMode
   private _terminalFocusState: boolean | null = null
@@ -1552,7 +1557,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.themeModeState = new RendererThemeMode(
         {
           queryThemeColors: () => {
-            this.nativeSession.control({ kind: "query-theme-colors" })
+            this.nativeSession.control({ kind: "query-theme-colors", sentinel: this.replySentinel })
+            if (!this.replySentinel) return false
+            this.admitReplyBatch("theme", () => {
+              this.themeModeState.cancelRefresh()
+              this.themeModeState.resolveWaiters()
+            })
+            return true
           },
         },
         this.clock,
@@ -2280,7 +2291,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("timeoutMs must be a non-negative finite number")
     }
 
-    return this.themeModeState.waitForThemeMode(timeoutMs, this._isDestroyed)
+    // In sentinel mode an OSC 11 reply comes before its batch's DA1 reply: with no such batch out, the answer is known.
+    const answered =
+      this.replySentinel &&
+      this._terminalIsSetup &&
+      !this.replyBatches.some((batch) => batch.kind === "startup" || batch.kind === "theme")
+    return this.themeModeState.waitForThemeMode(answered ? 0 : timeoutMs, this._isDestroyed)
   }
 
   public getDebugInputs(): Array<{ timestamp: string; sequence: string }> {
@@ -3475,7 +3491,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const startupCursorCprActive = this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
     this.pendingSplitStartupCursorSeed = startupCursorCprActive
     this.updateStdinParserProtocolContext({ startupCursorCprActive })
-    const startup = this.admitReplyBatch("startup")
+    // The startup batch asks OSC 11; after its DA1 reply a theme wait has its answer.
+    const startup = this.admitReplyBatch("startup", () => this.replySentinel && this.themeModeState.resolveWaiters())
     try {
       await this.trackNativeTerminalTransition(
         this.nativeSession.setupTerminal({
@@ -3547,12 +3564,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this.replyBatches.some((batch) => batch.kind === "startup")
   }
 
-  /** Call when the Session has accepted the batch's packet. */
-  private admitReplyBatch(kind: ReplyBatch["kind"]): ReplyBatch {
+  /** Call when the Session has accepted the batch's packet; `end` runs when the batch ends. */
+  private admitReplyBatch(kind: ReplyBatch["kind"], end?: () => void): ReplyBatch {
     // An earlier excused batch may take this batch's DA1 reply.
-    const batch = { kind, backstop: null, excused: this.replyBatches.some((earlier) => earlier.excused) }
+    const batch = { kind, backstop: null, excused: this.replyBatches.some((earlier) => earlier.excused), end }
     this.replyBatches.push(batch)
     this.syncReplyContext(false)
+    // Setup arms the startup backstop when it completes.
+    if (kind !== "startup") {
+      void this.nativeSession.idle().then(
+        () => this.armReplyBackstop(batch),
+        () => {},
+      )
+    }
     return batch
   }
 
@@ -3586,6 +3610,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // Release the re-query guard; a late reply still answers its query (issue 346).
       this.waitingForPixelResolution = false
     }
+    batch.end?.()
     this.syncReplyContext(true)
   }
 
@@ -3854,6 +3879,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         return
       case "response":
         if (event.protocol === "osc") {
+          this.applyPaletteReply(event.sequence)
           for (const subscriber of this.oscSubscribers) {
             subscriber(event.sequence)
           }
@@ -4349,11 +4375,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.pixelResolutionRequeryPending = false
       this.waitingForPixelResolution = true
       this.unansweredPixelQueries++
-      const batch = this.admitReplyBatch("pixel")
-      void this.nativeSession.idle().then(
-        () => this.armReplyBackstop(batch),
-        () => {},
-      )
+      this.admitReplyBatch("pixel")
     } catch (error) {
       if (!(error instanceof NativeError)) throw error
       if (error.status === NativeStatus.InvalidPhase) return
@@ -5890,14 +5912,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return projected
   }
 
+  private paletteTmux(): { isTmux: boolean; isLegacyTmux: boolean } {
+    const name = this.capabilities?.terminal?.name?.toLowerCase()
+    const version = this.capabilities?.terminal?.version
+    return {
+      isTmux: Boolean(this.capabilities?.multiplexer === "tmux" || name?.includes("tmux")),
+      isLegacyTmux: Boolean(name?.includes("tmux") && version !== undefined && version.localeCompare("3.6") < 0),
+    }
+  }
+
   private ensurePaletteDetector(): TerminalPaletteDetector {
     if (!this._paletteDetector) {
-      const isTmux = Boolean(
-        this.capabilities?.multiplexer === "tmux" || this.capabilities?.terminal?.name?.toLowerCase()?.includes("tmux"),
-      )
-      const isLegacyTmux =
-        this.capabilities?.terminal?.name?.toLowerCase()?.includes("tmux") &&
-        this.capabilities?.terminal?.version?.localeCompare("3.6") < 0
+      const { isTmux, isLegacyTmux } = this.paletteTmux()
       const detector = createTerminalPalette({
         stdin: this.stdin,
         stdout: this.stdout,
@@ -5919,6 +5945,52 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     return this._paletteDetector
+  }
+
+  /**
+   * Sentinel mode: one packet asks every color, and its DA1 reply ends the detection, capped by the caller's
+   * timeout. Legacy tmux (< 3.6) keeps the detector's timers: its wrapped replies trail tmux's own DA1.
+   */
+  private queryPaletteBatch(size: number, timeoutMs: number | undefined, isTmux: boolean): Promise<TerminalColors> {
+    // tmux answers only OSC 10/11/12 of the special colors.
+    const specials = isTmux ? [10, 11, 12] : [10, 11, 12, 13, 14, 15, 16, 17, 19]
+    const queries = [...Array(size).keys()]
+      .map((index) => `\x1b]4;${index};?\x07`)
+      .concat(specials.map((osc) => `\x1b]${osc};?\x07`))
+    const replies = { colors: emptyTerminalColors(size), generation: this._palettePublishGeneration }
+    return new Promise((resolve) => {
+      this.nativeSession.control({ kind: "palette-query", bytes: Buffer.from(queries.join("")), sentinel: true })
+      this.paletteReplies = replies
+      const cap = timeoutMs === undefined ? null : this.clock.setTimeout(() => resolve(replies.colors), timeoutMs)
+      this.admitReplyBatch("palette", () => {
+        if (cap !== null) this.clock.clearTimeout(cap)
+        resolve(replies.colors)
+      })
+    })
+  }
+
+  /**
+   * Replies fill the newest palette batch's result, also after its DA1 reply. Once it is published, a late reply
+   * revises a copy and publishes that, unless the cache was cleared since the batch began.
+   */
+  private applyPaletteReply(sequence: string): void {
+    const replies = this.paletteReplies
+    if (!replies || replies.generation !== this._palettePublishGeneration) return
+    const published = this._paletteCache.get(replies.colors.palette.length) === replies.colors
+    const colors = published ? { ...replies.colors, palette: [...replies.colors.palette] } : replies.colors
+    if (!applyPaletteReplies(colors, sequence) || !published) return
+    replies.colors = colors
+    this._paletteCache.clear()
+    this.publishPalette(colors)
+    this.requestRender()
+  }
+
+  private publishPalette(colors: TerminalColors): void {
+    if (this.shouldSyncNativePaletteState() && colors.palette.length >= NATIVE_PALETTE_QUERY_SIZE) {
+      this.syncNativePaletteState(colors)
+    }
+    this._paletteCache.set(colors.palette.length, colors)
+    this.emitPaletteChange(colors)
   }
 
   private syncNativePaletteState(colors: TerminalColors | null): void {
@@ -6088,7 +6160,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     })
     this._cancelPaletteDetection = cancel
-    const detection = detector.detect({ ...options, timeout: detectionTimeout })
+    const { isTmux, isLegacyTmux } = this.paletteTmux()
+    const batched = this.replySentinel && !isLegacyTmux && this.stdin.isTTY && this.stdout.isTTY
+    // A clock-mode result is newer than any reply to an earlier batch.
+    if (!batched) this.paletteReplies = null
+    const detection = batched
+      ? this.queryPaletteBatch(requestedSize, detectionTimeout, isTmux)
+      : detector.detect({ ...options, timeout: detectionTimeout })
     void detection.catch(() => detector.cleanup())
     const completion = Promise.race([detection, cancelled])
       .then((result) => {
@@ -6100,13 +6178,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           this._paletteDetectionGeneration = 0
         }
 
-        const publish = !this._isDestroyed && this._palettePublishGeneration === publishGeneration
-        if (publish && this.shouldSyncNativePaletteState() && result.palette.length >= NATIVE_PALETTE_QUERY_SIZE) {
-          this.syncNativePaletteState(result)
-        }
-        if (publish) this._paletteCache.set(result.palette.length, result)
-        if (publish) {
-          this.emitPaletteChange(result)
+        if (!this._isDestroyed && this._palettePublishGeneration === publishGeneration) {
+          this.publishPalette(result)
           if (this.shouldSyncNativePaletteState() && !this._paletteCache.has(NATIVE_PALETTE_QUERY_SIZE)) {
             this.refreshPalette()
           }
