@@ -745,6 +745,7 @@ fn capabilities_name_width_methods_multiplexers_and_forced_image_protocols() -> 
         (&[("VTE_VERSION", "5000")], false),
         (&[("TERM_PROGRAM", "vscode"), ("FORCE_HYPERLINK", "0")], false),
         (&[("FORCE_HYPERLINK", "1")], true),
+        (&[("WT_SESSION", "1"), ("TERM", "xterm-256color")], true),
         (&[("XTERM_VERSION", "XTerm(390)"), ("KONSOLE_VERSION", "240202")], false),
     ] {
         assert!(environment.iter().all(|(key, _)| crate::host::FORWARDED_ENVIRONMENT.contains(key)), "{environment:?}");
