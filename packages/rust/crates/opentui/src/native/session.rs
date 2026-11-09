@@ -37,7 +37,8 @@ impl Default for SessionOptions {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Remote {
     /// Detect remote sessions, such as SSH, and take only the color depth from forwarded hints for them: a `TERM`
-    /// containing `256color`, and a `COLORTERM` of `truecolor` or `24bit`.
+    /// containing `256color`, a `COLORTERM` of `truecolor` or `24bit` (ignored inside GNU screen, which gets 256
+    /// colors), and `OPENTUI_FORCE_TRUECOLOR` of `1` or `true`, which forces 24-bit color.
     #[default]
     Auto,
     Local,

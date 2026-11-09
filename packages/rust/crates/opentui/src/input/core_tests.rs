@@ -771,11 +771,11 @@ fn kitty_protocol_modifiers_and_payloads() {
         (b"\x1b[57400;1;120u", Char('x'), NONE, Press),
         (b"\x1b[0;;229u", Char('å'), NONE, Press),
     ]);
-    // Text without a key, such as an input method's, can hold several characters, of which native code keeps eight.
+    // Text without a key, such as an input method's, can hold several characters, all of which arrive.
     // Each character is a key with the first one's modifiers and kind.
     check(&[
         (b"\x1b[0;;104:105u", &[ch('h'), ch('i')]),
-        (b"\x1b[0;;97:97:97:97:97:97:97:97:98u", &vec![ch('a'); 8]),
+        (b"\x1b[0;;97:97:97:97:97:97:97:97:98u", &[vec![ch('a'); 8], vec![ch('b')]].concat()),
         (b"\x1b[104;5:2;104:105u", &[key_kind(Char('h'), CTRL, Repeat), key_kind(Char('i'), CTRL, Repeat)]),
     ]);
 }

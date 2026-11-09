@@ -56,7 +56,8 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with nine changes,
   size.
 - `yoga-measure-height-cap.patch` lets a node mark its measure function as one that uses an "at most"
   height only to clamp its result. Where Yoga would call such a function again because the cap grew,
-  it takes a cached size that was below the old cap at the same width, and stores it as a call's
+  it takes a cached size that was below the old cap at the same width. Under the scene's config, whose
+  cache compares exactly, it uses that entry as a cache hit. Otherwise it stores the size as a call's
   result, so later cache decisions are the same as without the patch. A node with a percent margin,
   padding, or minimum or maximum size keeps calling: this reuse does not compare the entry's owner size.
   The native text and editor measures set the mark; host measures do not.

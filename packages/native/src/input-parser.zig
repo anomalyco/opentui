@@ -7,17 +7,17 @@ const std = @import("std");
 pub const timeout_ns: u64 = 20 * std.time.ns_per_ms;
 pub const unit_bytes_max: u16 = 4096;
 pub const sequence_bytes_max: u16 = 256;
-pub const key_text_bytes_max: u8 = 32;
 /// The longest reply prefix a held string checks: OSC `7501;`.
 pub const reply_prefix_bytes_max: u8 = 8;
 pub const params_max: u8 = 16;
 pub const subparams_max: u8 = 8;
 pub const events_per_byte_max: u32 = 4;
-pub const payload_per_byte_max: u32 = unit_bytes_max + sequence_bytes_max + key_text_bytes_max;
+/// OT_INPUT_PAYLOAD_BYTES_MIN. The 32 is the key text bound from before key text grew to its unit.
+pub const payload_per_byte_max: u32 = unit_bytes_max + sequence_bytes_max + 32;
 
 comptime {
-    // A Kitty text field keeps at most subparams_max scalars, so key text never truncates by bytes.
-    std.debug.assert(key_text_bytes_max >= @as(u32, subparams_max) * 4);
+    // Key text is never longer than its unit: a scalar's UTF-8 is no longer than its decimal digits.
+    std.debug.assert(1 + 2 * @as(u32, sequence_bytes_max) <= payload_per_byte_max);
 }
 
 pub const Expectations = packed struct(u8) {
@@ -754,16 +754,16 @@ pub const InputParser = struct {
             // Private-prefixed and intermediate-bearing sequences are never keys.
             const fields = Fields.parse(params) orelse break :decoded null;
             cursor_report = final == 'R' and fields.count == 2 and fields.single(0) != null and fields.single(1) != null;
-            break :decoded if (reply_only) null else self.csiKey(&fields, final);
+            break :decoded if (reply_only) null else self.csiKey(&fields, params, final);
         };
         if (decoded) |value| return emitDecodedKey(sink, alt, unit, value);
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
         emitReply(sink, unit, .csi, if (cursor_report) flags.reply_cursor_position else 0);
     }
 
-    fn csiKey(self: *const InputParser, fields: *const Fields, final: u8) ?Key {
+    fn csiKey(self: *const InputParser, fields: *const Fields, params: []const u8, final: u8) ?Key {
         return switch (final) {
-            'u' => kittyKey(fields),
+            'u' => kittyKey(fields, params),
             '~' => tildeKey(fields),
             // rxvt marks Shift, Ctrl, and both with `$`, `^`, and `@` in place of `~`.
             '$', '^', '@' => if (fields.count == 1) rxvt: {
@@ -984,9 +984,9 @@ fn emitReply(sink: *Sink, raw: []const u8, protocol: Protocol, reply_flags: u8) 
     sink.push(value);
 }
 
-/// Text an editor inserts for a key, at most key_text_bytes_max bytes.
+/// Text an editor inserts for a key, no longer than the key's unit.
 const Text = struct {
-    bytes: [key_text_bytes_max]u8 = undefined,
+    bytes: [sequence_bytes_max]u8 = undefined,
     len: u8 = 0,
 
     fn slice(self: *const Text) []const u8 {
@@ -1024,8 +1024,6 @@ const Fields = struct {
     values: [params_max][subparams_max]u32 = undefined,
     present: [params_max]u8 = @splat(0),
     subcounts: [params_max]u8 = @splat(0),
-    /// Fields with subfields past subparams_max.
-    overflow: u16 = 0,
     count: u8 = 0,
 
     /// Null when the bytes are not only digits, `;`, and `:`.
@@ -1053,11 +1051,7 @@ const Fields = struct {
             },
             ':' => {
                 sub += 1;
-                if (field < params_max) {
-                    if (sub < subparams_max) {
-                        fields.subcounts[field] += 1;
-                    } else fields.overflow |= @as(u16, 1) << @intCast(field);
-                }
+                if (field < params_max and sub < subparams_max) fields.subcounts[field] += 1;
             },
             else => return null,
         };
@@ -1265,17 +1259,18 @@ fn codeKey(code: u32, mods: Modifiers) ?Key {
 }
 
 /// `CSI code[:shifted[:base]] ; mods[:event] ; text[:text...] u`
-fn kittyKey(fields: *const Fields) ?Key {
+fn kittyKey(fields: *const Fields, params: []const u8) ?Key {
     const code = fields.get(0, 0) orelse return null;
     const shape = modsAndAction(fields);
     var value: Key = .{ .code = code, .mods = shape.mods, .action = shape.action, .flags = flags.key_kitty };
-    if (fields.count > 2) {
-        if (fields.overflow & (1 << 2) != 0) value.flags |= flags.key_text_truncated;
-        for (0..fields.subcounts[2]) |sub| {
-            const scalar = fields.get(2, sub) orelse continue;
-            if (scalar == 0 or !isScalar(scalar) or isControl(scalar)) continue;
-            value.text.append(@intCast(scalar));
-        }
+    // The text's scalars, read from the bytes because they may outnumber subparams_max.
+    var params_fields = std.mem.splitScalar(u8, params, ';');
+    for (0..2) |_| _ = params_fields.next();
+    var scalars = std.mem.splitScalar(u8, params_fields.next() orelse "", ':');
+    while (scalars.next()) |digits| {
+        const scalar = parseDigits(digits);
+        if (scalar == 0 or !isScalar(scalar) or isControl(scalar)) continue;
+        value.text.append(@intCast(scalar));
     }
     // Text without a key, such as input method output.
     if (code == 0) return if (value.text.len == 0) null else value;

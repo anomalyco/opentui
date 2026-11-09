@@ -32,7 +32,7 @@ const TERM_BYTES_MAX: usize = 256;
 const ENV_ENTRIES_MAX: usize = 64;
 const ENV_BYTES_MAX: usize = 4096;
 /// Client environment the renderer takes as terminal hints, along with the terminal type.
-const FORWARDED_ENV: [&str; 3] = ["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
+const FORWARDED_ENV: [&str; 4] = ["COLORTERM", "OPENTUI_FORCE_TRUECOLOR", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
 /// Channels one connection may have open.
 const CHANNELS_MAX: usize = 16;
 /// Output per channel write.
