@@ -492,10 +492,12 @@ jobs:
       - name: Restore Bun install cache
         uses: ./.github/actions/restore-bun-cache
 
+      # Setup runtime Bun overwrites ~/.bun/bin/bun, so this step must not save it.
       - name: Setup development Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.1
+          no-cache: true
 
       - name: Install dependencies
         run: bun install
