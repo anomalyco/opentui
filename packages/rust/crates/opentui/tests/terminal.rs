@@ -573,22 +573,22 @@ mod windows_programs {
 
     #[test]
     fn spawned_programs_follow_the_terminal_size() {
-        let app = TestApp::new(30, 5);
+        let app = TestApp::new(30, 12);
         let terminal = TerminalView::new(&app).spawn(cmd("mode con& set /p x=& mode con")).unwrap();
         app.root().add(&terminal);
         terminal.focus();
-        // `mode con` prints a line such as `    Columns:        80`.
-        let columns = |cols: &str| {
+        // `mode con` prints `Lines:` and `Columns:` lines; 12 rows keep its whole second output on the screen.
+        let size = |lines: &str, cols: &str| {
             let text = terminal.screen().text();
-            text.lines()
-                .any(|line| line.trim_start().starts_with("Columns:") && line.split_whitespace().last() == Some(cols))
+            let shows = |name, value| text.lines().any(|line| line.split_whitespace().eq([name, value]));
+            shows("Lines:", lines) && shows("Columns:", cols)
         };
-        let started = app.wait_until(Duration::from_secs(10), || columns("80"));
-        assert!(started, "never saw 80 columns; the screen shows:\n{}", terminal.screen().text());
+        let started = app.wait_until(Duration::from_secs(10), || size("24", "80"));
+        assert!(started, "never saw 24 lines and 80 columns; the screen shows:\n{}", terminal.screen().text());
         app.render();
         app.type_text("\n");
-        let resized = app.wait_until(Duration::from_secs(10), || columns("30"));
-        assert!(resized, "never saw 30 columns; the screen shows:\n{}", terminal.screen().text());
+        let resized = app.wait_until(Duration::from_secs(10), || size("12", "30"));
+        assert!(resized, "never saw 12 lines and 30 columns; the screen shows:\n{}", terminal.screen().text());
     }
 
     #[test]
