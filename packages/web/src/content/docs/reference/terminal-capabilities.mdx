@@ -155,7 +155,10 @@ remote endpoint: `sshd` takes `TERM` from the client's PTY request, and `COLORTE
 configured to send it, or from the server session itself, such as a shell rc file. OpenTUI ignores the other keys, such
 as `TERM_PROGRAM`, the multiplexer variables, and the `OPENTUI_*` overrides. On the process host, they can describe the
 wrong terminal endpoint. The width overrides `OPENTUI_FORCE_WCWIDTH`, `OPENTUI_FORCE_UNICODE`, and `OPENTUI_FORCE_NOZWJ`
-are the exception: they configure the app, so OpenTUI applies them whenever they are in the forwarded environment.
+are an exception: they configure the app, so OpenTUI applies them whenever they are in the forwarded environment. GNU
+Screen is the other exception. It answers no query, so OpenTUI detects it from `STY`, or from a `TERM` that starts with
+`screen` without `TMUX`. This covers ssh started inside Screen, which forwards Screen's `TERM`,
+and Screen started on the server. A tmux XTVERSION reply still selects tmux.
 
 When `COLORTERM` does not enable `rgb`, OpenTUI asks the terminal. The startup queries include XTGETTCAP `RGB` and
 `Tc`, and a positive reply to either enables `rgb`. An XTVERSION reply from kitty, Ghostty, WezTerm, foot, XTerm,
@@ -189,8 +192,8 @@ const renderer = await createCliRenderer({
 `forwardEnvKeys` reads the process environment, so it describes the remote endpoint only when the process runs
 inside that endpoint's session. A server with many clients passes each client's values in `environment` instead,
 for example `environment: { TERM: pty.term, COLORTERM: "truecolor" }`. These values replace forwarded values with
-the same name. When auto-detection finds an SSH login, OpenTUI applies only their color depth keys, as it does for
-forwarded values. Set `remote: true` for the other values to take effect, as `@opentui/ssh` does.
+the same name. When auto-detection finds an SSH login, OpenTUI applies only their color depth keys and GNU Screen
+detection, as it does for forwarded values. Set `remote: true` for the other values to take effect, as `@opentui/ssh` does.
 
 Custom streams do not receive `SIGWINCH`. Call `renderer.resize(width, height)` when the remote transport reports a
 window change. Read [SSH](/docs/reference/ssh) for the full session setup.

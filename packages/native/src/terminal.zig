@@ -751,30 +751,28 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.caps.ansi256 = true;
         }
     }
-    if (self.identityEnv() == null) return;
-
+    // A remote client's environment names only GNU screen, which answers no query: TERM forwarded by ssh, or STY.
+    const remote_env = self.identityEnv() == null;
     if (!self.term_info.from_xtversion) {
-        if (env_map.get("TMUX")) |_| {
+        if (!remote_env and env_map.get("TMUX") != null) {
             self.multiplexer = .tmux;
             self.caps.explicit_cursor_positioning = true;
-        } else if (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null) {
+        } else if (!remote_env and (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null)) {
             self.multiplexer = .zellij;
             if (self.term_info.name_len == 0) {
                 const name = "Zellij";
                 @memcpy(self.term_info.name[0..name.len], name);
                 self.term_info.name_len = name.len;
             }
-        } else if (env_map.get("STY") != null) {
+        } else if (self.insideScreen()) {
             self.multiplexer = .screen;
             self.skip_graphics_query = true;
             self.caps.explicit_cursor_positioning = true;
-        } else if (env_map.get("TERM")) |term| {
+            self.caps.osc52 = true;
+        } else if (!remote_env) {
+            const term = env_map.get("TERM") orelse "";
             if (std.mem.startsWith(u8, term, "tmux")) {
                 self.multiplexer = .tmux;
-                self.caps.explicit_cursor_positioning = true;
-            } else if (std.mem.startsWith(u8, term, "screen")) {
-                self.multiplexer = .screen;
-                self.skip_graphics_query = true;
                 self.caps.explicit_cursor_positioning = true;
             }
             if (std.mem.find(u8, term, "alacritty") != null) {
@@ -782,6 +780,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             }
         }
     }
+    if (remote_env) return;
 
     if (env_map.get("TERM")) |term| {
         self.applyNotificationHeuristic(term);
@@ -945,7 +944,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.caps.osc52 = true;
         }
 
-        if (!self.caps.osc52 and (self.isInTmux() or self.isInScreen() or env_map.get("STY") != null)) {
+        if (!self.caps.osc52 and (self.isInTmux() or env_map.get("STY") != null)) {
             self.caps.osc52 = true;
         }
 
