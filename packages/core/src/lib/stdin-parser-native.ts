@@ -17,12 +17,25 @@ import { SystemClock, type Clock, type TimerHandle } from "./clock.js"
 import { kittyKeyMap, printableKeypadText } from "./parse.keypress-kitty.js"
 import type { ParsedKey } from "./parse.keypress.js"
 import type { MouseEventType, RawMouseEvent } from "./parse.mouse.js"
-import type {
-  StdinEvent,
-  StdinParserOptions,
-  StdinParserProtocolContext,
-  StdinResponseProtocol,
-} from "./stdin-parser.js"
+
+export type StdinResponseProtocol = "csi" | "cpr" | "osc" | "dcs" | "apc" | "unknown"
+
+// Everything stdin sends becomes exactly one of these.
+export type StdinEvent =
+  | { type: "key"; raw: string; key: ParsedKey }
+  | { type: "mouse"; raw: string; encoding: "sgr" | "x10"; event: RawMouseEvent }
+  | { type: "paste"; bytes: Uint8Array }
+  | { type: "response"; protocol: StdinResponseProtocol; sequence: string }
+
+export interface StdinParserProtocolContext {
+  kittyKeyboardEnabled: boolean
+  privateCapabilityRepliesActive: boolean
+  pixelResolutionQueryActive: boolean
+  explicitWidthCprActive: boolean
+  startupCursorCprActive: boolean
+  /** A query batch's DA1 reply is outstanding, so split replies wait for it without a deadline. */
+  replySentinelActive: boolean
+}
 
 export interface NativeInputSession {
   lib: RenderLib
@@ -30,10 +43,11 @@ export interface NativeInputSession {
   session: SessionHandle
 }
 
-export interface NativeStdinParserOptions extends Pick<
-  StdinParserOptions,
-  "armTimeouts" | "onTimeoutFlush" | "protocolContext" | "clock"
-> {
+export interface NativeStdinParserOptions {
+  armTimeouts?: boolean
+  onTimeoutFlush?: () => void
+  protocolContext?: Partial<StdinParserProtocolContext>
+  clock?: Clock
   /** Parse through this Session's input parser. Without one, the parser owns a private Context and Session. */
   session?: NativeInputSession
 }
@@ -114,8 +128,7 @@ function expectationFlags(context: StdinParserProtocolContext): number {
 }
 
 /**
- * Same surface as StdinParser for renderer.ts, without the hooks that coordinated
- * parser and renderer state: a deferred reply has no deadline, so CPR aborts and
+ * The renderer's stdin parser. A deferred reply has no deadline, so CPR aborts and
  * pixel queries need no special handling; suspension needs only suspend and resume.
  */
 export class NativeStdinParser {
@@ -509,102 +522,4 @@ function rawMouseEvent(
   }
   if (type === "scroll") event.scroll = { direction: SCROLL_DIRECTIONS[code & 3]!, delta: 1 }
   return event
-}
-
-const SHADOW_BACKLOG_MAX = 256
-// How far ahead the shadow comparator looks for the next event both parsers report.
-const SHADOW_WINDOW = 8
-
-function describeEvent(event: StdinEvent): string {
-  switch (event.type) {
-    case "key": {
-      const { name, ctrl, meta, shift, eventType } = event.key
-      return JSON.stringify(["key", event.raw, name, ctrl, meta, shift, eventType])
-    }
-    case "mouse": {
-      const { type, button, x, y, modifiers } = event.event
-      return JSON.stringify(["mouse", event.raw, type, button, x, y, modifiers.shift, modifiers.alt, modifiers.ctrl])
-    }
-    case "paste":
-      return JSON.stringify(["paste", event.bytes.length, Buffer.from(event.bytes).toString("base64")])
-    case "response":
-      return JSON.stringify(["response", event.protocol, event.sequence])
-  }
-}
-
-/**
- * Pairs the events of the delivering parser with the events of a parser that only
- * sees the same input (OTUI_NATIVE_INPUT_SHADOW) and logs one line per difference.
- * Events pair in order, so the parsers' separate timers cannot misalign them. After
- * a difference, pairing resumes once each side has reported its next event.
- */
-export class StdinShadowComparator {
-  private readonly delivered: string[] = []
-  private readonly shadowed: string[] = []
-
-  constructor(
-    private readonly primaryName: "legacy" | "native",
-    private readonly log: (line: string) => void,
-  ) {}
-
-  public primary(event: StdinEvent): void {
-    this.queue(this.delivered, event)
-  }
-
-  public shadow(event: StdinEvent): void {
-    this.queue(this.shadowed, event)
-  }
-
-  /** Reports every event still unpaired. Call when both parsers have stopped. */
-  public flush(): void {
-    this.pair(true)
-  }
-
-  private queue(events: string[], event: StdinEvent): void {
-    events.push(describeEvent(event))
-    this.pair(false)
-    // A parser that stopped producing events must not grow the other's backlog forever.
-    if (events.length > SHADOW_BACKLOG_MAX) {
-      const dropped = events.shift()!
-      if (events === this.delivered) this.report(dropped, "")
-      else this.report("", dropped)
-    }
-  }
-
-  // Pairs through the earliest event both sides report; the events before it differ. Without
-  // one in the window, the oldest pair differs once both sides fill it, or at the end.
-  private pair(final: boolean): void {
-    const { delivered, shadowed } = this
-    while (delivered.length > 0 && shadowed.length > 0) {
-      const [i, j] = commonEvent(delivered, shadowed) ?? [-1, -1]
-      if (i >= 0) {
-        for (let k = 0; k < Math.max(i, j); k++) this.report(k < i ? delivered[k]! : "", k < j ? shadowed[k]! : "")
-        delivered.splice(0, i + 1)
-        shadowed.splice(0, j + 1)
-      } else if (final || Math.min(delivered.length, shadowed.length) >= SHADOW_WINDOW) {
-        this.report(delivered.shift()!, shadowed.shift()!)
-      } else return
-    }
-    if (final) {
-      for (const event of delivered.splice(0)) this.report(event, "")
-      for (const event of shadowed.splice(0)) this.report("", event)
-    }
-  }
-
-  private report(delivered: string, shadowed: string): void {
-    const shadowName = this.primaryName === "native" ? "legacy" : "native"
-    this.log(`[stdin-shadow] ${this.primaryName}=${delivered || "none"} ${shadowName}=${shadowed || "none"}`)
-  }
-}
-
-/** The indexes of the earliest event, by combined position, that both lists hold within the window. */
-function commonEvent(a: string[], b: string[]): [number, number] | null {
-  const aEnd = Math.min(a.length, SHADOW_WINDOW)
-  const bEnd = Math.min(b.length, SHADOW_WINDOW)
-  for (let sum = 0; sum < aEnd + bEnd - 1; sum++) {
-    for (let i = Math.max(0, sum - bEnd + 1); i <= Math.min(sum, aEnd - 1); i++) {
-      if (a[i] === b[sum - i]) return [i, sum - i]
-    }
-  }
-  return null
 }

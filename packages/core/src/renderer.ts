@@ -69,8 +69,7 @@ import {
   parsePixelResolution,
 } from "./lib/terminal-capability-detection.js"
 import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
-import { StdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser.js"
-import { NativeStdinParser, StdinShadowComparator } from "./lib/stdin-parser-native.js"
+import { NativeStdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser-native.js"
 import { matchesKeyBinding } from "./lib/keybinding.internal.js"
 import { RendererThemeMode } from "./renderer-theme-mode.js"
 
@@ -115,22 +114,6 @@ registerEnvVar({
   type: "boolean",
   default: false,
 })
-
-registerEnvVar({
-  name: "OTUI_NATIVE_INPUT_PARSER",
-  description: "Parse stdin with the experimental native input parser unless experimental_nativeInput is set.",
-  type: "boolean",
-  default: false,
-})
-
-registerEnvVar({
-  name: "OTUI_NATIVE_INPUT_SHADOW",
-  description: "Also run the other stdin parser and log one line for each event that differs.",
-  type: "boolean",
-  default: false,
-})
-
-type RendererStdinParser = StdinParser | NativeStdinParser
 
 export type KittyImageTransport = "raw" | "zlib" | "file"
 const KITTY_IMAGE_TRANSPORTS: KittyImageTransport[] = ["raw", "zlib", "file"]
@@ -254,12 +237,6 @@ export interface CliRendererConfig {
 
   // Run these input handlers before the built-in handlers.
   prependInputHandlers?: ((sequence: string) => boolean)[]
-
-  // Cap the stdin parser buffer size in bytes. Defaults to 64 MB. The native parser is bounded and ignores it.
-  stdinParserMaxBufferBytes?: number
-
-  // Parse stdin with the experimental native input parser. Defaults to OTUI_NATIVE_INPUT_PARSER.
-  experimental_nativeInput?: boolean
 
   // Use a custom clock for timers and tests.
   clock?: Clock
@@ -876,7 +853,6 @@ const KITTY_FLAG_ALTERNATE_KEYS = 0b100 // Report alternate keys (e.g., numpad v
 const KITTY_FLAG_ALL_KEYS_AS_ESCAPES = 0b1000 // Report all keys as escape codes
 const KITTY_FLAG_REPORT_TEXT = 0b10000 // Report text associated with key events
 
-const DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES = 64 * 1024 * 1024
 const NATIVE_PALETTE_QUERY_SIZE = 16
 // The one reply clock: a peer that never answers DA1 gives no event that ends its batch.
 const REPLY_BACKSTOP_MS = 5000
@@ -1177,8 +1153,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // Pixel replies still owed; each consumes one.
   private unansweredPixelQueries = 0
   private replyBatches: ReplyBatch[] = []
-  // Native parser and no missed DA1 reply yet. After a miss, batches carry no DA1 and end at their backstop.
-  private replySentinel = false
+  // No missed DA1 reply yet. After a miss, batches carry no DA1 and end at their backstop.
+  private replySentinel = true
   public readonly clock: Clock
 
   private rendering: boolean = false
@@ -1219,9 +1195,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _console: TerminalConsole
   private _resolution: PixelResolution | null = null
   private _keyHandler: InternalKeyHandler
-  private stdinParser: RendererStdinParser | null = null
-  // OTUI_NATIVE_INPUT_SHADOW: the other parser sees the same input; its events are only compared.
-  private stdinShadow: { parser: RendererStdinParser; comparator: StdinShadowComparator } | null = null
+  private stdinParser: NativeStdinParser | null = null
   private readonly oscSubscribers = new Set<(sequence: string) => void>()
   private hasLoggedStdinParserError = false
 
@@ -1644,43 +1618,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       this.addExitListeners()
 
-      const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES
-      const createStdinParser = (native: boolean, onTimeoutFlush: () => void): RendererStdinParser => {
-        const protocolContext = {
-          kittyKeyboardEnabled: useKittyForParsing,
-          privateCapabilityRepliesActive: false,
-          pixelResolutionQueryActive: false,
-          explicitWidthCprActive: false,
-          startupCursorCprActive: false,
-        }
-        if (native) {
-          return new NativeStdinParser({
-            armTimeouts: true,
-            onTimeoutFlush,
-            protocolContext,
-            clock: this.clock,
-            session: { lib: this.lib, context: this.nativeSession.context, session: this.nativeSession.session },
-          })
-        }
-        return new StdinParser({
-          timeoutMs: 20,
-          maxPendingBytes: stdinParserMaxBufferBytes,
-          armTimeouts: true,
-          onTimeoutFlush,
-          useKittyKeyboard: useKittyForParsing,
-          protocolContext,
-          clock: this.clock,
-        })
-      }
-      const nativeInput = config.experimental_nativeInput ?? env.OTUI_NATIVE_INPUT_PARSER
-      this.stdinParser = createStdinParser(nativeInput, () => this.drainStdinParser())
-      this.replySentinel = this.stdinParser instanceof NativeStdinParser
-      if (env.OTUI_NATIVE_INPUT_SHADOW) {
-        this.stdinShadow = {
-          parser: createStdinParser(!nativeInput, () => this.drainStdinShadow()),
-          comparator: new StdinShadowComparator(nativeInput ? "native" : "legacy", (line) => console.warn(line)),
-        }
-      }
+      this.stdinParser = new NativeStdinParser({
+        armTimeouts: true,
+        onTimeoutFlush: () => this.drainStdinParser(),
+        protocolContext: { kittyKeyboardEnabled: useKittyForParsing },
+        clock: this.clock,
+        session: { lib: this.lib, context: this.nativeSession.context, session: this.nativeSession.session },
+      })
 
       this._console = new TerminalConsole(this, {
         ...(config.consoleOptions ?? {}),
@@ -3129,8 +3073,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private abortSplitStartupCursorSeed(): void {
     this.clearSplitStartupCursorSeed()
-    // A native parser reports a stale CPR as a reply that processCapabilitySequence ignores.
-    for (const parser of this.legacyStdinParsers()) parser.abortPendingStartupCursorCpr()
+    // The parser reports a stale CPR as a reply that processCapabilitySequence ignores.
     this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
   }
 
@@ -3468,7 +3411,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     this._useMouse = false
     this.capturedRenderable = undefined
-    for (const parser of this.legacyStdinParsers()) parser.resetMouseState()
   }
 
   public enableKittyKeyboard(flags: number = 0b00011): void {
@@ -3596,8 +3538,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     batch.backstop = this.clock.setTimeout(() => {
       batch.backstop = null
       // A paste still open may hold the DA1 reply as payload.
-      const pasting = this.stdinParser instanceof NativeStdinParser && this.stdinParser.pasting
-      if (this.replySentinel && !batch.excused && !pasting) {
+      if (this.replySentinel && !batch.excused && !this.stdinParser?.pasting) {
         this.replySentinel = false
         // Clock mode: later Kitty keyboard pushes send no query either.
         if (this.nativeSession.open) this.nativeSession.control({ kind: "end-reply-sentinel" })
@@ -3671,12 +3612,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } catch (error) {
       this.handleStdinParserFailure(error)
     }
-    try {
-      this.stdinShadow?.parser.push(data)
-      this.drainStdinShadow()
-    } catch (error) {
-      console.warn("[stdin-shadow] parser failure", error)
-    }
   }).bind(this)
 
   public addInputHandler(handler: (sequence: string) => boolean): void {
@@ -3694,13 +3629,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private updateStdinParserProtocolContext(patch: Partial<StdinParserProtocolContext>, drain = false): void {
     if (!this.stdinParser) return
     this.stdinParser.updateProtocolContext(patch)
-    this.stdinShadow?.parser.updateProtocolContext(patch)
     if (drain) this.drainStdinParser()
-    this.drainStdinShadow()
-  }
-
-  private legacyStdinParsers(): StdinParser[] {
-    return [this.stdinParser, this.stdinShadow?.parser].filter((parser) => parser instanceof StdinParser)
   }
 
   public subscribeOsc(handler: (sequence: string) => void): () => void {
@@ -3812,15 +3741,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private drainStdinParser(): void {
     if (!this.stdinParser) return
 
-    this.stdinParser.drain((event) => {
-      this.stdinShadow?.comparator.primary(event)
-      this.handleStdinEvent(event)
-    })
-  }
-
-  private drainStdinShadow(): void {
-    const shadow = this.stdinShadow
-    shadow?.parser.drain((event) => shadow.comparator.shadow(event))
+    this.stdinParser.drain((event) => this.handleStdinEvent(event))
   }
 
   private handleStdinEvent(event: StdinEvent): void {
@@ -3884,7 +3805,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       case "paste":
         // Pasted text may hold a DA1 reply that never pops a batch.
         for (const batch of this.replyBatches) batch.excused = true
-        this._keyHandler.processPaste(event.bytes, event.metadata)
+        this._keyHandler.processPaste(event.bytes)
         return
       case "response":
         if (event.protocol === "osc") {
@@ -3914,7 +3835,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     try {
       this.stdinParser?.reset()
-      this.stdinShadow?.parser.reset()
     } catch (resetError) {
       console.error("stdin parser reset failed after parser error", resetError)
     }
@@ -4480,7 +4400,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.lib.sessionSetImageResolution(this.nativeSession.context, this.nativeSession.session, 0, 0, 0, 0)
 
     this.capturedRenderable = undefined
-    for (const parser of this.legacyStdinParsers()) parser.resetMouseState()
 
     if (splitFooterActive) {
       this.forceFullRepaintRequested = true
@@ -4960,14 +4879,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return resumed
   }
 
-  // Legacy parsers drop pending input unless it may be a pixel reply. Native parsers stop
-  // input time instead, so stale bytes drained on resume can complete a unit (docs §11.5).
+  // The parser stops input time, so stale bytes drained on resume can complete a unit (docs §11.5).
   private pauseStdinParsers(resuming: boolean): void {
-    for (const parser of [this.stdinParser, this.stdinShadow?.parser]) {
-      if (parser instanceof NativeStdinParser) resuming ? parser.resume() : parser.suspend()
-      else if (parser?.hasPendingPixelResolutionResponse()) parser.pausePendingTimeout()
-      else parser?.reset()
-    }
+    if (resuming) this.stdinParser?.resume()
+    else this.stdinParser?.suspend()
   }
 
   private finishResume(): void {
@@ -5002,7 +4917,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     for (const batch of this.replyBatches) this.armReplyBackstop(batch)
     this.syncReplyContext(false)
     if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
-    for (const parser of this.legacyStdinParsers()) parser.resumePendingTimeout()
     this.applyPendingNativeResize()
 
     if (
@@ -5197,9 +5111,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.stdinParser?.destroy()
     this.stdinParser = null
-    this.stdinShadow?.parser.destroy()
-    this.stdinShadow?.comparator.flush()
-    this.stdinShadow = null
     this.oscSubscribers.clear()
     try {
       this._console?.destroy()

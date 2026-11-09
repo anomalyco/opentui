@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { parseKittyKeyboard } from "./parse.keypress-kitty.js"
 import { parseKeypress, type ParseKeypressOptions, type ParsedKey } from "./parse.keypress.js"
-import { StdinParser } from "./stdin-parser.js"
+import { NativeStdinParser } from "./stdin-parser-native.js"
 
 // This mirrors the upstream protocol tables and expands them into one test
 // per case so missing mappings fail with a name.
@@ -329,7 +329,7 @@ describe("Kitty protocol: canonical CSI letter forms", () => {
   // the stdin parser with the Kitty protocol on. The "Kitty mode" rows in stdin-parser.conformance.json specify more.
   test("CSI R and CSI 1;2 R are not F3 in Kitty mode", () => {
     expect(parseKittyKeyboard("\x1b[R")).toBeNull()
-    const parser = new StdinParser({ armTimeouts: false, protocolContext: { kittyKeyboardEnabled: true } })
+    const parser = new NativeStdinParser({ armTimeouts: false, protocolContext: { kittyKeyboardEnabled: true } })
     try {
       parser.push(Buffer.from("\x1b[R\x1b[1;2R"))
       const names: string[] = []
