@@ -859,7 +859,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     }
 
     if (env_map.get("WT_SESSION") != null) {
-        self.caps.rgb = true;
+        if (!self.insideScreen()) self.caps.rgb = true;
         self.setNotificationProtocol(.osc777, .heuristic);
     }
 

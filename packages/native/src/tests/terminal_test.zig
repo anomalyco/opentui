@@ -842,22 +842,26 @@ test "setHostEnvVar applies env overrides in shared library mode" {
 
 // WT_SESSION names Windows Terminal at the endpoint on every host OS: locally, in WSL, or forwarded to an
 // explicit remote session. A multiplexer, a non-xterm TERM, or an old VTE sits between, and auto mode ignores a
-// forwarded one.
-test "environment overrides - WT_SESSION enables hyperlinks for a direct Windows Terminal" {
-    const Row = struct { env: []const u8, mode: Terminal.RemoteMode = .local, hyperlinks: bool };
+// forwarded one. Its 24-bit color holds outside GNU screen, which drops 24-bit colors unless forced.
+test "environment overrides - WT_SESSION enables hyperlinks and rgb for Windows Terminal" {
+    const Row = struct { env: []const u8, mode: Terminal.RemoteMode = .local, hyperlinks: bool, rgb: bool };
     const rows = [_]Row{
-        .{ .env = "WT_SESSION=1", .hyperlinks = true },
-        .{ .env = "WT_SESSION=1 TERM=", .hyperlinks = true },
-        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = true },
-        .{ .env = "TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = false },
-        .{ .env = "WT_SESSION=1 TERM=screen-256color WSL_INTEROP=/run/WSL/1_interop", .hyperlinks = false },
-        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu ZELLIJ=0", .hyperlinks = false },
-        .{ .env = "WT_SESSION=1 TERM=xterm-256color VTE_VERSION=5000", .hyperlinks = false },
-        .{ .env = "WT_SESSION=1 TERM=xterm-256color SSH_CONNECTION=1", .mode = .auto, .hyperlinks = false },
-        .{ .env = "WT_SESSION=1 TERM=xterm-256color", .mode = .remote, .hyperlinks = true },
-        .{ .env = "WT_SESSION=1", .mode = .remote, .hyperlinks = true },
-        .{ .env = "WT_SESSION=1 TERM=rxvt-unicode-256color", .mode = .remote, .hyperlinks = false },
-        .{ .env = "WT_SESSION=1 TERM=xterm-256color TMUX=/tmp/tmux-1000/default,1,0", .mode = .remote, .hyperlinks = false },
+        .{ .env = "WT_SESSION=1", .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=", .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = true, .rgb = true },
+        .{ .env = "TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=screen-256color WSL_INTEROP=/run/WSL/1_interop", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=screen", .mode = .remote, .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color STY=1.pts-0.host", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color STY=1.pts-0.host TMUX=/tmp/tmux-1000/default,1,0", .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=screen-256color STY=1.pts-0.host OPENTUI_FORCE_TRUECOLOR=1", .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu ZELLIJ=0", .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color VTE_VERSION=5000", .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color SSH_CONNECTION=1", .mode = .auto, .hyperlinks = false, .rgb = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color", .mode = .remote, .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1", .mode = .remote, .hyperlinks = true, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=rxvt-unicode-256color", .mode = .remote, .hyperlinks = false, .rgb = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color TMUX=/tmp/tmux-1000/default,1,0", .mode = .remote, .hyperlinks = false, .rgb = true },
     };
     for (rows, 0..) |row, index| {
         errdefer std.debug.print("WT_SESSION row {d}\n", .{index});
@@ -867,6 +871,7 @@ test "environment overrides - WT_SESSION enables hyperlinks for a direct Windows
         term.adoptHostEnvironment(env);
         defer term.deinit();
         try testing.expectEqual(row.hyperlinks, term.caps.hyperlinks);
+        try testing.expectEqual(row.rgb, term.caps.rgb);
     }
 }
 
@@ -923,20 +928,17 @@ test "environment overrides - rgb does not imply hyperlinks after recheck for un
     try testing.expect(!term.caps.hyperlinks);
 }
 
-test "environment overrides - rgb does not imply hyperlinks after recheck for inherited Windows Terminal screen" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_INTEROP", "/run/WSL/123_interop");
-    try env.put("WT_SESSION", "test-session");
-    try env.put("TERM", "screen");
-
-    var term = Terminal.init(.{ .env_map = &env });
+test "environment overrides - STY forwarded after WT_SESSION revokes rgb and hyperlinks" {
+    var term = Terminal.init(.{});
     defer term.deinit();
 
-    try testing.expect(term.caps.rgb);
-    try testing.expect(!term.caps.hyperlinks);
+    try term.setHostEnvVar(testing.allocator, "TERM", "xterm-256color");
+    try term.setHostEnvVar(testing.allocator, "WT_SESSION", "test-session");
 
-    try term.setHostEnvVar(testing.allocator, "TERM", "screen");
+    try testing.expect(term.caps.rgb);
+    try testing.expect(term.caps.hyperlinks);
+
+    try term.setHostEnvVar(testing.allocator, "STY", "1234.pts-0.host");
 
     try testing.expect(!term.caps.rgb);
     try testing.expect(!term.caps.hyperlinks);
@@ -1031,18 +1033,6 @@ test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
 
     term.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
     try testing.expect(!term.caps.hyperlinks);
-}
-
-test "environment overrides - WT_SESSION enables rgb and ansi256" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TERM", "xterm-256color");
-    try env.put("WT_SESSION", "test-session");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(term.caps.rgb);
-    try testing.expect(term.caps.ansi256);
 }
 
 test "parseXtversion - terminal name only" {
