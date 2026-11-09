@@ -4,7 +4,7 @@ use super::{AnyWidget, Behavior, Element, Painter, Widget, build, handle};
 use crate::app::{App, Cx};
 use crate::input::MouseEvent;
 use crate::layout::{FlexDirection, LayoutProperty, Length};
-use crate::native::{Hooks, NodeKind};
+use crate::native::{Hooks, NodeKind, WidthMethod};
 use crate::style::{Color, Style};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -112,6 +112,7 @@ pub(crate) struct GutterInner {
     pub target: RefCell<Weak<dyn Behavior>>,
     pub state: RefCell<GutterState>,
     width: Cell<u32>,
+    sign_method: Cell<Option<WidthMethod>>,
 }
 
 impl GutterInner {
@@ -121,14 +122,18 @@ impl GutterInner {
             target: RefCell::new(Weak::<GutterInner>::new()),
             state: RefCell::new(GutterState::new(fg)),
             width: Cell::new(u32::MAX),
+            sign_method: Cell::new(None),
         });
         gutter.element.add_hooks(Hooks::UPDATE.union(Hooks::RENDER_AFTER));
         gutter.element.set_layout(LayoutProperty::FlexShrink(0.0));
         gutter
     }
 
-    /// Resizes the gutter for the target's line count. Runs before every frame's layout.
+    /// Resizes the gutter for the target's line count and the width method. Runs before every frame's layout.
     pub fn refresh(&self) {
+        if self.element.app().map(|app| app.width_method()) != self.sign_method.get() {
+            return self.measure_signs();
+        }
         let lines = self.target.borrow().upgrade().and_then(|target| target.visible_lines());
         let width = self.state.borrow().width(lines.map_or(1, |lines| lines.line_count.max(1)));
         if self.width.replace(width) != width {
@@ -139,14 +144,15 @@ impl GutterInner {
     /// Recomputes the sign widths after the signs changed.
     pub fn measure_signs(&self) {
         let Some(app) = self.element.app() else { return };
-        let context = app.session().context().clone();
-        let measure = |text: &str| context.text_width(text, app.width_method()).unwrap_or(0);
+        let (context, method) = (app.session().context().clone(), app.width_method());
+        let measure = |text: &str| context.text_width(text, method).unwrap_or(0);
         let mut state = self.state.borrow_mut();
         let widths = state.signs.values().fold((0, state.min_after_width), |(before, after), sign| {
             (before.max(measure(&sign.before)), after.max(measure(&sign.after)))
         });
         state.sign_widths = widths;
         drop(state);
+        self.sign_method.set(Some(method));
         self.changed();
     }
 

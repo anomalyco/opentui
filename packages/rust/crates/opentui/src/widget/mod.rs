@@ -296,7 +296,7 @@ impl Element {
     /// nothing.
     pub(crate) fn new(app: &App, kind: NodeKind, this: Weak<dyn Behavior>) -> Self {
         let num = app.inner().allocate_num();
-        let node = app.report(Node::new(app.session(), kind, num));
+        let node = app.report(Node::new(app.synced_session(), kind, num));
         Self {
             app: Rc::downgrade(app.inner()),
             node,

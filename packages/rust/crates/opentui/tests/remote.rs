@@ -374,6 +374,97 @@ fn a_color_scheme_notice_lets_the_app_read_the_new_palette() {
     client.finish().expect("the app thread").expect("the app");
 }
 
+// Expected: widgets, including a scrollback writer's, measure text with the width method native drawing uses, also
+// after a reply changes it, as Core's `widthMethod` follows the renderer.
+// Actual: `App::width_method` kept the method from before the reply, a scrollback writer's app kept it until its next
+// render, and `NoZwj` was reported although native draws it as `Unicode`. Under ConPTY's DECRPM 2027 "unrecognized"
+// reply, a ZWJ emoji measured 2 cells and drew 4: the table cell blanked it, the gutter sign was clipped, the input
+// wrote over "💻", and a snapshot lost its wrapped row.
+#[test]
+fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
+    use opentui::split::{Scrollback, SnapshotOptions};
+    use opentui::widget::{LineNumbers, LineSign, WrapMode};
+    let zwj = "👩\u{200d}💻";
+    // An environment variable, the replies and keys, the text, whether the emulator clusters graphemes, the method
+    // native draws with, the text's cells under it, the link snapshot, and the screen rows to check. Native draws NoZwj
+    // as Unicode but the emulator splits the emoji, so only the method's row and the cursor show the app's measurement.
+    // Only Ghostty's reply turns hyperlinks on; "l" updates the link before anything else reads the terminal state.
+    let ghostty = &b"\x1b[?2027;2$y\x1bP>|ghostty 1.3.0\x1b\\lw"[..];
+    let cases = [
+        (("TERM", "xterm-256color"), &b"\x1b[?2027;0$yw"[..], zwj, false, "Wcwidth", 4, "go (https://a.b)", 0..5),
+        (("TERM_PROGRAM", "vscode"), b"\x1b[?2027;2$yw", zwj, true, "Unicode", 2, "go", 0..5),
+        (("TERM", "xterm-256color"), ghostty, "বাংলা", true, "UnicodeWide", 4, "go!", 0..5),
+        (("OPENTUI_FORCE_NOZWJ", "1"), b"w", zwj, true, "Unicode", 2, "go (https://a.b)", 2..3),
+    ];
+    for (variable, input, text, clusters, method, cells, link, checked) in cases {
+        let environment = vec![("TERM".into(), "xterm-256color".into()), (variable.0.into(), variable.1.into())];
+        let options = RemoteOptions { width: 48, height: 5, environment };
+        let mut client = Client::start(options, quiet(), move |app| {
+            let editor = Textarea::new(app);
+            editor.set_text("x");
+            let gutter = LineNumbers::new(app, &editor).height(1).line_sign(0, LineSign::before(text, None));
+            let table = Table::new(app)
+                .set_columns([Column::new("").width(ColumnWidth::Cells(6)).align(Alignment::Right)])
+                .show_header(false)
+                .set_rows([[text]])
+                .size(6, 1);
+            let row = View::new(app).row().height(1).child(&table).child(&Text::new(app, "|"));
+            app.root().add(&row).add(&gutter);
+            // Made before the reply, as apps make their scrollback writer.
+            let scrollback = Scrollback::new(app).unwrap();
+            let link = Markdown::new(scrollback.app()).set_markdown("[go](https://a.b)");
+            app.on_key(move |cx, key| {
+                if key.matches("l") {
+                    // Updates a paragraph without making a node, so only `hyperlinks` reads the terminal state.
+                    link.append("!");
+                } else if key.matches("w") {
+                    // Text and Markdown prose measure through the detached Session, Code through the app. Text comes
+                    // first, before anything asks the app for its width method.
+                    let line = format!("{text}abcd");
+                    let shots = [
+                        Text::new(scrollback.app(), &line).wrap(WrapMode::Char).as_any(),
+                        Markdown::new(scrollback.app()).set_markdown(&line).as_any(),
+                        Code::new(scrollback.app()).wrap(WrapMode::Char).set_code(&line).as_any(),
+                    ]
+                    .map(|widget| {
+                        let options = SnapshotOptions { width: Some(6), ..SnapshotOptions::default() };
+                        let shot = scrollback.snapshot(&widget, options).unwrap().buffer.capture().unwrap().text();
+                        shot.replace('\n', "/")
+                    });
+                    let link =
+                        scrollback.snapshot(&link, SnapshotOptions::default()).unwrap().buffer.capture().unwrap();
+                    let error = scrollback.app().session().context().last_error().unwrap();
+                    let label = format!("m={:?} {} {error:?}", cx.app().width_method(), link.text().trim_end());
+                    let label = Text::new(cx.app(), label);
+                    cx.app().root().add(&label).add(&Text::new(cx.app(), shots.join(" ")));
+                } else if key.matches("i") {
+                    let input = Input::new(cx.app()).set_value(format!("{text}yz"));
+                    cx.app().root().add(&input);
+                    input.focus();
+                }
+            });
+        });
+        client.wait_for("|");
+        client.send(input);
+        client.wait_for("m=");
+        client.send(b"i");
+        client.wait_for("yz");
+        let host = opentui::testing::TestApp::new(48, 5);
+        let output = if clusters { client.text() } else { client.text().replace("\x1b[?2027h", "") };
+        let screen = TerminalView::new(&host).size(48, 5).write(output).screen();
+        // A 6-cell snapshot wraps "cd" after a 4-cell text.
+        let (pad, shot) = (" ".repeat(6 - cells as usize), if cells == 4 { "ab/cd" } else { "abcd" });
+        let shots = vec![format!("{text}{shot}"); 3].join(" ");
+        // The label ends with the Context's last error: the snapshots leave none.
+        let rows = [format!("{pad}{text}|"), format!("{text} 1 x"), format!("m={method} {link} None"), shots];
+        let rows = [&rows[..], &[format!("{text}yz")]].concat();
+        let expected = (&rows[checked.clone()], Some((cells + 2, 4)));
+        assert_eq!((&screen.lines[checked], screen.cursor.position), expected, "{variable:?}");
+        client.link.terminate();
+        client.finish().expect("the app thread").expect("the app");
+    }
+}
+
 // Expected: an image drawn before the terminal answers the capability queries switches to Kitty graphics once
 // Ghostty replies to XTVERSION and the Kitty graphics query, as Core repaints on each capability reply.
 // Actual: a reply forced the next frame but did not ask for one, so an app with nothing else to draw kept its

@@ -282,7 +282,8 @@ pub(crate) struct AppInner {
     /// Whether the app runs on a remote terminal, which waits here until [`App::run`].
     remote: bool,
     remote_terminal: RefCell<Option<RemoteTerminal>>,
-    width_method: Cell<WidthMethod>,
+    /// A detached app's parent Session, whose terminal state it copies before it measures text.
+    parent: std::cell::OnceCell<Session>,
     root: RefCell<Option<View>>,
     registry: RefCell<HashMap<u32, Weak<dyn Behavior>>>,
     next_num: Cell<u32>,
@@ -494,9 +495,11 @@ impl App {
     }
 
     /// An app on a detached Session that never runs, for painting widgets offscreen, with a manual clock.
-    pub(crate) fn detached(session: Session, options: AppOptions) -> Result<Self> {
+    pub(crate) fn detached(session: Session, parent: Session, options: AppOptions) -> Result<Self> {
         let start = Instant::now();
-        Self::with_session(session, options, Clock::Manual { start, now: Cell::new(start) }, None)
+        let app = Self::with_session(session, options, Clock::Manual { start, now: Cell::new(start) }, None)?;
+        let _ = app.0.parent.set(parent);
+        Ok(app)
     }
 
     fn with_session(
@@ -506,7 +509,6 @@ impl App {
         remote_terminal: Option<RemoteTerminal>,
     ) -> Result<Self> {
         let renderer = session.renderer_state()?;
-        let width_method = session.capabilities()?.width_method;
         let title = options.title.clone();
         let remote = remote_terminal.is_some();
         let app = Self(Rc::new(AppInner {
@@ -515,7 +517,7 @@ impl App {
             options,
             remote,
             remote_terminal: RefCell::new(remote_terminal),
-            width_method: Cell::new(width_method),
+            parent: std::cell::OnceCell::new(),
             root: RefCell::new(None),
             registry: RefCell::new(HashMap::new()),
             next_num: Cell::new(1),
@@ -626,6 +628,17 @@ impl App {
         &self.0.session
     }
 
+    /// The Session. A detached app first copies its parent's terminal state, so a text node made now measures as the
+    /// parent draws. Not while a frame runs, which native code rejects; `Scrollback` copies before each frame.
+    pub(crate) fn synced_session(&self) -> &Session {
+        if !self.0.in_frame.get()
+            && let Some(parent) = self.0.parent.get()
+        {
+            let _ = self.0.session.sync_detached(parent);
+        }
+        &self.0.session
+    }
+
     /// The terminal size in cells.
     pub fn size(&self) -> (u16, u16) {
         self.0.size.get()
@@ -635,7 +648,11 @@ impl App {
     /// native owners of text, such as [`Buffer::new`](crate::native::Buffer::new), so their text lines up with the
     /// app's.
     pub fn width_method(&self) -> WidthMethod {
-        self.0.width_method.get()
+        // Native draws NoZwj as Unicode, as Core reads it.
+        match self.synced_session().capabilities().map(|capabilities| capabilities.width_method) {
+            Ok(WidthMethod::NoZwj) | Err(_) => WidthMethod::Unicode,
+            Ok(method) => method,
+        }
     }
 
     /// Frames painted so far.
@@ -668,7 +685,7 @@ impl App {
 
     /// Whether the terminal shows OSC 8 hyperlinks, as far as it has reported.
     pub(crate) fn hyperlinks(&self) -> bool {
-        let capabilities = self.0.session.capabilities();
+        let capabilities = self.synced_session().capabilities();
         capabilities.is_ok_and(|capabilities| capabilities.flags.contains(crate::native::CapabilityFlags::HYPERLINKS))
     }
 
@@ -1452,14 +1469,14 @@ impl App {
             }
             HostRequest::LayoutChanged { .. } | HostRequest::Scroll { .. } => {}
             HostRequest::Record { slots, recorder } => {
-                let context = self.0.session.context().clone();
+                let (context, width_method) = (self.0.session.context().clone(), self.width_method());
                 for slot in slots {
                     if let Some(widget) = self.lookup(slot.num) {
                         if widget.element().has_filters() {
                             self.filtered_slot(&widget, slot);
                         }
                         let hooks = widget.element().own_hooks();
-                        let mut painter = Painter::new(recorder, slot, hooks, &context, self.width_method());
+                        let mut painter = Painter::new(recorder, slot, hooks, &context, width_method);
                         widget.paint(&mut painter);
                         painter.finish()?;
                     }
@@ -1520,9 +1537,6 @@ impl App {
         self.0.terminal_active.set(true);
         self.0.size.set(host.size());
         self.0.proxy.set_waker(Some(host.waker()));
-        if let Some(capabilities) = self.report(self.0.session.capabilities()) {
-            self.0.width_method.set(capabilities.width_method);
-        }
         let title = self.0.title.borrow().clone();
         if let Some(title) = title {
             self.report(self.0.session.control(Control::Title(&title)));
