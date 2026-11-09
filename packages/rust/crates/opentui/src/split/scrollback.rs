@@ -73,7 +73,7 @@ impl Scrollback {
         session.attach_renderer(renderer.width.max(1), 1, Remote::Remote, &[])?;
         session.sync_detached(parent)?;
         let theme = Theme { background: Color::TRANSPARENT, ..theme };
-        let app = App::detached(session.clone(), AppOptions::default().with_theme(theme))?;
+        let app = App::detached(session.clone(), parent.clone(), AppOptions::default().with_theme(theme))?;
         // The detached app never runs; messages logged meanwhile belong to the parent.
         crate::console::unregister(app.console_id());
         Ok(Self(Rc::new(Inner { app, session, parent: parent.clone() })))
@@ -137,6 +137,8 @@ impl Scrollback {
     fn render(&self, holder: &View, width: u32, height: Option<u32>, rows: u32) -> Result<(Buffer, u32)> {
         let inner = &self.0;
         inner.session.sync_detached(&inner.parent)?;
+        // Read before painting: the draft keeps the Session busy until it is dropped.
+        let width_method = inner.app.width_method();
         let mut rows = height.unwrap_or(rows).max(1);
         let mut pass = 0;
         let draft = loop {
@@ -150,7 +152,6 @@ impl Scrollback {
             rows = measured;
             pass += 1;
         };
-        let width_method = inner.parent.capabilities()?.width_method;
         let buffer = Buffer::new(inner.parent.context(), width, rows, width_method)?;
         draft.copy_to(&buffer)?;
         Ok((buffer, rows))
@@ -231,7 +232,7 @@ impl ScrollbackSurface {
             return Ok(None);
         }
         let parent = &self.scrollback.0.parent;
-        let buffer = Buffer::new(parent.context(), *width, end - start, parent.capabilities()?.width_method)?;
+        let buffer = Buffer::new(parent.context(), *width, end - start, self.scrollback.0.app.width_method())?;
         buffer.compose(source, 0, -(start as i32))?;
         let start_on_new_line = self.next_start_on_new_line.replace(false);
         Ok(Some(SplitSnapshot {
