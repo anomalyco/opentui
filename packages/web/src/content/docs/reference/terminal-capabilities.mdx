@@ -151,15 +151,14 @@ host terminal is the stream's real peer.
 Auto-detection recognizes `SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`, and `MOSH_CONNECTION`. In an auto-detected remote
 session, OpenTUI applies only the color depth keys from the forwarded environment: a `TERM` that contains `256color`
 enables `ansi256`, and a `COLORTERM` of `truecolor` or `24bit`, or `OPENTUI_FORCE_TRUECOLOR=1`, enables `rgb` and
-`ansi256`. These keys describe the
-remote endpoint: `sshd` takes `TERM` from the client's PTY request, and `COLORTERM` comes from the client when ssh is
-configured to send it, or from the server session itself, such as a shell rc file. OpenTUI ignores the other keys, such
-as `TERM_PROGRAM`, the multiplexer variables, and the `OPENTUI_*` overrides. On the process host, they can describe the
-wrong terminal endpoint. The width overrides `OPENTUI_FORCE_WCWIDTH`, `OPENTUI_FORCE_UNICODE`, and `OPENTUI_FORCE_NOZWJ`
-are an exception: they configure the app, so OpenTUI applies them whenever they are in the forwarded environment. GNU
-Screen is the other exception. It answers no query, so OpenTUI detects it from `STY`, or from a `TERM` that starts with
-`screen` without `TMUX`. This covers ssh started inside Screen, which forwards Screen's `TERM`,
-and Screen started on the server. A tmux XTVERSION reply still selects tmux.
+`ansi256`. These keys describe the remote endpoint: `sshd` takes `TERM` from the client's PTY request, and `COLORTERM`
+comes from the client when ssh is configured to send it, or from the server session itself, such as a shell rc file.
+OpenTUI ignores the other keys, such as `TERM_PROGRAM`, the multiplexer variables, and the other `OPENTUI_*`
+overrides. On the process host, they can describe the wrong terminal endpoint. The width overrides
+`OPENTUI_FORCE_WCWIDTH`, `OPENTUI_FORCE_UNICODE`, and `OPENTUI_FORCE_NOZWJ` are an exception: they configure the app, so
+OpenTUI applies them whenever they are in the forwarded environment. GNU Screen is the other exception. It answers no
+query, so OpenTUI detects it from `STY`, or from a `TERM` that starts with `screen` without `TMUX`. This covers ssh
+started inside Screen, which forwards Screen's `TERM`, and Screen started on the server. A tmux XTVERSION reply still selects tmux.
 
 When `COLORTERM` does not enable `rgb`, OpenTUI asks the terminal. The startup queries include XTGETTCAP `RGB` and
 `Tc`, and a positive reply to either enables `rgb`. An XTVERSION reply from kitty, Ghostty, WezTerm, foot, XTerm,
@@ -175,8 +174,8 @@ gets 256-color output, also with a plain `screen` `TERM`. If you turn on `trueco
 If nothing enables `rgb`, a `256color` `TERM` gives 256-color output. Alacritty and mosh, for example, answer none of
 these queries. To keep truecolor there, export `COLORTERM=truecolor` on the server, forward it with
 `SendEnv COLORTERM` on the client and `AcceptEnv COLORTERM` on the server, or pass it in `environment`.
-`OPENTUI_FORCE_TRUECOLOR=1` enables `rgb` in every mode and inside Screen, forwarded or passed in the same ways. Only
-the value `1` counts; OpenTUI ignores other values.
+`OPENTUI_FORCE_TRUECOLOR=1` (or `true`) enables `rgb` in every mode and inside Screen, forwarded or passed in the same
+ways. OpenTUI ignores other values.
 
 `forwardEnvKeys` selects process environment names that OpenTUI sends to native detection. Explicit remote mode
 defaults to an empty list. Other modes default to the documented terminal, SSH, tmux, Zellij, width, graphics,
@@ -231,7 +230,7 @@ Terminal detection reads these protocol controls:
 | `OPENTUI_GRAPHICS`              | Exact lowercase `false` or `0` disables Kitty and Sixel queries. Exact lowercase `true` or `1` keeps detection enabled. |
 | `OPENTUI_IMAGE_PROTOCOL`        | Selects `auto`, `kitty`, `sixel`, or `blocks` without case sensitivity                                                  |
 | `OPENTUI_FORCE_EXPLICIT_WIDTH`  | `true` or `1` forces support. `false` or `0` disables support and the query.                                            |
-| `OPENTUI_FORCE_TRUECOLOR`       | Exact `1` enables 24-bit color in every mode, also inside GNU Screen. Other values are ignored.                         |
+| `OPENTUI_FORCE_TRUECOLOR`       | `1` or `true` enables 24-bit color in every mode, also inside GNU Screen. Other values are ignored.                     |
 | `OPENTUI_FORCE_WCWIDTH`         | Presence selects wcwidth                                                                                                |
 | `OPENTUI_FORCE_UNICODE`         | Presence selects Unicode width mode                                                                                     |
 | `OPENTUI_FORCE_NOZWJ`           | Presence selects a native no-ZWJ width mode                                                                             |

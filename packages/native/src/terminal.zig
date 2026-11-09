@@ -747,8 +747,9 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
     } else if (env_map.get("COLORTERM")) |colorterm| {
         if (std.mem.eql(u8, colorterm, "truecolor") or std.mem.eql(u8, colorterm, "24bit")) self.caps.rgb = true;
     }
-    // The explicit override, for screen with `truecolor on` or a terminal that answers no query. Only `1` counts.
-    if (std.mem.eql(u8, env_map.get("OPENTUI_FORCE_TRUECOLOR") orelse "", "1")) self.caps.rgb = true;
+    // The explicit override, for screen with `truecolor on` or a terminal that answers no query.
+    const force_truecolor = env_map.get("OPENTUI_FORCE_TRUECOLOR") orelse "";
+    if (std.mem.eql(u8, force_truecolor, "1") or std.mem.eql(u8, force_truecolor, "true")) self.caps.rgb = true;
     // A remote client's environment names only GNU screen, which answers no query: TERM forwarded by ssh, or STY.
     const remote_env = self.identityEnv() == null;
     if (!self.term_info.from_xtversion) {

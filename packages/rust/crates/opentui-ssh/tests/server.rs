@@ -217,12 +217,14 @@ fn open_access_runs_an_app_on_the_clients_terminal() {
     let (server, errors) = start(ServerConfig::default(), greeter);
     runtime().block_on(async {
         let handle = connect_as(&server, "alice").await;
-        let mut shell = Shell::open(&handle, Some(("screen-256color", 90, 30)), &[("LANG", "C.UTF-8")]).await;
-        assert!(shell.accepted(3).await);
+        let env = [("LANG", "C.UTF-8"), ("OPENTUI_FORCE_TRUECOLOR", "1")];
+        let mut shell = Shell::open(&handle, Some(("screen-256color", 90, 30)), &env).await;
+        assert!(shell.accepted(4).await);
         shell.wait_for(ENTER_ALT).await;
         shell.wait_for("user alice via none").await;
         shell.wait_for("term screen-256color pty true lang Some(\"C.UTF-8\")").await;
         shell.wait_for("size 90x30").await;
+        assert!(shell.text().contains("\x1b[48;2;18;22;28m"), "{:?}", shell.text());
         shell.channel.window_change(100, 40, 0, 0).await.unwrap();
         shell.wait_for("size 100x40").await;
         shell.send(b"q").await;
