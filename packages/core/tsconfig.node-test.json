@@ -186,6 +186,7 @@
     "src/tests/text-corpus.test.ts",
     "src/tests/checked-text-unprintable.test.ts",
     "src/lib/tree-sitter/parser.worker.ts",
+    "src/lib/tree-sitter/tree-count-worker.fixture.ts",
     "src/testing/bun-test-node.ts",
     "src/testing/harness.test.ts",
     "src/tests/renderer.handler-error.test.ts",
