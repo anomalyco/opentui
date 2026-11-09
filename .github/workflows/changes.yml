@@ -23,7 +23,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           filter: blob:none
           sparse-checkout: scripts
 
@@ -34,4 +34,4 @@ jobs:
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
-        run: sh scripts/ci-changes.sh "$EVENT" HEAD^1 HEAD | tee -a "$GITHUB_OUTPUT"
+        run: sh scripts/ci-changes.sh "$EVENT" HEAD^2~1 HEAD^2 | tee -a "$GITHUB_OUTPUT"
