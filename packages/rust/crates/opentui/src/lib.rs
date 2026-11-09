@@ -86,3 +86,4 @@ pub mod prelude {
     };
     pub use crate::{Error, Result};
 }
+// probe: Rust-only run
