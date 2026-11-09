@@ -3338,8 +3338,9 @@ ot_status ot_session_input_feed(
  * out, and a reply that follows it is not typed; if what follows that Escape is
  * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
  * ESCAPE_PREFIX, which implies KITTY_KEYBOARD, means the terminal confirmed
- * Kitty disambiguate or report-all keys, so ESC only begins a sequence: no unit has a deadline, and an ESC before
- * a byte other than [, O, ], P or _ is the Escape key and that byte, never Alt.
+ * Kitty disambiguate or report-all keys, so no unit has a deadline. A raw ESC and the byte after it in the same
+ * feed are Alt and that key as without the flag; a raw ESC that ends a feed is the Escape key at once, and a
+ * sequence that begins the next feed is kept whole (a CSI then is never a key).
  * A session with a renderer sets it itself once the terminal answers the CSI ? u
  * query that follows its current push (only with OT_TERMINAL_REPLY_SENTINEL).
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */

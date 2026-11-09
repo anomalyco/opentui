@@ -1167,18 +1167,31 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     _ = try harness.feed("\x1b[" ++ utils.repeat(u8, "9", ip.sequence_bytes_max));
     try expectGot("", &.{}, try harness.wait(20));
     try expectGot("", &.{ ch('1'), ch('q') }, try harness.feed("1q"));
-    // With ESCAPE_PREFIX (confirmed Kitty) no ESC-led unit has a deadline, and a raw ESC before a byte that
-    // introduces no sequence is the Escape key and that byte, never Alt. Without the bit each one times out.
+    // With ESCAPE_PREFIX (confirmed Kitty) no unit has a deadline. A raw ESC and the byte after it in the same read
+    // are Alt and that key, as without the bit; a raw ESC that ends a read is the Escape key at once, and a unit that
+    // begins the next read is reinstated and no key. Without the bit each split one times out.
     const confirmed: ip.Expectations = .{ .kitty_keyboard = true, .escape_prefix = true };
     for ([_]struct { []const u8, []const u8, []const Expect }{
-        .{ "\x1b", "j", &.{ k(K.escape, NONE), ch('j') } },
+        .{ "\x1bb", "", &.{k('b', ALT)} },
+        .{ "\x1bf", "", &.{k('f', ALT)} },
+        .{ "\x1b\x7f", "", &.{k(K.backspace, ALT)} },
+        .{ "\x1b\r", "", &.{k(K.enter, ALT)} },
+        .{ "\x1b\x1b", "", &.{k(K.escape, ALT)} },
+        .{ "\x1b\xc3\xa9", "", &.{k(0xe9, ALT)} },
+        .{ "\x1b", "", &.{k(K.escape, NONE)} },
+        .{ "\x1b", "b", &.{ k(K.escape, NONE), ch('b') } },
         .{ "\x1b", "\r", &.{ k(K.escape, NONE), k(K.enter, NONE) } },
-        .{ "\x1b", "\x7f", &.{ k(K.escape, NONE), k(K.backspace, NONE) } },
         .{ "\x1b", "B", &.{ k(K.escape, NONE), ch('B') } },
+        .{ "\x1b", "[", &.{ k(K.escape, NONE), ch('[') } },
         .{ "\x1b", "\x1b[A", &.{ k(K.escape, NONE), k(K.up, NONE) } },
-        .{ "\x1b\x1b", "j", &.{ k(K.escape, NONE), k(K.escape, NONE), ch('j') } },
-        .{ "\x1b\x1b", "[A", &.{ k(K.escape, NONE), k(K.up, NONE) } },
-        .{ "\x1b", "[A", &.{k(K.up, NONE)} },
+        .{ "\x1b\x1b", "j", &.{ k(K.escape, ALT), ch('j') } },
+        .{ "\x1b\x1b", "[?62;22c", &.{ k(K.escape, ALT), reply("\x1b[?62;22c") } },
+        .{ "\x1b", "[27u", &.{ k(K.escape, NONE), reply("\x1b[27u") } },
+        .{ "\x1b", "[A", &.{ k(K.escape, NONE), reply("\x1b[A") } },
+        .{ "\x1b", "OP", &.{ k(K.escape, NONE), k(K.f(1), NONE) } },
+        .{ "\x1b", "[<0;1;1M", &.{ k(K.escape, NONE), down(0, 0, 0) } },
+        .{ "\x1b", "[?62;22c", &.{ k(K.escape, NONE), reply("\x1b[?62;22c") } },
+        .{ "\x1b", "]11;rgb:0/0/0\x07", &.{ k(K.escape, NONE), reply("\x1b]11;rgb:0/0/0\x07") } },
         .{ "\x1bO", "P", &.{k(K.f(1), NONE)} },
         .{ "\x1b[1;5", "A", &.{k(K.up, CTRL)} },
         .{ "\x1b[M ", "!!", &.{down(0, 0, 0)} },
@@ -1195,6 +1208,7 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         _ = try held.wait(60_000);
         _ = try held.feed(case[1]);
         try expectGot(case[0], case[2], held.out.items);
+        if (case[1].len == 0) continue;
         var timed = try Harness.create();
         defer timed.deinit();
         timed.parser.setExpectations(.{ .kitty_keyboard = true });
@@ -1242,17 +1256,20 @@ test "input parser times out partial units unless they may be mouse reports, Kit
         }
         try expectGot(case[2][0], case[3], split_reply.out.items);
     }
-    // A push or pop clears the bit: a held Escape gets its deadline back and is a key on the next feed.
+    // A push or pop clears the bit: a held unit gets its deadline back and is cut short on the next feed.
     harness.parser.setExpectations(confirmed);
-    _ = try harness.feed("\x1b");
+    _ = try harness.feed("\x1bO");
     try expectGot("", &.{}, try harness.wait(60_000));
     harness.parser.setExpectations(.{ .kitty_keyboard = true });
-    try expectGot("", &.{k(K.escape, NONE)}, try harness.wait(0));
+    try expectGot("", &.{frag("\x1bO")}, try harness.wait(0));
 }
 
 test "input parser types no reply byte at any cut or pause while a sentinel is out" {
-    const sentinel: ip.Expectations = .{ .replies = true, .sentinel = true };
-    for ([_][]const u8{
+    // Confirmed Kitty too: its lone Escape is a key at once instead of at the timeout.
+    for ([_]ip.Expectations{
+        .{ .replies = true, .sentinel = true },
+        .{ .replies = true, .sentinel = true, .kitty_keyboard = true, .escape_prefix = true },
+    }) |sentinel| for ([_][]const u8{
         "\x1b[?62;22c",          "\x1b[?2026;2$y",            "\x1b[?5u",                   "\x1b[24;80R",      "\x1b[4;600;800t",
         "\x1b]11;rgb:0/0/0\x07", "\x1b]4;1;rgb:cd/0/0\x1b\\", "\x1bP>|kitty(0.40.1)\x1b\\", "\x1bP1+r54\x1b\\", "\x1b_Gi=31;OK\x1b\\",
     }) |input| {
@@ -1267,8 +1284,9 @@ test "input parser types no reply byte at any cut or pause while a sentinel is o
             defer harness.deinit();
             harness.parser.setExpectations(sentinel);
             _ = try harness.feed(input[0..cut]);
-            // A lone Escape still times out; the reply after it is not typed.
-            try expectGot(input, if (cut == 1) &.{k(K.escape, NONE)} else &.{}, try harness.wait(pause));
+            // A lone Escape still is a key; the reply after it is not typed.
+            _ = try harness.wait(pause);
+            try expectGot(input, if (cut == 1) &.{k(K.escape, NONE)} else &.{}, harness.out.items);
             _ = try harness.feed(input[cut..]);
             _ = try harness.feed("j");
             if (!gotEql(whole.out.items, harness.out.items[@intFromBool(cut == 1)..])) {
@@ -1278,7 +1296,16 @@ test "input parser types no reply byte at any cut or pause while a sentinel is o
                 return error.TestUnexpectedResult;
             }
         };
-    }
+        // One byte per read with no pause: confirmed Kitty's Escape comes first, then the reply as a whole.
+        var bytes = try Harness.create();
+        defer bytes.deinit();
+        bytes.parser.setExpectations(sentinel);
+        for (input) |byte| _ = try bytes.feed(&.{byte});
+        _ = try bytes.feed("j");
+        const escaped = @intFromBool(sentinel.escape_prefix);
+        try expectGot(input, if (sentinel.escape_prefix) &.{k(K.escape, NONE)} else &.{}, bytes.out.items[0..escaped]);
+        try testing.expect(gotEql(whole.out.items, bytes.out.items[escaped..]));
+    };
 }
 
 /// Typed keys: Enter for `\r`, otherwise the byte.
