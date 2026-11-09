@@ -437,6 +437,21 @@ describe("ScrollBoxRenderable - facade", () => {
     expect(trace).toEqual(["25 row 25", "90 row 90", "6 row 6", "6 row 6", 0])
   })
 
+  // A relative scroll that runs past the start stays at the start: overscroll must not bank up and swallow the
+  // first steps of a reverse scroll.
+  test("relative scroll past the start does not accumulate", async () => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 20, height: 4 })
+    testRenderer.root.add(scrollbox)
+    for (let i = 0; i < 30; i++) scrollbox.add(new TextRenderable(testRenderer, { content: `row ${i}` }))
+    await renderOnce()
+
+    for (let i = 0; i < 4; i++) scrollbox.scrollBy(-2)
+    scrollbox.scrollBy(2)
+    await renderOnce()
+
+    expect(scrollbox.scrollTop).toBe(2)
+  })
+
   // afterLayout callbacks: one that throws does not stop the others, and its error reaches the renderer; one asked
   // during a frame (here from a content "resize" listener) runs in the next frame; an anchor release that native
   // rejects can be retried; destroying the box releases the queue.
