@@ -301,9 +301,9 @@ calls: `pipe` and `fcntl` for `pipe2`, the `TIOCPTYGNAME` ioctl for
 `/dev/tty`, the stdin `xargs -o` gives a program. From Linux, the crate
 compiles, passes clippy, and links every test binary for both macOS targets
 against a stub library (`-Zbuild-std`, with `zig cc` as C compiler and
-linker), but nothing has run on macOS yet. `scripts/check-macos.sh` repeats
-the compile and clippy part. OpenTUI's macOS build needs Apple's SDK, so the
-native library has to be built on a Mac.
+linker). `scripts/check-targets.sh` repeats the compile and clippy part, on
+each pull request in CI. OpenTUI's macOS build needs Apple's SDK, so the
+native library has to be built on a Mac; CI tests macOS after each merge.
 
 Windows 10 1809 or later, x86_64, with the MSVC or GNU toolchain, runs from
 the same sources. `term` and `pty` are now shared modules with a backend per
@@ -318,8 +318,8 @@ and `cargo test` find it. `sh test.sh` passes on a Windows 11 VM under Git
 Bash, with a Windows build of the native library that Zig cross-compiles from
 the current revision. The new `tests/lifecycle.rs` drives the `lifecycle`
 example on a pseudo-terminal on every platform, and on Windows also checks
-that the console modes are restored. `scripts/check-windows.sh` compile-checks
-from other systems.
+that the console modes are restored. CI runs `sh test.sh shared` on Windows
+for each pull request that changes the crates or native code.
 
 Decisions made for Windows:
 
@@ -389,8 +389,7 @@ Decisions made for SSH:
 - A remote app never reads or writes the server's system clipboard, and gets
   console messages only from its own thread or a `ConsoleSender`.
 - russh uses ring rather than its default aws-lc-rs, which needs CMake and NASM
-  on Windows. `scripts/check-windows.sh` leaves `opentui-ssh` out, since ring
-  compiles C even for a check.
+  on Windows.
 
 A review of the public API found bugs and inconsistencies, now fixed, with
 tests at the end of `tests/regressions.rs` and in `tests/widgets.rs`,

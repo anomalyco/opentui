@@ -73,17 +73,10 @@ fn run(host: &mut Host) -> Result<()> {
     let mut dirty = true;
     let mut events = Vec::new();
     loop {
-        if dirty && host.can_render()? {
-            frames += 1;
-            let (width, height) = host.size();
-            text.set_text(format!("lifecycle frame {frames} size {width}x{height}"))?;
-            host.present(session.paint(Color::TRANSPARENT, true, 0)?)?;
-            dirty = false;
-        }
-        host.poll(dirty.then(|| Instant::now() + Duration::from_millis(2)), &mut events)?;
         let mut suspend = false;
         for event in events.drain(..) {
             match event {
+                Event::Key(_) if suspend => {}
                 Event::Key(key) if key.matches("q") => return Ok(()),
                 Event::Key(key) if key.matches("p") => panic!("lifecycle fixture panic"),
                 Event::Key(key) if key.matches("e") => return Err(Error::Usage("lifecycle fixture error")),
@@ -95,7 +88,16 @@ fn run(host: &mut Host) -> Result<()> {
         }
         if suspend {
             host.suspend(&mut events)?;
+            continue;
         }
+        if dirty && host.can_render()? {
+            frames += 1;
+            let (width, height) = host.size();
+            text.set_text(format!("lifecycle frame {frames} size {width}x{height}"))?;
+            host.present(session.paint(Color::TRANSPARENT, true, 0)?)?;
+            dirty = false;
+        }
+        host.poll(dirty.then(|| Instant::now() + Duration::from_millis(2)), &mut events)?;
     }
 }
 

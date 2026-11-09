@@ -103,21 +103,26 @@ def scenario(name, command, action, expected_code, expect_text=None):
     return not failures
 
 
-def suspend_and_continue(pty):
-    # A read takes at most the line discipline's 4 KiB, so most of these bytes are still queued when the app suspends.
-    # As in Core, the app drops them once the suspension settles: the q among them must not reach the app.
-    pty.send(b"\x1a" + b"x" * 8192 + b"q")
-    # The fixture runs in its own session, where a stop request continues at once; either way it must come back.
-    time.sleep(0.3)
+def while_stopped(pty, data, *signals):
+    # Queues input and signals while the child is stopped, so that it takes them all at one wakeup.
+    os.kill(pty.process.pid, signal.SIGSTOP)
+    time.sleep(0.05)
+    pty.send(data)
+    for number in signals:
+        os.kill(pty.process.pid, number)
+    time.sleep(0.05)
     os.kill(pty.process.pid, signal.SIGCONT)
+
+
+def suspend_and_continue(pty):
+    # The first read takes Ctrl+Z and a q that must not quit (as in Core). On Linux, the last q, past the 4 KiB a read
+    # takes, is dropped when the suspension settles; macOS's pseudo-terminal holds only 1 KiB for a stopped reader.
+    # Resuming must paint without another wakeup.
+    while_stopped(pty, b"\x1aq" + (b"x" * 5000 + b"q" if sys.platform == "linux" else b""))
     if not pty.read(3, until=b"lifecycle frame 2"):
         raise SystemExit("FAIL: no frame after resuming")
     # A stop request and a key at one wakeup: once the key is read, another read of the blocking stdin waits for more.
-    os.kill(pty.process.pid, signal.SIGSTOP)
-    time.sleep(0.05)
-    pty.send(b"x")
-    time.sleep(0.05)
-    os.kill(pty.process.pid, signal.SIGCONT)
+    while_stopped(pty, b"x")
     os.kill(pty.process.pid, signal.SIGTSTP)
     if not pty.read(3, until=b"lifecycle frame 3"):
         raise SystemExit("FAIL: no frame after a stop request")
@@ -131,8 +136,9 @@ def write_to_stderr(pty):
 
 
 def resize_then_quit(pty):
+    # A suspension at the same wakeup drops the rest of the input, not the resize.
     pty.resize(100, 30)
-    os.kill(pty.process.pid, signal.SIGWINCH)
+    while_stopped(pty, b"\x1a", signal.SIGWINCH)
     if not pty.read(3, until=b"size 100x30"):
         raise SystemExit("FAIL: resize was not drawn")
     pty.send(b"q")
@@ -179,7 +185,8 @@ def main():
     for command in ([binary], [binary, "--app"]):
         results += [
             scenario("quit with q", command, lambda pty: pty.send(b"q"), 0),
-            scenario("resize, then quit", command, resize_then_quit, 0),
+            scenario("Ctrl+Z and a resize, then quit", command, resize_then_quit, 0),
+            scenario("Ctrl+Z and SIGTERM", command, lambda pty: while_stopped(pty, b"\x1a", signal.SIGTERM), 0),
             scenario("SIGTERM", command, lambda pty: os.kill(pty.process.pid, signal.SIGTERM), 0),
             scenario("SIGHUP", command, lambda pty: os.kill(pty.process.pid, signal.SIGHUP), 0),
             scenario("SIGINT", command, lambda pty: os.kill(pty.process.pid, signal.SIGINT), 0),

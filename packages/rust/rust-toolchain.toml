@@ -1,0 +1,8 @@
+# The toolchain CI installs with `rustup toolchain install` here. Toolchains without rustup ignore this file; keep
+# them at the same version, since a newer clippy can fail on one side only.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+# For scripts/check-targets.sh.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]

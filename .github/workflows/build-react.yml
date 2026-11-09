@@ -19,8 +19,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+
+  # A pull request that changes only packages/rust skips the tests; the gate accepts that.
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust_only != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -96,14 +102,19 @@ jobs:
   # Gate job for branch protection
   build-complete:
     name: React - Build and Test
-    needs: [test]
+    needs: [changes, test]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
+      # Without the changes job no skip is known to be safe. The tests may skip only on a Rust-only pull request.
       - name: Check test results
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST_ONLY: ${{ needs.changes.outputs.rust_only }}
+          TYPESCRIPT: ${{ needs.test.result }}
         run: |
-          if [ "${{ needs.test.result }}" != "success" ]; then
-            echo "Tests failed"
-            exit 1
-          fi
+          [ "$CHANGES" = success ] || { echo "Change detection: $CHANGES"; exit 1; }
+          for result in $TYPESCRIPT; do
+            [ "$result" = success ] || [ "$result-$RUST_ONLY" = skipped-true ] || { echo "Tests failed"; exit 1; }
+          done
           echo "All tests passed"

@@ -618,8 +618,7 @@ and delivering the output to memory.
 sh test.sh           # format, clippy, tests, and lifecycle checks, with shared and static linking
 sh test.sh shared
 cargo test --locked --workspace --features opentui/tokio,opentui/tree-sitter
-sh scripts/check-macos.sh     # from another system: clippy for both macOS targets
-sh scripts/check-windows.sh   # from another system: clippy for Windows
+sh scripts/check-targets.sh   # from another system: clippy for both macOS targets
 ```
 
 On Windows, run `sh test.sh` from Git Bash; it checks the shared linkage only.
@@ -628,11 +627,15 @@ On Windows, run `sh test.sh` from Git Bash; it checks the shared linkage only.
 After a change to `opentui.h`, run `bun run generate:abi` in `packages/core`,
 then `sh test.sh shared`, and fix the crates in the same change.
 
-`scripts/check-macos.sh` and `scripts/check-windows.sh` keep that code
-compiling while you work elsewhere. They need the standard library's source
-(`rust-src`), and the macOS one needs Zig; their headers say how they use them.
-They do not link or run anything, so `sh test.sh` on the platform is still the
-real check.
+`scripts/check-targets.sh` keeps the macOS code compiling while you work
+elsewhere. It needs Zig and the targets' standard libraries, or `rust-src`
+without rustup; its header says how it uses them. It does not link or run
+anything, so `sh test.sh` on the platform is still the real check.
+
+CI runs `test.sh` on Linux and Windows for each pull request that changes the
+crates, native code or the ABI generator, `check-targets.sh` on Linux, and
+`test.sh` on macOS after each merge. `rust-toolchain.toml` pins the toolchain it
+uses.
 
 Widget tests in `crates/opentui/tests/` drive headless apps and compare
 rendered frames. Native tests drive real Sessions into memory with a virtual
