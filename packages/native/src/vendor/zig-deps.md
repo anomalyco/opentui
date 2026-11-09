@@ -43,8 +43,14 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with nine changes,
   rounds differently at another size, even one within Yoga's 1e-4 tolerance. Each layout also keeps its
   unrounded left and top position beside the rounded one, as upstream keeps unrounded sizes, and rounding
   starts from the unrounded position and size: a subtree that a cache hit skips then rounds as a fresh one.
-  Only the scene's config in `src/context.zig` sets the option; other configs keep upstream rounding and
-  caching.
+  Rounding then visits only the nodes that the solve laid out, and the subtrees whose parent's unrounded
+  absolute origin moved; it clears the new-layout flag of each node it visits. A move in
+  `src/yoga-bridge.cpp` flags the child's new path, because under `display: none` the moved subtree gets no
+  layout pass. A test build checks on every solve that each skipped subtree already holds the values a full
+  pass would write (except a `display: contents` node's own box, which the scene does not have). Clearing
+  the flags turns off upstream's zero-out skip for `display: none` subtrees: each layout of their parent
+  zeroes and rounds them again, which costs less than the skip's compare. Only the scene's config in
+  `src/context.zig` sets the option; other configs keep upstream rounding and caching.
 - `yoga-finite-percent.patch` clamps a resolved percentage to ±1e30 in each of Yoga's three percent
   resolve paths, so a deep percentage chain cannot overflow f32 and stop layout on an indefinite available
   size.

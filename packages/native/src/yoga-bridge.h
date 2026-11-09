@@ -73,6 +73,8 @@ void otYogaTestFailAfter(int64_t allocations) OT_YOGA_NOEXCEPT;
 uint64_t otYogaTestAllocationCount(void) OT_YOGA_NOEXCEPT;
 uint32_t otYogaTestContentsChildCount(YGNodeConstRef node) OT_YOGA_NOEXCEPT;
 void otYogaTestLogMessage(YGConfigConstRef config, const char* message) OT_YOGA_NOEXCEPT;
+// Returns the nodes that absolute-edge rounding visited since the last call.
+uint32_t otYogaTestTakeRoundedNodes(void) OT_YOGA_NOEXCEPT;
 typedef struct {
   uint32_t mode, last_mode;
   float available, last_available, computed, margin;

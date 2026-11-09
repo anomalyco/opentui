@@ -1112,6 +1112,7 @@ pub const testFailAfter = c.otYogaTestFailAfter;
 pub const testAllocationCount = c.otYogaTestAllocationCount;
 pub const testContentsChildCount = c.otYogaTestContentsChildCount;
 pub const testLogMessage = c.otYogaTestLogMessage;
+pub const testTakeRoundedNodes = c.otYogaTestTakeRoundedNodes;
 pub const testCacheMeasurement = c.otYogaTestCacheMeasurement;
 pub const testLargerHeightCap = c.otYogaTestLargerHeightCap;
 pub const TestCacheAxis = c.OTYogaCacheAxis;

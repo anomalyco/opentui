@@ -19,10 +19,10 @@ const options: scene.FrameOptions = .{
     .max_host_requests = 1 << 20,
 };
 
-pub const Shape = enum { ui, boxes, scroll, wrapped_scroll, scroll_node };
+pub const Shape = enum { ui, boxes, scroll, wrapped_scroll, scroll_node, select };
 
 /// A frame kind: what changes before the frame.
-pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook, reply_text };
+pub const Change = enum { unchanged, glyph, background, scroll, append, update_hook, paint_hook, reply_text, row_text };
 
 /// One Session with a built scene and the nodes its frame kinds change.
 pub const Scene = struct {
@@ -52,6 +52,7 @@ pub const Scene = struct {
             .scroll => try self.buildScroll(size, 0, 0),
             .wrapped_scroll => try self.buildScroll(size, 6, 2),
             .scroll_node => try self.buildScrollNode(size),
+            .select => try self.buildSelect(size),
         }
         // The first frame lays out and paints everything; frame kinds measure the next ones.
         _ = try self.frame(.unchanged);
@@ -151,6 +152,26 @@ pub const Scene = struct {
         for (0..size) |_| try self.addRow(0);
     }
 
+    /// A select list: an overflow-hidden viewport whose content holds `size` row boxes, each
+    /// with a growing title and a footer text. The eleventh row's title is the target.
+    fn buildSelect(self: *Scene, size: u32) !void {
+        const viewport = try self.node(c.OT_SCENE_BOX, self.root);
+        try self.float(viewport, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
+        try self.owner.sceneSetStyle(viewport, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_OVERFLOW, 0, 0, c.OT_OVERFLOW_HIDDEN, 0);
+        self.content = try self.node(c.OT_SCENE_BOX, viewport);
+        try self.float(self.content, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0);
+        try self.owner.sceneSetViewport(self.content, viewport);
+        for (0..size) |index| {
+            const row = try self.node(c.OT_SCENE_BOX, self.content);
+            try self.float(row, c.OT_STYLE_FLOAT_FLEX_SHRINK, 0);
+            try self.owner.sceneSetStyle(row, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_FLEX_DIRECTION, 0, 0, c.OT_FLEX_DIRECTION_ROW, 0);
+            const title = try self.text(row, "session title");
+            try self.float(title, c.OT_STYLE_FLOAT_FLEX_GROW, 1);
+            _ = try self.text(row, "2 days ago");
+            if (index == 10) self.target = title;
+        }
+    }
+
     fn addRow(self: *Scene, depth: u32) !void {
         var parent = self.content;
         for (0..depth) |_| parent = try self.node(c.OT_SCENE_BOX, parent);
@@ -171,6 +192,7 @@ pub const Scene = struct {
                 _ = try self.owner.sceneScrollTo(self.content, .{ 0, if (odd) -1 else 1 }, .{ true, true }, false);
             } else try self.owner.scenePatchPaint(self.content, c.OT_SCENE_PROPERTY_TRANSLATE_Y, .{ .translateY = if (odd) -1 else 0 }),
             .append => try self.addRow(0),
+            .row_text => try self.owner.sceneSetText(self.target, if (odd) "session title A" else "session title B"),
             .update_hook, .paint_hook, .reply_text => if (self.frames == 2) {
                 const flags: u32 = if (change == .paint_hook) c.OT_SCENE_HOOK_RENDER_AFTER else c.OT_SCENE_HOOK_UPDATE;
                 try self.owner.sceneSetHooks(self.target, flags, 1, 1, 1);
@@ -214,6 +236,7 @@ const scenarios = [_]Scenario{
     .{ .name = "scroll-node-10000 unchanged", .shape = .scroll_node, .size = 10_000, .change = .unchanged },
     .{ .name = "scroll-node-10000 scroll by one row", .shape = .scroll_node, .size = 10_000, .change = .scroll },
     .{ .name = "scroll-node-10000 append", .shape = .scroll_node, .size = 10_000, .change = .append },
+    .{ .name = "select-1000 one row", .shape = .select, .size = 1000, .change = .row_text },
 };
 
 const SAMPLES: usize = 40;

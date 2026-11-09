@@ -1288,6 +1288,77 @@ test "Yoga incremental solves of measured leaves with margins equal fresh solves
         for (chain, layouts) |node, *layout| yoga.yogaNodeGetComputedLayout(node, layout);
     }
     try std.testing.expectEqual(chain_layouts[1], chain_layouts[0]);
+    // A cached box 64 cells past a spacer that grows from 0.499899 to 0.499901, on each axis: the two
+    // unrounded origins round to different cells but are the same float, so rounding must compare them
+    // as doubles.
+    for ([_]yoga.YogaFlexDirection{ .row, .column }) |direction| {
+        var leaf_layouts: [2]yoga.ExternalYogaLayout = undefined;
+        for (&leaf_layouts, [_]f32{ 0.499899, 0.499901 }) |*leaf_layout, first| {
+            var nodes: [5]yoga.YGNodeRef = undefined;
+            for (&nodes, 0..) |*node, i| {
+                node.* = yoga.yogaNodeCreateWithConfig(config);
+                if (i > 0) yoga.yogaNodeInsertChild(nodes[if (i < 3) 0 else i - 1], node.*, if (i == 2) 1 else 0);
+            }
+            defer yoga.yogaNodeFreeRecursive(nodes[0]);
+            yoga.yogaNodeStyleSetEnum(nodes[0], @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(direction));
+            for (nodes[2..], [_]f32{ 80, 10, 5 }, [_]f32{ 0, 64, 0.05 }) |node, size, margin| {
+                for ([_]yoga.YogaValueKind{ .width, .height }) |kind| yoga.yogaNodeStyleSetValue(node, @backingInt(kind), 0, point, size);
+                for ([_]u32{ api.OT_EDGE_LEFT, api.OT_EDGE_TOP }) |edge| yoga.yogaNodeStyleSetValue(node, @backingInt(yoga.YogaValueKind.margin), edge, point, margin);
+            }
+            for ([_]f32{ first, 0.499901 }) |spacer| {
+                for ([_]yoga.YogaValueKind{ .width, .height }) |kind| yoga.yogaNodeStyleSetValue(nodes[1], @backingInt(kind), 0, point, spacer);
+                yoga.yogaNodeCalculateLayout(nodes[0], std.math.nan(f32), std.math.nan(f32), ltr);
+            }
+            yoga.yogaNodeGetComputedLayout(nodes[4], leaf_layout);
+        }
+        try std.testing.expectEqual(leaf_layouts[1], leaf_layouts[0]);
+    }
+    // Trees whose skipped subtrees once held values a full pass would change; the test build's
+    // fixed-point check is the oracle. A laid-out subtree with fractional offsets (a third of a
+    // 19-wide row, holding a row of thirds) moves under a display: none box, directly or one box
+    // deeper. The hidden subtree stays dirty and gets no layout, and its parent's layout is cached.
+    for (0..2) |depth| {
+        const root = yoga.yogaNodeCreateWithConfig(config);
+        defer yoga.yogaNodeFreeRecursive(root);
+        var rows: [2]yoga.YGNodeRef = undefined;
+        var moving: yoga.YGNodeRef = undefined;
+        for (&rows, 0..) |*row, level| {
+            row.* = yoga.yogaNodeCreateWithConfig(config);
+            yoga.yogaNodeInsertChild(if (level == 0) root else moving, row.*, 0);
+            yoga.yogaNodeStyleSetEnum(row.*, @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+            yoga.yogaNodeStyleSetFloat(row.*, @backingInt(yoga.YogaFloatKind.flex_grow), 1);
+            for (0..3) |i| {
+                const third = yoga.yogaNodeCreateWithConfig(config);
+                yoga.yogaNodeInsertChild(row.*, third, @intCast(i));
+                yoga.yogaNodeStyleSetFloat(third, @backingInt(yoga.YogaFloatKind.flex_grow), 1);
+                if (level == 0 and i == 1) moving = third;
+            }
+        }
+        var parent = root;
+        // A panel whose layout is cached, `depth` boxes, the display: none box, and a box in it.
+        for (0..depth + 3) |level| {
+            const box = yoga.yogaNodeCreateWithConfig(config);
+            yoga.yogaNodeInsertChild(parent, box, if (parent == root) 1 else 0);
+            if (level == depth + 1) yoga.yogaNodeStyleSetEnum(box, @backingInt(yoga.YogaEnumKind.display), 1);
+            parent = box;
+        }
+        yoga.yogaNodeCalculateLayout(root, 19, 10, ltr);
+        try yoga.check(yoga.yogaNodeMoveChildChecked(parent, moving, 0));
+        yoga.yogaNodeCalculateLayout(root, 19, 10, ltr);
+    }
+    // A display: contents box under an infinite unrounded origin (two 3e38 offsets overflow a float):
+    // a wider root measures its parent again, which zeroes the box without a flag, and then reuses
+    // the parent's layout. A full pass rounds the zeros to NaN; the check skips that box.
+    {
+        const nodes = [_]yoga.YGNodeRef{ yoga.yogaNodeCreateWithConfig(config), yoga.yogaNodeCreateWithConfig(config), yoga.yogaNodeCreateWithConfig(config), yoga.yogaNodeCreateWithConfig(config) };
+        defer yoga.yogaNodeFreeRecursive(nodes[0]);
+        for (nodes[1..], nodes[0..3]) |node, owner| yoga.yogaNodeInsertChild(owner, node, 0);
+        yoga.yogaNodeStyleSetEnum(nodes[0], @backingInt(yoga.YogaEnumKind.flex_direction), @backingInt(yoga.YogaFlexDirection.row));
+        for ([_]yoga.YogaValueKind{ .margin, .position }) |kind| yoga.yogaNodeStyleSetValue(nodes[1], @backingInt(kind), api.OT_EDGE_LEFT, point, 3e38);
+        yoga.yogaNodeStyleSetEnum(nodes[2], @backingInt(yoga.YogaEnumKind.display), 2);
+        for ([_]yoga.YogaValueKind{ .width, .height }) |kind| yoga.yogaNodeStyleSetValue(nodes[3], @backingInt(kind), 0, point, 1);
+        for ([_]f32{ 100, 101 }) |width| yoga.yogaNodeCalculateLayout(nodes[0], width, 10, ltr);
+    }
     for (0..300) |tree| {
         var prng = std.Random.DefaultPrng.init(0x374000 + tree);
         const random = prng.random();

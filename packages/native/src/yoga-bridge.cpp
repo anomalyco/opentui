@@ -16,6 +16,7 @@
 #include <yoga/algorithm/PixelGrid.h>
 #include <yoga/debug/Log.h>
 #include <yoga/numeric/Comparison.h>
+#include <utility>
 #endif
 
 namespace {
@@ -146,6 +147,12 @@ uint32_t otYogaNodeMoveChild(YGNodeRef parent_ref, YGNodeRef child_ref,
     child->setOwner(parent);
     static_assert(std::is_nothrow_copy_assignable_v<LayoutResults>);
     if (previous) child->setLayout({});
+    // Absolute-edge rounding visits only flagged paths, and the child may get no layout pass: under
+    // display: none, descendants stay dirty below the zeroed root, so the dirty walk below stops
+    // there. Flag the child's new path, so the next pass rounds its subtree as a full pass would.
+    for (Node* node = child; node && node->getConfig()->roundsPositionsFromAbsoluteEdges();
+         node = node->getOwner())
+      node->setHasNewLayout(true);
 
     // Both ancestor paths are bounded by managed placement validation. Mark
     // their complete accepted state before any managed callback can inspect it.
@@ -517,6 +524,9 @@ uint32_t otYogaTestContentsChildCount(YGNodeConstRef node) noexcept {
 void otYogaTestLogMessage(YGConfigConstRef config, const char* message) noexcept {
   facebook::yoga::log(facebook::yoga::resolveRef(config), facebook::yoga::LogLevel::Warn, "%s",
                       message);
+}
+uint32_t otYogaTestTakeRoundedNodes() noexcept {
+  return std::exchange(facebook::yoga::testPixelGridNodeCount, 0);
 }
 
 // Independent eager reference for Yoga 3.2.1 Cache.cpp's per-axis predicate, with the margin
