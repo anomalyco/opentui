@@ -894,6 +894,14 @@ interface ReplyBatch {
   // A suspension or a paste may have taken its DA1 reply, so its backstop is no miss.
   excused: boolean
   end?: () => void
+  palette?: PaletteReplies
+}
+
+/** A palette batch's result; `delivered` once its detection has returned it. */
+interface PaletteReplies {
+  colors: TerminalColors
+  generation: number
+  delivered: boolean
 }
 
 /**
@@ -1306,7 +1314,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _emittedPaletteSignature: string | null = null
   private _palettePublishGeneration = 0
   // The newest palette batch's result and the publish generation it began in.
-  private paletteReplies: { colors: TerminalColors; generation: number } | null = null
+  private paletteReplies: PaletteReplies | null = null
   private _onDestroy?: () => void
   private themeModeState: RendererThemeMode
   private _terminalFocusState: boolean | null = null
@@ -3879,7 +3887,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         return
       case "response":
         if (event.protocol === "osc") {
-          this.applyPaletteReply(event.sequence)
           for (const subscriber of this.oscSubscribers) {
             subscriber(event.sequence)
           }
@@ -3890,6 +3897,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         }
 
         this.dispatchSequenceHandlers(event.sequence)
+        // After the theme handler, so that a theme change starts a new palette generation first.
+        if (event.protocol === "osc") this.applyPaletteReply(event.sequence)
         return
     }
   }
@@ -5951,41 +5960,61 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    * Sentinel mode: one packet asks every color, and its DA1 reply ends the detection, capped by the caller's
    * timeout. Legacy tmux (< 3.6) keeps the detector's timers: its wrapped replies trail tmux's own DA1.
    */
-  private queryPaletteBatch(size: number, timeoutMs: number | undefined, isTmux: boolean): Promise<TerminalColors> {
+  private queryPaletteBatch(
+    size: number,
+    timeoutMs: number | undefined,
+    isTmux: boolean,
+    cancelled: Promise<never>,
+  ): { replies: PaletteReplies; done: Promise<TerminalColors> } {
     // tmux answers only OSC 10/11/12 of the special colors.
     const specials = isTmux ? [10, 11, 12] : [10, 11, 12, 13, 14, 15, 16, 17, 19]
     const queries = [...Array(size).keys()]
       .map((index) => `\x1b]4;${index};?\x07`)
       .concat(specials.map((osc) => `\x1b]${osc};?\x07`))
-    const replies = { colors: emptyTerminalColors(size), generation: this._palettePublishGeneration }
-    return new Promise((resolve) => {
+    const replies = { colors: emptyTerminalColors(size), generation: this._palettePublishGeneration, delivered: false }
+    const done = new Promise<TerminalColors>((resolve) => {
       this.nativeSession.control({ kind: "palette-query", bytes: Buffer.from(queries.join("")), sentinel: true })
       this.paletteReplies = replies
       const cap = timeoutMs === undefined ? null : this.clock.setTimeout(() => resolve(replies.colors), timeoutMs)
+      void cancelled.catch(() => cap !== null && this.clock.clearTimeout(cap))
       this.admitReplyBatch("palette", () => {
         if (cap !== null) this.clock.clearTimeout(cap)
         resolve(replies.colors)
-      })
+      }).palette = replies
     })
+    return { replies, done }
   }
 
   /**
-   * Replies fill the newest palette batch's result, also after its DA1 reply. Once it is published, a late reply
-   * revises a copy and publishes that, unless the cache was cleared since the batch began.
+   * An OSC reply belongs to the oldest batch still waiting for its DA1 reply; with none, it is a late reply to the newest
+   * palette batch. A result not yet delivered takes every reply. A delivered one is revised in a copy, published on a
+   * change, unless the cache was cleared since its batch began.
    */
   private applyPaletteReply(sequence: string): void {
-    const replies = this.paletteReplies
-    if (!replies || replies.generation !== this._palettePublishGeneration) return
-    const published = this._paletteCache.get(replies.colors.palette.length) === replies.colors
-    const colors = published ? { ...replies.colors, palette: [...replies.colors.palette] } : replies.colors
-    if (!applyPaletteReplies(colors, sequence) || !published) return
+    const waiting = this.replyBatches.filter((batch) => !batch.excused)
+    const index = waiting.findIndex((batch) => batch.kind === "palette")
+    // An OSC 10/11 reply belongs to a startup or theme batch ahead, which asked it.
+    const ahead = index < 0 ? waiting : waiting.slice(0, index)
+    if (/^\x1b\]1[01];/.test(sequence) && ahead.some((batch) => batch.kind === "startup" || batch.kind === "theme")) {
+      return
+    }
+    const replies = index < 0 ? this.paletteReplies : waiting[index]!.palette
+    if (!replies) return
+    if (!replies.delivered) {
+      applyPaletteReplies(replies.colors, sequence)
+      return
+    }
+    if (replies.generation !== this._palettePublishGeneration) return
+    const colors = { ...replies.colors, palette: [...replies.colors.palette] }
+    if (!applyPaletteReplies(colors, sequence)) return
     replies.colors = colors
-    this._paletteCache.clear()
     this.publishPalette(colors)
     this.requestRender()
   }
 
   private publishPalette(colors: TerminalColors): void {
+    // Smaller sizes project from the newest result.
+    this._paletteCache.clear()
     if (this.shouldSyncNativePaletteState() && colors.palette.length >= NATIVE_PALETTE_QUERY_SIZE) {
       this.syncNativePaletteState(colors)
     }
@@ -6012,7 +6041,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private emitPaletteChange(colors: TerminalColors): void {
     if (this.listenerCount(CliRenderEvents.PALETTE) === 0) return
 
-    const signature = buildTerminalPaletteSignature(colors)
+    // Every published field: late replies may change only the cursor or highlight colors, or a null to its fallback.
+    const signature = JSON.stringify(colors)
     if (this._emittedPaletteSignature === signature) return
 
     this._emittedPaletteSignature = signature
@@ -6147,31 +6177,33 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     }
 
-    const detector = this.ensurePaletteDetector()
+    const { isTmux, isLegacyTmux } = this.paletteTmux()
+    const batched = this.replySentinel && !isLegacyTmux && this.stdin.isTTY && this.stdout.isTTY
+    const detector = batched ? null : this.ensurePaletteDetector()
+    const release = () => {
+      detector?.cleanup()
+      if (detector && this._paletteDetector === detector) this._paletteDetector = null
+    }
     const publishGeneration = this._palettePublishGeneration
     this._paletteDetectionSize = requestedSize
     this._paletteDetectionGeneration = publishGeneration
     let cancel: ((reason: Error) => void) | null = null
     const cancelled = new Promise<never>((_resolve, reject) => {
       cancel = (reason) => {
-        detector.cleanup()
-        if (this._paletteDetector === detector) this._paletteDetector = null
+        release()
         reject(reason)
       }
     })
     this._cancelPaletteDetection = cancel
-    const { isTmux, isLegacyTmux } = this.paletteTmux()
-    const batched = this.replySentinel && !isLegacyTmux && this.stdin.isTTY && this.stdout.isTTY
     // A clock-mode result is newer than any reply to an earlier batch.
     if (!batched) this.paletteReplies = null
-    const detection = batched
-      ? this.queryPaletteBatch(requestedSize, detectionTimeout, isTmux)
-      : detector.detect({ ...options, timeout: detectionTimeout })
-    void detection.catch(() => detector.cleanup())
+    const batch = batched ? this.queryPaletteBatch(requestedSize, detectionTimeout, isTmux, cancelled) : null
+    const detection = batch?.done ?? detector!.detect({ ...options, timeout: detectionTimeout })
+    void detection.catch(release)
     const completion = Promise.race([detection, cancelled])
       .then((result) => {
-        detector.cleanup()
-        if (this._paletteDetector === detector) this._paletteDetector = null
+        release()
+        if (batch) batch.replies.delivered = true
         if (this._paletteDetectionPromise === pending) {
           this._paletteDetectionPromise = null
           this._paletteDetectionSize = 0
@@ -6193,8 +6225,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           this._paletteDetectionSize = 0
           this._paletteDetectionGeneration = 0
         }
-        detector.cleanup()
-        if (this._paletteDetector === detector) this._paletteDetector = null
+        release()
         throw error
       })
     const pending: Promise<TerminalColors> = completion.finally(() => {

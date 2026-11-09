@@ -1,4 +1,4 @@
-import { test, expect, beforeEach, afterEach, describe } from "bun:test"
+import { test, expect, beforeEach, afterEach, describe, spyOn } from "bun:test"
 import { decodePasteBytes } from "../lib/paste.js"
 import { nonAlphanumericKeys, type KeyEventType, type ParsedKey } from "../lib/parse.keypress.js"
 import { type KeyEvent } from "../lib/KeyHandler.js"
@@ -2577,14 +2577,18 @@ test("theme waits and refreshes end at their DA1 reply in sentinel mode; clock m
       await t.drained()
     }
     try {
-      // The startup batch asks OSC 11, so its DA1 reply answers a wait; with no such batch out, a wait has its answer.
+      // The startup batch asks OSC 11, so its DA1 reply answers a wait; with no such batch out (the pixel batch asks
+      // no color), a wait has its answer.
       wait()
-      await step(native ? DA1_REPLY + DA1_REPLY : "")
+      await step(native ? DA1_REPLY : "")
       expect(settled).toEqual(native ? [null] : [])
       wait()
       await step("")
-      expect(settled).toEqual(native ? [null, null] : [])
-      await step("", 1000)
+      expect({ settled, batches: t.batches() }).toEqual({
+        settled: native ? [null, null] : [],
+        batches: native ? ["pixel"] : ["startup", "pixel"],
+      })
+      await step(native ? DA1_REPLY : "", 1000)
       expect(settled).toEqual([null, null])
       await t.written()
 
@@ -2597,7 +2601,10 @@ test("theme waits and refreshes end at their DA1 reply in sentinel mode; clock m
       await step("\x1b[?997;2n")
       expect(await t.written()).toBe(native ? "" : query)
       if (native) {
+        // A wait during a refresh holds until the refresh's DA1 reply.
         wait()
+        await step("")
+        expect(settled).toEqual([null, null])
         await step(DA1_REPLY + "\x1b[?997;2n")
         expect({ settled, written: await t.written() }).toEqual({
           settled: [null, null, null],
@@ -2636,18 +2643,21 @@ test("palette detection ends at its DA1 reply in sentinel mode, and late replies
   // Packets per terminal: one per detection with one DA1, within the 4096-byte packet at size 256. Clock mode,
   // and legacy tmux (its wrapped replies trail tmux's own DA1), write main's OSC 4 probe and keep its timers.
   const legacyProbe = "\x1bPtmux;\x1b\x1b]4;0;?\x07\x1b\\"
-  for (const [native, environment, packet] of [
-    [false, {}, "\x1b]4;0;?\x07"],
-    [true, {}, osc4(256) + specials(all) + "\x1b[c"],
-    [true, { TERM_PROGRAM: "tmux", TERM_PROGRAM_VERSION: "3.6a" }, osc4(256) + specials([10, 11, 12]) + "\x1b[c"],
-    [true, { TERM_PROGRAM: "tmux", TERM_PROGRAM_VERSION: "3.5a" }, legacyProbe],
+  // A non-terminal stdin is asked nothing, as on main.
+  for (const [native, environment, packet, tty] of [
+    [false, {}, "\x1b]4;0;?\x07", true],
+    [true, {}, osc4(256) + specials(all) + "\x1b[c", true],
+    [true, {}, "", false],
+    [true, { TERM_PROGRAM: "tmux", TERM_PROGRAM_VERSION: "3.6" }, osc4(256) + specials([10, 11, 12]) + "\x1b[c", true],
+    [true, { TERM_PROGRAM: "tmux", TERM_PROGRAM_VERSION: "3.5a" }, legacyProbe, true],
   ] as const) {
-    const t = await createBatchRenderer(native, false, { remote: true, forwardEnvKeys: [], environment })
+    const stdin = tty ? {} : { stdin: createTestStdin() }
+    const t = await createBatchRenderer(native, false, { remote: true, forwardEnvKeys: [], environment, ...stdin })
     try {
       t.send(DA1_REPLY + DA1_REPLY)
       await t.written()
       void t.renderer.getPalette({ size: 256 }).catch(() => {})
-      expect({ environment, packet: await t.written() }).toEqual({ environment, packet })
+      expect({ environment, tty, packet: await t.written() }).toEqual({ environment, tty, packet })
     } finally {
       t.renderer.destroy()
     }
@@ -2678,16 +2688,48 @@ test("palette detection ends at its DA1 reply in sentinel mode, and late replies
       events: [palette],
     })
 
-    // A late reply revises a copy and fires the event; a malformed or out-of-range reply changes nothing.
-    await step("\x1b]4;1;rgb:zz/00/00\x07\x1b]4;9;#ffffff\x07")
-    expect(events).toHaveLength(1)
+    // A late reply revises a copy, a smaller size's projection with it, requests a frame and fires the event; a
+    // malformed, out-of-range or repeated reply changes nothing.
+    const frames = spyOn(t.renderer, "requestRender")
+    expect((await t.renderer.getPalette({ size: 2 })).palette).toEqual(["#000000", null])
+    await step("\x1b]4;1;rgb:zz/00/00\x07\x1b]4;4;#ffffff\x07")
+    expect({ events: events.length, frames: frames.mock.calls.length }).toEqual({ events: 1, frames: 0 })
     await step("\x1b]4;1;#ff0000\x07")
     const revised = await t.renderer.getPalette({ size: 4 })
-    expect({ revised: revised.palette, published: palette.palette[1], events }).toEqual({
+    expect({
+      revised: revised.palette,
+      published: palette.palette[1],
+      events,
+      frames: frames.mock.calls.length,
+    }).toEqual({
       revised: ["#000000", "#ff0000", null, null],
       published: null,
       events: [palette, revised],
+      frames: 1,
     })
+    expect((await t.renderer.getPalette({ size: 2 })).palette).toEqual(["#000000", "#ff0000"])
+    await step("\x1b]4;1;#ff0000\x07")
+    expect({
+      cached: await t.renderer.getPalette({ size: 4 }),
+      events: events.length,
+      frames: frames.mock.calls.length,
+    }).toEqual({
+      cached: revised,
+      events: 2,
+      frames: 1,
+    })
+    // Every published field counts: a cursor color, and a value equal to its fallback (xterm's color 3), fire too.
+    await step("\x1b]12;#ff00ff\x07")
+    await step("\x1b]4;3;#808000\x07")
+    const fallback = await t.renderer.getPalette({ size: 4 })
+    expect({ cursor: fallback.cursorColor, p3: fallback.palette[3], events: events.length }).toEqual({
+      cursor: "#ff00ff",
+      p3: "#808000",
+      events: 4,
+    })
+    await step("\x1b]12;#ff00ff\x07")
+    expect({ events: events.length, frames: frames.mock.calls.length }).toEqual({ events: 4, frames: 3 })
+    frames.mockRestore()
 
     // Replies to one query kind come in order: an older batch's late reply comes before the newer batch's own.
     await t.written()
@@ -2700,7 +2742,7 @@ test("palette detection ends at its DA1 reply in sentinel mode, and late replies
     // A cleared cache starts a new generation: a late reply to an earlier batch is dropped.
     t.renderer.clearPaletteCache()
     await step("\x1b]4;0;#abcdef\x07")
-    expect({ status: t.renderer.paletteDetectionStatus, events: events.length }).toEqual({ status: "idle", events: 3 })
+    expect({ status: t.renderer.paletteDetectionStatus, events: events.length }).toEqual({ status: "idle", events: 5 })
     expect((await second).palette[0]).toBeNull()
 
     // The caller's timeout still bounds the wait; a reply after it, inside the batch, revises the result.
@@ -2711,6 +2753,71 @@ test("palette detection ends at its DA1 reply in sentinel mode, and late replies
     await step("\x1b]4;1;#00ff00\x07" + DA1_REPLY)
     expect((await t.renderer.getPalette({ size: 2 })).palette).toEqual([null, "#00ff00"])
     expect({ batches: t.batches(), sentinel: t.r.replySentinel }).toEqual({ batches: [], sentinel: true })
+
+    // A newer, larger result replaces every smaller size; a DA1 reply before the cap clears the cap's timer.
+    const timers = t.clock.pendingTimerCount
+    const bigger = t.renderer.getPalette({ size: 3, timeout: 1000 })
+    await step("\x1b]4;0;#010101\x07" + DA1_REPLY)
+    expect({ palette: (await bigger).palette, timers: t.clock.pendingTimerCount }).toEqual({
+      palette: ["#010101", null, null],
+      timers,
+    })
+    expect((await t.renderer.getPalette({ size: 2 })).palette).toEqual(["#010101", null])
+
+    // Replies belong to the batch whose DA1 reply has not come: an earlier batch's never reach a newer one.
+    t.renderer.clearPaletteCache()
+    const early = t.renderer.getPalette({ size: 3, timeout: 50 })
+    await step("", 50)
+    await early
+    t.renderer.clearPaletteCache()
+    const later = t.renderer.getPalette({ size: 3 })
+    await step("\x1b]4;0;#111111\x07\x1b]12;#ff00ff\x07" + DA1_REPLY)
+    await step("\x1b]4;0;#eeeeee\x07" + DA1_REPLY)
+    expect({ p0: (await later).palette[0], cursor: (await later).cursorColor }).toEqual({ p0: "#eeeeee", cursor: null })
+
+    // A theme refresh's OSC 10/11 replies are its own, so they publish no partial palette. The mode change starts
+    // one new detection, which keeps the replies that come after the change: one event, with every color.
+    await t.written()
+    const before = events.length
+    await step("\x1b[?997;2n")
+    expect(await t.written()).toBe("\x1b]10;?\x07\x1b]11;?\x07\x1b[c")
+    await step("\x1b]10;#000000\x07\x1b]11;#ffffff\x07")
+    expect({ mode: t.renderer.themeMode, events: events.length }).toEqual({ mode: "light", events: before })
+    expect(await t.written()).toBe(osc4(16) + specials(all) + "\x1b[c")
+    await step(DA1_REPLY + "\x1b]4;0;#eeeeee\x07\x1b]11;#ffffff\x07\x1b]12;#00ff00\x07" + DA1_REPLY)
+    expect(events.length).toBe(before + 1)
+    expect((events.at(-1) as any).cursorColor).toBe("#00ff00")
+
+    // A reply that changes the mode in the middle of a detection starts a new generation, but the detection keeps
+    // every reply its batch gets.
+    t.renderer.clearPaletteCache()
+    const midway = t.renderer.getPalette({ size: 2 })
+    await t.written()
+    await step("\x1b]11;#000000\x07\x1b]12;#00ff00\x07\x1b]17;#abcdef\x07\x1b]19;#fedcba\x07" + DA1_REPLY)
+    const colors = await midway
+    expect({ mode: t.renderer.themeMode, bg: colors.defaultBackground, cursor: colors.cursorColor }).toEqual({
+      mode: "dark",
+      bg: "#000000",
+      cursor: "#00ff00",
+    })
+    expect([colors.highlightBackground, colors.highlightForeground]).toEqual(["#abcdef", "#fedcba"])
+
+    // A late OSC 11 that changes the mode, with no batch out: the theme handler starts a new detection first, so the
+    // old palette is not revised and published on the way (one event, at the new detection's end).
+    await step(DA1_REPLY)
+    const published = events.length
+    await t.written()
+    await step("\x1b]11;#ffffff\x07")
+    expect({ mode: t.renderer.themeMode, events: events.length }).toEqual({ mode: "light", events: published })
+    expect(await t.written()).toBe(osc4(16) + specials(all) + "\x1b[c")
+    await step(DA1_REPLY)
+    expect(events.length).toBe(published + 1)
+
+    // Destroy cancels a detection and leaves no timer behind.
+    t.renderer.clearPaletteCache()
+    const left = t.renderer.getPalette({ size: 5, timeout: 5000 }).catch(() => "cancelled")
+    t.renderer.destroy()
+    expect({ left: await left, timers: t.clock.pendingTimerCount }).toEqual({ left: "cancelled", timers: 0 })
   } finally {
     t.renderer.destroy()
   }

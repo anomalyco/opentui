@@ -97,25 +97,27 @@ export function emptyTerminalColors(size: number): TerminalColors {
   return colors
 }
 
-/** Copies the OSC 4 and OSC 10-19 color replies in `sequence` into `colors`; returns false when it holds none. */
+/** Copies the OSC 4 and OSC 10-19 color replies in `sequence` into `colors`; returns whether a color changed. */
 export function applyPaletteReplies(colors: TerminalColors, sequence: string): boolean {
-  let applied = false
+  let changed = false
   let m: RegExpExecArray | null
   OSC4_RESPONSE.lastIndex = 0
   while ((m = OSC4_RESPONSE.exec(sequence))) {
     const index = parseInt(m[1], 10)
-    if (index >= colors.palette.length) continue
-    colors.palette[index] = toHex(m[2], m[3], m[4], m[5])
-    applied = true
+    const hex = toHex(m[2], m[3], m[4], m[5])
+    if (index >= colors.palette.length || colors.palette[index] === hex) continue
+    colors.palette[index] = hex
+    changed = true
   }
   OSC_SPECIAL_RESPONSE.lastIndex = 0
   while ((m = OSC_SPECIAL_RESPONSE.exec(sequence))) {
     const key = SPECIAL_COLORS[parseInt(m[1], 10) as keyof typeof SPECIAL_COLORS]
-    if (!key) continue
-    colors[key] = toHex(m[2], m[3], m[4], m[5])
-    applied = true
+    const hex = toHex(m[2], m[3], m[4], m[5])
+    if (!key || colors[key] === hex) continue
+    colors[key] = hex
+    changed = true
   }
-  return applied
+  return changed
 }
 
 /**
@@ -325,17 +327,7 @@ export class TerminalPalette implements TerminalPaletteDetector {
     idleTimeoutMs = env.OTUI_PALETTE_IDLE_TIMEOUT_MS,
   ): Promise<Record<number, Hex>> {
     const out = this.stdout
-    const results: Record<number, Hex> = {
-      10: null,
-      11: null,
-      12: null,
-      13: null,
-      14: null,
-      15: null,
-      16: null,
-      17: null,
-      19: null,
-    }
+    const results: Record<number, Hex> = Object.fromEntries(Object.keys(SPECIAL_COLORS).map((osc) => [osc, null]))
     // tmux handles plain OSC 10/11/12 only; it has no OSC 13-17/19 handlers or reply routing.
     const queries = this.inTmux ? [10, 11, 12] : [10, 11, 12, 13, 14, 15, 16, 17, 19]
 
@@ -403,18 +395,10 @@ export class TerminalPalette implements TerminalPaletteDetector {
       this.querySpecialColors(timeout, idleTimeout),
     ])
 
-    return {
-      palette: [...Array(size).keys()].map((i) => paletteResults.get(i) ?? null),
-      defaultForeground: specialColors[10],
-      defaultBackground: specialColors[11],
-      cursorColor: specialColors[12],
-      mouseForeground: specialColors[13],
-      mouseBackground: specialColors[14],
-      tekForeground: specialColors[15],
-      tekBackground: specialColors[16],
-      highlightBackground: specialColors[17],
-      highlightForeground: specialColors[19],
-    }
+    const colors = emptyTerminalColors(size)
+    colors.palette = colors.palette.map((_, i) => paletteResults.get(i) ?? null)
+    for (const [osc, key] of Object.entries(SPECIAL_COLORS)) colors[key] = specialColors[Number(osc)]
+    return colors
   }
 }
 
