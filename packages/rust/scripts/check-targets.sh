@@ -58,3 +58,15 @@ for arch in aarch64 x86_64; do
     done
     printf 'PASS: macOS compile checks (%s)\n' "$target"
 done
+
+# Apple's linker takes libopentui.dylib over libopentui.a from one directory, so a static build must not search one
+# that holds both. Rewriting the stubs reran each build script after the header copy, so -newer skips stale outputs.
+find "$CARGO_TARGET_DIR" -path '*-apple-darwin/debug/build/opentui-sys-*/output' -newer "$tools/lib/opentui.h" \
+    -exec grep -qx 'cargo:static=1' {} \; -print > "$tools/static-outputs"
+[ "$(wc -l < "$tools/static-outputs")" -eq 2 ] || { echo 'FAIL: no static build per macOS target' >&2; exit 1; }
+while IFS= read -r output; do
+    sed -n 's/^cargo:rustc-link-search=native=//p' "$output" | while IFS= read -r dir; do
+        [ ! -e "$dir/libopentui.dylib" ] || { echo "FAIL: the static build searches $dir" >&2; exit 1; }
+    done
+done < "$tools/static-outputs"
+echo 'PASS: static macOS builds search no libopentui.dylib'
