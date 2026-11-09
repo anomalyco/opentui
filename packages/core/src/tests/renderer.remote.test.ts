@@ -266,8 +266,7 @@ describe("remote detection", () => {
     )
 
     expect(caps.remote).toBe(true)
-    // createCliRenderer runs terminal setup; Windows ConPTY setup enables color
-    // capabilities even when remote mode suppresses env-derived terminal data.
+    expect([caps.ansi256, caps.rgb]).toEqual([false, false])
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })
