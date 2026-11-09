@@ -278,6 +278,13 @@ uint32_t otYogaNodeStyleSetEnum(YGNodeRef node, uint32_t kind, uint32_t value) n
     case OT_STYLE_ENUM_OVERFLOW: return set(YGNodeStyleSetOverflow, YGOverflowScroll);
     case OT_STYLE_ENUM_DISPLAY: return set(YGNodeStyleSetDisplay, YGDisplayContents);
     case OT_STYLE_ENUM_BOX_SIZING: return set(YGNodeStyleSetBoxSizing, YGBoxSizingContentBox);
+    case OT_STYLE_ENUM_LAYOUT_MODE: {
+      // Only the scene config has list rules; other configs keep Yoga's layouts.
+      auto target = facebook::yoga::resolveRef(node);
+      if (value > OT_LAYOUT_MODE_LIST || !target->getConfig()->roundsPositionsFromAbsoluteEdges())
+        return OT_YOGA_INVALID_ARGUMENT;
+      return checked([&] { target->setListLayout(value == OT_LAYOUT_MODE_LIST); });
+    }
     default: return OT_YOGA_INVALID_ARGUMENT;
   }
 }
@@ -298,6 +305,9 @@ uint32_t otYogaNodeStyleGetEnum(YGNodeConstRef node, uint32_t kind, uint32_t* ou
     case OT_STYLE_ENUM_OVERFLOW: return get(YGNodeStyleGetOverflow);
     case OT_STYLE_ENUM_DISPLAY: return get(YGNodeStyleGetDisplay);
     case OT_STYLE_ENUM_BOX_SIZING: return get(YGNodeStyleGetBoxSizing);
+    case OT_STYLE_ENUM_LAYOUT_MODE:
+      *out = facebook::yoga::resolveRef(node)->listLayout() ? OT_LAYOUT_MODE_LIST : OT_LAYOUT_MODE_FLEX;
+      return OT_YOGA_OK;
     default: return OT_YOGA_INVALID_ARGUMENT;
   }
 }

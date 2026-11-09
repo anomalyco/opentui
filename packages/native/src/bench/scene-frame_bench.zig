@@ -181,6 +181,12 @@ pub const Scene = struct {
         }
     }
 
+    /// Lays out the scroll content's rows as a list.
+    pub fn setList(self: *Scene) !void {
+        const flags: u32 = if (self.scroll_node) c.OT_STYLE_CONTENT else 0;
+        try self.owner.sceneSetStyle(self.content, c.OT_STYLE_ENUM, c.OT_STYLE_ENUM_LAYOUT_MODE, 0, 0, c.OT_LAYOUT_MODE_LIST, flags);
+    }
+
     fn addRow(self: *Scene, depth: u32) !void {
         var parent = self.content;
         for (0..depth) |_| parent = try self.node(c.OT_SCENE_BOX, parent);
@@ -225,7 +231,7 @@ pub const Scene = struct {
     }
 };
 
-const Scenario = struct { name: []const u8, shape: Shape, size: u32, change: Change };
+const Scenario = struct { name: []const u8, shape: Shape, size: u32, change: Change, list: bool = false };
 
 const scenarios = [_]Scenario{
     .{ .name = "ui-90 unchanged", .shape = .ui, .size = 0, .change = .unchanged },
@@ -249,6 +255,11 @@ const scenarios = [_]Scenario{
     .{ .name = "select-node-1000 one row", .shape = .select_node, .size = 1000, .change = .row_text },
     .{ .name = "scroll-1000 append", .shape = .scroll, .size = 1000, .change = .append },
     .{ .name = "scroll-node-1000 append", .shape = .scroll_node, .size = 1000, .change = .append },
+    .{ .name = "select-1000 one row list", .shape = .select, .size = 1000, .change = .row_text, .list = true },
+    .{ .name = "select-node-1000 one row list", .shape = .select_node, .size = 1000, .change = .row_text, .list = true },
+    .{ .name = "scroll-1000 append list", .shape = .scroll, .size = 1000, .change = .append, .list = true },
+    .{ .name = "scroll-node-1000 append list", .shape = .scroll_node, .size = 1000, .change = .append, .list = true },
+    .{ .name = "scroll-10000 append list", .shape = .scroll, .size = 10_000, .change = .append, .list = true },
 };
 
 const SAMPLES: usize = 40;
@@ -262,6 +273,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filte
         // Results use the caller's arena; the scene frees as it goes.
         var target = try Scene.init(std.heap.smp_allocator, io, scenario.shape, scenario.size);
         defer target.deinit();
+        if (scenario.list) try target.setList();
         var stats: bench_utils.BenchStats = .{};
         var work: renderer.FrameWork = .{};
         for (0..WARMUP_SAMPLES + SAMPLES) |sample| {

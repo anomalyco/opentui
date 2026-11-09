@@ -61,6 +61,7 @@ pub const YogaEnumKind = enum(u32) {
     overflow = api.OT_STYLE_ENUM_OVERFLOW,
     display = api.OT_STYLE_ENUM_DISPLAY,
     box_sizing = api.OT_STYLE_ENUM_BOX_SIZING,
+    layout_mode = api.OT_STYLE_ENUM_LAYOUT_MODE,
 };
 
 pub const YogaFloatKind = enum(u32) {
