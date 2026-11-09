@@ -1255,7 +1255,7 @@ pub const Session = struct {
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
                     try candidate.exitAltScreen(writer);
-                } else if (builtin.os.tag == .windows and progress.screen_claimed and
+                } else if (builtin.os.tag == .windows and candidate.opts.remote_mode != .remote and progress.screen_claimed and
                     !value.useAlternateScreen and value.clearOnShutdown and value.renderOffset == 0)
                 {
                     try writer.writeByte('\r');
