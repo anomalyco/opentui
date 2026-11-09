@@ -400,8 +400,7 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
         try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
     } else {
         try tty.writeAll(ansi.ANSI.capabilityQueries);
-        // Windows always has 24-bit color.
-        if (builtin.os.tag != .windows and !self.caps.rgb and !self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapTruecolor);
+        if (!self.caps.rgb and !self.consoleTruecolor() and !self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapTruecolor);
     }
     // Each setup starts a new queue with its startup query.
     self.state.kitty_query_count = 0;
@@ -430,14 +429,13 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     if (self.reply_sentinel) try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
 }
 
-pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
-    if (builtin.os.tag == .windows) {
-        // Windows-specific defaults for ConPTY
-        self.caps.rgb = true;
-        self.caps.ansi256 = true;
-        self.caps.bracketed_paste = true;
-    }
+/// ConPTY draws 24-bit color, but a remote app's output never reaches this process's console.
+fn consoleTruecolor(self: *const Terminal) bool {
+    return builtin.os.tag == .windows and self.opts.remote_mode != .remote;
+}
 
+pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
+    if (self.consoleTruecolor()) self.caps.rgb = true;
     self.checkEnvironmentOverrides();
 
     if (!self.state.modify_other_keys and !self.state.kitty_keyboard) {

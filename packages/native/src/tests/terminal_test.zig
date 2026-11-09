@@ -1441,13 +1441,16 @@ test "processCapabilityResponse - XTGETTCAP and XTVERSION replies set clipboard 
 
 test "queryTerminalSend - asks for 24-bit color only when the environment does not settle it, and never screen" {
     // `ms`: the XTGETTCAP Ms query, which screen prints as text (ssh from screen forwards only its TERM).
-    const Row = struct { env: []const u8 = "", asks: bool, ms: bool = true };
+    // `rgb`: after setup, without replies. ConPTY draws 24-bit color, also for Windows sshd's sessions.
+    const Row = struct { env: []const u8 = "", asks: bool, ms: bool = true, mode: Terminal.RemoteMode = .auto, rgb: bool = builtin.os.tag == .windows };
     const rows = [_]Row{
         .{ .asks = builtin.os.tag != .windows },
         .{ .env = "TERM=xterm-256color", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=xterm-256color SSH_CONNECTION=1", .asks = builtin.os.tag != .windows },
+        .{ .env = "TERM=xterm-256color", .asks = true, .mode = .remote, .rgb = false },
         .{ .env = "TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
         .{ .env = "TERM=screen-256color TMUX=/tmp/tmux-1000/default,1,0", .asks = builtin.os.tag != .windows },
-        .{ .env = "COLORTERM=truecolor", .asks = false },
+        .{ .env = "COLORTERM=truecolor", .asks = false, .rgb = true },
         .{ .env = "STY=1234.session", .asks = false, .ms = false },
         .{ .env = "STY=1234.session TMUX=/tmp/tmux-1000/default,1,0", .asks = false, .ms = false },
         .{ .env = "TERM=screen.xterm-256color SSH_CONNECTION=1", .asks = false, .ms = false },
@@ -1456,7 +1459,7 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
     for (rows) |row| for ([_]bool{ false, true }) |sentinel| {
         var env = std.process.Environ.Map.init(testing.allocator);
         try putEnv(&env, row.env);
-        var term = Terminal.init(.{ .remote_mode = .auto });
+        var term = Terminal.init(.{ .remote_mode = row.mode });
         term.adoptHostEnvironment(env);
         defer term.deinit();
         term.reply_sentinel = sentinel;
@@ -1469,6 +1472,9 @@ test "queryTerminalSend - asks for 24-bit color only when the environment does n
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q524742\x1b\\") != null);
         try testing.expectEqual(row.asks, std.mem.find(u8, output, "\x1bP+q5463\x1b\\") != null);
         if (sentinel) try testing.expect(std.mem.endsWith(u8, output, ansi.ANSI.primaryDeviceAttrs));
+        try term.enableDetectedFeatures(&writer, false);
+        try testing.expectEqual(row.rgb, term.caps.rgb);
+        try testing.expectEqual(row.rgb or std.mem.find(u8, row.env, "256color") != null, term.caps.ansi256);
     };
 }
 
