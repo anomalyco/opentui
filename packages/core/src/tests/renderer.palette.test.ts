@@ -91,13 +91,17 @@ function createMockStreams(clock?: ManualClock, options: { emitSpecialColors?: b
         schedule(clock, () => {
           mockStdin.emit("data", Buffer.from("\x1b]4;0;rgb:0000/0000/0000\x07"))
         })
-      } else if (dataStr.includes("\x1b]4;")) {
+        return true
+      }
+      if (dataStr.includes("\x1b]4;")) {
         schedule(clock, () => {
           for (let i = 0; i < 16; i++) {
             mockStdin.emit("data", Buffer.from(`\x1b]4;${i};rgb:1000/2000/3000\x07`))
           }
         })
-      } else if (emitSpecialColors && dataStr.includes("\x1b]10;?")) {
+      }
+      // A sentinel-mode palette packet asks the special colors too.
+      if (emitSpecialColors && dataStr.includes("\x1b]10;?")) {
         schedule(clock, () => {
           mockStdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
           mockStdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
@@ -110,6 +114,8 @@ function createMockStreams(clock?: ManualClock, options: { emitSpecialColors?: b
           mockStdin.emit("data", Buffer.from("\x1b]19;#cccccc\x07"))
         })
       }
+      // In sentinel mode every batch ends with DA1, answered last.
+      if (dataStr.endsWith("\x1b[c")) schedule(clock, () => mockStdin.emit("data", Buffer.from("\x1b[?62c")))
       return true
     },
   } as any
@@ -260,16 +266,13 @@ describe("Palette caching behavior", () => {
   })
 
   test("concurrent requests with different sizes redetect for the later caller", async () => {
-    const { renderer, clock } = await createPaletteRenderer()
+    const { renderer, clock, writes } = await createPaletteRenderer()
 
     const palette16Promise = renderer.getPalette({ size: 16, timeout: 300 })
     const palette256Promise = renderer.getPalette({ size: 256, timeout: 300 })
 
     await advancePaletteClock(clock, 300)
     await flushAsync()
-
-    expect(renderer.paletteDetectionStatus).toBe("detecting")
-
     await advancePaletteClock(clock, 300)
 
     const [palette16, palette256] = await Promise.all([palette16Promise, palette256Promise])
@@ -277,6 +280,7 @@ describe("Palette caching behavior", () => {
     expect(palette16.palette).toHaveLength(16)
     expect(palette256.palette).toHaveLength(256)
     expect(palette16).not.toBe(palette256)
+    expect(writes.filter((write) => write.includes("\x1b]4;255;?"))).toHaveLength(1)
 
     renderer.destroy()
   })
@@ -810,13 +814,15 @@ describe("Palette detector cleanup", () => {
     const cancelled = palettePromise.catch((error) => error)
 
     await flushAsync()
-    clock.advance(0)
+    // In clock mode the probe's reply makes the detector write its queries next. Sentinel mode wrote its one packet.
+    if (!(renderer as any).replySentinel) clock.advance(0)
     renderer.destroy()
     await flushAsync()
     clock.advance(300)
     expect(await cancelled).toEqual(new Error("Cannot detect palette after renderer destruction"))
     await renderer.closed
-    expect(writes.filter((write) => /\x1b\](4;\d+|1\d);\?/.test(write))).toEqual(["\x1b]4;0;?\x07"])
+    const queries = writes.filter((write) => /\x1b\](4;\d+|1\d);\?/.test(write))
+    expect(queries.map((write) => write.startsWith("\x1b]4;0;?\x07"))).toEqual([true])
   })
 
   test("multiple destroy calls don't cause errors", async () => {
@@ -864,7 +870,7 @@ describe("Palette detection while capabilities are unsettled", () => {
       void palettePromise.catch(() => {})
       await flushAsync()
 
-      expect(writes).toContain("\x1b]4;0;?\x07")
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
     } finally {
       renderer.destroy()
       if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
@@ -917,7 +923,7 @@ describe("Palette detection while capabilities are unsettled", () => {
       void palettePromise.catch(() => {})
       await flushAsync()
 
-      expect(writes).toContain("\x1b]4;0;?\x07")
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
     } finally {
       renderer.destroy()
       if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
@@ -970,7 +976,7 @@ describe("Palette detection while capabilities are unsettled", () => {
       renderer.stdin.emit("data", Buffer.from("\x1bP>|tmux 3.6a\x1b\\"))
       await flushAsync()
 
-      expect(writes).toContain("\x1b]4;0;?\x07")
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
       expect(writes.some((write) => write.startsWith("\x1bPtmux;") && write.includes("\x1b\x1b]4;"))).toBe(false)
     } finally {
       renderer.destroy()
@@ -990,7 +996,7 @@ describe("Palette detection while capabilities are unsettled", () => {
       await flushAsync()
 
       expect(renderer.capabilities?.multiplexer).toBe("none")
-      expect(writes).toContain("\x1b]4;0;?\x07")
+      expect(writes.some((write) => write.startsWith("\x1b]4;0;?\x07"))).toBe(true)
     } finally {
       renderer.destroy()
       if (palettePromise) await expect(palettePromise).rejects.toThrow(/cancelled|destruction/)
@@ -1001,6 +1007,8 @@ describe("Palette detection while capabilities are unsettled", () => {
 describe("Palette detection error handling", () => {
   test("getPalette settles after idle window when follow-up palette queries are silent", async () => {
     const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
+    // A missed startup DA1 reply leaves sentinel mode; clock mode keeps the probe and the idle window.
+    clock.advance(5000)
 
     let settled = false
     let palette: TerminalColors | undefined
@@ -1039,6 +1047,7 @@ describe("Palette detection error handling", () => {
     clearEnvCache()
 
     const { renderer, clock } = await createSilentFollowUpPaletteRenderer()
+    clock.advance(5000)
     let settled = false
     const palettePromise = renderer.getPalette({ size: 16 }).then(() => {
       settled = true
