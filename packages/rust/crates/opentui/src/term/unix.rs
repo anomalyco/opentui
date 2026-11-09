@@ -400,13 +400,25 @@ impl Drop for Signals {
     }
 }
 
-/// Stops the process for job control, as Ctrl-Z would, and returns after it continues.
+/// Stops the process group for job control, as Ctrl-Z would, and returns after it continues. The group holds a wrapper
+/// script that started the process, if any, and the children it started without a group of their own.
 pub fn stop_process() -> io::Result<()> {
     let ours = install(libc::SIGTSTP, libc::SIG_DFL)?;
-    let raised = check(unsafe { libc::raise(libc::SIGTSTP) });
+    // Blocked on this thread, the group's signal waits under the default action until another thread takes it or
+    // unblocking delivers it here, so our handler never runs for it once that is back; a SIGCONT meanwhile discards it.
+    // macOS stops the process inside kill when another thread takes it. Linux stops it later, so this thread queues its
+    // own stop first, which unblocking delivers; not on macOS, where a SIGCONT discards a stop on one thread only.
+    let mut tstp: libc::sigset_t = unsafe { std::mem::zeroed() };
+    unsafe { libc::sigemptyset(&mut tstp) };
+    unsafe { libc::sigaddset(&mut tstp, libc::SIGTSTP) };
+    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &tstp, std::ptr::null_mut()) };
+    #[cfg(target_os = "linux")]
+    let _ = unsafe { libc::raise(libc::SIGTSTP) };
+    let sent = check(unsafe { libc::kill(0, libc::SIGTSTP) });
+    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &tstp, std::ptr::null_mut()) };
     // Execution resumes here after SIGCONT.
     check(unsafe { libc::sigaction(libc::SIGTSTP, &ours, std::ptr::null_mut()) })?;
-    raised.map(drop)
+    sent.map(drop)
 }
 
 /// The read end of a wakeup pipe. The event loop polls it; [`Waker`]s write to it from any thread.
