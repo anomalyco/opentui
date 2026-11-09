@@ -95,7 +95,8 @@ def scenario(name, command, action, expected_code, expect_text=None, shell=False
             failures.append("alternate screen was not entered and left")
         if LEAVE_ALT in pty.output and pty.output.rindex(LEAVE_ALT) < pty.output.rindex(ENTER_ALT):
             failures.append("the alternate screen was entered again after leaving")
-        if not pty.restored():
+        # A shell's terminal state is its own, and on macOS its exit revokes the terminal, so ioctls on it fail.
+        if not shell and not pty.restored():
             failures.append("termios or file status flags were not restored")
         if expect_text is not None:
             before, after = pty.output.rsplit(LEAVE_ALT, 1)
