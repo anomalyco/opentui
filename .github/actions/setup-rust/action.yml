@@ -1,0 +1,71 @@
+name: Setup Rust
+description: >-
+  Prepare a checkout for packages/rust/test.sh: this runner's native library in packages/native/lib, where build.rs
+  looks, the toolchain from packages/rust/rust-toolchain.toml, and the crates. Sets ZIG_VERSION, and CI's Cargo
+  settings: no incremental builds and no debug info.
+outputs:
+  linkage:
+    description: all when the job built the native library, which gives libopentui.a; shared on a bottle hit
+    value: ${{ steps.bottle.outputs.cache-hit == 'true' && 'shared' || 'all' }}
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-zig
+
+    # Bun runs native-bottle.ts.
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.4.1
+
+    # The bottle holds the files of the npm package, without libopentui.a.
+    - id: bottle
+      uses: ./.github/actions/restore-native-host-bottle
+      with:
+        zig-version: ${{ env.ZIG_VERSION }}
+        ffmpeg: false
+
+    # No wait for "Build Native Libraries", which a Rust-only pull request skips: build this runner's library instead.
+    - if: steps.bottle.outputs.cache-hit != 'true'
+      uses: ./.github/actions/restore-zig-cache
+      with:
+        zig-version: ${{ env.ZIG_VERSION }}
+        kind: lib
+
+    # Without FFmpeg the library has no video, which the crates do not use. A host build must not save the bottle.
+    - name: Build the native library
+      if: steps.bottle.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ${{ github.workspace }}/packages/native
+      run: |
+        sh scripts/prepare-zig-deps.sh
+        zig build -Doptimize=ReleaseFast
+
+    # libopentui.a links the system's libc++.
+    - name: Install libc++
+      if: steps.bottle.outputs.cache-hit != 'true' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libc++-dev libc++abi-dev
+
+    # rustup reads rust-toolchain.toml from the working directory, so Cargo commands run in packages/rust.
+    - name: Install the pinned toolchain
+      shell: bash
+      working-directory: ${{ github.workspace }}/packages/rust
+      run: |
+        rustup toolchain install
+        {
+          echo "CARGO_INCREMENTAL=0"
+          echo "CARGO_PROFILE_DEV_DEBUG=0"
+          echo "CARGO_PROFILE_TEST_DEBUG=0"
+        } >> "$GITHUB_ENV"
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: packages/rust
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+
+    - name: Fetch the crates
+      shell: bash
+      working-directory: ${{ github.workspace }}/packages/rust
+      run: cargo fetch --locked
