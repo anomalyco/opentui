@@ -135,23 +135,23 @@ fn timers_fire_on_the_real_clock() {
     let app = headless(10, 1);
     watchdog(&app);
     let started = Instant::now();
-    let ticks = Rc::new(Cell::new(0));
-    app.set_interval(Duration::from_millis(10), {
-        let ticks = ticks.clone();
-        move |_cx| ticks.set(ticks.get() + 1)
-    });
     let fired = Rc::new(Cell::new(None));
     app.set_timeout(Duration::from_millis(60), {
         let fired = fired.clone();
-        move |cx| {
-            fired.set(Some(started.elapsed()));
+        move |_cx| fired.set(Some(started.elapsed()))
+    });
+    // Waits for both timers instead of racing them: a late wake collapses missed interval ticks into one.
+    let ticks = Cell::new(0);
+    app.set_interval(Duration::from_millis(10), move |cx| {
+        ticks.set(ticks.get() + 1);
+        if ticks.get() >= 3
+            && let Some(fired) = fired.get()
+        {
+            assert!(fired >= Duration::from_millis(60), "{fired:?}");
             cx.quit();
         }
     });
     app.run().expect("run");
-    let fired = fired.get().expect("the timeout fired");
-    assert!(fired >= Duration::from_millis(60), "{fired:?}");
-    assert!(ticks.get() >= 3, "{} ticks", ticks.get());
 }
 
 #[test]
