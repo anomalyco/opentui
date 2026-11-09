@@ -11,6 +11,9 @@ use std::time::Duration;
 
 const ENTER_ALT: &str = "\x1b[?1049h";
 const LEAVE_ALT: &str = "\x1b[?1049l";
+/// Any frame. Windows' pseudoconsole sends its screen, not each frame: with `--app`, its replies to the startup
+/// queries draw frame 2 at once, and frame 1 may never show.
+const DRAWN: &str = "lifecycle frame ";
 
 /// The lifecycle example, which `cargo test` builds along with the tests.
 fn fixture() -> PathBuf {
@@ -88,7 +91,7 @@ const MODES: [&[&str]; 2] = [&[], &["--app"]];
 fn quitting_restores_the_terminal() {
     for arguments in MODES {
         let run = Run::fixture(arguments);
-        run.wait_for("lifecycle frame 1");
+        run.wait_for(DRAWN);
         run.press("q");
         assert_eq!(run.code(), Some(0), "{arguments:?}");
         run.after_leaving();
@@ -99,7 +102,7 @@ fn quitting_restores_the_terminal() {
 fn resizes_are_drawn() {
     for arguments in MODES {
         let run = Run::fixture(arguments);
-        run.wait_for("lifecycle frame 1");
+        run.wait_for(DRAWN);
         run.pty.resize(100, 30).unwrap();
         run.wait_for("size 100x30");
         run.press("q");
@@ -112,7 +115,7 @@ fn errors_and_panics_print_after_the_terminal_is_restored() {
     for arguments in MODES {
         for (key, code, message) in [("e", 1, "lifecycle fixture error"), ("p", 101, "lifecycle fixture panic")] {
             let run = Run::fixture(arguments);
-            run.wait_for("lifecycle frame 1");
+            run.wait_for(DRAWN);
             run.press(key);
             assert_eq!(run.code(), Some(code), "{arguments:?} {key}");
             assert!(run.after_leaving().contains(message), "{arguments:?} {key}: {:?}", run.text());
@@ -123,7 +126,7 @@ fn errors_and_panics_print_after_the_terminal_is_restored() {
 #[test]
 fn captured_stderr_stays_off_the_screen() {
     let run = Run::fixture(&["--app"]);
-    run.wait_for("lifecycle frame 1");
+    run.wait_for(DRAWN);
     run.press("w");
     run.app.wait_until(Duration::from_millis(300), || false);
     run.press("q");
@@ -139,7 +142,7 @@ fn captured_stderr_stays_off_the_screen() {
 #[test]
 fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let run = Run::fixture(&["--app"]);
-    run.wait_for("lifecycle frame 1");
+    run.wait_for(DRAWN);
     // As in Core, the release ends the batch it came in: the q after it never quits.
     run.press("rq");
     run.wait_for("lifecycle released");
@@ -177,7 +180,7 @@ fn console_modes_are_restored() {
             let mut command = Command::new("cmd.exe");
             command.args(["/d", "/s", "/c", &script]);
             let run = Run::start(command);
-            run.wait_for("lifecycle frame 1");
+            run.wait_for(DRAWN);
             run.press(key);
             run.code();
             let text = run.text();
