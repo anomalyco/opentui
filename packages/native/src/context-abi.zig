@@ -1336,6 +1336,7 @@ pub fn ot_session_control(
         c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .{ .query_pixel_resolution = options.argument != 0 },
         c.OT_CONTROL_QUERY_THEME_COLORS => .query_theme_colors,
         c.OT_CONTROL_RESET_BACKGROUND => .reset_background,
+        c.OT_CONTROL_END_REPLY_SENTINEL => .end_reply_sentinel,
         c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = bytes },
         c.OT_CONTROL_CURSOR => blk: {
             if (bytes.len != @sizeOf(c.ot_session_cursor_update)) return sessionError(owner, error.InvalidOptions);
@@ -3388,7 +3389,11 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .reserved = 1 },
         .{ .kind = c.OT_CONTROL_TITLE, .null_bytes = true },
         .{ .kind = 0 },
-        .{ .kind = c.OT_CONTROL_PROGRAM_STATUS + 1 },
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL + 1 },
+        // The sentinel end, like the cursor, applies in any open phase and takes no argument.
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .argument = 1 },
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .bytes = "x" },
+        .{ .kind = c.OT_CONTROL_END_REPLY_SENTINEL, .status = c.OT_OK },
         .{ .kind = c.OT_CONTROL_RESTORE_MODES, .bytes = "x" },
         // Program status records have known enums and fields, zero unselected progress, and exact text lengths.
         .{ .kind = c.OT_CONTROL_PROGRAM_STATUS, .bytes = programStatus(.{}, "")[1..] },

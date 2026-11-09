@@ -838,7 +838,7 @@ export type NativeSessionControl =
   | { kind: "kitty-keyboard-flags"; flags: number }
   | { kind: "program-status"; status: ProgramStatus }
   | { kind: "query-pixel-resolution"; sentinel?: boolean }
-  | { kind: "restore-modes" | "query-theme-colors" | "reset-background" }
+  | { kind: "restore-modes" | "query-theme-colors" | "reset-background" | "end-reply-sentinel" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
   position?: { x: number; y: number; visible: boolean }
@@ -6933,6 +6933,9 @@ export class FFIRenderLib {
         break
       case "reset-background":
         record[kind] = nativeConstants.OT_CONTROL_RESET_BACKGROUND
+        break
+      case "end-reply-sentinel":
+        record[kind] = nativeConstants.OT_CONTROL_END_REPLY_SENTINEL
         break
       default:
         throw new TypeError("Unknown Session control kind")

@@ -210,6 +210,8 @@ pub const Control = union(enum) {
     restore_modes,
     /// True appends DA1, the sentinel that ends this query batch.
     query_pixel_resolution: bool,
+    /// The host stopped waiting for DA1 after a miss, so later pushes send no Kitty keyboard query.
+    end_reply_sentinel,
     query_theme_colors,
     /// Complete read-only OSC palette queries, optionally wrapped for tmux.
     palette_query: []const u8,
@@ -722,7 +724,7 @@ pub const Session = struct {
 
     /// Emitting controls use ordinary capacity, never restoration storage or headroom.
     /// Also accepts capability replies during setup after query publication and during resume.
-    /// Cursor intent is synchronous in any open phase; other controls require active.
+    /// Cursor intent and the sentinel end are synchronous in any open phase; other controls require active.
     /// Queued and copied output stays ahead.
     /// Rejection preserves state and output. No allocation or host I/O occurs.
     pub fn control(self: *Session, command: Control) Error!void {
@@ -741,6 +743,10 @@ pub const Session = struct {
             value.terminal.setCursorStyle(options.style orelse current.style, options.blinking orelse current.blinking);
             if (options.color) |color| value.terminal.setCursorColor(color);
             if (options.cursor) |cursor| value.terminal.setMousePointerStyle(cursor);
+            return;
+        }
+        if (command == .end_reply_sentinel) {
+            value.terminal.reply_sentinel = false;
             return;
         }
         // Malformed input is rejected in every phase, before lifecycle admission.
@@ -969,8 +975,13 @@ pub const Session = struct {
         }
         self.last_input_ns = now_ns;
         var expect = self.input_expect;
-        // The host only requests Kitty keyboard; setup pushes its flags once the terminal reports support.
-        if (self.renderer) |value| expect.kitty_keyboard = value.terminal.state.kitty_keyboard;
+        // The host only requests Kitty keyboard; setup pushes its flags once the terminal reports support,
+        // and the reply to the push's own query confirms them.
+        if (self.renderer) |value| {
+            expect.kitty_keyboard = value.terminal.state.kitty_keyboard;
+            expect.escape_prefix = value.terminal.state.kitty_confirmed;
+            expect.kitty_query = value.terminal.kittyQueryOutstanding();
+        }
         self.input.setExpectations(expect);
         const consumed = self.input.feed(bytes, now_ns, sink);
         return .{ .consumed = consumed, .discarded = self.input.discarded_count, .deadline_ns = self.input.deadlineNs() };
@@ -1128,15 +1139,15 @@ pub const Session = struct {
             try self.output.writeReservedControlAtomic(writer.buffered());
         }
         if (owned_environment) candidate.opts.env_map = &value.terminal.host_env_map.?;
+        // A reply that changes no capability, such as a Kitty keyboard confirmation, needs no repaint.
+        const repaint = !std.meta.eql(candidate.caps, value.terminal.caps) or candidate.multiplexer != value.terminal.multiplexer;
         self.queueSwitch(value);
         value.terminal = candidate;
         // Releases are not reported while mouse reporting is off (issue 426).
         if (progress.mouse != self.lifecycle.mouse) self.input.buttons_held = 0;
         self.lifecycle = progress;
         value.syncWidthMethod();
-        if (command != null and command.? == .capability_response) {
-            value.invalidateTerminalState();
-        }
+        if (command != null and command.? == .capability_response and repaint) value.invalidateTerminalState();
     }
 
     /// A packet that may switch the screen or Kitty keyboard was queued; the model has not taken it yet.
@@ -1183,7 +1194,7 @@ pub const Session = struct {
             .query_theme_colors => try candidate.queryThemeColors(writer),
             .palette_query => |bytes| try writer.writeAll(bytes),
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),
-            .cursor => unreachable,
+            .cursor, .end_reply_sentinel => unreachable,
             .program_status => |status| writeProgramStatus(writer, status),
         }
     }

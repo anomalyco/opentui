@@ -11,6 +11,10 @@ const WidthMethod = utf8.WidthMethod;
 /// Terminal capability detection and management
 pub const Terminal = @This();
 
+const kitty_queries_max = 4;
+/// Kitty keyboard flags that stop raw ESC: disambiguate and report all keys.
+const kitty_escape_flags: u8 = 0b1001;
+
 pub const Capabilities = struct {
     kitty_keyboard: bool = false,
     kitty_graphics: bool = false,
@@ -244,6 +248,14 @@ state: struct {
     alt_screen: bool = false,
     kitty_keyboard: bool = false,
     kitty_keyboard_flags: u8 = 0,
+    /// Every Kitty keyboard push or pop starts a generation; only a reply to its own query confirms it.
+    kitty_generation: u32 = 0,
+    /// The terminal reported disambiguate or report-all for the current push.
+    kitty_confirmed: bool = false,
+    /// Generations of the unanswered `CSI ? u` queries, oldest first. Terminals answer in order, so a
+    /// reply answers the oldest; a lost reply only makes later ones answer older generations.
+    kitty_queries: [kitty_queries_max]u32 = @splat(0),
+    kitty_query_count: u8 = 0,
     bracketed_paste: bool = false,
     mouse: bool = false,
     mouse_movement: bool = true,
@@ -391,6 +403,9 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
         // Windows always has 24-bit color.
         if (builtin.os.tag != .windows and !self.caps.rgb and !self.insideScreen()) try tty.writeAll(ansi.ANSI.xtgettcapTruecolor);
     }
+    // Each setup starts a new queue with its startup query.
+    self.state.kitty_query_count = 0;
+    self.recordKittyQuery();
 
     // Inside tmux, graphics replies cannot describe the passthrough endpoint.
     if (!self.skip_graphics_query and !self.isInTmux()) {
@@ -1022,20 +1037,45 @@ pub fn setFocusTracking(self: *Terminal, tty: anytype, enable: bool) !void {
     self.state.focus_tracking = enable;
 }
 
+/// Every push and pop goes through here, so each one starts a generation.
 pub fn setKittyKeyboard(self: *Terminal, tty: anytype, enable: bool, flags: u8) !void {
-    if (enable) {
-        if (!self.state.kitty_keyboard) {
-            try tty.print(ansi.ANSI.csiUPush, .{flags});
-            self.state.kitty_keyboard = true;
-            self.state.kitty_keyboard_flags = flags;
-        }
-    } else {
-        if (self.state.kitty_keyboard) {
-            try tty.writeAll(ansi.ANSI.csiUPop);
-            self.state.kitty_keyboard = false;
-            self.state.kitty_keyboard_flags = 0;
-        }
-    }
+    if (enable == self.state.kitty_keyboard) return;
+    if (enable) try tty.print(ansi.ANSI.csiUPush, .{flags}) else try tty.writeAll(ansi.ANSI.csiUPop);
+    self.state.kitty_keyboard = enable;
+    self.state.kitty_keyboard_flags = if (enable) flags else 0;
+    self.state.kitty_generation +%= 1;
+    self.state.kitty_confirmed = false;
+    // Without the sentinel the legacy parser may read input, and it must see no new reply. A full queue
+    // means replies stopped; the push then stays unconfirmed.
+    if (!enable or !self.reply_sentinel or self.state.kitty_query_count == kitty_queries_max) return;
+    try tty.writeAll(ansi.ANSI.csiUQuery);
+    self.recordKittyQuery();
+}
+
+/// Whether the current push's own query is unanswered, so its reply may still come.
+pub fn kittyQueryOutstanding(self: *const Terminal) bool {
+    const count = self.state.kitty_query_count;
+    return self.reply_sentinel and self.state.kitty_keyboard and count != 0 and
+        self.state.kitty_queries[count - 1] == self.state.kitty_generation;
+}
+
+fn recordKittyQuery(self: *Terminal) void {
+    const count = self.state.kitty_query_count;
+    std.debug.assert(count < kitty_queries_max);
+    self.state.kitty_queries[count] = self.state.kitty_generation;
+    self.state.kitty_query_count = count + 1;
+}
+
+/// A `CSI ? flags u` reply answers the oldest query; it confirms only a query of the current push.
+fn answerKittyQuery(self: *Terminal, flags: u32) void {
+    const count = self.state.kitty_query_count;
+    if (count == 0) return;
+    const generation = self.state.kitty_queries[0];
+    std.mem.copyForwards(u32, self.state.kitty_queries[0 .. count - 1], self.state.kitty_queries[1..count]);
+    self.state.kitty_query_count = count - 1;
+    if (generation != self.state.kitty_generation) return;
+    if (self.state.kitty_keyboard_flags & kitty_escape_flags == 0 or flags & kitty_escape_flags == 0) return;
+    self.state.kitty_confirmed = true;
 }
 
 pub fn setModifyOtherKeys(self: *Terminal, tty: anytype, enable: bool) !void {
@@ -1100,8 +1140,9 @@ pub fn restoreTerminalModes(self: *Terminal, tty: anytype) !void {
     // Pop stale entry then re-push kitty keyboard protocol to avoid stack growth.
     // Both sequences are in the same write buffer so the terminal processes them atomically.
     if (self.state.kitty_keyboard) {
-        try tty.writeAll(ansi.ANSI.csiUPop);
-        try tty.print(ansi.ANSI.csiUPush, .{self.state.kitty_keyboard_flags});
+        const flags = self.state.kitty_keyboard_flags;
+        try self.setKittyKeyboard(tty, false, 0);
+        try self.setKittyKeyboard(tty, true, flags);
     }
 
     // Re-enable modifyOtherKeys if active
@@ -1439,18 +1480,14 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     // Kitty keyboard protocol detection via CSI ? u response
     // Terminals supporting the protocol respond to CSI ? u with CSI ? <flags> u
     // Examples: \x1b[?0u (ghostty, alacritty), \x1b[?1u, etc.
-    if (std.mem.find(u8, response, "\x1b[?") != null and std.mem.find(u8, response, "u") != null) {
-        // Look for pattern \x1b[?Nu where N is 0-31
-        var i: usize = 0;
-        while (i + 4 < response.len) : (i += 1) {
-            if (response[i] == '\x1b' and i + 1 < response.len and response[i + 1] == '[' and i + 2 < response.len and response[i + 2] == '?') {
-                var num_end = i + 3;
-                while (num_end < response.len and response[num_end] >= '0' and response[num_end] <= '9') : (num_end += 1) {}
-                if (num_end > i + 3 and num_end < response.len and response[num_end] == 'u') {
-                    self.caps.kitty_keyboard = true;
-                    break;
-                }
-            }
+    var rest = response;
+    while (std.mem.find(u8, rest, "\x1b[?")) |start| {
+        rest = rest[start + 3 ..];
+        const digits = std.mem.indexOfNone(u8, rest, "0123456789") orelse rest.len;
+        if (digits != 0 and digits < rest.len and rest[digits] == 'u') {
+            self.caps.kitty_keyboard = true;
+            self.answerKittyQuery(std.fmt.parseInt(u32, rest[0..digits], 10) catch std.math.maxInt(u32));
+            break;
         }
     }
 

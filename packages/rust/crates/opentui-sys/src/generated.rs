@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 /// FNV-1a 64-bit hash of the `opentui.h` these declarations were generated from.
 /// The build script rejects native artifacts whose header has a different hash.
-pub const OPENTUI_HEADER_FNV1A64: u64 = 0x8d5bb00a3849e3fb;
+pub const OPENTUI_HEADER_FNV1A64: u64 = 0x66ee6a8c25e71006;
 
 pub type ot_status = i32;
 
@@ -504,6 +504,7 @@ pub const OT_CONTROL_CURSOR: u32 = 8;
 pub const OT_CONTROL_RESET_BACKGROUND: u32 = 9;
 pub const OT_CONTROL_PALETTE_QUERY: u32 = 10;
 pub const OT_CONTROL_PROGRAM_STATUS: u32 = 11;
+pub const OT_CONTROL_END_REPLY_SENTINEL: u32 = 12;
 pub const OT_CURSOR_POSITION: u32 = 1;
 pub const OT_CURSOR_STYLE: u32 = 2;
 pub const OT_CURSOR_BLINKING: u32 = 4;
@@ -664,6 +665,7 @@ pub const OT_INPUT_EXPECT_REPLIES: u32 = 1;
 pub const OT_INPUT_EXPECT_KITTY_KEYBOARD: u32 = 2;
 pub const OT_INPUT_EXPECT_CURSOR_POSITION: u32 = 4;
 pub const OT_INPUT_EXPECT_SENTINEL: u32 = 8;
+pub const OT_INPUT_EXPECT_ESCAPE_PREFIX: u32 = 16;
 pub const OT_INPUT_EVENTS_MIN: u32 = 4;
 pub const OT_INPUT_PAYLOAD_BYTES_MIN: u32 = 4384;
 pub const OT_INPUT_TIMEOUT_NS: u64 = 20000000;

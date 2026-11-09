@@ -2380,10 +2380,13 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_RESET_BACKGROUND UINT32_C(9)
 #define OT_CONTROL_PALETTE_QUERY UINT32_C(10)
 #define OT_CONTROL_PROGRAM_STATUS UINT32_C(11)
+#define OT_CONTROL_END_REPLY_SENTINEL UINT32_C(12)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
  * 0/1 for QUERY_PIXEL_RESOLUTION (1 appends the DA1 sentinel), and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
- * PROGRAM_STATUS accept payload bytes. reserved must be zero. */
+ * PROGRAM_STATUS accept payload bytes. reserved must be zero. END_REPLY_SENTINEL,
+ * accepted in every open phase, turns REPLY_SENTINEL off for good once a DA1
+ * reply never came: later Kitty keyboard pushes send no CSI ? u query. */
 typedef struct ot_session_control_options {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -2650,6 +2653,7 @@ typedef struct ot_session_pump_result {
 #define OT_INPUT_EXPECT_KITTY_KEYBOARD UINT32_C(2)
 #define OT_INPUT_EXPECT_CURSOR_POSITION UINT32_C(4)
 #define OT_INPUT_EXPECT_SENTINEL UINT32_C(8)
+#define OT_INPUT_EXPECT_ESCAPE_PREFIX UINT32_C(16)
 
 #define OT_INPUT_EVENTS_MIN UINT32_C(4)
 #define OT_INPUT_PAYLOAD_BYTES_MIN UINT32_C(4384)
@@ -3333,6 +3337,11 @@ ot_status ot_session_input_feed(
  * reply; another byte ends either one and is typed. A lone Escape still times
  * out, and a reply that follows it is not typed; if what follows that Escape is
  * cut before it matches a reply, its introducer is typed. KEEP_REPLY also keeps such a CSI.
+ * ESCAPE_PREFIX, which implies KITTY_KEYBOARD, means the terminal confirmed
+ * Kitty disambiguate or report-all keys, so ESC only begins a sequence: no unit has a deadline, and an ESC before
+ * a byte other than [, O, ], P or _ is the Escape key and that byte, never Alt.
+ * A session with a renderer sets it itself once the terminal answers the CSI ? u
+ * query that follows its current push (only with OT_TERMINAL_REPLY_SENTINEL).
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 

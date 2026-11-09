@@ -2170,9 +2170,16 @@ test("delayed pixel resolution response stays in response path while query is ac
 const DA1_REPLY = "\x1b[?62c"
 
 // A set-up renderer whose query batches the test ends: `sentinels` records the DA1 flag of setup and each pixel query.
-async function createBatchRenderer(experimental_nativeInput: boolean) {
+async function createBatchRenderer(experimental_nativeInput: boolean, kittyKeyboard = false) {
   const clock = new ManualClock()
-  const { renderer } = await createTestRenderer({ clock, experimental_nativeInput })
+  const stdout = new RecordingWriteStream(80, 24)
+  const { renderer, renderOnce } = await createTestRenderer({
+    clock,
+    experimental_nativeInput,
+    kittyKeyboard,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    bufferedOutput: "stdout",
+  })
   const r = renderer as any
   const sentinels: boolean[] = []
   const { control, setupTerminal } = r.nativeSession
@@ -2194,8 +2201,18 @@ async function createBatchRenderer(experimental_nativeInput: boolean) {
   const send = (bytes: string) => renderer.stdin.emit("data", Buffer.from(bytes))
   const batches = () => r.replyBatches.map((batch: { kind: string }) => batch.kind)
   const context = () => r.stdinParser.protocolContext
+  // Bytes the Session wrote since the previous call, once its output drained.
+  const written = async () => {
+    await drained()
+    const text = stdout.text()
+    stdout.clear()
+    return text
+  }
   return {
     renderer,
+    renderOnce,
+    written,
+    stdout,
     r,
     clock,
     sentinels,
@@ -2264,7 +2281,7 @@ test("pixel queries end at their DA1 reply or backstop, and replies apply in arr
 test("a batch whose DA1 reply never comes ends at its backstop; only an unexcused one switches to clock mode", async () => {
   const paste = "\x1b[200~" + DA1_REPLY
   for (const before of ["", paste + "\x1b[201~", paste, "suspend"]) {
-    const t = await createBatchRenderer(true)
+    const t = await createBatchRenderer(true, true)
     try {
       t.send("\x1b[4;80;100t")
       let batches = ["startup", "pixel"]
@@ -2300,9 +2317,26 @@ test("a batch whose DA1 reply never comes ends at its backstop; only an unexcuse
       expect(t.context()).toMatchObject({ replySentinelActive: false, privateCapabilityRepliesActive: false })
       t.renderer.resize(100, 30)
       expect(t.sentinels.at(-1)).toBe(!miss)
+      // Clock mode also stops the Kitty keyboard query: a focus restore pops and pushes, and asks nothing.
+      if (before === paste) t.send("\x1b[201~")
+      t.send("\x1b[?0u")
+      await t.written()
+      t.send("\x1b[O\x1b[I")
+      const restore = await t.written()
+      expect([restore.includes("\x1b[>"), restore.includes("\x1b[?u")]).toEqual([true, !miss])
     } finally {
       t.renderer.destroy()
     }
+  }
+  // A miss after the terminal is gone, before teardown, still ends its batches without throwing.
+  const t = await createBatchRenderer(true, true)
+  try {
+    t.renderer.on("error", () => {})
+    t.stdout.emit("error", new Error("terminal gone"))
+    t.clock.advance(5000)
+    expect(t.batches()).toEqual([])
+  } finally {
+    t.renderer.destroy()
   }
 })
 
@@ -2439,6 +2473,120 @@ test("a startup reply split by a pause types nothing while its DA1 reply is out 
       } finally {
         t.renderer.destroy()
       }
+    }
+  }
+})
+
+test("once the terminal confirms its Kitty push, a lone ESC waits for the next byte without a clock", async () => {
+  for (const [native, confirm] of [
+    [false, true],
+    [true, false],
+    [true, true],
+  ]) {
+    const t = await createBatchRenderer(native, true)
+    try {
+      // The startup `?0u` pushes the flags; in sentinel mode the push carries its own `CSI ? u` query.
+      // One DA1 reply for the startup batch and one for the pixel batch.
+      t.send("\x1b[?0u" + DA1_REPLY + DA1_REPLY)
+      t.clock.advance(5000)
+      if (confirm) t.send("\x1b[?5u")
+      t.send("\x1b")
+      t.clock.advance(60_000)
+      const held = [...t.keys]
+      t.send("\x1b[A")
+      expect({ native, confirm, held, keys: t.keys }).toEqual({
+        native,
+        confirm,
+        held: native && confirm ? [] : ["escape"],
+        keys: ["escape", "up"],
+      })
+      // A focus restore pushes again; its confirming reply changes no capability, so the next frame writes nothing.
+      await t.renderOnce()
+      await t.written()
+      t.send("\x1b[O\x1b[I")
+      if (confirm) t.send("\x1b[?5u")
+      await t.written()
+      await t.renderOnce()
+      expect({ native, confirm, frame: (await t.written()).length }).toEqual({ native, confirm, frame: 0 })
+      // Resume pushes and asks again. Its reply, buffered in stdin, is read before the control state is restored.
+      await t.renderer.suspend()
+      if (confirm) t.renderer.stdin.push("\x1b[?5u")
+      await t.renderer.resume()
+      t.keys.length = 0
+      t.send("\x1b")
+      t.clock.advance(60_000)
+      expect({ native, confirm, resumed: [...t.keys] }).toEqual({
+        native,
+        confirm,
+        resumed: native && confirm ? [] : ["escape"],
+      })
+    } finally {
+      t.renderer.destroy()
+    }
+  }
+})
+
+test("a push's CSI ? u reply split by a pause is not typed, at startup and after a focus restore", async () => {
+  const reply = "\x1b[?5u"
+  for (const focus of [false, true]) {
+    for (const pause of [0, 25, 60_000]) {
+      for (let cut = 1; cut < reply.length; cut++) {
+        const t = await createBatchRenderer(true, true)
+        try {
+          t.send("\x1b[?0u" + DA1_REPLY + DA1_REPLY)
+          await t.drained()
+          if (focus) {
+            t.send(reply)
+            t.send("\x1b[O\x1b[I")
+            await t.drained()
+          }
+          t.send(reply.slice(0, cut))
+          t.clock.advance(pause)
+          t.send(reply.slice(cut) + "j")
+          t.clock.advance(25)
+          const keys = [...t.keys]
+          // Confirmed: a lone ESC then has no timeout.
+          t.keys.length = 0
+          t.send("\x1b")
+          t.clock.advance(25)
+          // Cut 1 after a pause: the Escape already went out at 20 ms (decision Q3).
+          const escape = cut === 1 && pause > 0 ? ["escape"] : []
+          expect({ focus, pause, cut, keys, confirmed: t.keys.length === 0 }).toEqual({
+            focus,
+            pause,
+            cut,
+            keys: [...escape, "j"],
+            confirmed: true,
+          })
+        } finally {
+          t.renderer.destroy()
+        }
+      }
+    }
+  }
+  // A push whose query is never answered, and a terminal that never pushes (WezTerm by default, tmux): keys typed
+  // one read at a time are as before. Alt+[ then `?` types the `?`, and a lone Escape goes out at 20 ms.
+  for (const pushed of [true, false]) {
+    const t = await createBatchRenderer(true, true)
+    try {
+      t.send((pushed ? "\x1b[?0u" : "") + DA1_REPLY + DA1_REPLY)
+      await t.drained()
+      // Without a push, the startup query alone holds nothing.
+      if (!pushed) {
+        t.send("\x1b[?5")
+        t.clock.advance(25)
+        t.send("u")
+        expect(t.keys.splice(0)).toEqual(["u"])
+      }
+      for (const bytes of ["\x1b[", "?", "j"]) {
+        t.send(bytes)
+        t.clock.advance(25)
+      }
+      t.send("\x1b")
+      t.clock.advance(20)
+      expect({ pushed, keys: t.keys }).toEqual({ pushed, keys: ["?", "j", "escape"] })
+    } finally {
+      t.renderer.destroy()
     }
   }
 })

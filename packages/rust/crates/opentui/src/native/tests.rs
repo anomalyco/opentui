@@ -381,7 +381,7 @@ fn input_parses_into_caller_records_until_they_run_low() -> Result<()> {
     let drain = session.input_feed(b"", 10 + sys::OT_INPUT_TIMEOUT_NS, &mut records, &mut payload)?;
     assert_eq!((drain.count, drain.deadline_ns), (0, 0));
     assert_eq!(status(session.input_feed(b"", 9, &mut records, &mut payload)), Status::InvalidArgument);
-    assert_eq!(status(session.input_expect(16)), Status::InvalidArgument);
+    assert_eq!(status(session.input_expect(32)), Status::InvalidArgument);
     session.input_expect(sys::OT_INPUT_EXPECT_REPLIES)?;
     session.close()?;
     assert_eq!(status(session.input_feed(b"a", 20, &mut records, &mut payload)), Status::SessionClosed);
