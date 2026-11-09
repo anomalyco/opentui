@@ -840,50 +840,34 @@ test "setHostEnvVar applies env overrides in shared library mode" {
     try testing.expect(term.skip_graphics_query);
 }
 
-test "environment overrides - direct Windows Terminal hyperlinks do not require TERM" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WT_SESSION", "test-session");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(term.caps.rgb);
-    try testing.expectEqual(builtin.os.tag == .windows, term.caps.hyperlinks);
-}
-
-test "environment overrides - enables hyperlinks for WSL Windows Terminal xterm" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_DISTRO_NAME", "Ubuntu");
-    try env.put("WT_SESSION", "test-session");
-    try env.put("TERM", "xterm-256color");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(term.caps.hyperlinks);
-}
-
-test "environment overrides - does not enable hyperlinks for WSL without WT_SESSION" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_DISTRO_NAME", "Ubuntu");
-    try env.put("TERM", "xterm-256color");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(!term.caps.hyperlinks);
-}
-
-test "environment overrides - does not enable hyperlinks for WSL non-xterm terms" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("WSL_INTEROP", "/run/WSL/123_interop");
-    try env.put("WT_SESSION", "test-session");
-    try env.put("TERM", "screen-256color");
-
-    const term = Terminal.init(.{ .env_map = &env });
-
-    try testing.expect(!term.caps.hyperlinks);
+// WT_SESSION names Windows Terminal at the endpoint on every host OS: locally, in WSL, or forwarded to an
+// explicit remote session. A multiplexer, a non-xterm TERM, or an old VTE sits between, and auto mode ignores a
+// forwarded one.
+test "environment overrides - WT_SESSION enables hyperlinks for a direct Windows Terminal" {
+    const Row = struct { env: []const u8, mode: Terminal.RemoteMode = .local, hyperlinks: bool };
+    const rows = [_]Row{
+        .{ .env = "WT_SESSION=1", .hyperlinks = true },
+        .{ .env = "WT_SESSION=1 TERM=", .hyperlinks = true },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = true },
+        .{ .env = "TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu", .hyperlinks = false },
+        .{ .env = "WT_SESSION=1 TERM=screen-256color WSL_INTEROP=/run/WSL/1_interop", .hyperlinks = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color WSL_DISTRO_NAME=Ubuntu ZELLIJ=0", .hyperlinks = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color VTE_VERSION=5000", .hyperlinks = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color SSH_CONNECTION=1", .mode = .auto, .hyperlinks = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color", .mode = .remote, .hyperlinks = true },
+        .{ .env = "WT_SESSION=1", .mode = .remote, .hyperlinks = true },
+        .{ .env = "WT_SESSION=1 TERM=rxvt-unicode-256color", .mode = .remote, .hyperlinks = false },
+        .{ .env = "WT_SESSION=1 TERM=xterm-256color TMUX=/tmp/tmux-1000/default,1,0", .mode = .remote, .hyperlinks = false },
+    };
+    for (rows, 0..) |row, index| {
+        errdefer std.debug.print("WT_SESSION row {d}\n", .{index});
+        var env = std.process.Environ.Map.init(testing.allocator);
+        try putEnv(&env, row.env);
+        var term = Terminal.init(.{ .remote_mode = row.mode });
+        term.adoptHostEnvironment(env);
+        defer term.deinit();
+        try testing.expectEqual(row.hyperlinks, term.caps.hyperlinks);
+    }
 }
 
 test "environment overrides - foot hyperlinks require a direct terminal" {
@@ -979,7 +963,7 @@ test "environment overrides - TERM_PROGRAM and VTE_VERSION enable hyperlinks for
     }
 }
 
-test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal" {
+test "environment overrides - TERM_PROGRAM and WT_SESSION hyperlinks require a direct terminal" {
     const multiplexers = [_]struct {
         key: []const u8,
         value: []const u8,
@@ -990,17 +974,17 @@ test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal"
         .{ .key = "ZELLIJ", .value = "0", .kind = .zellij },
     };
 
-    for (multiplexers) |multiplexer| {
+    for ([_][2][]const u8{ .{ "TERM_PROGRAM", "vscode" }, .{ "WT_SESSION", "1" } }) |host| for (multiplexers) |multiplexer| {
         var term = Terminal.init(.{});
         defer term.deinit();
 
-        try term.setHostEnvVar(testing.allocator, "TERM_PROGRAM", "vscode");
+        try term.setHostEnvVar(testing.allocator, host[0], host[1]);
         try testing.expect(term.caps.hyperlinks);
 
         try term.setHostEnvVar(testing.allocator, multiplexer.key, multiplexer.value);
         try testing.expectEqual(multiplexer.kind, term.multiplexer);
         try testing.expect(!term.caps.hyperlinks);
-    }
+    };
 }
 
 test "environment overrides - Rex hyperlinks match exact TERM and XTVersion names" {

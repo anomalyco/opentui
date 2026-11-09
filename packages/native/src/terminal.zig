@@ -860,9 +860,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
 
     if (env_map.get("WT_SESSION") != null) {
         self.caps.rgb = true;
-        if (builtin.os.tag == .windows and !self.term_info.from_xtversion and self.multiplexer == .none) {
-            self.caps.hyperlinks = true;
-        }
         self.setNotificationProtocol(.osc777, .heuristic);
     }
 
@@ -907,18 +904,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
         if (env_map.get("TERM")) |term| {
             if (isHyperlinkTerm(term) and (!self.is_foot or self.multiplexer == .none)) {
                 self.caps.hyperlinks = true;
-            }
-        }
-    }
-
-    if (!self.caps.hyperlinks and !self.term_info.from_xtversion) {
-        const is_wsl = env_map.get("WSL_DISTRO_NAME") != null or env_map.get("WSL_INTEROP") != null;
-        const has_wt_session = env_map.get("WT_SESSION") != null;
-        if (is_wsl and has_wt_session) {
-            if (env_map.get("TERM")) |term| {
-                if (std.mem.startsWith(u8, term, "xterm")) {
-                    self.caps.hyperlinks = true;
-                }
             }
         }
     }
@@ -1591,7 +1576,9 @@ fn isHyperlinkHostEnv(env_map: *const std.process.Environ.Map) bool {
         const parsed = std.fmt.parseInt(u32, version, 10) catch return false;
         return parsed >= 5202;
     }
-    return false;
+    // WT_SESSION names Windows Terminal at the endpoint on any host OS, unless TERM names another terminal inside it.
+    const term = env_map.get("TERM") orelse "";
+    return env_map.get("WT_SESSION") != null and (term.len == 0 or std.mem.startsWith(u8, term, "xterm"));
 }
 
 pub fn synchronizedOutput(self: *const Terminal) bool {
