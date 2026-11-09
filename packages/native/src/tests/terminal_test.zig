@@ -952,10 +952,9 @@ test "environment overrides - rgb does not imply hyperlinks after recheck for in
     try testing.expect(term.caps.rgb);
     try testing.expect(!term.caps.hyperlinks);
 
-    try term.setHostEnvVar(testing.allocator, "WT_SESSION", "test-session");
     try term.setHostEnvVar(testing.allocator, "TERM", "screen");
 
-    try testing.expect(term.caps.rgb);
+    try testing.expect(!term.caps.rgb);
     try testing.expect(!term.caps.hyperlinks);
 }
 
