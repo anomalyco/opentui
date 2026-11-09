@@ -84,6 +84,8 @@ fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     if static_link {
         // Apple's linker takes libopentui.dylib over libopentui.a from one directory, so search one without the dylib.
+        // The copy keeps the source's mode, so a read-only source leaves a copy that a rerun cannot overwrite.
+        let _ = fs::remove_file(out.join("libopentui.a"));
         fs::copy(library.join("libopentui.a"), out.join("libopentui.a")).expect("copy libopentui.a into OUT_DIR");
         println!("cargo:rustc-link-search=native={}", out.display());
         println!("cargo:rustc-link-lib=static=opentui");

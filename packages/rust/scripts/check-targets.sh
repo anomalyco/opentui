@@ -23,8 +23,11 @@ tools=$CARGO_TARGET_DIR/tools
 # build.rs only checks that the artifacts exist and that the header matches the bindings.
 mkdir -p "$tools/lib"
 cp "$header" "$tools/lib/opentui.h"
+rm -f "$tools/lib/libopentui.dylib" "$tools/lib/libopentui.a"
 : > "$tools/lib/libopentui.dylib"
+# Read-only, as in a release or a Nix store: the static build below runs build.rs twice over its own copy.
 : > "$tools/lib/libopentui.a"
+chmod a-w "$tools/lib/libopentui.a"
 for arch in aarch64 x86_64; do
     cat > "$tools/cc-$arch" <<EOF
 #!/bin/sh
@@ -50,8 +53,10 @@ export OPENTUI_LIB_DIR="$tools/lib"
 cargo=${CARGO:-cargo}
 for arch in aarch64 x86_64; do
     target=$arch-apple-darwin
-    for features in '' opentui/tokio,opentui/log,opentui/tree-sitter \
-        opentui/static,opentui/tokio,opentui/log,opentui/tree-sitter; do
+    static=opentui/static,opentui/tokio,opentui/log,opentui/tree-sitter
+    for features in '' opentui/tokio,opentui/log,opentui/tree-sitter "$static" "$static"; do
+        # A newer archive reruns build.rs, so the second static pass replaces the first one's copy.
+        touch "$tools/lib/libopentui.a"
         env "CC_${arch}_apple_darwin=$tools/cc-$arch" "AR_${arch}_apple_darwin=$tools/ar" \
             "$cargo" clippy --locked --target "$target" --manifest-path "$here/Cargo.toml" --workspace \
             --all-targets ${features:+--features "$features"} -- -D warnings
@@ -65,8 +70,12 @@ find "$CARGO_TARGET_DIR" -path '*-apple-darwin/debug/build/opentui-sys-*/output'
     -exec grep -qx 'cargo:static=1' {} \; -print > "$tools/static-outputs"
 [ "$(wc -l < "$tools/static-outputs")" -eq 2 ] || { echo 'FAIL: no static build per macOS target' >&2; exit 1; }
 while IFS= read -r output; do
-    sed -n 's/^cargo:rustc-link-search=native=//p' "$output" | while IFS= read -r dir; do
+    sed -En 's/^cargo::?rustc-link-search=((native|all|crate|dependency|framework)=)?//p' "$output" > "$tools/dirs"
+    archive=
+    while IFS= read -r dir; do
         [ ! -e "$dir/libopentui.dylib" ] || { echo "FAIL: the static build searches $dir" >&2; exit 1; }
-    done
+        [ ! -f "$dir/libopentui.a" ] || archive=1
+    done < "$tools/dirs"
+    [ -n "$archive" ] || { echo "FAIL: the static build searches no libopentui.a: $output" >&2; exit 1; }
 done < "$tools/static-outputs"
-echo 'PASS: static macOS builds search no libopentui.dylib'
+echo 'PASS: static macOS builds search libopentui.a and no libopentui.dylib'
