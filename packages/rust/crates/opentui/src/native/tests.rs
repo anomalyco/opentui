@@ -739,6 +739,7 @@ fn capabilities_name_width_methods_multiplexers_and_forced_image_protocols() -> 
     assert_eq!(capabilities.width_method, WidthMethod::Wcwidth);
     assert_eq!(capabilities.image_protocol, ImageProtocol::Sixel);
     // A host forwards only FORWARDED_ENVIRONMENT, which must hold every key native code reads.
+    assert!(crate::host::FORWARDED_ENVIRONMENT.contains(&"OPENTUI_FORCE_TRUECOLOR"));
     for (environment, hyperlinks) in [
         (&[("VTE_VERSION", "5202")][..], true),
         (&[("VTE_VERSION", "5000")], false),

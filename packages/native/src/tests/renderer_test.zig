@@ -2473,7 +2473,7 @@ test "renderer - indexed snapshots fall back to rgb and explicit bg default rese
     try std.testing.expect(std.mem.find(u8, output, "\x1b[49m") != null);
 }
 
-test "renderer - rgb colors fall back to ANSI256 mapping from auto remote forwarded TERM" {
+test "renderer - rgb colors fall back to ANSI256 mapping inside GNU screen from auto remote forwarded TERM" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -2489,7 +2489,8 @@ test "renderer - rgb colors fall back to ANSI256 mapping from auto remote forwar
 
     cli_renderer.terminal.opts.remote_mode = .auto;
     try cli_renderer.terminal.setHostEnvVar(std.testing.allocator, "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
-    try cli_renderer.terminal.setHostEnvVar(std.testing.allocator, "TERM", "screen-256color");
+    try cli_renderer.terminal.setHostEnvVar(std.testing.allocator, "COLORTERM", "truecolor");
+    try cli_renderer.terminal.setHostEnvVar(std.testing.allocator, "TERM", "screen");
 
     const next_buffer = cli_renderer.getNextBuffer();
     try next_buffer.drawText("A", 0, 0, ansi.rgbaFromFloats(0.95, 0.1, 0.1, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 0);
