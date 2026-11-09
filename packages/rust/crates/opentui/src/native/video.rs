@@ -37,6 +37,12 @@ pub struct VideoState {
     pub quality_tier: u32,
 }
 
+/// A path [`Node::video_open`] takes: UTF-8 and not empty, which would close the player instead.
+pub(crate) fn video_path(path: &Path) -> Result<&str> {
+    let invalid = Error::Native { operation: "ot_video_open", status: Status::InvalidArgument };
+    path.to_str().filter(|path| !path.is_empty()).ok_or(invalid)
+}
+
 fn micros(time: i64) -> Duration {
     Duration::from_micros(time.max(0) as u64)
 }
@@ -51,12 +57,14 @@ impl Node {
 
     /// Opens an MP4 (H.264 and AAC) file in a video node, replacing its player, or closes the player with `None`.
     /// Without `audio`, playback opens no audio device and follows the wall clock. A file that does not open returns
-    /// [`Status::VideoFailed`], with the detail in [`Self::video_error`]; a path that is not UTF-8,
-    /// [`Status::InvalidArgument`].
+    /// [`Status::VideoFailed`], with the detail in [`Self::video_error`], and closes the player. An empty path, or one
+    /// that is not UTF-8, returns [`Status::InvalidArgument`] and leaves the player as it was.
     pub fn video_open(&self, path: Option<&Path>, audio: bool) -> Result<VideoInfo> {
         const OPERATION: &str = "ot_video_open";
-        let invalid = Error::Native { operation: OPERATION, status: Status::InvalidArgument };
-        let path = path.map_or(Some(""), Path::to_str).ok_or(invalid)?;
+        let path = match path {
+            None => "",
+            Some(path) => video_path(path)?,
+        };
         let flags = if audio { 0 } else { sys::OT_VIDEO_OPEN_NO_AUDIO };
         let mut raw = sys::ot_video_info::default();
         check(OPERATION, unsafe {
@@ -92,22 +100,33 @@ impl Node {
         check("ot_video_seek", unsafe { sys::ot_video_seek(self.context_raw(), &self.handle(), time) })
     }
 
-    /// Applies the playback options a player keeps: loop, mute, volume (finite and at least 0), the A/V sync offset
-    /// (at most 60 s either way; positive shows frames earlier), and the presentation rate cap (1 to 120).
-    pub fn set_video_options(
-        &self,
-        looping: bool,
-        muted: bool,
-        volume: f32,
-        offset_us: i64,
-        max_fps: u32,
-    ) -> Result<()> {
-        let (context, handle) = (self.context_raw(), self.handle());
-        check("ot_video_set_loop", unsafe { sys::ot_video_set_loop(context, &handle, u32::from(looping)) })?;
-        check("ot_video_set_muted", unsafe { sys::ot_video_set_muted(context, &handle, u32::from(muted)) })?;
-        check("ot_video_set_volume", unsafe { sys::ot_video_set_volume(context, &handle, volume) })?;
-        check("ot_video_set_av_sync_offset", unsafe { sys::ot_video_set_av_sync_offset(context, &handle, offset_us) })?;
-        check("ot_video_set_max_fps", unsafe { sys::ot_video_set_max_fps(context, &handle, max_fps) })
+    pub fn set_video_loop(&self, looping: bool) -> Result<()> {
+        check("ot_video_set_loop", unsafe {
+            sys::ot_video_set_loop(self.context_raw(), &self.handle(), looping.into())
+        })
+    }
+
+    pub fn set_video_muted(&self, muted: bool) -> Result<()> {
+        check("ot_video_set_muted", unsafe {
+            sys::ot_video_set_muted(self.context_raw(), &self.handle(), muted.into())
+        })
+    }
+
+    /// The audio gain: finite and at least 0.
+    pub fn set_video_volume(&self, volume: f32) -> Result<()> {
+        check("ot_video_set_volume", unsafe { sys::ot_video_set_volume(self.context_raw(), &self.handle(), volume) })
+    }
+
+    /// At most 60 s either way; positive shows frames earlier. Native code drops the frames it has decoded ahead.
+    pub fn set_video_av_sync_offset(&self, offset_us: i64) -> Result<()> {
+        check("ot_video_set_av_sync_offset", unsafe {
+            sys::ot_video_set_av_sync_offset(self.context_raw(), &self.handle(), offset_us)
+        })
+    }
+
+    /// The presentation rate cap, 1 to 120.
+    pub fn set_video_max_fps(&self, fps: u32) -> Result<()> {
+        check("ot_video_set_max_fps", unsafe { sys::ot_video_set_max_fps(self.context_raw(), &self.handle(), fps) })
     }
 
     /// Reads the playback state. Reading advances the player's clock, and ends or loops playback at the end.

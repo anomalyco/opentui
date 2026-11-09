@@ -565,8 +565,10 @@ Decisions made for the native parser:
 device. While it plays, an interval at `max_fps` reads the native state, which
 advances the clock, and requests a frame, which draws the next video frame; a
 paused or ended video costs nothing. `on_event` reports play, pause, seek,
-position, buffering, the end, and failures with native code's detail. A
-failed play, seek, or decode is an event, not an error that ends the app.
+position, the end, and failures with native code's detail. A failed play,
+seek, or decode is an event, not an error that ends the app. An option change
+sends only that option, as in Core: a new A/V offset drops the frames decoded
+ahead. As in Core, a remote app's video plays its audio on the server.
 Unlike Core, invalid numbers are ignored or clamped, and `open` is synchronous,
 so nothing waits for a microtask. `tests/video.rs` plays Core's video
 fixtures, and skips where the native library was built without FFmpeg.

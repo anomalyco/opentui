@@ -62,6 +62,7 @@ pub use terminal::{
 pub use text::{
     Image, ImageFit, ImageInfo, ImageProtocol, TextBuffer, TextBufferInfo, TextMeasure, TextView, VisualLine,
 };
+pub(crate) use video::video_path;
 pub use video::{VideoInfo, VideoState};
 
 /// Debug output for handles whose state lives in native code: only the type's name.

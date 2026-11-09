@@ -5,7 +5,7 @@
 use opentui::Status;
 use opentui::prelude::*;
 use opentui::testing::TestApp;
-use opentui::widget::{VideoEvent, VideoInfo, VideoView};
+use opentui::widget::{ImageFit, VideoEvent, VideoInfo, VideoView};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -76,21 +76,49 @@ fn opening_reports_metadata_and_paints_the_first_frame_while_paused() {
     play_until(&app, || video.state().unwrap().has_frame);
     app.advance(Duration::from_secs(1));
     assert_eq!(*events.borrow(), []);
+    // In a tall node, Contain leaves rows above and below the frame empty, and Fill stretches it over all of them.
+    let painted = |fit| {
+        video.size(4, 6).fit(fit);
+        app.render();
+        let capture = app.render();
+        capture.cells.iter().filter(|cell| cell.symbol != " " || cell.bg != app.theme().background).count()
+    };
+    assert_eq!((painted(ImageFit::Fill), painted(ImageFit::Contain) < 24), (24, true));
 }
 
 #[test]
 fn playing_ticks_at_max_fps_until_paused() {
     let app = TestApp::new(20, 6);
     let (video, events) = video(&app);
-    if open(&video.max_fps(10), SILENT).is_none() {
+    if open(&video, SILENT).is_none() {
         return;
     }
+    // Options out of range are ignored or clamped instead of failing.
+    video.volume(-1.0).volume(f32::NAN).volume(0.0).muted(true).av_sync_offset(100_000).max_fps(0).max_fps(200);
+    video.av_sync_offset(0);
+    video.toggle();
     video.play();
-    assert_eq!(*events.borrow(), [VideoEvent::Play]);
+    assert_eq!(*events.borrow(), [VideoEvent::Play], "a second play starts nothing");
     assert!(video.is_playing());
-    app.advance(Duration::from_secs(1));
+    // Setting the same rate again keeps the tick's schedule.
+    for _ in 0..25 {
+        video.max_fps(10);
+        app.advance(Duration::from_millis(40));
+    }
     assert_eq!(times(&events.borrow()), 10, "one tick per frame at 10 fps");
-    play_until(&app, || video.state().unwrap().current_time > Duration::from_millis(100));
+    video.max_fps(20);
+    app.advance(Duration::from_secs(1));
+    assert_eq!(times(&events.borrow()), 30, "a new rate takes effect while playing");
+    // Live option changes send only themselves; a volume change keeps the frames coming.
+    let mut frames = std::collections::HashSet::new();
+    for step in 0..40 {
+        video.volume(if step % 2 == 0 { 0.5 } else { 1.0 });
+        std::thread::sleep(Duration::from_millis(15));
+        app.advance(Duration::from_millis(15));
+        frames.insert(format!("{:?}", app.render().cells));
+    }
+    assert!(frames.len() > 5, "{} distinct frames", frames.len());
+    app.try_render().unwrap();
     events.borrow_mut().clear();
     video.pause();
     let position = video.state().unwrap().current_time;
@@ -139,11 +167,42 @@ fn seeks_clamp_and_playback_reports_its_end_and_failures_drawn_or_not() {
 }
 
 #[test]
+fn events_that_a_handler_made_stale_are_not_sent() {
+    let app = TestApp::new(20, 6);
+    let (video, events) = video(&app);
+    let Some(info) = open(&video, SILENT) else { return };
+    let restarted = Rc::new(std::cell::Cell::new(false));
+    video.on_event({
+        let (video, restarted) = (video.clone(), restarted.clone());
+        move |_cx, event| match event {
+            VideoEvent::Time(time) if *time == info.duration && !restarted.replace(true) => {
+                video.seek(Duration::ZERO);
+                video.play();
+            }
+            VideoEvent::Pause => video.seek(Duration::ZERO),
+            _ => {}
+        }
+    });
+    video.seek(info.duration - Duration::from_millis(30));
+    video.play();
+    play_until(&app, || restarted.get());
+    // A handler restarted the video at its end, so the end is not reported.
+    assert!(!events.borrow().contains(&VideoEvent::Ended), "{:?}", events.borrow());
+    assert!(video.is_playing());
+    // A handler rewound at the pause, so the paused position is not reported after the rewind.
+    events.borrow_mut().clear();
+    video.pause();
+    let rewound = [VideoEvent::Pause, VideoEvent::Seek(Duration::ZERO), VideoEvent::Time(Duration::ZERO)];
+    assert_eq!(*events.borrow(), rewound);
+}
+
+#[test]
 fn looping_wraps_and_autoplay_plays_each_file() {
     let app = TestApp::new(20, 6);
     let (video, events) = video(&app);
-    let Some(info) = open(&video.looping(true).autoplay(true), SILENT) else { return };
+    let Some(info) = open(&video.autoplay(true), SILENT) else { return };
     assert_eq!(*events.borrow(), [VideoEvent::Play]);
+    video.looping(true);
     video.seek(info.duration - Duration::from_millis(30));
     play_until(&app, || video.state().unwrap().current_time < Duration::from_millis(500));
     assert!(video.is_playing());
@@ -157,6 +216,20 @@ fn failed_opens_return_the_detail_and_play_waits_for_the_next_file() {
     if open(&video, SILENT).is_none() {
         return;
     }
+    // A path native code cannot take fails before the open file closes, which keeps playing.
+    video.play();
+    let invalid = |path: &std::path::Path| video.open(path).unwrap_err().status();
+    assert_eq!(invalid("".as_ref()), Some(Status::InvalidArgument));
+    #[cfg(unix)]
+    assert_eq!(
+        invalid(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"\xff.mp4").as_ref()),
+        Some(Status::InvalidArgument)
+    );
+    assert!(video.is_playing());
+    app.try_render().unwrap();
+    video.pause();
+    events.borrow_mut().clear();
+
     let error = video.open(fixture("missing.mp4")).unwrap_err();
     assert_eq!(error.status(), Some(Status::VideoFailed));
     assert!(video.last_error().is_some());
@@ -167,7 +240,10 @@ fn failed_opens_return_the_detail_and_play_waits_for_the_next_file() {
     assert!(!video.is_playing());
     app.try_render().unwrap();
 
-    // Play before a file opens, and a close, carry playback over to the next file.
+    // Play before a file opens, and a close, carry playback over to the next file; a pause cancels it.
+    video.toggle();
+    video.toggle();
+    assert!(!video.is_playing());
     video.play();
     assert!(video.is_playing());
     open(&video, SILENT).unwrap();
