@@ -589,19 +589,25 @@ jobs:
   # Gate job for branch protection
   build-complete:
     name: Core - Build and Test
-    needs: [changes, build, test, packages-windows, bun-1-compat]
+    needs: [changes, build, test, packages-windows, bun-1-compat, rust-linux]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
-      # Without the changes job no skip is known to be safe. A TypeScript job may skip only on a Rust-only pull request.
+      # Without the changes job no skip is known to be safe. A TypeScript job may skip only on a Rust-only pull request,
+      # a Rust job only when no path it tests changed.
       - name: Check test results
         env:
           CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.changes.outputs.rust }}
           RUST_ONLY: ${{ needs.changes.outputs.rust_only }}
           TYPESCRIPT: ${{ needs.build.result }} ${{ needs.test.result }} ${{ needs['packages-windows'].result }} ${{ needs['bun-1-compat'].result }}
+          RUST_JOBS: ${{ needs['rust-linux'].result }}
         run: |
           [ "$CHANGES" = success ] || { echo "Change detection: $CHANGES"; exit 1; }
           for result in $TYPESCRIPT; do
             [ "$result" = success ] || [ "$result-$RUST_ONLY" = skipped-true ] || { echo "Tests failed"; exit 1; }
+          done
+          for result in $RUST_JOBS; do
+            [ "$result" = success ] || [ "$result-$RUST" = skipped-false ] || { echo "Rust tests failed"; exit 1; }
           done
           echo "All tests passed"
