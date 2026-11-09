@@ -36,6 +36,7 @@ mod terminal;
 mod text;
 mod text_table;
 mod textarea;
+mod video;
 mod view;
 
 pub use code::Code;
@@ -59,12 +60,13 @@ pub use terminal::{TerminalData, TerminalScreen, TerminalView};
 pub use text::Text;
 pub use text_table::{ColumnFitter, ColumnWidthMode, TextTable};
 pub use textarea::Textarea;
+pub use video::{VideoEvent, VideoView};
 pub use view::View;
 
 // Native types that widget methods take or return, so the widget layer needs no `native` imports.
 pub use crate::native::{
     Constraint, CursorStyle, EmbeddedTerminalOptions, Image, ImageFit, ImageProtocol, MousePointer, SelectionColors,
-    TerminalCursor, WrapMode,
+    TerminalCursor, VideoInfo, VideoState, WrapMode,
 };
 
 use crate::app::{App, AppInner, Cx, HandlerId};

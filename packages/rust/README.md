@@ -38,8 +38,6 @@ fn main() -> opentui::Result<()> {
 }
 ```
 
-The work follows [PLAN.md](PLAN.md).
-
 ## Build
 
 The crates link the native library of this checkout,
@@ -74,6 +72,9 @@ Line Tools (`xcode-select --install`). On a Mac, `bun run build` in
 `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-macos.13.0` (or
 `aarch64-macos.13.0`). The Windows build needs no SDK, so Zig makes it on any
 system: `zig build -Doptimize=ReleaseFast -Dlibrary-target=x86_64-windows-gnu`.
+`VideoView` needs a library built with FFmpeg: the native build links it from
+`packages/native/.cache/ffmpeg/prefix/<target>`, which `bun run build` makes for
+the host, and warns and leaves video out without it.
 
 `crates/opentui-sys/src/generated.rs` is generated from
 `packages/native/include/opentui.h`: `bun run generate:abi` in `packages/core`
@@ -100,7 +101,7 @@ and `pty::shell()` is `%COMSPEC%`.
 Features:
 
 - `static`: link `libopentui.a`. On macOS this also links the system
-  frameworks OpenTUI uses for the clipboard and audio. Not supported on
+  frameworks OpenTUI uses for the clipboard, audio, and video. Not supported on
   Windows: OpenTUI's Windows archive is built for MinGW with libc++, which
   neither Rust Windows toolchain links.
 - `tokio`: `App::spawn` runs futures on a Tokio runtime and finishes them on
@@ -241,6 +242,7 @@ program status reports.
 | `Markdown`     | Rendered or source Markdown with nested lists, tables, code, and code-block renderers; streamed text updates only what changed. |
 | `TerminalView` | A shell or any program on a pseudo-terminal, emulated natively, with scrollback and selection.                                  |
 | `ImageView`    | A picture, drawn with the Kitty protocol, Sixel, or half blocks.                                                                |
+| `VideoView`    | An MP4 file played natively, with audio, looping, and seeking; events report the position, the end, and failures.               |
 | `FrameBuffer`  | A grid of cells you draw into yourself, which native code shows every frame.                                                    |
 | `Custom<T>`    | A widget you paint yourself by implementing `Component`.                                                                        |
 
@@ -602,6 +604,7 @@ sh run.sh tasks       # a task list you move through and toggle
 sh run.sh native      # the native layer and host, without the framework
 sh run.sh workbench   # a native-layer build queue with live progress and a debug pane
 sh run.sh terminal    # your shell in a terminal widget, beside a notes field
+sh run.sh video       # a video player; `cargo run --example video -- file.mp4` plays your own file
 sh run.sh chat        # an SSH chat server on 127.0.0.1:2222: run `ssh -p 2222 localhost` per participant
 sh run.sh tasks static
 cargo run --release --example bench   # headless frame timings

@@ -698,6 +698,7 @@ fn parseProgramStatusReply(self: *Terminal, response: []const u8) void {
 
 pub fn checkEnvironmentOverrides(self: *Terminal) void {
     defer self.caps.unicode = self.selectWidthMethod();
+    defer self.caps.ansi256 = self.caps.ansi256 or self.caps.rgb;
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
     } else if (self.isXtversionZellij()) {
@@ -716,10 +717,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
 
     // Always just try to enable bracketed paste, even if it was reported as not supported
     self.caps.bracketed_paste = true;
-
-    if (self.caps.rgb) {
-        self.caps.ansi256 = true;
-    }
 
     if (self.opts.remote_mode == .remote) {
         self.remote = true;
@@ -743,38 +740,38 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.caps.ansi256 = true;
         }
     }
-    if (env_map.get("COLORTERM")) |colorterm| {
-        if (std.mem.eql(u8, colorterm, "truecolor") or
-            std.mem.eql(u8, colorterm, "24bit"))
-        {
-            self.caps.rgb = true;
-            self.caps.ansi256 = true;
-        }
+    if (self.insideScreen()) {
+        // Screen drops 24-bit colors unless its `truecolor` setting is on, and an inherited COLORTERM cannot tell.
+        self.caps.rgb = false;
+        self.caps.ansi256 = true;
+    } else if (env_map.get("COLORTERM")) |colorterm| {
+        if (std.mem.eql(u8, colorterm, "truecolor") or std.mem.eql(u8, colorterm, "24bit")) self.caps.rgb = true;
     }
-    if (self.identityEnv() == null) return;
-
+    // The explicit override, for screen with `truecolor on` or a terminal that answers no query.
+    const force_truecolor = env_map.get("OPENTUI_FORCE_TRUECOLOR") orelse "";
+    if (std.mem.eql(u8, force_truecolor, "1") or std.mem.eql(u8, force_truecolor, "true")) self.caps.rgb = true;
+    // A remote client's environment names only GNU screen, which answers no query: TERM forwarded by ssh, or STY.
+    const remote_env = self.identityEnv() == null;
     if (!self.term_info.from_xtversion) {
-        if (env_map.get("TMUX")) |_| {
+        if (!remote_env and env_map.get("TMUX") != null) {
             self.multiplexer = .tmux;
             self.caps.explicit_cursor_positioning = true;
-        } else if (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null) {
+        } else if (!remote_env and (env_map.get("ZELLIJ") != null or env_map.get("ZELLIJ_SESSION_NAME") != null or env_map.get("ZELLIJ_PANE_ID") != null)) {
             self.multiplexer = .zellij;
             if (self.term_info.name_len == 0) {
                 const name = "Zellij";
                 @memcpy(self.term_info.name[0..name.len], name);
                 self.term_info.name_len = name.len;
             }
-        } else if (env_map.get("STY") != null) {
+        } else if (self.insideScreen()) {
             self.multiplexer = .screen;
             self.skip_graphics_query = true;
             self.caps.explicit_cursor_positioning = true;
-        } else if (env_map.get("TERM")) |term| {
+            self.caps.osc52 = true;
+        } else if (!remote_env) {
+            const term = env_map.get("TERM") orelse "";
             if (std.mem.startsWith(u8, term, "tmux")) {
                 self.multiplexer = .tmux;
-                self.caps.explicit_cursor_positioning = true;
-            } else if (std.mem.startsWith(u8, term, "screen")) {
-                self.multiplexer = .screen;
-                self.skip_graphics_query = true;
                 self.caps.explicit_cursor_positioning = true;
             }
             if (std.mem.find(u8, term, "alacritty") != null) {
@@ -782,6 +779,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             }
         }
     }
+    if (remote_env) return;
 
     if (env_map.get("TERM")) |term| {
         self.applyNotificationHeuristic(term);
@@ -862,7 +860,6 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
 
     if (env_map.get("WT_SESSION") != null) {
         self.caps.rgb = true;
-        self.caps.ansi256 = true;
         if (builtin.os.tag == .windows and !self.term_info.from_xtversion and self.multiplexer == .none) {
             self.caps.hyperlinks = true;
         }
@@ -945,7 +942,7 @@ pub fn checkEnvironmentOverrides(self: *Terminal) void {
             self.caps.osc52 = true;
         }
 
-        if (!self.caps.osc52 and (self.isInTmux() or self.isInScreen() or env_map.get("STY") != null)) {
+        if (!self.caps.osc52 and (self.isInTmux() or env_map.get("STY") != null)) {
             self.caps.osc52 = true;
         }
 

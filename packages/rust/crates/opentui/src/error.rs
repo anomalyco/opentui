@@ -137,6 +137,7 @@ statuses! {
     ImageBusy = OT_IMAGE_BUSY: "image busy",
     AudioDecodeFailed = OT_AUDIO_DECODE_FAILED: "audio decoding failed",
     AudioDeviceFailed = OT_AUDIO_DEVICE_FAILED: "audio device failed",
+    VideoFailed = OT_VIDEO_FAILED: "video failed",
 }
 
 pub(crate) fn check(operation: &'static str, code: sys::ot_status) -> Result<()> {
@@ -166,7 +167,7 @@ mod tests {
             let status = Status::from_code(code);
             assert_eq!(status.code(), code);
             let named = !matches!(status, Status::Unknown(_));
-            let known = (-28..=-1).contains(&code) || (-47..=-40).contains(&code) || (-62..=-61).contains(&code);
+            let known = (-28..=-1).contains(&code) || (-47..=-40).contains(&code) || (-62..=-60).contains(&code);
             assert_eq!(named, known, "status {code}");
         }
     }

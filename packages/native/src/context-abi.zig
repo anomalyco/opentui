@@ -1322,7 +1322,7 @@ pub fn ot_session_control(
     const argument_max: u32 = switch (options.kind) {
         c.OT_CONTROL_MOUSE => @backingInt(@import("session.zig").MouseMode.motion),
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
-        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => 1,
+        c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, c.OT_CONTROL_QUERY_THEME_COLORS, c.OT_CONTROL_PALETTE_QUERY => 1,
         else => 0,
     };
     if ((!payload and byte_count != 0) or options.argument > argument_max) return sessionError(owner, error.InvalidOptions);
@@ -1334,10 +1334,10 @@ pub fn ot_session_control(
         c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => .{ .kitty_keyboard_flags = @intCast(options.argument) },
         c.OT_CONTROL_RESTORE_MODES => .restore_modes,
         c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .{ .query_pixel_resolution = options.argument != 0 },
-        c.OT_CONTROL_QUERY_THEME_COLORS => .query_theme_colors,
+        c.OT_CONTROL_QUERY_THEME_COLORS => .{ .query_theme_colors = options.argument != 0 },
         c.OT_CONTROL_RESET_BACKGROUND => .reset_background,
         c.OT_CONTROL_END_REPLY_SENTINEL => .end_reply_sentinel,
-        c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = bytes },
+        c.OT_CONTROL_PALETTE_QUERY => .{ .palette_query = .{ .bytes = bytes, .sentinel = options.argument != 0 } },
         c.OT_CONTROL_CURSOR => blk: {
             if (bytes.len != @sizeOf(c.ot_session_cursor_update)) return sessionError(owner, error.InvalidOptions);
             var update: c.ot_session_cursor_update = undefined;
@@ -3436,8 +3436,8 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
             .{ c.OT_CONTROL_CAPABILITY_RESPONSE, 0, "\x1b[?0u" }, .{ c.OT_CONTROL_TITLE, 0, "t" },
             .{ c.OT_CONTROL_MOUSE, 2, "" },                       .{ c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, 31, "" },
             .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 1, "" },
-            .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
-            .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
+            .{ c.OT_CONTROL_QUERY_THEME_COLORS, 1, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
+            .{ c.OT_CONTROL_PALETTE_QUERY, 1, "\x1b]10;?\x07" },
             .{ c.OT_CONTROL_PROGRAM_STATUS, 0, programStatus(.{
                 .state = c.OT_PROGRAM_STATE_BLOCKED,
                 .kind = c.OT_PROGRAM_KIND_AUTH,

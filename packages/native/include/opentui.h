@@ -2388,7 +2388,10 @@ typedef struct ot_session_terminal_options {
 #define OT_CONTROL_END_REPLY_SENTINEL UINT32_C(12)
 
 /* argument is 0/1/2 (disabled/drag/motion) for MOUSE, 0..31 for Kitty flags,
- * 0/1 for QUERY_PIXEL_RESOLUTION (1 appends the DA1 sentinel), and zero otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
+ * 0/1 for QUERY_PIXEL_RESOLUTION, QUERY_THEME_COLORS and PALETTE_QUERY (1 appends
+ * the DA1 sentinel, after the validated palette queries in the same packet; a
+ * tmux-wrapped query's replies trail tmux's own DA1, so it takes 0), and zero
+ * otherwise. CAPABILITY_RESPONSE, TITLE, CURSOR, PALETTE_QUERY, and
  * PROGRAM_STATUS accept payload bytes. reserved must be zero. END_REPLY_SENTINEL,
  * accepted in every open phase, turns REPLY_SENTINEL off for good once a DA1
  * reply never came: later Kitty keyboard pushes send no CSI ? u query. */

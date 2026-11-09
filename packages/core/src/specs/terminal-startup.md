@@ -23,7 +23,7 @@ This spec describes the startup flow for `createCliRenderer()` with `testing !==
 
 7. `setupTerminal()` immediately reads initial native capabilities with `getTerminalCapabilities()`. At this point environment-derived capabilities are known, but async terminal responses may not have arrived yet.
 
-8. `setupTerminal()` starts a 5000ms capability timeout. When it fires, startup capability parsing is disabled, the capability handler is removed, and any `XTVERSION` waiters are released.
+8. `setupTerminal()` admits the startup reply batch. It ends at its DA1 reply in sentinel mode, otherwise at a 5000ms backstop after its output drained. Its end disables startup capability parsing and releases any `XTVERSION` waiters.
 
 9. Mouse and split-footer startup cursor seeding are initialized when configured.
 
@@ -39,9 +39,9 @@ This spec describes the startup flow for `createCliRenderer()` with `testing !==
 
     In tmux, special color queries use only plain OSC 10/11/12. tmux has handlers for these and no OSC 13-17/19 handlers or reply routing, so DCS passthrough does not help those queries.
 
-14. Palette detection uses a hard timeout plus an idle timeout. The idle timeout finishes detection after a short period of silence after palette queries, including when follow-up palette queries produce no responses.
+14. With the native parser and no missed DA1 reply (sentinel mode), outside tmux `< 3.6`, palette detection writes one packet of OSC 4, OSC 10-19 and DA1, and ends at the DA1 reply or the caller's timeout. Otherwise it uses a hard timeout plus an idle timeout. The idle timeout finishes detection after a short period of silence after palette queries, including when follow-up palette queries produce no responses.
 
-15. When a palette result is detected, `PALETTE` is emitted if listeners exist and the detected palette signature changed since the last palette event.
+15. When a palette result is published, `PALETTE` is emitted if listeners exist and any published color changed since the last palette event. In sentinel mode a reply that comes after its batch revises the published palette, unless the palette cache was cleared since that batch began; it is published, and emitted, only when it changes a color.
 
 16. When a palette result is detected and native palette state is useful, `syncNativePaletteState()` publishes the palette to native. It increments the palette epoch only when the normalized palette signature changes.
 

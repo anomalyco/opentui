@@ -17,12 +17,12 @@ runs:
       with:
         bun-version: 1.4.1
 
-    # The bottle holds the files of the npm package, without libopentui.a.
+    # The bottle holds the files of the npm package, without libopentui.a. A miss restores the FFmpeg cache that
+    # Core's jobs save, so the library built below has video for tests/video.rs.
     - id: bottle
       uses: ./.github/actions/restore-native-host-bottle
       with:
         zig-version: ${{ env.ZIG_VERSION }}
-        ffmpeg: false
 
     # No wait for "Build Native Libraries", which a Rust-only pull request skips: build this runner's library instead.
     - if: steps.bottle.outputs.cache-hit != 'true'
@@ -31,7 +31,8 @@ runs:
         zig-version: ${{ env.ZIG_VERSION }}
         kind: lib
 
-    # Without FFmpeg the library has no video, which the crates do not use. A host build must not save the bottle.
+    # Without a restored FFmpeg prefix the library has no video, and the video tests skip. A host build must not save
+    # the bottle.
     - name: Build the native library
       if: steps.bottle.outputs.cache-hit != 'true'
       shell: bash

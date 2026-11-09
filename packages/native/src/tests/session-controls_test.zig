@@ -20,7 +20,7 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
     const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
     defer f.deinit();
     const unattached = try f.owner.createSession(transport);
-    try testing.expectError(error.RendererNotAttached, (try f.owner.raw().getSession(unattached)).control(.query_theme_colors));
+    try testing.expectError(error.RendererNotAttached, (try f.owner.raw().getSession(unattached)).control(.{ .query_theme_colors = false }));
     const commands = [_]session.Control{
         .{ .capability_response = "\x1b[?0u" },
         .{ .title = "title" },
@@ -28,7 +28,7 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .kitty_keyboard_flags = 31 },
         .restore_modes,
         .{ .query_pixel_resolution = false },
-        .query_theme_colors,
+        .{ .query_theme_colors = false },
         .reset_background,
         .{ .program_status = .{ .state = .working } },
     };
@@ -142,7 +142,7 @@ test "Session controls preserve rejected drafts and leave restoration capacity u
         .{ .title = "rejected" },
         .restore_modes,
         .{ .query_pixel_resolution = false },
-        .query_theme_colors,
+        .{ .query_theme_colors = false },
         .reset_background,
         .{ .program_status = .{ .state = .done } },
     }) |command| {
@@ -226,14 +226,16 @@ test "Session controls bound input and output without allocation after attachmen
     try testing.expect(f.cli.terminal.caps.osc52 and f.cli.terminal.caps.kitty_graphics);
     try testing.expect(f.cli.terminal.caps.sixel and f.cli.terminal.caps.notifications);
     try testing.expect(f.cli.terminal.caps.program_status);
-    for ([_]bool{ false, true }) |sentinel| {
-        try f.value.control(.{ .query_pixel_resolution = sentinel });
-        const sent = try f.drain(&bytes);
-        try testing.expectEqualStrings(ansi.ANSI.queryPixelSize, sent[0..ansi.ANSI.queryPixelSize.len]);
-        try testing.expectEqualStrings(if (sentinel) ansi.ANSI.primaryDeviceAttrs else "", sent[ansi.ANSI.queryPixelSize.len..]);
+    // The sentinel appends one DA1 to the packet; without it the bytes are unchanged.
+    for ([_]struct { session.Control, []const u8 }{
+        .{ .{ .query_pixel_resolution = false }, ansi.ANSI.queryPixelSize },
+        .{ .{ .query_pixel_resolution = true }, ansi.ANSI.queryPixelSize ++ ansi.ANSI.primaryDeviceAttrs },
+        .{ .{ .query_theme_colors = false }, ansi.ANSI.oscThemeQueries },
+        .{ .{ .query_theme_colors = true }, ansi.ANSI.oscThemeQueries ++ ansi.ANSI.primaryDeviceAttrs },
+    }) |case| {
+        try f.value.control(case[0]);
+        try testing.expectEqualStrings(case[1], try f.drain(&bytes));
     }
-    try f.value.control(.query_theme_colors);
-    try testing.expectEqualStrings(ansi.ANSI.oscThemeQueries, try f.drain(&bytes));
     try f.owner.beginSessionClose(f.id);
     _ = try f.driveOutput(&now_ns, .restored, &bytes, 32);
     try testing.expectEqual(allocated, failing.allocated_bytes);

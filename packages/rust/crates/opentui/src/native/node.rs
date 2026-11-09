@@ -22,6 +22,8 @@ pub enum NodeKind {
     /// A shared text buffer view bound with `ot_scene_set_text_view`.
     TextView,
     Image,
+    /// A video player, opened with [`Node::video_open`].
+    Video,
 }
 
 impl NodeKind {
@@ -36,6 +38,7 @@ impl NodeKind {
             Self::Custom => sys::OT_SCENE_CUSTOM,
             Self::TextView => sys::OT_SCENE_TEXT_VIEW,
             Self::Image => sys::OT_SCENE_IMAGE,
+            Self::Video => sys::OT_SCENE_VIDEO,
         }
     }
 }

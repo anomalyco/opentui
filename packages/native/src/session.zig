@@ -198,6 +198,13 @@ pub const ProgramStatus = struct {
     message: []const u8 = "",
 };
 
+/// Complete read-only OSC palette queries, optionally wrapped for tmux.
+pub const PaletteQuery = struct {
+    bytes: []const u8,
+    /// Appends DA1 after the validated queries, in the same packet.
+    sentinel: bool = false,
+};
+
 /// Byte slices are borrowed for this call only. Replies must contain complete
 /// 7-bit ASCII CSI, DCS, OSC, or APC capability responses, not input-stream chunks.
 pub const Control = union(enum) {
@@ -212,9 +219,9 @@ pub const Control = union(enum) {
     query_pixel_resolution: bool,
     /// The host stopped waiting for DA1 after a miss, so later pushes send no Kitty keyboard query.
     end_reply_sentinel,
-    query_theme_colors,
-    /// Complete read-only OSC palette queries, optionally wrapped for tmux.
-    palette_query: []const u8,
+    /// True appends DA1, the sentinel that ends this query batch.
+    query_theme_colors: bool,
+    palette_query: PaletteQuery,
     reset_background,
     /// Desired cursor state only; the frame encoder owns output admission.
     cursor: CursorOptions,
@@ -755,7 +762,7 @@ pub const Session = struct {
             .kitty_keyboard_flags => |flags| {
                 if (flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
             },
-            .palette_query => |bytes| try validatePaletteQuery(bytes),
+            .palette_query => |query| try validatePaletteQuery(query.bytes),
             .program_status => |status| try validateProgramStatus(status),
             else => {},
         }
@@ -1191,8 +1198,14 @@ pub const Session = struct {
                 try writer.writeAll(ansi.ANSI.queryPixelSize);
                 if (sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
             },
-            .query_theme_colors => try candidate.queryThemeColors(writer),
-            .palette_query => |bytes| try writer.writeAll(bytes),
+            .query_theme_colors => |sentinel| {
+                try candidate.queryThemeColors(writer);
+                if (sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
+            },
+            .palette_query => |query| {
+                try writer.writeAll(query.bytes);
+                if (query.sentinel) try writer.writeAll(ansi.ANSI.primaryDeviceAttrs);
+            },
             .reset_background => try writer.writeAll(ansi.ANSI.resetTerminalBgColor),
             .cursor, .end_reply_sentinel => unreachable,
             .program_status => |status| writeProgramStatus(writer, status),
@@ -1255,7 +1268,7 @@ pub const Session = struct {
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
                     try candidate.exitAltScreen(writer);
-                } else if (builtin.os.tag == .windows and progress.screen_claimed and
+                } else if (builtin.os.tag == .windows and candidate.opts.remote_mode != .remote and progress.screen_claimed and
                     !value.useAlternateScreen and value.clearOnShutdown and value.renderOffset == 0)
                 {
                     try writer.writeByte('\r');

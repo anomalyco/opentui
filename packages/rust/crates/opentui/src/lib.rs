@@ -12,8 +12,8 @@
 //!   [`Slider`](widget::Slider), [`ScrollBox`](widget::ScrollBox), [`Table`](widget::Table),
 //!   [`TextTable`](widget::TextTable), [`Code`](widget::Code), [`LineNumbers`](widget::LineNumbers),
 //!   [`Diff`](widget::Diff), [`Markdown`](widget::Markdown), [`TerminalView`](widget::TerminalView),
-//!   [`ImageView`](widget::ImageView), [`FrameBuffer`](widget::FrameBuffer), and [`Custom`](widget::Custom) for your
-//!   own.
+//!   [`ImageView`](widget::ImageView), [`VideoView`](widget::VideoView), [`FrameBuffer`](widget::FrameBuffer), and
+//!   [`Custom`](widget::Custom) for your own.
 //! - [`post`] has post-processing: color matrices, filters, and animated effects for a widget's area or the screen.
 //! - [`pty`] runs programs on pseudo-terminals, for a [`TerminalView`](widget::TerminalView) or on their own.
 //! - [`testing`] runs apps without a terminal for tests.
@@ -82,7 +82,7 @@ pub mod prelude {
         AnyWidget, Code, Column, ColumnWidth, Component, Container, Content, Custom, Diff, DiffView, EditorAction,
         ExtmarkOptions, FrameBuffer, ImageView, Input, LineNumbers, Markdown, Painter, ScrollAction, ScrollBox, Select,
         SelectAction, SelectOption, Slider, SliderAction, TabSelect, TabSelectAction, Table, TableAction, TerminalView,
-        Text, TextTable, Textarea, View, Widget,
+        Text, TextTable, Textarea, VideoEvent, VideoView, View, Widget,
     };
     pub use crate::{Error, Result};
 }

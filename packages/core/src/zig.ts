@@ -832,13 +832,13 @@ export interface NativeInputDrain {
 
 export type NativeSessionControl =
   | { kind: "capability-response"; bytes: Uint8Array }
-  | { kind: "palette-query"; bytes: Uint8Array }
+  | { kind: "palette-query"; bytes: Uint8Array; sentinel?: boolean }
   | { kind: "title"; title: string }
   | { kind: "mouse"; mode: "disabled" | "drag" | "motion" }
   | { kind: "kitty-keyboard-flags"; flags: number }
   | { kind: "program-status"; status: ProgramStatus }
-  | { kind: "query-pixel-resolution"; sentinel?: boolean }
-  | { kind: "restore-modes" | "query-theme-colors" | "reset-background" | "end-reply-sentinel" }
+  | { kind: "query-pixel-resolution" | "query-theme-colors"; sentinel?: boolean }
+  | { kind: "restore-modes" | "reset-background" | "end-reply-sentinel" }
 
 export interface NativeSessionCursorOptions extends CursorStyleOptions {
   position?: { x: number; y: number; visible: boolean }
@@ -6891,6 +6891,7 @@ export class FFIRenderLib {
         break
       case "palette-query":
         record[kind] = nativeConstants.OT_CONTROL_PALETTE_QUERY
+        record[layout.fields.argument.offset / 4] = command.sentinel ? 1 : 0
         bytes = sessionBytes(command.bytes, "Session palette query length")
         break
       case "title": {
@@ -6930,6 +6931,7 @@ export class FFIRenderLib {
         break
       case "query-theme-colors":
         record[kind] = nativeConstants.OT_CONTROL_QUERY_THEME_COLORS
+        record[layout.fields.argument.offset / 4] = command.sentinel ? 1 : 0
         break
       case "reset-background":
         record[kind] = nativeConstants.OT_CONTROL_RESET_BACKGROUND
