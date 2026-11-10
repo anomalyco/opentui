@@ -4,7 +4,6 @@ import { SyntaxStyle } from "../syntax-style.js"
 import { getTreeSitterClient, TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { TextBufferRenderable, type TextBufferOptions } from "./TextBufferRenderable.js"
 import type { NativeRenderableIntegration } from "../Renderable.js"
-import { ScrollBoxRenderable } from "./ScrollBox.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import type { TextChunk } from "../text-buffer.js"
@@ -150,7 +149,7 @@ export class CodeRenderable extends TextBufferRenderable {
     this.runMutation(() => {
       // Streaming keeps the shown highlight until the next one lands (_hadInitialContent implies _streaming).
       if (this._hadInitialContent && this._shouldRenderTextBuffer && this._filetype && !this._drawUnstyledText) {
-        if (!ScrollBoxRenderable._skips(this)) {
+        if (this._ctx.nativeScene.reachesHooks(this)) {
           this._content = value
           this.invalidateHighlights()
           this.requestRender()

@@ -693,6 +693,10 @@ typedef void (*ot_scene_measure_callback)(uint64_t context_id, uint32_t slot, ui
     float width, uint32_t width_mode, float height, uint32_t height_mode, float *out_size);
 ot_status ot_scene_set_measure(ot_context *, const ot_handle *node, ot_scene_measure_callback);
 ot_status ot_scene_has_measure(ot_context *, const ot_handle *node, uint32_t *out_enabled);
+/* out_reached is 1 when a frame's hooks reach the node: it is attached under the root, it and
+ * its ancestors are shown, and each filtering ancestor's latest child selection took its branch
+ * (a child none took since it moved in was not). A node they do not reach gets no hook calls. */
+ot_status ot_scene_reaches_hooks(ot_context *, const ot_handle *node, uint32_t *out_reached);
 ot_status ot_scene_mark_dirty(ot_context *, const ot_handle *node);
 /* Use OT_STYLE_* groups/kinds, OT_EDGE_* (or OT_GUTTER_* for GAP), and OT_UNIT_*.
  * Only OT_STYLE_DIMENSION accepts OT_STYLE_DISABLE_FLEX_SHRINK, which disables
