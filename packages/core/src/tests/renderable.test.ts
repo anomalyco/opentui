@@ -820,7 +820,7 @@ describe("Renderable - Child Management", () => {
     for (const [input, warnings] of rows) {
       for (const call of [() => dynParent.add(input), () => dynParent.insertBefore(input, anchor)]) {
         warnSpy.mockClear()
-        expect(call()).toBe(-1)
+        expect<unknown>(call()).toBe(-1)
         expect(warnSpy).toHaveBeenCalledTimes(warnings)
       }
     }
@@ -830,6 +830,15 @@ describe("Renderable - Child Management", () => {
     const child = new TestRenderable(testRenderer, { id: "child" })
     expect(() => dynParent.insertBefore(child, {})).toThrow("Anchor must be a Renderable")
     expect(parent.insertBefore(child)).toBe(1)
+
+    // TextRenderable takes text children only; tsconfig.node-test.json checks these rows.
+    const text = new TextRenderable(testRenderer, {})
+    // @ts-expect-error a layout renderable is not a text child
+    expect(() => text.add(anchor)).toThrow()
+    // @ts-expect-error a number is not a text child
+    expect(() => text.add(42)).toThrow()
+    // @ts-expect-error an anchor must be a TextNodeRenderable
+    expect(() => text.insertBefore("hi", {})).toThrow()
   })
 
   test("can change renderable id and updates parent mapping", () => {
