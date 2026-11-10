@@ -1266,6 +1266,23 @@ test "Yoga incremental solves of measured leaves with margins equal fresh solves
         yoga.yogaNodeGetComputedLayout(root, layout);
     }
     try std.testing.expectEqual(root_layouts[1], root_layouts[0]);
+    // A text stretched or at most under a root that steps by less than 1e-4 across its wrap at
+    // 10 - 1e-4, either way, as fresh.
+    for ([_][2]f32{ .{ 9.99988, 9.99995 }, .{ 9.99995, 9.99988 } }) |widths| for ([_]u32{ api.OT_ALIGN_FLEX_START, api.OT_ALIGN_STRETCH }) |align_items| {
+        var layouts: [2]yoga.ExternalYogaLayout = undefined;
+        for (&layouts, [_][]const f32{ &widths, widths[1..] }) |*layout, steps| {
+            var text: Leaf = .{ .len = 40 };
+            const root = yoga.yogaNodeCreateWithConfig(config);
+            defer yoga.yogaNodeFreeRecursive(root);
+            const leaf = yoga.yogaNodeCreateWithConfig(config);
+            yoga.yogaNodeInsertChild(root, leaf, 0);
+            try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(leaf, &text, &Leaf.measure, true));
+            yoga.yogaNodeStyleSetEnum(root, @backingInt(yoga.YogaEnumKind.align_items), align_items);
+            for (steps) |width| yoga.yogaNodeCalculateLayout(root, width, std.math.nan(f32), ltr);
+            yoga.yogaNodeGetComputedLayout(leaf, layout);
+        }
+        try std.testing.expectEqual(layouts[1], layouts[0]);
+    };
     // Static boxes centered on both axes over an absolute child at left 0, top 0, as the root grows by a cell.
     var chain_layouts: [2][4]yoga.ExternalYogaLayout = undefined;
     for (&chain_layouts, [_]f32{ 10, 11 }) |*layouts, first| {

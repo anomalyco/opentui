@@ -92,9 +92,13 @@ for (const kind of ["text", "textarea"] as const) {
     })
 
     test.each([
-      ["exact", 10, 10, "stretch"],
-      ["stricter", 3.9999998, 2.999999, "flex-start"],
-    ] as const)("lays out as a fresh tree after an at-most size is reused (%s)", async (_, first, width, align) => {
+      ["exact", 10, "flex-start", 10, "stretch"],
+      ["stricter", 3.9999998, "flex-start", 2.999999, "flex-start"],
+      // Within 1e-4 of each other across the wrap at 10 - 1e-4.
+      ["at most across a wrap", 9.99988, "flex-start", 9.99995, "flex-start"],
+      ["exact across a wrap", 9.99988, "stretch", 9.99995, "stretch"],
+      ["stricter across a wrap", 9.99995, "flex-start", 9.99988, "flex-start"],
+    ] as const)("lays out as a fresh tree after a size is reused (%s)", async (_, first, from, width, align) => {
       const build = (w: number, alignItems: "flex-start" | "stretch") => {
         const parent = new BoxRenderable(renderer, { width: w, height: 2, alignItems })
         const node = create("a".repeat(40), { wrapMode: "char", flexShrink: 0 })
@@ -102,7 +106,7 @@ for (const kind of ["text", "textarea"] as const) {
         renderer.root.add(parent)
         return { parent, node }
       }
-      const tree = build(first, "flex-start")
+      const tree = build(first, from)
       await renderOnce()
       Object.assign(tree.parent, { width, alignItems: align })
       await renderOnce()
@@ -372,6 +376,39 @@ describe("measured text stays inside its parent's rounded content box", () => {
       ],
       [[5, { padding: 2 }]],
     ],
+    [
+      // Absolute, so the fresh copy rounds from the same origin.
+      "a cached measurement at a height within 1e-4 across a half cell",
+      { position: "absolute", height: 9.49988, alignItems: "flex-start" },
+      [[-1, 1, { content: "0\n1\n2\n3\n4\n5\n6\n7\n8\n9", flexGrow: 1, flexBasis: 0 }]],
+      [[-1, { height: 9.49995 }]],
+    ],
+    [
+      // 40 cells and the padding add up to 64 exactly; 63.9999008 leaves 39.999897 cells for the text.
+      "a max-content measurement within 1e-4 of an at-most width across a wrap",
+      { flexDirection: "row", overflow: "scroll", alignItems: "flex-start" },
+      [[-1, 40, { paddingLeft: 24.000003814697266 }]],
+      [[-1, { flexDirection: "column", overflow: "visible", width: 63.999900817871094 }]],
+    ],
+    // A large flexShrink ratio moves a box by less than 1e-4 across the wrap at N - 1e-4 as the holder resizes.
+    ...(
+      [
+        [{ width: 80, height: 3 }, 10, 10, 8000, [130]],
+        [{ width: 80 }, 4, 132, 2000, [79, 80]],
+      ] as const
+    ).map(
+      ([size, width, length, flexShrink, widths]): [string, BoxOptions, Spec, [number, BoxOptions & TextOptions][]] => [
+        `a cached measurement at a width within 1e-4 across a wrap at ${width}`,
+        { ...size },
+        [
+          [-1, "row", { width: "100%", alignItems: "flex-start" }],
+          [0, "column", { width, minWidth: 0, flexShrink: 1, alignItems: "flex-start" }],
+          [1, length, { flexShrink: 0 }],
+          [0, "column", { width: "100%", flexShrink, height: 1 }],
+        ],
+        widths.map((w) => [-1, { width: w }]),
+      ],
+    ),
   ])("a reduced random tree lays out as a fresh one: %s", async (_, size, spec, steps) => {
     const build = () => {
       const holder = box({ ...size, flexShrink: 0 })
