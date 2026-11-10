@@ -468,28 +468,65 @@ fn widgets_measure_text_with_the_width_method_a_reply_switches_to() {
 // Ghostty replies to XTVERSION and the Kitty graphics query, as Core repaints on each capability reply.
 // Actual: a reply forced the next frame but did not ask for one, so an app with nothing else to draw kept its
 // first-frame half blocks until some unrelated change painted again.
+// Expected too: the app asks for the pixel size (`CSI 14 t`) at setup and after a resize, as Core does, and a large
+// image goes out as a copy at its placement's pixel size. Actual: it never asked, so the full upload of a 1290x810
+// noise image was over the output budget and the image drew half blocks for good.
 #[test]
 fn images_switch_to_kitty_graphics_when_the_terminal_reports_support_after_the_first_frame() {
+    use opentui::native::{Image, ImageFit};
+    use opentui::widget::ImageView;
     let options = RemoteOptions {
         environment: vec![("TERM".into(), "xterm-256color".into()), ("TERM_PROGRAM".into(), "ghostty".into())],
         ..RemoteOptions::default()
     };
-    let mut client = Client::start(options, quiet(), |app| {
+    // Without the capability window, only the pixel size query makes the parser wait for the rest of a reply.
+    let mut app_options = quiet();
+    app_options.host.capability_window = Duration::ZERO;
+    let mut client = Client::start(options, app_options, |app| {
         let red = [255u8, 0, 0, 255].repeat(16 * 16);
-        let image = opentui::native::Image::from_rgba(app.session().context(), 16, 16, &red).unwrap();
-        app.root().add(&opentui::widget::ImageView::new(app).size(8, 4).image(Some(image)));
-        app.on_key(|cx, key| {
-            if key.matches("q") {
-                cx.quit();
-            }
-        });
+        let image = Image::from_rgba(app.session().context(), 16, 16, &red).unwrap();
+        let mut seed = 1u32;
+        let noise: Vec<u8> = (0..1290 * 810 * 4)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (seed >> 16) as u8
+            })
+            .collect();
+        let large = Image::from_rgba(app.session().context(), 1290, 810, &noise).unwrap();
+        sizes(app);
+        app.root()
+            .add(&ImageView::new(app).size(8, 4).image(Some(image)))
+            .add(&ImageView::new(app).fit(ImageFit::Cover).size(16, 8).image(Some(large)));
     });
     client.wait_for("\x1b_Gi=31337");
     // The first frame draws half blocks: no reply has come yet.
     client.wait_for("\x1b[?2026l");
     assert!(!client.text().contains("\x1b_Ga="), "{:?}", client.text());
-    client.send(b"\x1bP>|ghostty 1.2.3\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[?62;22c");
-    client.wait_for("\x1b_Ga=t");
+    client.take_until("the pixel size query", |client| client.text().contains("\x1b[14t"));
+    // The setup query's window has passed, so a resize asks again. Its reply comes after the late one for 80 columns,
+    // and wins as in Core: cells of 10x20 pixels make the 16x8 box 160x160, not 128x128.
+    client.link.resize(100, 30);
+    client.wait_for("\x1b[14t");
+    client.send(b"\x1bP>|ghostty 1.2.3\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[?62;22c\x1b[4;480;800t");
+    client.send(b"\x1b[4;600;1000t");
+    client.wait_for("s=160,v=160,");
+    let text = client.text();
+    let last = text.split(",s=").skip(1).filter(|size| !size.starts_with("16,v=16,")).last();
+    assert!(last.is_some_and(|size| size.starts_with("160,v=160,")), "the last copy is not 160x160: {text:?}");
+    // Cells of 10x30 pixels after two more resizes. The second comes while the first's query waits, whose reply then
+    // describes the width before it: the app asks again instead of sizing the image by it (137x240).
+    client.link.resize(120, 30);
+    client.wait_for("\x1b[14t");
+    client.link.resize(140, 30);
+    client.wait_for("Hello remote 140x30");
+    client.send(b"\x1b[4;900;1200t");
+    client.wait_for("\x1b[14t");
+    // A reply cut in two still answers it, not typed as keys.
+    client.send(b"\x1b[4;900;14");
+    std::thread::sleep(opentui::input::ESCAPE_TIMEOUT * 3);
+    client.send(b"00t");
+    client.wait_for("s=160,v=240,");
+    assert!(!client.text().contains("s=137,v=240,"), "{:?}", client.text());
     client.send(b"q");
     client.finish().expect("the app thread").expect("the app");
 }

@@ -247,6 +247,27 @@ fn footer_changes_wait_for_queued_rows_and_rows_join_at_the_tail_as_core() {
     );
 }
 
+// Expected: the terminal's pixel size divides by its own cells, not the footer's: cells of 10x20 pixels make a 16x4
+// image in the footer 160x80, not 160x320.
+#[test]
+fn a_footer_image_takes_its_cell_size_from_the_whole_terminal() {
+    use opentui::layout::{LayoutProperty, Length};
+    use opentui::native::{Image, ImageFit, ImageProtocol};
+    let mut harness = Harness::start_with(80, 24, 6, 1, None);
+    let image = Node::new(harness.host().session(), NodeKind::Image, 3).expect("create the image");
+    image.insert_into(&harness._nodes.0, 1).expect("add the image");
+    image.set_layout(LayoutProperty::FixedWidth(Length::Cells(16.0))).expect("size the image");
+    image.set_layout(LayoutProperty::FixedHeight(Length::Cells(4.0))).expect("size the image");
+    let pixels = Image::from_rgba(harness.host().context(), 400, 400, &[255; 400 * 400 * 4]).expect("make pixels");
+    image.set_image(Some(&pixels), ImageFit::Cover, ImageProtocol::Kitty).expect("show the pixels");
+    harness.link.send_input(b"\x1b[4;480;800t");
+    harness.frame();
+    let output = shown(&harness.link.take_output(usize::MAX));
+    let sizes: Vec<&str> = output.split(",s=").skip(1).map(|size| size.split(",i=").next().unwrap_or("")).collect();
+    assert_eq!(sizes, ["160,v=80"]);
+    harness.shutdown();
+}
+
 #[test]
 fn a_surface_commits_rows_as_they_settle_as_core() {
     compare(

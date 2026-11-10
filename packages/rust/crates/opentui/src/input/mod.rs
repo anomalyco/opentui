@@ -16,5 +16,5 @@ pub use keymap::{IntoShortcut, Keymap, ParseShortcutError, Shortcut};
 pub use parser::{ESCAPE_TIMEOUT, Expectations, Input, Parser};
 pub use reply::{
     OscColor, ThemeColor, is_capability_response, is_color_scheme_notice, is_cursor_report, is_device_attributes,
-    osc_color, theme_color,
+    osc_color, pixel_resolution, theme_color,
 };
