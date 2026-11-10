@@ -9,7 +9,7 @@ import {
 } from "../index.js"
 import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
-import { StdinParser } from "../lib/stdin-parser.js"
+import { NativeStdinParser } from "../lib/stdin-parser-native.js"
 import type { Renderable } from "../Renderable.js"
 import { CliRenderEvents, MouseEvent, type CliRendererErrorEvent } from "../renderer.js"
 import { allocateProportionalColumnWidths } from "../renderables/text-table-width.js"
@@ -853,7 +853,7 @@ function mouseCase(name: string, stdin: boolean): BenchmarkCase {
       if (stdin) {
         await renderOnce()
         renderer.stdin.emit("data", sequence)
-        const validationParser = new StdinParser({ armTimeouts: false })
+        const validationParser = new NativeStdinParser({ armTimeouts: false })
         try {
           validateSgrMove(validationParser, sequence)
         } catch (error) {
@@ -901,7 +901,7 @@ function validateYogaFixture(nodes: readonly BoxRenderable[]): void {
   }
 }
 
-function validateSgrMove(parser: StdinParser, sequence: Buffer): void {
+function validateSgrMove(parser: NativeStdinParser, sequence: Buffer): void {
   parser.push(sequence)
   const decoded = parser.read()
   const trailing = parser.read()

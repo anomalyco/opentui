@@ -1025,7 +1025,7 @@ pub fn setKittyKeyboard(self: *Terminal, tty: anytype, enable: bool, flags: u8) 
     self.state.kitty_keyboard_flags = if (enable) flags else 0;
     self.state.kitty_generation +%= 1;
     self.state.kitty_confirmed = false;
-    // Without the sentinel the legacy parser may read input, and it must see no new reply. A full queue
+    // Without the sentinel the host's parser does not hold split replies, so it must see no new reply. A full queue
     // means replies stopped; the push then stays unconfirmed.
     if (!enable or !self.reply_sentinel or self.state.kitty_query_count == kitty_queries_max) return;
     try tty.writeAll(ansi.ANSI.csiUQuery);

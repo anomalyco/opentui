@@ -3,20 +3,10 @@ import { Buffer } from "node:buffer"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { Clock, TimerHandle } from "./clock.js"
 import type { ScrollInfo } from "./parse.mouse.js"
-import { StdinParser, type StdinEvent, type StdinParserOptions } from "./stdin-parser.js"
 import conformance from "./stdin-parser.conformance.json" with { type: "json" }
-import { NativeStdinParser } from "./stdin-parser-native.js"
+import { NativeStdinParser, type NativeStdinParserOptions, type StdinEvent } from "./stdin-parser-native.js"
 
-// Every case runs against the legacy TypeScript parser and the native adapter.
-// Expected differences are the native parser's intentional changes, asserted explicitly;
-// tests of legacy-only hooks run for the legacy parser only.
-type Parser = StdinParser | NativeStdinParser
-type Implementation = { name: "legacy" | "native"; create: (options: StdinParserOptions) => Parser }
-const asLegacy = (parser: Parser): StdinParser => parser as StdinParser
-const IMPLEMENTATIONS: Implementation[] = [
-  { name: "legacy", create: (options) => new StdinParser(options) },
-  { name: "native", create: (options) => new NativeStdinParser(options) },
-]
+type Parser = NativeStdinParser
 
 type KeySnap = {
   type: "key"
@@ -33,7 +23,7 @@ type RespSnap = { type: "response"; protocol: string; sequence: string }
 type Snap = KeySnap | MouseSnap | PasteSnap | RespSnap
 
 const K_DEFAULTS = { ctrl: false, meta: false, shift: false, eventType: "press" }
-// The native parser's timeout is a constant 20 ms; the legacy parser is configured to match.
+// The parser's timeout is a constant 20 ms.
 const TEST_TIMEOUT_MS = 20
 type KOpts = { raw?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; eventType?: string }
 
@@ -138,10 +128,8 @@ function x10bytes(rawButton: number, x: number, y: number): number[] {
 
 type Case = [label: string, input: ChunkInput, expected: Snap[]]
 
-// Conformance vectors for the native parser port (issue 044); the JSON file's `format` field defines them.
-// The native parser passes every row; a row with an issue id is a todo for the legacy parser only.
-// packages/native/src/tests/input-parser_test.zig also runs every row against the parser alone.
-// `bun test --todo src/lib/stdin-parser.test.ts` also runs the todo rows: a todo row that passes fails that run.
+// Conformance vectors (issue 044); the JSON file's `format` field defines them. A row's issue id names the
+// record it pins. packages/native/src/tests/input-parser_test.zig also runs every row against the parser alone.
 type ConformanceContext = { kitty?: boolean; pending?: string[] }
 type ConformanceRow = [
   name: string,
@@ -158,8 +146,8 @@ const PENDING_QUERY = {
   pixel: ["pixelResolutionQueryActive"],
 } as const
 
-function conformanceContext({ kitty = false, pending = [] }: ConformanceContext = {}): StdinParserOptions {
-  const protocolContext: StdinParserOptions["protocolContext"] & {} = { kittyKeyboardEnabled: kitty }
+function conformanceContext({ kitty = false, pending = [] }: ConformanceContext = {}): NativeStdinParserOptions {
+  const protocolContext: NativeStdinParserOptions["protocolContext"] & {} = { kittyKeyboardEnabled: kitty }
   for (const query of pending) {
     const fields = PENDING_QUERY[query as keyof typeof PENDING_QUERY]
     if (!fields) throw new Error(`unknown pending query in conformance context: ${query}`)
@@ -184,25 +172,17 @@ function notation(event: Snap): string {
   }
 }
 
-function defineStdinParserSuite(impl: Implementation): void {
-  const native = impl.name === "native"
-  // Hooks the native adapter removed: CPR aborts, paused timeouts, pending-byte caps.
-  const legacyTest = (label: string, fn: () => void) => {
-    if (!native) test(label, fn)
-  }
-  /** Picks the expectation for this implementation where the native parser changes behavior. */
-  const either = <T>(legacy: T, nativeValue: T): T => (native ? nativeValue : legacy)
-
-  function createParser(options: StdinParserOptions = {}): Parser {
-    return impl.create({ armTimeouts: false, clock: new ManualClock(), ...options })
+describe("stdin parser", () => {
+  function createParser(options: NativeStdinParserOptions = {}): Parser {
+    return new NativeStdinParser({ armTimeouts: false, clock: new ManualClock(), ...options })
   }
 
-  function createTimedParser(options: StdinParserOptions = {}): { parser: Parser; clock: ManualClock } {
+  function createTimedParser(options: NativeStdinParserOptions = {}): { parser: Parser; clock: ManualClock } {
     const clock = new ManualClock()
-    return { parser: impl.create({ armTimeouts: true, clock, timeoutMs: TEST_TIMEOUT_MS, ...options }), clock }
+    return { parser: new NativeStdinParser({ armTimeouts: true, clock, ...options }), clock }
   }
 
-  function snapChunks(chunks: ChunkInput[], opts?: StdinParserOptions): Snap[] {
+  function snapChunks(chunks: ChunkInput[], opts?: NativeStdinParserOptions): Snap[] {
     const p = createParser(opts)
     try {
       for (const chunk of chunks) p.push(buf(chunk))
@@ -212,7 +192,7 @@ function defineStdinParserSuite(impl: Implementation): void {
     }
   }
 
-  function table(cases: Case[], opts?: StdinParserOptions) {
+  function table(cases: Case[], opts?: NativeStdinParserOptions) {
     for (const [label, input, expected] of cases) {
       test(label, () => {
         const p = createParser(opts)
@@ -227,7 +207,7 @@ function defineStdinParserSuite(impl: Implementation): void {
   }
 
   /** push each byte individually, assert same result as whole-chunk push */
-  function assertChunkInvariant(input: Uint8Array, opts?: StdinParserOptions) {
+  function assertChunkInvariant(input: Uint8Array, opts?: NativeStdinParserOptions) {
     const whole = createParser(opts)
     const split = createParser(opts)
     try {
@@ -241,7 +221,7 @@ function defineStdinParserSuite(impl: Implementation): void {
     }
   }
 
-  function runConformance(steps: ConformanceRow[1], options: StdinParserOptions): string[] {
+  function runConformance(steps: ConformanceRow[1], options: NativeStdinParserOptions): string[] {
     const { parser, clock } = createTimedParser(options)
     const out: string[] = []
     try {
@@ -256,7 +236,7 @@ function defineStdinParserSuite(impl: Implementation): void {
     }
   }
 
-  describe(`StdinParser (${impl.name})`, () => {
+  describe("NativeStdinParser", () => {
     describe("printable ASCII", () => {
       test("lowercase a-z", () => {
         const p = createParser()
@@ -916,14 +896,14 @@ function defineStdinParserSuite(impl: Implementation): void {
       test("legacy single high-byte on timeout", () => {
         const { parser, clock } = createTimedParser()
         try {
-          // Native waits for the rest of a UTF-8 lead without a deadline, until a byte that cannot continue it.
+          // The parser waits for the rest of a UTF-8 lead without a deadline, until a byte that cannot continue it.
           const key = k("i", { raw: "\x1bi", meta: true })
           parser.push(Uint8Array.from([0xe9]))
           expect(snap(parser)).toEqual([])
           clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual(either([key], []))
+          expect(snap(parser)).toEqual([])
           parser.push(Buffer.from("x"))
-          expect(snap(parser)).toEqual(either([k("x")], [key, k("x")]))
+          expect(snap(parser)).toEqual([key, k("x")])
         } finally {
           parser.destroy()
         }
@@ -932,13 +912,13 @@ function defineStdinParserSuite(impl: Implementation): void {
       test("high byte 0xFF on timeout → meta+backspace", () => {
         const { parser, clock } = createTimedParser()
         try {
-          // 0xFF - 128 = 0x7F = DEL, so ESC + DEL = meta+backspace. Native does not wait:
+          // 0xFF - 128 = 0x7F = DEL, so ESC + DEL = meta+backspace. The parser does not wait:
           // 0xFF cannot start a UTF-8 scalar.
           const key = k("backspace", { raw: "\x1b\x7f", meta: true })
           parser.push(Uint8Array.from([0xff]))
-          expect(snap(parser)).toEqual(either([], [key]))
+          expect(snap(parser)).toEqual([key])
           clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual(either([key], []))
+          expect(snap(parser)).toEqual([])
         } finally {
           parser.destroy()
         }
@@ -1366,32 +1346,6 @@ function defineStdinParserSuite(impl: Implementation): void {
         }
       })
 
-      legacyTest("recognizes every partial pixel resolution response prefix", () => {
-        const response = Buffer.from("\x1b[4;1080;1920t")
-
-        for (let split = 1; split < response.length; split++) {
-          const parser = createParser({ protocolContext: { pixelResolutionQueryActive: true } })
-          try {
-            parser.push(response.subarray(0, split))
-            expect(asLegacy(parser).hasPendingPixelResolutionResponse()).toBe(true)
-          } finally {
-            parser.destroy()
-          }
-        }
-      })
-
-      legacyTest("does not mistake unrelated pending input for a pixel resolution response", () => {
-        for (const input of ["a", "\x1b[A", "\x1b[3;1080;", "\x1b[4;1080:", "\x1b[4;;", "\x1b[4;1:2;3"]) {
-          const parser = createParser({ protocolContext: { pixelResolutionQueryActive: true } })
-          try {
-            parser.push(Buffer.from(input))
-            expect(asLegacy(parser).hasPendingPixelResolutionResponse()).toBe(false)
-          } finally {
-            parser.destroy()
-          }
-        }
-      })
-
       test("partial pixel resolution response flushes after timeout when no query is active", () => {
         const { parser, clock } = createTimedParser()
         try {
@@ -1399,103 +1353,6 @@ function defineStdinParserSuite(impl: Implementation): void {
           expect(snap(parser)).toEqual([])
           clock.advance(TEST_TIMEOUT_MS)
           expect(snap(parser)).toEqual([resp("unknown", "\x1b[4;1080")])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("separates a suspended lone escape from a later pixel resolution response", () => {
-        const parser = createParser({ protocolContext: { pixelResolutionQueryActive: true } })
-        try {
-          parser.push(Buffer.from("\x1b"))
-          asLegacy(parser).pausePendingTimeout()
-          asLegacy(parser).resumePendingTimeout()
-          parser.push(Buffer.from("\x1b[4;1080;1920t"))
-          expect(snap(parser)).toEqual([resp("csi", "\x1b[4;1080;1920t")])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("separates every suspended pixel response prefix from later input", () => {
-        const response = Buffer.from("\x1b[4;1080;1920t")
-
-        for (let split = 1; split < response.length; split++) {
-          const parser = createParser({ protocolContext: { pixelResolutionQueryActive: true } })
-          try {
-            parser.push(response.subarray(0, split))
-            asLegacy(parser).pausePendingTimeout()
-            asLegacy(parser).resumePendingTimeout()
-            parser.push(Buffer.from("a"))
-            expect(snap(parser)).toEqual([k("a", { raw: "a" })])
-          } finally {
-            parser.destroy()
-          }
-        }
-      })
-
-      legacyTest("query cancellation separates a suspended pixel prefix from later input", () => {
-        const parser = createParser({ protocolContext: { pixelResolutionQueryActive: true } })
-        try {
-          parser.push(Buffer.from("\x1b[4;1080"))
-          asLegacy(parser).pausePendingTimeout()
-          asLegacy(parser).resumePendingTimeout()
-          parser.updateProtocolContext({ pixelResolutionQueryActive: false })
-          parser.push(Buffer.from("a"))
-          expect(snap(parser)).toEqual([k("a", { raw: "a" })])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("reset restores a paused pending timeout", () => {
-        const { parser, clock } = createTimedParser()
-        try {
-          parser.push(Buffer.from("\x1b"))
-          asLegacy(parser).pausePendingTimeout()
-          parser.reset()
-          parser.push(Buffer.from("\x1b"))
-          clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("keeps consecutive suspended escapes pending until the pixel response arrives", () => {
-        const { parser, clock } = createTimedParser({ protocolContext: { pixelResolutionQueryActive: true } })
-        try {
-          parser.push(Buffer.from("\x1b"))
-          asLegacy(parser).pausePendingTimeout()
-          asLegacy(parser).resumePendingTimeout()
-          parser.push(Buffer.from("\x1b"))
-          asLegacy(parser).pausePendingTimeout()
-          asLegacy(parser).resumePendingTimeout()
-          clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual([])
-
-          parser.push(Buffer.from("\x1b[4;1080;1920t"))
-          expect(snap(parser)).toEqual([resp("csi", "\x1b[4;1080;1920t")])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("pending overflow clears suspended pixel response state", () => {
-        const { parser, clock } = createTimedParser({
-          maxPendingBytes: 8,
-          protocolContext: { pixelResolutionQueryActive: true },
-        })
-        try {
-          parser.push(Buffer.from("\x1b"))
-          asLegacy(parser).pausePendingTimeout()
-          asLegacy(parser).resumePendingTimeout()
-          parser.push(Buffer.from("[4;123456789"))
-          expect(snap(parser)).toEqual([resp("unknown", "\x1b[4;123456789")])
-
-          parser.push(Buffer.from("\x1b"))
-          clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
         } finally {
           parser.destroy()
         }
@@ -1592,14 +1449,14 @@ function defineStdinParserSuite(impl: Implementation): void {
         })
 
         try {
-          // Native folds every reply probe into one expectation (docs §11.3), so any CPR waits.
+          // The parser folds every reply probe into one expectation (docs §11.3), so any CPR waits.
           parser.push(Buffer.from("\x1b[24;80"))
           expect(snap(parser)).toEqual([])
           clock.advance(TEST_TIMEOUT_MS)
-          expect(snap(parser)).toEqual(either([resp("unknown", "\x1b[24;80")], []))
+          expect(snap(parser)).toEqual([])
 
           parser.push(Buffer.from("R"))
-          expect(snap(parser)).toEqual(either([k("r", { raw: "R", shift: true })], [resp("cpr", "\x1b[24;80R")]))
+          expect(snap(parser)).toEqual([resp("cpr", "\x1b[24;80R")])
         } finally {
           parser.destroy()
         }
@@ -1623,77 +1480,16 @@ function defineStdinParserSuite(impl: Implementation): void {
         }
       })
 
-      test("a startup CPR pending when its probe ends completes as a CPR reply unless aborted", () => {
-        for (const abort of [false, true]) {
-          const parser = createParser({ protocolContext: { startupCursorCprActive: true } })
-          try {
-            parser.push(Buffer.from("\x1b[24;80"))
-            expect(snap(parser)).toEqual([])
-            // Native has no abort: the stale reply stays a CPR reply, which the renderer ignores.
-            const aborted = abort && !native
-            if (aborted) asLegacy(parser).abortPendingStartupCursorCpr()
-            parser.updateProtocolContext({ startupCursorCprActive: false })
-            expect(snap(parser)).toEqual([])
-            parser.push(Buffer.from("R"))
-            expect(snap(parser)).toEqual(aborted ? [] : [resp("cpr", "\x1b[24;80R")])
-          } finally {
-            parser.destroy()
-          }
-        }
-      })
-
-      legacyTest("aborting a pending startup cursor CPR swallows a reply split after the CSI introducer", () => {
-        const parser = createParser({
-          protocolContext: { startupCursorCprActive: true },
-        })
-
-        try {
-          parser.push(Buffer.from("\x1b["))
-          expect(snap(parser)).toEqual([])
-          asLegacy(parser).abortPendingStartupCursorCpr()
-          parser.updateProtocolContext({ startupCursorCprActive: false })
-
-          parser.push(Buffer.from("24;80R"))
-          expect(snap(parser)).toEqual([])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("aborting a pending startup cursor CPR preserves explicit-width CPR replies", () => {
-        const parser = createParser({
-          protocolContext: {
-            startupCursorCprActive: true,
-            explicitWidthCprActive: true,
-          },
-        })
-
-        try {
-          parser.push(Buffer.from("\x1b["))
-          expect(snap(parser)).toEqual([])
-          asLegacy(parser).abortPendingStartupCursorCpr()
-          parser.updateProtocolContext({ startupCursorCprActive: false })
-
-          parser.push(Buffer.from("1;2R"))
-          expect(snap(parser)).toEqual([resp("cpr", "\x1b[1;2R")])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("aborting a pending startup cursor CPR preserves later non-CPR input", () => {
-        const parser = createParser({
-          protocolContext: { startupCursorCprActive: true },
-        })
-
+      test("a startup CPR pending when its probe ends completes as a CPR reply", () => {
+        const parser = createParser({ protocolContext: { startupCursorCprActive: true } })
         try {
           parser.push(Buffer.from("\x1b[24;80"))
           expect(snap(parser)).toEqual([])
-          asLegacy(parser).abortPendingStartupCursorCpr()
+          // The stale reply stays a CPR reply, which the renderer ignores.
           parser.updateProtocolContext({ startupCursorCprActive: false })
-
-          parser.push(Buffer.from("a"))
-          expect(snap(parser)).toEqual([k("a")])
+          expect(snap(parser)).toEqual([])
+          parser.push(Buffer.from("R"))
+          expect(snap(parser)).toEqual([resp("cpr", "\x1b[24;80R")])
         } finally {
           parser.destroy()
         }
@@ -1721,10 +1517,9 @@ function defineStdinParserSuite(impl: Implementation): void {
         const clock = new ManualClock()
         let timeoutFlushes = 0
         let parser!: Parser
-        parser = impl.create({
+        parser = new NativeStdinParser({
           armTimeouts: true,
           clock,
-          timeoutMs: TEST_TIMEOUT_MS,
           protocolContext: { explicitWidthCprActive: true },
           onTimeoutFlush: () => {
             timeoutFlushes += 1
@@ -1753,10 +1548,9 @@ function defineStdinParserSuite(impl: Implementation): void {
         const clock = new ManualClock()
         let timeoutFlushes = 0
         let parser!: Parser
-        parser = impl.create({
+        parser = new NativeStdinParser({
           armTimeouts: true,
           clock,
-          timeoutMs: TEST_TIMEOUT_MS,
           protocolContext: { privateCapabilityRepliesActive: true },
           onTimeoutFlush: () => {
             timeoutFlushes += 1
@@ -1859,20 +1653,19 @@ function defineStdinParserSuite(impl: Implementation): void {
         }
       })
 
-      test("large paste does not grow parser buffer", () => {
-        const p = createParser({ maxPendingBytes: 32 })
+      test("large paste in one read", () => {
+        const p = createParser()
         const payload = "x".repeat(100_000)
         try {
           p.push(Buffer.from(`\x1b[200~${payload}\x1b[201~z`))
           expect(snap(p)).toEqual([paste(payload), k("z")])
-          if (p instanceof StdinParser) expect(p.bufferCapacity).toBeLessThanOrEqual(512)
         } finally {
           p.destroy()
         }
       })
 
       test("large paste across many small chunks", () => {
-        const p = createParser({ maxPendingBytes: 32 })
+        const p = createParser()
         try {
           p.push(Buffer.from("\x1b[200~"))
           for (let i = 0; i < 1000; i++) p.push(Buffer.from("chunk "))
@@ -1881,7 +1674,6 @@ function defineStdinParserSuite(impl: Implementation): void {
           expect(s).toHaveLength(1)
           expect(s[0]!.type).toBe("paste")
           expect((s[0] as PasteSnap).bytes).toHaveLength(6000)
-          if (p instanceof StdinParser) expect(p.bufferCapacity).toBeLessThanOrEqual(512)
         } finally {
           p.destroy()
         }
@@ -2055,7 +1847,7 @@ function defineStdinParserSuite(impl: Implementation): void {
     describe("timeout behavior", () => {
       test("default timeout at exact boundary (19ms no fire, 20ms fires)", () => {
         const clock = new ManualClock()
-        const parser = impl.create({ armTimeouts: true, clock })
+        const parser = new NativeStdinParser({ armTimeouts: true, clock })
         try {
           parser.push(Buffer.from("\x1b"))
           clock.advance(19)
@@ -2067,21 +1859,8 @@ function defineStdinParserSuite(impl: Implementation): void {
         }
       })
 
-      legacyTest("configured timeout at exact boundary (9ms no fire, 10ms fires)", () => {
-        const { parser, clock } = createTimedParser({ timeoutMs: 10 })
-        try {
-          parser.push(Buffer.from("\x1b"))
-          clock.advance(9)
-          expect(snap(parser)).toEqual([])
-          clock.advance(1)
-          expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
-        } finally {
-          parser.destroy()
-        }
-      })
-
       test("flushTimeout() only flushes when caller reports elapsed timeout", () => {
-        const parser = createParser({ timeoutMs: TEST_TIMEOUT_MS })
+        const parser = createParser()
         try {
           parser.push(Buffer.from("\x1b"))
 
@@ -2115,10 +1894,9 @@ function defineStdinParserSuite(impl: Implementation): void {
         const clock = new ManualClock()
         let timeoutFlushes = 0
         let parser!: Parser
-        parser = impl.create({
+        parser = new NativeStdinParser({
           armTimeouts: true,
           clock,
-          timeoutMs: TEST_TIMEOUT_MS,
           protocolContext: { kittyKeyboardEnabled: true },
           onTimeoutFlush: () => {
             timeoutFlushes += 1
@@ -2147,10 +1925,9 @@ function defineStdinParserSuite(impl: Implementation): void {
         const clock = new ManualClock()
         let timeoutFlushes = 0
         let parser!: Parser
-        parser = impl.create({
+        parser = new NativeStdinParser({
           armTimeouts: true,
           clock,
-          timeoutMs: TEST_TIMEOUT_MS,
           onTimeoutFlush: () => {
             timeoutFlushes += 1
             parser.drain(() => {})
@@ -2182,19 +1959,6 @@ function defineStdinParserSuite(impl: Implementation): void {
           expect(snap(parser)).toEqual([]) // still collecting paste
           parser.push(Buffer.from("\x1b[201~"))
           expect(snap(parser)).toEqual([paste("partial")])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      legacyTest("custom timeout delay", () => {
-        const { parser, clock } = createTimedParser({ timeoutMs: 50 })
-        try {
-          parser.push(Buffer.from("\x1b"))
-          clock.advance(49)
-          expect(snap(parser)).toEqual([])
-          clock.advance(1)
-          expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
         } finally {
           parser.destroy()
         }
@@ -2353,15 +2117,14 @@ function defineStdinParserSuite(impl: Implementation): void {
     })
 
     describe("state management", () => {
-      test("reset clears pending bytes and releases capacity", () => {
+      test("reset clears pending bytes", () => {
         const p = createParser()
         try {
           p.push(Buffer.from("\x1b["))
           expect(snap(p)).toEqual([])
-          p.push(Buffer.alloc(4096, 0x78)) // 'x' bytes to grow buffer
+          p.push(Buffer.alloc(4096, 0x78))
           p.reset()
           expect(snap(p)).toEqual([])
-          if (p instanceof StdinParser) expect(p.bufferCapacity).toBeLessThanOrEqual(256)
           // parser works normally after reset
           p.push(Buffer.from("a"))
           expect(snap(p)).toEqual([k("a")])
@@ -2477,21 +2240,6 @@ function defineStdinParserSuite(impl: Implementation): void {
           p.destroy()
         }
       })
-
-      legacyTest("overflow flushes incomplete protocols as one unknown response and recovers", () => {
-        const longDigits = "1".repeat(40)
-        const longOsc = "a".repeat(40)
-        const longDcs = "x".repeat(40)
-        const cases: Array<[label: string, chunks: ChunkInput[], expected: Snap[]]> = [
-          ["CSI", [`\x1b[${longDigits}`], [resp("unknown", `\x1b[${longDigits}`)]],
-          ["OSC", [`\x1b]${longOsc}`], [resp("unknown", `\x1b]${longOsc}`)]],
-          ["DCS + recovery", [`\x1bP${longDcs}`, "z"], [resp("unknown", `\x1bP${longDcs}`), k("z")]],
-        ]
-
-        for (const [label, chunks, expected] of cases) {
-          expect(snapChunks(chunks, { maxPendingBytes: 16 })).toEqual(expected)
-        }
-      })
     })
 
     describe("multi-event interleaving", () => {
@@ -2534,12 +2282,12 @@ function defineStdinParserSuite(impl: Implementation): void {
     })
 
     describe("negative and edge cases", () => {
-      test("push with empty buffer emits an empty key event", () => {
+      test("push with empty buffer emits nothing", () => {
         const p = createParser()
         try {
-          // Native: zero bytes only resolve timeouts.
+          // Zero bytes only resolve timeouts.
           p.push(new Uint8Array(0))
-          expect(snap(p)).toEqual(either([k("")], []))
+          expect(snap(p)).toEqual([])
         } finally {
           p.destroy()
         }
@@ -2558,25 +2306,12 @@ function defineStdinParserSuite(impl: Implementation): void {
         }
       })
 
-      // The first, second, and fourth rows pin legacy behavior that the 044 conformance vectors replace.
+      // Unknown sequences are replies, and Alt applies to every printable byte (issue 046).
       table([
-        // Native: unknown sequences are replies, and Alt applies to every printable byte (issue 046).
-        [
-          "CSI with unknown final byte produces empty-name key",
-          "\x1b[h",
-          either([k("", { raw: "\x1b[h" })], [resp("csi", "\x1b[h")]),
-        ],
-        [
-          "ESC followed by punctuation stays one empty-name key",
-          "\x1b!",
-          either([k("", { raw: "\x1b!" })], [k("!", { raw: "\x1b!", meta: true })]),
-        ],
+        ["CSI with unknown final byte is a CSI response", "\x1b[h", [resp("csi", "\x1b[h")]],
+        ["ESC followed by punctuation is Alt+punctuation", "\x1b!", [k("!", { raw: "\x1b!", meta: true })]],
         ["ESC followed by N becomes meta+shift+N", "\x1bN", [k("N", { raw: "\x1bN", meta: true, shift: true })]],
-        [
-          "malformed SGR mouse falls through as empty-name CSI key",
-          "\x1b[<0M",
-          either([k("", { raw: "\x1b[<0M" })], [resp("csi", "\x1b[<0M")]),
-        ],
+        ["malformed SGR mouse is a CSI response", "\x1b[<0M", [resp("csi", "\x1b[<0M")]],
         ["bracketed paste end outside paste mode is a CSI response", "\x1b[201~", [resp("csi", "\x1b[201~")]],
       ])
 
@@ -2609,12 +2344,10 @@ function defineStdinParserSuite(impl: Implementation): void {
       for (const [name, steps, expected, issue, context] of CONFORMANCE) {
         const bytewise = steps.flatMap((step) => (step === null ? [null] : Array.from(buf(step), (byte) => [byte])))
         const options = conformanceContext(context)
-        const run = () => {
+        test(issue ? `${name} (${issue})` : name, () => {
           expect(runConformance(steps, options)).toEqual(expected)
           expect(runConformance(bytewise, options)).toEqual(expected)
-        }
-        if (issue && !native) test.todo(`${name} (${issue})`, run)
-        else test(name, run)
+        })
       }
     })
 
@@ -2622,10 +2355,9 @@ function defineStdinParserSuite(impl: Implementation): void {
       test("a protocol update after a missed deadline still delivers through onTimeoutFlush", () => {
         const clock = new ManualClock()
         const delivered: Snap[] = []
-        const parser: Parser = impl.create({
+        const parser: Parser = new NativeStdinParser({
           armTimeouts: true,
           clock,
-          timeoutMs: TEST_TIMEOUT_MS,
           onTimeoutFlush: () => parser.drain((event) => delivered.push(snapshotEvent(event))),
         })
         try {
@@ -2682,10 +2414,9 @@ function defineStdinParserSuite(impl: Implementation): void {
         const onTimeoutFlush = () => {
           throw new Error("handler failed")
         }
-        const parser = impl.create({
+        const parser = new NativeStdinParser({
           armTimeouts: true,
           clock: disagreeingClock,
-          timeoutMs: TEST_TIMEOUT_MS,
           onTimeoutFlush,
         })
         const logged = spyOn(console, "error").mockImplementation(() => {})
@@ -2707,6 +2438,4 @@ function defineStdinParserSuite(impl: Implementation): void {
       })
     })
   })
-}
-
-for (const impl of IMPLEMENTATIONS) defineStdinParserSuite(impl)
+})

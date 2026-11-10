@@ -1230,7 +1230,7 @@ test "Kitty keyboard is confirmed only by the reply to the current push's query"
         .{ true, .{ Op{ .reply = "\x1b[?0u" }, da1, Op{ .reply = "\x1b[?5u" } }, true },
         // Four unanswered queries fill the queue; a fifth push sends none, so no reply can confirm it.
         .{ true, .{ Op{ .reply = "\x1b[?0u" }, Op.restore, Op.restore, Op.restore, Op.restore, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" }, Op{ .reply = "\x1b[?5u" } }, false },
-        // Clock mode sends no new query, so the legacy parser sees no new reply and nothing confirms.
+        // Clock mode sends no new query, so the host's parser sees no new reply and nothing confirms.
         .{ false, .{ Op{ .reply = "\x1b[?0u" }, Op{ .reply = "\x1b[?5u" } }, false },
     };
     inline for (rows) |row| {

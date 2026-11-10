@@ -122,7 +122,7 @@ Capability detection continues after `createCliRenderer()` returns. The first sn
 
 Most capability fields are booleans. `false` can mean either unsupported or not detected yet. Treat the `capabilities` event as the source of updated snapshots.
 
-OpenTUI accepts startup capability replies for five seconds. Snapshots can change several times in that window, and again when OpenTUI processes a later terminal response.
+The startup window ends when the terminal answers the device attributes (DA1) request that follows the startup queries, or after five seconds without an answer. Snapshots can change several times in that window, and again when OpenTUI processes a later terminal response.
 
 ```typescript
 import { CliRenderEvents, type TerminalCapabilities } from "@opentui/core"

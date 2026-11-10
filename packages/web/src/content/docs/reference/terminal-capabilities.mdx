@@ -38,8 +38,9 @@ replies late. `"capabilities"` is emitted only when the capabilities change. Exp
 occasionally later. Do not wait for one specific count or treat the first event as final.
 
 The renderer consumes these responses before handlers added with `addInputHandler` run. Use `prependInputHandler` to
-observe them. After a five-second startup window, the input parser stops treating private replies as expected
-responses. Pixel-resolution and theme queries have separate lifecycles.
+observe them. The startup window ends when the terminal answers the device attributes (DA1) request that follows the
+startup queries, or after five seconds without an answer. Then the input parser stops treating private replies as
+expected responses. Pixel-resolution and theme queries have separate lifecycles.
 
 ## Public types
 

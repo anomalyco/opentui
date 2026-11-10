@@ -128,10 +128,10 @@ describe("renderer capabilities event", () => {
     "\x1b_Gi=31337;OK\x1b\\",
   ]
 
-  async function run(experimental_nativeInput: boolean, lateMs: number) {
+  async function run(lateMs: number) {
     const clock = new ManualClock()
     const environment = { TERM: "xterm-256color" }
-    const { renderer } = await createTestRenderer({ clock, experimental_nativeInput, remote: true, environment })
+    const { renderer } = await createTestRenderer({ clock, remote: true, environment })
     const events: string[] = []
     const keys: string[] = []
     let renders = 0
@@ -145,8 +145,8 @@ describe("renderer capabilities event", () => {
     await renderer.setupTerminal()
     renderer.stdin.emit("data", Buffer.from("\x1b[4;600;800t"))
     clock.advance(lateMs)
-    // Modified F3 is a key once no explicit-width report is expected (the legacy parser reads it as a report).
-    if (lateMs > 0 && experimental_nativeInput) renderer.stdin.emit("data", Buffer.from("\x1b[1;2R\x1b[1;5R"))
+    // Modified F3 is a key once no explicit-width report is expected.
+    if (lateMs > 0) renderer.stdin.emit("data", Buffer.from("\x1b[1;2R\x1b[1;5R"))
     const marks: number[][] = []
     const send = (batch: string[]) => {
       for (const reply of batch) {
@@ -167,27 +167,25 @@ describe("renderer capabilities event", () => {
     return { marks, events, keys, caps }
   }
 
-  for (const experimental_nativeInput of [false, true]) {
-    test(`replies after the startup window emit what replies inside it emit (native ${experimental_nativeInput})`, async () => {
-      const inside = await run(experimental_nativeInput, 0)
-      const late = await run(experimental_nativeInput, 5000)
+  test("replies after the startup window emit what replies inside it emit", async () => {
+    const inside = await run(0)
+    const late = await run(5000)
 
-      expect(late.events).toEqual(inside.events)
-      for (const { marks, events } of [inside, late]) {
-        expect(marks[0][0]).toBeGreaterThan(0)
-        expect(marks[1]).toEqual(marks[0])
-        expect([marks[3][0] - marks[2][0], marks[3][1] - marks[2][1]]).toEqual([2, 2])
-        expect(events.at(-1)).toBe(events.at(-3))
-        expect(events.filter((event, index) => event === events[index - 1])).toEqual([])
-      }
-      expect(late.caps).toMatchObject({ kitty_keyboard: true, kitty_graphics: true, sgr_pixels: true, sync: true })
-      expect(late.caps.terminal).toEqual({ name: "kitty", version: "0.42.2", from_xtversion: true })
-      expect(JSON.parse(inside.events[0])).toMatchObject({ rgb: true, ansi256: true, terminal: { name: "" } })
-      const typed = Array(replies.length * 2 + 2).fill("a")
-      expect(inside.keys).toEqual(typed)
-      expect(late.keys).toEqual(experimental_nativeInput ? ["\x1b[1;2R", "\x1b[1;5R", ...typed] : typed)
-    })
-  }
+    expect(late.events).toEqual(inside.events)
+    for (const { marks, events } of [inside, late]) {
+      expect(marks[0][0]).toBeGreaterThan(0)
+      expect(marks[1]).toEqual(marks[0])
+      expect([marks[3][0] - marks[2][0], marks[3][1] - marks[2][1]]).toEqual([2, 2])
+      expect(events.at(-1)).toBe(events.at(-3))
+      expect(events.filter((event, index) => event === events[index - 1])).toEqual([])
+    }
+    expect(late.caps).toMatchObject({ kitty_keyboard: true, kitty_graphics: true, sgr_pixels: true, sync: true })
+    expect(late.caps.terminal).toEqual({ name: "kitty", version: "0.42.2", from_xtversion: true })
+    expect(JSON.parse(inside.events[0])).toMatchObject({ rgb: true, ansi256: true, terminal: { name: "" } })
+    const typed = Array(replies.length * 2 + 2).fill("a")
+    expect(inside.keys).toEqual(typed)
+    expect(late.keys).toEqual(["\x1b[1;2R", "\x1b[1;5R", ...typed])
+  })
 })
 
 describe("synchronized output", () => {
@@ -235,8 +233,7 @@ describe("synchronized output", () => {
     [client, true, true],
     [{ remote: true, synchronizedOutput: "always" }, false, true],
     [{ remote: false, synchronizedOutput: "never" }, true, false],
-    [{ remote: true, experimental_nativeInput: false }, false, false, 5100],
-    [{ remote: true, experimental_nativeInput: true }, false, false, 5100],
+    [{ remote: true }, false, false, 5100],
     [{ remote: true }, true, false, 0, true],
   ]
   test("frames carry the envelope by option, reply and host", async () => {
