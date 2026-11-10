@@ -119,8 +119,8 @@ index 9762ca4b..dd20a9d0 100644
 +      }
 +    }
    } else if (performLayout) {
-     if (hasSameAvailableSize(
-             node, layout->cachedLayout.availableWidth, availableWidth) &&
+     if (sizesMatch(
+             layout->cachedLayout.availableWidth, availableWidth, node->getConfig()) &&
 @@ -2898,20 +2942,27 @@ bool calculateLayoutInternal(
      (performLayout ? layoutMarkerData.cachedLayouts
                     : layoutMarkerData.cachedMeasures) += 1;

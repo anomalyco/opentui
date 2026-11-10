@@ -39,8 +39,8 @@ The Yoga source is upstream Yoga `main` at commit `41118bd3a` with ten changes, 
 - `yoga-absolute-edge-rounding.patch` adds a config option that rounds each node's position from the same
   absolute edges that Yoga already uses for its size. Upstream rounds the relative position on its own,
   so a child nested under fractional offsets can end one cell outside its parent. With the option, the
-  layout cache also compares available sizes exactly, because a subtree laid out for one fractional size
-  rounds differently at another size, even one within Yoga's 1e-4 tolerance. Each layout also keeps its
+  caches compare sizes exactly, also for measured nodes: at another size, even one within Yoga's 1e-4
+  tolerance, a subtree rounds differently and a text wraps at another cell. Each layout also keeps its
   unrounded left and top position beside the rounded one, as upstream keeps unrounded sizes, and rounding
   starts from the unrounded position and size: a subtree that a cache hit skips then rounds as a fresh one.
   A baseline adds its child's unrounded top on every config, so a box that a cache hit skips aligns as a

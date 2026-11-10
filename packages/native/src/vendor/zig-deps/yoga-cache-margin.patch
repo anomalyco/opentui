@@ -1,9 +1,9 @@
 diff --git a/yoga/algorithm/Cache.cpp b/yoga/algorithm/Cache.cpp
-index f1a5f4ea..e8a011a8 100644
+index 08e2f223..01bec5b6 100644
 --- a/yoga/algorithm/Cache.cpp
 +++ b/yoga/algorithm/Cache.cpp
-@@ -79,6 +79,10 @@ bool canUseCachedMeasurement(
-     hasSameWidthSpec = yoga::inexactEquals(effectiveLastWidth, effectiveWidth);
+@@ -92,6 +92,10 @@ bool canUseCachedMeasurement(
+     hasSameWidthSpec = sizesMatch(effectiveLastWidth, effectiveWidth, config);
    }
  
 +  // OpenTUI: the stricter rule compares sizes without the margin on both
@@ -13,21 +13,21 @@ index f1a5f4ea..e8a011a8 100644
    const bool widthIsCompatible =
        hasSameWidthSpec ||
        sizeIsExactAndMatchesOldMeasuredSize(
-@@ -92,7 +96,7 @@ bool canUseCachedMeasurement(
+@@ -106,7 +110,7 @@ bool canUseCachedMeasurement(
            widthMode,
            availableWidth - marginRow,
            lastWidthMode,
 -          lastAvailableWidth,
 +          lastAvailableWidth - std::max(marginRow, 0.0f),
-           lastComputedWidth);
+           lastComputedWidth,
+           config);
  
-   if (!widthIsCompatible) {
-@@ -123,7 +127,7 @@ bool canUseCachedMeasurement(
+@@ -140,7 +144,7 @@ bool canUseCachedMeasurement(
        newSizeIsStricterAndStillValid(heightMode,
                                       availableHeight - marginColumn,
                                       lastHeightMode,
 -                                     lastAvailableHeight,
 +                                     lastAvailableHeight - std::max(marginColumn, 0.0f),
-                                      lastComputedHeight);
+                                      lastComputedHeight,
+                                      config);
  
-   return heightIsCompatible;
