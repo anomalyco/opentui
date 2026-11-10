@@ -110,7 +110,8 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
     }
   }
 
-  parent.add(node, anchorIndex)
+  // Insert through the wide BaseRenderable contract, which validates children at runtime.
+  ;(parent as BaseRenderable).add(node, anchorIndex)
 
   // Hosts such as LineNumberRenderable ignore children they do not render.
   if (slot && !node.parent) node.destroy()
