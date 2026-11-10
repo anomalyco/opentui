@@ -2112,6 +2112,8 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         .{ tmux38 ++ .{.{ "STY", "1.pts-0.box" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
         .{ tmux38 ++ .{.{ "ZELLIJ", "0" }}, .{"\x1bP>|tmux 3.8\x1b\\"}, .unicode },
         .{ .{ .{ "TERM", "xterm-256color" }, .{ "XTERM_VERSION", "XTerm(411)" }, .{ "KONSOLE_VERSION", "250400" } }, .{}, .unicode },
+        // Explicit widths (the probe moved the cursor to column 2) need no mode 2027.
+        .{ .{}, .{ "\x1b[?2027;2$y", "\x1b[1;1R\x1b[1;2R\x1b[1;3R" }, .unicode },
     };
     inline for (rows, 0..) |row, index| {
         var env = std.process.Environ.Map.init(testing.allocator);
@@ -2121,15 +2123,34 @@ test "width method follows the environment, then the DECRPM 2027 reply and XTVER
         defer term.deinit();
         var writer = TestWriter.init(testing.allocator);
         defer writer.deinit();
+        // Session enables features before the replies arrive, and again after each reply.
         try term.queryTerminalSend(&writer);
-        inline for (row[1]) |reply| term.processCapabilityResponse(reply);
+        try term.enableDetectedFeatures(&writer, false);
+        inline for (row[1]) |reply| {
+            term.processCapabilityResponse(reply);
+            try term.enableDetectedFeatures(&writer, false);
+        }
         errdefer std.debug.print("width row {d}\n", .{index});
         try testing.expectEqual(@as(utf8.WidthMethod, row[2]), term.caps.unicode);
+        const graphemes = (row[2] == .unicode or row[2] == .unicode_wide) and !term.caps.explicit_width;
+        try testing.expectEqual(graphemes, mode2027Set(writer.getWritten()));
+        // Another reply that changes nothing writes no mode 2027 change.
+        const written = writer.getWritten().len;
         try term.enableDetectedFeatures(&writer, false);
-        try testing.expectEqual(@as(utf8.WidthMethod, row[2]), term.caps.unicode);
-        const graphemes = row[2] == .unicode or row[2] == .unicode_wide;
-        try testing.expectEqual(graphemes, std.mem.find(u8, writer.getWritten(), ansi.ANSI.unicodeSet) != null);
+        try testing.expect(std.mem.find(u8, writer.getWritten()[written..], "\x1b[?2027") == null);
+        // Teardown turns mode 2027 off unless the terminal reported it set before OpenTUI started.
+        try term.resetOutputModes(&writer);
+        try testing.expectEqual(graphemes and term.mode_2027 == 1, mode2027Set(writer.getWritten()));
+        // Resume enables it again.
+        try term.enableDetectedFeatures(&writer, false);
+        try testing.expectEqual(graphemes, mode2027Set(writer.getWritten()));
     }
+}
+
+/// Whether the last mode 2027 change in `output` turned it on.
+fn mode2027Set(output: []const u8) bool {
+    const set = std.mem.lastIndexOf(u8, output, ansi.ANSI.unicodeSet) orelse return false;
+    return set > (std.mem.lastIndexOf(u8, output, ansi.ANSI.unicodeReset) orelse 0);
 }
 
 test "tmux XTVERSION selects the width method by version" {

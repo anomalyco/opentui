@@ -745,6 +745,7 @@ test "Session late close restores the modes that dropped output changed" {
         try testing.expectEqual(!ends_main, std.mem.startsWith(u8, shown, "pre"));
         try testing.expectEqual(@as(usize, @intFromBool(ends_main)), std.mem.count(u8, output, "\x1b[H\x1b[J"));
         try testing.expect(!far.modes.get(.synchronized_output));
+        try testing.expect(!far.modes.get(.grapheme_cluster));
         try testing.expectEqual(.primary, far.screens.active_key);
         for ([_]@TypeOf(far.screens.active_key){ .primary, .alternate }) |key| {
             if (far.screens.get(key)) |screen| try testing.expectEqual(@as(u5, 0), screen.kitty_keyboard.current().int());
