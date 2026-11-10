@@ -1009,6 +1009,8 @@ pub const Scene = struct {
             if (reparented) node.attach_order = self.last_placement;
         } else if (destination == null) node.placement = 0;
         node.layout_flags.needs_layout = true;
+        // No scan of the new parent has taken the node yet (reaches).
+        node.culling.selected_at = std.math.maxInt(u64);
         self.visibility_epoch +%= 1;
         self.selection_epoch +%= 1;
         self.preparation_dirty = true;
@@ -2231,6 +2233,12 @@ pub const Scene = struct {
         // Preparation enters only visible nodes, so its stamp answers until a display or ancestry change.
         if (node.prepared_gen == self.candidates_gen and active.visibility_epoch == self.visibility_epoch and
             !self.forcesFullFrame()) return node.layout_flags.prepared_visible;
+        return self.reaches(value, false);
+    }
+
+    /// Whether the hook walk reaches the node: it and its ancestors are shown up to the root and,
+    /// with `selected`, each filtering ancestor's latest selection took the branch to it.
+    pub fn reaches(self: *Scene, value: *native.NativeRenderable, selected: bool) !bool {
         var cursor: ?*native.NativeRenderable = value;
         var depth: u32 = 0;
         while (cursor) |current| : (cursor = current.scene_node.?.parent) {
@@ -2241,6 +2249,8 @@ pub const Scene = struct {
             try yoga.check(yoga.yogaNodeStyleGetEnumChecked(current.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
             if (display == api.OT_DISPLAY_NONE) return false;
             if (current == self.root) return true;
+            const parent = (current.scene_node.?.parent orelse return false).scene_node.?;
+            if (selected and parent.filtersChildren() and current.scene_node.?.culling.selected_at != parent.culling.selected_epoch) return false;
         }
         return false;
     }

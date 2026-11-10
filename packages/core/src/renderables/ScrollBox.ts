@@ -1,7 +1,7 @@
 import { type KeyEvent } from "../lib/index.js"
 import { LinearScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
 import { scrollOnce, wheelDirection } from "../lib/scroll-chain.js"
-import { RootRenderable, type NativeRenderableIntegration, type Renderable } from "../Renderable.js"
+import type { NativeRenderableIntegration, Renderable } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
 import type { TimerHandle } from "../lib/clock.js"
 import type { RenderContext } from "../types.js"
@@ -308,29 +308,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.state = this._ctx.nativeScene.getScroll(this)
     this.stateRevision = revision
     return this.state
-  }
-
-  /** @internal Whether the scene runs no hooks in the node at the last layout: the node or an ancestor is hidden or
-   * culled by a ScrollBox, or the tree is detached. */
-  static _skips(node: Renderable): boolean {
-    for (; node.parent; node = node.parent) {
-      if (!node.visible || (node.parent instanceof ScrollBoxRenderable && node.parent.culls(node))) return true
-    }
-    return !(node instanceof RootRenderable)
-  }
-
-  // scene.zig childFilter and overlaps: the main axis excludes a child that touches the view, the cross axis does not.
-  private culls(child: Renderable): boolean {
-    const view = this._scrollState().viewport
-    const empty = view.width <= 0 || view.height <= 0
-    if (!this._viewportCulling || (!empty && this.getChildrenCount() < 16)) return false
-    const { x, y, width, height } = child
-    const row = this.content._row
-    const inX = row ? x < view.x + view.width && x + width > view.x : x <= view.x + view.width && x + width >= view.x
-    const inY = row
-      ? y <= view.y + view.height && y + height >= view.y
-      : y < view.y + view.height && y + height > view.y
-    return empty || !(inX && inY)
   }
 
   /** @internal The box's inner rect without the vertical bar's gutter, as today's wrapper box. */

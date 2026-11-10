@@ -1258,10 +1258,14 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       if (mode === "detached") scrollbox.remove(target)
       if (mode !== "shown") scrollbox.scrollTo(away)
       await renderOnce()
+      const before = captureCharFrame()
       target.content = text(5)
       if (mode === "hidden") target.visible = true
       if (mode === "detached") mount()
-      await (mode === "shown" ? settle() : renderOnce())
+      await renderOnce()
+      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands.
+      if (mode === "shown") expect(captureCharFrame()).toBe(before)
+      if (mode === "shown") await settle()
       const height = scrollbox.scrollHeight
       // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view.
       if (mode !== "shown") expect(client.isHighlighting()).toBe(first)
@@ -1280,52 +1284,6 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       const shown = await run(first, "shown")
       for (const mode of ["culled", "hidden", "detached"] as const) expect(await run(first, mode)).toEqual(shown)
     }
-  })
-
-  // Over child counts, culling, empty and filled views, both directions and scroll positions on both axes, _skips names
-  // exactly the nodes the scene ran no update hook in: each child, a grandchild in its second cell, a hidden child, and
-  // a detached node.
-  test("ScrollBoxRenderable._skips matches the nodes the scene skips", async () => {
-    class Probe extends BoxRenderable {
-      updates = 0
-      protected override onUpdate(): void {
-        this.updates++
-      }
-    }
-    const mismatches: string[] = []
-    for (let config = 0; config < 32; config++) {
-      const [count, culling, size, row] = [[2, 15, 16, 17][config >> 3], (config & 4) > 0, (config & 2) * 3, config & 1]
-      const [main, cross, margin] = row ? ["width", "height", "marginTop"] : ["height", "width", "marginLeft"]
-      const scrollbox = new ScrollBoxRenderable(testRenderer, {
-        ...(row ? { width: size, height: 4 } : { width: 8, height: size }),
-        scrollX: true,
-        viewportCulling: culling,
-        contentOptions: { flexDirection: row ? "row" : "column", alignItems: "flex-start" },
-      })
-      testRenderer.root.add(scrollbox)
-      const probes = [new Probe(testRenderer, {})]
-      for (let i = 0; i < count; i++) {
-        // Across the main axis, children start 0 to 11 cells in and are 1 to 3 cells wide, so some miss the view there.
-        const child = new Probe(testRenderer, { [main]: 2, [cross]: 1 + (i % 3), [margin]: (i * 7) % 12 })
-        child.visible = i !== 1
-        child.add(new Probe(testRenderer, { [main]: 1, [row ? "marginLeft" : "marginTop"]: 1 }))
-        scrollbox.add(child)
-        probes.push(child, ...(child.getChildren() as Probe[]))
-      }
-      const scrolls = [0, 0, 1, 0, 2, 0, 0, 1, 0, 2, 3, 1, 7, 3, 8, 8, Infinity, Infinity]
-      for (let at = 0; at < scrolls.length; at += 2) {
-        scrollbox.scrollLeft = scrolls[at]
-        scrollbox.scrollTop = scrolls[at + 1]
-        await renderOnce()
-        for (const probe of probes) probe.updates = 0
-        await renderOnce()
-        for (const [index, probe] of probes.entries()) {
-          if ((probe.updates === 0) !== ScrollBoxRenderable._skips(probe)) mismatches.push(`${[config, at, index]}`)
-        }
-      }
-      scrollbox.destroyRecursively()
-    }
-    expect(mismatches).toEqual([])
   })
 
   test("maintains visibility when scrolling with many Code elements", async () => {

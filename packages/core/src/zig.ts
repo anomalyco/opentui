@@ -7389,6 +7389,14 @@ export class FFIRenderLib {
     return output[0] !== 0
   }
 
+  public sceneReachesHooks(context: NativeContextHandle, node: SceneNodeHandle): boolean {
+    const handle = encodeContextHandle(context, node)
+    const output = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_scene_reaches_hooks")
+    nativeResult("ot_scene_reaches_hooks", this.opentui.symbols.ot_scene_reaches_hooks(pointer, handle, output))
+    return output[0] !== 0
+  }
+
   public sceneMarkDirty(context: NativeContextHandle, node: SceneNodeHandle): void {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, node)
