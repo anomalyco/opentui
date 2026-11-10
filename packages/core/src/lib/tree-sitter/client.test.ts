@@ -281,12 +281,23 @@ describeClient("TreeSitterClient", () => {
       newEndPosition: end(to),
     },
   ]
+  // Markdown list items after a fence: an edit applied to a tree of an earlier text traps in the markdown scanner.
+  const stream = ["# Streaming Summary\n\n", "```typescript\n", "export const ready = true;\n", "```\n\n"].concat(
+    Array.from({ length: 132 }, (_, i) => `- Step ${i + 1}: check \`item_${i + 1}\` and **status**\n`),
+  )
+  const streamed = (chunks: number) => stream.slice(0, chunks).join("")
+  const append = (from: string, to: string) => [
+    { ...replace(from, to)[0]!, startIndex: from.length, oldEndIndex: from.length, startPosition: end(from) },
+  ]
   const within3s = <T>(promise: Promise<T>) =>
     Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
   // Each row ends with removeBuffer. The markdown rows edit or remove while the worker loads the injected typescript
   // or zig grammar, which a new worker has not loaded yet. A row returns the errors and warnings it expects.
   test.each<
-    [string, (c: TreeSitterClient, highlighted: (version: number) => Promise<void>) => Promise<string[] | void>]
+    [
+      string,
+      (c: TreeSitterClient, highlighted: (version: number, line?: number) => Promise<void>) => Promise<string[] | void>,
+    ]
   >([
     [
       "resetBuffer",
@@ -314,9 +325,57 @@ describeClient("TreeSitterClient", () => {
         await highlighted(2)
       },
     ],
+    [
+      "updateBuffer before the first reply",
+      async (c, highlighted) => {
+        // The first reply is stale, so the client resets: a version 2 reply then has line 0, not only the edit's line.
+        // A removed buffer of the same id, reset at a later version, must not suppress that reset.
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await c.resetBuffer(1, 9, js(9))
+        await highlighted(9)
+        await c.removeBuffer(1)
+        const ts = Array.from({ length: 20 }, (_, i) => `export const item${i}: number = ${i};`).join("\n")
+        await c.createBuffer(1, ts, "typescript", 1)
+        await c.updateBuffer(1, append(ts, `${ts}\nlet b = 2;`), `${ts}\nlet b = 2;`, 2)
+        await highlighted(2, 0)
+      },
+    ],
+    [
+      "updateBuffer right after resetBuffer",
+      async (c, highlighted) => {
+        await c.createBuffer(1, streamed(6), "markdown", 1)
+        await highlighted(1)
+        await c.resetBuffer(1, 2, streamed(10))
+        await c.updateBuffer(1, append(streamed(10), streamed(11)), streamed(11), 3)
+        await highlighted(3)
+      },
+    ],
+    [
+      "updateBuffer streaming list items",
+      async (c, highlighted) => {
+        await c.createBuffer(1, streamed(1), "markdown", 1)
+        for (let n = 2; n <= stream.length; n++) {
+          await c.updateBuffer(1, append(streamed(n - 1), streamed(n)), streamed(n), n)
+          if (n % 7 === 0) await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        await highlighted(stream.length)
+      },
+    ],
+    [
+      "resetBuffer while another client is destroyed",
+      async (c, highlighted) => {
+        const other = new TreeSitterClient({ dataPath })
+        await other.initialize()
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await highlighted(1)
+        await c.resetBuffer(1, 2, js(2))
+        await other.destroy()
+        await highlighted(2)
+      },
+    ],
     ["removeBuffer during the first injection load", async (c) => void (await c.createBuffer(1, md, "markdown", 1))],
     [
-      "removeBuffer with a reset still debounced",
+      "removeBuffer right after resetBuffer",
       async (c) => {
         await c.createBuffer(1, md, "markdown", 1)
         await c.resetBuffer(1, 2, mdZig)
@@ -400,9 +459,11 @@ describeClient("TreeSitterClient", () => {
         import.meta.url,
       )
       const c = new TreeSitterClient({ dataPath, workerPath })
-      const versions: number[] = []
+      const replies: { version: number; lines: number[] }[] = []
       const errors: string[] = []
-      c.on("highlights:response", (id, version) => id === 1 && versions.push(version))
+      c.on("highlights:response", (id, version, highlights) => {
+        if (id === 1) replies.push({ version, lines: highlights.map((highlight) => highlight.line) })
+      })
       c.on("error", (error) => errors.push(error.split("\n")[0]!))
       c.on("warning", (warning) => errors.push(warning))
       const treeCount = new Promise<unknown>((resolve) =>
@@ -410,8 +471,11 @@ describeClient("TreeSitterClient", () => {
           if (message.startsWith("tree-count ")) resolve(JSON.parse(message.slice("tree-count ".length)))
         }),
       )
-      const highlighted = async (version: number) => {
-        for (let waited = 0; !versions.includes(version); waited += 5) {
+      // Waits for a reply of this version, with a highlight on this line if one is given.
+      const highlighted = async (version: number, line?: number) => {
+        const seen = (reply: (typeof replies)[number]) =>
+          reply.version === version && (line === undefined || reply.lines.includes(line))
+        for (let waited = 0; !replies.some(seen); waited += 5) {
           if (waited >= 3000) throw new Error(`no highlights for version ${version}`)
           await new Promise((resolve) => setTimeout(resolve, 5))
         }

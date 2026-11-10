@@ -1,6 +1,4 @@
 import { EventEmitter } from "events"
-import { createDebounce, clearDebounceScope, DebounceController } from "../debounce.js"
-import { ProcessQueue } from "../queue.js"
 import type {
   TreeSitterClientOptions,
   TreeSitterClientEvents,
@@ -35,13 +33,6 @@ registerEnvVar({
 
 declare global {
   const OTUI_TREE_SITTER_WORKER_PATH: string
-}
-
-interface EditQueueItem {
-  edits: Edit[]
-  newContent: string
-  version: number
-  isReset?: boolean
 }
 
 type TreeSitterWorkerPath = string | URL
@@ -81,8 +72,8 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     | undefined
   private messageCallbacks = new Map<string, PendingRequest>()
   private messageIdCounter: number = 0
-  private editQueues: Map<number, ProcessQueue<EditQueueItem>> = new Map()
-  private debouncer: DebounceController
+  // The version of each buffer's last reset sent to the worker.
+  private resetVersions = new Map<number, number>()
   private options: TreeSitterClientOptions
   private destroyCallbacks = new Set<() => void>()
   private lifecycleGeneration = 0
@@ -93,7 +84,6 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
   constructor(options: TreeSitterClientOptions, internalOptions: TreeSitterClientInternalOptions = {}) {
     super()
     this.options = options
-    this.debouncer = createDebounce("tree-sitter-client")
     if (internalOptions.autoStartWorker ?? true) {
       this.startWorker()
     }
@@ -186,9 +176,8 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     this.initializePromise = undefined
     this.rejectActiveInitialization(error)
     this.rejectPendingRequests(error)
-    this.editQueues.clear()
+    this.resetVersions.clear()
     this.buffers.clear()
-    this.debouncer.clear()
 
     try {
       void Promise.resolve(worker.terminate()).catch(() => {})
@@ -431,8 +420,12 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
           return
         }
 
+        // A stale reply needs a reset unless one at its version or later was sent: replies come in order, so that
+        // reset or the edits after it still reply.
         if (buffer.version !== message.version) {
-          this.resetBuffer(message.bufferId, buffer.version, buffer.content)
+          if ((this.resetVersions.get(message.bufferId) ?? -Infinity) < message.version) {
+            this.resetBuffer(message.bufferId, buffer.version, buffer.content)
+          }
           return
         }
 
@@ -636,36 +629,9 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
       return
     }
 
-    // Update buffer state
+    // The worker runs a buffer's messages in the order they are posted, so edits and resets apply in call order.
     this.buffers.set(id, { ...buffer, content: newContent, version })
-
-    if (!this.editQueues.has(id)) {
-      this.editQueues.set(
-        id,
-        new ProcessQueue<EditQueueItem>((item) =>
-          this.processEdit(id, item.edits, item.newContent, item.version, item.isReset),
-        ),
-      )
-    }
-
-    const bufferQueue = this.editQueues.get(id)!
-    bufferQueue.enqueue({ edits, newContent, version })
-  }
-
-  private async processEdit(
-    bufferId: number,
-    edits: Edit[],
-    newContent: string,
-    version: number,
-    isReset = false,
-  ): Promise<void> {
-    this.sendWorkerMessage({
-      type: isReset ? "RESET_BUFFER" : "HANDLE_EDITS",
-      bufferId,
-      version,
-      content: newContent,
-      edits,
-    })
+    this.sendWorkerMessage({ type: "HANDLE_EDITS", bufferId: id, version, content: newContent, edits })
   }
 
   public async removeBuffer(bufferId: number): Promise<void> {
@@ -674,12 +640,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     }
 
     this.buffers.delete(bufferId)
-
-    if (this.editQueues.has(bufferId)) {
-      this.editQueues.get(bufferId)?.clear()
-      this.editQueues.delete(bufferId)
-    }
-    this.debouncer.clearDebounce(`reset-${bufferId}`)
+    this.resetVersions.delete(bufferId)
 
     if (this.worker) {
       await new Promise<boolean>((resolve, reject) => {
@@ -743,10 +704,7 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
     }
     this.destroyCallbacks.clear()
 
-    clearDebounceScope("tree-sitter-client")
-    this.debouncer.clear()
-
-    this.editQueues.clear()
+    this.resetVersions.clear()
     this.buffers.clear()
 
     void this.stopWorker().then(
@@ -779,11 +737,9 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
       return
     }
 
-    // Update buffer state
     this.buffers.set(bufferId, { ...buffer, content, version })
-
-    // Use debouncer to avoid excessive resets
-    this.debouncer.debounce(`reset-${bufferId}`, 10, () => this.processEdit(bufferId, [], content, version, true))
+    this.resetVersions.set(bufferId, version)
+    this.sendWorkerMessage({ type: "RESET_BUFFER", bufferId, version, content, edits: [] })
   }
 
   public getBuffer(bufferId: number): BufferState | undefined {
