@@ -284,6 +284,7 @@ pub const TEXTAREA_BINDINGS: &[(&str, EditorAction)] = &[
     ("super+right", EditorAction::VisualLineEnd),
     ("super+up", EditorAction::BufferHome),
     ("super+down", EditorAction::BufferEnd),
+    ("super+backspace", EditorAction::DeleteToLineStart),
     ("shift+super+left", EditorAction::SelectVisualLineHome),
     ("shift+super+right", EditorAction::SelectVisualLineEnd),
     ("shift+super+up", EditorAction::SelectBufferHome),
