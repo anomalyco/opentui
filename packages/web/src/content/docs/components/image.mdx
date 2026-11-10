@@ -110,7 +110,7 @@ The `blocks` protocol renders generated RGBA pixels as terminal cells:
 ████████████████████████
 ```
 
-With global and per-image protocols set to `auto`, tmux uses blocks. Explicit Kitty, or Sixel with pixel resolution, uses tmux passthrough.
+With global and per-image protocols set to `auto`, tmux uses blocks. Explicit Sixel with pixel resolution uses tmux passthrough. Explicit Kitty also needs an outer terminal supporting Unicode placeholders and relative placements, so images follow the pane during resizing and window switching. Shrinking a split-footer window can leave stale anchors in reflowed history and misplace the live image.
 
 Overlapping images must use the same effective protocol. OpenTUI does not support layering or alpha composition across different effective protocols. Leave overlapping images on `auto` or give them the same explicit `protocol`. Non-overlapping images can use different protocols.
 
