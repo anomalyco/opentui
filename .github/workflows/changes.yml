@@ -5,7 +5,7 @@ on:
   workflow_call:
     outputs:
       rust:
-        description: true on a push, or when a pull request changes the Rust crates, native code, the ABI generator or the CI that tests them
+        description: true on a push, or when a pull request changes the Rust crates, native code, the ABI generator, the video fixtures the crates' tests read, or the CI that tests them
         value: ${{ jobs.changes.outputs.rust }}
       rust_only:
         description: true when a pull request changes files only under packages/rust/

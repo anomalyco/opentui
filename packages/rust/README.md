@@ -635,10 +635,9 @@ elsewhere. It needs Zig and the targets' standard libraries, or `rust-src`
 without rustup; its header says how it uses them. It does not link or run
 anything, so `sh test.sh` on the platform is still the real check.
 
-CI runs `test.sh` on Linux and Windows for each pull request that changes the
-crates, native code or the ABI generator, `check-targets.sh` on Linux, and
-`test.sh` on macOS after each merge. `rust-toolchain.toml` pins the toolchain it
-uses.
+CI runs `test.sh` on Linux, Windows and macOS for each pull request that
+changes the crates, native code or the ABI generator, and `check-targets.sh` on
+Linux. `rust-toolchain.toml` pins the toolchain it uses.
 
 Widget tests in `crates/opentui/tests/` drive headless apps and compare
 rendered frames. Native tests drive real Sessions into memory with a virtual

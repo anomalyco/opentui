@@ -569,13 +569,12 @@ jobs:
         working-directory: packages/rust
         run: sh test.sh shared
 
+  # Not in the gate yet, like Rust (Windows).
   rust-macos:
     name: Rust (macOS)
-    # The shared macOS runner: after merges only, never per pull request.
-    if: github.event_name == 'push'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: blacksmith-12vcpu-macos-15
-    # The crates have not been tested on macOS before.
-    continue-on-error: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

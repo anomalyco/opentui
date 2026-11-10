@@ -1,6 +1,6 @@
 #!/bin/sh
 # Compile-checks the workspace for aarch64-apple-darwin and x86_64-apple-darwin from another system: clippy with the
-# feature sets test.sh uses, against stub artifacts. Nothing is linked or run; CI tests macOS after each merge.
+# feature sets test.sh uses, against stub artifacts. Nothing is linked or run; test.sh on macOS does that.
 #
 # Needs Zig, whose C compiler builds tree-sitter's C code against its bundled macOS headers, and each target's
 # standard library: rustup installs both targets from rust-toolchain.toml. Without rustup, build them from rust-src:

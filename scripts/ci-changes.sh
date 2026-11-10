@@ -14,10 +14,10 @@ fi
 # --no-renames lists both paths of a moved file, and needs no file contents in a blob-less clone. Unquoted paths keep
 # names with non-ASCII characters matchable.
 files=$(git -c core.quotePath=false diff --name-only --no-renames "$2" "$3")
-# The crates, what they link and generate from, and the CI that tests them.
+# The crates, what they link, generate from and read in tests, and the CI that tests them.
 rust=false
 if printf '%s\n' "$files" | grep -Eq \
-    '^(packages/rust/|packages/native/|packages/core/scripts/native-abi|scripts/(native-bottle\.ts|ci-changes\.sh)$|\.github/actions/|\.github/workflows/(build-core|changes)\.yml$)'; then
+    '^(packages/rust/|packages/native/|packages/core/scripts/native-abi|packages/core/src/tests/fixtures/video/|scripts/(native-bottle\.ts|ci-changes\.sh)$|\.github/actions/|\.github/workflows/(build-core|changes)\.yml$)'; then
     rust=true
 fi
 # Every changed file is in the crates. An empty diff prints one empty line, which is not, so it runs everything.
