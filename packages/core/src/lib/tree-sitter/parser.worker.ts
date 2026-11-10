@@ -928,6 +928,7 @@ class ParserWorker {
 
       this.filetypeParsers.clear()
       this.filetypeParserPromises.clear()
+      for (const { parser } of this.reusableParsers.values()) parser.delete()
       this.reusableParsers.clear()
       this.reusableParserPromises.clear()
     } catch (error) {

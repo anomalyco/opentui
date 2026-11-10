@@ -343,8 +343,15 @@ describeClient("TreeSitterClient", () => {
         await c.createBuffer(1, md, "markdown", 1)
       },
     ],
+    [
+      "clearCache after highlighting",
+      async (c) => {
+        await c.highlightOnce(mdZig, "markdown")
+        await c.clearCache()
+      },
+    ],
   ])(
-    "should delete every replaced tree once no message reads it: %s",
+    "should delete every replaced tree and parser once no message reads it: %s",
     async (_name, run) => {
       const workerPath = new URL(
         existsSync(new URL("./tree-count-worker.fixture.js", import.meta.url))
@@ -376,13 +383,14 @@ describeClient("TreeSitterClient", () => {
         await c.initialize()
         await run(c, highlighted)
         const removed = await within3s(c.removeBuffer(1))
-        // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count.
+        // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count. It also
+        // leaves the four cached parsers: markdown, markdown_inline, typescript and zig.
         await within3s(c.highlightOnce(mdZig, "markdown"))
         const trees = await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))
         expect({ removed, errors, trees }).toEqual({
           removed: undefined,
           errors: [],
-          trees: { live: 0, freedReads: 0 },
+          trees: { live: 0, freedReads: 0, parsers: 4 },
         })
       } finally {
         await within3s(c.destroy())
