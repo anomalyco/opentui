@@ -419,4 +419,23 @@ describe("SolidJS Renderer Integration Tests", () => {
       expect(frame).toMatchSnapshot()
     })
   })
+
+  it("passes layoutMode through: a list stacks its rows whatever the direction", async () => {
+    const [mode, setMode] = createSignal<"flex" | "list">("list")
+    testSetup = await testRender(
+      () => (
+        <box flexDirection="row" layoutMode={mode()}>
+          <text>ab</text>
+          <text>cd</text>
+        </box>
+      ),
+      { width: 6, height: 2 },
+    )
+
+    await testSetup.renderOnce()
+    const list = testSetup.captureCharFrame()
+    setMode("flex")
+    await testSetup.renderOnce()
+    expect([list, testSetup.captureCharFrame()]).toEqual(["ab    \ncd    \n", "abcd  \n      \n"])
+  })
 })

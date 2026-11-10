@@ -689,4 +689,25 @@ describe("React Renderer | Layout Tests", () => {
       expect(defaultTextLine!.indexOf("Test")).toBe(0)
     })
   })
+
+  it("passes layoutMode through: a list stacks its rows whatever the direction", async () => {
+    let setMode: (mode: "flex" | "list") => void
+    function TestComponent() {
+      const [mode, _setMode] = useState<"flex" | "list">("list")
+      setMode = _setMode
+      return (
+        <box flexDirection="row" layoutMode={mode}>
+          <text>ab</text>
+          <text>cd</text>
+        </box>
+      )
+    }
+
+    testSetup = await testRender(<TestComponent />, { width: 6, height: 2 })
+    await testSetup.renderOnce()
+    const list = testSetup.captureCharFrame()
+    act(() => setMode("flex"))
+    await testSetup.renderOnce()
+    expect([list, testSetup.captureCharFrame()]).toEqual(["ab    \ncd    \n", "abcd  \n      \n"])
+  })
 })
