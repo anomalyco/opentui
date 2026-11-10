@@ -1,7 +1,7 @@
 // Seeded simulation of the real CliRenderer and NativeSession on virtual time over a modeled link, through a
 // borrowed Writable and through fd 1. On fd 1 the stdout writer thread (post_stdout) and, with
 // OTUI_STDOUT_THREAD=0, the synchronous drain_stdout write are modeled with the ticket ABI.
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { clearEnvCache } from "../lib/env.js"
 import { NativeSession } from "../NativeSession.js"
 import { TextRenderable } from "../renderables/Text.js"
@@ -58,7 +58,8 @@ type Path = "writable" | "fd" | "fd-off"
 /** Runs `then` once the promise resolves; the run observes rejections elsewhere. */
 const after = (promise: Promise<unknown>, then: () => unknown) => void promise.then(then, () => {})
 const tick = () => new Promise<void>((resolve) => process.nextTick(resolve))
-// What a run replaces, saved once: a run that timed out must not restore it under the run that replaced it.
+// What a run replaces, saved once and put back after each row, timed out or not. A run that timed out then owns
+// nothing and stops at its next step.
 const real = {
   stdout: Object.getOwnPropertyDescriptor(process, "stdout")!,
   drainStdout: lib.sessionDrainStdout,
@@ -66,6 +67,15 @@ const real = {
   consoleError: console.error,
 }
 let owner: World | null = null
+afterEach(() => {
+  owner = null
+  console.error = real.consoleError
+  Object.defineProperty(process, "stdout", real.stdout)
+  lib.sessionDrainStdout = real.drainStdout
+  lib.sessionPostStdout = real.postStdout
+  delete process.env.OTUI_STDOUT_THREAD
+  clearEnvCache()
+})
 
 function random(seed: number): (limit: number) => number {
   let state = seed | 0
@@ -630,14 +640,6 @@ async function simulate(preset: Preset, path: Path, seed: number): Promise<numbe
     if (process.env.OUTPUT_SIM_SUMMARY) console.log(label, JSON.stringify(summary))
     return hash
   } finally {
-    if (owner === world) {
-      console.error = real.consoleError
-      Object.defineProperty(process, "stdout", real.stdout)
-      lib.sessionDrainStdout = real.drainStdout
-      lib.sessionPostStdout = real.postStdout
-      delete process.env.OTUI_STDOUT_THREAD
-      clearEnvCache()
-    }
     if (renderer && closed === "pending") {
       renderer.destroy()
       renderer.nativeScene.driver.dispose()
@@ -657,13 +659,13 @@ const rows = (Object.keys(presets) as Preset[]).flatMap((preset) =>
   ),
 )
 
+// Only a hang outlasts Node's runner bound; a producer_flood row runs up to 70k steps.
 test.each(rows)(
   "$preset $path seed $seed",
   async ({ preset, path, seed }) => {
     const hash = await simulate(preset, path, seed)
     // I11: a seed replays to the same trace.
     if (seed < 4) expect(await simulate(preset, path, seed), `${preset} ${path} seed ${seed}: replay`).toBe(hash)
-    // Only a hang outlasts Node's runner bound; a producer_flood row runs up to 70k steps.
   },
   30_000,
 )
