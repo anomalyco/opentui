@@ -79,9 +79,9 @@ zig build test-abi --summary all
 ```
 
 This command runs the C fixture against the static and shared libraries on the host.
-On a glibc Linux host, the fixture targets glibc 2.17. `check:abi --all-targets`
-checks layouts for all eight supported targets. It does not test macOS or Windows
-runtime linkage or terminal behavior.
+An unfiltered `bun run test` runs it too. On a glibc Linux host, the fixture targets
+glibc 2.17. `check:abi --all-targets` checks layouts for all eight supported targets.
+`check:abi` does not test macOS or Windows runtime linkage or terminal behavior.
 
 The external [`examples/hello`](examples/hello) package imports the public Zig module
 without JavaScript.
