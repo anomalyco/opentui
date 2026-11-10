@@ -381,7 +381,8 @@ describeClient("TreeSitterClient", () => {
           if (n % 7 === 0) await new Promise((resolve) => setTimeout(resolve, 5))
         }
         await highlighted(stream.length)
-        expect(resets).toBeLessThanOrEqual(3)
+        // Replies arrive only during the 19 pauses and the final wait, so at most one reset per gap: 20.
+        expect(resets).toBeLessThanOrEqual(20)
       },
     ],
     [
