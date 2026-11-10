@@ -2659,10 +2659,8 @@ pub const Context = struct {
             if (chunk.byte_count == 0) continue;
             var attributes = chunk.attributes;
             if (chunk.link_url) |url| {
-                // Legacy styled text omits empty/oversized URLs and zero-width chunks.
-                if (url.len != 0 and url.len <= link.MAX_URL_LENGTH and
-                    text.buffer.measureText(bytes[offset..][0..chunk.byte_count]) > 0)
-                {
+                // Legacy styled text omits unwritable URLs and zero-width chunks; their text stays.
+                if (link.isWritableUrl(url) and text.buffer.measureText(bytes[offset..][0..chunk.byte_count]) > 0) {
                     const id = try prepared.links.trackUrl(url);
                     attributes = @import("ansi.zig").TextAttributes.setLinkId(attributes, id);
                 }

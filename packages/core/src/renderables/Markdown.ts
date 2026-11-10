@@ -231,7 +231,7 @@ const TRAILING_MARKDOWN_BLOCK_NEWLINES_RE = /(?:\r?\n)+$/
 const markdownLinkEncoder = new TextEncoder()
 
 function isSupportedLinkTarget(url: string): boolean {
-  if (url.length > MAX_LINK_URL_BYTES) return false
+  if (url.length > MAX_LINK_URL_BYTES || /[\x00-\x1f\x7f-\x9f]/.test(url)) return false
   return markdownLinkEncoder.encode(url).byteLength <= MAX_LINK_URL_BYTES
 }
 

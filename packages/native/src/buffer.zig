@@ -2754,7 +2754,7 @@ pub const OptimizedBuffer = struct {
                         self.link_pool.incref(link_id) catch |err| switch (err) {
                             error.RefcountOverflow => return error.TrackerLimit,
                             error.InvalidId, error.WrongGeneration => return err,
-                            error.OutOfMemory, error.UrlTooLong => unreachable,
+                            error.OutOfMemory, error.InvalidUrl => unreachable,
                         };
                     }
                     defer if (link_id != 0) self.link_pool.decref(link_id) catch unreachable;
