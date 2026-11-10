@@ -1254,13 +1254,15 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       await settle()
       // Away, the block's bottom is on the view's top edge, or its top on the bottom edge (30 rows above it, 6 in view).
       const away = first ? target.height : 24
-      if (mode === "hidden") target.visible = false
       if (mode === "detached") scrollbox.remove(target)
-      if (mode !== "shown") scrollbox.scrollTo(away)
+      if (mode === "culled" || mode === "detached") scrollbox.scrollTo(away)
       await renderOnce()
       const before = captureCharFrame()
+      // Hidden only in this tick, so the scene learns it from the write's own query.
+      if (mode === "hidden") target.visible = false
       target.content = text(5)
       if (mode === "hidden") target.visible = true
+      if (mode === "hidden") scrollbox.scrollTo(away)
       if (mode === "detached") mount()
       await renderOnce()
       // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands.
