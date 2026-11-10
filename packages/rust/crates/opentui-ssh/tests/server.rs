@@ -512,6 +512,8 @@ fn the_openssh_client_runs_an_app() {
     command
         .args(["-F", "/dev/null", "-tt", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"])
         .args(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"])
+        // ssh can miss a SIGWINCH until its poll wakes; keepalives wake it each 1 s and allow 30 s of server silence.
+        .args(["-o", "ServerAliveInterval=1", "-o", "ServerAliveCountMax=30"])
         .arg("-i")
         .arg(&identity)
         .args(["-p", &server.local_addr().port().to_string(), "alice@127.0.0.1"])
