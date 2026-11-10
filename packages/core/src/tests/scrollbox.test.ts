@@ -15,7 +15,6 @@ import { CodeRenderable } from "../renderables/Code.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
 import { SyntaxStyle } from "../syntax-style.js"
-import { TextBuffer } from "../text-buffer.js"
 
 // Test accelerator that returns a constant multiplier
 class ConstantScrollAccel implements ScrollAcceleration {
@@ -1213,9 +1212,9 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     expect(trace).toEqual(Array(12).fill("30/0"))
   })
 
-  // A block first or last of 16 children highlights in view, grows from 1 line to 3 and 5, and scrolls back into view.
-  // Grown above or below the view of the box, which culls it, it runs no update hook and starts no highlight, yet it
-  // measures as the one grown in view does after its highlight lands, appends the second growth, and shows the same.
+  // A block first or last of 16 children highlights in view, grows from 1 line to 5, and scrolls back into view. Grown
+  // where the scene runs none of its hooks (culled with an edge on the view's edge, hidden, or detached, then shown or
+  // mounted out of view), it measures as the block grown in view does, never paints raw text, and then shows the same.
   const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
   const grownOutOfView: [string, boolean, (count: number) => string][] = [
     ["code", true, (count) => lines(count).join("\n")],
@@ -1227,20 +1226,23 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     ]),
   ]
   test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
-    const run = async (first: boolean, cull: boolean) => {
+    const run = async (first: boolean, mode: "shown" | "culled" | "hidden" | "detached") => {
       const client = createMockTreeSitterClient()
+      // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
+      client.setMockResult({ highlights: [[0, 2, "conceal", { conceal: "" }]] })
       const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
       const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6 })
       testRenderer.root.add(scrollbox)
       for (let i = 0; i < 15; i++) scrollbox.add(new BoxRenderable(testRenderer, { height: 2, flexShrink: 0 }))
-      const options = { content: source(1), syntaxStyle, streaming, treeSitterClient: client, width: "100%" as const }
+      const text = (count: number) => (kind === "code" ? source(count) : `Intro\n\n${source(count)}`)
+      const options = { content: text(1), syntaxStyle, streaming, treeSitterClient: client, width: "100%" as const }
       const target =
         kind === "code"
           ? new CodeRenderable(testRenderer, { ...options, filetype: "typescript", drawUnstyledText: false })
           : new MarkdownRenderable(testRenderer, { ...options, internalBlockMode: "top-level" })
-      scrollbox.insertBefore(target, first ? scrollbox.getChildren()[0] : undefined)
-      // Last, the block is culled with its top on the view's bottom edge: 30 rows above it, 6 in view.
-      const [shown, away] = first ? [0, Infinity] : [Infinity, 24]
+      const mount = () => scrollbox.insertBefore(target, first ? scrollbox.getChildren()[0] : undefined)
+      mount()
+      const shown = first ? 0 : Infinity
       const settle = async () => {
         for (let pass = 0; pass < 4; pass++) {
           await renderOnce()
@@ -1250,22 +1252,80 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
       }
       scrollbox.scrollTo(shown)
       await settle()
-      if (cull) scrollbox.scrollTo(away)
+      // Away, the block's bottom is on the view's top edge, or its top on the bottom edge (30 rows above it, 6 in view).
+      const away = first ? target.height : 24
+      if (mode === "hidden") target.visible = false
+      if (mode === "detached") scrollbox.remove(target)
+      if (mode !== "shown") scrollbox.scrollTo(away)
       await renderOnce()
-      const append = spyOn(TextBuffer.prototype, "append")
-      target.content = source(3)
-      target.content = source(5)
-      await (cull ? renderOnce() : settle())
+      target.content = text(5)
+      if (mode === "hidden") target.visible = true
+      if (mode === "detached") mount()
+      await (mode === "shown" ? settle() : renderOnce())
       const height = scrollbox.scrollHeight
-      if (cull) expect([client.isHighlighting(), append.mock.calls]).toEqual([false, [["\nline 4\nline 5"]]])
-      append.mockRestore()
+      // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view.
+      if (mode !== "shown") expect(client.isHighlighting()).toBe(first)
       scrollbox.scrollTo(shown)
+      await renderOnce()
+      const reveal = captureCharFrame().split("\n")
       await settle()
       const frame = captureCharFrame()
+      // Before the highlight lands, each cell shows the highlighted text or nothing, never raw text.
+      const settled = frame.split("\n")
+      expect(reveal.filter((row, i) => [...row].some((cell, c) => cell !== " " && cell !== settled[i][c]))).toEqual([])
       scrollbox.destroyRecursively()
       return { height, frame }
     }
-    for (const first of [true, false]) expect(await run(first, true)).toEqual(await run(first, false))
+    for (const first of [true, false]) {
+      const shown = await run(first, "shown")
+      for (const mode of ["culled", "hidden", "detached"] as const) expect(await run(first, mode)).toEqual(shown)
+    }
+  })
+
+  // Over child counts, culling, empty and filled views, both directions and scroll positions on both axes, _skips names
+  // exactly the nodes the scene ran no update hook in: each child, a grandchild in its second cell, a hidden child, and
+  // a detached node.
+  test("ScrollBoxRenderable._skips matches the nodes the scene skips", async () => {
+    class Probe extends BoxRenderable {
+      updates = 0
+      protected override onUpdate(): void {
+        this.updates++
+      }
+    }
+    const mismatches: string[] = []
+    for (let config = 0; config < 32; config++) {
+      const [count, culling, size, row] = [[2, 15, 16, 17][config >> 3], (config & 4) > 0, (config & 2) * 3, config & 1]
+      const [main, cross, margin] = row ? ["width", "height", "marginTop"] : ["height", "width", "marginLeft"]
+      const scrollbox = new ScrollBoxRenderable(testRenderer, {
+        ...(row ? { width: size, height: 4 } : { width: 8, height: size }),
+        scrollX: true,
+        viewportCulling: culling,
+        contentOptions: { flexDirection: row ? "row" : "column", alignItems: "flex-start" },
+      })
+      testRenderer.root.add(scrollbox)
+      const probes = [new Probe(testRenderer, {})]
+      for (let i = 0; i < count; i++) {
+        // Across the main axis, children start 0 to 11 cells in and are 1 to 3 cells wide, so some miss the view there.
+        const child = new Probe(testRenderer, { [main]: 2, [cross]: 1 + (i % 3), [margin]: (i * 7) % 12 })
+        child.visible = i !== 1
+        child.add(new Probe(testRenderer, { [main]: 1, [row ? "marginLeft" : "marginTop"]: 1 }))
+        scrollbox.add(child)
+        probes.push(child, ...(child.getChildren() as Probe[]))
+      }
+      const scrolls = [0, 0, 1, 0, 2, 0, 0, 1, 0, 2, 3, 1, 7, 3, 8, 8, Infinity, Infinity]
+      for (let at = 0; at < scrolls.length; at += 2) {
+        scrollbox.scrollLeft = scrolls[at]
+        scrollbox.scrollTop = scrolls[at + 1]
+        await renderOnce()
+        for (const probe of probes) probe.updates = 0
+        await renderOnce()
+        for (const [index, probe] of probes.entries()) {
+          if ((probe.updates === 0) !== ScrollBoxRenderable._skips(probe)) mismatches.push(`${[config, at, index]}`)
+        }
+      }
+      scrollbox.destroyRecursively()
+    }
+    expect(mismatches).toEqual([])
   })
 
   test("maintains visibility when scrolling with many Code elements", async () => {
