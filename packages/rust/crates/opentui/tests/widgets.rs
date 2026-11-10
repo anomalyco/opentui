@@ -1123,6 +1123,15 @@ fn markdown_renders_blocks_inline_styles_and_code() {
     // The fence's filetype highlights the block.
     let keyword = if cfg!(feature = "tree-sitter") { syntax_fg(&app, "keyword") } else { colors.text };
     assert_eq!(capture.cell(1, 9).unwrap().fg, keyword);
+    // A new syntax theme restyles the block; after the app's theme changes, a new document's blocks take its colors.
+    doc.syntax_theme(opentui::syntax::SyntaxTheme::new().style("keyword", Style::new().fg(Color::RED)));
+    let red = if cfg!(feature = "tree-sitter") { Color::RED } else { colors.text };
+    assert_eq!(app.render().cell(1, 9).unwrap().fg, red);
+    app.set_theme(opentui::theme::Theme::light());
+    doc.detach();
+    app.root().add(&Markdown::new(&app).set_markdown("```rust\nfn main() {}\n```"));
+    let keyword = if cfg!(feature = "tree-sitter") { syntax_fg(&app, "keyword") } else { app.theme().foreground };
+    assert_eq!(app.render().cell(1, 0).unwrap().fg, keyword);
 }
 
 #[test]
