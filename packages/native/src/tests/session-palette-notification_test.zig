@@ -77,6 +77,7 @@ test "Session notification and palette rejection retain restoration reserves and
     try testing.expect(!try f.value.triggerNotification(&oversized, null));
     const too_large_encoded: [session.control_packet_bytes_max]u8 = @splat('x');
     try testing.expect(!try f.value.triggerNotification(&too_large_encoded, null));
+    try testing.expect(!try f.value.triggerNotification("ok", "\xc2"));
     failing.fail_index = failing.alloc_index;
     try testing.expect(!try f.value.triggerNotification("allocation failure", null));
     failing.fail_index = std.math.maxInt(usize);

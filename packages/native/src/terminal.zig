@@ -613,13 +613,12 @@ fn detectNotificationProtocol(value: []const u8) ?NotificationProtocol {
         return .osc777;
     }
 
-    // OSC 9 is the iTerm2 notification sequence. ConEmu also uses OSC 9 for
-    // multiple extensions, so use it only for terminal families with documented
-    // notification support rather than as a generic fallback.
+    // OSC 9 is the iTerm2 notification sequence. ConEmu reads every OSC 9 as
+    // one of its subcommands and shows no notification, so use it only for
+    // terminal families with documented notification support.
     if (std.ascii.findIgnoreCase(value, "iterm") != null or
         std.ascii.findIgnoreCase(value, "Apple_Terminal") != null or
-        std.ascii.findIgnoreCase(value, "Terminal.app") != null or
-        std.ascii.findIgnoreCase(value, "conemu") != null)
+        std.ascii.findIgnoreCase(value, "Terminal.app") != null)
     {
         return .osc9;
     }
@@ -1686,12 +1685,15 @@ fn writePassthroughSequence(self: *Terminal, tty: anytype, sequence: []const u8)
     try tty.writeAll(sequence);
 }
 
+/// A C0, DEL, or C1 control in the text can end the OSC and start another one, so each becomes a space.
 fn writeSanitizedNotificationText(writer: anytype, text: []const u8, replace_semicolon: bool) !void {
-    for (text) |c| {
-        if (c < 0x20 or c == 0x7f or c == '\x1b' or (replace_semicolon and c == ';')) {
+    var code_points = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (code_points.nextCodepointSlice()) |slice| {
+        const code_point = std.unicode.utf8Decode(slice) catch unreachable;
+        if (code_point < 0x20 or (code_point >= 0x7f and code_point < 0xa0) or (replace_semicolon and code_point == ';')) {
             try writer.writeByte(' ');
         } else {
-            try writer.writeByte(c);
+            try writer.writeAll(slice);
         }
     }
 }
@@ -1711,6 +1713,8 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
     if (!self.caps.notifications or self.notification_protocol == .none) {
         return false;
     }
+    const notification_title = title orelse "";
+    if (!std.unicode.utf8ValidateSlice(message) or !std.unicode.utf8ValidateSlice(notification_title)) return false;
 
     self.notification_id_counter +%= 1;
 
@@ -1724,20 +1728,12 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
             const id = try std.fmt.allocPrint(allocator, "opentui-{d}", .{self.notification_id_counter});
             defer allocator.free(id);
 
-            if (title) |notification_title| {
-                if (notification_title.len > 0) {
-                    try writeOsc99Payload(allocator, writer, id, "title", notification_title, false);
-                    try writeOsc99Payload(allocator, writer, id, "body", message, true);
-                } else {
-                    try writeOsc99Payload(allocator, writer, id, "body", message, true);
-                }
-            } else {
-                try writeOsc99Payload(allocator, writer, id, "body", message, true);
-            }
+            if (notification_title.len > 0) try writeOsc99Payload(allocator, writer, id, "title", notification_title, false);
+            try writeOsc99Payload(allocator, writer, id, "body", message, true);
         },
         .osc777 => {
             try writer.writeAll("\x1b]777;notify;");
-            if (title) |notification_title| {
+            if (title != null) {
                 try writeSanitizedNotificationText(writer, notification_title, true);
                 try writer.writeByte(';');
                 try writeSanitizedNotificationText(writer, message, true);
@@ -1748,12 +1744,13 @@ pub fn writeNotification(self: *Terminal, allocator: std.mem.Allocator, tty: any
             try writer.writeAll("\x1b\\");
         },
         .osc9 => {
-            try writer.writeAll("\x1b]9;");
-            if (title) |notification_title| {
-                if (notification_title.len > 0) {
-                    try writeSanitizedNotificationText(writer, notification_title, false);
-                    try writer.writeAll(": ");
-                }
+            // OSC 9 parsers (ConEmu, Windows Terminal, Ghostty, iTerm2) read text that starts with a digit as
+            // a ConEmu subcommand (progress, cwd, tab title, macro), so a space keeps it a notification.
+            const lead = if (notification_title.len > 0) notification_title else message;
+            try writer.writeAll(if (lead.len > 0 and std.ascii.isDigit(lead[0])) "\x1b]9; " else "\x1b]9;");
+            if (notification_title.len > 0) {
+                try writeSanitizedNotificationText(writer, notification_title, false);
+                try writer.writeAll(": ");
             }
             try writeSanitizedNotificationText(writer, message, false);
             try writer.writeAll("\x1b\\");

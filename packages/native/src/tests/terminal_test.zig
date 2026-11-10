@@ -486,20 +486,18 @@ test "notifications - iTerm2 feature reporting without No leaves disabled" {
 }
 
 test "notifications - xtversion heuristics prefer documented protocols" {
-    var kitty = Terminal.init(.{});
-    kitty.processCapabilityResponse("\x1bP>|kitty(0.46.2)\x1b\\");
-    try testing.expect(kitty.caps.notifications);
-    try testing.expectEqual(Terminal.NotificationProtocol.osc99, kitty.notification_protocol);
-
-    var ghostty = Terminal.init(.{});
-    ghostty.processCapabilityResponse("\x1bP>|ghostty 1.3.1\x1b\\");
-    try testing.expect(ghostty.caps.notifications);
-    try testing.expectEqual(Terminal.NotificationProtocol.osc777, ghostty.notification_protocol);
-
-    var iterm = Terminal.init(.{});
-    iterm.processCapabilityResponse("\x1bP>|iTerm2 3.6.9\x1b\\");
-    try testing.expect(iterm.caps.notifications);
-    try testing.expectEqual(Terminal.NotificationProtocol.osc9, iterm.notification_protocol);
+    // ConEmu reads every OSC 9 as a subcommand (sleep, message box, macro, process) and shows no notification.
+    for ([_]struct { []const u8, Terminal.NotificationProtocol }{
+        .{ "\x1bP>|kitty(0.46.2)\x1b\\", .osc99 },
+        .{ "\x1bP>|ghostty 1.3.1\x1b\\", .osc777 },
+        .{ "\x1bP>|iTerm2 3.6.9\x1b\\", .osc9 },
+        .{ "\x1bP>|ConEmu 230724\x1b\\", .none },
+    }) |case| {
+        var term = Terminal.init(.{ .remote_mode = .remote });
+        term.processCapabilityResponse(case[0]);
+        try testing.expectEqual(case[1] != .none, term.caps.notifications);
+        try testing.expectEqual(case[1], term.notification_protocol);
+    }
 }
 
 test "notifications - TERM_FEATURES enables OSC9 protocol" {
@@ -1515,52 +1513,39 @@ test "writeNotification - returns false when unsupported" {
     try testing.expectEqual(@as(usize, 0), writer.getWritten().len);
 }
 
-test "writeNotification - writes OSC99 title and body with base64 payloads" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.notifications = true;
-    term.notification_protocol = .osc99;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const ok = try term.writeNotification(testing.allocator, &writer, "Body", "Title");
-
-    try testing.expect(ok);
-    try testing.expectEqualStrings("\x1b]99;i=opentui-1:p=title:e=1:d=0;VGl0bGU=\x1b\\\x1b]99;i=opentui-1:p=body:e=1:d=1;Qm9keQ==\x1b\\", writer.getWritten());
-}
-
-test "writeNotification - writes OSC777 and sanitizes semicolons and controls" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.notifications = true;
-    term.notification_protocol = .osc777;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const ok = try term.writeNotification(testing.allocator, &writer, "Bo;dy\n", "Ti;tle");
-
-    try testing.expect(ok);
-    try testing.expectEqualStrings("\x1b]777;notify;Ti tle;Bo dy \x1b\\", writer.getWritten());
-}
-
-test "writeNotification - writes OSC9 combined title and message" {
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    var term = Terminal.init(.{ .env_map = &env });
-    term.caps.notifications = true;
-    term.notification_protocol = .osc9;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const ok = try term.writeNotification(testing.allocator, &writer, "Body\n", "Title");
-
-    try testing.expect(ok);
-    try testing.expectEqualStrings("\x1b]9;Title: Body \x1b\\", writer.getWritten());
+test "writeNotification - text cannot end or redirect its OSC" {
+    // C0, DEL and C1 controls become spaces, OSC 777 fields lose their semicolons, and OSC 9 text that starts
+    // with a digit gets a space first, so no OSC 9 parser reads it as a ConEmu subcommand. Invalid UTF-8 writes
+    // nothing and consumes no ID. Null expects a rejection.
+    for ([_]struct { Terminal.NotificationProtocol, []const u8, ?[]const u8, ?[]const u8 }{
+        .{ .osc99, "Body", "Title", "\x1b]99;i=opentui-1:p=title:e=1:d=0;VGl0bGU=\x1b\\\x1b]99;i=opentui-1:p=body:e=1:d=1;Qm9keQ==\x1b\\" },
+        .{ .osc99, "Body", "", "\x1b]99;i=opentui-1:p=body:e=1:d=1;Qm9keQ==\x1b\\" },
+        .{ .osc777, "Bo;dy\n", "Ti;tle", "\x1b]777;notify;Ti tle;Bo dy \x1b\\" },
+        .{ .osc777, "a\x00b\x1bc\x7fd", null, "\x1b]777;notify;a b c d;\x1b\\" },
+        .{ .osc777, "done\u{9c}\u{9b}21t", "ci\u{9c}", "\x1b]777;notify;ci ;done  21t\x1b\\" },
+        .{ .osc777, "€ Łódź\u{a0}", "\u{80}\u{9f}", "\x1b]777;notify;  ;€ Łódź\u{a0}\x1b\\" },
+        .{ .osc9, "Body\n", "Title", "\x1b]9;Title: Body \x1b\\" },
+        .{ .osc9, "x\u{9d}9;/tmp\u{9c}", null, "\x1b]9;x 9;/tmp \x1b\\" },
+        .{ .osc9, "4;1;50", null, "\x1b]9; 4;1;50\x1b\\" },
+        .{ .osc9, "5 tests passed", null, "\x1b]9; 5 tests passed\x1b\\" },
+        .{ .osc9, "12 files", "", "\x1b]9; 12 files\x1b\\" },
+        .{ .osc9, "0", null, "\x1b]9; 0\x1b\\" },
+        .{ .osc9, "done", "3;tab", "\x1b]9; 3;tab: done\x1b\\" },
+        .{ .osc9, "4;1;50", "CI", "\x1b]9;CI: 4;1;50\x1b\\" },
+        .{ .osc99, "\x9c", null, null },
+        .{ .osc777, "ok", "\xc2", null },
+        .{ .osc9, "\xff", "ok", null },
+        .{ .osc9, "ok", "\xed\xa0\x80", null },
+    }) |case| {
+        var term = Terminal.init(.{ .remote_mode = .remote });
+        term.caps.notifications = true;
+        term.notification_protocol = case[0];
+        var writer = TestWriter.init(testing.allocator);
+        defer writer.deinit();
+        try testing.expectEqual(case[3] != null, try term.writeNotification(testing.allocator, &writer, case[1], case[2]));
+        try testing.expectEqualStrings(case[3] orelse "", writer.getWritten());
+        try testing.expectEqual(@intFromBool(case[3] != null), term.notification_id_counter);
+    }
 }
 
 test "writeNotification - wraps OSC777 in tmux passthrough" {
