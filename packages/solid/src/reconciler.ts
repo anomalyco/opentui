@@ -1,10 +1,11 @@
 /* @refresh skip */
 import {
-  BaseRenderable,
+  type BaseRenderable,
   createTextAttributes,
   ImageRenderable,
   InputRenderable,
   InputRenderableEvents,
+  isRenderable,
   isTextNodeRenderable,
   isEditBufferRenderable,
   Renderable,
@@ -94,7 +95,7 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
   }
 
   // Renderable nodes
-  if (!(parent instanceof BaseRenderable)) {
+  if (!isRenderable(parent)) {
     console.error("[INSERT]", "Tried to mount a non base renderable")
     // Can't be a noop, have to panic
     throw new Error("Tried to mount a non base renderable")
@@ -138,7 +139,7 @@ function _removeNode(parent: DomNode, node: DomNode): void {
   slotParent?.didRemoveSlotChild(parent, node)
 
   process.nextTick(() => {
-    if (node instanceof BaseRenderable && !node.parent) {
+    if (isRenderable(node) && !node.parent) {
       node.destroyRecursively()
       return
     }

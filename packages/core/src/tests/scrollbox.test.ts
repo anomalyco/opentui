@@ -1212,6 +1212,82 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
     expect(trace).toEqual(Array(12).fill("30/0"))
   })
 
+  // A block first or last of 16 children highlights in view, grows from 1 line to 5, and scrolls back into view. Grown
+  // where the scene runs none of its hooks (culled with an edge on the view's edge, hidden, or detached, then shown or
+  // mounted out of view), it measures as the block grown in view does, never paints raw text, and then shows the same.
+  const lines = (count: number, prefix = "") => [1, 2, 3, 4, 5].slice(0, count).map((i) => `${prefix}line ${i}`)
+  const grownOutOfView: [string, boolean, (count: number) => string][] = [
+    ["code", true, (count) => lines(count).join("\n")],
+    ["paragraph", false, (count) => lines(count).join("\n")],
+    ["fence", true, (count) => ["```ts", ...lines(count), "```"].join("\n")],
+    ...[true, false].flatMap((streaming): [string, boolean, (count: number) => string][] => [
+      ["quote", streaming, (count) => lines(count, "> ").join("\n")],
+      ["list", streaming, (count) => `- ${lines(count).join("\n")}`],
+    ]),
+  ]
+  test.each(grownOutOfView)("a %s block (streaming %p) grown out of view", async (kind, streaming, source) => {
+    const run = async (first: boolean, mode: "shown" | "culled" | "hidden" | "detached") => {
+      const client = createMockTreeSitterClient()
+      // The highlight conceals each block's first two characters, so text painted unhighlighted differs.
+      client.setMockResult({ highlights: [[0, 2, "conceal", { conceal: "" }]] })
+      const syntaxStyle = SyntaxStyle.create(testRenderer.nativeScene)
+      const scrollbox = new ScrollBoxRenderable(testRenderer, { width: 40, height: 6 })
+      testRenderer.root.add(scrollbox)
+      for (let i = 0; i < 15; i++) scrollbox.add(new BoxRenderable(testRenderer, { height: 2, flexShrink: 0 }))
+      const text = (count: number) => (kind === "code" ? source(count) : `Intro\n\n${source(count)}`)
+      const options = { content: text(1), syntaxStyle, streaming, treeSitterClient: client, width: "100%" as const }
+      const target =
+        kind === "code"
+          ? new CodeRenderable(testRenderer, { ...options, filetype: "typescript", drawUnstyledText: false })
+          : new MarkdownRenderable(testRenderer, { ...options, internalBlockMode: "top-level" })
+      const mount = () => scrollbox.insertBefore(target, first ? scrollbox.getChildren()[0] : undefined)
+      mount()
+      const shown = first ? 0 : Infinity
+      const settle = async () => {
+        for (let pass = 0; pass < 4; pass++) {
+          await renderOnce()
+          client.resolveAllHighlightOnce()
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      }
+      scrollbox.scrollTo(shown)
+      await settle()
+      // Away, the block's bottom is on the view's top edge, or its top on the bottom edge (30 rows above it, 6 in view).
+      const away = first ? target.height : 24
+      if (mode === "detached") scrollbox.remove(target)
+      if (mode === "culled" || mode === "detached") scrollbox.scrollTo(away)
+      await renderOnce()
+      const before = captureCharFrame()
+      // Hidden only in this tick, so the scene learns it from the write's own query.
+      if (mode === "hidden") target.visible = false
+      target.content = text(5)
+      if (mode === "hidden") target.visible = true
+      if (mode === "hidden") scrollbox.scrollTo(away)
+      if (mode === "detached") mount()
+      await renderOnce()
+      // In view, where the scene runs its hooks, the block shows its last highlight until the next one lands.
+      if (mode === "shown") expect(captureCharFrame()).toBe(before)
+      if (mode === "shown") await settle()
+      const height = scrollbox.scrollHeight
+      // Grown, a first block reaches into the view, where the scene highlights it; a last one stays out of view.
+      if (mode !== "shown") expect(client.isHighlighting()).toBe(first)
+      scrollbox.scrollTo(shown)
+      await renderOnce()
+      const reveal = captureCharFrame().split("\n")
+      await settle()
+      const frame = captureCharFrame()
+      // Before the highlight lands, each cell shows the highlighted text or nothing, never raw text.
+      const settled = frame.split("\n")
+      expect(reveal.filter((row, i) => [...row].some((cell, c) => cell !== " " && cell !== settled[i][c]))).toEqual([])
+      scrollbox.destroyRecursively()
+      return { height, frame }
+    }
+    for (const first of [true, false]) {
+      const shown = await run(first, "shown")
+      for (const mode of ["culled", "hidden", "detached"] as const) expect(await run(first, mode)).toEqual(shown)
+    }
+  })
+
   test("maintains visibility when scrolling with many Code elements", async () => {
     const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 

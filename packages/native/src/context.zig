@@ -2295,6 +2295,12 @@ pub const Context = struct {
         return yoga.yogaNodeHasMeasureFunc((try self.sceneNode(handle)).yoga_node);
     }
 
+    pub fn sceneReachesHooks(self: *Context, handle: Handle) !bool {
+        try self.checkSceneRead();
+        const node = try self.sceneNode(handle);
+        return node.scene_node.?.owner.reaches(&self.objects, node);
+    }
+
     pub fn sceneMarkDirty(self: *Context, handle: Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
