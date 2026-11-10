@@ -81,8 +81,13 @@ fn main() {
         library.join("opentui.h").display()
     );
 
-    println!("cargo:rustc-link-search=native={}", library.display());
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     if static_link {
+        // Apple's linker takes libopentui.dylib over libopentui.a from one directory, so search one without the dylib.
+        // The copy keeps the source's mode, so a read-only source leaves a copy that a rerun cannot overwrite.
+        let _ = fs::remove_file(out.join("libopentui.a"));
+        fs::copy(library.join("libopentui.a"), out.join("libopentui.a")).expect("copy libopentui.a into OUT_DIR");
+        println!("cargo:rustc-link-search=native={}", out.display());
         println!("cargo:rustc-link-lib=static=opentui");
         if target.ends_with("-apple-darwin") {
             // What OpenTUI's build links libopentui.dylib against: the clipboard uses AppKit, Foundation, ImageIO, and
@@ -111,17 +116,18 @@ fn main() {
                 println!("cargo:rustc-link-lib={name}");
             }
         }
-    } else if windows {
-        println!("cargo:rustc-link-lib=dylib=opentui");
-        // Windows has no rpath; programs find a DLL beside them or on PATH. `cargo run` and `cargo test` put search
-        // paths inside the target directory on PATH, so a copy in OUT_DIR lets this workspace's programs start.
-        let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-        fs::copy(library.join(shared_library), out.join(shared_library)).expect("copy opentui.dll into OUT_DIR");
-        println!("cargo:rustc-link-search=native={}", out.display());
     } else {
+        println!("cargo:rustc-link-search=native={}", library.display());
         println!("cargo:rustc-link-lib=dylib=opentui");
-        // Lets this crate's own test binary start on macOS, whose linker keeps the library though nothing uses it.
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", library.display());
+        if windows {
+            // Windows has no rpath; programs find a DLL beside them or on PATH. `cargo run` and `cargo test` put search
+            // paths inside the target directory on PATH, so a copy in OUT_DIR lets this workspace's programs start.
+            fs::copy(library.join(shared_library), out.join(shared_library)).expect("copy opentui.dll into OUT_DIR");
+            println!("cargo:rustc-link-search=native={}", out.display());
+        } else {
+            // Lets this crate's own test binary start on macOS, whose linker keeps the library though nothing uses it.
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", library.display());
+        }
     }
     // Dependent build scripts read these as DEP_OPENTUI_LIB_DIR and DEP_OPENTUI_STATIC.
     println!("cargo:lib_dir={}", library.display());
