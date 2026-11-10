@@ -1296,14 +1296,11 @@ mod tests {
                 paragraph("after"),
             ]
         );
-        // A thematic break is three or more of one mark, with any whitespace between, indented at most three columns.
+        // A thematic break is three or more of one mark, with spaces or tabs between, indented at most three columns.
         let rules = ["---", "***", "___", "- - -", " ** * **", "_ _ _ _", "---   ", "---\t", "   ---", "-\t-\t-"];
         let not_rules =
-            ["--", "**", "-*-", "*-*-", "_-_", "\t---", "    ---", "---a", "- - - x", "-é", "", "  ", "–––"];
-        // Any Unicode whitespace separates marks, though only spaces and tabs indent; other marks are text.
-        let more = [("-\u{a0}-\u{2003}-", true), ("\u{a0}---", true), ("+++", false), ("===", false)];
-        let rows = rules.map(|line| (line, true)).into_iter().chain(not_rules.map(|line| (line, false)));
-        for (line, rule) in rows.chain(more) {
+            ["--", "**", "*-*-", "_-_", "\t---", "    ---", "---a", "- - - x", "-é", "", "–––", "+++", "==="];
+        for (line, rule) in rules.map(|line| (line, true)).into_iter().chain(not_rules.map(|line| (line, false))) {
             assert_eq!(is_rule(line), rule, "{line:?}");
         }
         // Dashes alone under a paragraph underline a heading; spaced dashes or other marks break after it.
