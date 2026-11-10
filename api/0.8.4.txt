@@ -1,0 +1,3 @@
+base 0.8.3
++ @opentui/core: method FFIRenderLib.sceneReachesHooks(context: NativeContextHandle, node: SceneNodeHandle): boolean
++ opentui.h: function ot_scene_reaches_hooks(ot_context *, const ot_handle *node, uint32_t *out_reached): ot_status
