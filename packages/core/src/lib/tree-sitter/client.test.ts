@@ -212,45 +212,6 @@ describeClient("TreeSitterClient", () => {
     expect(buffer?.hasParser).toBe(false)
   })
 
-  test("should emit highlights:response event when buffer is updated", async () => {
-    await client.initialize()
-
-    const jsCode = 'const hello = "world";'
-    await client.createBuffer(1, jsCode, "javascript")
-
-    let highlightReceived = false
-    let receivedBufferId: number | undefined
-    let receivedVersion: number | undefined
-
-    client.on("highlights:response", (bufferId, version, highlights) => {
-      highlightReceived = true
-      receivedBufferId = bufferId
-      receivedVersion = version
-    })
-
-    await new Promise((resolve) => setTimeout(resolve, 100))
-
-    const newCode = 'const hello = "world";\nconst foo = 42;'
-    const edits = [
-      {
-        startIndex: jsCode.length,
-        oldEndIndex: jsCode.length,
-        newEndIndex: newCode.length,
-        startPosition: { row: 0, column: jsCode.length },
-        oldEndPosition: { row: 0, column: jsCode.length },
-        newEndPosition: { row: 1, column: 14 },
-      },
-    ]
-
-    await client.updateBuffer(1, edits, newCode, 2)
-
-    await new Promise((resolve) => setTimeout(resolve, 200))
-
-    expect(highlightReceived).toBe(true)
-    expect(receivedBufferId).toBe(1)
-    expect(receivedVersion).toBe(2)
-  })
-
   test("should handle buffer removal", async () => {
     await client.initialize()
 
@@ -304,6 +265,131 @@ describeClient("TreeSitterClient", () => {
     expect(buffer?.content).toBe(newContent)
     expect(buffer?.version).toBe(2)
   })
+
+  const js = (n: number) => `const a = ${n};\nfunction f() { return ${n}; }`
+  const fence = Array.from({ length: 80 }, (_, i) => `export const item${i}: number = ${i} * 2;`).join("\n")
+  const md = `# Heading\n\nParagraph with **bold** and \`inline\`.\n\n\`\`\`typescript\n${fence}\n\`\`\`\n`
+  const mdZig = `${md}\n\`\`\`zig\npub fn main() void {}\n\`\`\`\n`
+  const end = (text: string) => ({ row: text.split("\n").length - 1, column: text.length - text.lastIndexOf("\n") - 1 })
+  const replace = (from: string, to: string) => [
+    {
+      startIndex: 0,
+      oldEndIndex: from.length,
+      newEndIndex: to.length,
+      startPosition: { row: 0, column: 0 },
+      oldEndPosition: end(from),
+      newEndPosition: end(to),
+    },
+  ]
+  // Each row ends with removeBuffer. The markdown rows edit or remove while the worker loads the injected typescript
+  // or zig grammar, which a new worker has not loaded yet.
+  test.each<[string, (c: TreeSitterClient, highlighted: (version: number) => Promise<void>) => Promise<void>]>([
+    [
+      "resetBuffer",
+      async (c, highlighted) => {
+        await c.createBuffer(1, js(1), "javascript", 1)
+        for (let v = 2; v <= 4; v++) {
+          await c.resetBuffer(1, v, js(v))
+          await highlighted(v)
+        }
+      },
+    ],
+    [
+      "updateBuffer during the first injection load",
+      async (c, highlighted) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+        await highlighted(2)
+      },
+    ],
+    [
+      "resetBuffer during the first injection load",
+      async (c, highlighted) => {
+        await c.createBuffer(1, mdZig, "markdown", 1)
+        await c.resetBuffer(1, 2, md)
+        await highlighted(2)
+      },
+    ],
+    ["removeBuffer during the first injection load", async (c) => void (await c.createBuffer(1, md, "markdown", 1))],
+    [
+      "removeBuffer with a reset still debounced",
+      async (c) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.resetBuffer(1, 2, mdZig)
+      },
+    ],
+    [
+      "removeBuffer during an edit's injection load",
+      async (c, highlighted) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await highlighted(1)
+        await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+      },
+    ],
+    [
+      "removeBuffer during a queued edit's injection load",
+      async (c) => {
+        await c.createBuffer(1, md, "markdown", 1)
+        await c.updateBuffer(1, replace(md, mdZig), mdZig, 2)
+        await c.highlightOnce(md, "markdown")
+      },
+    ],
+    [
+      "removeBuffer again as the last removeBuffer's 3 s timeout ends",
+      async (c) => {
+        await c.createBuffer(1, js(1), "javascript", 1)
+        await c.removeBuffer(1)
+        await new Promise((resolve) => setTimeout(resolve, 2975))
+        await c.createBuffer(1, md, "markdown", 1)
+      },
+    ],
+  ])(
+    "should delete every replaced tree once no message reads it: %s",
+    async (_name, run) => {
+      const workerPath = new URL(
+        existsSync(new URL("./tree-count-worker.fixture.js", import.meta.url))
+          ? "./tree-count-worker.fixture.js"
+          : "./tree-count-worker.fixture.ts",
+        import.meta.url,
+      )
+      const c = new TreeSitterClient({ dataPath, workerPath })
+      const versions: number[] = []
+      const errors: string[] = []
+      c.on("highlights:response", (id, version) => id === 1 && versions.push(version))
+      c.on("error", (error) => errors.push(error.split("\n")[0]!))
+      c.on("warning", (warning) => errors.push(warning))
+      const treeCount = new Promise<unknown>((resolve) =>
+        c.on("worker:log", (_type, message) => {
+          if (message.startsWith("tree-count ")) resolve(JSON.parse(message.slice("tree-count ".length)))
+        }),
+      )
+      const highlighted = async (version: number) => {
+        for (let waited = 0; !versions.includes(version); waited += 5) {
+          if (waited >= 3000) throw new Error(`no highlights for version ${version}`)
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+      }
+      const within3s = <T>(promise: Promise<T>) =>
+        Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3000))])
+
+      try {
+        await c.initialize()
+        await run(c, highlighted)
+        const removed = await within3s(c.removeBuffer(1))
+        // Waits on the same grammar loads, so a buffer pass suspended on them has resumed before the count.
+        await within3s(c.highlightOnce(mdZig, "markdown"))
+        const trees = await within3s(Promise.all([c.getPerformance(), treeCount]).then(([, count]) => count))
+        expect({ removed, errors, trees }).toEqual({
+          removed: undefined,
+          errors: [],
+          trees: { live: 0, freedReads: 0 },
+        })
+      } finally {
+        await within3s(c.destroy())
+      }
+    },
+    15000,
+  )
 
   test("should emit error events for invalid operations", async () => {
     await client.initialize()
