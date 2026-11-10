@@ -47,9 +47,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated.rs");
     let dir = native_lib_dir(platform);
-    let static_link = env::var_os("CARGO_FEATURE_STATIC").is_some();
-    // OpenTUI's Windows archive is built for MinGW with libc++, which neither Rust Windows toolchain links.
-    assert!(!(windows && static_link), "the static feature is not supported on Windows; link opentui.dll instead");
+    // OpenTUI's Windows archive is built for MinGW with libc++, which neither Rust Windows toolchain links, so Windows
+    // links opentui.dll with or without the static feature.
+    let static_link = env::var_os("CARGO_FEATURE_STATIC").is_some() && !windows;
     // A crt-static Unix executable has no dynamic loader, so nothing loads the shared library and it crashes at start.
     // Rust's musl targets default to crt-static, which CARGO_CFG_TARGET_FEATURE does not list.
     let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
@@ -58,7 +58,7 @@ fn main() {
     assert!(
         windows || static_link || !crt_static,
         "{target} links static executables (crt-static), which cannot load {shared_library}: build with \
-         RUSTFLAGS='-C target-feature=-crt-static', or link libopentui.a with the static feature."
+         RUSTFLAGS='-C target-feature=-crt-static', or keep the default static feature, which links libopentui.a."
     );
     // Windows links a DLL through its import library.
     let files: &[&str] = if static_link {
@@ -72,10 +72,19 @@ fn main() {
         let path = dir.join(file);
         // Watch the path as given: a canonical path follows a symlink and would keep watching its old target.
         println!("cargo:rerun-if-changed={}", path.display());
+        // npm's platform packages ship the shared library only.
+        let shared = if *file == "libopentui.a" && dir.join(shared_library).is_file() {
+            format!(
+                ". This directory has no static archive: to link {shared_library} instead, turn off the default static \
+                 feature (default-features = false, or --no-default-features)"
+            )
+        } else {
+            String::new()
+        };
         assert!(
             path.is_file(),
             "missing native artifact {}: run `bun run build` at the repository root or `bun run build:native` in \
-             packages/core, or set OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}",
+             packages/core, or set OPENTUI_LIB_DIR to OpenTUI's packages/native/lib/{platform}{shared}",
             path.display()
         );
     }

@@ -73,8 +73,9 @@ done
 exec $zig cc -target $zig_target "\$@"
 EOF
     chmod +x "$tools/cc-$target"
-    shared=opentui/tokio,opentui/log,opentui/tree-sitter
-    static=opentui/static,$shared
+    # The static feature is a default one.
+    shared='--no-default-features --features opentui/tokio,opentui/log,opentui/tree-sitter'
+    static='--features opentui/tokio,opentui/log,opentui/tree-sitter'
     archiver=ar
     rustflags=
     case $target in
@@ -83,9 +84,9 @@ EOF
         *-musl) rustflags='-C target-feature=-crt-static' ;;
     esac
     case $target in
-        # build.rs refuses the static feature on Windows.
-        *-windows-*) feature_sets="'' $shared" ;;
-        *) feature_sets="'' $shared $static $static" ;;
+        # Windows links opentui.dll with or without the static feature.
+        *-windows-*) feature_sets="--no-default-features '$shared' '$static'" ;;
+        *) feature_sets="--no-default-features '$shared' '$static' '$static'" ;;
     esac
     eval "set -- $feature_sets"
     for features do
@@ -93,7 +94,7 @@ EOF
         touch "$tools/lib/libopentui.a"
         env "CC_$(printf %s "$target" | tr - _)=$tools/cc-$target" "AR_$(printf %s "$target" | tr - _)=$tools/zig-$archiver" \
             ${rustflags:+"RUSTFLAGS=$rustflags"} "$cargo" clippy --locked --target "$target" --manifest-path "$here/Cargo.toml" --workspace \
-            --all-targets ${features:+--features "$features"} -- -D warnings < /dev/null
+            --all-targets $features -- -D warnings < /dev/null
     done
     printf 'PASS: compile checks (%s)\n' "$target"
 done <<EOF
@@ -102,7 +103,7 @@ EOF
 
 # A crt-static executable has no dynamic loader and would crash at start, so build.rs refuses to link it shared.
 if "$cargo" check --locked --target x86_64-unknown-linux-musl --manifest-path "$here/Cargo.toml" -p opentui-sys \
-    < /dev/null 2> "$tools/crt-static"; then
+    --no-default-features < /dev/null 2> "$tools/crt-static"; then
     echo 'FAIL: a crt-static musl build links the shared library' >&2
     exit 1
 fi
@@ -124,3 +125,12 @@ while IFS= read -r output; do
     [ -n "$archive" ] || { echo "FAIL: the static build searches no libopentui.a: $output" >&2; exit 1; }
 done < "$tools/static-outputs"
 echo 'PASS: static macOS builds search libopentui.a and no libopentui.dylib'
+
+# Windows links opentui.dll with the static feature too, though the stubs include a libopentui.a.
+find "$CARGO_TARGET_DIR" -path '*-windows-*/debug/build/opentui-sys-*/output' -newer "$tools/lib/opentui.h" \
+    -print > "$tools/windows-outputs"
+[ -s "$tools/windows-outputs" ] || { echo 'FAIL: no Windows build' >&2; exit 1; }
+while IFS= read -r output; do
+    grep -qx 'cargo:static=0' "$output" || { echo "FAIL: a Windows build links libopentui.a: $output" >&2; exit 1; }
+done < "$tools/windows-outputs"
+echo 'PASS: Windows builds link opentui.dll with and without the static feature'

@@ -8,7 +8,7 @@ fn main() {
     let windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     if let (false, false, Ok(dir)) = (static_link, windows, env::var("DEP_OPENTUI_LIB_DIR")) {
         // Lets this package's tests and examples run in place. Downstream executables choose their own runtime
-        // search path, or enable the `static` feature.
+        // search path, or keep the default `static` feature.
         println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     }
 }

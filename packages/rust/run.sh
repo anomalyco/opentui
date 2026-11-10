@@ -22,15 +22,12 @@ case ${1:-} in
     chat) example=chat; package=opentui-ssh; shift ;;
 esac
 [ "$#" -le 1 ] || usage
+# The static feature is a default one; Windows links opentui.dll either way.
 case ${1:-shared} in
-    shared) features=opentui/tree-sitter ;;
-    static) features=opentui/static,opentui/tree-sitter ;;
+    shared) defaults=--no-default-features ;;
+    static) defaults= ;;
     *) usage ;;
 esac
-if [ "$platform" = x86_64-windows ] && [ "${1:-shared}" = static ]; then
-    printf '%s\n' 'Static linking is not supported on Windows.' >&2
-    exit 2
-fi
 # Without OPENTUI_LIB_DIR, the crates link this checkout's packages/native/lib/$platform.
 if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
     # Cargo on Windows needs a Windows path, which MSYS's `pwd -W` prints.
@@ -38,4 +35,4 @@ if [ -n "${OPENTUI_LIB_DIR:-}" ]; then
     export OPENTUI_LIB_DIR
 fi
 exec "${CARGO:-cargo}" run --locked --manifest-path "$here/Cargo.toml" -p "$package" --example "$example" \
-    ${features:+--features "$features"}
+    $defaults --features opentui/tree-sitter

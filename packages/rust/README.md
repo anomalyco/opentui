@@ -54,7 +54,9 @@ To link other artifacts, such as an npm platform package or a native archive
 of a release, set `OPENTUI_LIB_DIR` to their directory. It wins over the
 checkout's build. Give an absolute path: Cargo reads a relative one from
 `crates/opentui-sys`. A Cargo `git` dependency on this repository has no native
-build, so it needs `OPENTUI_LIB_DIR`.
+build, so it needs `OPENTUI_LIB_DIR`. An npm platform package ships only the
+shared library, so on Linux and macOS it needs the default features off (see
+below).
 
 These platforms are supported:
 
@@ -71,8 +73,9 @@ These platforms are supported:
 
 The build picks the directory for the target it builds.
 Rust's musl targets build static executables (`crt-static`), which cannot load
-`libopentui.so`, so the build refuses the shared library there: use the
-`static` feature, or build with `RUSTFLAGS='-C target-feature=-crt-static'`.
+`libopentui.so`, so the build refuses the shared library there: keep the
+default `static` feature, or turn the default features off and build with
+`RUSTFLAGS='-C target-feature=-crt-static'`.
 OpenTUI's macOS build needs the macOS SDK, which comes with the Xcode Command
 Line Tools (`xcode-select --install`). On a Mac, `bun run build` in
 `packages/native` builds the Mac's own architecture; add the other one with
@@ -89,14 +92,18 @@ writes it, and `bun run check:abi` fails when it is stale. Do not edit it. The
 bindings are valid only for the exact header they were generated from, and the
 build fails if the artifacts' header differs.
 
-By default the crate links the shared library: `libopentui.so` on Linux,
-`libopentui.dylib` on macOS, and `opentui.dll` on Windows, through its import
-library `opentui.lib`. On Linux and macOS, the workspace's tests and examples
-find it through an rpath; other executables need their own rpath,
-`LD_LIBRARY_PATH` on Linux, or `DYLD_LIBRARY_PATH` on macOS, or can link
-statically with the `static` feature. Windows has no rpath: the build copies
-`opentui.dll` where `cargo run` and `cargo test` find it, and other
-executables need it beside them or on `PATH`.
+By default the crate links `libopentui.a` on Linux and macOS, so an
+executable needs no OpenTUI file at run time, and on Linux no libc++ either.
+Windows always links `opentui.dll`, through its import library `opentui.lib`:
+ship `opentui.dll` beside the `.exe`. The build copies it where `cargo run`
+and `cargo test` find it.
+
+To link `libopentui.so` or `libopentui.dylib` instead, turn the default
+features off (`default-features = false`, or `--no-default-features`). Cargo
+merges features across the app's graph, so every crate in it that depends on
+`opentui` must turn them off. The workspace's tests and examples find the library through an rpath; other
+executables need their own rpath, `LD_LIBRARY_PATH` on Linux, or
+`DYLD_LIBRARY_PATH` on macOS.
 
 On Windows, the app turns on the console's virtual terminal input and output,
 so the input parser reads the same sequences as on Unix. Windows has no job
@@ -107,13 +114,13 @@ and `pty::shell()` is `%COMSPEC%`.
 
 Features:
 
-- `static`: link `libopentui.a`. On Linux the archive carries its own libc++,
-  so the program needs only libc. That libc++ is private to OpenTUI, so C++
-  code elsewhere in the program keeps its own runtime, libstdc++ or libc++,
-  shared or static. On macOS this also links the system
-  frameworks OpenTUI uses for the clipboard, audio, and video. Not supported on
-  Windows: OpenTUI's Windows archive is built for MinGW with libc++, which
-  neither Rust Windows toolchain links.
+- `static` (default): link `libopentui.a`. On Linux the archive carries its
+  own libc++, so the program needs only libc. That libc++ is private to
+  OpenTUI, so C++ code elsewhere in the program keeps its own runtime,
+  libstdc++ or libc++, shared or static. On macOS this also links the system
+  frameworks OpenTUI uses for the clipboard, audio, and video. Windows links
+  `opentui.dll` with or without it: OpenTUI's Windows archive is built for
+  MinGW with libc++, which neither Rust Windows toolchain links.
 - `tokio`: `App::spawn` runs futures on a Tokio runtime and finishes them on
   the UI thread.
 - `log`: `console::init_logger` shows the `log` crate's records in the debug
@@ -634,7 +641,8 @@ cargo test --locked --workspace --features opentui/tokio,opentui/tree-sitter
 sh scripts/check-targets.sh   # clippy for the macOS, arm64 and musl Linux, and Arm Windows targets
 ```
 
-On Windows, run `sh test.sh` from Git Bash; it checks the shared linkage only.
+On Windows, run `sh test.sh` from Git Bash; it runs one pass, which links
+`opentui.dll`.
 `cargo test` also works from any shell.
 
 After a change to `opentui.h`, run `bun run generate:abi` in `packages/core`,
