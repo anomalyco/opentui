@@ -65,7 +65,8 @@ impl LogEntry {
     pub fn format(&self) -> String {
         let seconds = self.time.duration_since(SystemTime::UNIX_EPOCH).unwrap_or(Duration::ZERO).as_secs();
         let mut local: libc::tm = unsafe { std::mem::zeroed() };
-        let time = seconds as libc::time_t;
+        // Inferred from the calls: libc deprecates the name `time_t` on musl, whose definition it plans to change.
+        let time = seconds as _;
         #[cfg(unix)]
         unsafe {
             libc::localtime_r(&time, &mut local)

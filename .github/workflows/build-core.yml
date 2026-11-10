@@ -533,7 +533,7 @@ jobs:
         working-directory: packages/rust
         run: sh test.sh ${{ steps.rust.outputs.linkage }}
 
-      - name: Check the macOS targets
+      - name: Check the other targets
         working-directory: packages/rust
         run: sh scripts/check-targets.sh
 

@@ -1,10 +1,11 @@
 #!/bin/sh
-# Compile-checks the workspace for aarch64-apple-darwin and x86_64-apple-darwin from another system: clippy with the
-# feature sets test.sh uses, against stub artifacts. Nothing is linked or run; test.sh on macOS does that.
+# Compile-checks the workspace for every target build.rs maps except the x86_64 Linux and Windows ones, which test.sh
+# checks on their own runners: clippy with the feature sets test.sh uses, against stub artifacts. Nothing is linked or
+# run; test.sh on the platform does that.
 #
-# Needs Zig, whose C compiler builds tree-sitter's C code against its bundled macOS headers, and each target's
-# standard library: rustup installs both targets from rust-toolchain.toml. Without rustup, build them from rust-src:
-# RUSTC_BOOTSTRAP=1 CARGO_UNSTABLE_BUILD_STD=std sh scripts/check-targets.sh
+# Needs Zig, whose C compiler builds tree-sitter's and ring's C code for each target against its bundled headers, and
+# each target's standard library: rustup installs them from rust-toolchain.toml. Without rustup, build them from
+# rust-src: RUSTC_BOOTSTRAP=1 CARGO_UNSTABLE_BUILD_STD=std sh scripts/check-targets.sh
 #
 # Usage: sh scripts/check-targets.sh
 # Set ZIG to the Zig command if `zig` is not the version packages/native/build.zig.zon names, such as ZIG='zig 0.17.0'
@@ -18,20 +19,39 @@ zig=${ZIG:-zig}
 # The bindings match this checkout's header, or OPENTUI_LIB_DIR's, which every platform's build shares.
 header=${OPENTUI_LIB_DIR:-$here/../native/include}/opentui.h
 
+# Each Rust target and the Zig target its C code compiles for. Zig has no MSVC headers, so both Windows targets use
+# MinGW's; the objects are never linked.
+targets='aarch64-apple-darwin aarch64-macos.13.0
+x86_64-apple-darwin x86_64-macos.13.0
+aarch64-unknown-linux-gnu aarch64-linux-gnu.2.17
+x86_64-unknown-linux-musl x86_64-linux-musl
+aarch64-unknown-linux-musl aarch64-linux-musl
+aarch64-pc-windows-msvc aarch64-windows-gnu
+aarch64-pc-windows-gnullvm aarch64-windows-gnu'
+
 export CARGO_TARGET_DIR="$here/target/check-targets"
 tools=$CARGO_TARGET_DIR/tools
 # build.rs only checks that the artifacts exist and that the header matches the bindings.
 mkdir -p "$tools/lib"
 cp "$header" "$tools/lib/opentui.h"
-rm -f "$tools/lib/libopentui.dylib" "$tools/lib/libopentui.a"
-: > "$tools/lib/libopentui.dylib"
+for stub in libopentui.dylib libopentui.so libopentui.a opentui.dll opentui.lib; do
+    rm -f "$tools/lib/$stub"
+    : > "$tools/lib/$stub"
+done
 # Read-only, as in a release or a Nix store: the static build below runs build.rs twice over its own copy.
-: > "$tools/lib/libopentui.a"
 chmod a-w "$tools/lib/libopentui.a"
-for arch in aarch64 x86_64; do
-    cat > "$tools/cc-$arch" <<EOF
+# cc-rs gives MSVC targets lib.exe's options.
+for archiver in ar lib; do
+    printf '#!/bin/sh\nexec %s %s "$@"\n' "$zig" "$archiver" > "$tools/zig-$archiver"
+    chmod +x "$tools/zig-$archiver"
+done
+
+export OPENTUI_LIB_DIR="$tools/lib"
+cargo=${CARGO:-cargo}
+while read -r target zig_target; do
+    cat > "$tools/cc-$target" <<EOF
 #!/bin/sh
-# Drops the Apple driver flags that zig cc takes from -target instead.
+# Drops the driver flags that zig cc takes from -target instead.
 skip=
 for arg do
     shift
@@ -42,27 +62,32 @@ for arg do
     esac
     set -- "\$@" "\$arg"
 done
-exec $zig cc -target $arch-macos.13.0 "\$@"
+exec $zig cc -target $zig_target "\$@"
 EOF
-    chmod +x "$tools/cc-$arch"
-done
-printf '#!/bin/sh\nexec %s ar "$@"\n' "$zig" > "$tools/ar"
-chmod +x "$tools/ar"
-
-export OPENTUI_LIB_DIR="$tools/lib"
-cargo=${CARGO:-cargo}
-for arch in aarch64 x86_64; do
-    target=$arch-apple-darwin
-    static=opentui/static,opentui/tokio,opentui/log,opentui/tree-sitter
-    for features in '' opentui/tokio,opentui/log,opentui/tree-sitter "$static" "$static"; do
+    chmod +x "$tools/cc-$target"
+    shared=opentui/tokio,opentui/log,opentui/tree-sitter
+    static=opentui/static,$shared
+    archiver=ar
+    case $target in
+        *-msvc) archiver=lib ;;
+    esac
+    case $target in
+        # build.rs refuses the static feature on Windows.
+        *-windows-*) feature_sets="'' $shared" ;;
+        *) feature_sets="'' $shared $static $static" ;;
+    esac
+    eval "set -- $feature_sets"
+    for features do
         # A newer archive reruns build.rs, so the second static pass replaces the first one's copy.
         touch "$tools/lib/libopentui.a"
-        env "CC_${arch}_apple_darwin=$tools/cc-$arch" "AR_${arch}_apple_darwin=$tools/ar" \
+        env "CC_$(printf %s "$target" | tr - _)=$tools/cc-$target" "AR_$(printf %s "$target" | tr - _)=$tools/zig-$archiver" \
             "$cargo" clippy --locked --target "$target" --manifest-path "$here/Cargo.toml" --workspace \
-            --all-targets ${features:+--features "$features"} -- -D warnings
+            --all-targets ${features:+--features "$features"} -- -D warnings < /dev/null
     done
-    printf 'PASS: macOS compile checks (%s)\n' "$target"
-done
+    printf 'PASS: compile checks (%s)\n' "$target"
+done <<EOF
+$targets
+EOF
 
 # Apple's linker takes libopentui.dylib over libopentui.a from one directory, so a static build must not search one
 # that holds both. Rewriting the stubs reran each build script after the header copy, so -newer skips stale outputs.
