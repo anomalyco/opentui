@@ -40,7 +40,7 @@
 use crate::error::{Error, Result};
 use crate::input::{
     Event, Expectations, Input, OscColor, Parser, is_capability_response, is_color_scheme_notice, is_cursor_report,
-    osc_color,
+    osc_color, pixel_resolution,
 };
 use crate::native::{
     Context, ContextOptions, Control, Draft, KittyImageReply, KittyKeyboard, MouseTracking, Pump, Remote,
@@ -100,6 +100,8 @@ const OUTPUT_BYTES_PER_DRAIN: u32 = 256 * 1024;
 const READ_BYTES_MAX: usize = 64 * 1024;
 /// Close timeouts a whole close or mode change may take, as Core's `NativeSession` caps its close.
 const CLOSE_CAP_TIMEOUTS: u32 = 10;
+/// How long a pixel size query waits for its reply before another may go out, as Core's reply backstop.
+const PIXEL_REPLY_WINDOW: Duration = Duration::from_secs(5);
 
 /// How a [`Host`] creates its Context and Session and sets up its terminal.
 #[derive(Clone, Debug)]
@@ -297,6 +299,13 @@ pub struct Host {
     close_timeout: Duration,
     output: OutputStats,
     split: Option<SplitFooter>,
+    /// Whether a query for the terminal's pixel size waits to be sent, as Core sends one at setup and after a resize.
+    pixel_query_wanted: bool,
+    /// Until when the reply to the last pixel size query is expected; a late reply still answers it. As in Core, only
+    /// one query waits at a time.
+    pixel_reply_until: Option<Instant>,
+    /// Whether the parser was last told to expect that reply.
+    expecting_pixel_reply: bool,
 }
 
 /// A deadline that moves on whenever output reaches the terminal, within a cap of ten times its timeout.
@@ -434,6 +443,9 @@ impl Host {
             close_timeout: options.close_timeout,
             output: OutputStats::default(),
             split,
+            pixel_query_wanted: true,
+            pixel_reply_until: None,
+            expecting_pixel_reply: false,
         };
         host.session.setup_terminal(options.terminal)?;
         let now = Instant::now();
@@ -443,6 +455,8 @@ impl Host {
         if let Some(split) = &host.split {
             split.setup_done(Instant::now());
         }
+        // Its reply is one of setup's: expected within the capability window.
+        host.query_pixels(options.capability_window.min(PIXEL_REPLY_WINDOW));
         Ok(host)
     }
 
@@ -600,20 +614,29 @@ impl Host {
         let pump = self.pump_deadline.and_then(|deadline| self.clock.checked_add(Duration::from_nanos(deadline)));
         // The end of the capability window ends a partial reply that waits for it, even when it passed between polls.
         let window = self.capability_until.filter(|_| self.expecting_replies);
+        let pixel = self.pixel_reply_until.filter(|_| self.expecting_pixel_reply);
         let seed = self.split.as_ref().and_then(SplitFooter::seed_deadline);
-        [deadline, self.parser.deadline(), pump, window, seed].into_iter().flatten().min()
+        [deadline, self.parser.deadline(), pump, window, pixel, seed].into_iter().flatten().min()
     }
 
     /// Tells the parser what the host waits for at `now`, then ends what may no longer wait, as Core does: during the
-    /// capability window, replies to setup's queries, including cursor position reports, not modified F3 keys.
+    /// capability window, replies to setup's queries, including cursor position reports, not modified F3 keys; then
+    /// the reply to a pixel size query.
     fn expect_replies(&mut self, now: Instant) -> Result<()> {
         self.expecting_replies = self.capability_until.is_none_or(|until| now < until);
+        self.expecting_pixel_reply = self.pixel_reply_until.is_some_and(|until| now < until);
         if !self.expecting_replies
             && let Some(split) = &self.split
         {
             split.replies_ended();
         }
-        let expectations = if self.expecting_replies { Expectations::CURSOR_POSITION } else { Expectations::NONE };
+        let expectations = if self.expecting_replies {
+            Expectations::CURSOR_POSITION
+        } else if self.expecting_pixel_reply {
+            Expectations::REPLIES
+        } else {
+            Expectations::NONE
+        };
         self.parser.set_expectations(expectations, now, &mut self.inputs)
     }
 
@@ -644,7 +667,23 @@ impl Host {
             self.handle_signals(events)?;
         }
         self.flush()?;
-        self.apply_resize(events)
+        self.apply_resize(events)?;
+        self.query_pixels(PIXEL_REPLY_WINDOW);
+        Ok(())
+    }
+
+    /// Asks for the terminal's pixel size if a query is wanted and none waits for its reply, and expects the reply for
+    /// `window`. A query the Session refuses, such as one behind a full output queue or while the terminal is
+    /// inactive, is tried again at the end of the next poll.
+    fn query_pixels(&mut self, window: Duration) {
+        let now = Instant::now();
+        if self.pixel_query_wanted
+            && self.pixel_reply_until.is_none_or(|until| now >= until)
+            && self.session.control(Control::QueryPixelResolution).is_ok()
+        {
+            self.pixel_query_wanted = false;
+            self.pixel_reply_until = Some(now + window);
+        }
     }
 
     /// Waits for the terminal, a wakeup, or `timeout`. A remote terminal reports `signals` and `input` on every turn;
@@ -716,6 +755,19 @@ impl Host {
                 }
             }
             events.push(Event::Color(color));
+            return;
+        }
+        if self.pixel_reply_until.is_some()
+            && let Some((width, height)) = pixel_resolution(reply)
+        {
+            self.pixel_reply_until = None;
+            let (columns, rows) = self.size;
+            // After a resize the reply may describe the old size: ask again instead, as Core does.
+            if self.pixel_query_wanted {
+                self.query_pixels(PIXEL_REPLY_WINDOW);
+            } else if self.session.set_image_resolution(columns.into(), rows.into(), width, height).is_ok() {
+                self.force_next_frame = true;
+            }
             return;
         }
         if reply.starts_with(b"\x1b_G") {
@@ -794,6 +846,9 @@ impl Host {
             Ok(Some((renderer_width, renderer_height))) => {
                 self.pending_resize = None;
                 self.size = (width, height);
+                // As Core: the cell size may have changed too, so images go without one until the terminal answers.
+                self.session.set_image_resolution(0, 0, 0, 0)?;
+                self.pixel_query_wanted = true;
                 self.force_next_frame = true;
                 events.push(Event::Resize { width: renderer_width, height: renderer_height });
                 Ok(())

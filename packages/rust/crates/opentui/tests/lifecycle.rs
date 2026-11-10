@@ -143,16 +143,21 @@ fn captured_stderr_stays_off_the_screen() {
 fn releasing_hands_the_terminal_over_and_takes_it_back() {
     let run = Run::fixture(&["--app"]);
     run.wait_for(DRAWN);
+    // The emulator does not answer the pixel size query: a terminal that does.
+    run.press("\x1b[4;480;800t");
     // As in Core, the release ends the batch it came in: the q after it never quits.
     run.press("rq");
     run.wait_for("lifecycle released");
     let text = run.text();
     let released = text.find("lifecycle released").unwrap();
     assert!(text[..released].contains(LEAVE_ALT), "the alternate screen is still active: {text:?}");
+    // Taking it back after a resize, the app asks for the pixel size again.
+    run.pty.resize(100, 30).unwrap();
     run.press("hello\r");
     run.wait_for("lifecycle read hello");
     let read = run.text().find("lifecycle read hello").unwrap();
-    let seen = run.app.wait_until(Duration::from_secs(10), || run.text()[read..].contains(ENTER_ALT));
+    let taken = || ["\x1b[14t", ENTER_ALT].iter().all(|text| run.text()[read..].contains(text));
+    let seen = run.app.wait_until(Duration::from_secs(10), taken);
     assert!(seen, "the app never took the terminal back: {:?}", run.text());
     let released = |count| {
         run.app.wait_until(Duration::from_secs(10), || run.text().matches("lifecycle released").count() == count)

@@ -112,6 +112,13 @@ pub fn is_device_attributes(reply: &[u8]) -> bool {
         .is_some_and(|(&last, body)| last == b'c' && body.iter().all(|byte| byte.is_ascii_digit() || *byte == b';'))
 }
 
+/// Parses a reply to the pixel size query `CSI 14 t`, `ESC [ 4 ; height ; width t`, into width and height.
+pub fn pixel_resolution(reply: &[u8]) -> Option<(u32, u32)> {
+    let body = std::str::from_utf8(reply.strip_prefix(b"\x1b[4;")?.strip_suffix(b"t")?).ok()?;
+    let (height, width) = body.split_once(';')?;
+    Some((width.parse().ok()?, height.parse().ok()?))
+}
+
 /// Whether a reply is the terminal's notice that its color scheme changed, `ESC [ ? 997 ; 1 n` (dark) or `2 n`
 /// (light), sent while mode 2031 is on.
 pub fn is_color_scheme_notice(reply: &[u8]) -> bool {

@@ -1013,6 +1013,15 @@ impl Session {
         check("ot_session_resize_renderer", unsafe { sys::ot_session_resize_renderer(context, session, width, height) })
     }
 
+    /// Sets the terminal's size in cells and in pixels, which images use to size their pixels and cells. All four are
+    /// positive, or all zero to forget the size.
+    pub fn set_image_resolution(&self, columns: u32, rows: u32, pixel_width: u32, pixel_height: u32) -> Result<()> {
+        let (context, session) = self.raw();
+        check("ot_session_set_image_resolution", unsafe {
+            sys::ot_session_set_image_resolution(context, session, columns, rows, pixel_width, pixel_height)
+        })
+    }
+
     pub fn renderer_state(&self) -> Result<RendererState> {
         let mut raw = sys::ot_session_renderer_state::default();
         let (context, session) = self.raw();
